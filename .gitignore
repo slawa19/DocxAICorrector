@@ -6,3 +6,9 @@ __pycache__/
 *.pyd
 *.tmp
 .run/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/

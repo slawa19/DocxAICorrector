@@ -58,3 +58,17 @@ def test_generate_markdown_block_raises_on_empty_model_output():
         assert "пустой ответ" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError for an empty model response")
+
+
+def test_ensure_pandoc_available_converts_os_error(monkeypatch):
+    def raise_os_error():
+        raise OSError("pandoc missing")
+
+    monkeypatch.setattr(generation.pypandoc, "get_pandoc_version", raise_os_error)
+
+    try:
+        generation.ensure_pandoc_available()
+    except RuntimeError as exc:
+        assert "Pandoc не найден" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError when pandoc is unavailable")

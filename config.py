@@ -1,7 +1,6 @@
 import os
 import tomllib
 
-import pypandoc
 from openai import OpenAI
 
 from constants import (
@@ -92,13 +91,3 @@ def get_client() -> OpenAI:
     if not api_key:
         raise RuntimeError("Не найден OPENAI_API_KEY. Добавьте его в .env или переменные окружения.")
     return OpenAI(api_key=api_key)
-
-
-def ensure_pandoc_available() -> None:
-    try:
-        pypandoc.get_pandoc_version()
-    except OSError as exc:
-        raise RuntimeError(
-            "Pandoc не найден. Для Windows PowerShell установите его командой: "
-            "winget install --id JohnMacFarlane.Pandoc -e"
-        ) from exc

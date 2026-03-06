@@ -59,13 +59,12 @@ DocxAICorrector/
 
 ### `config.py`
 Зависимости: `constants`.
-Внешние: `tomllib`, `openai`, `pypandoc`, `dotenv`.
+Внешние: `tomllib`, `openai`, `dotenv`.
 
 Экспортирует:
 - `load_app_config() -> dict`
 - `load_system_prompt() -> str`
 - `get_client() -> OpenAI`
-- `ensure_pandoc_available()`
 - `parse_int_env()`, `parse_csv_env()` (вспомогательные)
 
 ### `document.py`
@@ -85,6 +84,7 @@ DocxAICorrector/
 Внешние: `openai`, `pypandoc`, `tempfile`, `pathlib`.
 
 Экспортирует:
+- `ensure_pandoc_available()`
 - `normalize_model_output(text) -> str`
 - `is_retryable_error(exc) -> bool`
 - `generate_markdown_block(client, model, system_prompt, target_text, context_before, context_after, max_retries) -> str`

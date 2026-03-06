@@ -7,10 +7,12 @@ from constants import APP_LOG_PATH
 
 
 def init_session_state() -> None:
+    st.session_state.setdefault("app_start_logged", False)
     st.session_state.setdefault("run_log", [])
     st.session_state.setdefault("activity_feed", [])
     st.session_state.setdefault("latest_markdown", "")
     st.session_state.setdefault("processed_block_markdowns", [])
+    st.session_state.setdefault("markdown_preview_render_nonce", 0)
     st.session_state.setdefault("latest_docx_bytes", None)
     st.session_state.setdefault("latest_source_name", "")
     st.session_state.setdefault("last_error", "")
@@ -38,6 +40,7 @@ def reset_run_state() -> None:
     st.session_state.activity_feed = []
     st.session_state.latest_markdown = ""
     st.session_state.processed_block_markdowns = []
+    st.session_state.markdown_preview_render_nonce = 0
     st.session_state.latest_docx_bytes = None
     st.session_state.latest_source_name = ""
     st.session_state.last_error = ""

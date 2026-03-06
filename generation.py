@@ -5,7 +5,15 @@ from pathlib import Path
 import pypandoc
 from openai import OpenAI
 
-from config import ensure_pandoc_available
+
+def ensure_pandoc_available() -> None:
+    try:
+        pypandoc.get_pandoc_version()
+    except OSError as exc:
+        raise RuntimeError(
+            "Pandoc не найден. Для Windows PowerShell установите его командой: "
+            "winget install --id JohnMacFarlane.Pandoc -e"
+        ) from exc
 
 
 def normalize_model_output(text: str) -> str:

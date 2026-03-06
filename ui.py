@@ -19,6 +19,30 @@ def inject_ui_styles() -> None:
             --text-soft: rgba(226, 232, 240, 0.82);
         }
 
+        .stApp .main .block-container,
+        [data-testid="stAppViewBlockContainer"] {
+            max-width: 1120px;
+            padding-top: 2rem;
+            padding-right: 2rem;
+            padding-bottom: 3rem;
+            padding-left: 2rem;
+        }
+
+        @media (max-width: 768px) {
+            .stApp .main .block-container,
+            [data-testid="stAppViewBlockContainer"] {
+                padding-top: 1.25rem;
+                padding-right: 1rem;
+                padding-bottom: 2rem;
+                padding-left: 1rem;
+            }
+        }
+
+        div[data-testid="stFileUploader"] {
+            margin-top: 0.5rem;
+            margin-bottom: 1rem;
+        }
+
         .stButton > button,
         .stDownloadButton > button {
             background: linear-gradient(135deg, var(--accent-main), var(--accent-strong)) !important;
@@ -94,10 +118,23 @@ def inject_ui_styles() -> None:
             font-size: 0.88rem;
             margin: 4px 0;
         }
+
+        .section-gap-md {
+            height: 0.9rem;
+        }
+
+        .section-gap-lg {
+            height: 1.35rem;
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
+
+
+def render_section_gap(size: str = "md") -> None:
+    normalized_size = "lg" if size == "lg" else "md"
+    st.markdown(f'<div class="section-gap-{normalized_size}"></div>', unsafe_allow_html=True)
 
 
 def render_live_status(target=None) -> None:
@@ -210,6 +247,8 @@ def render_markdown_preview(target=None, *, title: str) -> None:
 
     sink = target if target is not None else st
     option_count = len(blocks)
+    st.session_state.markdown_preview_render_nonce += 1
+    widget_key_base = f"markdown_preview_{st.session_state.markdown_preview_render_nonce}"
     if st.session_state.markdown_preview_block_index > option_count:
         st.session_state.markdown_preview_block_index = option_count
 
@@ -220,13 +259,14 @@ def render_markdown_preview(target=None, *, title: str) -> None:
                 "Показать блок",
                 options=list(range(1, option_count + 1)),
                 index=max(0, st.session_state.markdown_preview_block_index - 1),
-                key="markdown_preview_block_select",
+                key=f"{widget_key_base}_select",
             )
             st.session_state.markdown_preview_block_index = selected_block
             st.text_area(
                 "Markdown блока",
                 value=blocks[selected_block - 1],
                 height=320,
+                key=f"{widget_key_base}_text",
             )
 
 
