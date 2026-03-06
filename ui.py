@@ -20,8 +20,12 @@ def inject_ui_styles() -> None:
         }
 
         .stApp .main .block-container,
-        [data-testid="stAppViewBlockContainer"] {
-            max-width: 1120px;
+        section.main > div.block-container,
+        div[data-testid="stMainBlockContainer"] {
+            width: min(100%, 1040px);
+            max-width: 1040px;
+            margin-left: 0;
+            margin-right: auto;
             padding-top: 2rem;
             padding-right: 2rem;
             padding-bottom: 3rem;
@@ -30,7 +34,10 @@ def inject_ui_styles() -> None:
 
         @media (max-width: 768px) {
             .stApp .main .block-container,
-            [data-testid="stAppViewBlockContainer"] {
+            section.main > div.block-container,
+            div[data-testid="stMainBlockContainer"] {
+                width: 100%;
+                max-width: 100%;
                 padding-top: 1.25rem;
                 padding-right: 1rem;
                 padding-bottom: 2rem;
