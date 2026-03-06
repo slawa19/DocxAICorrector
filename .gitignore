@@ -21,8 +21,6 @@ dist/
 build/
 .idea/
 .history/
-.vscode/settings.json
-.vscode/launch.json
-.vscode/*.local
+.vscode/
 Thumbs.db
 Desktop.ini
