@@ -2,6 +2,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 PROMPTS_DIR = BASE_DIR / "prompts"
+ENV_PATH = BASE_DIR / ".env"
 CONFIG_PATH = BASE_DIR / "config.toml"
 SYSTEM_PROMPT_PATH = PROMPTS_DIR / "system_prompt.txt"
 RUN_DIR = BASE_DIR / ".run"

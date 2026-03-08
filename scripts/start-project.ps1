@@ -107,7 +107,7 @@ try {
     Write-Ok 'Pandoc доступен'
 
     Write-Step 'Проверяю .env и API-ключ'
-    $keyCheck = & $venvPython -c "from dotenv import load_dotenv; import os; load_dotenv(); v=os.getenv('OPENAI_API_KEY','').strip(); print('KEY_OK' if v and v!='your_api_key_here' else 'KEY_MISSING')" 2>&1
+    $keyCheck = & $venvPython -c "from dotenv import load_dotenv; import os; load_dotenv(dotenv_path=r'$envPath'); v=os.getenv('OPENAI_API_KEY','').strip(); print('KEY_OK' if v and v!='your_api_key_here' else 'KEY_MISSING')" 2>&1
     if (($keyCheck | Out-String).Trim() -ne 'KEY_OK') {
         throw 'OPENAI_API_KEY не задан или остался placeholder в .env.'
     }

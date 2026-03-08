@@ -1,7 +1,5 @@
 from dotenv import load_dotenv
 
-load_dotenv()
-
 import logging
 import time
 
@@ -12,6 +10,7 @@ st.set_page_config(
     layout="wide",
 )
 
+from constants import ENV_PATH
 from config import get_client, load_app_config, load_system_prompt
 from document import (
     build_document_text,
@@ -39,6 +38,8 @@ from ui import (
     render_section_gap,
     render_sidebar,
 )
+
+load_dotenv(dotenv_path=ENV_PATH)
 
 
 def run_document_processing(
