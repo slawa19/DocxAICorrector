@@ -221,7 +221,7 @@ def render_run_log(target=None) -> None:
 
 
 def render_image_validation_summary(target=None) -> None:
-    summary = st.session_state.get("image_validation_summary", {})
+    summary = st.session_state.get("image_processing_summary", st.session_state.get("image_validation_summary", {}))
     if not summary.get("total_images"):
         return
 

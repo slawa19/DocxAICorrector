@@ -33,10 +33,13 @@ def init_session_state() -> None:
         },
     )
     st.session_state.setdefault("markdown_preview_block_index", 1)
+    st.session_state.setdefault("image_assets", [])
+    st.session_state.setdefault("image_validation_failures", [])
     st.session_state.setdefault(
-        "image_validation_summary",
+        "image_processing_summary",
         {
             "total_images": 0,
+            "processed_images": 0,
             "images_validated": 0,
             "validation_passed": 0,
             "fallbacks_applied": 0,
@@ -55,6 +58,16 @@ def reset_run_state() -> None:
     st.session_state.latest_source_name = ""
     st.session_state.last_error = ""
     st.session_state.markdown_preview_block_index = 1
+    st.session_state.image_assets = []
+    st.session_state.image_validation_failures = []
+    st.session_state.image_processing_summary = {
+        "total_images": 0,
+        "processed_images": 0,
+        "images_validated": 0,
+        "validation_passed": 0,
+        "fallbacks_applied": 0,
+        "validation_errors": [],
+    }
     st.session_state.processing_status = {
         "is_running": False,
         "stage": "Ожидание запуска",
@@ -67,15 +80,6 @@ def reset_run_state() -> None:
         "last_update_at": None,
         "progress": 0.0,
     }
-    st.session_state.image_validation_summary = {
-        "total_images": 0,
-        "images_validated": 0,
-        "validation_passed": 0,
-        "fallbacks_applied": 0,
-        "validation_errors": [],
-    }
-
-
 def push_activity(message: str) -> None:
     timestamp = datetime.now().strftime("%H:%M:%S")
     st.session_state.activity_feed.append({"time": timestamp, "message": message})
@@ -136,8 +140,9 @@ def append_image_log(
     missing_labels: list[str] | None = None,
     suspicious_reasons: list[str] | None = None,
 ) -> None:
-    summary = dict(st.session_state.image_validation_summary)
+    summary = dict(st.session_state.image_processing_summary)
     summary["total_images"] = int(summary.get("total_images", 0)) + 1
+    summary["processed_images"] = int(summary.get("processed_images", 0)) + 1
 
     if status == "validated":
         summary["images_validated"] = int(summary.get("images_validated", 0)) + 1
@@ -154,8 +159,11 @@ def append_image_log(
             reason = f"missing_labels:{', '.join(missing_labels)}"
         errors.append(f"{image_id}: {reason}")
         summary["validation_errors"] = errors[-10:]
+        failures = list(st.session_state.image_validation_failures)
+        failures.append(f"{image_id}: {reason}")
+        st.session_state.image_validation_failures = failures[-10:]
 
-    st.session_state.image_validation_summary = summary
+    st.session_state.image_processing_summary = summary
     push_activity(f"[IMG] {image_id}: {status} | conf: {confidence:.2f} | {decision}")
 
 

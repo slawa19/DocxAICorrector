@@ -16,11 +16,17 @@ from document import (
     build_document_text,
     build_editing_jobs,
     build_semantic_blocks,
-    extract_paragraph_units_from_docx,
+    extract_document_content_from_docx,
+    inspect_placeholder_integrity,
+    reinsert_inline_images,
 )
 from generation import convert_markdown_to_docx_bytes, ensure_pandoc_available, generate_markdown_block
+from image_analysis import analyze_image
+from image_generation import generate_image_candidate
+from image_validation import process_image_asset
 from logger import fail_critical, log_event, present_error
 from state import (
+    append_image_log,
     append_log,
     finalize_processing_status,
     init_session_state,
@@ -43,10 +49,117 @@ from ui import (
 load_dotenv(dotenv_path=ENV_PATH)
 
 
+def process_document_images(
+    *,
+    image_assets,
+    image_mode: str,
+    config: dict[str, object],
+    on_progress,
+) -> list:
+    if not image_assets:
+        st.session_state.image_assets = []
+        return []
+
+    processed_assets = []
+    st.session_state.image_assets = []
+    st.session_state.image_validation_failures = []
+    total_images = len(image_assets)
+    for index, asset in enumerate(image_assets, start=1):
+        set_processing_status(
+            stage="Обработка изображений",
+            detail=f"Обрабатываю изображение {index} из {total_images}.",
+            current_block=index,
+            block_count=total_images,
+            progress=index / max(total_images, 1),
+            is_running=True,
+        )
+        push_activity(f"Начата обработка изображения {index} из {total_images}.")
+        on_progress(preview_title="Текущий Markdown")
+        analysis = None
+        try:
+            analysis = analyze_image(
+                asset.original_bytes,
+                model=str(config.get("validation_model", "")),
+                mime_type=asset.mime_type,
+            )
+            asset.analysis_result = analysis
+            asset.prompt_key = analysis.prompt_key
+            asset.render_strategy = analysis.render_strategy
+
+            if image_mode == "safe" or not analysis.semantic_redraw_allowed:
+                asset.safe_bytes = generate_image_candidate(asset.original_bytes, analysis, mode="safe")
+                asset.validation_status = "skipped"
+                asset.final_decision = "accept"
+                asset.final_variant = "safe" if asset.safe_bytes else "original"
+                asset.final_reason = "Изображение обработано в safe-mode."
+            else:
+                asset.safe_bytes = generate_image_candidate(asset.original_bytes, analysis, mode="safe")
+                asset.redrawn_bytes = generate_image_candidate(asset.original_bytes, analysis, mode=image_mode)
+                candidate_analysis = analyze_image(
+                    asset.redrawn_bytes,
+                    model=str(config.get("validation_model", "")),
+                    mime_type=asset.mime_type,
+                )
+                asset = process_image_asset(
+                    asset,
+                    image_mode=image_mode,
+                    config=config,
+                    candidate_analysis=candidate_analysis,
+                )
+
+            validation_result = asset.validation_result if hasattr(asset, "validation_result") else None
+            confidence = (
+                float(getattr(validation_result, "validator_confidence", 0.0))
+                if validation_result is not None
+                else float(getattr(analysis, "confidence", 0.0))
+            )
+            append_image_log(
+                image_id=asset.image_id,
+                status="validated" if asset.validation_status in {"passed", "failed"} else asset.validation_status,
+                decision=asset.final_decision or "accept",
+                confidence=confidence,
+                missing_labels=(
+                    list(getattr(validation_result, "missing_labels", [])) if validation_result is not None else []
+                ),
+                suspicious_reasons=(
+                    list(getattr(validation_result, "suspicious_reasons", [])) if validation_result is not None else []
+                ),
+            )
+            processed_assets.append(asset)
+            push_activity(
+                f"Изображение {asset.image_id}: {asset.final_variant or 'original'} | {asset.final_decision or 'accept'}."
+            )
+        except Exception as exc:
+            asset.validation_status = "error"
+            asset.final_decision = "fallback_original"
+            asset.final_variant = "original"
+            asset.final_reason = f"image_processing_exception:{exc.__class__.__name__}"
+            append_image_log(
+                image_id=asset.image_id,
+                status="error",
+                decision=asset.final_decision,
+                confidence=float(getattr(analysis, "confidence", 0.0)) if analysis is not None else 0.0,
+                suspicious_reasons=[asset.final_reason],
+            )
+            log_event(
+                logging.ERROR,
+                "image_processing_failed",
+                "Обработка изображения завершилась ошибкой, применен fallback на оригинал.",
+                **asset.to_log_context(),
+            )
+            processed_assets.append(asset)
+
+    st.session_state.image_assets = processed_assets
+    return processed_assets
+
+
 def run_document_processing(
     *,
     uploaded_file,
     jobs: list[dict[str, str | int]],
+    image_assets: list,
+    image_mode: str,
+    app_config: dict[str, object],
     model: str,
     max_retries: int,
     on_progress,
@@ -63,6 +176,7 @@ def run_document_processing(
             model=model,
             block_count=len(jobs),
             max_retries=max_retries,
+            image_count=len(image_assets),
         )
         push_activity(f"Инициализация завершена. Модель: {model}.")
     except Exception as exc:
@@ -219,6 +333,24 @@ def run_document_processing(
 
     final_markdown = "\n\n".join(processed_chunks).strip()
     st.session_state.latest_markdown = final_markdown
+    processed_image_assets = process_document_images(
+        image_assets=image_assets,
+        image_mode=image_mode,
+        config=app_config,
+        on_progress=on_progress,
+    )
+    placeholder_integrity = inspect_placeholder_integrity(final_markdown, processed_image_assets)
+    for image_id, placeholder_status in placeholder_integrity.items():
+        if placeholder_status == "ok":
+            continue
+        log_event(
+            logging.WARNING,
+            "image_placeholder_mismatch",
+            "Обнаружено нарушение контракта image placeholder.",
+            filename=uploaded_file.name,
+            image_id=image_id,
+            placeholder_status=placeholder_status,
+        )
     set_processing_status(
         stage="Сборка DOCX",
         detail="Все блоки готовы. Собираю итоговый DOCX из Markdown.",
@@ -234,6 +366,8 @@ def run_document_processing(
 
     try:
         docx_bytes = convert_markdown_to_docx_bytes(final_markdown)
+        if processed_image_assets:
+            docx_bytes = reinsert_inline_images(docx_bytes, processed_image_assets)
     except Exception as exc:
         error_message = present_error(
             "docx_build_failed",
@@ -322,7 +456,7 @@ def main() -> None:
         return
 
     try:
-        paragraphs = extract_paragraph_units_from_docx(uploaded_file)
+        paragraphs, image_assets = extract_document_content_from_docx(uploaded_file)
         source_text = build_document_text(paragraphs)
         blocks = build_semantic_blocks(paragraphs, max_chars=chunk_size)
         jobs = build_editing_jobs(blocks, max_chars=chunk_size)
@@ -337,6 +471,7 @@ def main() -> None:
             filename=uploaded_file.name,
             paragraph_count=len(paragraphs),
             block_count=len(jobs),
+            image_count=len(image_assets),
             source_chars=len(source_text),
             chunk_size=chunk_size,
             image_mode=image_mode,
@@ -419,6 +554,9 @@ def main() -> None:
         processing_succeeded = run_document_processing(
             uploaded_file=uploaded_file,
             jobs=jobs,
+            image_assets=image_assets,
+            image_mode=image_mode,
+            app_config=app_config,
             model=model,
             max_retries=max_retries,
             on_progress=refresh_processing_ui,

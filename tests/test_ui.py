@@ -88,8 +88,9 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
 
 def test_render_image_validation_summary_shows_metrics(monkeypatch):
     session_state = SessionState(
-        image_validation_summary={
+        image_processing_summary={
             "total_images": 2,
+            "processed_images": 2,
             "images_validated": 2,
             "validation_passed": 1,
             "fallbacks_applied": 1,
