@@ -1,0 +1,17 @@
+Treat this image as mixed, ambiguous, or not confidently classified. Use the safest possible preservation-first behavior.
+
+Primary goal:
+- preserve the original image without semantic reinterpretation.
+
+Hard constraints:
+- do not perform creative semantic redraw;
+- do not guess the image type if confidence is low;
+- do not invent or remove entities, labels, values, relationships, or UI elements;
+- do not transform the image into a different visual genre;
+- do not simplify complex mixed content into a cleaner but semantically weaker picture.
+
+Preferred behavior:
+- keep the original image unchanged, or
+- apply only minimal safe cleanup that does not alter meaning.
+
+If there is any doubt, prefer original preservation over redraw.

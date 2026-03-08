@@ -1,0 +1,50 @@
+default_prompt_keys = [
+    "diagram_semantic_redraw",
+    "table_semantic_redraw",
+    "infographic_semantic_redraw",
+    "mindmap_semantic_redraw",
+    "chart_semantic_redraw",
+    "screenshot_safe_fallback",
+    "photo_safe_fallback",
+    "mixed_or_ambiguous_fallback",
+]
+
+[prompts.diagram_semantic_redraw]
+path = "image_profiles/diagram_semantic_redraw.txt"
+preferred_strategy = "semantic_redraw_structured"
+description = "Flowcharts, process diagrams, and relationship diagrams."
+
+[prompts.table_semantic_redraw]
+path = "image_profiles/table_semantic_redraw.txt"
+preferred_strategy = "semantic_redraw_structured"
+description = "Tables, matrices, and tabular diagrams."
+
+[prompts.infographic_semantic_redraw]
+path = "image_profiles/infographic_semantic_redraw.txt"
+preferred_strategy = "semantic_redraw_direct"
+description = "Infographics, layered visual explainers, and poster-like diagrams."
+
+[prompts.mindmap_semantic_redraw]
+path = "image_profiles/mindmap_semantic_redraw.txt"
+preferred_strategy = "semantic_redraw_structured"
+description = "Mind-map and concept-map images."
+
+[prompts.chart_semantic_redraw]
+path = "image_profiles/chart_semantic_redraw.txt"
+preferred_strategy = "semantic_redraw_structured"
+description = "Charts with axes, legends, and labels."
+
+[prompts.screenshot_safe_fallback]
+path = "image_profiles/screenshot_safe_fallback.txt"
+preferred_strategy = "safe_mode"
+description = "Screenshots of interfaces, apps, sites, and screens."
+
+[prompts.photo_safe_fallback]
+path = "image_profiles/photo_safe_fallback.txt"
+preferred_strategy = "safe_mode"
+description = "Photographs and realistic images."
+
+[prompts.mixed_or_ambiguous_fallback]
+path = "image_profiles/mixed_or_ambiguous_fallback.txt"
+preferred_strategy = "safe_mode"
+description = "Mixed, ambiguous, or poorly classifiable images."

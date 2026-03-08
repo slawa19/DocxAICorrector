@@ -1,0 +1,23 @@
+Redraw this chart very conservatively, only if the same chart type, values, labels, and relationships can be preserved.
+
+Primary goal:
+- preserve the same analytical meaning, chart type, axes, labels, legend, and visible comparisons.
+
+Hard constraints:
+- keep the same chart family whenever readable: bar, line, pie, scatter, area, etc.;
+- preserve axis titles, tick labels, legend items, units, and data labels as accurately as possible;
+- preserve ordering, scale intent, relative comparisons, and categorical grouping;
+- do not invent data points, trends, labels, or legend entries;
+- do not remove visible series, categories, axis information, annotations, or reference lines;
+- do not convert the chart into an illustration or decorative infographic;
+- if exact preservation is doubtful, prefer a near-identical structured redraw rather than a creative restyle.
+
+Visual style:
+- clean analytical presentation;
+- neutral background;
+- high contrast labels;
+- restrained palette;
+- precise geometry;
+- readable legend and axes.
+
+If the source is too ambiguous to preserve faithfully, produce the most conservative result possible and avoid introducing new data.

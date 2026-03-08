@@ -1,0 +1,20 @@
+Treat this image as a screenshot or UI capture. Apply only a safe, minimal cleanup-oriented transformation.
+
+Primary goal:
+- preserve the screenshot exactly in meaning and layout.
+
+Hard constraints:
+- do not semantically redraw the interface;
+- do not reinterpret the screen as a diagram;
+- do not invent, remove, reorder, or rename buttons, menus, fields, icons, tabs, windows, or notifications;
+- do not alter visible text content except for strictly lossless readability improvement;
+- do not fabricate sharper details that were not present in the source;
+- preserve layout, spacing, and the original UI structure.
+
+Allowed changes:
+- mild denoising;
+- mild contrast cleanup;
+- mild sharpening;
+- faithful upscale if non-generative and layout-preserving.
+
+If safe cleanup is uncertain, preserve the original image without modification.
