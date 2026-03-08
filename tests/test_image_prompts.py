@@ -36,7 +36,6 @@ def test_image_prompt_registry_references_existing_non_empty_files():
     registry_keys = set(registry["prompts"])
     assert set(registry["default_prompt_keys"]) == expected_keys
     assert registry_keys == expected_keys
-    assert set(registry["default_prompt_keys"]).issubset(registry_keys)
 
     for prompt_key, prompt_meta in registry["prompts"].items():
         prompt_path = PROMPTS_DIR / prompt_meta["path"]
