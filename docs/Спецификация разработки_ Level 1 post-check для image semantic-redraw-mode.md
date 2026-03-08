@@ -790,6 +790,45 @@ prompts/
 
 ---
 
+## 14.1. Почему улучшение качества `image_analysis` / `image_generation` — отдельный следующий шаг
+
+Это нужно зафиксировать явно, чтобы команда не смешивала **закрытие Level 1** и **дальнейшее повышение
+качества эвристик** в один merge.
+
+Причина в том, что Level 1 по этой спецификации закрывает прежде всего **контракт безопасного
+production-ready guardrail**, а не задачу максимального качества image understanding / image redraw:
+
+1. в scope текущего этапа входит orchestration flow `analysis -> redraw -> post-check -> accept/fallback`,
+   логирование решений, конфигурация, UI-статус и tests;
+2. из Level 1 прямо исключены полноценный OCR-конвейер, точное восстановление графов/стрелок,
+   proof-level структурное сравнение, обучение своего CV-pipeline и гарантия идеального совпадения
+   всех надписей;
+3. сам Level 1 определен как **production-friendly heuristic guardrail**, а не как строгий semantic
+   proof layer.
+
+Следствие: если merge уже обеспечивает обязательный post-check, консервативный fallback и не ломает
+сборку итогового документа, то базовый roadmap/spec для Level 1 выполнен. После этого следующим
+логичным шагом становится уже не расширение core-contract, а **hardening качества эвристик**:
+
+- более точная классификация типов изображений;
+- более надежный выбор `prompt_key` и `render_strategy`;
+- уменьшение false positive / false negative в validator-driven decision flow;
+- улучшение качества candidate generation без разрастания scope текущего merge.
+
+Именно поэтому фраза «следующим шагом можно отдельно заняться улучшением качества
+`image-analysis` / `image-generation` эвристик» корректна: это не недоделка текущего этапа, а
+ожидаемая следующая итерация после стабилизации минимально безопасного Level 1 контура.
+
+Это также согласуется с roadmap-порядком:
+
+- сначала закрывается базовый media pipeline и fallback-safe orchestration;
+- затем validator и final integration;
+- после этого идет этап hardening с регрессиями, audit logs и conservative fallback tuning;
+- аналогично в image v1/v2 roadmap более сложные режимы и улучшения обсуждаются только после
+  стабилизации базового контура.
+
+---
+
 ## 15. Риски и способы снижения
 
 ## Риск 1. Слишком оптимистичный validator
