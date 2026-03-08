@@ -829,6 +829,50 @@ production-ready guardrail**, а не задачу максимального к
 
 ---
 
+## 14.2. Отдельный checklist по текущему статусу реализации
+
+Ниже — практический checklist по состоянию **текущего репозитория**, чтобы было явно видно,
+что уже реализовано в рамках Level 1, а что остается на следующий этап.
+
+### Уже реализовано
+
+- [x] Data contracts для image pipeline вынесены в `models.py`.
+- [x] Конфигурация image mode и post-check thresholds заведена в `config.toml` и `config.py`
+      с env-overrides.
+- [x] Реализован document media pipeline: extraction inline images, placeholder insertion,
+      reinsertion в итоговый DOCX.
+- [x] Добавлены модули `image_analysis.py`, `image_generation.py`, `image_validation.py`.
+- [x] В `app.py` работает orchestration flow `analysis -> redraw -> post-check -> accept/fallback`.
+- [x] Для `semantic_redraw_*` используется validator-driven decision routing.
+- [x] В UI есть выбор image mode и минимальная сводка по результатам image validation.
+- [x] Validator и image pipeline логируют ключевые решения и fallback-сценарии.
+- [x] Есть unit/integration tests на config, document pipeline, image prompts,
+      image validation и image integration.
+
+### Остается / требует отдельного следующего шага
+
+- [ ] Улучшить качество `image_analysis` эвристик: уйти от грубой MIME-based классификации
+      к более содержательному анализу изображения.
+- [ ] Улучшить качество `image_generation` эвристик: текущий слой orchestration уже есть,
+      но качество candidate generation еще можно усиливать отдельно.
+- [ ] Добавить более надежное извлечение label/text signals из изображений, если команда решит
+      расширять validator beyond Level 1.
+- [ ] Доработать quality tuning для `prompt_key`, `render_strategy` и conservative thresholds
+      на основе реальных кейсов и run-log.
+- [ ] Расширить UI/run-log, если понадобится более детальная per-image диагностика для команды.
+- [ ] Продолжить hardening: накопление регрессий, анализ false positive / false negative и
+      точечная настройка fallback-policy.
+
+### Как читать этот checklist
+
+Если нужен ответ на вопрос «готов ли Level 1 контур как безопасный guardrail?» — ориентиром
+является блок **«Уже реализовано»**. Если нужен ответ на вопрос «есть ли еще пространство для
+улучшения качества image-analysis / image-generation?» — это блок **«Остается / требует отдельного
+следующего шага»**. Иными словами, базовый Level 1 контур уже собран, а дальнейшая работа —
+это отдельная итерация улучшения качества, а не незакрытый обязательный scope текущего merge.
+
+---
+
 ## 15. Риски и способы снижения
 
 ## Риск 1. Слишком оптимистичный validator
