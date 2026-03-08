@@ -14,6 +14,7 @@ class SessionState(dict):
 
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"test-image-payload"
+REDRAWN_BYTES = PNG_BYTES + b"-edited"
 
 
 def build_analysis_result(**overrides):
@@ -52,6 +53,11 @@ def _prepare_state(monkeypatch):
     monkeypatch.setattr(app, "push_activity", lambda message: None)
     monkeypatch.setattr(app, "append_image_log", lambda **kwargs: None)
     monkeypatch.setattr(app, "log_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        app,
+        "generate_image_candidate",
+        lambda image_bytes, analysis, *, mode: PNG_BYTES if mode == "safe" else REDRAWN_BYTES,
+    )
     return session_state
 
 

@@ -74,7 +74,10 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
     monkeypatch.setattr(
         ui.st.sidebar,
         "selectbox",
-        lambda label, options, index=0: "semantic_redraw_direct" if label == "Режим обработки изображений" else options[index],
+        lambda label, options, index=0, format_func=None, help=None: (
+            sidebar_calls.append(("selectbox", label, help))
+            or ("semantic_redraw_direct" if label == "Режим обработки изображений" else options[index])
+        ),
     )
     monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
     monkeypatch.setattr(ui.st.sidebar, "slider", lambda label, **kwargs: kwargs["value"])
@@ -83,7 +86,11 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
     result = ui.render_sidebar(config)
 
     assert result == ("gpt-5-mini", 6000, 3, "semantic_redraw_direct", False)
-    assert sidebar_calls == [("header", "Настройки")]
+    assert sidebar_calls == [
+        ("header", "Настройки"),
+        ("selectbox", "Модель", None),
+        ("selectbox", "Режим обработки изображений", ui.IMAGE_MODE_HELP),
+    ]
 
 
 def test_render_image_validation_summary_shows_metrics(monkeypatch):
@@ -95,9 +102,23 @@ def test_render_image_validation_summary_shows_metrics(monkeypatch):
             "validation_passed": 1,
             "fallbacks_applied": 1,
             "validation_errors": ["img-2: validator_exception:RuntimeError"],
-        }
+        },
+        image_assets=[
+            {
+                "image_id": "img-1",
+                "final_variant": "redrawn",
+                "final_decision": "accept",
+                "final_reason": "Validator подтвердил semantic redraw.",
+            },
+            {
+                "image_id": "img-2",
+                "final_variant": "original",
+                "final_decision": "fallback_original",
+                "final_reason": "candidate_image_unreadable",
+            },
+        ],
     )
-    metrics = [FakeMetricTarget(), FakeMetricTarget(), FakeMetricTarget()]
+    metrics = [FakeMetricTarget(), FakeMetricTarget(), FakeMetricTarget(), FakeMetricTarget()]
     captions = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
@@ -107,10 +128,13 @@ def test_render_image_validation_summary_shows_metrics(monkeypatch):
 
     ui.render_image_validation_summary(FakeTarget())
 
-    assert metrics[0].calls == [("Проверено", "2/2")]
-    assert metrics[1].calls == [("Принято", 1)]
+    assert metrics[0].calls == [("Обработано", "2/2")]
+    assert metrics[1].calls == [("Изменено", 1)]
     assert metrics[2].calls == [("Fallbacks", 1)]
+    assert metrics[3].calls == [("Оригинал оставлен", 1)]
     assert captions == [
+        "Причины fallback по изображениям:",
+        "• img-2: original | candidate_image_unreadable",
         "Ошибки валидации изображений:",
         "• img-2: validator_exception:RuntimeError",
     ]

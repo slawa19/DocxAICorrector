@@ -7,6 +7,19 @@ from generation import build_markdown_filename, build_output_filename
 from logger import format_elapsed
 
 
+IMAGE_MODE_LABELS = {
+    "safe": "Просто улучшить без перерисовки",
+    "semantic_redraw_direct": "Свободная AI-перерисовка по смыслу",
+    "semantic_redraw_structured": "Точная AI-перерисовка схем и таблиц",
+}
+
+IMAGE_MODE_HELP = (
+    "Просто улучшить: слегка улучшает исходную картинку без смысловой перерисовки.\n"
+    "Свободная AI-перерисовка: лучше для инфографики и сложного оформления.\n"
+    "Точная AI-перерисовка: лучше для таблиц, блок-схем, графиков и других структурных изображений."
+)
+
+
 def inject_ui_styles() -> None:
     st.markdown(
         """
@@ -222,25 +235,47 @@ def render_run_log(target=None) -> None:
 
 def render_image_validation_summary(target=None) -> None:
     summary = st.session_state.get("image_processing_summary", st.session_state.get("image_validation_summary", {}))
-    if not summary.get("total_images"):
+    image_assets = list(st.session_state.get("image_assets", []))
+    if not summary.get("total_images") and not image_assets:
         return
+
+    total_images = int(summary.get("total_images", len(image_assets)))
+    processed_images = int(summary.get("processed_images", len(image_assets)))
+    fallback_count = sum(1 for asset in image_assets if str(_asset_value(asset, "final_decision", "")).startswith("fallback_"))
+    modified_images = sum(1 for asset in image_assets if _asset_value(asset, "final_variant") in {"safe", "redrawn"})
+    original_images = sum(1 for asset in image_assets if _asset_value(asset, "final_variant") == "original")
+    fallback_details = [
+        asset for asset in image_assets if str(_asset_value(asset, "final_decision", "")).startswith("fallback_")
+    ]
 
     sink = target if target is not None else st
     with sink.container():
         with st.expander("Результаты валидации изображений", expanded=True):
-            columns = st.columns(3)
-            columns[0].metric(
-                "Проверено",
-                f"{summary.get('images_validated', 0)}/{summary.get('total_images', 0)}",
-            )
-            columns[1].metric("Принято", int(summary.get("validation_passed", 0)))
-            columns[2].metric("Fallbacks", int(summary.get("fallbacks_applied", 0)))
+            columns = st.columns(4)
+            columns[0].metric("Обработано", f"{processed_images}/{total_images}")
+            columns[1].metric("Изменено", modified_images)
+            columns[2].metric("Fallbacks", fallback_count or int(summary.get("fallbacks_applied", 0)))
+            columns[3].metric("Оригинал оставлен", original_images)
+
+            if fallback_details:
+                st.caption("Причины fallback по изображениям:")
+                for asset in fallback_details[-5:]:
+                    image_id = str(_asset_value(asset, "image_id", "unknown"))
+                    final_variant = _asset_value(asset, "final_variant", "original")
+                    final_reason = str(_asset_value(asset, "final_reason", "Причина не указана."))
+                    st.caption(f"• {image_id}: {final_variant} | {final_reason}")
 
             validation_errors = summary.get("validation_errors", [])
             if validation_errors:
                 st.caption("Ошибки валидации изображений:")
                 for error in validation_errors[-5:]:
                     st.caption(f"• {error}")
+
+
+def _asset_value(asset, field_name: str, default=None):
+    if isinstance(asset, dict):
+        return asset.get(field_name, default)
+    return getattr(asset, field_name, default)
 
 
 def render_sidebar(config: dict[str, object]) -> tuple[str, int, int, str, bool]:
@@ -274,6 +309,8 @@ def render_sidebar(config: dict[str, object]) -> tuple[str, int, int, str, bool]
         "Режим обработки изображений",
         image_mode_options,
         index=image_mode_index,
+        format_func=lambda mode: IMAGE_MODE_LABELS.get(mode, mode),
+        help=IMAGE_MODE_HELP,
     )
     enable_post_redraw_validation = st.sidebar.checkbox(
         "Включить post-check validation",

@@ -1,4 +1,11 @@
+from io import BytesIO
+
+from PIL import Image, ImageFile, ImageFilter, ImageOps
+
 from models import ImageAnalysisResult
+
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 def analyze_image(image_bytes: bytes, *, model: str, mime_type: str | None = None) -> ImageAnalysisResult:
@@ -6,6 +13,19 @@ def analyze_image(image_bytes: bytes, *, model: str, mime_type: str | None = Non
 
     detected_mime_type = mime_type or _detect_mime_type(image_bytes)
     if detected_mime_type == "image/jpeg":
+        if _looks_like_structured_diagram(image_bytes):
+            return ImageAnalysisResult(
+                image_type="diagram",
+                image_subtype="jpeg_diagram_like",
+                contains_text=True,
+                semantic_redraw_allowed=True,
+                confidence=0.72,
+                structured_parse_confidence=0.62,
+                prompt_key="diagram_semantic_redraw",
+                render_strategy="semantic_redraw_structured",
+                structure_summary="JPEG image with strong diagram-like layout, edges, and light background.",
+                extracted_labels=[],
+            )
         return ImageAnalysisResult(
             image_type="photo",
             image_subtype=None,
@@ -59,3 +79,52 @@ def _detect_mime_type(image_bytes: bytes) -> str | None:
     if image_bytes.startswith(b"BM"):
         return "image/bmp"
     return None
+
+
+def _looks_like_structured_diagram(image_bytes: bytes) -> bool:
+    try:
+        with Image.open(BytesIO(image_bytes)) as source_image:
+            source_image.load()
+            rgb_image = ImageOps.exif_transpose(source_image).convert("RGB")
+    except Exception:
+        return False
+
+    if rgb_image.width < 80 or rgb_image.height < 80:
+        return False
+
+    preview = rgb_image.resize((min(256, rgb_image.width), min(256, rgb_image.height)))
+    pixel_count = max(1, preview.width * preview.height)
+
+    white_pixels = 0
+    low_saturation_pixels = 0
+    dark_pixels = 0
+    for y_coord in range(preview.height):
+        for x_coord in range(preview.width):
+            red, green, blue = preview.getpixel((x_coord, y_coord))
+            maximum = max(red, green, blue)
+            minimum = min(red, green, blue)
+            if maximum >= 245 and minimum >= 235:
+                white_pixels += 1
+            if maximum - minimum <= 24:
+                low_saturation_pixels += 1
+            if maximum <= 72:
+                dark_pixels += 1
+
+    edge_map = preview.convert("L").filter(ImageFilter.FIND_EDGES)
+    strong_edges = sum(
+        1
+        for y_coord in range(edge_map.height)
+        for x_coord in range(edge_map.width)
+        if edge_map.getpixel((x_coord, y_coord)) >= 40
+    )
+
+    white_ratio = white_pixels / pixel_count
+    low_saturation_ratio = low_saturation_pixels / pixel_count
+    dark_ratio = dark_pixels / pixel_count
+    edge_ratio = strong_edges / pixel_count
+
+    if white_ratio >= 0.55 and edge_ratio >= 0.06:
+        return True
+    if white_ratio >= 0.45 and low_saturation_ratio >= 0.7 and edge_ratio >= 0.055 and dark_ratio >= 0.03:
+        return True
+    return False
