@@ -23,11 +23,12 @@ def test_main_logs_app_start_only_once(monkeypatch):
     monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "load_app_config", lambda: {})
-    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3))
+    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", True))
     monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "button", lambda *args, **kwargs: False)
     monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
 
     app.main()

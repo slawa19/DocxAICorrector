@@ -8,3 +8,12 @@ model_options = [
 ]
 chunk_size = 6000
 max_retries = 3
+image_mode_default = "safe"
+enable_post_redraw_validation = true
+validation_model = "gpt-4.1"
+min_semantic_match_score = 0.75
+min_text_match_score = 0.80
+min_structure_match_score = 0.70
+validator_confidence_threshold = 0.75
+allow_accept_with_partial_text_loss = false
+prefer_structured_redraw = true

@@ -16,6 +16,45 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     assert app_config["max_retries"] == 1
 
 
+def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH)
+
+    app_config = config.load_app_config()
+
+    assert app_config["image_mode_default"] == "safe"
+    assert app_config["enable_post_redraw_validation"] is True
+    assert app_config["validation_model"] == "gpt-4.1"
+    assert app_config["min_semantic_match_score"] == 0.75
+    assert app_config["min_text_match_score"] == 0.8
+    assert app_config["min_structure_match_score"] == 0.7
+    assert app_config["validator_confidence_threshold"] == 0.75
+    assert app_config["allow_accept_with_partial_text_loss"] is False
+    assert app_config["prefer_structured_redraw"] is True
+
+
+def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.setenv("DOCX_AI_IMAGE_MODE_DEFAULT", "semantic_redraw_direct")
+    monkeypatch.setenv("DOCX_AI_ENABLE_POST_REDRAW_VALIDATION", "false")
+    monkeypatch.setenv("DOCX_AI_VALIDATION_MODEL", "gpt-5.4")
+    monkeypatch.setenv("DOCX_AI_MIN_SEMANTIC_MATCH_SCORE", "1.2")
+    monkeypatch.setenv("DOCX_AI_MIN_TEXT_MATCH_SCORE", "-0.1")
+    monkeypatch.setenv("DOCX_AI_MIN_STRUCTURE_MATCH_SCORE", "0.91")
+    monkeypatch.setenv("DOCX_AI_VALIDATOR_CONFIDENCE_THRESHOLD", "2")
+    monkeypatch.setenv("DOCX_AI_ALLOW_ACCEPT_WITH_PARTIAL_TEXT_LOSS", "yes")
+
+    app_config = config.load_app_config()
+
+    assert app_config["image_mode_default"] == "semantic_redraw_direct"
+    assert app_config["enable_post_redraw_validation"] is False
+    assert app_config["validation_model"] == "gpt-5.4"
+    assert app_config["min_semantic_match_score"] == 1.0
+    assert app_config["min_text_match_score"] == 0.0
+    assert app_config["min_structure_match_score"] == 0.91
+    assert app_config["validator_confidence_threshold"] == 1.0
+    assert app_config["allow_accept_with_partial_text_loss"] is True
+
+
 def test_parse_csv_env_rejects_empty_effective_list(monkeypatch):
     monkeypatch.setenv("DOCX_AI_MODEL_OPTIONS", " , , ")
 
@@ -25,3 +64,15 @@ def test_parse_csv_env_rejects_empty_effective_list(monkeypatch):
         assert "список моделей пуст" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError for an empty CSV env override")
+
+
+def test_load_app_config_rejects_invalid_image_env_value(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.setenv("DOCX_AI_ENABLE_POST_REDRAW_VALIDATION", "sometimes")
+
+    try:
+        config.load_app_config()
+    except RuntimeError as exc:
+        assert "DOCX_AI_ENABLE_POST_REDRAW_VALIDATION" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError for an invalid image bool env override")

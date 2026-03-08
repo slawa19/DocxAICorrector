@@ -220,7 +220,30 @@ def render_run_log(target=None) -> None:
             st.caption(st.session_state.last_log_hint)
 
 
-def render_sidebar(config: dict[str, object]) -> tuple[str, int, int]:
+def render_image_validation_summary(target=None) -> None:
+    summary = st.session_state.get("image_processing_summary", st.session_state.get("image_validation_summary", {}))
+    if not summary.get("total_images"):
+        return
+
+    sink = target if target is not None else st
+    with sink.container():
+        with st.expander("Результаты валидации изображений", expanded=True):
+            columns = st.columns(3)
+            columns[0].metric(
+                "Проверено",
+                f"{summary.get('images_validated', 0)}/{summary.get('total_images', 0)}",
+            )
+            columns[1].metric("Принято", int(summary.get("validation_passed", 0)))
+            columns[2].metric("Fallbacks", int(summary.get("fallbacks_applied", 0)))
+
+            validation_errors = summary.get("validation_errors", [])
+            if validation_errors:
+                st.caption("Ошибки валидации изображений:")
+                for error in validation_errors[-5:]:
+                    st.caption(f"• {error}")
+
+
+def render_sidebar(config: dict[str, object]) -> tuple[str, int, int, str, bool]:
     st.sidebar.header("Настройки")
     model_options = [*config["model_options"], "custom"]
     default_model = str(config["default_model"])
@@ -244,7 +267,19 @@ def render_sidebar(config: dict[str, object]) -> tuple[str, int, int]:
         max_value=5,
         value=int(config["max_retries"]),
     )
-    return model, chunk_size, max_retries
+    image_mode_options = ["safe", "semantic_redraw_direct", "semantic_redraw_structured"]
+    image_mode_default = str(config.get("image_mode_default", "safe"))
+    image_mode_index = image_mode_options.index(image_mode_default) if image_mode_default in image_mode_options else 0
+    image_mode = st.sidebar.selectbox(
+        "Режим обработки изображений",
+        image_mode_options,
+        index=image_mode_index,
+    )
+    enable_post_redraw_validation = st.sidebar.checkbox(
+        "Включить post-check validation",
+        value=bool(config.get("enable_post_redraw_validation", True)),
+    )
+    return model, chunk_size, max_retries, image_mode, enable_post_redraw_validation
 
 
 def render_markdown_preview(target=None, *, title: str) -> None:
