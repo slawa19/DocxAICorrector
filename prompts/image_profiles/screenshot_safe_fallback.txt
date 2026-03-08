@@ -17,4 +17,4 @@ Allowed changes:
 - mild sharpening;
 - faithful upscale if non-generative and layout-preserving.
 
-If safe cleanup is uncertain, keep the image as close to the original as possible.
+If safe cleanup is uncertain, preserve the original image without modification.

@@ -16,4 +16,4 @@ Allowed changes:
 - mild contrast and exposure normalization;
 - faithful non-generative upscale if needed.
 
-If enhancement is uncertain or could alter meaning, keep the original appearance as closely as possible.
+If enhancement is uncertain or could alter meaning, preserve the original image without modification.
