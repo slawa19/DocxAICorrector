@@ -1,9 +1,10 @@
 import tomllib
+from typing import Any
 
 from constants import PROMPTS_DIR
 
 
-def _read_registry() -> dict[str, object]:
+def _read_registry() -> dict[str, Any]:
     return tomllib.loads((PROMPTS_DIR / "image_prompt_registry.toml").read_text(encoding="utf-8"))
 
 
@@ -27,7 +28,8 @@ def test_image_prompt_registry_references_existing_non_empty_files():
     }
 
     registry_keys = set(registry["prompts"])
-    assert set(registry["default_prompt_keys"]) == registry_keys == expected_keys
+    assert set(registry["default_prompt_keys"]) == expected_keys
+    assert registry_keys == expected_keys
 
     for prompt_key, prompt_meta in registry["prompts"].items():
         prompt_path = PROMPTS_DIR / prompt_meta["path"]
@@ -53,11 +55,26 @@ def test_safety_constraints_in_prompt_profiles():
 
     for prompt_key in semantic_prompt_keys:
         prompt_text = (PROMPTS_DIR / registry["prompts"][prompt_key]["path"]).read_text(encoding="utf-8")
-        assert _contains_any(prompt_text, ("preserve", "keep the same"))
-        assert _contains_any(prompt_text, ("do not invent", "avoid guessing", "avoid hallucinating"))
-        assert _contains_any(prompt_text, ("do not remove", "do not collapse", "do not merge"))
+        assert _contains_any(
+            prompt_text,
+            ("preserve", "keep the same"),
+        ), f"{prompt_key} is missing a preservation constraint"
+        assert _contains_any(
+            prompt_text,
+            ("do not invent", "avoid guessing", "avoid hallucinating"),
+        ), f"{prompt_key} is missing an anti-hallucination constraint"
+        assert _contains_any(
+            prompt_text,
+            ("do not remove", "do not collapse", "do not merge"),
+        ), f"{prompt_key} is missing a no-removal/no-collapse constraint"
 
     for prompt_key in safe_prompt_keys:
         prompt_text = (PROMPTS_DIR / registry["prompts"][prompt_key]["path"]).read_text(encoding="utf-8")
-        assert _contains_any(prompt_text, ("safe", "original", "preserve"))
-        assert _contains_any(prompt_text, ("do not", "keep the image as close to the original as possible"))
+        assert _contains_any(
+            prompt_text,
+            ("safe", "original", "preserve"),
+        ), f"{prompt_key} is missing a safe-preservation signal"
+        assert _contains_any(
+            prompt_text,
+            ("do not", "keep the image as close to the original as possible"),
+        ), f"{prompt_key} is missing a restriction against unsafe transformation"
