@@ -33,6 +33,16 @@ def init_session_state() -> None:
         },
     )
     st.session_state.setdefault("markdown_preview_block_index", 1)
+    st.session_state.setdefault(
+        "image_validation_summary",
+        {
+            "total_images": 0,
+            "images_validated": 0,
+            "validation_passed": 0,
+            "fallbacks_applied": 0,
+            "validation_errors": [],
+        },
+    )
 
 
 def reset_run_state() -> None:
@@ -56,6 +66,13 @@ def reset_run_state() -> None:
         "started_at": None,
         "last_update_at": None,
         "progress": 0.0,
+    }
+    st.session_state.image_validation_summary = {
+        "total_images": 0,
+        "images_validated": 0,
+        "validation_passed": 0,
+        "fallbacks_applied": 0,
+        "validation_errors": [],
     }
 
 
@@ -108,6 +125,38 @@ def finalize_processing_status(stage: str, detail: str, progress: float) -> None
         }
     )
     st.session_state.processing_status = status
+
+
+def append_image_log(
+    *,
+    image_id: str,
+    status: str,
+    decision: str,
+    confidence: float,
+    missing_labels: list[str] | None = None,
+    suspicious_reasons: list[str] | None = None,
+) -> None:
+    summary = dict(st.session_state.image_validation_summary)
+    summary["total_images"] = int(summary.get("total_images", 0)) + 1
+
+    if status == "validated":
+        summary["images_validated"] = int(summary.get("images_validated", 0)) + 1
+        if decision == "accept":
+            summary["validation_passed"] = int(summary.get("validation_passed", 0)) + 1
+        else:
+            summary["fallbacks_applied"] = int(summary.get("fallbacks_applied", 0)) + 1
+    else:
+        errors = list(summary.get("validation_errors", []))
+        reason = "unknown"
+        if suspicious_reasons:
+            reason = suspicious_reasons[0]
+        elif missing_labels:
+            reason = f"missing_labels:{', '.join(missing_labels)}"
+        errors.append(f"{image_id}: {reason}")
+        summary["validation_errors"] = errors[-10:]
+
+    st.session_state.image_validation_summary = summary
+    push_activity(f"[IMG] {image_id}: {status} | conf: {confidence:.2f} | {decision}")
 
 
 def append_log(

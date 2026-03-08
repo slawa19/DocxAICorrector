@@ -43,3 +43,48 @@ def test_append_log_keeps_only_last_thirty_entries(monkeypatch):
     assert len(session_state.run_log) == 30
     assert session_state.run_log[0]["details"] == "entry-5"
     assert session_state.run_log[-1]["details"] == "entry-34"
+
+
+def test_init_session_state_initializes_image_validation_summary(monkeypatch):
+    session_state = SessionState()
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    state.init_session_state()
+
+    assert session_state.image_validation_summary == {
+        "total_images": 0,
+        "images_validated": 0,
+        "validation_passed": 0,
+        "fallbacks_applied": 0,
+        "validation_errors": [],
+    }
+
+
+def test_append_image_log_updates_summary_and_activity(monkeypatch):
+    session_state = SessionState()
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    state.init_session_state()
+
+    state.append_image_log(
+        image_id="img-1",
+        status="validated",
+        decision="accept",
+        confidence=0.92,
+        missing_labels=[],
+        suspicious_reasons=[],
+    )
+    state.append_image_log(
+        image_id="img-2",
+        status="error",
+        decision="fallback_safe",
+        confidence=0.10,
+        suspicious_reasons=["validator_exception:RuntimeError"],
+    )
+
+    assert session_state.image_validation_summary["total_images"] == 2
+    assert session_state.image_validation_summary["images_validated"] == 1
+    assert session_state.image_validation_summary["validation_passed"] == 1
+    assert session_state.image_validation_summary["fallbacks_applied"] == 0
+    assert session_state.image_validation_summary["validation_errors"] == ["img-2: validator_exception:RuntimeError"]
+    assert session_state.activity_feed[-1]["message"] == "[IMG] img-2: error | conf: 0.10 | fallback_safe"

@@ -30,6 +30,7 @@ from state import (
 )
 from ui import (
     inject_ui_styles,
+    render_image_validation_summary,
     render_live_status,
     render_markdown_preview,
     render_partial_result,
@@ -307,7 +308,7 @@ def main() -> None:
         st.error(f"Ошибка загрузки конфигурации: {user_message}")
         return
 
-    model, chunk_size, max_retries = render_sidebar(app_config)
+    model, chunk_size, max_retries, image_mode, enable_post_redraw_validation = render_sidebar(app_config)
     uploaded_file = st.file_uploader("Загрузите DOCX-файл", type=["docx"])
 
     if st.button("Сбросить результаты", use_container_width=True):
@@ -338,6 +339,8 @@ def main() -> None:
             block_count=len(jobs),
             source_chars=len(source_text),
             chunk_size=chunk_size,
+            image_mode=image_mode,
+            enable_post_redraw_validation=enable_post_redraw_validation,
         )
     except Exception as exc:
         user_message = present_error(
@@ -377,10 +380,12 @@ def main() -> None:
     status_placeholder = st.empty()
     log_placeholder = st.empty()
     preview_placeholder = st.empty()
+    image_validation_placeholder = st.empty()
 
     def refresh_processing_ui(*, preview_title: str | None = None) -> None:
         render_live_status(status_placeholder)
         render_run_log(log_placeholder)
+        render_image_validation_summary(image_validation_placeholder)
         if preview_title:
             render_markdown_preview(preview_placeholder, title=preview_title)
 
