@@ -613,6 +613,11 @@ Validator должен вернуть fail, если:
 - mapping type -> prompt_key;
 - классификацией и result object.
 
+При этом базовый prompt registry для image-generation не нужно откладывать "на потом":
+
+- default profile-файлы должны быть созданы уже на текущем этапе;
+- далее допускается только их итеративное улучшение без ломки `prompt_key`-контракта.
+
 ## 11.5. `image_generation.py`
 
 Создать новый модуль с:
@@ -621,6 +626,35 @@ Validator должен вернуть fail, если:
 - structured branch;
 - direct redraw branch;
 - image technical validity checks.
+
+### 11.5.1. Хранение prompt-профилей
+
+Для соответствия текущей архитектуре проекта prompt-профили должны храниться не внутри Python-кода,
+а как отдельные ресурсы в `prompts/`.
+
+Обязательный минимальный контракт хранения:
+
+```text
+prompts/
+  system_prompt.txt
+  image_prompt_registry.toml
+  image_profiles/
+    diagram_semantic_redraw.txt
+    table_semantic_redraw.txt
+    infographic_semantic_redraw.txt
+    mindmap_semantic_redraw.txt
+    chart_semantic_redraw.txt
+    screenshot_safe_fallback.txt
+    photo_safe_fallback.txt
+    mixed_or_ambiguous_fallback.txt
+```
+
+Требования:
+
+1. `prompt_key` должен ссылаться на файл через registry, а не через hardcode в нескольких местах;
+2. каждый prompt-файл должен быть человекочитаемым и редактируемым без изменения orchestration logic;
+3. registry должен хранить хотя бы `path`, `preferred_strategy`, `description`;
+4. отсутствие prompt-файла должно считаться конфигурационной ошибкой feature-level.
 
 ## 11.6. `image_validation.py`
 

@@ -1,0 +1,22 @@
+Redraw this infographic in a cleaner, more readable, modern style while preserving its meaning.
+
+Primary goal:
+- keep the same message, information hierarchy, and semantic sections.
+
+Hard constraints:
+- preserve the same core topics, blocks, callouts, icons, and labels whenever they are readable;
+- preserve the information hierarchy, ordering, grouping, and relationships;
+- keep numerical values, percentages, names, and key labels as accurately as possible;
+- do not invent new claims, extra sections, icons with new meaning, or unsupported data;
+- do not remove essential blocks, labels, legends, annotations, or explanatory relationships;
+- do not oversimplify the infographic into a vague decorative poster.
+
+Visual style:
+- modern editorial infographic;
+- clear section separation;
+- strong readability;
+- limited and consistent color palette;
+- balanced typography and spacing;
+- visually clean, but still information-dense when needed.
+
+When any element is ambiguous, prefer conservative preservation over stylistic reinterpretation.

@@ -1,0 +1,22 @@
+Redraw this image as a clean, readable table or structured tabular layout.
+
+Primary goal:
+- preserve the same rows, columns, headers, grouping, and meaning.
+
+Hard constraints:
+- keep the table structure equivalent to the source whenever it is readable;
+- preserve headers, row labels, column labels, units, legends, and footnotes as accurately as possible;
+- do not merge, split, reorder, or reinterpret rows and columns unless the source clearly requires it;
+- do not invent values, captions, totals, categories, or notes;
+- do not remove existing values, labels, grid relationships, or structural separators;
+- do not transform the table into a generic poster, chart, or infographic.
+
+Visual style:
+- clean academic or business table;
+- high contrast text;
+- clear cell boundaries or strong alignment cues;
+- restrained colors;
+- consistent spacing;
+- readable typography.
+
+If parts of the source are unclear, preserve the visible structure conservatively and avoid hallucinating missing data.

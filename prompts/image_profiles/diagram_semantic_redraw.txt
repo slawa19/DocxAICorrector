@@ -1,0 +1,23 @@
+Redraw this diagram as a clean, modern, professional vector-style diagram.
+
+Primary goal:
+- preserve the same semantic structure and the same logical relationships.
+
+Hard constraints:
+- keep the same number of major blocks, lanes, columns, decision nodes, and arrows whenever they are readable in the source;
+- preserve the direction of relationships, process flow, hierarchy, and grouping;
+- preserve labels and wording as accurately as possible when they are readable;
+- do not invent new entities, categories, steps, arrows, labels, or conclusions;
+- do not remove existing entities, labels, connectors, or legends unless they are clearly unreadable noise;
+- do not convert the diagram into a generic illustration or decorative infographic;
+- do not change the meaning, ordering, causality, ownership, or hierarchy.
+
+Visual style:
+- white or very light background;
+- aligned boxes and containers;
+- clean spacing and balanced margins;
+- crisp connector lines and arrows;
+- professional typography;
+- high readability at document scale.
+
+If some text is unreadable, keep the structure conservative and avoid guessing specific new content.

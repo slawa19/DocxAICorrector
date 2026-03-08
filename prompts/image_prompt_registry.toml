@@ -1,0 +1,50 @@
+default_prompt_keys = [
+    "diagram_semantic_redraw",
+    "table_semantic_redraw",
+    "infographic_semantic_redraw",
+    "mindmap_semantic_redraw",
+    "chart_semantic_redraw",
+    "screenshot_safe_fallback",
+    "photo_safe_fallback",
+    "mixed_or_ambiguous_fallback",
+]
+
+[prompts.diagram_semantic_redraw]
+path = "image_profiles/diagram_semantic_redraw.txt"
+preferred_strategy = "semantic_redraw_structured"
+description = "Блок-схемы, процессные схемы и визуальные схемы взаимосвязей."
+
+[prompts.table_semantic_redraw]
+path = "image_profiles/table_semantic_redraw.txt"
+preferred_strategy = "semantic_redraw_structured"
+description = "Таблицы, матрицы и табличные схемы."
+
+[prompts.infographic_semantic_redraw]
+path = "image_profiles/infographic_semantic_redraw.txt"
+preferred_strategy = "semantic_redraw_direct"
+description = "Инфографика, многоуровневые визуальные объяснения, poster-like схемы."
+
+[prompts.mindmap_semantic_redraw]
+path = "image_profiles/mindmap_semantic_redraw.txt"
+preferred_strategy = "semantic_redraw_structured"
+description = "Mind-map и concept-map изображения."
+
+[prompts.chart_semantic_redraw]
+path = "image_profiles/chart_semantic_redraw.txt"
+preferred_strategy = "semantic_redraw_structured"
+description = "Графики и диаграммы с осями, легендами и подписями."
+
+[prompts.screenshot_safe_fallback]
+path = "image_profiles/screenshot_safe_fallback.txt"
+preferred_strategy = "safe_mode"
+description = "Скриншоты интерфейсов, приложений, сайтов и экранов."
+
+[prompts.photo_safe_fallback]
+path = "image_profiles/photo_safe_fallback.txt"
+preferred_strategy = "safe_mode"
+description = "Фотографии и реалистичные изображения."
+
+[prompts.mixed_or_ambiguous_fallback]
+path = "image_profiles/mixed_or_ambiguous_fallback.txt"
+preferred_strategy = "safe_mode"
+description = "Смешанные, неоднозначные или плохо классифицируемые изображения."

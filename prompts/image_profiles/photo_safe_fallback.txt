@@ -1,0 +1,19 @@
+Treat this image as a photograph or realistic image. Apply only a safe, minimal enhancement.
+
+Primary goal:
+- preserve the same scene, objects, people, text, and evidence value of the source.
+
+Hard constraints:
+- do not semantically redraw the photo;
+- do not invent faces, objects, background elements, text, or lighting changes that alter meaning;
+- do not remove visible objects, people, labels, marks, or context;
+- do not stylize the image into an illustration, render, painting, or infographic;
+- do not change the factual content of the scene.
+
+Allowed changes:
+- mild denoising;
+- mild sharpening;
+- mild contrast and exposure normalization;
+- faithful non-generative upscale if needed.
+
+If enhancement is uncertain or could alter meaning, keep the original appearance as closely as possible.

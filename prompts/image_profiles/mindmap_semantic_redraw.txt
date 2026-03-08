@@ -1,0 +1,22 @@
+Redraw this mind map or concept map as a clean, readable structured diagram.
+
+Primary goal:
+- preserve the same central topic, branches, sub-branches, and semantic relationships.
+
+Hard constraints:
+- keep the same root node, primary branches, and secondary branches whenever they are readable;
+- preserve parent-child relationships, adjacency, grouping, and branch direction;
+- preserve labels as accurately as possible;
+- do not invent new branches, topics, examples, or connections;
+- do not remove existing branches or collapse distinct branches into one unless the source is clearly duplicated noise;
+- do not convert the mind map into a different type of diagram or into a generic illustration.
+
+Visual style:
+- clear central node;
+- balanced branch layout;
+- clean connectors;
+- readable labels;
+- restrained colors;
+- professional educational style.
+
+If a branch is partially unreadable, keep the visible branch structure conservative and avoid guessing extra content.
