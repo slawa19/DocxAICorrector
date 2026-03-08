@@ -143,7 +143,7 @@ def append_image_log(
         summary["images_validated"] = int(summary.get("images_validated", 0)) + 1
         if decision == "accept":
             summary["validation_passed"] = int(summary.get("validation_passed", 0)) + 1
-        else:
+        elif decision.startswith("fallback_"):
             summary["fallbacks_applied"] = int(summary.get("fallbacks_applied", 0)) + 1
     else:
         errors = list(summary.get("validation_errors", []))
