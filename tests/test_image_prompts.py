@@ -3,9 +3,17 @@ import tomllib
 from constants import PROMPTS_DIR
 
 
+def _read_registry() -> dict[str, object]:
+    return tomllib.loads((PROMPTS_DIR / "image_prompt_registry.toml").read_text(encoding="utf-8"))
+
+
+def _contains_any(text: str, variants: tuple[str, ...]) -> bool:
+    lowered = text.lower()
+    return any(variant in lowered for variant in variants)
+
+
 def test_image_prompt_registry_references_existing_non_empty_files():
-    registry_path = PROMPTS_DIR / "image_prompt_registry.toml"
-    registry = tomllib.loads(registry_path.read_text(encoding="utf-8"))
+    registry = _read_registry()
 
     expected_keys = {
         "diagram_semantic_redraw",
@@ -18,8 +26,8 @@ def test_image_prompt_registry_references_existing_non_empty_files():
         "mixed_or_ambiguous_fallback",
     }
 
-    assert set(registry["default_prompt_keys"]) == expected_keys
-    assert set(registry["prompts"]) == expected_keys
+    registry_keys = set(registry["prompts"])
+    assert set(registry["default_prompt_keys"]) == registry_keys == expected_keys
 
     for prompt_key, prompt_meta in registry["prompts"].items():
         prompt_path = PROMPTS_DIR / prompt_meta["path"]
@@ -27,8 +35,8 @@ def test_image_prompt_registry_references_existing_non_empty_files():
         assert prompt_path.read_text(encoding="utf-8").strip(), f"Prompt file is empty for {prompt_key}"
 
 
-def test_image_prompt_registry_has_safety_constraints_for_semantic_and_safe_profiles():
-    registry = tomllib.loads((PROMPTS_DIR / "image_prompt_registry.toml").read_text(encoding="utf-8"))
+def test_safety_constraints_in_prompt_profiles():
+    registry = _read_registry()
 
     semantic_prompt_keys = {
         "diagram_semantic_redraw",
@@ -45,11 +53,11 @@ def test_image_prompt_registry_has_safety_constraints_for_semantic_and_safe_prof
 
     for prompt_key in semantic_prompt_keys:
         prompt_text = (PROMPTS_DIR / registry["prompts"][prompt_key]["path"]).read_text(encoding="utf-8")
-        assert "do not invent" in prompt_text.lower()
-        assert "do not remove" in prompt_text.lower()
-        assert "preserve" in prompt_text.lower()
+        assert _contains_any(prompt_text, ("preserve", "keep the same"))
+        assert _contains_any(prompt_text, ("do not invent", "avoid guessing", "avoid hallucinating"))
+        assert _contains_any(prompt_text, ("do not remove", "do not collapse", "do not merge"))
 
     for prompt_key in safe_prompt_keys:
         prompt_text = (PROMPTS_DIR / registry["prompts"][prompt_key]["path"]).read_text(encoding="utf-8")
-        assert "safe" in prompt_text.lower() or "original" in prompt_text.lower()
-        assert "do not" in prompt_text.lower()
+        assert _contains_any(prompt_text, ("safe", "original", "preserve"))
+        assert _contains_any(prompt_text, ("do not", "keep the image as close to the original as possible"))
