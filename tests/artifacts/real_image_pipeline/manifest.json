@@ -30,9 +30,9 @@
     "prompt_key": "infographic_semantic_redraw",
     "render_strategy": "semantic_redraw_direct",
     "semantic_redraw_allowed": true,
-    "analysis_elapsed_seconds": 0.084,
-    "generation_elapsed_seconds": 72.031,
+    "analysis_elapsed_seconds": 0.081,
+    "generation_elapsed_seconds": 75.342,
     "bytes_in": 504646,
-    "bytes_out": 1552115
+    "bytes_out": 2693381
   }
 ]
