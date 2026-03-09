@@ -316,6 +316,10 @@ def _render_table(draw: ImageDraw.ImageDraw, image: Image.Image, el: dict[str, A
     if w <= 0 or h <= 0 or rows <= 0 or cols <= 0:
         return
 
+    if _should_render_styled_matrix(el, w=w, h=h, rows=rows, cols=cols):
+        _render_styled_matrix_table(draw, image, el, x=x, y=y, w=w, h=h, rows=rows, cols=cols)
+        return
+
     cell_w = w / cols
     cell_h = h / rows
 
@@ -344,6 +348,119 @@ def _render_table(draw: ImageDraw.ImageDraw, image: Image.Image, el: dict[str, A
             draw.rectangle(
                 [cell_x + stroke_w, cell_y + stroke_w, cell_x + cw - stroke_w, cell_y + ch - stroke_w],
                 fill=_hex_to_rgba(cell_fill),
+            )
+
+
+def _should_render_styled_matrix(el: dict[str, Any], *, w: int, h: int, rows: int, cols: int) -> bool:
+    if rows < 3 or cols < 2 or cols > 4:
+        return False
+    if min(w, h) < 160:
+        return False
+    cells = el.get("cells", [])
+    if len(cells) < rows * cols * 0.7:
+        return False
+    non_empty_cells = [cell for cell in cells if str(cell.get("text", "")).strip()]
+    if len(non_empty_cells) < rows * max(1, cols - 1):
+        return False
+    header_cells = [cell for cell in cells if int(cell.get("row", 0)) == 0]
+    if len(header_cells) < cols:
+        return False
+    return True
+
+
+def _render_styled_matrix_table(
+    draw: ImageDraw.ImageDraw,
+    image: Image.Image,
+    el: dict[str, Any],
+    *,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    rows: int,
+    cols: int,
+) -> None:
+    panel_radius = max(12, int(min(w, h) * 0.035))
+    panel_fill = _hex_to_rgba("#F6F7FB")
+    panel_stroke = _hex_to_rgba("#D8DEE9")
+    shadow_fill = (30, 41, 59, 28)
+    shadow_offset = max(3, int(min(w, h) * 0.012))
+    draw.rounded_rectangle(
+        [x + shadow_offset, y + shadow_offset, x + w + shadow_offset, y + h + shadow_offset],
+        radius=panel_radius,
+        fill=shadow_fill,
+    )
+    draw.rounded_rectangle([x, y, x + w, y + h], radius=panel_radius, fill=panel_fill, outline=panel_stroke, width=1)
+
+    outer_padding_x = max(10, int(w * 0.03))
+    outer_padding_y = max(10, int(h * 0.04))
+    col_gap = max(8, int(w * 0.018))
+    row_gap = max(8, int(h * 0.022))
+    inner_w = max(1, w - outer_padding_x * 2)
+    inner_h = max(1, h - outer_padding_y * 2)
+    cell_w = (inner_w - col_gap * (cols - 1)) / cols
+    cell_h = (inner_h - row_gap * (rows - 1)) / rows
+    corner_radius = max(10, int(min(cell_w, cell_h) * 0.16))
+
+    cells_by_position = {
+        (int(cell.get("row", 0)), int(cell.get("col", 0))): cell
+        for cell in el.get("cells", [])
+    }
+    column_palette = ["#EEF3FF", "#F7F4EE", "#EEF7F1", "#F6F0FF"]
+    header_palette = ["#C9D8F0", "#D8D2C3", "#CFE5D6", "#DDD4F6"]
+
+    for row_index in range(rows):
+        for col_index in range(cols):
+            cell = cells_by_position.get((row_index, col_index), {})
+            cell_x = int(round(x + outer_padding_x + col_index * (cell_w + col_gap)))
+            cell_y = int(round(y + outer_padding_y + row_index * (cell_h + row_gap)))
+            cw = int(round(cell_w * int(cell.get("colspan", 1)) + col_gap * (int(cell.get("colspan", 1)) - 1)))
+            ch = int(round(cell_h * int(cell.get("rowspan", 1)) + row_gap * (int(cell.get("rowspan", 1)) - 1)))
+
+            base_fill = cell.get("fill")
+            if not base_fill:
+                base_fill = header_palette[col_index % len(header_palette)] if row_index == 0 else column_palette[col_index % len(column_palette)]
+            fill_color = _lighten_rgba(_hex_to_rgba(base_fill) or (255, 255, 255, 255), 0.05 if row_index == 0 else 0.16)
+            border_color = _mix_rgba(fill_color, (148, 163, 184, 255), 0.45)
+            accent_shadow = (*fill_color[:3], 34)
+
+            draw.rounded_rectangle(
+                [cell_x, cell_y + 2, cell_x + cw, cell_y + ch + 2],
+                radius=corner_radius,
+                fill=accent_shadow,
+            )
+            draw.rounded_rectangle(
+                [cell_x, cell_y, cell_x + cw, cell_y + ch],
+                radius=corner_radius,
+                fill=fill_color,
+                outline=border_color,
+                width=1,
+            )
+
+            text = str(cell.get("text", "")).strip()
+            if not text:
+                continue
+            explicit_font_size = cell.get("font_size") or el.get("font_size")
+            default_font_size = int(ch * (0.24 if row_index == 0 else 0.2))
+            font_size = max(_MIN_FONT_SIZE, min(int(explicit_font_size) if explicit_font_size else default_font_size, _MAX_FONT_SIZE))
+            bold = bool(cell.get("bold", row_index == 0))
+            font_family = cell.get("font_family") or el.get("font_family")
+            font = _get_font(font_size, bold=bold, family=font_family)
+            text_align = str(cell.get("text_align") or ("center" if row_index == 0 or col_index == cols - 1 else "left"))
+            font_color = _hex_to_rgba(cell.get("font_color") or ("#203047" if row_index == 0 else "#27364A")) or (39, 54, 74, 255)
+            horizontal_padding = max(8, int(cw * 0.08))
+            _draw_box_text(
+                draw,
+                text,
+                cell_x + (horizontal_padding if text_align == "left" else 0),
+                cell_y + max(4, int(ch * 0.08)),
+                cw - (horizontal_padding if text_align == "left" else 0) * 2,
+                ch - max(8, int(ch * 0.12)),
+                font,
+                font_color,
+                text_align=text_align,
+                family=font_family,
+                bold=bold,
             )
 
         text = cell.get("text", "")
@@ -837,6 +954,30 @@ def _sample_source_background(
 
 def _rgba_distance(left: tuple[int, ...], right: tuple[int, ...]) -> float:
     return math.sqrt(sum((left[index] - right[index]) ** 2 for index in range(3)))
+
+
+def _lighten_rgba(color: tuple[int, int, int, int], amount: float) -> tuple[int, int, int, int]:
+    clamped = max(0.0, min(amount, 1.0))
+    return (
+        int(round(color[0] + (255 - color[0]) * clamped)),
+        int(round(color[1] + (255 - color[1]) * clamped)),
+        int(round(color[2] + (255 - color[2]) * clamped)),
+        color[3],
+    )
+
+
+def _mix_rgba(
+    left: tuple[int, int, int, int],
+    right: tuple[int, int, int, int],
+    weight_right: float,
+) -> tuple[int, int, int, int]:
+    ratio = max(0.0, min(weight_right, 1.0))
+    return (
+        int(round(left[0] * (1.0 - ratio) + right[0] * ratio)),
+        int(round(left[1] * (1.0 - ratio) + right[1] * ratio)),
+        int(round(left[2] * (1.0 - ratio) + right[2] * ratio)),
+        int(round(left[3] * (1.0 - ratio) + right[3] * ratio)),
+    )
 
 
 # ---------------------------------------------------------------------------
