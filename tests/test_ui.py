@@ -71,14 +71,14 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
 
     sidebar_calls = []
     monkeypatch.setattr(ui.st.sidebar, "header", lambda text: sidebar_calls.append(("header", text)))
-    monkeypatch.setattr(
-        ui.st.sidebar,
-        "selectbox",
-        lambda label, options, index=0, format_func=None, help=None, key=None: (
-            sidebar_calls.append(("selectbox", label, help))
-            or ("semantic_redraw_direct" if label == "Режим обработки изображений" else options[index])
-        ),
-    )
+
+    def fake_selectbox(label, options, index=0, format_func=None, help=None, key=None):
+        sidebar_calls.append(("selectbox", label, help, tuple(options), format_func))
+        if label == "Режим обработки изображений":
+            return ui.IMAGE_MODE_LABELS["semantic_redraw_direct"]
+        return options[index]
+
+    monkeypatch.setattr(ui.st.sidebar, "selectbox", fake_selectbox)
     monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
     monkeypatch.setattr(ui.st.sidebar, "slider", lambda label, **kwargs: kwargs["value"])
     monkeypatch.setattr(ui.st.sidebar, "checkbox", lambda label, value, key=None: value)
@@ -88,8 +88,14 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
     assert result == ("gpt-5-mini", 6000, 3, "semantic_redraw_direct", False)
     assert sidebar_calls == [
         ("header", "Настройки"),
-        ("selectbox", "Модель", None),
-        ("selectbox", "Режим обработки изображений", ui.IMAGE_MODE_HELP),
+        ("selectbox", "Модель", None, ("gpt-5.4", "gpt-5-mini", "custom"), None),
+        (
+            "selectbox",
+            "Режим обработки изображений",
+            ui.IMAGE_MODE_HELP,
+            tuple(ui.IMAGE_MODE_LABELS.values()),
+            None,
+        ),
     ]
 
 

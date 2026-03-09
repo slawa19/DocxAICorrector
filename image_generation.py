@@ -121,7 +121,7 @@ def _should_use_reconstruction(
     return (
         prefer_deterministic_reconstruction
         and analysis.render_strategy == RECONSTRUCTION_STRATEGY
-        and requested_mode in SEMANTIC_MODES
+        and requested_mode == "semantic_redraw_structured"
     )
 
 
@@ -251,23 +251,43 @@ def _generate_semantic_candidate(
         )
 
     try:
-        return _generate_direct_semantic_candidate(
+        return _generate_creative_candidate(
             resolved_client,
             image_bytes,
             analysis,
+            prompt_text=prompt_text,
+            prompt_profile=prompt_profile,
             prompt=prompt,
             budget=budget,
         )
     except Exception as exc:
         log_event(
             logging.WARNING,
-            "semantic_image_edit_fallback_to_structured_generate",
-            "Прямой semantic edit не удался, перехожу на structured Vision + Generate pipeline.",
+            "creative_semantic_generate_fallback_to_direct_edit",
+            "Creative semantic generate не удался, пробую direct image edit как fallback.",
             error_type=exc.__class__.__name__,
             error_message=str(exc),
             image_type=analysis.image_type,
             prompt_key=analysis.prompt_key,
         )
+        try:
+            return _generate_direct_semantic_candidate(
+                resolved_client,
+                image_bytes,
+                analysis,
+                prompt=prompt,
+                budget=budget,
+            )
+        except Exception as fallback_exc:
+            log_event(
+                logging.WARNING,
+                "semantic_image_edit_fallback_to_structured_generate",
+                "Direct semantic edit тоже не удался, перехожу на structured Vision + Generate pipeline.",
+                error_type=fallback_exc.__class__.__name__,
+                error_message=str(fallback_exc),
+                image_type=analysis.image_type,
+                prompt_key=analysis.prompt_key,
+            )
         return _generate_structured_candidate(
             resolved_client,
             image_bytes,
@@ -277,6 +297,48 @@ def _generate_semantic_candidate(
             prompt=prompt,
             budget=budget,
         )
+
+
+def _generate_creative_candidate(
+    client,
+    image_bytes: bytes,
+    analysis: ImageAnalysisResult,
+    *,
+    prompt_text: str,
+    prompt_profile: dict[str, str],
+    prompt: str,
+    budget: ImageModelCallBudget | None = None,
+) -> bytes:
+    original_size = _read_image_size(image_bytes)
+    creative_brief = _extract_creative_redraw_brief(client, image_bytes, analysis, budget=budget)
+    generate_prompt = _build_creative_generate_prompt(
+        analysis,
+        prompt_text=prompt_text,
+        prompt_profile=prompt_profile,
+        base_prompt=prompt,
+        creative_brief=creative_brief,
+        source_size=original_size,
+    )
+    request_payload = {
+        "model": IMAGE_GENERATE_MODEL,
+        "prompt": generate_prompt,
+        "size": _select_generate_size(original_size),
+        "quality": "high",
+        "response_format": "b64_json",
+    }
+    response = _call_images_generate(client, request_payload, budget=budget)
+    candidate_bytes, revised_prompt = _extract_image_bytes(response)
+    candidate_bytes = _restore_generated_output(candidate_bytes, original_size)
+    log_event(
+        logging.INFO,
+        "creative_semantic_generate_completed",
+        "Creative semantic redraw завершен через Vision + Images.generate.",
+        requested_mode="semantic_redraw_direct",
+        prompt_key=analysis.prompt_key,
+        image_type=analysis.image_type,
+        revised_prompt=revised_prompt,
+    )
+    return candidate_bytes
 
 
 def _generate_direct_semantic_candidate(
@@ -832,6 +894,36 @@ def _build_structured_generate_prompt(
     return "\n\n".join(prompt_parts)
 
 
+def _build_creative_generate_prompt(
+    analysis: ImageAnalysisResult,
+    *,
+    prompt_text: str,
+    prompt_profile: dict[str, str],
+    base_prompt: str,
+    creative_brief: str,
+    source_size: tuple[int, int],
+) -> str:
+    prompt_parts = [
+        prompt_text,
+        f"Profile: {prompt_profile['description']}",
+        f"Detected image type: {analysis.image_type}.",
+        f"Original content aspect ratio: {source_size[0]}:{source_size[1]}. Fill the entire generated canvas completely from edge to edge — no empty outer margins, padding, or borders.",
+        "Create a polished, publication-ready infographic from scratch instead of tracing the source literally.",
+        "You may redesign composition, spacing, typography, card shapes, connector styling, icon treatment, and color hierarchy to make the result feel intentional, contemporary, and visually rich.",
+        "Do not make it look like an Excel sheet, raw spreadsheet, scan, or low-level vector export.",
+        "Preserve meaning, reading order, hierarchy, and every readable label from the source. Do not remove, translate, paraphrase, or invent text.",
+        "Use a cohesive editorial design system: balanced whitespace, clear grouping, softer shapes, restrained but confident colors, and typographic contrast between headers and body text.",
+        base_prompt,
+        "Creative redraw brief from vision analysis:",
+        creative_brief,
+    ]
+    if analysis.extracted_text.strip():
+        prompt_parts.append("Verbatim text that should appear in the generated image when readable:")
+        prompt_parts.append(analysis.extracted_text.strip())
+    prompt_parts.append("Return a single generated image, not a textual explanation.")
+    return "\n\n".join(prompt_parts)
+
+
 def _extract_structured_layout_description(
     client,
     image_bytes: bytes,
@@ -883,6 +975,60 @@ def _extract_structured_layout_description(
     if not layout_description:
         raise RuntimeError("Vision-модель не вернула описание структуры для structured redraw.")
     return layout_description
+
+
+def _extract_creative_redraw_brief(
+    client,
+    image_bytes: bytes,
+    analysis: ImageAnalysisResult,
+    *,
+    budget: ImageModelCallBudget | None = None,
+) -> str:
+    mime_type = _detect_mime_type(image_bytes)
+    if mime_type is None:
+        raise RuntimeError("Не удалось определить MIME-тип изображения для creative semantic redraw.")
+
+    image_data_url = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+    response = _call_responses_create(
+        client,
+        {
+            "model": IMAGE_STRUCTURE_VISION_MODEL,
+            "input": [
+                {
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "You are an infographic art director. Analyze the source image and produce a concise but production-ready creative redraw brief. "
+                                "Preserve all readable text verbatim, preserve meaning and reading order, but suggest a cleaner and more polished composition."
+                            ),
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "Describe the source image for a creative redraw. Include: content hierarchy, grouping, all readable labels verbatim, the structural relationships that must remain intact, "
+                                "and style opportunities for a more polished infographic composition with stronger typography, color hierarchy, spacing, and visual rhythm. "
+                                "Call out how to avoid a spreadsheet-like result. If text is unreadable, say unreadable instead of guessing. "
+                                f"Detected image type: {analysis.image_type}. Structure summary: {analysis.structure_summary}."
+                            ),
+                        },
+                        {"type": "input_image", "image_url": image_data_url},
+                    ],
+                },
+            ],
+        },
+        budget=budget,
+    )
+    creative_brief = getattr(response, "output_text", "").strip()
+    if not creative_brief:
+        raise RuntimeError("Vision-модель не вернула creative brief для semantic redraw.")
+    return creative_brief
 
 
 def _read_image_size(image_bytes: bytes) -> tuple[int, int]:

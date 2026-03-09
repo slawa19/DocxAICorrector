@@ -13,10 +13,12 @@ IMAGE_MODE_LABELS = {
     "semantic_redraw_structured": "Точная AI-перерисовка схем и таблиц",
 }
 
+IMAGE_MODE_VALUES_BY_LABEL = {label: value for value, label in IMAGE_MODE_LABELS.items()}
+
 IMAGE_MODE_HELP = (
     "Просто улучшить: слегка улучшает исходную картинку без смысловой перерисовки.\n"
-    "Свободная AI-перерисовка: лучше для инфографики и сложного оформления.\n"
-    "Точная AI-перерисовка: лучше для таблиц, блок-схем, графиков и других структурных изображений."
+    "Свободная AI-перерисовка: делает creative redraw через vision + generate, лучше для инфографики, композиции, цвета и сложного оформления.\n"
+    "Точная AI-перерисовка: делает exact/structured redraw, лучше для таблиц, блок-схем, графиков и других структурных изображений, где важна строгая сохранность структуры."
 )
 
 
@@ -327,17 +329,18 @@ def render_sidebar(config: dict[str, object]) -> tuple[str, int, int, str, bool]
         max_value=5,
         value=int(config["max_retries"]),
     )
-    image_mode_options = ["safe", "semantic_redraw_direct", "semantic_redraw_structured"]
+    image_mode_options = list(IMAGE_MODE_LABELS.values())
     image_mode_default = str(config.get("image_mode_default", "safe"))
-    image_mode_index = image_mode_options.index(image_mode_default) if image_mode_default in image_mode_options else 0
-    image_mode = st.sidebar.selectbox(
+    image_mode_default_label = IMAGE_MODE_LABELS.get(image_mode_default, image_mode_default)
+    image_mode_index = image_mode_options.index(image_mode_default_label) if image_mode_default_label in image_mode_options else 0
+    selected_image_mode_label = st.sidebar.selectbox(
         "Режим обработки изображений",
         image_mode_options,
         index=image_mode_index,
-        format_func=lambda mode: IMAGE_MODE_LABELS.get(mode, mode),
         help=IMAGE_MODE_HELP,
         key="sidebar_image_mode",
     )
+    image_mode = IMAGE_MODE_VALUES_BY_LABEL.get(selected_image_mode_label, image_mode_default)
     enable_post_redraw_validation = st.sidebar.checkbox(
         "Включить post-check validation",
         value=bool(config.get("enable_post_redraw_validation", True)),

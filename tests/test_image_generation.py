@@ -246,12 +246,17 @@ def test_generate_image_candidate_structured_trims_large_generated_margins_befor
         assert rightmost_blue >= restored_image.width - 5
 
 
-def test_generate_image_candidate_direct_uses_openai_edit_with_file_list(monkeypatch):
-    captured = {}
+def test_generate_image_candidate_direct_uses_creative_vision_and_images_generate(monkeypatch):
+    captured = {"vision": None, "generate": None}
+
+    class FakeResponsesClient:
+        def create(self, **kwargs):
+            captured["vision"] = kwargs
+            return SimpleNamespace(output_text="Creative redraw brief with stronger hierarchy and more editorial composition.")
 
     class FakeImagesClient:
-        def edit(self, **kwargs):
-            captured.update(kwargs)
+        def generate(self, **kwargs):
+            captured["generate"] = kwargs
             return SimpleNamespace(
                 data=[
                     SimpleNamespace(
@@ -261,7 +266,11 @@ def test_generate_image_candidate_direct_uses_openai_edit_with_file_list(monkeyp
                 ]
             )
 
-    monkeypatch.setattr(image_generation, "get_client", lambda: SimpleNamespace(images=FakeImagesClient()))
+    monkeypatch.setattr(
+        image_generation,
+        "get_client",
+        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
+    )
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
     source_bytes = build_detailed_png_bytes()
@@ -272,21 +281,23 @@ def test_generate_image_candidate_direct_uses_openai_edit_with_file_list(monkeyp
     )
 
     assert candidate
-    assert captured["model"] == image_generation.IMAGE_EDIT_MODEL
-    assert captured["response_format"] == "b64_json"
-    assert captured["quality"] == "high"
-    assert isinstance(captured["image"], list)
-    assert len(captured["image"]) == 1
-    assert captured["image"][0].name == "source.png"
-    assert captured["size"] == "auto"
+    assert captured["vision"]["model"] == image_generation.IMAGE_STRUCTURE_VISION_MODEL
+    assert captured["generate"]["model"] == image_generation.IMAGE_GENERATE_MODEL
+    assert captured["generate"]["response_format"] == "b64_json"
+    assert captured["generate"]["quality"] == "high"
+    assert "Creative redraw brief" in captured["generate"]["prompt"]
+    assert "Do not make it look like an Excel sheet" in captured["generate"]["prompt"]
     with Image.open(BytesIO(candidate)) as edited_image:
         assert edited_image.size == (12, 12)
 
 
 def test_generate_image_candidate_uses_provided_client_without_calling_get_client(monkeypatch):
     provided_client = SimpleNamespace(
+        responses=SimpleNamespace(
+            create=lambda **kwargs: SimpleNamespace(output_text="creative redraw brief")
+        ),
         images=SimpleNamespace(
-            edit=lambda **kwargs: SimpleNamespace(
+            generate=lambda **kwargs: SimpleNamespace(
                 data=[
                     SimpleNamespace(
                         b64_json=base64.b64encode(build_square_semantic_output_bytes()).decode("ascii"),
@@ -310,12 +321,16 @@ def test_generate_image_candidate_uses_provided_client_without_calling_get_clien
     assert candidate
 
 
-def test_generate_image_candidate_direct_uploads_png_even_for_jpeg_input(monkeypatch):
-    captured = {}
+def test_generate_image_candidate_direct_passes_source_image_to_vision_for_jpeg_input(monkeypatch):
+    captured = {"vision": None}
+
+    class FakeResponsesClient:
+        def create(self, **kwargs):
+            captured["vision"] = kwargs
+            return SimpleNamespace(output_text="creative redraw brief")
 
     class FakeImagesClient:
-        def edit(self, **kwargs):
-            captured.update(kwargs)
+        def generate(self, **kwargs):
             return SimpleNamespace(
                 data=[
                     SimpleNamespace(
@@ -325,7 +340,11 @@ def test_generate_image_candidate_direct_uploads_png_even_for_jpeg_input(monkeyp
                 ]
             )
 
-    monkeypatch.setattr(image_generation, "get_client", lambda: SimpleNamespace(images=FakeImagesClient()))
+    monkeypatch.setattr(
+        image_generation,
+        "get_client",
+        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
+    )
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
     candidate = image_generation.generate_image_candidate(
@@ -335,12 +354,11 @@ def test_generate_image_candidate_direct_uploads_png_even_for_jpeg_input(monkeyp
     )
 
     assert candidate
-    assert captured["image"][0].name == "source.png"
-    with Image.open(captured["image"][0]) as uploaded_image:
-        assert uploaded_image.format == "PNG"
+    image_payload = captured["vision"]["input"][1]["content"][1]["image_url"]
+    assert image_payload.startswith("data:image/jpeg;base64,")
 
 
-def test_generate_image_candidate_direct_falls_back_to_structured_generate(monkeypatch):
+def test_generate_image_candidate_direct_falls_back_to_direct_edit_then_structured_generate(monkeypatch):
     captured = {}
 
     class FakeResponsesClient:
@@ -350,15 +368,17 @@ def test_generate_image_candidate_direct_falls_back_to_structured_generate(monke
 
     class FakeImagesClient:
         def __init__(self):
-            self.edit_called = False
+            self.generate_called = 0
 
         def edit(self, **kwargs):
-            self.edit_called = True
             captured["edit"] = kwargs
             raise RuntimeError("Invalid value: 'gpt-image-1'. Value must be 'dall-e-2'.")
 
         def generate(self, **kwargs):
-            captured["generate"] = kwargs
+            self.generate_called += 1
+            captured.setdefault("generate_calls", []).append(kwargs)
+            if self.generate_called == 1:
+                raise RuntimeError("temporary creative generate failure")
             return SimpleNamespace(
                 data=[
                     SimpleNamespace(
@@ -383,16 +403,17 @@ def test_generate_image_candidate_direct_falls_back_to_structured_generate(monke
 
     assert candidate
     assert captured["edit"]["model"] == image_generation.IMAGE_EDIT_MODEL
-    assert captured["generate"]["model"] == image_generation.IMAGE_GENERATE_MODEL
-    assert "Fallback structured description" in captured["generate"]["prompt"]
+    assert captured["generate_calls"][1]["model"] == image_generation.IMAGE_GENERATE_MODEL
+    assert "Fallback structured description" in captured["generate_calls"][1]["prompt"]
 
 
-def test_generate_image_candidate_direct_restores_original_dimensions_after_square_edit(monkeypatch):
-    captured = {}
+def test_generate_image_candidate_direct_restores_original_dimensions_after_generate(monkeypatch):
+    class FakeResponsesClient:
+        def create(self, **kwargs):
+            return SimpleNamespace(output_text="creative redraw brief")
 
     class FakeImagesClient:
-        def edit(self, **kwargs):
-            captured.update(kwargs)
+        def generate(self, **kwargs):
             return SimpleNamespace(
                 data=[
                     SimpleNamespace(
@@ -402,7 +423,11 @@ def test_generate_image_candidate_direct_restores_original_dimensions_after_squa
                 ]
             )
 
-    monkeypatch.setattr(image_generation, "get_client", lambda: SimpleNamespace(images=FakeImagesClient()))
+    monkeypatch.setattr(
+        image_generation,
+        "get_client",
+        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
+    )
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
     source_bytes = build_rectangular_png_bytes()
@@ -412,9 +437,6 @@ def test_generate_image_candidate_direct_restores_original_dimensions_after_squa
         mode="semantic_redraw_direct",
     )
 
-    with Image.open(captured["image"][0]) as uploaded_image:
-        assert uploaded_image.size == (18, 18)
-
     with Image.open(BytesIO(candidate)) as restored_image:
         assert restored_image.size == (18, 10)
 
@@ -422,11 +444,15 @@ def test_generate_image_candidate_direct_restores_original_dimensions_after_squa
 def test_generate_image_candidate_direct_retries_without_unknown_optional_param(monkeypatch):
     captured_calls = []
 
+    class FakeResponsesClient:
+        def create(self, **kwargs):
+            return SimpleNamespace(output_text="creative redraw brief")
+
     class FakeImagesClient:
-        def edit(self, **kwargs):
+        def generate(self, **kwargs):
             captured_calls.append(dict(kwargs))
             if len(captured_calls) == 1 and "quality" in kwargs:
-                raise TypeError("Images.edit() got an unexpected keyword argument 'quality'")
+                raise TypeError("Images.generate() got an unexpected keyword argument 'quality'")
             return SimpleNamespace(
                 data=[
                     SimpleNamespace(
@@ -436,7 +462,11 @@ def test_generate_image_candidate_direct_retries_without_unknown_optional_param(
                 ]
             )
 
-    monkeypatch.setattr(image_generation, "get_client", lambda: SimpleNamespace(images=FakeImagesClient()))
+    monkeypatch.setattr(
+        image_generation,
+        "get_client",
+        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
+    )
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
     candidate = image_generation.generate_image_candidate(
@@ -455,8 +485,12 @@ def test_generate_image_candidate_direct_retries_after_retryable_error(monkeypat
     captured_calls = []
     sleep_calls = []
 
+    class FakeResponsesClient:
+        def create(self, **kwargs):
+            return SimpleNamespace(output_text="creative redraw brief")
+
     class FakeImagesClient:
-        def edit(self, **kwargs):
+        def generate(self, **kwargs):
             captured_calls.append(dict(kwargs))
             if len(captured_calls) == 1:
                 raise RetryableError("rate limited")
@@ -469,7 +503,11 @@ def test_generate_image_candidate_direct_retries_after_retryable_error(monkeypat
                 ]
             )
 
-    monkeypatch.setattr(image_generation, "get_client", lambda: SimpleNamespace(images=FakeImagesClient()))
+    monkeypatch.setattr(
+        image_generation,
+        "get_client",
+        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
+    )
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(image_generation.time, "sleep", sleep_calls.append)
 
@@ -489,12 +527,20 @@ def test_generate_image_candidate_direct_stops_when_model_call_budget_is_exhaust
     captured_calls = []
     sleep_calls = []
 
+    class FakeResponsesClient:
+        def create(self, **kwargs):
+            return SimpleNamespace(output_text="creative redraw brief")
+
     class FakeImagesClient:
-        def edit(self, **kwargs):
+        def generate(self, **kwargs):
             captured_calls.append(dict(kwargs))
             raise RetryableError("rate limited")
 
-    monkeypatch.setattr(image_generation, "get_client", lambda: SimpleNamespace(images=FakeImagesClient()))
+    monkeypatch.setattr(
+        image_generation,
+        "get_client",
+        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
+    )
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(image_generation.time, "sleep", sleep_calls.append)
 
@@ -510,18 +556,23 @@ def test_generate_image_candidate_direct_stops_when_model_call_budget_is_exhaust
     else:
         raise AssertionError("Expected ImageModelCallBudgetExceeded when retry budget is exhausted")
 
-    assert len(captured_calls) == 1
+    assert len(captured_calls) == 0
     assert sleep_calls == []
+
 
 
 def test_generate_image_candidate_direct_retries_with_shorter_prompt(monkeypatch):
     captured_calls = []
 
+    class FakeResponsesClient:
+        def create(self, **kwargs):
+            return SimpleNamespace(output_text="creative redraw brief")
+
     class FakeImagesClient:
         def __init__(self):
             self.failed_once = False
 
-        def edit(self, **kwargs):
+        def generate(self, **kwargs):
             captured_calls.append(dict(kwargs))
             if not self.failed_once:
                 self.failed_once = True
@@ -537,7 +588,11 @@ def test_generate_image_candidate_direct_retries_with_shorter_prompt(monkeypatch
                 ]
             )
 
-    monkeypatch.setattr(image_generation, "get_client", lambda: SimpleNamespace(images=FakeImagesClient()))
+    monkeypatch.setattr(
+        image_generation,
+        "get_client",
+        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
+    )
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
     candidate = image_generation.generate_image_candidate(
@@ -550,6 +605,37 @@ def test_generate_image_candidate_direct_retries_with_shorter_prompt(monkeypatch
     assert len(captured_calls) == 2
     assert len(captured_calls[0]["prompt"]) > 1000
     assert len(captured_calls[1]["prompt"]) <= 1000
+
+
+def test_generate_image_candidate_direct_does_not_force_reconstruction_for_free_mode(monkeypatch):
+    calls = {"creative": 0, "reconstruct": 0}
+
+    monkeypatch.setattr(
+        image_generation,
+        "_generate_creative_candidate",
+        lambda *args, **kwargs: calls.__setitem__("creative", calls["creative"] + 1) or PNG_BYTES,
+    )
+    monkeypatch.setattr(
+        image_generation,
+        "_generate_reconstructed_candidate",
+        lambda *args, **kwargs: calls.__setitem__("reconstruct", calls["reconstruct"] + 1) or PNG_BYTES,
+    )
+    monkeypatch.setattr(
+        image_generation,
+        "get_client",
+        lambda: SimpleNamespace(images=SimpleNamespace(), responses=SimpleNamespace()),
+    )
+    monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
+
+    candidate = image_generation.generate_image_candidate(
+        build_detailed_png_bytes(),
+        build_analysis_result(render_strategy="deterministic_reconstruction"),
+        mode="semantic_redraw_direct",
+    )
+
+    assert candidate == PNG_BYTES
+    assert calls["creative"] == 1
+    assert calls["reconstruct"] == 0
 
 
 def test_generate_image_candidate_structured_retries_with_shorter_prompt(monkeypatch):

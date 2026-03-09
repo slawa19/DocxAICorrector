@@ -18,10 +18,10 @@
     "prompt_key": "diagram_semantic_redraw",
     "render_strategy": "deterministic_reconstruction",
     "semantic_redraw_allowed": true,
-    "analysis_elapsed_seconds": 7.703,
-    "generation_elapsed_seconds": 81.451,
+    "analysis_elapsed_seconds": 7.26,
+    "generation_elapsed_seconds": 103.699,
     "bytes_in": 40424,
-    "bytes_out": 99094
+    "bytes_out": 122137
   },
   {
     "filename": "журналистика факты манипуляции.png",
