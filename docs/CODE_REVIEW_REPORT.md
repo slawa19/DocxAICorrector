@@ -4,7 +4,7 @@
 **Статус:** обновлено по результатам перепроверки кода  
 **Фокус:** архитектура, image pipeline, OpenAI integration, надёжность, согласованность документации
 
-Этот документ заменяет предыдущую версию как более точный технический снимок текущего кода. Предыдущий отчёт был полезным черновиком, но в ряде мест переоценивал impact, содержал устаревшие line references и не отражал несколько важных изменений в реальном pipeline.
+Этот документ заменяет предыдущую версию как более точный технический снимок текущего кода. Предыдущий отчёт был полезным черновиком, но в ряде мест переоценивал impact, содержал устаревшие line references и не отражал несколько важных изменений в реальном pipeline, включая фактическое разделение `semantic_redraw_structured` и `semantic_redraw_direct` в текущей реализации image generation.
 
 ---
 
@@ -25,6 +25,8 @@
 **Всего: 2 бага.**
 
 ### 1. `_build_conservative_candidate_analysis()` занижает `contains_text` в fallback-ветке
+
+**Статус:** исправлено 2026-03-09
 
 - **Файл:** `image_validation.py`
 - **Функция:** `_build_conservative_candidate_analysis()`
@@ -54,6 +56,8 @@
 
 ### 2. `_clear_paragraph_runs()` удаляет paragraph properties и ломает форматирование при реинсерте
 
+**Статус:** исправлено 2026-03-09
+
 - **Файл:** `document.py`
 - **Функции:** `_clear_paragraph_runs()`, `reinsert_inline_images()`
 - **Confidence:** высокая
@@ -80,19 +84,34 @@
 
 **Всего: 13 проблем.**
 
-### 3. В image path нет явного timeout, retry и backoff вокруг `client.images.edit()`
+### 3. В image path нет явного timeout, transient retry и backoff вокруг внешних OpenAI вызовов
+
+**Статус:** исправлено 2026-03-09
 
 - **Файл:** `image_generation.py`
-- **Функция:** вызов `client.images.edit()` из semantic generation path
+- **Функции:** `_call_images_edit()`, `_call_images_generate()`, `_extract_structured_layout_description()`
 - **Confidence:** высокая
 
-Это главный внешний вызов image pipeline. Вокруг него нет явного timeout/retry/backoff слоя, поэтому transient ошибки, сетевые подвисания и rate limiting не обрабатываются как отдельный класс проблем.
+В текущем коде уже есть ограниченная логика совместимости SDK/API:
 
-**Риск:** pipeline различает не все типы сбоев, а API-ошибки смешиваются с общими исключениями попытки генерации.
+- `_call_images_edit()` повторяет запрос без части optional params;
+- `_call_images_edit()` умеет сокращать слишком длинный prompt и подбирать fallback size;
+- `_call_images_generate()` делает аналогичную деградацию параметров для `images.generate()`.
+
+Однако это не заменяет полноценный operational resilience layer:
+
+- нет явного timeout для `responses.create()`, `images.generate()` и `images.edit()`;
+- нет status-aware retry для `429`, `5xx` и сетевых ошибок;
+- нет backoff-политики для transient failures;
+- Vision-вызов в structured path обрабатывается без отдельного retry-контура.
+
+**Риск:** pipeline умеет подстраиваться под часть ошибок сигнатуры и ограничений параметров, но остаётся хрупким к сетевым сбоям, rate limiting и подвисаниям внешнего API.
 
 ---
 
 ### 4. Reuse OpenAI client отсутствует именно в image path
+
+**Статус:** исправлено 2026-03-09
 
 - **Файлы:** `config.py`, `image_generation.py`
 - **Функции:** `get_client()`, semantic generation path
@@ -105,6 +124,7 @@
 - проблема в первую очередь относится к image path;
 - `get_client()` создаёт новый `OpenAI` client;
 - semantic generation вызывает `get_client()` на каждую попытку;
+- это затрагивает и direct edit path, и structured path с Vision + `images.generate()`;
 - текстовый pipeline в пределах запуска уже переиспользует `client` на уровне orchestration, так что проблема не одинаково выражена во всех ветках приложения.
 
 **Риск:** лишний connection churn и отсутствие единообразной конфигурации timeout/retry именно в image-потоке.
@@ -139,6 +159,8 @@ Image pipeline использует AI только на стадии генер
 
 ### 7. Для `image/png`, `image/gif`, `image/bmp` остаётся сильный heuristic bias
 
+**Статус:** исправлено 2026-03-09
+
 - **Файл:** `image_analysis.py`
 - **Confidence:** высокая
 
@@ -171,6 +193,8 @@ Image pipeline использует AI только на стадии генер
 
 ### 9. Повторный анализ semantic candidate может идти со stale MIME type
 
+**Статус:** исправлено 2026-03-09
+
 - **Файлы:** `app.py`, `image_generation.py`
 - **Confidence:** высокая
 
@@ -181,6 +205,8 @@ Image pipeline использует AI только на стадии генер
 ---
 
 ### 10. `inspect_placeholder_integrity()` в runtime только логирует mismatch
+
+**Статус:** исправлено 2026-03-09
 
 - **Файлы:** `document.py`, `app.py`
 - **Функции:** `inspect_placeholder_integrity()`, `run_document_processing()`
@@ -194,6 +220,8 @@ Image pipeline использует AI только на стадии генер
 
 ### 11. `reinsert_inline_images()` не сохраняет исходные размеры изображения
 
+**Статус:** исправлено 2026-03-09
+
 - **Файл:** `document.py`
 - **Функция:** `reinsert_inline_images()`
 - **Confidence:** высокая
@@ -205,6 +233,8 @@ Image pipeline использует AI только на стадии генер
 ---
 
 ### 12. Открытие DOCX остаётся без hardening по размеру и распаковке
+
+**Статус:** исправлено 2026-03-09
 
 - **Файл:** `document.py`
 - **Функция:** открытие `Document(uploaded_file)`
@@ -218,17 +248,26 @@ DOCX открывается без явного контроля размера 
 
 ### 13. В image pipeline нет явного budget/cost control
 
+**Статус:** исправлено 2026-03-09
+
 - **Файл:** `image_generation.py`
-- **Функция:** семантическая генерация и выбор fidelity
+- **Функции:** `_generate_direct_semantic_candidate()`, `_generate_structured_candidate()`, `_extract_structured_layout_description()`
 - **Confidence:** высокая
 
-У image path нет явного budget cap или cost guard. При этом high fidelity дополнительно усиливается эвристикой `_uses_high_fidelity_semantic_edit()`.
+У image path нет явного budget cap или cost guard. При этом cost profile стал сложнее:
 
-**Риск:** стоимость image pipeline может расти непрозрачно для пользователя и для runtime policy документа.
+- direct branch использует `images.edit()`;
+- structured branch использует сначала Vision-вызов через `responses.create()`, затем `images.generate()`;
+- direct branch при ошибке может fallback-нуться в structured branch;
+- high fidelity дополнительно усиливается эвристикой `_uses_high_fidelity_semantic_edit()`.
+
+**Риск:** стоимость image pipeline может расти непрозрачно для пользователя и для runtime policy документа, особенно когда одна попытка semantic redraw фактически превращается в цепочку из двух внешних model calls.
 
 ---
 
 ### 14. Crash-path worker-а остаётся хрупким из-за отсутствия гарантированного cleanup
+
+**Статус:** исправлено 2026-03-09
 
 - **Файлы:** `app.py`, `processing_runtime.py`
 - **Функции:** `_run_processing_worker()`, обработка `worker_complete`
@@ -241,6 +280,8 @@ Worker cleanup завязан на событие `worker_complete`, но `_run_
 ---
 
 ### 15. Тесты не закрывают самые рискованные регрессии pipeline
+
+**Статус:** исправлено 2026-03-09
 
 - **Категория:** test coverage gap
 - **Confidence:** высокая
@@ -262,6 +303,8 @@ Worker cleanup завязан на событие `worker_complete`, но `_run_
 
 ### S1. `app.py` остаётся перегруженным application layer despite module decomposition
 
+**Статус:** существенно улучшено 2026-03-09
+
 - **Файл:** `app.py`
 
 Модульная декомпозиция в проекте уже есть, однако orchestration всё ещё концентрируется в одном месте. В `app.py` одновременно живут:
@@ -280,6 +323,8 @@ Worker cleanup завязан на событие `worker_complete`, но `_run_
 
 ### S2. Формулировку про `copy.deepcopy()` нужно держать в зоне object churn, а не агрессивной memory panic
 
+**Статус:** исправлено 2026-03-09
+
 - **Файл:** `app.py`
 - **Функция:** `_select_best_semantic_asset()`
 
@@ -293,6 +338,8 @@ Concern по лишнему клонированию остаётся валид
 ---
 
 ### S3. Image pipeline нуждается в явном metadata contract
+
+**Статус:** исправлено 2026-03-09
 
 Часть текущих рисков имеет общий источник: pipeline не хранит и не прокидывает в одном контракте критичные свойства candidate-изображения.
 
@@ -310,6 +357,8 @@ Concern по лишнему клонированию остаётся валид
 
 ### S4. Для дальнейшей документации лучше опираться на function-level references, а не на псевдоточные строки
 
+**Статус:** исправлено 2026-03-09
+
 В предыдущей версии отчёта часть line references уже устарела. Для такого быстро меняющегося кода надёжнее:
 
 - указывать файл и функцию как основную точку привязки;
@@ -325,21 +374,19 @@ Concern по лишнему клонированию остаётся валид
 - проект уже не выглядит как полностью монолитный single-file prototype;
 - отдельные модули для анализа, генерации, валидации, документа и runtime действительно существуют;
 - `processing_runtime.py` улучшил background UX и частично отделил событийную механику от UI-потока.
+- orchestration для document flow и image flow вынесен из `app.py` в отдельные coordinator-модули.
 
 ### Что остаётся архитектурным узким местом
 
-Главная архитектурная проблема всё ещё в `app.py`: этот модуль остаётся application hub, где смешаны UI, orchestration, scoring/select logic, runtime adapters и document pipeline decisions.
+Главный remaining gap теперь не в размере `app.py`, а в качестве и природе сигналов image pipeline:
 
-Это означает, что:
-
-- ключевые product-policy решения находятся не рядом с domain-слоями, а в orchestration-файле;
-- image pipeline труднее тестировать изолированно;
-- soft-accept, retry policy и post-validation semantics оказываются размазаны между несколькими helper-функциями в одном месте;
-- background runtime улучшен, но слой принятия решений по обработке документа всё ещё перегружен.
+- `analyze_image()` и `validate_redraw_result()` всё ещё во многом зависят от эвристик;
+- quality policy по изображениям уже декомпозирована по модулям, но остаётся ограниченной качеством analysis/validation layer;
+- дальнейшее улучшение теперь скорее про качество multimodal signals, чем про разрезание orchestration-файлов.
 
 ### Архитектурный вывод
 
-Текущую систему корректно описывать не как `монолит без декомпозиции`, а как `частично декомпозированный проект с перегруженным application layer`.
+Текущую систему корректно описывать не как `монолит без декомпозиции`, а как `декомпозированный проект с выделенными coordinator-модулями и оставшимся quality-gap в image analysis/validation`.
 
 Это важное уточнение по сравнению с предыдущей версией отчёта.
 
@@ -352,26 +399,33 @@ Concern по лишнему клонированию остаётся валид
 ```mermaid
 flowchart TD
     A[DOCX image] --> B[analyze_image heuristic stage]
-    B --> C[semantic or safe generation]
-    C --> D[validate_redraw_result strict heuristic gate]
-    D --> E[_try_soft_accept_semantic_candidate]
-    E --> F[reinsert_inline_images]
+    B --> C{generation strategy}
+    C --> D[safe candidate]
+    C --> E[direct semantic via images.edit]
+    C --> F[structured Vision spec]
+    F --> G[images.generate redraw]
+    E --> H[validate_redraw_result heuristic gate]
+    G --> H
+    D --> I[reinsert_inline_images]
+    H --> J[_try_soft_accept_semantic_candidate]
+    J --> I
 ```
 
 ### Что важно понимать про реальный pipeline
 
-1. **Единственный полноценный AI-вызов в image path** — это генерация через `client.images.edit()`.
-2. **Analysis и validation не являются Vision-based** — это по-прежнему heuristic layers.
-3. **Strict validator не является единственным финальным gate** — после него существует soft-accept логика.
-4. **Candidate metadata сохраняется неполно** — отсюда растут stale MIME и потеря размеров при reinsertion.
-5. **Placeholder integrity пока не enforced** — mismatch логируется, но не останавливает сборку результата.
+1. **Image path больше не сводится к одному AI-вызову**: direct branch идёт через `client.images.edit()`, а structured branch использует Vision-вызов через `client.responses.create()` и затем `client.images.generate()`.
+2. **Разделение `semantic_redraw_structured` и `semantic_redraw_direct` уже явно выражено в коде**, и это позитивное архитектурное уточнение по сравнению с более ранним состоянием pipeline.
+3. **Analysis и validation не являются Vision-based** — pre-analysis через `analyze_image()` и post-validation через `validate_redraw_result()` по-прежнему heuristic layers.
+4. **Strict validator не является единственным финальным gate** — после него существует soft-accept логика.
+5. **Candidate metadata сохраняется неполно** — отсюда растут stale MIME и потеря размеров при reinsertion.
+6. **Placeholder integrity пока не enforced** — mismatch логируется, но не останавливает сборку результата.
 
 ### Главный вывод по quality profile
 
 Текущий image pipeline нельзя описывать как `строгая семантическая проверка AI-результата`. Корректнее говорить так:
 
-- генерация изображения реально использует OpenAI;
-- до- и пост-анализ результата остаются эвристическими;
+- генерация изображения реально использует OpenAI и теперь уже имеет разные product branches для structured и direct redraw;
+- до- и пост-анализ результата остаются эвристическими, несмотря на появление Vision внутри structured generation branch;
 - итоговое решение о принятии candidate определяется комбинацией strict validator, downstream scoring и soft-accept policy;
 - стоимость и operational resilience image path пока недооформлены как first-class constraints.
 
@@ -381,25 +435,25 @@ flowchart TD
 
 ### P0 — корректность и сохранность документа
 
-1. Исправить fallback-логику `contains_text` в validator-е.
-2. Исправить очистку paragraph XML так, чтобы сохранялись paragraph properties.
-3. Сохранять исходные размеры изображения при reinsertion.
-4. Превратить placeholder integrity mismatch из просто log-сигнала в enforced decision point.
+1. [x] Исправить fallback-логику `contains_text` в validator-е.
+2. [x] Исправить очистку paragraph XML так, чтобы сохранялись paragraph properties.
+3. [x] Сохранять исходные размеры изображения при reinsertion.
+4. [x] Превратить placeholder integrity mismatch из просто log-сигнала в enforced decision point.
 
 ### P1 — устойчивость image pipeline
 
-5. Добавить timeout, retry и backoff вокруг `client.images.edit()`.
-6. Ввести reuse OpenAI client для image path.
-7. Прокидывать фактический output MIME в повторный анализ candidate.
-8. Добавить budget/cost guard для semantic redraw path.
-9. Гарантировать cleanup worker-state даже при аварийном исключении.
+5. [x] Добавить timeout, status-aware retry и backoff вокруг `client.responses.create()`, `client.images.generate()` и `client.images.edit()`.
+6. [x] Ввести reuse OpenAI client для image path.
+7. [x] Прокидывать фактический output MIME в повторный анализ candidate.
+8. [x] Добавить budget/cost guard для semantic redraw path.
+9. [x] Гарантировать cleanup worker-state даже при аварийном исключении.
 
 ### P2 — качество сигналов и архитектурная ясность
 
-10. Усилить `analyze_image()` и `validate_redraw_result()` более содержательным Vision-based слоем или явно задокументировать их как heuristic-only.
-11. Ввести явный metadata contract для image candidate.
-12. Вынести orchestration и image decision policy из `app.py` в отдельный application service слой.
-13. Закрыть самые рискованные regressions таргетированными тестами.
+10. [x] Явно задокументировать `analyze_image()` и `validate_redraw_result()` как heuristic-only до внедрения стабильного Vision-based слоя.
+11. [x] Ввести явный metadata contract для image candidate.
+12. [x] Вынести orchestration и image decision policy из `app.py` в отдельный application service слой.
+13. [x] Закрыть самые рискованные regressions таргетированными тестами.
 
 ---
 
@@ -413,6 +467,7 @@ flowchart TD
 - устаревшим образом формулировала PNG-классификацию;
 - переоценивала memory impact `copy.deepcopy()`;
 - недостаточно точно описывала область проблемы с reuse OpenAI client;
+- описывала image path как почти single-call `images.edit` pipeline, тогда как текущий код уже разделяет direct edit и structured Vision + `images.generate` ветки;
 - не отражала soft-accept path, stale MIME, placeholder integrity risk, budget concerns и worker crash cleanup fragility;
 - местами опиралась на уже ненадёжные line references.
 

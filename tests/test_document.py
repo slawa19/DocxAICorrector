@@ -1,7 +1,11 @@
 import base64
+import zipfile
 from io import BytesIO
 
+import document
 from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Inches
 
 from document import (
     build_editing_jobs,
@@ -72,6 +76,8 @@ def test_extract_document_content_from_docx_inserts_image_placeholders(tmp_path)
     assert len(image_assets) == 1
     assert image_assets[0].image_id == "img_001"
     assert image_assets[0].placeholder == "[[DOCX_IMAGE_img_001]]"
+    assert image_assets[0].width_emu is not None
+    assert image_assets[0].height_emu is not None
     assert inspect_placeholder_integrity("\n\n".join(paragraph.text for paragraph in paragraphs), image_assets) == {
         "img_001": "ok"
     }
@@ -80,10 +86,14 @@ def test_extract_document_content_from_docx_inserts_image_placeholders(tmp_path)
 def test_reinsert_inline_images_replaces_placeholder_with_picture():
     doc = Document()
     doc.add_paragraph("До")
-    doc.add_paragraph("[[DOCX_IMAGE_img_001]]")
+    image_paragraph = doc.add_paragraph("[[DOCX_IMAGE_img_001]]")
+    image_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    image_paragraph.paragraph_format.left_indent = Inches(0.5)
     doc.add_paragraph("После")
     buffer = BytesIO()
     doc.save(buffer)
+
+    expected_indent = image_paragraph.paragraph_format.left_indent
 
     updated_bytes = reinsert_inline_images(
         buffer.getvalue(),
@@ -94,6 +104,8 @@ def test_reinsert_inline_images_replaces_placeholder_with_picture():
                 original_bytes=PNG_BYTES,
                 mime_type="image/png",
                 position_index=0,
+                width_emu=914400,
+                height_emu=914400,
                 final_variant="original",
             )
         ],
@@ -101,4 +113,25 @@ def test_reinsert_inline_images_replaces_placeholder_with_picture():
     updated_doc = Document(BytesIO(updated_bytes))
 
     assert updated_doc.paragraphs[1].text == ""
+    assert updated_doc.paragraphs[1].alignment == WD_ALIGN_PARAGRAPH.CENTER
+    assert updated_doc.paragraphs[1].paragraph_format.left_indent == expected_indent
     assert len(updated_doc.inline_shapes) == 1
+    assert updated_doc.inline_shapes[0].width == 914400
+    assert updated_doc.inline_shapes[0].height == 914400
+
+
+def test_extract_document_content_from_docx_rejects_suspicious_uncompressed_archive(monkeypatch):
+    monkeypatch.setattr(document, "MAX_DOCX_UNCOMPRESSED_SIZE_BYTES", 100)
+
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", "x" * 150)
+        archive.writestr("word/document.xml", "<w:document />")
+    buffer.seek(0)
+
+    try:
+        extract_document_content_from_docx(buffer)
+    except RuntimeError as exc:
+        assert "слишком велик после распаковки" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError for suspiciously large uncompressed DOCX archive")

@@ -79,6 +79,13 @@ def parse_config_score(config_data: dict[str, object], field_name: str, default:
     return clamp_score(float(value))
 
 
+def parse_config_int(config_data: dict[str, object], field_name: str, default: int) -> int:
+    value = config_data.get(field_name, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RuntimeError(f"Некорректное поле {field_name} в {CONFIG_PATH}")
+    return value
+
+
 def load_app_config() -> dict[str, object]:
     config_data: dict[str, object] = {}
     if CONFIG_PATH.exists():
@@ -118,6 +125,14 @@ def load_app_config() -> dict[str, object]:
         config_data, "prefer_deterministic_reconstruction", True
     )
     reconstruction_model = parse_config_str(config_data, "reconstruction_model", "gpt-4.1")
+    enable_vision_image_analysis = parse_config_bool(config_data, "enable_vision_image_analysis", True)
+    enable_vision_image_validation = parse_config_bool(config_data, "enable_vision_image_validation", True)
+    semantic_redraw_max_attempts = parse_config_int(config_data, "semantic_redraw_max_attempts", 3)
+    semantic_redraw_max_model_calls_per_image = parse_config_int(
+        config_data,
+        "semantic_redraw_max_model_calls_per_image",
+        semantic_redraw_max_attempts * 3,
+    )
 
     env_model_options = parse_csv_env("DOCX_AI_MODEL_OPTIONS")
     if env_model_options is not None:
@@ -151,6 +166,22 @@ def load_app_config() -> dict[str, object]:
         prefer_deterministic_reconstruction,
     )
     reconstruction_model = os.getenv("DOCX_AI_RECONSTRUCTION_MODEL", reconstruction_model).strip() or reconstruction_model
+    enable_vision_image_analysis = parse_bool_env(
+        "DOCX_AI_ENABLE_VISION_IMAGE_ANALYSIS",
+        enable_vision_image_analysis,
+    )
+    enable_vision_image_validation = parse_bool_env(
+        "DOCX_AI_ENABLE_VISION_IMAGE_VALIDATION",
+        enable_vision_image_validation,
+    )
+    semantic_redraw_max_attempts = parse_int_env(
+        "DOCX_AI_SEMANTIC_REDRAW_MAX_ATTEMPTS",
+        semantic_redraw_max_attempts,
+    )
+    semantic_redraw_max_model_calls_per_image = parse_int_env(
+        "DOCX_AI_SEMANTIC_REDRAW_MAX_MODEL_CALLS_PER_IMAGE",
+        semantic_redraw_max_model_calls_per_image,
+    )
 
     if default_model not in model_options:
         model_options = [default_model, *[item for item in model_options if item != default_model]]
@@ -171,6 +202,10 @@ def load_app_config() -> dict[str, object]:
         "prefer_structured_redraw": prefer_structured_redraw,
         "prefer_deterministic_reconstruction": prefer_deterministic_reconstruction,
         "reconstruction_model": reconstruction_model,
+        "enable_vision_image_analysis": enable_vision_image_analysis,
+        "enable_vision_image_validation": enable_vision_image_validation,
+        "semantic_redraw_max_attempts": max(1, min(semantic_redraw_max_attempts, 5)),
+        "semantic_redraw_max_model_calls_per_image": max(1, min(semantic_redraw_max_model_calls_per_image, 20)),
     }
 
 

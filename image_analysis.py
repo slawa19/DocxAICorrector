@@ -1,19 +1,54 @@
+import base64
+import json
+import time
+from dataclasses import replace
 from io import BytesIO
 
 from PIL import Image, ImageFile, ImageFilter, ImageOps
 
+from generation import is_retryable_error
 from models import ImageAnalysisResult
 
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+VISION_ANALYSIS_TIMEOUT_SECONDS = 45.0
+VISION_ANALYSIS_MAX_RETRIES = 2
+DENSE_TEXT_BYPASS_THRESHOLD = 18  # text nodes at which image regeneration loses too much fidelity
 
 
-def analyze_image(image_bytes: bytes, *, model: str, mime_type: str | None = None) -> ImageAnalysisResult:
-    del model
-
+def analyze_image(
+    image_bytes: bytes,
+    *,
+    model: str,
+    mime_type: str | None = None,
+    client=None,
+    enable_vision: bool = True,
+) -> ImageAnalysisResult:
     detected_mime_type = mime_type or _detect_mime_type(image_bytes)
     visual_features = _extract_visual_features(image_bytes)
+    heuristic_result = _build_heuristic_analysis(detected_mime_type, visual_features)
 
+    if not enable_vision or client is None or detected_mime_type is None:
+        return heuristic_result
+
+    try:
+        vision_result = _extract_vision_analysis(
+            client=client,
+            image_bytes=image_bytes,
+            mime_type=detected_mime_type,
+            model=model,
+            heuristic_result=heuristic_result,
+        )
+    except Exception:
+        return heuristic_result
+
+    return _merge_analysis_results(heuristic_result, vision_result)
+
+
+def _build_heuristic_analysis(
+    detected_mime_type: str | None,
+    visual_features: dict[str, float] | None,
+) -> ImageAnalysisResult:
     if detected_mime_type == "image/jpeg":
         if _looks_like_infographic(visual_features):
             return ImageAnalysisResult(
@@ -69,6 +104,33 @@ def analyze_image(image_bytes: bytes, *, model: str, mime_type: str | None = Non
                 structure_summary="Infographic-like image with bright background, multiple content zones, and colored emphasis.",
                 extracted_labels=[],
             )
+        if _looks_like_screenshot(visual_features):
+            return ImageAnalysisResult(
+                image_type="screenshot",
+                image_subtype="ui_screenshot_like",
+                contains_text=True,
+                semantic_redraw_allowed=False,
+                confidence=0.79,
+                structured_parse_confidence=0.18,
+                prompt_key="screenshot_safe_fallback",
+                render_strategy="safe_mode",
+                structure_summary="Interface or screen-like raster image; preserve original layout and text safely.",
+                extracted_labels=[],
+                fallback_reason="screenshot_safe_only",
+            )
+        if _looks_like_structured_diagram(visual_features):
+            return ImageAnalysisResult(
+                image_type="diagram",
+                image_subtype=None,
+                contains_text=True,
+                semantic_redraw_allowed=True,
+                confidence=0.81,
+                structured_parse_confidence=0.74,
+                prompt_key="diagram_semantic_redraw",
+                render_strategy="deterministic_reconstruction",
+                structure_summary="Diagram-like image with labels and layout relationships.",
+                extracted_labels=[],
+            )
         return ImageAnalysisResult(
             image_type="diagram",
             image_subtype=None,
@@ -95,6 +157,206 @@ def analyze_image(image_bytes: bytes, *, model: str, mime_type: str | None = Non
         extracted_labels=[],
         fallback_reason="unreadable_or_unsupported_image",
     )
+
+
+def _extract_vision_analysis(
+    *,
+    client,
+    image_bytes: bytes,
+    mime_type: str,
+    model: str,
+    heuristic_result: ImageAnalysisResult,
+) -> ImageAnalysisResult:
+    response = _call_responses_create_with_retry(
+        client,
+        {
+            "model": model or "gpt-4.1",
+            "input": [
+                {
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "You analyze document images conservatively for a DOCX editing pipeline. Return strict JSON only. "
+                                "Screenshots and photos should usually stay in safe_mode unless the image is clearly a structured diagram or infographic."
+                            ),
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "Return JSON with keys: image_type, image_subtype, contains_text, semantic_redraw_allowed, confidence, "
+                                "structured_parse_confidence, prompt_key, render_strategy, recommended_route, structure_summary, extracted_labels, "
+                                "text_node_count, extracted_text, fallback_reason. "
+                                "Populate extracted_labels only with clearly readable labels, max 12 items. Heuristic baseline: "
+                                f"image_type={heuristic_result.image_type}, prompt_key={heuristic_result.prompt_key}, render_strategy={heuristic_result.render_strategy}."
+                            ),
+                        },
+                        {
+                            "type": "input_image",
+                            "image_url": f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}",
+                        },
+                    ],
+                },
+            ],
+            "timeout": VISION_ANALYSIS_TIMEOUT_SECONDS,
+        },
+    )
+    payload = _parse_json_object(getattr(response, "output_text", ""))
+    return _coerce_vision_analysis_payload(payload, heuristic_result)
+
+
+def _call_responses_create_with_retry(client, request_payload: dict[str, object]):
+    current_payload = dict(request_payload)
+    for attempt in range(1, VISION_ANALYSIS_MAX_RETRIES + 1):
+        try:
+            return client.responses.create(**current_payload)
+        except TypeError as exc:
+            if "timeout" in str(exc) and "timeout" in current_payload:
+                current_payload.pop("timeout", None)
+                continue
+            raise
+        except Exception as exc:
+            if attempt >= VISION_ANALYSIS_MAX_RETRIES or not is_retryable_error(exc):
+                raise
+            time.sleep(min(2 ** (attempt - 1), 4))
+    raise RuntimeError("Vision analysis retry loop exhausted unexpectedly.")
+
+
+def _parse_json_object(raw_text: str) -> dict[str, object]:
+    text = raw_text.strip()
+    if not text:
+        raise RuntimeError("Vision analysis returned empty output.")
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise RuntimeError("Vision analysis did not return JSON.")
+    return json.loads(text[start : end + 1])
+
+
+def _coerce_vision_analysis_payload(
+    payload: dict[str, object],
+    heuristic_result: ImageAnalysisResult,
+) -> ImageAnalysisResult:
+    extracted_labels = [str(item).strip() for item in payload.get("extracted_labels", []) if str(item).strip()][:12]
+    extracted_text = _coerce_extracted_text(payload.get("extracted_text"))
+    text_node_count = _coerce_non_negative_int(payload.get("text_node_count"))
+    render_strategy, force_safe_mode = _normalize_render_strategy(
+        payload.get("recommended_route") or payload.get("render_strategy"),
+        heuristic_result.render_strategy,
+    )
+    semantic_redraw_allowed = bool(payload.get("semantic_redraw_allowed", heuristic_result.semantic_redraw_allowed))
+    if force_safe_mode:
+        semantic_redraw_allowed = False
+    return ImageAnalysisResult(
+        image_type=str(payload.get("image_type", heuristic_result.image_type)).strip() or heuristic_result.image_type,
+        image_subtype=(
+            str(payload.get("image_subtype")).strip()
+            if isinstance(payload.get("image_subtype"), str) and str(payload.get("image_subtype")).strip()
+            else heuristic_result.image_subtype
+        ),
+        contains_text=bool(payload.get("contains_text", heuristic_result.contains_text)) or bool(extracted_labels) or bool(extracted_text),
+        semantic_redraw_allowed=semantic_redraw_allowed,
+        confidence=_clamp_score(payload.get("confidence", heuristic_result.confidence)),
+        structured_parse_confidence=_clamp_score(payload.get("structured_parse_confidence", heuristic_result.structured_parse_confidence)),
+        prompt_key=str(payload.get("prompt_key", heuristic_result.prompt_key)).strip() or heuristic_result.prompt_key,
+        render_strategy=render_strategy,
+        structure_summary=str(payload.get("structure_summary", heuristic_result.structure_summary)).strip() or heuristic_result.structure_summary,
+        extracted_labels=extracted_labels or heuristic_result.extracted_labels,
+        text_node_count=text_node_count,
+        extracted_text=extracted_text,
+        fallback_reason=(
+            str(payload.get("fallback_reason")).strip()
+            if isinstance(payload.get("fallback_reason"), str) and str(payload.get("fallback_reason")).strip()
+            else heuristic_result.fallback_reason
+        ),
+    )
+
+
+def _merge_analysis_results(
+    heuristic_result: ImageAnalysisResult,
+    vision_result: ImageAnalysisResult,
+) -> ImageAnalysisResult:
+    merged = ImageAnalysisResult(
+        image_type=vision_result.image_type or heuristic_result.image_type,
+        image_subtype=vision_result.image_subtype or heuristic_result.image_subtype,
+        contains_text=heuristic_result.contains_text or vision_result.contains_text or bool(vision_result.extracted_labels),
+        semantic_redraw_allowed=vision_result.semantic_redraw_allowed,
+        confidence=_clamp_score((heuristic_result.confidence + vision_result.confidence) / 2.0),
+        structured_parse_confidence=_clamp_score((heuristic_result.structured_parse_confidence + vision_result.structured_parse_confidence) / 2.0),
+        prompt_key=vision_result.prompt_key or heuristic_result.prompt_key,
+        render_strategy=vision_result.render_strategy or heuristic_result.render_strategy,
+        structure_summary=vision_result.structure_summary or heuristic_result.structure_summary,
+        extracted_labels=vision_result.extracted_labels or heuristic_result.extracted_labels,
+        text_node_count=(
+            vision_result.text_node_count
+            if vision_result.text_node_count is not None
+            else heuristic_result.text_node_count
+        ),
+        extracted_text=vision_result.extracted_text or heuristic_result.extracted_text,
+        fallback_reason=vision_result.fallback_reason or heuristic_result.fallback_reason,
+    )
+    return _apply_routing_overrides(merged)
+
+
+def _coerce_non_negative_int(value: object) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0, parsed)
+
+
+def _coerce_extracted_text(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+
+def _apply_routing_overrides(result: ImageAnalysisResult) -> ImageAnalysisResult:
+    """Override to safe_mode when Vision detects too many text nodes for reliable regeneration."""
+    if (
+        result.text_node_count is not None
+        and result.text_node_count >= DENSE_TEXT_BYPASS_THRESHOLD
+        and result.semantic_redraw_allowed
+        and result.image_type in {"infographic", "mixed_or_ambiguous", "chart"}
+    ):
+        return replace(
+            result,
+            render_strategy="safe_mode",
+            semantic_redraw_allowed=False,
+            fallback_reason=f"dense_text_bypass:{result.text_node_count}_nodes",
+        )
+    return result
+
+
+def _normalize_render_strategy(route_hint: object, fallback_strategy: str) -> tuple[str, bool]:
+    route = str(route_hint).strip().lower() if route_hint is not None else ""
+    if route in {"", "none"}:
+        return fallback_strategy, False
+    if route in {"bypass", "safe", "safe_mode"}:
+        return "safe_mode", True
+    if fallback_strategy == "deterministic_reconstruction" and route in {
+        "deterministic_reconstruction",
+        "gpt-image-1",
+        "semantic_redraw_direct",
+        "semantic_redraw_structured",
+    }:
+        return "deterministic_reconstruction", False
+    if route == "gpt-image-1":
+        if fallback_strategy in {"semantic_redraw_direct", "semantic_redraw_structured"}:
+            return fallback_strategy, False
+        return "semantic_redraw_structured", False
+    return str(route_hint).strip() or fallback_strategy, False
 
 
 def _detect_mime_type(image_bytes: bytes) -> str | None:
@@ -197,3 +459,26 @@ def _looks_like_infographic(visual_features: dict[str, float] | None) -> bool:
         and visual_features["edge_ratio"] >= 0.08
         and visual_features["dark_ratio"] <= 0.05
     )
+
+
+def _looks_like_screenshot(visual_features: dict[str, float] | None) -> bool:
+    if not visual_features:
+        return False
+
+    return (
+        visual_features["bright_ratio"] >= 0.45
+        and visual_features["white_ratio"] >= 0.18
+        and visual_features["white_ratio"] <= 0.9
+        and visual_features["edge_ratio"] >= 0.01
+        and visual_features["edge_ratio"] <= 0.16
+        and visual_features["colorful_ratio"] >= 0.01
+        and visual_features["colorful_ratio"] <= 0.2
+        and visual_features["dark_ratio"] <= 0.2
+    )
+
+
+def _clamp_score(value: object) -> float:
+    try:
+        return max(0.0, min(float(value), 1.0))
+    except (TypeError, ValueError):
+        return 0.0

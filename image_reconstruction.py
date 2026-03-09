@@ -33,13 +33,14 @@ def reconstruct_image(
     *,
     model: str = DEFAULT_RECONSTRUCTION_MODEL,
     mime_type: str | None = None,
+    client=None,
 ) -> tuple[bytes, dict[str, Any]]:
     """End-to-end deterministic reconstruction.
 
     Returns ``(png_bytes, scene_graph_dict)``.  Raises on unrecoverable
     errors so that callers can fall back to safe mode.
     """
-    scene_graph = extract_scene_graph(image_bytes, model=model, mime_type=mime_type)
+    scene_graph = extract_scene_graph(image_bytes, model=model, mime_type=mime_type, client=client)
     original_size = _get_image_size(image_bytes)
     rendered_bytes = render_scene_graph(scene_graph, original_size=original_size)
     log_event(
@@ -62,13 +63,14 @@ def extract_scene_graph(
     *,
     model: str = DEFAULT_RECONSTRUCTION_MODEL,
     mime_type: str | None = None,
+    client=None,
 ) -> dict[str, Any]:
     """Call a multimodal VLM to extract a structured JSON scene graph."""
     prompt_text = _load_scene_graph_prompt()
     data_uri = _image_bytes_to_data_uri(image_bytes, mime_type)
 
-    client = get_client()
-    response = client.responses.create(
+    resolved_client = client or get_client()
+    response = resolved_client.responses.create(
         model=model,
         input=[
             {

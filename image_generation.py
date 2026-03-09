@@ -1,8 +1,11 @@
 import base64
 import logging
+import time
 from io import BytesIO
+from types import SimpleNamespace
 
 from PIL import Image, ImageEnhance, ImageOps
+from PIL import ImageChops
 
 from config import get_client
 from image_prompts import get_image_prompt_profile, load_image_prompt_text
@@ -11,8 +14,37 @@ from logger import log_event
 from models import ImageAnalysisResult
 
 IMAGE_EDIT_MODEL = "gpt-image-1"
+IMAGE_GENERATE_MODEL = "gpt-image-1"
+IMAGE_STRUCTURE_VISION_MODEL = "gpt-4.1"
+IMAGE_API_TIMEOUT_SECONDS = 90.0
+IMAGE_API_MAX_RETRIES = 3
+IMAGE_API_MAX_BACKOFF_SECONDS = 8.0
 SEMANTIC_MODES = {"semantic_redraw_direct", "semantic_redraw_structured"}
 RECONSTRUCTION_STRATEGY = "deterministic_reconstruction"
+
+
+class ImageModelCallBudgetExceeded(RuntimeError):
+    pass
+
+
+class ImageModelCallBudget:
+    def __init__(self, max_calls: int):
+        self.max_calls = max(1, int(max_calls))
+        self.used_calls = 0
+
+    @property
+    def remaining_calls(self) -> int:
+        return max(0, self.max_calls - self.used_calls)
+
+    def ensure_available(self, operation_name: str) -> None:
+        if self.remaining_calls <= 0:
+            raise ImageModelCallBudgetExceeded(
+                f"Image model call budget exhausted before {operation_name}: {self.used_calls}/{self.max_calls} calls used."
+            )
+
+    def consume(self, operation_name: str) -> None:
+        self.ensure_available(operation_name)
+        self.used_calls += 1
 
 
 def generate_image_candidate(
@@ -22,6 +54,8 @@ def generate_image_candidate(
     mode: str,
     prefer_deterministic_reconstruction: bool = True,
     reconstruction_model: str | None = None,
+    client=None,
+    budget: ImageModelCallBudget | None = None,
 ) -> bytes:
     if not _is_supported_image_bytes(image_bytes):
         raise RuntimeError("Передан неподдерживаемый image payload.")
@@ -40,6 +74,8 @@ def generate_image_candidate(
         candidate_bytes = _generate_reconstructed_candidate(
             image_bytes,
             analysis,
+            client=client,
+            budget=budget,
             reconstruction_model=reconstruction_model,
         )
     else:
@@ -49,6 +85,8 @@ def generate_image_candidate(
             requested_mode=requested_mode,
             prompt_text=prompt_text,
             prompt_profile=prompt_profile,
+            client=client,
+            budget=budget,
         )
 
     log_event(
@@ -116,6 +154,8 @@ def _generate_reconstructed_candidate(
     image_bytes: bytes,
     analysis: ImageAnalysisResult,
     *,
+    client=None,
+    budget: ImageModelCallBudget | None = None,
     reconstruction_model: str | None = None,
 ) -> bytes:
     """Deterministic reconstruction via VLM scene-graph extraction + PIL rendering.
@@ -124,10 +164,12 @@ def _generate_reconstructed_candidate(
     """
     model = reconstruction_model or "gpt-4.1"
     try:
+        _consume_budget(budget, "deterministic_reconstruction.responses.create")
         candidate_bytes, scene_graph = reconstruct_image(
             image_bytes,
             model=model,
             mime_type=None,
+            client=client,
         )
         log_event(
             logging.INFO,
@@ -181,35 +223,84 @@ def _generate_semantic_candidate(
     requested_mode: str,
     prompt_text: str,
     prompt_profile: dict[str, str],
+    client=None,
+    budget: ImageModelCallBudget | None = None,
 ) -> bytes:
-    client = get_client()
-    use_high_fidelity = _uses_high_fidelity_semantic_edit(analysis, requested_mode)
+    resolved_client = client or get_client()
+    prompt = _build_image_edit_prompt(
+        analysis,
+        requested_mode=requested_mode,
+        prompt_text=prompt_text,
+        prompt_profile=prompt_profile,
+        source_size=_read_image_size(image_bytes),
+    )
+
+    if requested_mode == "semantic_redraw_structured":
+        return _generate_structured_candidate(
+            resolved_client,
+            image_bytes,
+            analysis,
+            prompt_text=prompt_text,
+            prompt_profile=prompt_profile,
+            prompt=prompt,
+            budget=budget,
+        )
+
+    try:
+        return _generate_direct_semantic_candidate(
+            resolved_client,
+            image_bytes,
+            analysis,
+            prompt=prompt,
+            budget=budget,
+        )
+    except Exception as exc:
+        log_event(
+            logging.WARNING,
+            "semantic_image_edit_fallback_to_structured_generate",
+            "Прямой semantic edit не удался, перехожу на structured Vision + Generate pipeline.",
+            error_type=exc.__class__.__name__,
+            error_message=str(exc),
+            image_type=analysis.image_type,
+            prompt_key=analysis.prompt_key,
+        )
+        return _generate_structured_candidate(
+            resolved_client,
+            image_bytes,
+            analysis,
+            prompt_text=prompt_text,
+            prompt_profile=prompt_profile,
+            prompt=prompt,
+            budget=budget,
+        )
+
+
+def _generate_direct_semantic_candidate(
+    client,
+    image_bytes: bytes,
+    analysis: ImageAnalysisResult,
+    *,
+    prompt: str,
+    budget: ImageModelCallBudget | None = None,
+) -> bytes:
+    use_high_fidelity = _uses_high_fidelity_semantic_edit(analysis, "semantic_redraw_direct")
     semantic_upload, restore_context = _prepare_semantic_edit_image(image_bytes)
     request_payload = {
         "model": IMAGE_EDIT_MODEL,
-        "image": semantic_upload,
-        "prompt": _build_image_edit_prompt(
-            analysis,
-            requested_mode=requested_mode,
-            prompt_text=prompt_text,
-            prompt_profile=prompt_profile,
-            source_size=restore_context["original_size"],
-        ),
-        "input_fidelity": "high" if use_high_fidelity else "low",
+        "image": [_build_edit_file_like(semantic_upload)],
+        "prompt": prompt,
         "quality": "high" if use_high_fidelity else "medium",
-        "size": "auto",
-        "output_format": _select_semantic_api_output_format(image_bytes, analysis),
+        "size": _select_generate_size(restore_context["original_size"]),
         "response_format": "b64_json",
-        "moderation": "auto",
     }
-    response = _call_images_edit(client, request_payload)
+    response = _call_images_edit(client, request_payload, budget=budget)
     candidate_bytes, revised_prompt = _extract_image_bytes(response)
     candidate_bytes = _restore_semantic_output(candidate_bytes, restore_context)
     log_event(
         logging.INFO,
         "semantic_image_edit_completed",
-        "Semantic redraw завершен через OpenAI Images API.",
-        requested_mode=requested_mode,
+        "Direct semantic redraw завершен через OpenAI Images API.",
+        requested_mode="semantic_redraw_direct",
         prompt_key=analysis.prompt_key,
         image_type=analysis.image_type,
         revised_prompt=revised_prompt,
@@ -217,7 +308,49 @@ def _generate_semantic_candidate(
     return candidate_bytes
 
 
-def _call_images_edit(client, request_payload: dict[str, object]):
+def _generate_structured_candidate(
+    client,
+    image_bytes: bytes,
+    analysis: ImageAnalysisResult,
+    *,
+    prompt_text: str,
+    prompt_profile: dict[str, str],
+    prompt: str,
+    budget: ImageModelCallBudget | None = None,
+) -> bytes:
+    original_size = _read_image_size(image_bytes)
+    layout_description = _extract_structured_layout_description(client, image_bytes, analysis, budget=budget)
+    generate_prompt = _build_structured_generate_prompt(
+        analysis,
+        prompt_text=prompt_text,
+        prompt_profile=prompt_profile,
+        base_prompt=prompt,
+        layout_description=layout_description,
+        source_size=original_size,
+    )
+    request_payload = {
+        "model": IMAGE_GENERATE_MODEL,
+        "prompt": generate_prompt,
+        "size": _select_generate_size(original_size),
+        "quality": "high",
+        "response_format": "b64_json",
+    }
+    response = _call_images_generate(client, request_payload, budget=budget)
+    candidate_bytes, revised_prompt = _extract_image_bytes(response)
+    candidate_bytes = _restore_generated_output(candidate_bytes, original_size)
+    log_event(
+        logging.INFO,
+        "structured_image_generate_completed",
+        "Structured semantic redraw завершен через Vision + Images.generate.",
+        requested_mode="semantic_redraw_structured",
+        prompt_key=analysis.prompt_key,
+        image_type=analysis.image_type,
+        revised_prompt=revised_prompt,
+    )
+    return candidate_bytes
+
+
+def _call_images_edit(client, request_payload: dict[str, object], *, budget: ImageModelCallBudget | None = None):
     retryable_optional_params = {
         "moderation",
         "input_fidelity",
@@ -225,64 +358,222 @@ def _call_images_edit(client, request_payload: dict[str, object]):
         "output_format",
         "response_format",
         "size",
+        "timeout",
     }
     current_payload = dict(request_payload)
-    try:
-        return client.images.edit(**current_payload)
-    except TypeError as exc:
-        unsupported_param = _extract_unsupported_parameter_name(str(exc))
-        if unsupported_param not in retryable_optional_params or unsupported_param not in current_payload:
+    attempt = 1
+    while True:
+        try:
+            _consume_budget(budget, "images.edit")
+            return client.images.edit(**_with_timeout(current_payload))
+        except TypeError as exc:
+            unsupported_param = _extract_unsupported_parameter_name(str(exc))
+            if unsupported_param not in retryable_optional_params or unsupported_param not in current_payload:
+                raise
+            current_payload.pop(unsupported_param, None)
+            log_event(
+                logging.INFO,
+                "semantic_image_edit_retry_without_optional_param",
+                "OpenAI SDK не поддерживает один из optional params для Images.edit, повторяю запрос без него.",
+                removed_param=unsupported_param,
+            )
+            continue
+        except Exception as exc:
+            prompt_limit = _extract_prompt_limit(str(exc))
+            if prompt_limit is not None and isinstance(current_payload.get("prompt"), str):
+                current_payload["prompt"] = _shorten_prompt_for_limit(str(current_payload["prompt"]), prompt_limit)
+                log_event(
+                    logging.INFO,
+                    "semantic_image_edit_retry_with_shorter_prompt",
+                    "Images API отклонил слишком длинный prompt, повторяю запрос с сокращенным prompt.",
+                    prompt_limit=prompt_limit,
+                )
+                continue
+            fallback_size = _extract_supported_size_fallback(str(exc), str(current_payload.get("size", "")))
+            if fallback_size is not None:
+                current_payload["size"] = fallback_size
+                log_event(
+                    logging.INFO,
+                    "semantic_image_edit_retry_with_fallback_size",
+                    "Images API отклонил auto-size, повторяю запрос с совместимым фиксированным размером.",
+                    fallback_size=fallback_size,
+                )
+                continue
+            unsupported_param = _extract_unsupported_parameter_name(str(exc))
+            if unsupported_param in retryable_optional_params and unsupported_param in current_payload:
+                current_payload.pop(unsupported_param, None)
+                log_event(
+                    logging.INFO,
+                    "semantic_image_edit_retry_without_optional_param",
+                    "Images API отклонил optional param, повторяю запрос без него.",
+                    removed_param=unsupported_param,
+                )
+                continue
+            if attempt < IMAGE_API_MAX_RETRIES and _is_retryable_api_error(exc):
+                _ensure_budget_available(budget, "images.edit")
+                retry_delay = _compute_retry_delay(attempt)
+                log_event(
+                    logging.WARNING,
+                    "semantic_image_edit_retry_after_transient_error",
+                    "Transient ошибка Images.edit, повторяю запрос с backoff.",
+                    attempt=attempt,
+                    retry_delay_seconds=retry_delay,
+                    error_type=exc.__class__.__name__,
+                    error_message=str(exc),
+                )
+                time.sleep(retry_delay)
+                attempt += 1
+                continue
             raise
-        current_payload.pop(unsupported_param, None)
-        log_event(
-            logging.INFO,
-            "semantic_image_edit_retry_without_optional_param",
-            "OpenAI SDK не поддерживает один из optional params для Images.edit, повторяю запрос без него.",
-            removed_param=unsupported_param,
-        )
-        return _call_images_edit(client, current_payload)
-    except Exception as exc:
-        fallback_model = _extract_supported_model_fallback(str(exc), str(current_payload.get("model", "")))
-        if fallback_model is not None:
-            current_payload["model"] = fallback_model
+
+
+def _call_images_generate(client, request_payload: dict[str, object], *, budget: ImageModelCallBudget | None = None):
+    retryable_optional_params = {"quality", "response_format", "size", "timeout"}
+    current_payload = dict(request_payload)
+    attempt = 1
+    while True:
+        try:
+            _consume_budget(budget, "images.generate")
+            return client.images.generate(**_with_timeout(current_payload))
+        except TypeError as exc:
+            unsupported_param = _extract_unsupported_parameter_name(str(exc))
+            if unsupported_param not in retryable_optional_params or unsupported_param not in current_payload:
+                raise
+            current_payload.pop(unsupported_param, None)
             log_event(
                 logging.INFO,
-                "semantic_image_edit_retry_with_fallback_model",
-                "Images API отклонил model, повторяю запрос с совместимой моделью.",
-                fallback_model=fallback_model,
+                "structured_image_generate_retry_without_optional_param",
+                "OpenAI SDK не поддерживает optional param для Images.generate, повторяю запрос без него.",
+                removed_param=unsupported_param,
             )
-            return _call_images_edit(client, current_payload)
-        prompt_limit = _extract_prompt_limit(str(exc))
-        if prompt_limit is not None and isinstance(current_payload.get("prompt"), str):
-            current_payload["prompt"] = _shorten_prompt_for_limit(str(current_payload["prompt"]), prompt_limit)
-            log_event(
-                logging.INFO,
-                "semantic_image_edit_retry_with_shorter_prompt",
-                "Images API отклонил слишком длинный prompt, повторяю запрос с сокращенным prompt.",
-                prompt_limit=prompt_limit,
-            )
-            return _call_images_edit(client, current_payload)
-        fallback_size = _extract_supported_size_fallback(str(exc), str(current_payload.get("size", "")))
-        if fallback_size is not None:
-            current_payload["size"] = fallback_size
-            log_event(
-                logging.INFO,
-                "semantic_image_edit_retry_with_fallback_size",
-                "Images API отклонил auto-size, повторяю запрос с совместимым фиксированным размером.",
-                fallback_size=fallback_size,
-            )
-            return _call_images_edit(client, current_payload)
-        unsupported_param = _extract_unsupported_parameter_name(str(exc))
-        if unsupported_param not in retryable_optional_params or unsupported_param not in current_payload:
+            continue
+        except Exception as exc:
+            prompt_limit = _extract_prompt_limit(str(exc))
+            if prompt_limit is not None and isinstance(current_payload.get("prompt"), str):
+                current_payload["prompt"] = _shorten_prompt_for_limit(str(current_payload["prompt"]), prompt_limit)
+                log_event(
+                    logging.INFO,
+                    "structured_image_generate_retry_with_shorter_prompt",
+                    "Images.generate отклонил слишком длинный prompt, повторяю запрос с сокращенным prompt.",
+                    prompt_limit=prompt_limit,
+                )
+                continue
+            fallback_size = _extract_supported_generate_size_fallback(str(exc), str(current_payload.get("size", "")))
+            if fallback_size is not None:
+                current_payload["size"] = fallback_size
+                log_event(
+                    logging.INFO,
+                    "structured_image_generate_retry_with_fallback_size",
+                    "Images.generate отклонил размер, повторяю запрос с совместимым размером.",
+                    fallback_size=fallback_size,
+                )
+                continue
+            unsupported_param = _extract_unsupported_parameter_name(str(exc))
+            if unsupported_param in retryable_optional_params and unsupported_param in current_payload:
+                current_payload.pop(unsupported_param, None)
+                log_event(
+                    logging.INFO,
+                    "structured_image_generate_retry_without_optional_param",
+                    "Images.generate отклонил optional param, повторяю запрос без него.",
+                    removed_param=unsupported_param,
+                )
+                continue
+            if attempt < IMAGE_API_MAX_RETRIES and _is_retryable_api_error(exc):
+                _ensure_budget_available(budget, "images.generate")
+                retry_delay = _compute_retry_delay(attempt)
+                log_event(
+                    logging.WARNING,
+                    "structured_image_generate_retry_after_transient_error",
+                    "Transient ошибка Images.generate, повторяю запрос с backoff.",
+                    attempt=attempt,
+                    retry_delay_seconds=retry_delay,
+                    error_type=exc.__class__.__name__,
+                    error_message=str(exc),
+                )
+                time.sleep(retry_delay)
+                attempt += 1
+                continue
             raise
-        current_payload.pop(unsupported_param, None)
-        log_event(
-            logging.INFO,
-            "semantic_image_edit_retry_without_optional_param",
-            "Images API отклонил optional param, повторяю запрос без него.",
-            removed_param=unsupported_param,
-        )
-        return _call_images_edit(client, current_payload)
+
+
+def _call_responses_create(client, request_payload: dict[str, object], *, budget: ImageModelCallBudget | None = None):
+    retryable_optional_params = {"timeout"}
+    current_payload = dict(request_payload)
+    attempt = 1
+    while True:
+        try:
+            _consume_budget(budget, "responses.create")
+            return client.responses.create(**_with_timeout(current_payload))
+        except TypeError as exc:
+            unsupported_param = _extract_unsupported_parameter_name(str(exc))
+            if unsupported_param not in retryable_optional_params or unsupported_param not in current_payload:
+                raise
+            current_payload.pop(unsupported_param, None)
+            log_event(
+                logging.INFO,
+                "structured_layout_retry_without_optional_param",
+                "OpenAI SDK не поддерживает optional param для Responses API, повторяю запрос без него.",
+                removed_param=unsupported_param,
+            )
+            continue
+        except Exception as exc:
+            unsupported_param = _extract_unsupported_parameter_name(str(exc))
+            if unsupported_param in retryable_optional_params and unsupported_param in current_payload:
+                current_payload.pop(unsupported_param, None)
+                log_event(
+                    logging.INFO,
+                    "structured_layout_retry_without_optional_param",
+                    "Responses API отклонил optional param, повторяю запрос без него.",
+                    removed_param=unsupported_param,
+                )
+                continue
+            if attempt < IMAGE_API_MAX_RETRIES and _is_retryable_api_error(exc):
+                _ensure_budget_available(budget, "responses.create")
+                retry_delay = _compute_retry_delay(attempt)
+                log_event(
+                    logging.WARNING,
+                    "structured_layout_retry_after_transient_error",
+                    "Transient ошибка Responses API, повторяю Vision-запрос с backoff.",
+                    attempt=attempt,
+                    retry_delay_seconds=retry_delay,
+                    error_type=exc.__class__.__name__,
+                    error_message=str(exc),
+                )
+                time.sleep(retry_delay)
+                attempt += 1
+                continue
+            raise
+
+
+def _with_timeout(request_payload: dict[str, object]) -> dict[str, object]:
+    payload_with_timeout = dict(request_payload)
+    payload_with_timeout.setdefault("timeout", IMAGE_API_TIMEOUT_SECONDS)
+    return payload_with_timeout
+
+
+def _is_retryable_api_error(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    if status_code in {408, 409, 429}:
+        return True
+    if isinstance(status_code, int) and status_code >= 500:
+        return True
+    return exc.__class__.__name__ in {"APIConnectionError", "APITimeoutError", "RateLimitError", "InternalServerError"}
+
+
+def _compute_retry_delay(attempt: int) -> float:
+    return min(2 ** (attempt - 1), IMAGE_API_MAX_BACKOFF_SECONDS)
+
+
+def _ensure_budget_available(budget: ImageModelCallBudget | None, operation_name: str) -> None:
+    if budget is None:
+        return
+    budget.ensure_available(operation_name)
+
+
+def _consume_budget(budget: ImageModelCallBudget | None, operation_name: str) -> None:
+    if budget is None:
+        return
+    budget.consume(operation_name)
 
 
 def _extract_unsupported_parameter_name(error_message: str) -> str | None:
@@ -295,17 +586,6 @@ def _extract_unsupported_parameter_name(error_message: str) -> str | None:
         tail = error_message.split(marker, 1)[1]
         return tail.split("'", 1)[0]
     return None
-
-
-def _extract_supported_model_fallback(error_message: str, current_model: str) -> str | None:
-    marker = "Value must be '"
-    if marker not in error_message:
-        return None
-    tail = error_message.split(marker, 1)[1]
-    fallback_model = tail.split("'", 1)[0]
-    if not fallback_model or fallback_model == current_model:
-        return None
-    return fallback_model
 
 
 def _extract_prompt_limit(error_message: str) -> int | None:
@@ -338,7 +618,20 @@ def _extract_supported_size_fallback(error_message: str, current_size: str) -> s
     if "Supported values are:" not in error_message or "size" not in error_message:
         return None
     supported_sizes = []
-    for candidate in ("1024x1024", "512x512", "256x256"):
+    for candidate in ("1536x1024", "1024x1536", "1024x1024", "512x512", "256x256"):
+        if candidate in error_message:
+            supported_sizes.append(candidate)
+    for candidate in supported_sizes:
+        if candidate != current_size:
+            return candidate
+    return None
+
+
+def _extract_supported_generate_size_fallback(error_message: str, current_size: str) -> str | None:
+    if "Supported values are:" not in error_message or "size" not in error_message:
+        return None
+    supported_sizes = []
+    for candidate in ("1536x1024", "1024x1536", "1024x1024", "1792x1024", "1024x1792"):
         if candidate in error_message:
             supported_sizes.append(candidate)
     for candidate in supported_sizes:
@@ -378,6 +671,13 @@ def _convert_image_bytes_to_png(image_bytes: bytes) -> bytes:
             return png_bytes
     except Exception as exc:
         raise RuntimeError("Не удалось подготовить PNG payload для OpenAI Images API.") from exc
+
+
+def _build_edit_file_like(image_upload: tuple[str, bytes, str]):
+    filename, image_bytes, _mime_type = image_upload
+    file_like = BytesIO(image_bytes)
+    file_like.name = filename
+    return file_like
 
 
 def _prepare_semantic_edit_image(
@@ -483,12 +783,15 @@ def _build_image_edit_prompt(
         mode_guidance,
         f"Profile: {prompt_profile['description']}",
         f"Detected image type: {analysis.image_type}.",
-        f"Original aspect ratio: {source_size[0]}:{source_size[1]}. Keep the same aspect ratio and composition. Do not stretch content to fill a square canvas.",
+        f"Original content aspect ratio: {source_size[0]}:{source_size[1]}. Fill the entire generated canvas completely from edge to edge — no empty outer margins, padding, or borders around the artwork.",
         f"Structure summary: {analysis.structure_summary}",
     ]
     if labels:
         prompt_parts.append(f"Preserve these labels exactly when readable: {labels}")
         prompt_parts.append("Do not remove, translate, paraphrase, or invent labels. Preserve visible text verbatim.")
+    if analysis.extracted_text.strip():
+        prompt_parts.append("Preserve this extracted source text verbatim when it is readable:")
+        prompt_parts.append(analysis.extracted_text.strip())
     if analysis.fallback_reason:
         prompt_parts.append(f"Avoid the failure mode noted during analysis: {analysis.fallback_reason}.")
     if analysis.contains_text:
@@ -496,6 +799,198 @@ def _build_image_edit_prompt(
     prompt_parts.append("Do not merely upscale, sharpen, or restyle the existing pixels. Rebuild the visual from scratch while keeping the same meaning and layout.")
     prompt_parts.append("Return a single edited image, not a textual explanation.")
     return "\n\n".join(part for part in prompt_parts if part)
+
+
+def _build_structured_generate_prompt(
+    analysis: ImageAnalysisResult,
+    *,
+    prompt_text: str,
+    prompt_profile: dict[str, str],
+    base_prompt: str,
+    layout_description: str,
+    source_size: tuple[int, int],
+) -> str:
+    prompt_parts = [
+        prompt_text,
+        f"Profile: {prompt_profile['description']}",
+        f"Detected image type: {analysis.image_type}.",
+        f"Original content aspect ratio: {source_size[0]}:{source_size[1]}. Fill the entire generated canvas completely from edge to edge — no empty outer margins, padding, or borders.",
+        "Generate a brand-new clean vector-style diagram from scratch. Do not mimic scan artifacts, JPEG noise, blur, shadows, or the original raster texture.",
+        "Preserve every readable label, connector, block, lane, table cell, legend item, and hierarchy level from the source structure.",
+        base_prompt,
+        "Structured layout description for exact redraw:",
+        layout_description,
+    ]
+    if analysis.extracted_text.strip():
+        prompt_parts.append("Verbatim text that should appear in the generated image when readable:")
+        prompt_parts.append(analysis.extracted_text.strip())
+    prompt_parts.append("Return a single generated image, not a textual explanation.")
+    return "\n\n".join(prompt_parts)
+
+
+def _extract_structured_layout_description(
+    client,
+    image_bytes: bytes,
+    analysis: ImageAnalysisResult,
+    *,
+    budget: ImageModelCallBudget | None = None,
+) -> str:
+    mime_type = _detect_mime_type(image_bytes)
+    if mime_type is None:
+        raise RuntimeError("Не удалось определить MIME-тип изображения для structured redraw.")
+
+    image_data_url = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+    response = _call_responses_create(
+        client,
+        {
+            "model": IMAGE_STRUCTURE_VISION_MODEL,
+            "input": [
+                {
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "You convert diagrams, tables, and infographics into exact redraw specifications for image generation. "
+                                "List every readable label verbatim, preserve structure conservatively, and never invent missing content."
+                            ),
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "Describe this image as a production-ready redraw specification. Include layout, reading order, block geometry, arrows, "
+                                "table structure, colors, and all readable text verbatim. If text is unreadable, say unreadable instead of guessing. "
+                                f"Detected image type: {analysis.image_type}. Structure summary: {analysis.structure_summary}."
+                            ),
+                        },
+                        {"type": "input_image", "image_url": image_data_url},
+                    ],
+                },
+            ],
+        },
+        budget=budget,
+    )
+    layout_description = getattr(response, "output_text", "").strip()
+    if not layout_description:
+        raise RuntimeError("Vision-модель не вернула описание структуры для structured redraw.")
+    return layout_description
+
+
+def _read_image_size(image_bytes: bytes) -> tuple[int, int]:
+    try:
+        with Image.open(BytesIO(image_bytes)) as image:
+            image.load()
+            return ImageOps.exif_transpose(image).size
+    except Exception as exc:
+        raise RuntimeError("Не удалось определить размеры исходного изображения.") from exc
+
+
+def _select_generate_size(_source_size: tuple[int, int]) -> str:
+    """Request auto-sizing so gpt-image-1 picks the aspect ratio closest to the source."""
+    return "auto"
+
+
+def _restore_generated_output(image_bytes: bytes, original_size: tuple[int, int]) -> bytes:
+    try:
+        with Image.open(BytesIO(image_bytes)) as generated_image:
+            generated_image.load()
+            normalized_image = ImageOps.exif_transpose(generated_image)
+            trimmed_image = _trim_generated_outer_padding(normalized_image)
+            fitted = ImageOps.contain(trimmed_image, original_size, Image.Resampling.LANCZOS)
+            if fitted.size != original_size:
+                background_color = _pick_generated_background_color(fitted)
+                canvas_mode = "RGBA" if fitted.mode in {"RGBA", "LA"} else "RGB"
+                canvas = Image.new(canvas_mode, original_size, background_color)
+                offset_x = (original_size[0] - fitted.width) // 2
+                offset_y = (original_size[1] - fitted.height) // 2
+                if canvas_mode == "RGBA":
+                    canvas.alpha_composite(fitted.convert("RGBA"), (offset_x, offset_y))
+                else:
+                    canvas.paste(fitted, (offset_x, offset_y))
+                restored_image = canvas
+            else:
+                restored_image = fitted
+
+            output = BytesIO()
+            output_format = _select_pillow_output_format(generated_image.format)
+            save_kwargs = {"format": output_format}
+            if output_format == "PNG":
+                save_kwargs["optimize"] = True
+            elif output_format == "JPEG":
+                save_kwargs["quality"] = 92
+                save_kwargs["optimize"] = True
+                if restored_image.mode not in {"RGB", "L"}:
+                    restored_image = restored_image.convert("RGB")
+            restored_image.save(output, **save_kwargs)
+            restored_bytes = output.getvalue()
+            return restored_bytes or image_bytes
+    except Exception:
+        return image_bytes
+
+
+def _trim_generated_outer_padding(image: Image.Image) -> Image.Image:
+    rgb_image = image.convert("RGB")
+    background_rgb = _pick_generated_background_color(rgb_image)
+    background = Image.new("RGB", rgb_image.size, background_rgb)
+    difference = ImageChops.difference(rgb_image, background)
+    mask = difference.convert("L").point(lambda value: 255 if value > 12 else 0)
+    bbox = mask.getbbox()
+    if bbox is None:
+        return image
+
+    left, top, right, bottom = bbox
+    if left == 0 and top == 0 and right == image.width and bottom == image.height:
+        return image
+
+    pad_x = max(2, int(round(image.width * 0.01)))
+    pad_y = max(2, int(round(image.height * 0.01)))
+    expanded_bbox = (
+        max(0, left - pad_x),
+        max(0, top - pad_y),
+        min(image.width, right + pad_x),
+        min(image.height, bottom + pad_y),
+    )
+    cropped = image.crop(expanded_bbox)
+    if cropped.width <= 0 or cropped.height <= 0:
+        return image
+    return cropped
+
+
+def _pick_generated_background_color(image: Image.Image) -> tuple[int, ...]:
+    """Sample 4x4 corner patches and return the median RGB, robust against noisy corner pixels."""
+    rgb_image = image.convert("RGB")
+    w, h = rgb_image.size
+    patch = max(4, min(w, h) // 16)
+    corner_regions = [
+        (0, 0, patch, patch),
+        (max(0, w - patch), 0, w, patch),
+        (0, max(0, h - patch), patch, h),
+        (max(0, w - patch), max(0, h - patch), w, h),
+    ]
+    samples: list[tuple[int, int, int]] = []
+    for box in corner_regions:
+        region = rgb_image.crop(box)
+        for y_coord in range(region.height):
+            for x_coord in range(region.width):
+                pixel = region.getpixel((x_coord, y_coord))
+                if isinstance(pixel, int):
+                    samples.append((pixel, pixel, pixel))
+                else:
+                    samples.append((int(pixel[0]), int(pixel[1]), int(pixel[2])))
+
+    if not samples:
+        return (255, 255, 255, 255) if image.mode in {"RGBA", "LA"} else (255, 255, 255)
+
+    rgb_result = tuple(
+        sorted(s[c] for s in samples)[len(samples) // 2]
+        for c in range(3)
+    )
+    return rgb_result + (255,) if image.mode in {"RGBA", "LA"} else rgb_result
 
 
 def _extract_image_bytes(response) -> tuple[bytes, str | None]:
@@ -552,6 +1047,10 @@ def _detect_mime_type(image_bytes: bytes) -> str | None:
     if image_bytes.startswith(b"BM"):
         return "image/bmp"
     return None
+
+
+def detect_image_mime_type(image_bytes: bytes) -> str | None:
+    return _detect_mime_type(image_bytes)
 
 
 def _is_supported_image_bytes(image_bytes: bytes) -> bool:

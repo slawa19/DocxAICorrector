@@ -1,4 +1,5 @@
 import app
+from models import ImageAsset
 
 
 class SessionState(dict):
@@ -89,3 +90,84 @@ def test_sync_selected_file_context_resets_run_state_for_new_file(monkeypatch):
     assert session_state.previous_result["source_token"] == "old.docx:10"
     assert session_state.run_log == []
     assert session_state.activity_feed == []
+
+
+def test_run_document_processing_fails_on_placeholder_integrity_mismatch(monkeypatch):
+    emitted_state = {}
+    activity_messages = []
+    log_entries = []
+
+    monkeypatch.setattr(app, "get_client", lambda: object())
+    monkeypatch.setattr(app, "ensure_pandoc_available", lambda: None)
+    monkeypatch.setattr(app, "load_system_prompt", lambda: "system")
+    monkeypatch.setattr(app, "generate_markdown_block", lambda **kwargs: "Обработанный блок без placeholder")
+    monkeypatch.setattr(app, "process_document_images", lambda **kwargs: kwargs["image_assets"])
+    monkeypatch.setattr(app, "inspect_placeholder_integrity", lambda markdown, assets: {"img_001": "lost"})
+    monkeypatch.setattr(app, "convert_markdown_to_docx_bytes", lambda markdown: (_ for _ in ()).throw(AssertionError("must not build docx")))
+    monkeypatch.setattr(app, "log_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "present_error", lambda code, exc, title, **kwargs: f"{title}: {exc}")
+    monkeypatch.setattr(app, "_emit_or_apply_state", lambda runtime, **values: emitted_state.update(values))
+    monkeypatch.setattr(app, "_emit_or_apply_finalize", lambda runtime, stage, detail, progress: emitted_state.update(final_stage=stage, final_detail=detail, final_progress=progress))
+    monkeypatch.setattr(app, "_emit_or_apply_activity", lambda runtime, message: activity_messages.append(message))
+    monkeypatch.setattr(app, "_emit_or_apply_log", lambda runtime, **payload: log_entries.append(payload))
+    monkeypatch.setattr(app, "_emit_or_apply_status", lambda runtime, **payload: None)
+
+    result = app.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[
+            {
+                "target_text": "Исходный блок",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 13,
+                "context_chars": 0,
+            }
+        ],
+        image_assets=[
+            ImageAsset(
+                image_id="img_001",
+                placeholder="[[DOCX_IMAGE_img_001]]",
+                original_bytes=b"png",
+                mime_type="image/png",
+                position_index=0,
+            )
+        ],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=None,
+    )
+
+    assert result == "failed"
+    assert emitted_state["last_error"].startswith("Критическая ошибка подготовки изображений")
+    assert emitted_state["final_stage"] == "Критическая ошибка"
+    assert activity_messages[-1] == "Сборка DOCX остановлена из-за потери или дублирования image placeholder."
+    assert log_entries[-1]["status"] == "ERROR"
+
+
+def test_run_processing_worker_emits_worker_complete_after_unhandled_crash(monkeypatch):
+    emitted_events = []
+
+    class RuntimeStub:
+        def emit(self, event_type, **payload):
+            emitted_events.append({"type": event_type, **payload})
+
+    monkeypatch.setattr(app, "run_document_processing", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(app, "present_error", lambda code, exc, title, **kwargs: f"{title}: {exc}")
+
+    app._run_processing_worker(
+        runtime=RuntimeStub(),
+        uploaded_filename="report.docx",
+        jobs=[{"target_text": "x", "context_before": "", "context_after": "", "target_chars": 1, "context_chars": 0}],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+    )
+
+    assert emitted_events[-1] == {"type": "worker_complete", "outcome": "failed"}
+    assert any(event["type"] == "set_state" and event["values"]["last_error"].startswith("Критическая ошибка фоновой обработки") for event in emitted_events)
+    assert any(event["type"] == "finalize_processing_status" for event in emitted_events)
