@@ -1,6 +1,7 @@
 import base64
 import json
 import time
+from dataclasses import replace
 from io import BytesIO
 
 from PIL import Image, ImageFile, ImageFilter, ImageOps
@@ -12,6 +13,7 @@ from models import ImageAnalysisResult
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 VISION_ANALYSIS_TIMEOUT_SECONDS = 45.0
 VISION_ANALYSIS_MAX_RETRIES = 2
+DENSE_TEXT_BYPASS_THRESHOLD = 18  # text nodes at which image regeneration loses too much fidelity
 
 
 def analyze_image(
@@ -285,7 +287,7 @@ def _merge_analysis_results(
     heuristic_result: ImageAnalysisResult,
     vision_result: ImageAnalysisResult,
 ) -> ImageAnalysisResult:
-    return ImageAnalysisResult(
+    merged = ImageAnalysisResult(
         image_type=vision_result.image_type or heuristic_result.image_type,
         image_subtype=vision_result.image_subtype or heuristic_result.image_subtype,
         contains_text=heuristic_result.contains_text or vision_result.contains_text or bool(vision_result.extracted_labels),
@@ -304,6 +306,7 @@ def _merge_analysis_results(
         extracted_text=vision_result.extracted_text or heuristic_result.extracted_text,
         fallback_reason=vision_result.fallback_reason or heuristic_result.fallback_reason,
     )
+    return _apply_routing_overrides(merged)
 
 
 def _coerce_non_negative_int(value: object) -> int | None:
@@ -318,6 +321,23 @@ def _coerce_extracted_text(value: object) -> str:
     if not isinstance(value, str):
         return ""
     return value.strip()
+
+
+def _apply_routing_overrides(result: ImageAnalysisResult) -> ImageAnalysisResult:
+    """Override to safe_mode when Vision detects too many text nodes for reliable regeneration."""
+    if (
+        result.text_node_count is not None
+        and result.text_node_count >= DENSE_TEXT_BYPASS_THRESHOLD
+        and result.semantic_redraw_allowed
+        and result.image_type in {"infographic", "mixed_or_ambiguous", "chart"}
+    ):
+        return replace(
+            result,
+            render_strategy="safe_mode",
+            semantic_redraw_allowed=False,
+            fallback_reason=f"dense_text_bypass:{result.text_node_count}_nodes",
+        )
+    return result
 
 
 def _normalize_render_strategy(route_hint: object, fallback_strategy: str) -> tuple[str, bool]:

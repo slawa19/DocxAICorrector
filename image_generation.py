@@ -5,6 +5,7 @@ from io import BytesIO
 from types import SimpleNamespace
 
 from PIL import Image, ImageEnhance, ImageOps
+from PIL import ImageChops
 
 from config import get_client
 from image_prompts import get_image_prompt_profile, load_image_prompt_text
@@ -547,7 +548,7 @@ def _extract_supported_size_fallback(error_message: str, current_size: str) -> s
     if "Supported values are:" not in error_message or "size" not in error_message:
         return None
     supported_sizes = []
-    for candidate in ("1024x1024", "512x512", "256x256"):
+    for candidate in ("1536x1024", "1024x1536", "1024x1024", "512x512", "256x256"):
         if candidate in error_message:
             supported_sizes.append(candidate)
     for candidate in supported_sizes:
@@ -560,7 +561,7 @@ def _extract_supported_generate_size_fallback(error_message: str, current_size: 
     if "Supported values are:" not in error_message or "size" not in error_message:
         return None
     supported_sizes = []
-    for candidate in ("1792x1024", "1024x1792", "1024x1024"):
+    for candidate in ("1536x1024", "1024x1536", "1024x1024", "1792x1024", "1024x1792"):
         if candidate in error_message:
             supported_sizes.append(candidate)
     for candidate in supported_sizes:
@@ -712,7 +713,7 @@ def _build_image_edit_prompt(
         mode_guidance,
         f"Profile: {prompt_profile['description']}",
         f"Detected image type: {analysis.image_type}.",
-        f"Original aspect ratio: {source_size[0]}:{source_size[1]}. Keep the same aspect ratio and composition. Do not stretch content to fill a square canvas.",
+        f"Original content aspect ratio: {source_size[0]}:{source_size[1]}. Fill the entire generated canvas completely from edge to edge — no empty outer margins, padding, or borders around the artwork.",
         f"Structure summary: {analysis.structure_summary}",
     ]
     if labels:
@@ -743,7 +744,7 @@ def _build_structured_generate_prompt(
         prompt_text,
         f"Profile: {prompt_profile['description']}",
         f"Detected image type: {analysis.image_type}.",
-        f"Original aspect ratio: {source_size[0]}:{source_size[1]}. Preserve the same layout and composition.",
+        f"Original content aspect ratio: {source_size[0]}:{source_size[1]}. Fill the entire generated canvas completely from edge to edge — no empty outer margins, padding, or borders.",
         "Generate a brand-new clean vector-style diagram from scratch. Do not mimic scan artifacts, JPEG noise, blur, shadows, or the original raster texture.",
         "Preserve every readable label, connector, block, lane, table cell, legend item, and hierarchy level from the source structure.",
         base_prompt,
@@ -819,13 +820,9 @@ def _read_image_size(image_bytes: bytes) -> tuple[int, int]:
         raise RuntimeError("Не удалось определить размеры исходного изображения.") from exc
 
 
-def _select_generate_size(source_size: tuple[int, int]) -> str:
-    width, height = source_size
-    if width > height * 1.2:
-        return "1792x1024"
-    if height > width * 1.2:
-        return "1024x1792"
-    return "1024x1024"
+def _select_generate_size(_source_size: tuple[int, int]) -> str:
+    """Request auto-sizing so gpt-image-1 picks the aspect ratio closest to the source."""
+    return "auto"
 
 
 def _restore_generated_output(image_bytes: bytes, original_size: tuple[int, int]) -> bytes:
@@ -833,7 +830,8 @@ def _restore_generated_output(image_bytes: bytes, original_size: tuple[int, int]
         with Image.open(BytesIO(image_bytes)) as generated_image:
             generated_image.load()
             normalized_image = ImageOps.exif_transpose(generated_image)
-            fitted = ImageOps.contain(normalized_image, original_size, Image.Resampling.LANCZOS)
+            trimmed_image = _trim_generated_outer_padding(normalized_image)
+            fitted = ImageOps.contain(trimmed_image, original_size, Image.Resampling.LANCZOS)
             if fitted.size != original_size:
                 background_color = _pick_generated_background_color(fitted)
                 canvas_mode = "RGBA" if fitted.mode in {"RGBA", "LA"} else "RGB"
@@ -865,29 +863,64 @@ def _restore_generated_output(image_bytes: bytes, original_size: tuple[int, int]
         return image_bytes
 
 
+def _trim_generated_outer_padding(image: Image.Image) -> Image.Image:
+    rgb_image = image.convert("RGB")
+    background_rgb = _pick_generated_background_color(rgb_image)
+    background = Image.new("RGB", rgb_image.size, background_rgb)
+    difference = ImageChops.difference(rgb_image, background)
+    mask = difference.convert("L").point(lambda value: 255 if value > 12 else 0)
+    bbox = mask.getbbox()
+    if bbox is None:
+        return image
+
+    left, top, right, bottom = bbox
+    if left == 0 and top == 0 and right == image.width and bottom == image.height:
+        return image
+
+    pad_x = max(2, int(round(image.width * 0.01)))
+    pad_y = max(2, int(round(image.height * 0.01)))
+    expanded_bbox = (
+        max(0, left - pad_x),
+        max(0, top - pad_y),
+        min(image.width, right + pad_x),
+        min(image.height, bottom + pad_y),
+    )
+    cropped = image.crop(expanded_bbox)
+    if cropped.width <= 0 or cropped.height <= 0:
+        return image
+    return cropped
+
+
 def _pick_generated_background_color(image: Image.Image) -> tuple[int, ...]:
-    sample_points = [
-        (0, 0),
-        (max(0, image.width - 1), 0),
-        (0, max(0, image.height - 1)),
-        (max(0, image.width - 1), max(0, image.height - 1)),
+    """Sample 4x4 corner patches and return the median RGB, robust against noisy corner pixels."""
+    rgb_image = image.convert("RGB")
+    w, h = rgb_image.size
+    patch = max(4, min(w, h) // 16)
+    corner_regions = [
+        (0, 0, patch, patch),
+        (max(0, w - patch), 0, w, patch),
+        (0, max(0, h - patch), patch, h),
+        (max(0, w - patch), max(0, h - patch), w, h),
     ]
-    samples: list[tuple[int, ...]] = []
-    for x_coord, y_coord in sample_points:
-        pixel = image.getpixel((x_coord, y_coord))
-        if isinstance(pixel, int):
-            samples.append((pixel,))
-        else:
-            samples.append(tuple(int(channel) for channel in pixel))
+    samples: list[tuple[int, int, int]] = []
+    for box in corner_regions:
+        region = rgb_image.crop(box)
+        for y_coord in range(region.height):
+            for x_coord in range(region.width):
+                pixel = region.getpixel((x_coord, y_coord))
+                if isinstance(pixel, int):
+                    samples.append((pixel, pixel, pixel))
+                else:
+                    samples.append((int(pixel[0]), int(pixel[1]), int(pixel[2])))
 
     if not samples:
         return (255, 255, 255, 255) if image.mode in {"RGBA", "LA"} else (255, 255, 255)
 
-    channel_count = len(samples[0])
-    averaged = []
-    for channel_index in range(channel_count):
-        averaged.append(int(round(sum(sample[channel_index] for sample in samples) / len(samples))))
-    return tuple(averaged)
+    rgb_result = tuple(
+        sorted(s[c] for s in samples)[len(samples) // 2]
+        for c in range(3)
+    )
+    return rgb_result + (255,) if image.mode in {"RGBA", "LA"} else rgb_result
 
 
 def _extract_image_bytes(response) -> tuple[bytes, str | None]:

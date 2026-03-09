@@ -6,8 +6,8 @@
     "prompt_key": "photo_safe_fallback",
     "render_strategy": "safe_mode",
     "semantic_redraw_allowed": false,
-    "analysis_elapsed_seconds": 0.056,
-    "generation_elapsed_seconds": 0.016,
+    "analysis_elapsed_seconds": 0.058,
+    "generation_elapsed_seconds": 0.015,
     "bytes_in": 46725,
     "bytes_out": 71138
   },
@@ -19,9 +19,9 @@
     "render_strategy": "semantic_redraw_structured",
     "semantic_redraw_allowed": true,
     "analysis_elapsed_seconds": 0.049,
-    "generation_elapsed_seconds": 48.573,
+    "generation_elapsed_seconds": 44.848,
     "bytes_in": 40424,
-    "bytes_out": 72617
+    "bytes_out": 64271
   },
   {
     "filename": "журналистика факты манипуляции.png",
@@ -30,9 +30,9 @@
     "prompt_key": "infographic_semantic_redraw",
     "render_strategy": "semantic_redraw_direct",
     "semantic_redraw_allowed": true,
-    "analysis_elapsed_seconds": 0.082,
-    "generation_elapsed_seconds": 68.899,
+    "analysis_elapsed_seconds": 0.085,
+    "generation_elapsed_seconds": 63.638,
     "bytes_in": 504646,
-    "bytes_out": 2142751
+    "bytes_out": 2348918
   }
 ]

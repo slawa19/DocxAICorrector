@@ -63,6 +63,22 @@ def _make_screenshot_like_png() -> bytes:
     return output.getvalue()
 
 
+def _make_infographic_like_png() -> bytes:
+    """Bright, colorful PNG that the heuristic will classify as infographic."""
+    image = Image.new("RGB", (480, 680), (240, 60, 60))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((20, 20, 460, 120), fill=(255, 200, 0))
+    for row in range(4):
+        y0 = 140 + row * 130
+        draw.rectangle((20, y0, 220, y0 + 110), fill=(80, 160, 240))
+        draw.rectangle((260, y0, 460, y0 + 110), fill=(80, 220, 130))
+    for x in range(0, 480, 12):
+        draw.line((x, 0, x, 680), fill=(255, 255, 255, 30), width=1)
+    output = BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
+
+
 def test_analyze_image_allows_semantic_redraw_for_diagram_like_jpeg():
     result = image_analysis.analyze_image(_make_diagram_like_jpeg(), model="gpt-4.1", mime_type="image/jpeg")
 
@@ -135,3 +151,29 @@ def test_analyze_image_normalizes_bypass_route_from_vision_payload():
     assert result.semantic_redraw_allowed is False
     assert result.text_node_count == 26
     assert result.extracted_text == "A | B | C"
+
+
+def test_analyze_image_applies_dense_text_routing_override_for_text_heavy_infographic():
+    """When Vision reports ≥ DENSE_TEXT_BYPASS_THRESHOLD text nodes on an infographic,
+    the merged result must be forced to safe_mode even if Vision said semantic_redraw_allowed=True."""
+    client = _FakeResponsesClient(
+        '{"image_type":"infographic","image_subtype":"editorial_infographic","contains_text":true,'
+        '"semantic_redraw_allowed":true,"confidence":0.88,"structured_parse_confidence":0.70,'
+        '"prompt_key":"infographic_semantic_redraw","render_strategy":"semantic_redraw_direct",'
+        '"structure_summary":"multi-column infographic with many text blocks",'
+        '"extracted_labels":["A","B","C"],'
+        '"text_node_count":22,"extracted_text":"headline | stat | body","fallback_reason":null}'
+    )
+
+    result = image_analysis.analyze_image(
+        _make_infographic_like_png(),
+        model="gpt-4.1",
+        mime_type="image/png",
+        client=client,
+        enable_vision=True,
+    )
+
+    assert result.render_strategy == "safe_mode"
+    assert result.semantic_redraw_allowed is False
+    assert result.text_node_count == 22
+    assert result.fallback_reason is not None and "dense_text_bypass" in result.fallback_reason

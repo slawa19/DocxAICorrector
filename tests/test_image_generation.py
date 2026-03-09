@@ -92,6 +92,16 @@ def build_square_generated_output_with_edge_markers(size: int = 24) -> bytes:
     return output.getvalue()
 
 
+def build_square_generated_output_with_large_margins(size: int = 24) -> bytes:
+    image = Image.new("RGB", (size, size), (244, 242, 236))
+    for x in range(5, size - 5):
+        for y in range(8, size - 8):
+            image.putpixel((x, y), (60, 100, 220))
+    output = BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
+
+
 def test_generate_image_candidate_safe_enhances_image_bytes():
     original_bytes = build_detailed_png_bytes()
     candidate = image_generation.generate_image_candidate(original_bytes, build_analysis_result(), mode="safe")
@@ -192,6 +202,50 @@ def test_generate_image_candidate_structured_restores_original_size_without_crop
         assert bottom_band_detected
 
 
+def test_generate_image_candidate_structured_trims_large_generated_margins_before_restore(monkeypatch):
+    class FakeResponsesClient:
+        def create(self, **kwargs):
+            return SimpleNamespace(output_text="layout description")
+
+    class FakeImagesClient:
+        def generate(self, **kwargs):
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(
+                        b64_json=base64.b64encode(build_square_generated_output_with_large_margins()).decode("ascii"),
+                        revised_prompt=None,
+                    )
+                ]
+            )
+
+    monkeypatch.setattr(
+        image_generation,
+        "get_client",
+        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
+    )
+    monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
+
+    candidate = image_generation.generate_image_candidate(
+        build_rectangular_png_bytes(),
+        build_analysis_result(),
+        mode="semantic_redraw_structured",
+    )
+
+    with Image.open(BytesIO(candidate)) as restored_image:
+        assert restored_image.size == (18, 10)
+        leftmost_blue = restored_image.width
+        rightmost_blue = -1
+        for y_coord in range(restored_image.height):
+            for x_coord in range(restored_image.width):
+                pixel = restored_image.getpixel((x_coord, y_coord))
+                if pixel[2] > pixel[0] + 60 and pixel[2] > pixel[1] + 60:
+                    leftmost_blue = min(leftmost_blue, x_coord)
+                    rightmost_blue = max(rightmost_blue, x_coord)
+
+        assert leftmost_blue <= 4
+        assert rightmost_blue >= restored_image.width - 5
+
+
 def test_generate_image_candidate_direct_uses_openai_edit_with_file_list(monkeypatch):
     captured = {}
 
@@ -224,7 +278,7 @@ def test_generate_image_candidate_direct_uses_openai_edit_with_file_list(monkeyp
     assert isinstance(captured["image"], list)
     assert len(captured["image"]) == 1
     assert captured["image"][0].name == "source.png"
-    assert captured["size"] == "1024x1024"
+    assert captured["size"] == "auto"
     with Image.open(BytesIO(candidate)) as edited_image:
         assert edited_image.size == (12, 12)
 
