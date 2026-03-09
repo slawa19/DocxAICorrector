@@ -63,6 +63,7 @@ class ImageAsset:
     render_strategy: str | None = None
     safe_bytes: bytes | None = None
     redrawn_bytes: bytes | None = None
+    reconstruction_scene_graph: dict[str, object] | None = None
     validation_result: ImageValidationResult | dict[str, object] | None = None
     validation_status: str = "pending"
     final_decision: str | None = None

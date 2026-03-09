@@ -22,7 +22,7 @@ REAL_IMAGE_CASES = [
         "filename": "pic1_lietaer.jpg",
         "expected_type": "diagram",
         "expected_prompt_key": "diagram_semantic_redraw",
-        "expected_strategy": "semantic_redraw_structured",
+        "expected_strategy": "deterministic_reconstruction",
         "expected_mode": "semantic_redraw_structured",
         "semantic_allowed": True,
     },
@@ -38,8 +38,8 @@ REAL_IMAGE_CASES = [
         "filename": "журналистика факты манипуляции.png",
         "expected_type": "infographic",
         "expected_prompt_key": "infographic_semantic_redraw",
-        "expected_strategy": "semantic_redraw_direct",
-        "expected_mode": "semantic_redraw_direct",
+        "expected_strategy": "deterministic_reconstruction",
+        "expected_mode": "semantic_redraw_structured",
         "semantic_allowed": True,
     },
 ]
@@ -60,7 +60,7 @@ def _load_image_bytes(filename: str) -> bytes:
 def _resolve_requested_mode(analysis_result) -> str:
     if not analysis_result.semantic_redraw_allowed:
         return "safe"
-    if analysis_result.render_strategy == "semantic_redraw_structured":
+    if analysis_result.render_strategy in {"semantic_redraw_structured", "deterministic_reconstruction"}:
         return "semantic_redraw_structured"
     return "semantic_redraw_direct"
 
@@ -132,6 +132,30 @@ class TestRedrawRoutingRealInputs:
         if requested_mode == "safe":
             candidate = image_generation.generate_image_candidate(image_bytes, analysis_result, mode=requested_mode)
             assert candidate
+            return
+
+        if analysis_result.render_strategy == "deterministic_reconstruction":
+            original_size = Image.open(BytesIO(image_bytes)).size
+            stub_image = Image.new("RGB", original_size, (200, 200, 200))
+            stub_buf = BytesIO()
+            stub_image.save(stub_buf, format="PNG")
+            stub_png = stub_buf.getvalue()
+
+            monkeypatch.setattr(
+                image_generation,
+                "reconstruct_image",
+                lambda img_bytes, **kwargs: (stub_png, {"canvas": {"width": original_size[0], "height": original_size[1]}, "elements": []}),
+            )
+            monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
+
+            started_at = time.perf_counter()
+            candidate = image_generation.generate_image_candidate(image_bytes, analysis_result, mode=requested_mode)
+            elapsed_seconds = time.perf_counter() - started_at
+
+            assert candidate
+            with Image.open(BytesIO(candidate)) as candidate_image:
+                assert candidate_image.size == original_size
+            assert elapsed_seconds < 2.0
             return
 
         captured = {}

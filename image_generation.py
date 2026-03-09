@@ -6,11 +6,13 @@ from PIL import Image, ImageEnhance, ImageOps
 
 from config import get_client
 from image_prompts import get_image_prompt_profile, load_image_prompt_text
+from image_reconstruction import reconstruct_image
 from logger import log_event
 from models import ImageAnalysisResult
 
 IMAGE_EDIT_MODEL = "gpt-image-1"
 SEMANTIC_MODES = {"semantic_redraw_direct", "semantic_redraw_structured"}
+RECONSTRUCTION_STRATEGY = "deterministic_reconstruction"
 
 
 def generate_image_candidate(
@@ -18,6 +20,7 @@ def generate_image_candidate(
     analysis: ImageAnalysisResult,
     *,
     mode: str,
+    reconstruction_model: str | None = None,
 ) -> bytes:
     if not _is_supported_image_bytes(image_bytes):
         raise RuntimeError("Передан неподдерживаемый image payload.")
@@ -28,6 +31,12 @@ def generate_image_candidate(
 
     if requested_mode == "safe":
         candidate_bytes = _generate_safe_candidate(image_bytes)
+    elif analysis.render_strategy == RECONSTRUCTION_STRATEGY and requested_mode in SEMANTIC_MODES:
+        candidate_bytes = _generate_reconstructed_candidate(
+            image_bytes,
+            analysis,
+            reconstruction_model=reconstruction_model,
+        )
     else:
         candidate_bytes = _generate_semantic_candidate(
             image_bytes,
@@ -83,6 +92,45 @@ def _generate_safe_candidate(image_bytes: bytes) -> bytes:
             error_message=str(exc),
         )
         return image_bytes
+
+
+def _generate_reconstructed_candidate(
+    image_bytes: bytes,
+    analysis: ImageAnalysisResult,
+    *,
+    reconstruction_model: str | None = None,
+) -> bytes:
+    """Deterministic reconstruction via VLM scene-graph extraction + PIL rendering.
+
+    Falls back to safe candidate if reconstruction fails.
+    """
+    from image_reconstruction import reconstruct_image as _reconstruct
+
+    model = reconstruction_model or "gpt-4.1"
+    try:
+        candidate_bytes, scene_graph = _reconstruct(
+            image_bytes,
+            model=model,
+            mime_type=None,
+        )
+        log_event(
+            logging.INFO,
+            "deterministic_reconstruction_succeeded",
+            "Детерминированная реконструкция через scene graph завершена успешно.",
+            image_type=analysis.image_type,
+            element_count=len(scene_graph.get("elements", [])),
+        )
+        return candidate_bytes
+    except Exception as exc:
+        log_event(
+            logging.WARNING,
+            "deterministic_reconstruction_failed",
+            "Детерминированная реконструкция не удалась, применяется safe fallback.",
+            image_type=analysis.image_type,
+            error_type=exc.__class__.__name__,
+            error_message=str(exc),
+        )
+        return _generate_safe_candidate(image_bytes)
 
 
 def _enhance_image_conservatively(source_image: Image.Image) -> Image.Image:

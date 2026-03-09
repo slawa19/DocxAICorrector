@@ -24,7 +24,7 @@ def analyze_image(image_bytes: bytes, *, model: str, mime_type: str | None = Non
                 confidence=0.76,
                 structured_parse_confidence=0.64,
                 prompt_key="infographic_semantic_redraw",
-                render_strategy="semantic_redraw_direct",
+                render_strategy="deterministic_reconstruction",
                 structure_summary="Editorial infographic-like image with bright background, colored accents, and dense visual layout.",
                 extracted_labels=[],
             )
@@ -37,7 +37,7 @@ def analyze_image(image_bytes: bytes, *, model: str, mime_type: str | None = Non
                 confidence=0.72,
                 structured_parse_confidence=0.62,
                 prompt_key="diagram_semantic_redraw",
-                render_strategy="semantic_redraw_structured",
+                render_strategy="deterministic_reconstruction",
                 structure_summary="JPEG image with strong diagram-like layout, edges, and light background.",
                 extracted_labels=[],
             )
@@ -65,7 +65,7 @@ def analyze_image(image_bytes: bytes, *, model: str, mime_type: str | None = Non
                 confidence=0.86,
                 structured_parse_confidence=0.7,
                 prompt_key="infographic_semantic_redraw",
-                render_strategy="semantic_redraw_direct",
+                render_strategy="deterministic_reconstruction",
                 structure_summary="Infographic-like image with bright background, multiple content zones, and colored emphasis.",
                 extracted_labels=[],
             )
@@ -77,7 +77,7 @@ def analyze_image(image_bytes: bytes, *, model: str, mime_type: str | None = Non
             confidence=0.81,
             structured_parse_confidence=0.74,
             prompt_key="diagram_semantic_redraw",
-            render_strategy="semantic_redraw_structured",
+            render_strategy="deterministic_reconstruction",
             structure_summary="Diagram-like image with labels and layout relationships.",
             extracted_labels=[],
         )

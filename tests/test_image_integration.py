@@ -56,7 +56,7 @@ def _prepare_state(monkeypatch):
     monkeypatch.setattr(
         app,
         "generate_image_candidate",
-        lambda image_bytes, analysis, *, mode: PNG_BYTES if mode == "safe" else REDRAWN_BYTES,
+        lambda image_bytes, analysis, *, mode, reconstruction_model=None: PNG_BYTES if mode == "safe" else REDRAWN_BYTES,
     )
     return session_state
 
@@ -102,7 +102,7 @@ def test_process_document_images_applies_fallback_safe(monkeypatch):
 def test_process_document_images_applies_fallback_original_for_unreadable_candidate(monkeypatch):
     _prepare_state(monkeypatch)
 
-    def generate_candidate(image_bytes, analysis, *, mode):
+    def generate_candidate(image_bytes, analysis, *, mode, reconstruction_model=None):
         if mode == "safe":
             return b""
         return b"not-an-image"

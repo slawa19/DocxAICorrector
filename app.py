@@ -293,7 +293,12 @@ def _select_best_semantic_asset(asset, analysis, image_mode: str, config: dict[s
     for attempt_index in range(1, attempt_count + 1):
         try:
             attempt_asset = copy.deepcopy(asset)
-            attempt_asset.redrawn_bytes = generate_image_candidate(attempt_asset.original_bytes, analysis, mode=image_mode)
+            attempt_asset.redrawn_bytes = generate_image_candidate(
+                attempt_asset.original_bytes,
+                analysis,
+                mode=image_mode,
+                reconstruction_model=str(config.get("reconstruction_model", "")) or None,
+            )
             candidate_analysis = analyze_image(
                 attempt_asset.redrawn_bytes,
                 model=str(config.get("validation_model", "")),

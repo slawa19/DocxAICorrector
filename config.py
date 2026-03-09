@@ -114,6 +114,10 @@ def load_app_config() -> dict[str, object]:
         False,
     )
     prefer_structured_redraw = parse_config_bool(config_data, "prefer_structured_redraw", True)
+    prefer_deterministic_reconstruction = parse_config_bool(
+        config_data, "prefer_deterministic_reconstruction", True
+    )
+    reconstruction_model = parse_config_str(config_data, "reconstruction_model", "gpt-4.1")
 
     env_model_options = parse_csv_env("DOCX_AI_MODEL_OPTIONS")
     if env_model_options is not None:
@@ -160,6 +164,8 @@ def load_app_config() -> dict[str, object]:
         "validator_confidence_threshold": validator_confidence_threshold,
         "allow_accept_with_partial_text_loss": allow_accept_with_partial_text_loss,
         "prefer_structured_redraw": prefer_structured_redraw,
+        "prefer_deterministic_reconstruction": prefer_deterministic_reconstruction,
+        "reconstruction_model": reconstruction_model,
     }
 
 
