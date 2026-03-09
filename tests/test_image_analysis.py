@@ -111,3 +111,27 @@ def test_analyze_image_uses_vision_labels_when_available():
     assert result.semantic_redraw_allowed is True
     assert result.extracted_labels == ["Start", "Review", "Finish"]
     assert result.contains_text is True
+
+
+def test_analyze_image_normalizes_bypass_route_from_vision_payload():
+    client = _FakeResponsesClient(
+        '{"image_type":"dense_document_or_table","image_subtype":"dense_table","contains_text":true,'
+        '"semantic_redraw_allowed":true,"confidence":0.93,"structured_parse_confidence":0.88,'
+        '"prompt_key":"diagram_semantic_redraw","recommended_route":"bypass",'
+        '"structure_summary":"dense table with many textual cells","extracted_labels":["A","B"],'
+        '"text_node_count":26,"extracted_text":"A | B | C","fallback_reason":"text_density_too_high"}'
+    )
+
+    result = image_analysis.analyze_image(
+        _make_diagram_like_jpeg(),
+        model="gpt-4.1",
+        mime_type="image/jpeg",
+        client=client,
+        enable_vision=True,
+    )
+
+    assert result.image_type == "dense_document_or_table"
+    assert result.render_strategy == "safe_mode"
+    assert result.semantic_redraw_allowed is False
+    assert result.text_node_count == 26
+    assert result.extracted_text == "A | B | C"

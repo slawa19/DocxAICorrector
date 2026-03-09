@@ -12,7 +12,7 @@ from logger import log_event
 from models import ImageAnalysisResult
 
 IMAGE_EDIT_MODEL = "gpt-image-1"
-IMAGE_GENERATE_MODEL = "dall-e-3"
+IMAGE_GENERATE_MODEL = "gpt-image-1"
 IMAGE_STRUCTURE_VISION_MODEL = "gpt-4.1"
 IMAGE_API_TIMEOUT_SECONDS = 90.0
 IMAGE_API_MAX_RETRIES = 3
@@ -261,7 +261,7 @@ def _generate_structured_candidate(
         "model": IMAGE_GENERATE_MODEL,
         "prompt": generate_prompt,
         "size": _select_generate_size(original_size),
-        "quality": "standard",
+        "quality": "high",
         "response_format": "b64_json",
     }
     response = _call_images_generate(client, request_payload, budget=budget)
@@ -718,6 +718,9 @@ def _build_image_edit_prompt(
     if labels:
         prompt_parts.append(f"Preserve these labels exactly when readable: {labels}")
         prompt_parts.append("Do not remove, translate, paraphrase, or invent labels. Preserve visible text verbatim.")
+    if analysis.extracted_text.strip():
+        prompt_parts.append("Preserve this extracted source text verbatim when it is readable:")
+        prompt_parts.append(analysis.extracted_text.strip())
     if analysis.fallback_reason:
         prompt_parts.append(f"Avoid the failure mode noted during analysis: {analysis.fallback_reason}.")
     if analysis.contains_text:
@@ -736,20 +739,22 @@ def _build_structured_generate_prompt(
     layout_description: str,
     source_size: tuple[int, int],
 ) -> str:
-    return "\n\n".join(
-        [
-            prompt_text,
-            f"Profile: {prompt_profile['description']}",
-            f"Detected image type: {analysis.image_type}.",
-            f"Original aspect ratio: {source_size[0]}:{source_size[1]}. Preserve the same layout and composition.",
-            "Generate a brand-new clean vector-style diagram from scratch. Do not mimic scan artifacts, JPEG noise, blur, shadows, or the original raster texture.",
-            "Preserve every readable label, connector, block, lane, table cell, legend item, and hierarchy level from the source structure.",
-            base_prompt,
-            "Structured layout description for exact redraw:",
-            layout_description,
-            "Return a single generated image, not a textual explanation.",
-        ]
-    )
+    prompt_parts = [
+        prompt_text,
+        f"Profile: {prompt_profile['description']}",
+        f"Detected image type: {analysis.image_type}.",
+        f"Original aspect ratio: {source_size[0]}:{source_size[1]}. Preserve the same layout and composition.",
+        "Generate a brand-new clean vector-style diagram from scratch. Do not mimic scan artifacts, JPEG noise, blur, shadows, or the original raster texture.",
+        "Preserve every readable label, connector, block, lane, table cell, legend item, and hierarchy level from the source structure.",
+        base_prompt,
+        "Structured layout description for exact redraw:",
+        layout_description,
+    ]
+    if analysis.extracted_text.strip():
+        prompt_parts.append("Verbatim text that should appear in the generated image when readable:")
+        prompt_parts.append(analysis.extracted_text.strip())
+    prompt_parts.append("Return a single generated image, not a textual explanation.")
+    return "\n\n".join(prompt_parts)
 
 
 def _extract_structured_layout_description(
@@ -828,21 +833,20 @@ def _restore_generated_output(image_bytes: bytes, original_size: tuple[int, int]
         with Image.open(BytesIO(image_bytes)) as generated_image:
             generated_image.load()
             normalized_image = ImageOps.exif_transpose(generated_image)
-            target_ratio = original_size[0] / max(1, original_size[1])
-            source_ratio = normalized_image.width / max(1, normalized_image.height)
-
-            if source_ratio > target_ratio:
-                crop_width = int(round(normalized_image.height * target_ratio))
-                offset_x = max(0, (normalized_image.width - crop_width) // 2)
-                crop_box = (offset_x, 0, offset_x + crop_width, normalized_image.height)
+            fitted = ImageOps.contain(normalized_image, original_size, Image.Resampling.LANCZOS)
+            if fitted.size != original_size:
+                background_color = _pick_generated_background_color(fitted)
+                canvas_mode = "RGBA" if fitted.mode in {"RGBA", "LA"} else "RGB"
+                canvas = Image.new(canvas_mode, original_size, background_color)
+                offset_x = (original_size[0] - fitted.width) // 2
+                offset_y = (original_size[1] - fitted.height) // 2
+                if canvas_mode == "RGBA":
+                    canvas.alpha_composite(fitted.convert("RGBA"), (offset_x, offset_y))
+                else:
+                    canvas.paste(fitted, (offset_x, offset_y))
+                restored_image = canvas
             else:
-                crop_height = int(round(normalized_image.width / max(target_ratio, 1e-6)))
-                offset_y = max(0, (normalized_image.height - crop_height) // 2)
-                crop_box = (0, offset_y, normalized_image.width, offset_y + crop_height)
-
-            cropped = normalized_image.crop(crop_box)
-            if cropped.size != original_size:
-                cropped = cropped.resize(original_size, Image.Resampling.LANCZOS)
+                restored_image = fitted
 
             output = BytesIO()
             output_format = _select_pillow_output_format(generated_image.format)
@@ -852,13 +856,38 @@ def _restore_generated_output(image_bytes: bytes, original_size: tuple[int, int]
             elif output_format == "JPEG":
                 save_kwargs["quality"] = 92
                 save_kwargs["optimize"] = True
-                if cropped.mode not in {"RGB", "L"}:
-                    cropped = cropped.convert("RGB")
-            cropped.save(output, **save_kwargs)
+                if restored_image.mode not in {"RGB", "L"}:
+                    restored_image = restored_image.convert("RGB")
+            restored_image.save(output, **save_kwargs)
             restored_bytes = output.getvalue()
             return restored_bytes or image_bytes
     except Exception:
         return image_bytes
+
+
+def _pick_generated_background_color(image: Image.Image) -> tuple[int, ...]:
+    sample_points = [
+        (0, 0),
+        (max(0, image.width - 1), 0),
+        (0, max(0, image.height - 1)),
+        (max(0, image.width - 1), max(0, image.height - 1)),
+    ]
+    samples: list[tuple[int, ...]] = []
+    for x_coord, y_coord in sample_points:
+        pixel = image.getpixel((x_coord, y_coord))
+        if isinstance(pixel, int):
+            samples.append((pixel,))
+        else:
+            samples.append(tuple(int(channel) for channel in pixel))
+
+    if not samples:
+        return (255, 255, 255, 255) if image.mode in {"RGBA", "LA"} else (255, 255, 255)
+
+    channel_count = len(samples[0])
+    averaged = []
+    for channel_index in range(channel_count):
+        averaged.append(int(round(sum(sample[channel_index] for sample in samples) / len(samples))))
+    return tuple(averaged)
 
 
 def _extract_image_bytes(response) -> tuple[bytes, str | None]:

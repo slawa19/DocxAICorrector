@@ -30,6 +30,8 @@ def build_analysis_result(**overrides):
         "render_strategy": "semantic_redraw_structured",
         "structure_summary": "three boxes connected by arrows",
         "extracted_labels": ["Start", "Review", "Finish"],
+        "text_node_count": 3,
+        "extracted_text": "Start -> Review -> Finish",
         "fallback_reason": None,
     }
     payload.update(overrides)

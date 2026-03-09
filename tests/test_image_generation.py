@@ -27,6 +27,8 @@ def build_analysis_result(**overrides):
         "render_strategy": "semantic_redraw_structured",
         "structure_summary": "three boxes connected by arrows",
         "extracted_labels": ["Start", "Review", "Finish"],
+        "text_node_count": 3,
+        "extracted_text": "Start -> Review -> Finish",
         "fallback_reason": None,
     }
     payload.update(overrides)
@@ -80,6 +82,16 @@ def build_square_semantic_output_bytes(size: int = 24) -> bytes:
     return output.getvalue()
 
 
+def build_square_generated_output_with_edge_markers(size: int = 24) -> bytes:
+    image = Image.new("RGB", (size, size), (255, 255, 255))
+    for x in range(2, size - 2):
+        image.putpixel((x, 1), (20, 180, 40))
+        image.putpixel((x, size - 2), (220, 30, 30))
+    output = BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
+
+
 def test_generate_image_candidate_safe_enhances_image_bytes():
     original_bytes = build_detailed_png_bytes()
     candidate = image_generation.generate_image_candidate(original_bytes, build_analysis_result(), mode="safe")
@@ -125,11 +137,59 @@ def test_generate_image_candidate_structured_uses_vision_and_images_generate(mon
     assert captured["vision"]["model"] == image_generation.IMAGE_STRUCTURE_VISION_MODEL
     assert captured["generate"]["model"] == image_generation.IMAGE_GENERATE_MODEL
     assert captured["generate"]["response_format"] == "b64_json"
-    assert captured["generate"]["quality"] == "standard"
+    assert captured["generate"]["quality"] == "high"
     assert "Three columns with arrows" in captured["generate"]["prompt"]
     assert "Generate a brand-new clean vector-style diagram from scratch" in captured["generate"]["prompt"]
+    assert "Start -> Review -> Finish" in captured["generate"]["prompt"]
     with Image.open(BytesIO(candidate)) as generated_image:
         assert generated_image.size == (12, 12)
+
+
+def test_generate_image_candidate_structured_restores_original_size_without_cropping_edge_content(monkeypatch):
+    class FakeResponsesClient:
+        def create(self, **kwargs):
+            return SimpleNamespace(output_text="layout description")
+
+    class FakeImagesClient:
+        def generate(self, **kwargs):
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(
+                        b64_json=base64.b64encode(build_square_generated_output_with_edge_markers()).decode("ascii"),
+                        revised_prompt=None,
+                    )
+                ]
+            )
+
+    monkeypatch.setattr(
+        image_generation,
+        "get_client",
+        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
+    )
+    monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
+
+    candidate = image_generation.generate_image_candidate(
+        build_rectangular_png_bytes(),
+        build_analysis_result(),
+        mode="semantic_redraw_structured",
+    )
+
+    with Image.open(BytesIO(candidate)) as restored_image:
+        assert restored_image.size == (18, 10)
+        top_band_detected = False
+        bottom_band_detected = False
+        for x_coord in range(restored_image.width):
+            for y_coord in range(min(2, restored_image.height)):
+                top_pixel = restored_image.getpixel((x_coord, y_coord))
+                if top_pixel[1] > top_pixel[0] + 40 and top_pixel[1] > top_pixel[2] + 20:
+                    top_band_detected = True
+            for y_coord in range(max(0, restored_image.height - 2), restored_image.height):
+                bottom_pixel = restored_image.getpixel((x_coord, y_coord))
+                if bottom_pixel[0] > bottom_pixel[1] + 40 and bottom_pixel[0] > bottom_pixel[2] + 40:
+                    bottom_band_detected = True
+
+        assert top_band_detected
+        assert bottom_band_detected
 
 
 def test_generate_image_candidate_direct_uses_openai_edit_with_file_list(monkeypatch):
@@ -622,3 +682,31 @@ def test_generate_image_candidate_semantic_falls_back_to_safe_when_redraw_is_for
     )
 
     assert candidate.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_generate_image_candidate_direct_includes_extracted_text_in_prompt(monkeypatch):
+    captured = {}
+
+    class FakeImagesClient:
+        def edit(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(
+                        b64_json=base64.b64encode(build_square_semantic_output_bytes()).decode("ascii"),
+                        revised_prompt=None,
+                    )
+                ]
+            )
+
+    monkeypatch.setattr(image_generation, "get_client", lambda: SimpleNamespace(images=FakeImagesClient()))
+    monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
+
+    candidate = image_generation.generate_image_candidate(
+        build_detailed_png_bytes(),
+        build_analysis_result(render_strategy="semantic_redraw_direct", extracted_text="Факты -> Анализ -> Вывод"),
+        mode="semantic_redraw_direct",
+    )
+
+    assert candidate
+    assert "Факты -> Анализ -> Вывод" in captured["prompt"]

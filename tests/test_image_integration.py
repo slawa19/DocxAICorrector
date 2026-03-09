@@ -49,6 +49,8 @@ def build_analysis_result(**overrides):
         "render_strategy": "semantic_redraw_structured",
         "structure_summary": "three boxes connected by arrows",
         "extracted_labels": ["Start", "Review", "Finish"],
+        "text_node_count": 3,
+        "extracted_text": "Start -> Review -> Finish",
         "fallback_reason": None,
     }
     payload.update(overrides)
@@ -73,6 +75,7 @@ def _prepare_state(monkeypatch):
     monkeypatch.setattr(app, "push_activity", lambda message: None)
     monkeypatch.setattr(app, "append_image_log", lambda **kwargs: None)
     monkeypatch.setattr(app, "log_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "analyze_image", lambda *args, **kwargs: build_analysis_result())
     monkeypatch.setattr(
         app,
         "generate_image_candidate",

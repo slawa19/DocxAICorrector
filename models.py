@@ -28,6 +28,8 @@ class ImageAnalysisResult:
     render_strategy: str
     structure_summary: str
     extracted_labels: list[str]
+    text_node_count: int | None = None
+    extracted_text: str = ""
     fallback_reason: str | None = None
 
     def to_dict(self) -> dict[str, object]:

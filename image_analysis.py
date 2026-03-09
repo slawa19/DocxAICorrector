@@ -190,7 +190,8 @@ def _extract_vision_analysis(
                             "type": "input_text",
                             "text": (
                                 "Return JSON with keys: image_type, image_subtype, contains_text, semantic_redraw_allowed, confidence, "
-                                "structured_parse_confidence, prompt_key, render_strategy, structure_summary, extracted_labels, fallback_reason. "
+                                "structured_parse_confidence, prompt_key, render_strategy, recommended_route, structure_summary, extracted_labels, "
+                                "text_node_count, extracted_text, fallback_reason. "
                                 "Populate extracted_labels only with clearly readable labels, max 12 items. Heuristic baseline: "
                                 f"image_type={heuristic_result.image_type}, prompt_key={heuristic_result.prompt_key}, render_strategy={heuristic_result.render_strategy}."
                             ),
@@ -246,6 +247,15 @@ def _coerce_vision_analysis_payload(
     heuristic_result: ImageAnalysisResult,
 ) -> ImageAnalysisResult:
     extracted_labels = [str(item).strip() for item in payload.get("extracted_labels", []) if str(item).strip()][:12]
+    extracted_text = _coerce_extracted_text(payload.get("extracted_text"))
+    text_node_count = _coerce_non_negative_int(payload.get("text_node_count"))
+    render_strategy, force_safe_mode = _normalize_render_strategy(
+        payload.get("recommended_route") or payload.get("render_strategy"),
+        heuristic_result.render_strategy,
+    )
+    semantic_redraw_allowed = bool(payload.get("semantic_redraw_allowed", heuristic_result.semantic_redraw_allowed))
+    if force_safe_mode:
+        semantic_redraw_allowed = False
     return ImageAnalysisResult(
         image_type=str(payload.get("image_type", heuristic_result.image_type)).strip() or heuristic_result.image_type,
         image_subtype=(
@@ -253,14 +263,16 @@ def _coerce_vision_analysis_payload(
             if isinstance(payload.get("image_subtype"), str) and str(payload.get("image_subtype")).strip()
             else heuristic_result.image_subtype
         ),
-        contains_text=bool(payload.get("contains_text", heuristic_result.contains_text)) or bool(extracted_labels),
-        semantic_redraw_allowed=bool(payload.get("semantic_redraw_allowed", heuristic_result.semantic_redraw_allowed)),
+        contains_text=bool(payload.get("contains_text", heuristic_result.contains_text)) or bool(extracted_labels) or bool(extracted_text),
+        semantic_redraw_allowed=semantic_redraw_allowed,
         confidence=_clamp_score(payload.get("confidence", heuristic_result.confidence)),
         structured_parse_confidence=_clamp_score(payload.get("structured_parse_confidence", heuristic_result.structured_parse_confidence)),
         prompt_key=str(payload.get("prompt_key", heuristic_result.prompt_key)).strip() or heuristic_result.prompt_key,
-        render_strategy=str(payload.get("render_strategy", heuristic_result.render_strategy)).strip() or heuristic_result.render_strategy,
+        render_strategy=render_strategy,
         structure_summary=str(payload.get("structure_summary", heuristic_result.structure_summary)).strip() or heuristic_result.structure_summary,
         extracted_labels=extracted_labels or heuristic_result.extracted_labels,
+        text_node_count=text_node_count,
+        extracted_text=extracted_text,
         fallback_reason=(
             str(payload.get("fallback_reason")).strip()
             if isinstance(payload.get("fallback_reason"), str) and str(payload.get("fallback_reason")).strip()
@@ -284,8 +296,41 @@ def _merge_analysis_results(
         render_strategy=vision_result.render_strategy or heuristic_result.render_strategy,
         structure_summary=vision_result.structure_summary or heuristic_result.structure_summary,
         extracted_labels=vision_result.extracted_labels or heuristic_result.extracted_labels,
+        text_node_count=(
+            vision_result.text_node_count
+            if vision_result.text_node_count is not None
+            else heuristic_result.text_node_count
+        ),
+        extracted_text=vision_result.extracted_text or heuristic_result.extracted_text,
         fallback_reason=vision_result.fallback_reason or heuristic_result.fallback_reason,
     )
+
+
+def _coerce_non_negative_int(value: object) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0, parsed)
+
+
+def _coerce_extracted_text(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+
+def _normalize_render_strategy(route_hint: object, fallback_strategy: str) -> tuple[str, bool]:
+    route = str(route_hint).strip().lower() if route_hint is not None else ""
+    if route in {"", "none"}:
+        return fallback_strategy, False
+    if route in {"bypass", "safe", "safe_mode"}:
+        return "safe_mode", True
+    if route == "gpt-image-1":
+        if fallback_strategy in {"semantic_redraw_direct", "semantic_redraw_structured"}:
+            return fallback_strategy, False
+        return "semantic_redraw_structured", False
+    return str(route_hint).strip() or fallback_strategy, False
 
 
 def _detect_mime_type(image_bytes: bytes) -> str | None:
