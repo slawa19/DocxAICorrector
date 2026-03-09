@@ -14,6 +14,7 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 VISION_ANALYSIS_TIMEOUT_SECONDS = 45.0
 VISION_ANALYSIS_MAX_RETRIES = 2
 DENSE_TEXT_BYPASS_THRESHOLD = 18  # text nodes at which image regeneration loses too much fidelity
+NON_LATIN_DENSE_TEXT_BYPASS_THRESHOLD = 12
 
 
 def analyze_image(
@@ -23,6 +24,8 @@ def analyze_image(
     mime_type: str | None = None,
     client=None,
     enable_vision: bool = True,
+    dense_text_bypass_threshold: int = DENSE_TEXT_BYPASS_THRESHOLD,
+    non_latin_text_bypass_threshold: int = NON_LATIN_DENSE_TEXT_BYPASS_THRESHOLD,
 ) -> ImageAnalysisResult:
     detected_mime_type = mime_type or _detect_mime_type(image_bytes)
     visual_features = _extract_visual_features(image_bytes)
@@ -42,7 +45,12 @@ def analyze_image(
     except Exception:
         return heuristic_result
 
-    return _merge_analysis_results(heuristic_result, vision_result)
+    return _merge_analysis_results(
+        heuristic_result,
+        vision_result,
+        dense_text_bypass_threshold=dense_text_bypass_threshold,
+        non_latin_text_bypass_threshold=non_latin_text_bypass_threshold,
+    )
 
 
 def _build_heuristic_analysis(
@@ -132,16 +140,17 @@ def _build_heuristic_analysis(
                 extracted_labels=[],
             )
         return ImageAnalysisResult(
-            image_type="diagram",
+            image_type="mixed_or_ambiguous",
             image_subtype=None,
-            contains_text=True,
-            semantic_redraw_allowed=True,
-            confidence=0.81,
-            structured_parse_confidence=0.74,
-            prompt_key="diagram_semantic_redraw",
-            render_strategy="deterministic_reconstruction",
-            structure_summary="Diagram-like image with labels and layout relationships.",
+            contains_text=False,
+            semantic_redraw_allowed=False,
+            confidence=0.45,
+            structured_parse_confidence=0.12,
+            prompt_key="mixed_or_ambiguous_fallback",
+            render_strategy="safe_mode",
+            structure_summary="PNG/GIF/BMP image without strong diagram or screenshot signals; preserve original appearance conservatively.",
             extracted_labels=[],
+            fallback_reason="ambiguous_raster_safe_only",
         )
 
     return ImageAnalysisResult(
@@ -179,7 +188,8 @@ def _extract_vision_analysis(
                             "type": "input_text",
                             "text": (
                                 "You analyze document images conservatively for a DOCX editing pipeline. Return strict JSON only. "
-                                "Screenshots and photos should usually stay in safe_mode unless the image is clearly a structured diagram or infographic."
+                                    "Screenshots and photos should usually stay in safe_mode unless the image is clearly a structured diagram or infographic. "
+                                    "Dense infographics, posters, and comparison charts with many text blocks, especially in Cyrillic or mixed non-Latin text, should prefer safe_mode."
                             ),
                         }
                     ],
@@ -194,7 +204,8 @@ def _extract_vision_analysis(
                                 "structured_parse_confidence, prompt_key, render_strategy, recommended_route, structure_summary, extracted_labels, "
                                 "text_node_count, extracted_text, fallback_reason. "
                                 "Populate extracted_labels only with clearly readable labels, max 12 items. Heuristic baseline: "
-                                f"image_type={heuristic_result.image_type}, prompt_key={heuristic_result.prompt_key}, render_strategy={heuristic_result.render_strategy}."
+                                f"image_type={heuristic_result.image_type}, prompt_key={heuristic_result.prompt_key}, render_strategy={heuristic_result.render_strategy}. "
+                                "Copy Cyrillic, Ukrainian, and Russian text exactly in Unicode. If text is too dense for faithful redraw, set recommended_route to safe_mode."
                             ),
                         },
                         {
@@ -285,6 +296,9 @@ def _coerce_vision_analysis_payload(
 def _merge_analysis_results(
     heuristic_result: ImageAnalysisResult,
     vision_result: ImageAnalysisResult,
+    *,
+    dense_text_bypass_threshold: int = DENSE_TEXT_BYPASS_THRESHOLD,
+    non_latin_text_bypass_threshold: int = NON_LATIN_DENSE_TEXT_BYPASS_THRESHOLD,
 ) -> ImageAnalysisResult:
     merged = ImageAnalysisResult(
         image_type=vision_result.image_type or heuristic_result.image_type,
@@ -305,7 +319,11 @@ def _merge_analysis_results(
         extracted_text=vision_result.extracted_text or heuristic_result.extracted_text,
         fallback_reason=vision_result.fallback_reason or heuristic_result.fallback_reason,
     )
-    return _apply_routing_overrides(merged)
+    return _apply_routing_overrides(
+        merged,
+        dense_text_bypass_threshold=dense_text_bypass_threshold,
+        non_latin_text_bypass_threshold=non_latin_text_bypass_threshold,
+    )
 
 
 def _coerce_non_negative_int(value: object) -> int | None:
@@ -322,19 +340,37 @@ def _coerce_extracted_text(value: object) -> str:
     return value.strip()
 
 
-def _apply_routing_overrides(result: ImageAnalysisResult) -> ImageAnalysisResult:
-    """Override to safe_mode when Vision detects too many text nodes for reliable regeneration."""
+def _apply_routing_overrides(
+    result: ImageAnalysisResult,
+    *,
+    dense_text_bypass_threshold: int,
+    non_latin_text_bypass_threshold: int,
+) -> ImageAnalysisResult:
+    """Override to safe_mode when Vision detects text density too high for reliable regeneration."""
     if (
         result.text_node_count is not None
-        and result.text_node_count >= DENSE_TEXT_BYPASS_THRESHOLD
+        and result.text_node_count >= dense_text_bypass_threshold
         and result.semantic_redraw_allowed
-        and result.image_type in {"infographic", "mixed_or_ambiguous", "chart"}
+        and result.image_type in {"infographic", "mixed_or_ambiguous", "chart", "table"}
     ):
         return replace(
             result,
             render_strategy="safe_mode",
             semantic_redraw_allowed=False,
             fallback_reason=f"dense_text_bypass:{result.text_node_count}_nodes",
+        )
+    if (
+        result.text_node_count is not None
+        and result.text_node_count >= non_latin_text_bypass_threshold
+        and result.semantic_redraw_allowed
+        and result.image_type in {"infographic", "mixed_or_ambiguous", "chart", "table"}
+        and _contains_non_latin_text(result.extracted_text, result.extracted_labels)
+    ):
+        return replace(
+            result,
+            render_strategy="safe_mode",
+            semantic_redraw_allowed=False,
+            fallback_reason=f"dense_non_latin_text_bypass:{result.text_node_count}_nodes",
         )
     return result
 
@@ -345,6 +381,16 @@ def _normalize_render_strategy(route_hint: object, fallback_strategy: str) -> tu
         return fallback_strategy, False
     if route in {"bypass", "safe", "safe_mode"}:
         return "safe_mode", True
+    if route in {"semantic_parse", "structured_parse", "scene_graph", "scene_graph_reconstruction"}:
+        return "deterministic_reconstruction", False
+    if route == "semantic_redraw":
+        return "deterministic_reconstruction", False
+    if route.endswith("_semantic_redraw"):
+        if fallback_strategy == "deterministic_reconstruction":
+            return "deterministic_reconstruction", False
+        if fallback_strategy in {"semantic_redraw_direct", "semantic_redraw_structured"}:
+            return fallback_strategy, False
+        return "deterministic_reconstruction", False
     if fallback_strategy == "deterministic_reconstruction" and route in {
         "deterministic_reconstruction",
         "gpt-image-1",
@@ -482,3 +528,8 @@ def _clamp_score(value: object) -> float:
         return max(0.0, min(float(value), 1.0))
     except (TypeError, ValueError):
         return 0.0
+
+
+def _contains_non_latin_text(extracted_text: str, extracted_labels: list[str]) -> bool:
+    joined_text = " ".join([extracted_text, *extracted_labels])
+    return any(ord(character) > 127 and character.isalpha() for character in joined_text)

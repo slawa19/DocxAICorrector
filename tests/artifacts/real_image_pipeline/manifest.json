@@ -6,8 +6,8 @@
     "prompt_key": "photo_safe_fallback",
     "render_strategy": "safe_mode",
     "semantic_redraw_allowed": false,
-    "analysis_elapsed_seconds": 0.057,
-    "generation_elapsed_seconds": 0.015,
+    "analysis_elapsed_seconds": 10.364,
+    "generation_elapsed_seconds": 0.016,
     "bytes_in": 46725,
     "bytes_out": 71138
   },
@@ -16,23 +16,23 @@
     "recognized_type": "diagram",
     "requested_mode": "semantic_redraw_structured",
     "prompt_key": "diagram_semantic_redraw",
-    "render_strategy": "semantic_redraw_structured",
+    "render_strategy": "deterministic_reconstruction",
     "semantic_redraw_allowed": true,
-    "analysis_elapsed_seconds": 0.052,
-    "generation_elapsed_seconds": 59.57,
+    "analysis_elapsed_seconds": 7.703,
+    "generation_elapsed_seconds": 81.451,
     "bytes_in": 40424,
-    "bytes_out": 45841
+    "bytes_out": 99094
   },
   {
     "filename": "журналистика факты манипуляции.png",
     "recognized_type": "infographic",
-    "requested_mode": "semantic_redraw_direct",
+    "requested_mode": "safe",
     "prompt_key": "infographic_semantic_redraw",
-    "render_strategy": "semantic_redraw_direct",
-    "semantic_redraw_allowed": true,
-    "analysis_elapsed_seconds": 0.084,
-    "generation_elapsed_seconds": 72.031,
+    "render_strategy": "safe_mode",
+    "semantic_redraw_allowed": false,
+    "analysis_elapsed_seconds": 16.858,
+    "generation_elapsed_seconds": 0.363,
     "bytes_in": 504646,
-    "bytes_out": 1552115
+    "bytes_out": 540506
   }
 ]

@@ -8,10 +8,14 @@ This module replaces hallucination-prone generative redraw with a two-step pipel
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import logging
 import math
+import os
 from io import BytesIO
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -22,6 +26,52 @@ from logger import log_event
 
 SCENE_GRAPH_PROMPT_PATH = PROMPTS_DIR / "scene_graph_extraction.txt"
 DEFAULT_RECONSTRUCTION_MODEL = "gpt-4.1"
+DEFAULT_RECONSTRUCTION_MIN_CANVAS_SHORT_SIDE_PX = 900
+DEFAULT_RECONSTRUCTION_TARGET_MIN_FONT_PX = 18
+DEFAULT_RECONSTRUCTION_MAX_UPSCALE_FACTOR = 3.0
+DEFAULT_RECONSTRUCTION_BACKGROUND_SAMPLE_RATIO = 0.04
+DEFAULT_RECONSTRUCTION_BACKGROUND_COLOR_DISTANCE_THRESHOLD = 48.0
+DEFAULT_RECONSTRUCTION_BACKGROUND_UNIFORMITY_THRESHOLD = 10.0
+DEFAULT_FONT_FAMILY = "sans"
+WINDOWS_FONT_DIR = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
+COMMON_SANS_FONTS = {
+    "sans": {
+        False: [
+            WINDOWS_FONT_DIR / "segoeui.ttf",
+            WINDOWS_FONT_DIR / "calibri.ttf",
+            WINDOWS_FONT_DIR / "arial.ttf",
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+            Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"),
+        ],
+        True: [
+            WINDOWS_FONT_DIR / "segoeuib.ttf",
+            WINDOWS_FONT_DIR / "calibrib.ttf",
+            WINDOWS_FONT_DIR / "arialbd.ttf",
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+            Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"),
+        ],
+    },
+    "serif": {
+        False: [
+            WINDOWS_FONT_DIR / "times.ttf",
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"),
+        ],
+        True: [
+            WINDOWS_FONT_DIR / "timesbd.ttf",
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"),
+        ],
+    },
+    "mono": {
+        False: [
+            WINDOWS_FONT_DIR / "consola.ttf",
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"),
+        ],
+        True: [
+            WINDOWS_FONT_DIR / "consolab.ttf",
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf"),
+        ],
+    },
+}
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -34,6 +84,7 @@ def reconstruct_image(
     model: str = DEFAULT_RECONSTRUCTION_MODEL,
     mime_type: str | None = None,
     client=None,
+    render_config: dict[str, object] | None = None,
 ) -> tuple[bytes, dict[str, Any]]:
     """End-to-end deterministic reconstruction.
 
@@ -42,7 +93,12 @@ def reconstruct_image(
     """
     scene_graph = extract_scene_graph(image_bytes, model=model, mime_type=mime_type, client=client)
     original_size = _get_image_size(image_bytes)
-    rendered_bytes = render_scene_graph(scene_graph, original_size=original_size)
+    rendered_bytes = render_scene_graph(
+        scene_graph,
+        original_size=original_size,
+        source_image_bytes=image_bytes,
+        render_config=render_config,
+    )
     log_event(
         logging.INFO,
         "image_reconstruction_completed",
@@ -111,23 +167,35 @@ def render_scene_graph(
     scene_graph: dict[str, Any],
     *,
     original_size: tuple[int, int] | None = None,
+    source_image_bytes: bytes | None = None,
+    render_config: dict[str, object] | None = None,
 ) -> bytes:
     """Render a scene graph to PNG using only PIL primitives."""
-    canvas_spec = scene_graph.get("canvas", {})
-    width = int(canvas_spec.get("width", 800))
-    height = int(canvas_spec.get("height", 600))
-    bg_color = canvas_spec.get("background_color", "#FFFFFF")
+    resolved_render_config = _resolve_render_config(render_config)
+    working_scene_graph = copy.deepcopy(scene_graph)
+    canvas_spec = working_scene_graph.get("canvas", {})
+    width = int(canvas_spec.get("width", original_size[0] if original_size else 800))
+    height = int(canvas_spec.get("height", original_size[1] if original_size else 600))
+    render_scale = _compute_render_scale(working_scene_graph, (width, height), resolved_render_config)
+    if render_scale > 1.0:
+        working_scene_graph = _scale_scene_graph(working_scene_graph, render_scale)
+        canvas_spec = working_scene_graph.get("canvas", {})
+        width = int(canvas_spec.get("width", width))
+        height = int(canvas_spec.get("height", height))
 
-    image = Image.new("RGBA", (width, height), _hex_to_rgba(bg_color) or (255, 255, 255, 255))
+    _inset_full_canvas_containers(working_scene_graph)
+
+    bg_color = _resolve_canvas_background(scene_graph, source_image_bytes, resolved_render_config)
+    image = Image.new("RGBA", (width, height), bg_color)
     draw = ImageDraw.Draw(image)
 
-    elements = scene_graph.get("elements", [])
+    elements = working_scene_graph.get("elements", [])
     sorted_elements = sorted(elements, key=lambda e: int(e.get("z_index", 0)))
 
     for element in sorted_elements:
         _render_element(draw, image, element)
 
-    if original_size and (width, height) != original_size:
+    if original_size and render_scale <= 1.0 and (width, height) != original_size:
         image = image.resize(original_size, Image.Resampling.LANCZOS)
 
     output = BytesIO()
@@ -154,7 +222,8 @@ def _render_rect(draw: ImageDraw.ImageDraw, image: Image.Image, el: dict[str, An
     fill = _safe_fill(el)
     stroke = _safe_stroke(el)
     stroke_w = int(el.get("stroke_width", 1))
-    draw.rectangle([x, y, x + w, y + h], fill=fill, outline=stroke, width=stroke_w)
+    if fill is not None or stroke is not None:
+        draw.rectangle([x, y, x + w, y + h], fill=fill, outline=stroke, width=stroke_w)
     _render_text_content(draw, el, x, y, w, h)
 
 
@@ -167,7 +236,8 @@ def _render_rounded_rect(draw: ImageDraw.ImageDraw, image: Image.Image, el: dict
     stroke = _safe_stroke(el)
     stroke_w = int(el.get("stroke_width", 1))
     radius = int(el.get("corner_radius", 8))
-    draw.rounded_rectangle([x, y, x + w, y + h], radius=radius, fill=fill, outline=stroke, width=stroke_w)
+    if fill is not None or stroke is not None:
+        draw.rounded_rectangle([x, y, x + w, y + h], radius=radius, fill=fill, outline=stroke, width=stroke_w)
     _render_text_content(draw, el, x, y, w, h)
 
 
@@ -179,7 +249,8 @@ def _render_ellipse(draw: ImageDraw.ImageDraw, image: Image.Image, el: dict[str,
     fill = _safe_fill(el)
     stroke = _safe_stroke(el)
     stroke_w = int(el.get("stroke_width", 1))
-    draw.ellipse([x, y, x + w, y + h], fill=fill, outline=stroke, width=stroke_w)
+    if fill is not None or stroke is not None:
+        draw.ellipse([x, y, x + w, y + h], fill=fill, outline=stroke, width=stroke_w)
     _render_text_content(draw, el, x, y, w, h)
 
 
@@ -197,7 +268,8 @@ def _render_diamond(draw: ImageDraw.ImageDraw, image: Image.Image, el: dict[str,
     stroke_w = int(el.get("stroke_width", 1))
     cx, cy = x + w // 2, y + h // 2
     points = [(cx, y), (x + w, cy), (cx, y + h), (x, cy)]
-    draw.polygon(points, fill=fill, outline=stroke)
+    if fill is not None or stroke is not None:
+        draw.polygon(points, fill=fill, outline=stroke)
     if stroke_w > 1 and stroke:
         draw.line(points + [points[0]], fill=stroke, width=stroke_w)
     _render_text_content(draw, el, x, y, w, h)
@@ -276,11 +348,28 @@ def _render_table(draw: ImageDraw.ImageDraw, image: Image.Image, el: dict[str, A
 
         text = cell.get("text", "")
         if text:
-            font_size = max(_MIN_FONT_SIZE, min(int(ch * 0.5), _MAX_FONT_SIZE))
+            explicit_font_size = cell.get("font_size") or el.get("font_size")
+            font_size = max(
+                _MIN_FONT_SIZE,
+                min(int(explicit_font_size) if explicit_font_size else int(ch * 0.5), _MAX_FONT_SIZE),
+            )
             bold = cell.get("bold", False)
-            font = _get_font(font_size, bold=bold)
+            font_family = cell.get("font_family") or el.get("font_family")
+            font = _get_font(font_size, bold=bold, family=font_family)
             font_color = cell.get("font_color") or "#000000"
-            _draw_centered_text(draw, text, cell_x, cell_y, cw, ch, font, _hex_to_rgba(font_color))
+            _draw_box_text(
+                draw,
+                text,
+                cell_x,
+                cell_y,
+                cw,
+                ch,
+                font,
+                _hex_to_rgba(font_color) or (0, 0, 0, 255),
+                text_align=str(cell.get("text_align") or el.get("text_align") or "center"),
+                family=font_family,
+                bold=bold,
+            )
 
 
 def _render_group(draw: ImageDraw.ImageDraw, image: Image.Image, el: dict[str, Any]) -> None:
@@ -310,7 +399,7 @@ def _render_icon_placeholder(draw: ImageDraw.ImageDraw, image: Image.Image, el: 
     desc = el.get("text_content", "")
     if desc:
         font = _get_font(max(_MIN_FONT_SIZE, min(int(h * 0.3), 12)))
-        _draw_centered_text(draw, desc, x, y, w, h, font, (128, 128, 128, 255))
+        _draw_box_text(draw, desc, x, y, w, h, font, (128, 128, 128, 255))
 
 
 _ELEMENT_RENDERERS: dict[str, Any] = {
@@ -346,9 +435,10 @@ def _render_text_content(
     font_size = el.get("font_size") or _FALLBACK_FONT_SIZE
     font_size = max(_MIN_FONT_SIZE, min(int(font_size), _MAX_FONT_SIZE))
     bold = el.get("font_weight", "normal") == "bold"
-    font = _get_font(font_size, bold=bold)
+    font_family = el.get("font_family")
+    font = _get_font(font_size, bold=bold, family=font_family)
     color = el.get("font_color") or "#000000"
-    _draw_centered_text(
+    _draw_box_text(
         draw,
         text,
         x,
@@ -356,12 +446,14 @@ def _render_text_content(
         w,
         h,
         font,
-        _hex_to_rgba(color),
+        _hex_to_rgba(color) or (0, 0, 0, 255),
         text_align=str(el.get("text_align", "center")),
+        family=font_family,
+        bold=bold,
     )
 
 
-def _draw_centered_text(
+def _draw_box_text(
     draw: ImageDraw.ImageDraw,
     text: str,
     x: int,
@@ -371,33 +463,115 @@ def _draw_centered_text(
     font: ImageFont.ImageFont | ImageFont.FreeTypeFont,
     color: tuple[int, ...],
     text_align: str = "center",
+    family: str | None = None,
+    bold: bool = False,
 ) -> None:
-    bbox = draw.textbbox((0, 0), text, font=font)
-    tw = bbox[2] - bbox[0]
-    th = bbox[3] - bbox[1]
+    if w <= 0 or h <= 0 or not text.strip():
+        return
+
+    font_size = getattr(font, "size", _FALLBACK_FONT_SIZE)
+    fitted_font = font
+    fitted_lines = _wrap_text_lines(draw, text, fitted_font, max(1, w - 4))
+    total_height = _measure_wrapped_text_height(draw, fitted_lines, fitted_font)
+
+    while total_height > h and font_size > _MIN_FONT_SIZE:
+        font_size -= 1
+        fitted_font = _get_font(font_size, bold=bold, family=family)
+        fitted_lines = _wrap_text_lines(draw, text, fitted_font, max(1, w - 4))
+        total_height = _measure_wrapped_text_height(draw, fitted_lines, fitted_font)
+
+    line_height = _line_height(draw, fitted_font)
+    line_spacing = max(2, int(round(line_height * 0.2)))
+    current_y = y + max(0, (h - total_height) // 2)
     normalized_align = text_align.lower()
-    if normalized_align == "left":
-        tx = x
-    elif normalized_align == "right":
-        tx = x + w - tw
-    else:
-        tx = x + (w - tw) // 2
-    ty = y + (h - th) // 2
-    draw.text((tx, ty), text, fill=color, font=font)
+    for line in fitted_lines:
+        bbox = draw.textbbox((0, 0), line, font=fitted_font)
+        text_width = bbox[2] - bbox[0]
+        if normalized_align == "left":
+            current_x = x + 2
+        elif normalized_align == "right":
+            current_x = x + max(0, w - text_width - 2)
+        else:
+            current_x = x + max(0, (w - text_width) // 2)
+        draw.text((current_x, current_y), line, fill=color, font=fitted_font)
+        current_y += line_height + line_spacing
 
 
-def _get_font(size: int, *, bold: bool = False) -> ImageFont.ImageFont | ImageFont.FreeTypeFont:
-    font_names = (
-        ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]
-        if bold
-        else ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]
-    )
-    for font_path in font_names:
+@lru_cache(maxsize=128)
+def _get_font(size: int, *, bold: bool = False, family: str | None = None) -> ImageFont.ImageFont | ImageFont.FreeTypeFont:
+    for font_path in _build_font_search_paths(family, bold):
         try:
-            return ImageFont.truetype(font_path, size)
+            return ImageFont.truetype(str(font_path), size)
         except (OSError, IOError):
             continue
     return ImageFont.load_default()
+
+
+def _build_font_search_paths(family: str | None, bold: bool) -> list[Path]:
+    normalized_family = _normalize_font_family(family)
+    search_paths = list(COMMON_SANS_FONTS.get(normalized_family, COMMON_SANS_FONTS[DEFAULT_FONT_FAMILY])[bold])
+    if normalized_family != DEFAULT_FONT_FAMILY:
+        search_paths.extend(COMMON_SANS_FONTS[DEFAULT_FONT_FAMILY][bold])
+    if not bold:
+        search_paths.extend(COMMON_SANS_FONTS[DEFAULT_FONT_FAMILY][True])
+    return search_paths
+
+
+def _normalize_font_family(family: str | None) -> str:
+    normalized = str(family or "").strip().lower()
+    if any(token in normalized for token in {"serif", "times", "georgia"}):
+        return "serif"
+    if any(token in normalized for token in {"mono", "consol", "courier"}):
+        return "mono"
+    return DEFAULT_FONT_FAMILY
+
+
+def _wrap_text_lines(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.ImageFont | ImageFont.FreeTypeFont,
+    max_width: int,
+) -> list[str]:
+    wrapped_lines: list[str] = []
+    for paragraph in text.splitlines() or [text]:
+        paragraph = paragraph.strip()
+        if not paragraph:
+            wrapped_lines.append("")
+            continue
+        words = paragraph.split()
+        if not words:
+            wrapped_lines.append(paragraph)
+            continue
+        current_line = words[0]
+        for word in words[1:]:
+            candidate = f"{current_line} {word}".strip()
+            if _text_width(draw, candidate, font) <= max_width:
+                current_line = candidate
+                continue
+            wrapped_lines.append(current_line)
+            current_line = word
+        wrapped_lines.append(current_line)
+    return wrapped_lines or [text]
+
+
+def _text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont | ImageFont.FreeTypeFont) -> int:
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return bbox[2] - bbox[0]
+
+
+def _line_height(draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont | ImageFont.FreeTypeFont) -> int:
+    bbox = draw.textbbox((0, 0), "Ag", font=font)
+    return max(1, bbox[3] - bbox[1])
+
+
+def _measure_wrapped_text_height(
+    draw: ImageDraw.ImageDraw,
+    lines: list[str],
+    font: ImageFont.ImageFont | ImageFont.FreeTypeFont,
+) -> int:
+    line_height = _line_height(draw, font)
+    line_spacing = max(2, int(round(line_height * 0.2)))
+    return len(lines) * line_height + max(0, len(lines) - 1) * line_spacing
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +645,198 @@ def _safe_stroke(el: dict[str, Any]) -> str | None:
     if stroke and isinstance(stroke, str) and stroke.startswith("#"):
         return stroke
     return None
+
+
+def _resolve_render_config(render_config: dict[str, object] | None) -> dict[str, float]:
+    config = dict(render_config or {})
+    return {
+        "min_canvas_short_side_px": float(
+            max(256, config.get("min_canvas_short_side_px", DEFAULT_RECONSTRUCTION_MIN_CANVAS_SHORT_SIDE_PX))
+        ),
+        "target_min_font_px": float(
+            max(_MIN_FONT_SIZE, config.get("target_min_font_px", DEFAULT_RECONSTRUCTION_TARGET_MIN_FONT_PX))
+        ),
+        "max_upscale_factor": float(
+            max(1.0, config.get("max_upscale_factor", DEFAULT_RECONSTRUCTION_MAX_UPSCALE_FACTOR))
+        ),
+        "background_sample_ratio": float(
+            max(0.01, config.get("background_sample_ratio", DEFAULT_RECONSTRUCTION_BACKGROUND_SAMPLE_RATIO))
+        ),
+        "background_color_distance_threshold": float(
+            max(
+                1.0,
+                config.get(
+                    "background_color_distance_threshold",
+                    DEFAULT_RECONSTRUCTION_BACKGROUND_COLOR_DISTANCE_THRESHOLD,
+                ),
+            )
+        ),
+        "background_uniformity_threshold": float(
+            max(
+                0.1,
+                config.get(
+                    "background_uniformity_threshold",
+                    DEFAULT_RECONSTRUCTION_BACKGROUND_UNIFORMITY_THRESHOLD,
+                ),
+            )
+        ),
+    }
+
+
+def _compute_render_scale(
+    scene_graph: dict[str, Any],
+    canvas_size: tuple[int, int],
+    render_config: dict[str, float],
+) -> float:
+    width, height = canvas_size
+    short_side = max(1, min(width, height))
+    scale_candidates = [1.0]
+    if short_side < render_config["min_canvas_short_side_px"]:
+        scale_candidates.append(render_config["min_canvas_short_side_px"] / short_side)
+
+    font_sizes = _collect_font_sizes(scene_graph)
+    if font_sizes:
+        smallest_font = min(font_sizes)
+        if smallest_font < render_config["target_min_font_px"]:
+            scale_candidates.append(render_config["target_min_font_px"] / smallest_font)
+
+    return min(render_config["max_upscale_factor"], max(scale_candidates))
+
+
+def _collect_font_sizes(scene_graph: dict[str, Any]) -> list[int]:
+    font_sizes: list[int] = []
+    for element in scene_graph.get("elements", []):
+        _collect_font_sizes_from_element(element, font_sizes)
+    return [size for size in font_sizes if size > 0]
+
+
+def _collect_font_sizes_from_element(element: dict[str, Any], font_sizes: list[int]) -> None:
+    font_size = element.get("font_size")
+    if isinstance(font_size, (int, float)):
+        font_sizes.append(max(1, int(font_size)))
+    for cell in element.get("cells", []):
+        cell_font_size = cell.get("font_size")
+        if isinstance(cell_font_size, (int, float)):
+            font_sizes.append(max(1, int(cell_font_size)))
+    for child in element.get("children", []):
+        _collect_font_sizes_from_element(child, font_sizes)
+
+
+def _scale_scene_graph(scene_graph: dict[str, Any], scale: float) -> dict[str, Any]:
+    scaled = copy.deepcopy(scene_graph)
+    canvas = scaled.get("canvas", {})
+    if isinstance(canvas.get("width"), (int, float)):
+        canvas["width"] = max(1, int(round(float(canvas["width"]) * scale)))
+    if isinstance(canvas.get("height"), (int, float)):
+        canvas["height"] = max(1, int(round(float(canvas["height"]) * scale)))
+    scaled["elements"] = [_scale_element(element, scale) for element in scaled.get("elements", [])]
+    return scaled
+
+
+def _scale_element(element: dict[str, Any], scale: float) -> dict[str, Any]:
+    scaled = copy.deepcopy(element)
+    for key in ("x", "y", "width", "height", "x1", "y1", "x2", "y2"):
+        if isinstance(scaled.get(key), (int, float)):
+            scaled[key] = int(round(float(scaled[key]) * scale))
+    for key in ("stroke_width", "corner_radius", "font_size"):
+        if isinstance(scaled.get(key), (int, float)):
+            scaled[key] = max(1, int(round(float(scaled[key]) * scale)))
+    if "children" in scaled:
+        scaled["children"] = [_scale_element(child, scale) for child in scaled.get("children", [])]
+    if "cells" in scaled:
+        scaled["cells"] = [_scale_cell(cell, scale) for cell in scaled.get("cells", [])]
+    return scaled
+
+
+def _scale_cell(cell: dict[str, Any], scale: float) -> dict[str, Any]:
+    scaled = copy.deepcopy(cell)
+    if isinstance(scaled.get("font_size"), (int, float)):
+        scaled["font_size"] = max(1, int(round(float(scaled["font_size"]) * scale)))
+    return scaled
+
+
+def _inset_full_canvas_containers(scene_graph: dict[str, Any]) -> None:
+    canvas = scene_graph.get("canvas", {})
+    canvas_width = int(canvas.get("width", 0))
+    canvas_height = int(canvas.get("height", 0))
+    if canvas_width <= 2 or canvas_height <= 2:
+        return
+    for element in scene_graph.get("elements", []):
+        if element.get("type") not in {"table", "rect", "rounded_rect"}:
+            continue
+        x = int(element.get("x", 0))
+        y = int(element.get("y", 0))
+        width = int(element.get("width", 0))
+        height = int(element.get("height", 0))
+        stroke = _safe_stroke(element)
+        if not stroke:
+            continue
+        if x > 0 or y > 0 or x + width < canvas_width or y + height < canvas_height:
+            continue
+        margin = max(1, int(element.get("stroke_width", 1)))
+        if width <= margin * 2 or height <= margin * 2:
+            continue
+        element["x"] = x + margin
+        element["y"] = y + margin
+        element["width"] = width - margin * 2
+        element["height"] = height - margin * 2
+
+
+def _resolve_canvas_background(
+    scene_graph: dict[str, Any],
+    source_image_bytes: bytes | None,
+    render_config: dict[str, float],
+) -> tuple[int, int, int, int]:
+    canvas = scene_graph.get("canvas", {})
+    scene_background = _hex_to_rgba(canvas.get("background_color")) or (255, 255, 255, 255)
+    if not source_image_bytes:
+        return scene_background
+    sampled_background, uniformity_score = _sample_source_background(source_image_bytes, render_config["background_sample_ratio"])
+    if sampled_background is None:
+        return scene_background
+    if (
+        uniformity_score <= render_config["background_uniformity_threshold"]
+        and _rgba_distance(scene_background, sampled_background) >= render_config["background_color_distance_threshold"]
+    ):
+        return sampled_background
+    return scene_background
+
+
+def _sample_source_background(
+    image_bytes: bytes,
+    sample_ratio: float,
+) -> tuple[tuple[int, int, int, int] | None, float]:
+    try:
+        with Image.open(BytesIO(image_bytes)) as source_image:
+            source_image.load()
+            rgb_image = ImageOps.exif_transpose(source_image).convert("RGB")
+    except Exception:
+        return None, float("inf")
+
+    width, height = rgb_image.size
+    sample = max(1, int(round(min(width, height) * sample_ratio)))
+    pixels: list[tuple[int, int, int]] = []
+    for x_coord in range(width):
+        for y_coord in range(sample):
+            pixels.append(rgb_image.getpixel((x_coord, y_coord)))
+            pixels.append(rgb_image.getpixel((x_coord, height - 1 - y_coord)))
+    for y_coord in range(height):
+        for x_coord in range(sample):
+            pixels.append(rgb_image.getpixel((x_coord, y_coord)))
+            pixels.append(rgb_image.getpixel((width - 1 - x_coord, y_coord)))
+    if not pixels:
+        return None, float("inf")
+
+    median_color = tuple(sorted(pixel[channel] for pixel in pixels)[len(pixels) // 2] for channel in range(3))
+    average_deviation = sum(
+        (abs(pixel[0] - median_color[0]) + abs(pixel[1] - median_color[1]) + abs(pixel[2] - median_color[2])) / 3.0
+        for pixel in pixels
+    ) / len(pixels)
+    return (median_color[0], median_color[1], median_color[2], 255), average_deviation
+
+
+def _rgba_distance(left: tuple[int, ...], right: tuple[int, ...]) -> float:
+    return math.sqrt(sum((left[index] - right[index]) ** 2 for index in range(3)))
 
 
 # ---------------------------------------------------------------------------

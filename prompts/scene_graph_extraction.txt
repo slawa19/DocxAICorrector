@@ -26,6 +26,7 @@ Return a single JSON object with this exact schema:
       "opacity": <float, 0.0-1.0, default 1.0>,
       "text_content": "<visible text inside this element, verbatim, or null>",
       "font_size": <int or null>,
+      "font_family": "<string or null, when visually distinguishable>",
       "font_weight": "<normal or bold, default normal>",
       "font_color": "<hex color or null>",
       "text_align": "<left, center, or right, default center>",
@@ -54,16 +55,19 @@ Return a single JSON object with this exact schema:
 
 CRITICAL RULES:
 1. Extract ALL visible text verbatim — do not translate, paraphrase, or summarize. Copy text character by character.
+1a. Preserve Cyrillic, Ukrainian, and Russian text exactly in Unicode. If a word is unreadable, write "unreadable" instead of guessing or transliterating.
 2. Estimate coordinates and sizes relative to the image dimensions. Be as precise as possible.
 3. Use the correct element type for each visual primitive.
 4. For tables: extract every cell with row/col indices, text content, and styling.
+4a. For tables and comparison layouts, preserve header fills, column background fills, bold header text, and any different styling between header and body.
 5. For flowcharts/diagrams: extract each box/shape as a separate element, and each connector as a line or arrow.
 6. Preserve the visual hierarchy: z_index should reflect which elements are drawn on top.
-7. Include background rectangles, borders, and decorative elements.
+7. Include background rectangles, borders, decorative elements, and the true canvas background color. Do not invert a light source background into a dark one.
 8. For text that appears standalone (not inside a shape), use type "text".
 9. Colors must be hex format (#RRGGBB). Use #000000 for black text if unsure.
 10. If an element contains an icon or image that cannot be described as a primitive, use type "icon_placeholder" with a brief text_content describing it.
 11. Do NOT add elements that are not visible in the image.
 12. Do NOT omit any visible element.
+13. If different text blocks clearly use different font families or weights, capture that distinction via font_family and font_weight.
 
 Return ONLY the JSON object, no markdown fences, no explanation.

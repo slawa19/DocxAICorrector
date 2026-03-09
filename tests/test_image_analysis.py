@@ -46,6 +46,17 @@ def _make_photo_like_jpeg() -> bytes:
     return output.getvalue()
 
 
+def _make_photo_like_png() -> bytes:
+    image = Image.new("RGB", (480, 320))
+    draw = ImageDraw.Draw(image)
+    for x in range(480):
+        for y in range(320):
+            draw.point((x, y), fill=((x * 3) % 256, (y * 5) % 256, ((x + y) * 2) % 256))
+    output = BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
+
+
 def _make_screenshot_like_png() -> bytes:
     image = Image.new("RGB", (480, 320), "white")
     draw = ImageDraw.Draw(image)
@@ -103,6 +114,15 @@ def test_analyze_image_routes_screenshot_like_png_to_safe_mode():
     assert result.image_type == "screenshot"
     assert result.semantic_redraw_allowed is False
     assert result.prompt_key == "screenshot_safe_fallback"
+    assert result.render_strategy == "safe_mode"
+
+
+def test_analyze_image_keeps_photo_like_png_in_safe_mode_without_vision():
+    result = image_analysis.analyze_image(_make_photo_like_png(), model="gpt-4.1", mime_type="image/png", enable_vision=False)
+
+    assert result.image_type == "mixed_or_ambiguous"
+    assert result.semantic_redraw_allowed is False
+    assert result.prompt_key == "mixed_or_ambiguous_fallback"
     assert result.render_strategy == "safe_mode"
 
 
@@ -177,3 +197,71 @@ def test_analyze_image_applies_dense_text_routing_override_for_text_heavy_infogr
     assert result.semantic_redraw_allowed is False
     assert result.text_node_count == 22
     assert result.fallback_reason is not None and "dense_text_bypass" in result.fallback_reason
+
+
+def test_analyze_image_routes_dense_non_latin_infographic_to_safe_mode():
+    client = _FakeResponsesClient(
+        '{"image_type":"infographic","image_subtype":"comparison_chart","contains_text":true,'
+        '"semantic_redraw_allowed":true,"confidence":0.9,"structured_parse_confidence":0.8,'
+        '"prompt_key":"infographic_semantic_redraw","recommended_route":"semantic_parse",'
+        '"structure_summary":"comparison infographic with many text blocks",'
+        '"extracted_labels":["Факти","Маніпуляції","Висновок"],'
+        '"text_node_count":15,"extracted_text":"Факти проти маніпуляцій","fallback_reason":null}'
+    )
+
+    result = image_analysis.analyze_image(
+        _make_infographic_like_png(),
+        model="gpt-4.1",
+        mime_type="image/png",
+        client=client,
+        enable_vision=True,
+        dense_text_bypass_threshold=18,
+        non_latin_text_bypass_threshold=12,
+    )
+
+    assert result.render_strategy == "safe_mode"
+    assert result.semantic_redraw_allowed is False
+    assert result.text_node_count == 15
+    assert result.fallback_reason is not None and "dense_non_latin_text_bypass" in result.fallback_reason
+
+
+def test_analyze_image_normalizes_generic_semantic_redraw_to_reconstruction():
+    client = _FakeResponsesClient(
+        '{"image_type":"diagram","image_subtype":"comparative_matrix","contains_text":true,'
+        '"semantic_redraw_allowed":true,"confidence":0.9,"structured_parse_confidence":0.85,'
+        '"prompt_key":"diagram_semantic_redraw","render_strategy":"semantic_redraw",'
+        '"structure_summary":"three-column comparison table","extracted_labels":["A","B"],'
+        '"text_node_count":6,"extracted_text":"A B","fallback_reason":null}'
+    )
+
+    result = image_analysis.analyze_image(
+        _make_diagram_like_jpeg(),
+        model="gpt-4.1",
+        mime_type="image/jpeg",
+        client=client,
+        enable_vision=True,
+    )
+
+    assert result.render_strategy == "deterministic_reconstruction"
+    assert result.semantic_redraw_allowed is True
+
+
+def test_analyze_image_normalizes_prompt_key_like_semantic_redraw_route_to_reconstruction():
+    client = _FakeResponsesClient(
+        '{"image_type":"diagram","image_subtype":"comparative_matrix","contains_text":true,'
+        '"semantic_redraw_allowed":true,"confidence":0.9,"structured_parse_confidence":0.85,'
+        '"prompt_key":"diagram_semantic_redraw","render_strategy":"diagram_semantic_redraw",'
+        '"structure_summary":"three-column comparison table","extracted_labels":["A","B"],'
+        '"text_node_count":6,"extracted_text":"A B","fallback_reason":null}'
+    )
+
+    result = image_analysis.analyze_image(
+        _make_diagram_like_jpeg(),
+        model="gpt-4.1",
+        mime_type="image/jpeg",
+        client=client,
+        enable_vision=True,
+    )
+
+    assert result.render_strategy == "deterministic_reconstruction"
+    assert result.semantic_redraw_allowed is True

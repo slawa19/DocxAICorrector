@@ -36,6 +36,11 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["enable_vision_image_validation"] is True
     assert app_config["semantic_redraw_max_attempts"] == 3
     assert app_config["semantic_redraw_max_model_calls_per_image"] == 9
+    assert app_config["dense_text_bypass_threshold"] == 18
+    assert app_config["non_latin_text_bypass_threshold"] == 12
+    assert app_config["reconstruction_min_canvas_short_side_px"] == 900
+    assert app_config["reconstruction_target_min_font_px"] == 18
+    assert app_config["reconstruction_max_upscale_factor"] == 3.0
 
 
 def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
@@ -54,6 +59,11 @@ def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
     monkeypatch.setenv("DOCX_AI_ENABLE_VISION_IMAGE_VALIDATION", "false")
     monkeypatch.setenv("DOCX_AI_SEMANTIC_REDRAW_MAX_ATTEMPTS", "9")
     monkeypatch.setenv("DOCX_AI_SEMANTIC_REDRAW_MAX_MODEL_CALLS_PER_IMAGE", "99")
+    monkeypatch.setenv("DOCX_AI_DENSE_TEXT_BYPASS_THRESHOLD", "99")
+    monkeypatch.setenv("DOCX_AI_NON_LATIN_TEXT_BYPASS_THRESHOLD", "77")
+    monkeypatch.setenv("DOCX_AI_RECONSTRUCTION_MIN_CANVAS_SHORT_SIDE_PX", "8192")
+    monkeypatch.setenv("DOCX_AI_RECONSTRUCTION_TARGET_MIN_FONT_PX", "8")
+    monkeypatch.setenv("DOCX_AI_RECONSTRUCTION_MAX_UPSCALE_FACTOR", "9")
 
     app_config = config.load_app_config()
 
@@ -71,6 +81,11 @@ def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
     assert app_config["enable_vision_image_validation"] is False
     assert app_config["semantic_redraw_max_attempts"] == 5
     assert app_config["semantic_redraw_max_model_calls_per_image"] == 20
+    assert app_config["dense_text_bypass_threshold"] == 80
+    assert app_config["non_latin_text_bypass_threshold"] == 77
+    assert app_config["reconstruction_min_canvas_short_side_px"] == 4096
+    assert app_config["reconstruction_target_min_font_px"] == 10
+    assert app_config["reconstruction_max_upscale_factor"] == 6.0
 
 
 def test_parse_csv_env_rejects_empty_effective_list(monkeypatch):
@@ -94,3 +109,22 @@ def test_load_app_config_rejects_invalid_image_env_value(monkeypatch):
         assert "DOCX_AI_ENABLE_POST_REDRAW_VALIDATION" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError for an invalid image bool env override")
+
+
+def test_get_client_loads_openai_api_key_from_dotenv(monkeypatch, tmp_path):
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("OPENAI_API_KEY=test-key-from-dotenv\n", encoding="utf-8")
+
+    captured = {}
+
+    class FakeOpenAI:
+        def __init__(self, *, api_key):
+            captured["api_key"] = api_key
+
+    monkeypatch.setattr(config, "ENV_PATH", dotenv_path)
+    monkeypatch.setattr(config, "OpenAI", FakeOpenAI)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    config.get_client()
+
+    assert captured["api_key"] == "test-key-from-dotenv"

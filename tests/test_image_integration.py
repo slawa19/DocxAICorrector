@@ -1,3 +1,5 @@
+from io import BytesIO
+
 import app
 from PIL import Image, ImageDraw
 from models import ImageAnalysisResult, ImageAsset
@@ -34,7 +36,18 @@ def _make_diagram_like_png() -> bytes:
 
 
 PNG_BYTES = _make_diagram_like_png()
-REDRAWN_BYTES = PNG_BYTES
+
+
+def _make_redrawn_like_png() -> bytes:
+    image = Image.open(BytesIO(PNG_BYTES)).convert("RGB")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((118, 14, 202, 34), fill="#E8EEF8", outline="#4A6288", width=2)
+    output = BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
+
+
+REDRAWN_BYTES = _make_redrawn_like_png()
 
 
 def build_analysis_result(**overrides):
@@ -337,3 +350,30 @@ def test_process_document_images_falls_back_when_model_call_budget_is_exhausted(
     assert result[0].final_decision == "fallback_original"
     assert result[0].validation_status == "failed"
     assert result[0].final_reason == "semantic_model_call_budget_exhausted"
+
+
+def test_process_document_images_uses_safe_variant_when_semantic_candidate_collapses_to_safe(monkeypatch):
+    _prepare_state(monkeypatch)
+    monkeypatch.setattr(app, "analyze_image", lambda *args, **kwargs: build_analysis_result(render_strategy="deterministic_reconstruction"))
+
+    def generate_candidate(image_bytes, analysis, *, mode, client=None, budget=None, **kwargs):
+        return PNG_BYTES
+
+    monkeypatch.setattr(app, "generate_image_candidate", generate_candidate)
+    monkeypatch.setattr(
+        app,
+        "process_image_asset",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("post-check should not run for safe fallback")),
+    )
+
+    result = app.process_document_images(
+        image_assets=[build_asset()],
+        image_mode="semantic_redraw_structured",
+        config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1", "semantic_redraw_max_attempts": 1},
+        on_progress=lambda **kwargs: None,
+        client=object(),
+    )
+
+    assert result[0].final_decision == "fallback_safe"
+    assert result[0].final_variant == "safe"
+    assert result[0].final_reason == "semantic_redraw_fell_back_to_safe_candidate"

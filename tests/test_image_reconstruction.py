@@ -13,9 +13,21 @@ from image_reconstruction import (
     _hex_to_rgba,
     _parse_scene_graph_json,
     _validate_scene_graph,
-    render_scene_graph,
+    render_scene_graph as _render_scene_graph_impl,
 )
 from models import ImageAnalysisResult
+
+
+DEFAULT_TEST_RENDER_CONFIG = {
+    "min_canvas_short_side_px": 100,
+    "target_min_font_px": 8,
+    "max_upscale_factor": 1.0,
+}
+
+
+def render_scene_graph(*args, **kwargs):
+    kwargs.setdefault("render_config", DEFAULT_TEST_RENDER_CONFIG)
+    return _render_scene_graph_impl(*args, **kwargs)
 
 
 def _build_minimal_scene_graph(**overrides):
@@ -353,6 +365,107 @@ class TestRenderSceneGraph:
         with Image.open(BytesIO(png_bytes)) as img:
             assert img.size == (400, 200)
 
+    def test_uses_source_background_when_vlm_background_is_implausible(self):
+        sg = _build_minimal_scene_graph(canvas={"width": 200, "height": 100, "background_color": "#000000"})
+        source_png = _build_test_png(width=200, height=100, color=(255, 255, 255))
+
+        png_bytes = render_scene_graph(
+            sg,
+            source_image_bytes=source_png,
+            render_config={
+                "background_sample_ratio": 0.05,
+                "background_color_distance_threshold": 10.0,
+                "background_uniformity_threshold": 1.0,
+            },
+        )
+
+        with Image.open(BytesIO(png_bytes)) as img:
+            assert img.getpixel((0, 0)) == (255, 255, 255, 255)
+
+    def test_does_not_draw_default_black_border_for_invisible_rect(self):
+        sg = _build_minimal_scene_graph(
+            canvas={"width": 200, "height": 100, "background_color": "#FFFFFF"},
+            elements=[
+                {
+                    "id": "bg",
+                    "type": "rect",
+                    "x": 0,
+                    "y": 0,
+                    "width": 200,
+                    "height": 100,
+                    "fill": None,
+                    "stroke": None,
+                    "z_index": 0,
+                }
+            ],
+        )
+
+        png_bytes = render_scene_graph(sg)
+
+        with Image.open(BytesIO(png_bytes)) as img:
+            assert img.getpixel((0, 0)) == (255, 255, 255, 255)
+            assert img.getpixel((199, 99)) == (255, 255, 255, 255)
+
+    def test_insets_full_canvas_table_frame_away_from_edges(self):
+        sg = _build_minimal_scene_graph(
+            canvas={"width": 200, "height": 100, "background_color": "#FFFFFF"},
+            elements=[
+                {
+                    "id": "tbl",
+                    "type": "table",
+                    "x": 0,
+                    "y": 0,
+                    "width": 200,
+                    "height": 100,
+                    "rows": 1,
+                    "cols": 1,
+                    "fill": "#FFFFFF",
+                    "stroke": "#000000",
+                    "stroke_width": 1,
+                    "cells": [{"row": 0, "col": 0, "text": "A"}],
+                    "z_index": 0,
+                }
+            ],
+        )
+
+        png_bytes = render_scene_graph(sg)
+
+        with Image.open(BytesIO(png_bytes)) as img:
+            assert img.getpixel((0, 0)) == (255, 255, 255, 255)
+            assert img.getpixel((1, 1))[0] < 32
+
+    def test_upscales_low_resolution_scene_for_text_legibility(self):
+        sg = _build_minimal_scene_graph(
+            canvas={"width": 200, "height": 100, "background_color": "#FFFFFF"},
+            elements=[
+                {
+                    "id": "t1",
+                    "type": "text",
+                    "x": 10,
+                    "y": 10,
+                    "width": 180,
+                    "height": 40,
+                    "text_content": "Small text",
+                    "font_size": 8,
+                    "font_color": "#000000",
+                    "z_index": 1,
+                }
+            ],
+        )
+
+        png_bytes = render_scene_graph(
+            sg,
+            original_size=(200, 100),
+            render_config={
+                "min_canvas_short_side_px": 100,
+                "target_min_font_px": 16,
+                "max_upscale_factor": 3.0,
+            },
+        )
+
+        with Image.open(BytesIO(png_bytes)) as img:
+            assert img.size == (512, 256)
+
     def test_z_order_sorting(self):
         sg = _build_minimal_scene_graph(
             elements=[
@@ -391,11 +504,24 @@ class TestRenderSceneGraph:
 
 
 class TestReconstructionRouting:
-    def test_diagram_analysis_sets_deterministic_strategy(self):
+    def test_diagram_like_jpeg_analysis_sets_deterministic_strategy(self):
         from image_analysis import analyze_image
 
-        png_bytes = _build_diagram_like_png()
-        result = analyze_image(png_bytes, model="test-model", mime_type="image/png")
+        jpeg_bytes = _build_diagram_like_jpeg()
+        client = SimpleNamespace(
+            responses=SimpleNamespace(
+                create=lambda **kwargs: SimpleNamespace(
+                    output_text=(
+                        '{"image_type":"diagram","image_subtype":"comparison_matrix","contains_text":true,'
+                        '"semantic_redraw_allowed":true,"confidence":0.9,"structured_parse_confidence":0.85,'
+                        '"prompt_key":"diagram_semantic_redraw","render_strategy":"diagram_semantic_redraw",'
+                        '"recommended_route":"diagram_semantic_redraw","structure_summary":"comparison diagram",'
+                        '"extracted_labels":["A","B"],"text_node_count":6,"extracted_text":"A B","fallback_reason":null}'
+                    )
+                )
+            )
+        )
+        result = analyze_image(jpeg_bytes, model="test-model", mime_type="image/jpeg", client=client)
         assert result.render_strategy == "deterministic_reconstruction"
         assert result.semantic_redraw_allowed is True
 
@@ -420,6 +546,13 @@ def _build_diagram_like_png():
     draw.line([(50, 60), (50, 120)], fill=(0, 0, 0), width=2)
     buf = BytesIO()
     img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _build_diagram_like_jpeg():
+    img = Image.open(BytesIO(_build_diagram_like_png())).convert("RGB")
+    buf = BytesIO()
+    img.save(buf, format="JPEG", quality=95)
     return buf.getvalue()
 
 

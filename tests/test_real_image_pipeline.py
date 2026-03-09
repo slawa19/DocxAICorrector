@@ -2,6 +2,7 @@ import base64
 import json
 import os
 import time
+from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,8 +12,10 @@ from dotenv import load_dotenv
 from PIL import Image
 
 import image_generation
+from config import get_client
 from constants import ENV_PATH
 from image_analysis import analyze_image
+from image_reconstruction import reconstruct_image
 
 
 TESTS_DIR = Path(__file__).parent
@@ -25,6 +28,9 @@ REAL_IMAGE_CASES = [
         "expected_strategy": "deterministic_reconstruction",
         "expected_mode": "semantic_redraw_structured",
         "semantic_allowed": True,
+        "expected_live_strategy": "deterministic_reconstruction",
+        "expected_live_mode": "semantic_redraw_structured",
+        "live_semantic_allowed": True,
     },
     {
         "filename": "кпсс.jpg",
@@ -33,6 +39,9 @@ REAL_IMAGE_CASES = [
         "expected_strategy": "safe_mode",
         "expected_mode": "safe",
         "semantic_allowed": False,
+        "expected_live_strategy": "safe_mode",
+        "expected_live_mode": "safe",
+        "live_semantic_allowed": False,
     },
     {
         "filename": "журналистика факты манипуляции.png",
@@ -41,12 +50,15 @@ REAL_IMAGE_CASES = [
         "expected_strategy": "deterministic_reconstruction",
         "expected_mode": "semantic_redraw_structured",
         "semantic_allowed": True,
+        "expected_live_strategy": "safe_mode",
+        "expected_live_mode": "safe",
+        "live_semantic_allowed": False,
     },
 ]
 
-LIVE_API_ENABLED = os.getenv("DOCX_AI_RUN_LIVE_IMAGE_API_TESTS", "").strip().lower() in {"1", "true", "yes", "on"}
-
 load_dotenv(dotenv_path=ENV_PATH)
+
+LIVE_API_ENABLED = os.getenv("DOCX_AI_RUN_LIVE_IMAGE_API_TESTS", "").strip().lower() in {"1", "true", "yes", "on"}
 
 PNG_STUB_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAIElEQVR4nGP8z/D/PwMDAwMDEwMDA8N/BoYGBgYGAABd8gT+olr0cQAAAABJRU5ErkJggg=="
@@ -84,6 +96,9 @@ def _artifact_basename(filename: str) -> str:
 def _write_pipeline_artifact(case: dict[str, object], candidate: bytes, metadata: dict[str, object]) -> Path:
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
     output_path = ARTIFACTS_DIR / f"{_artifact_basename(str(case['filename']))}_output{_detect_output_extension(candidate)}"
+    for stale_path in ARTIFACTS_DIR.glob(f"{_artifact_basename(str(case['filename']))}_output.*"):
+        if stale_path != output_path:
+            stale_path.unlink(missing_ok=True)
     output_path.write_bytes(candidate)
 
     manifest_path = ARTIFACTS_DIR / "manifest.json"
@@ -102,6 +117,27 @@ def _write_pipeline_artifact(case: dict[str, object], candidate: bytes, metadata
 
     manifest_path.write_text(json.dumps(manifest_data, ensure_ascii=False, indent=2), encoding="utf-8")
     return output_path
+
+
+@lru_cache(maxsize=1)
+def _get_live_client():
+    return get_client()
+
+
+def _generate_live_candidate(image_bytes: bytes, analysis_result, requested_mode: str, client) -> bytes:
+    if analysis_result.render_strategy == "deterministic_reconstruction":
+        candidate, _ = reconstruct_image(
+            image_bytes,
+            model="gpt-4.1",
+            client=client,
+        )
+        return candidate
+    return image_generation.generate_image_candidate(
+        image_bytes,
+        analysis_result,
+        mode=requested_mode,
+        client=client,
+    )
 
 
 class TestRecognitionRealInputs:
@@ -203,14 +239,18 @@ class TestRedrawRoutingRealInputs:
         assert elapsed_seconds < 1.0
 
     @pytest.mark.skipif(not LIVE_API_ENABLED, reason="Set DOCX_AI_RUN_LIVE_IMAGE_API_TESTS=1 to run live image API smoke tests.")
-    @pytest.mark.parametrize("case", [case for case in REAL_IMAGE_CASES if case["expected_mode"] != "safe"], ids=lambda case: case["filename"])
+    @pytest.mark.parametrize("case", [case for case in REAL_IMAGE_CASES if case["expected_live_mode"] != "safe"], ids=lambda case: case["filename"])
     def test_live_redraw_api_smoke_and_timing(self, case):
         image_bytes = _load_image_bytes(case["filename"])
-        analysis_result = analyze_image(image_bytes, model="gpt-4.1")
+        analysis_result = analyze_image(image_bytes, model="gpt-4.1", client=_get_live_client())
         requested_mode = _resolve_requested_mode(analysis_result)
 
+        assert analysis_result.render_strategy == case["expected_live_strategy"]
+        assert analysis_result.semantic_redraw_allowed is case["live_semantic_allowed"]
+        assert requested_mode == case["expected_live_mode"]
+
         started_at = time.perf_counter()
-        candidate = image_generation.generate_image_candidate(image_bytes, analysis_result, mode=requested_mode)
+        candidate = _generate_live_candidate(image_bytes, analysis_result, requested_mode, _get_live_client())
         elapsed_seconds = time.perf_counter() - started_at
 
         print(
@@ -233,15 +273,19 @@ class TestLiveFullImagePipelineArtifacts:
     @pytest.mark.parametrize("case", REAL_IMAGE_CASES, ids=lambda case: case["filename"])
     def test_live_full_pipeline_saves_final_image_artifact(self, case):
         image_bytes = _load_image_bytes(case["filename"])
+        client = _get_live_client()
 
         analysis_started_at = time.perf_counter()
-        analysis_result = analyze_image(image_bytes, model="gpt-4.1")
+        analysis_result = analyze_image(image_bytes, model="gpt-4.1", client=client)
         analysis_elapsed_seconds = time.perf_counter() - analysis_started_at
 
         requested_mode = _resolve_requested_mode(analysis_result)
+        assert analysis_result.render_strategy == case["expected_live_strategy"]
+        assert analysis_result.semantic_redraw_allowed is case["live_semantic_allowed"]
+        assert requested_mode == case["expected_live_mode"]
 
         generation_started_at = time.perf_counter()
-        candidate = image_generation.generate_image_candidate(image_bytes, analysis_result, mode=requested_mode)
+        candidate = _generate_live_candidate(image_bytes, analysis_result, requested_mode, client)
         generation_elapsed_seconds = time.perf_counter() - generation_started_at
 
         metadata = {

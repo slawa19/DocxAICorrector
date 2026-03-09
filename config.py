@@ -1,6 +1,7 @@
 import os
 import tomllib
 
+from dotenv import load_dotenv
 from openai import OpenAI
 
 from constants import (
@@ -9,8 +10,13 @@ from constants import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_MODEL,
     DEFAULT_MODEL_OPTIONS,
+    ENV_PATH,
     SYSTEM_PROMPT_PATH,
 )
+
+
+def load_project_dotenv() -> None:
+    load_dotenv(dotenv_path=ENV_PATH, override=False)
 
 
 def parse_int_env(name: str, default: int) -> int:
@@ -79,6 +85,13 @@ def parse_config_score(config_data: dict[str, object], field_name: str, default:
     return clamp_score(float(value))
 
 
+def parse_config_float(config_data: dict[str, object], field_name: str, default: float) -> float:
+    value = config_data.get(field_name, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RuntimeError(f"Некорректное поле {field_name} в {CONFIG_PATH}")
+    return float(value)
+
+
 def parse_config_int(config_data: dict[str, object], field_name: str, default: int) -> int:
     value = config_data.get(field_name, default)
     if isinstance(value, bool) or not isinstance(value, int):
@@ -87,6 +100,7 @@ def parse_config_int(config_data: dict[str, object], field_name: str, default: i
 
 
 def load_app_config() -> dict[str, object]:
+    load_project_dotenv()
     config_data: dict[str, object] = {}
     if CONFIG_PATH.exists():
         with CONFIG_PATH.open("rb") as file_handle:
@@ -132,6 +146,30 @@ def load_app_config() -> dict[str, object]:
         config_data,
         "semantic_redraw_max_model_calls_per_image",
         semantic_redraw_max_attempts * 3,
+    )
+    dense_text_bypass_threshold = parse_config_int(config_data, "dense_text_bypass_threshold", 18)
+    non_latin_text_bypass_threshold = parse_config_int(config_data, "non_latin_text_bypass_threshold", 12)
+    reconstruction_min_canvas_short_side_px = parse_config_int(
+        config_data,
+        "reconstruction_min_canvas_short_side_px",
+        900,
+    )
+    reconstruction_target_min_font_px = parse_config_int(config_data, "reconstruction_target_min_font_px", 18)
+    reconstruction_max_upscale_factor = parse_config_float(config_data, "reconstruction_max_upscale_factor", 3.0)
+    reconstruction_background_sample_ratio = parse_config_float(
+        config_data,
+        "reconstruction_background_sample_ratio",
+        0.04,
+    )
+    reconstruction_background_color_distance_threshold = parse_config_float(
+        config_data,
+        "reconstruction_background_color_distance_threshold",
+        48.0,
+    )
+    reconstruction_background_uniformity_threshold = parse_config_float(
+        config_data,
+        "reconstruction_background_uniformity_threshold",
+        10.0,
     )
 
     env_model_options = parse_csv_env("DOCX_AI_MODEL_OPTIONS")
@@ -182,6 +220,38 @@ def load_app_config() -> dict[str, object]:
         "DOCX_AI_SEMANTIC_REDRAW_MAX_MODEL_CALLS_PER_IMAGE",
         semantic_redraw_max_model_calls_per_image,
     )
+    dense_text_bypass_threshold = parse_int_env(
+        "DOCX_AI_DENSE_TEXT_BYPASS_THRESHOLD",
+        dense_text_bypass_threshold,
+    )
+    non_latin_text_bypass_threshold = parse_int_env(
+        "DOCX_AI_NON_LATIN_TEXT_BYPASS_THRESHOLD",
+        non_latin_text_bypass_threshold,
+    )
+    reconstruction_min_canvas_short_side_px = parse_int_env(
+        "DOCX_AI_RECONSTRUCTION_MIN_CANVAS_SHORT_SIDE_PX",
+        reconstruction_min_canvas_short_side_px,
+    )
+    reconstruction_target_min_font_px = parse_int_env(
+        "DOCX_AI_RECONSTRUCTION_TARGET_MIN_FONT_PX",
+        reconstruction_target_min_font_px,
+    )
+    reconstruction_max_upscale_factor = parse_float_env(
+        "DOCX_AI_RECONSTRUCTION_MAX_UPSCALE_FACTOR",
+        reconstruction_max_upscale_factor,
+    )
+    reconstruction_background_sample_ratio = parse_float_env(
+        "DOCX_AI_RECONSTRUCTION_BACKGROUND_SAMPLE_RATIO",
+        reconstruction_background_sample_ratio,
+    )
+    reconstruction_background_color_distance_threshold = parse_float_env(
+        "DOCX_AI_RECONSTRUCTION_BACKGROUND_COLOR_DISTANCE_THRESHOLD",
+        reconstruction_background_color_distance_threshold,
+    )
+    reconstruction_background_uniformity_threshold = parse_float_env(
+        "DOCX_AI_RECONSTRUCTION_BACKGROUND_UNIFORMITY_THRESHOLD",
+        reconstruction_background_uniformity_threshold,
+    )
 
     if default_model not in model_options:
         model_options = [default_model, *[item for item in model_options if item != default_model]]
@@ -206,6 +276,14 @@ def load_app_config() -> dict[str, object]:
         "enable_vision_image_validation": enable_vision_image_validation,
         "semantic_redraw_max_attempts": max(1, min(semantic_redraw_max_attempts, 5)),
         "semantic_redraw_max_model_calls_per_image": max(1, min(semantic_redraw_max_model_calls_per_image, 20)),
+        "dense_text_bypass_threshold": max(1, min(dense_text_bypass_threshold, 80)),
+        "non_latin_text_bypass_threshold": max(1, min(non_latin_text_bypass_threshold, 80)),
+        "reconstruction_min_canvas_short_side_px": max(256, min(reconstruction_min_canvas_short_side_px, 4096)),
+        "reconstruction_target_min_font_px": max(10, min(reconstruction_target_min_font_px, 48)),
+        "reconstruction_max_upscale_factor": max(1.0, min(reconstruction_max_upscale_factor, 6.0)),
+        "reconstruction_background_sample_ratio": max(0.01, min(reconstruction_background_sample_ratio, 0.2)),
+        "reconstruction_background_color_distance_threshold": max(5.0, min(reconstruction_background_color_distance_threshold, 255.0)),
+        "reconstruction_background_uniformity_threshold": max(1.0, min(reconstruction_background_uniformity_threshold, 64.0)),
     }
 
 
@@ -222,6 +300,7 @@ def load_system_prompt() -> str:
 
 
 def get_client() -> OpenAI:
+    load_project_dotenv()
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("Не найден OPENAI_API_KEY. Добавьте его в .env или переменные окружения.")

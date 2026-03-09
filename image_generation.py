@@ -54,6 +54,7 @@ def generate_image_candidate(
     mode: str,
     prefer_deterministic_reconstruction: bool = True,
     reconstruction_model: str | None = None,
+    reconstruction_render_config: dict[str, object] | None = None,
     client=None,
     budget: ImageModelCallBudget | None = None,
 ) -> bytes:
@@ -77,6 +78,7 @@ def generate_image_candidate(
             client=client,
             budget=budget,
             reconstruction_model=reconstruction_model,
+            reconstruction_render_config=reconstruction_render_config,
         )
     else:
         candidate_bytes = _generate_semantic_candidate(
@@ -157,6 +159,7 @@ def _generate_reconstructed_candidate(
     client=None,
     budget: ImageModelCallBudget | None = None,
     reconstruction_model: str | None = None,
+    reconstruction_render_config: dict[str, object] | None = None,
 ) -> bytes:
     """Deterministic reconstruction via VLM scene-graph extraction + PIL rendering.
 
@@ -170,6 +173,7 @@ def _generate_reconstructed_candidate(
             model=model,
             mime_type=None,
             client=client,
+            render_config=reconstruction_render_config,
         )
         log_event(
             logging.INFO,

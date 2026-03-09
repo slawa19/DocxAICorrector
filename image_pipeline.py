@@ -109,9 +109,23 @@ def select_best_semantic_asset(
                 mode=image_mode,
                 prefer_deterministic_reconstruction=bool(config.get("prefer_deterministic_reconstruction", True)),
                 reconstruction_model=str(config.get("reconstruction_model", "")) or None,
+                reconstruction_render_config=_build_reconstruction_render_config(config),
                 client=client,
                 budget=call_budget,
             )
+            if attempt_asset.safe_bytes and attempt_asset.redrawn_bytes == attempt_asset.safe_bytes:
+                attempt_asset.validation_status = "skipped"
+                attempt_asset.final_decision = "fallback_safe"
+                attempt_asset.final_variant = "safe"
+                attempt_asset.final_reason = "semantic_redraw_fell_back_to_safe_candidate"
+                log_event_fn(
+                    logging.WARNING,
+                    "semantic_candidate_resolved_to_safe_fallback",
+                    "Semantic redraw candidate совпал с safe candidate; применяю safe fallback без post-check.",
+                    attempt_index=attempt_index,
+                    **attempt_asset.to_log_context(),
+                )
+                return attempt_asset
             attempt_asset.redrawn_mime_type = detect_image_mime_type_fn(attempt_asset.redrawn_bytes)
             attempt_asset.update_pipeline_metadata(rendered_mime_type=attempt_asset.redrawn_mime_type)
             candidate_analysis = _call_with_supported_kwargs(
@@ -121,6 +135,8 @@ def select_best_semantic_asset(
                 mime_type=attempt_asset.redrawn_mime_type or attempt_asset.mime_type,
                 client=client,
                 enable_vision=bool(config.get("enable_vision_image_analysis", True)),
+                dense_text_bypass_threshold=int(config.get("dense_text_bypass_threshold", 18)),
+                non_latin_text_bypass_threshold=int(config.get("non_latin_text_bypass_threshold", 12)),
             )
             attempt_asset = _call_with_supported_kwargs(
                 process_image_asset_fn,
@@ -245,6 +261,8 @@ def process_document_images(
                 mime_type=asset.mime_type,
                 client=image_client,
                 enable_vision=bool(config.get("enable_vision_image_analysis", True)),
+                dense_text_bypass_threshold=int(config.get("dense_text_bypass_threshold", 18)),
+                non_latin_text_bypass_threshold=int(config.get("non_latin_text_bypass_threshold", 12)),
             )
             asset.analysis_result = analysis
             asset.prompt_key = analysis.prompt_key
@@ -257,6 +275,7 @@ def process_document_images(
                     analysis,
                     mode="safe",
                     prefer_deterministic_reconstruction=bool(config.get("prefer_deterministic_reconstruction", True)),
+                    reconstruction_render_config=_build_reconstruction_render_config(config),
                     client=image_client,
                 )
                 asset.validation_status = "skipped"
@@ -272,6 +291,7 @@ def process_document_images(
                     analysis,
                     mode="safe",
                     prefer_deterministic_reconstruction=bool(config.get("prefer_deterministic_reconstruction", True)),
+                    reconstruction_render_config=_build_reconstruction_render_config(config),
                     client=image_client,
                 )
                 asset = select_best_semantic_asset(
@@ -368,3 +388,18 @@ def _clone_image_asset_for_attempt(asset):
         soft_accepted=False,
     )
     return cloned_asset
+
+
+def _build_reconstruction_render_config(config: dict[str, object]) -> dict[str, object]:
+    return {
+        "min_canvas_short_side_px": int(config.get("reconstruction_min_canvas_short_side_px", 900)),
+        "target_min_font_px": int(config.get("reconstruction_target_min_font_px", 18)),
+        "max_upscale_factor": float(config.get("reconstruction_max_upscale_factor", 3.0)),
+        "background_sample_ratio": float(config.get("reconstruction_background_sample_ratio", 0.04)),
+        "background_color_distance_threshold": float(
+            config.get("reconstruction_background_color_distance_threshold", 48.0)
+        ),
+        "background_uniformity_threshold": float(
+            config.get("reconstruction_background_uniformity_threshold", 10.0)
+        ),
+    }

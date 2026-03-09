@@ -275,3 +275,32 @@ def test_validate_redraw_result_uses_vision_assessment_conservatively():
     assert "text_missing_in_candidate" in result.suspicious_reasons
     assert "vision_text_loss_detected" in result.suspicious_reasons
     assert result.missing_labels == ["review"]
+
+
+def test_validate_redraw_result_keeps_type_change_as_hard_reject_after_vision_merge():
+    analysis_before = build_analysis_result()
+    candidate_analysis = build_analysis_result(
+        image_type="photo",
+        contains_text=True,
+        extracted_labels=["Start", "Review", "Finish"],
+        structure_summary="three boxes connected by arrows",
+    )
+    client = _FakeResponsesClient(
+        '{"semantic_match_score":0.98,"text_match_score":0.98,"structure_match_score":0.98,'
+        '"validator_confidence":0.98,"candidate_contains_text":true,"missing_labels":[],'
+        '"added_entities":[],"suspicious_reasons":[]}'
+    )
+
+    result = image_validation.validate_redraw_result(
+        PNG_BYTES,
+        PNG_BYTES,
+        analysis_before,
+        candidate_analysis=candidate_analysis,
+        client=client,
+        enable_vision_validation=True,
+        validation_model="gpt-4.1",
+    )
+
+    assert result.validation_passed is False
+    assert result.decision == "fallback_safe"
+    assert "image_type_changed" in result.suspicious_reasons

@@ -566,6 +566,7 @@ def _merge_with_vision_assessment(
     resolved_config: Mapping[str, object],
     vision_assessment: dict[str, object],
 ) -> ImageValidationResult:
+    type_match_score = _type_match_score(analysis_before.image_type, candidate_analysis.image_type)
     missing_labels = sorted(set(heuristic_result.missing_labels) | set(_normalize_labels_list(vision_assessment.get("missing_labels", []))))
     added_entities = _normalize_labels_list(vision_assessment.get("added_entities", []))
     suspicious_reasons = list(dict.fromkeys(
@@ -589,6 +590,8 @@ def _merge_with_vision_assessment(
 
     if analysis_before.contains_text and not candidate_contains_text and "text_missing_in_candidate" not in suspicious_reasons:
         suspicious_reasons.append("text_missing_in_candidate")
+    if type_match_score < 1.0 and "image_type_changed" not in suspicious_reasons:
+        suspicious_reasons.append("image_type_changed")
     if missing_labels and not any(str(reason).startswith("missing_labels:") for reason in suspicious_reasons):
         suspicious_reasons.append(f"missing_labels:{', '.join(missing_labels)}")
     if added_entities_detected and not any(str(reason).startswith("added_entities:") for reason in suspicious_reasons):
@@ -599,6 +602,7 @@ def _merge_with_vision_assessment(
         and text_match_score >= float(resolved_config["min_text_match_score"])
         and structure_match_score >= float(resolved_config["min_structure_match_score"])
         and validator_confidence >= float(resolved_config["validator_confidence_threshold"])
+        and type_match_score >= 1.0
         and not added_entities_detected
         and (not missing_labels or bool(resolved_config["allow_accept_with_partial_text_loss"]))
         and (not analysis_before.contains_text or candidate_contains_text)
