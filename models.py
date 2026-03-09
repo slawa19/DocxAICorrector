@@ -57,12 +57,15 @@ class ImageAsset:
     original_bytes: bytes
     mime_type: str | None
     position_index: int
+    width_emu: int | None = None
+    height_emu: int | None = None
     mode_requested: str | None = None
     analysis_result: ImageAnalysisResult | dict[str, object] | None = None
     prompt_key: str | None = None
     render_strategy: str | None = None
     safe_bytes: bytes | None = None
     redrawn_bytes: bytes | None = None
+    redrawn_mime_type: str | None = None
     validation_result: ImageValidationResult | dict[str, object] | None = None
     validation_status: str = "pending"
     final_decision: str | None = None
@@ -77,9 +80,12 @@ class ImageAsset:
             "placeholder": self.placeholder,
             "mime_type": self.mime_type,
             "position_index": self.position_index,
+            "width_emu": self.width_emu,
+            "height_emu": self.height_emu,
             "mode_requested": self.mode_requested,
             "prompt_key": self.prompt_key,
             "render_strategy": self.render_strategy,
+            "redrawn_mime_type": self.redrawn_mime_type,
             "validation_status": self.validation_status,
             "final_decision": self.final_decision,
             "final_variant": self.final_variant,

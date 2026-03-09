@@ -1,4 +1,3 @@
-import copy
 import logging
 import time
 
@@ -21,9 +20,16 @@ from document import (
     inspect_placeholder_integrity,
     reinsert_inline_images,
 )
+from document_pipeline import run_document_processing as run_document_processing_impl
 from generation import convert_markdown_to_docx_bytes, ensure_pandoc_available, generate_markdown_block
 from image_analysis import analyze_image
-from image_generation import generate_image_candidate
+from image_generation import (
+    ImageModelCallBudget,
+    ImageModelCallBudgetExceeded,
+    detect_image_mime_type,
+    generate_image_candidate,
+)
+from image_pipeline import process_document_images as process_document_images_impl
 from image_validation import process_image_asset
 from logger import fail_critical, log_event, present_error
 from processing_runtime import (
@@ -168,18 +174,43 @@ def _run_processing_worker(
     model: str,
     max_retries: int,
 ) -> None:
-    outcome = run_document_processing(
-        uploaded_file=uploaded_filename,
-        jobs=jobs,
-        image_assets=image_assets,
-        image_mode=image_mode,
-        app_config=app_config,
-        model=model,
-        max_retries=max_retries,
-        on_progress=lambda **kwargs: None,
-        runtime=runtime,
-    )
-    runtime.emit("worker_complete", outcome=outcome)
+    outcome = "failed"
+    try:
+        outcome = run_document_processing(
+            uploaded_file=uploaded_filename,
+            jobs=jobs,
+            image_assets=image_assets,
+            image_mode=image_mode,
+            app_config=app_config,
+            model=model,
+            max_retries=max_retries,
+            on_progress=lambda **kwargs: None,
+            runtime=runtime,
+        )
+    except Exception as exc:
+        error_message = present_error(
+            "processing_worker_crashed",
+            exc,
+            "Критическая ошибка фоновой обработки",
+            filename=uploaded_filename,
+            block_count=len(jobs),
+        )
+        runtime.emit("set_state", values={"last_error": error_message})
+        runtime.emit("finalize_processing_status", stage="Критическая ошибка", detail=error_message, progress=1.0)
+        runtime.emit("push_activity", message="Фоновый worker аварийно завершился; runtime-state принудительно очищается.")
+        runtime.emit(
+            "append_log",
+            payload={
+                "status": "ERROR",
+                "block_index": 0,
+                "block_count": len(jobs),
+                "target_chars": 0,
+                "context_chars": 0,
+                "details": error_message,
+            },
+        )
+    finally:
+        runtime.emit("worker_complete", outcome=outcome)
 
 
 def build_start_button_label(*, has_current_result: bool, has_previous_result: bool) -> str:
@@ -212,135 +243,6 @@ def _should_log_document_prepared(prepared_source_key: str) -> bool:
     return st.session_state.get("prepared_source_key", "") != prepared_source_key
 
 
-def _score_semantic_candidate(asset) -> float:
-    validation_result = getattr(asset, "validation_result", None)
-    if validation_result is None:
-        return -1.0
-
-    score = float(getattr(validation_result, "validator_confidence", 0.0))
-    score += 0.20 * float(getattr(validation_result, "semantic_match_score", 0.0))
-    score += 0.20 * float(getattr(validation_result, "text_match_score", 0.0))
-    score += 0.20 * float(getattr(validation_result, "structure_match_score", 0.0))
-
-    suspicious_reasons = list(getattr(validation_result, "suspicious_reasons", []))
-    if any(reason == "candidate_image_unreadable" for reason in suspicious_reasons):
-        return -1.0
-    if any(reason == "image_type_changed" for reason in suspicious_reasons):
-        score -= 0.35
-    if any(str(reason).startswith("added_entities:") for reason in suspicious_reasons):
-        score -= 0.30
-
-    if getattr(asset, "final_variant", None) == "redrawn" and getattr(asset, "final_decision", None) == "accept":
-        score += 1.0
-    return score
-
-
-def _try_soft_accept_semantic_candidate(asset, analysis, image_mode: str, config: dict[str, object]):
-    validation_result = getattr(asset, "validation_result", None)
-    if validation_result is None or not getattr(asset, "redrawn_bytes", None):
-        return asset
-
-    suspicious_reasons = list(getattr(validation_result, "suspicious_reasons", []))
-    if any(reason in {"candidate_image_unreadable", "image_type_changed"} for reason in suspicious_reasons):
-        return asset
-    if any(str(reason).startswith("added_entities:") for reason in suspicious_reasons):
-        return asset
-
-    min_confidence = float(
-        config.get(
-            "semantic_soft_accept_confidence",
-            0.64 if image_mode == "semantic_redraw_structured" or analysis.contains_text else 0.58,
-        )
-    )
-    min_semantic = float(config.get("semantic_soft_accept_semantic_match", 0.58))
-    min_text = float(config.get("semantic_soft_accept_text_match", 0.72 if analysis.contains_text else 0.0))
-    min_structure = float(
-        config.get(
-            "semantic_soft_accept_structure_match",
-            0.64 if analysis.render_strategy == "semantic_redraw_structured" else 0.48,
-        )
-    )
-
-    if (
-        float(getattr(validation_result, "validator_confidence", 0.0)) < min_confidence
-        or float(getattr(validation_result, "semantic_match_score", 0.0)) < min_semantic
-        or float(getattr(validation_result, "text_match_score", 0.0)) < min_text
-        or float(getattr(validation_result, "structure_match_score", 0.0)) < min_structure
-    ):
-        return asset
-
-    asset.validation_status = "soft-pass"
-    asset.final_decision = "accept_soft"
-    asset.final_variant = "redrawn"
-    asset.final_reason = (
-        "Выбран лучший semantic redraw после нескольких попыток; "
-        f"validator отметил умеренные расхождения: {'; '.join(suspicious_reasons) or 'нет'}"
-    )
-    log_event(
-        logging.INFO,
-        "image_soft_accept_applied",
-        "Применен мягкий accept для лучшего semantic redraw candidate.",
-        **asset.to_log_context(),
-    )
-    return asset
-
-
-def _select_best_semantic_asset(asset, analysis, image_mode: str, config: dict[str, object]):
-    attempt_count = max(1, int(config.get("semantic_redraw_max_attempts", 3)))
-    best_asset = None
-    best_score = -1.0
-
-    for attempt_index in range(1, attempt_count + 1):
-        try:
-            attempt_asset = copy.deepcopy(asset)
-            attempt_asset.redrawn_bytes = generate_image_candidate(attempt_asset.original_bytes, analysis, mode=image_mode)
-            candidate_analysis = analyze_image(
-                attempt_asset.redrawn_bytes,
-                model=str(config.get("validation_model", "")),
-                mime_type=attempt_asset.mime_type,
-            )
-            attempt_asset = process_image_asset(
-                attempt_asset,
-                image_mode=image_mode,
-                config=config,
-                candidate_analysis=candidate_analysis,
-            )
-        except Exception as exc:
-            log_event(
-                logging.WARNING,
-                "semantic_candidate_attempt_failed",
-                "Не удалось оценить semantic redraw candidate, пробую следующую попытку.",
-                attempt_index=attempt_index,
-                error_type=exc.__class__.__name__,
-                error_message=str(exc),
-                **asset.to_log_context(),
-            )
-            continue
-
-        score = _score_semantic_candidate(attempt_asset)
-        log_event(
-            logging.INFO,
-            "semantic_candidate_evaluated",
-            "Оценен semantic redraw candidate.",
-            attempt_index=attempt_index,
-            candidate_score=round(score, 4),
-            **attempt_asset.to_log_context(),
-        )
-        if best_asset is None or score > best_score:
-            best_asset = attempt_asset
-            best_score = score
-        if attempt_asset.final_variant == "redrawn" and attempt_asset.final_decision == "accept":
-            return attempt_asset
-
-    if best_asset is None:
-        asset.validation_status = "error"
-        asset.final_decision = "fallback_original"
-        asset.final_variant = "original"
-        asset.final_reason = "semantic_candidate_attempts_exhausted"
-        return asset
-    return _try_soft_accept_semantic_candidate(best_asset, analysis, image_mode, config)
-
-
 def process_document_images(
     *,
     image_assets,
@@ -348,108 +250,31 @@ def process_document_images(
     config: dict[str, object],
     on_progress,
     runtime: BackgroundRuntime | None = None,
+    client=None,
 ) -> list:
-    if not image_assets:
-        _emit_or_apply_state(runtime, image_assets=[])
-        return []
-
-    processed_assets = []
-    _emit_or_apply_image_reset(runtime)
-    total_images = len(image_assets)
-    for index, asset in enumerate(image_assets, start=1):
-        if _should_stop_processing(runtime):
-            _emit_or_apply_finalize(
-                runtime,
-                "Остановлено пользователем",
-                "Обработка изображений остановлена пользователем.",
-                (index - 1) / max(total_images, 1),
-            )
-            _emit_or_apply_activity(runtime, "Обработка изображений остановлена пользователем.")
-            return processed_assets
-
-        _emit_or_apply_status(
-            runtime,
-            stage="Обработка изображений",
-            detail=f"Обрабатываю изображение {index} из {total_images}.",
-            current_block=index,
-            block_count=total_images,
-            progress=index / max(total_images, 1),
-            is_running=True,
-        )
-        _emit_or_apply_activity(runtime, f"Начата обработка изображения {index} из {total_images}.")
-        on_progress(preview_title="Текущий Markdown")
-        analysis = None
-        try:
-            analysis = analyze_image(
-                asset.original_bytes,
-                model=str(config.get("validation_model", "")),
-                mime_type=asset.mime_type,
-            )
-            asset.analysis_result = analysis
-            asset.prompt_key = analysis.prompt_key
-            asset.render_strategy = analysis.render_strategy
-
-            if image_mode == "safe" or not analysis.semantic_redraw_allowed:
-                asset.safe_bytes = generate_image_candidate(asset.original_bytes, analysis, mode="safe")
-                asset.validation_status = "skipped"
-                asset.final_decision = "accept"
-                asset.final_variant = "safe" if asset.safe_bytes else "original"
-                asset.final_reason = "Изображение обработано в safe-mode."
-            else:
-                asset.safe_bytes = generate_image_candidate(asset.original_bytes, analysis, mode="safe")
-                asset = _select_best_semantic_asset(asset, analysis, image_mode, config)
-
-            validation_result = asset.validation_result if hasattr(asset, "validation_result") else None
-            confidence = (
-                float(getattr(validation_result, "validator_confidence", 0.0))
-                if validation_result is not None
-                else float(getattr(analysis, "confidence", 0.0))
-            )
-            _emit_or_apply_image_log(
-                runtime,
-                image_id=asset.image_id,
-                status=(
-                    "validated"
-                    if asset.validation_status in {"passed", "failed", "soft-pass"}
-                    else asset.validation_status
-                ),
-                decision=asset.final_decision or "accept",
-                confidence=confidence,
-                missing_labels=(
-                    list(getattr(validation_result, "missing_labels", [])) if validation_result is not None else []
-                ),
-                suspicious_reasons=(
-                    list(getattr(validation_result, "suspicious_reasons", [])) if validation_result is not None else []
-                ),
-            )
-            processed_assets.append(asset)
-            _emit_or_apply_activity(
-                runtime,
-                f"Изображение {asset.image_id}: {asset.final_variant or 'original'} | {asset.final_decision or 'accept'}."
-            )
-        except Exception as exc:
-            asset.validation_status = "error"
-            asset.final_decision = "fallback_original"
-            asset.final_variant = "original"
-            asset.final_reason = f"image_processing_exception:{exc.__class__.__name__}"
-            _emit_or_apply_image_log(
-                runtime,
-                image_id=asset.image_id,
-                status="error",
-                decision=asset.final_decision,
-                confidence=float(getattr(analysis, "confidence", 0.0)) if analysis is not None else 0.0,
-                suspicious_reasons=[asset.final_reason],
-            )
-            log_event(
-                logging.ERROR,
-                "image_processing_failed",
-                "Обработка изображения завершилась ошибкой, применен fallback на оригинал.",
-                **asset.to_log_context(),
-            )
-            processed_assets.append(asset)
-
-            _emit_or_apply_state(runtime, image_assets=processed_assets)
-    return processed_assets
+    return process_document_images_impl(
+        image_assets=image_assets,
+        image_mode=image_mode,
+        config=config,
+        on_progress=on_progress,
+        runtime=runtime,
+        client=client,
+        emit_state=_emit_or_apply_state,
+        emit_image_reset=_emit_or_apply_image_reset,
+        emit_finalize=_emit_or_apply_finalize,
+        emit_activity=_emit_or_apply_activity,
+        emit_status=_emit_or_apply_status,
+        emit_image_log=_emit_or_apply_image_log,
+        should_stop=_should_stop_processing,
+        analyze_image_fn=analyze_image,
+        generate_image_candidate_fn=generate_image_candidate,
+        process_image_asset_fn=process_image_asset,
+        get_client_fn=get_client,
+        log_event_fn=log_event,
+        detect_image_mime_type_fn=detect_image_mime_type,
+        image_model_call_budget_cls=ImageModelCallBudget,
+        image_model_call_budget_exceeded_cls=ImageModelCallBudgetExceeded,
+    )
 
 
 def run_document_processing(
@@ -464,330 +289,34 @@ def run_document_processing(
     on_progress,
     runtime: BackgroundRuntime | None = None,
 ) -> str:
-    uploaded_filename = _resolve_uploaded_filename(uploaded_file)
-    try:
-        client = get_client()
-        ensure_pandoc_available()
-        system_prompt = load_system_prompt()
-        log_event(
-            logging.INFO,
-            "processing_started",
-            "Запуск обработки документа",
-            filename=uploaded_filename,
-            model=model,
-            block_count=len(jobs),
-            max_retries=max_retries,
-            image_count=len(image_assets),
-        )
-        _emit_or_apply_activity(runtime, f"Инициализация завершена. Модель: {model}.")
-    except Exception as exc:
-        error_message = present_error(
-            "processing_init_failed",
-            exc,
-            "Ошибка инициализации обработки",
-            filename=uploaded_filename,
-            model=model,
-        )
-        _emit_or_apply_state(runtime, last_error=error_message)
-        _emit_or_apply_finalize(runtime, "Ошибка инициализации", error_message, 0.0)
-        return "failed"
-
-    processed_chunks: list[str] = []
-    started_at = time.perf_counter()
-
-    for index, job in enumerate(jobs, start=1):
-        if _should_stop_processing(runtime):
-            stop_message = "Обработка остановлена пользователем."
-            _emit_or_apply_finalize(runtime, "Остановлено пользователем", stop_message, (index - 1) / len(jobs))
-            _emit_or_apply_activity(runtime, stop_message)
-            _emit_or_apply_log(
-                runtime,
-                status="STOP",
-                block_index=max(0, index - 1),
-                block_count=len(jobs),
-                target_chars=0,
-                context_chars=0,
-                details=stop_message,
-            )
-            return "stopped"
-
-        target_chars = int(job["target_chars"])
-        context_chars = int(job["context_chars"])
-        _emit_or_apply_status(
-            runtime,
-            stage="Подготовка блока",
-            detail=f"Готовлю блок {index} из {len(jobs)} к отправке в OpenAI.",
-            current_block=index,
-            block_count=len(jobs),
-            target_chars=target_chars,
-            context_chars=context_chars,
-            progress=(index - 1) / len(jobs),
-            is_running=True,
-        )
-        _emit_or_apply_activity(runtime, f"Начата обработка блока {index} из {len(jobs)}.")
-        log_event(
-            logging.INFO,
-            "block_started",
-            "Начата обработка блока",
-            filename=uploaded_filename,
-            block_index=index,
-            block_count=len(jobs),
-            target_chars=target_chars,
-            context_chars=context_chars,
-            model=model,
-        )
-        try:
-            _emit_or_apply_status(
-                runtime,
-                stage="Ожидание ответа OpenAI",
-                detail=f"Блок {index} отправлен в модель. Приложение работает, ожидаю ответ.",
-                current_block=index,
-                block_count=len(jobs),
-                target_chars=target_chars,
-                context_chars=context_chars,
-                progress=(index - 1) / len(jobs),
-                is_running=True,
-            )
-            _emit_or_apply_activity(runtime, f"Блок {index} отправлен в OpenAI.")
-            on_progress(preview_title="Текущий Markdown")
-            processed_chunk = generate_markdown_block(
-                client=client,
-                model=model,
-                system_prompt=system_prompt,
-                target_text=str(job["target_text"]),
-                context_before=str(job["context_before"]),
-                context_after=str(job["context_after"]),
-                max_retries=max_retries,
-            )
-        except Exception as exc:
-            _emit_or_apply_state(runtime, latest_markdown="\n\n".join(processed_chunks).strip())
-            error_message = present_error(
-                "block_failed",
-                exc,
-                "Ошибка обработки блока",
-                filename=uploaded_filename,
-                block_index=index,
-                block_count=len(jobs),
-                target_chars=target_chars,
-                context_chars=context_chars,
-                model=model,
-            )
-            formatted_error = f"Ошибка на блоке {index}: {error_message}"
-            _emit_or_apply_state(runtime, last_error=formatted_error)
-            _emit_or_apply_finalize(runtime, "Ошибка обработки", formatted_error, (index - 1) / len(jobs))
-            _emit_or_apply_activity(runtime, f"Блок {index}: ошибка обработки.")
-            _emit_or_apply_log(
-                runtime,
-                status="ERROR",
-                block_index=index,
-                block_count=len(jobs),
-                target_chars=target_chars,
-                context_chars=context_chars,
-                details=error_message,
-            )
-            return "failed"
-
-        if not processed_chunk.strip():
-            critical_message = present_error(
-                "empty_processed_block",
-                RuntimeError("Модель вернула пустой Markdown-блок после успешного вызова."),
-                "Критическая ошибка обработки блока",
-                filename=uploaded_filename,
-                block_index=index,
-            )
-            formatted_error = f"Ошибка на блоке {index}: {critical_message}"
-            _emit_or_apply_state(runtime, last_error=formatted_error)
-            _emit_or_apply_finalize(runtime, "Критическая ошибка", formatted_error, (index - 1) / len(jobs))
-            _emit_or_apply_activity(runtime, f"Блок {index}: модель вернула пустой Markdown.")
-            _emit_or_apply_log(
-                runtime,
-                status="ERROR",
-                block_index=index,
-                block_count=len(jobs),
-                target_chars=target_chars,
-                context_chars=context_chars,
-                details=critical_message,
-            )
-            return "failed"
-
-        processed_chunks.append(processed_chunk)
-        _emit_or_apply_state(
-            runtime,
-            processed_block_markdowns=processed_chunks.copy(),
-            markdown_preview_block_index=len(processed_chunks),
-            latest_markdown="\n\n".join(processed_chunks).strip(),
-        )
-        _emit_or_apply_log(
-            runtime,
-            status="OK",
-            block_index=index,
-            block_count=len(jobs),
-            target_chars=target_chars,
-            context_chars=context_chars,
-            details=f"готово за {time.perf_counter() - started_at:.1f} сек. с начала запуска",
-        )
-        _emit_or_apply_status(
-            runtime,
-            stage="Блок обработан",
-            detail=f"Получен ответ для блока {index}. Обновляю промежуточный Markdown.",
-            current_block=index,
-            block_count=len(jobs),
-            target_chars=target_chars,
-            context_chars=context_chars,
-            progress=index / len(jobs),
-            is_running=True,
-        )
-        _emit_or_apply_activity(runtime, f"Блок {index} обработан успешно.")
-        log_event(
-            logging.INFO,
-            "block_completed",
-            "Блок обработан успешно",
-            filename=uploaded_filename,
-            block_index=index,
-            block_count=len(jobs),
-            target_chars=int(job["target_chars"]),
-            context_chars=int(job["context_chars"]),
-            output_chars=len(processed_chunk),
-        )
-        on_progress(preview_title="Текущий Markdown")
-
-    if len(processed_chunks) != len(jobs):
-        critical_message = present_error(
-            "processed_block_count_mismatch",
-            RuntimeError("Количество обработанных блоков не совпало с планом обработки."),
-            "Критическая ошибка финализации",
-            filename=uploaded_filename,
-            processed_count=len(processed_chunks),
-            planned_count=len(jobs),
-        )
-        _emit_or_apply_state(runtime, last_error=critical_message)
-        _emit_or_apply_finalize(runtime, "Критическая ошибка", critical_message, len(processed_chunks) / len(jobs))
-        _emit_or_apply_activity(runtime, "Обнаружено несоответствие количества обработанных блоков.")
-        _emit_or_apply_log(
-            runtime,
-            status="ERROR",
-            block_index=len(processed_chunks),
-            block_count=len(jobs),
-            target_chars=len("\n\n".join(processed_chunks).strip()),
-            context_chars=0,
-            details=critical_message,
-        )
-        return "failed"
-
-    final_markdown = "\n\n".join(processed_chunks).strip()
-    _emit_or_apply_state(runtime, latest_markdown=final_markdown)
-    processed_image_assets = process_document_images(
+    return run_document_processing_impl(
+        uploaded_file=uploaded_file,
+        jobs=jobs,
         image_assets=image_assets,
         image_mode=image_mode,
-        config=app_config,
+        app_config=app_config,
+        model=model,
+        max_retries=max_retries,
         on_progress=on_progress,
         runtime=runtime,
+        resolve_uploaded_filename=_resolve_uploaded_filename,
+        get_client=get_client,
+        ensure_pandoc_available=ensure_pandoc_available,
+        load_system_prompt=load_system_prompt,
+        log_event=log_event,
+        present_error=present_error,
+        emit_state=_emit_or_apply_state,
+        emit_finalize=_emit_or_apply_finalize,
+        emit_activity=_emit_or_apply_activity,
+        emit_log=_emit_or_apply_log,
+        emit_status=_emit_or_apply_status,
+        should_stop_processing=_should_stop_processing,
+        generate_markdown_block=generate_markdown_block,
+        process_document_images=process_document_images,
+        inspect_placeholder_integrity=inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=convert_markdown_to_docx_bytes,
+        reinsert_inline_images=reinsert_inline_images,
     )
-    if _should_stop_processing(runtime):
-        _emit_or_apply_finalize(runtime, "Остановлено пользователем", "Обработка остановлена пользователем.", 1.0)
-        _emit_or_apply_activity(runtime, "Обработка документа остановлена пользователем.")
-        return "stopped"
-
-    placeholder_integrity = inspect_placeholder_integrity(final_markdown, processed_image_assets)
-    for image_id, placeholder_status in placeholder_integrity.items():
-        if placeholder_status == "ok":
-            continue
-        log_event(
-            logging.WARNING,
-            "image_placeholder_mismatch",
-            "Обнаружено нарушение контракта image placeholder.",
-            filename=uploaded_filename,
-            image_id=image_id,
-            placeholder_status=placeholder_status,
-        )
-    _emit_or_apply_status(
-        runtime,
-        stage="Сборка DOCX",
-        detail="Все блоки готовы. Собираю итоговый DOCX из Markdown.",
-        current_block=len(jobs),
-        block_count=len(jobs),
-        target_chars=len(final_markdown),
-        context_chars=0,
-        progress=1.0,
-        is_running=True,
-    )
-    _emit_or_apply_activity(runtime, "Все блоки готовы. Начата сборка итогового DOCX.")
-    on_progress(preview_title="Текущий Markdown")
-
-    try:
-        docx_bytes = convert_markdown_to_docx_bytes(final_markdown)
-        if processed_image_assets:
-            docx_bytes = reinsert_inline_images(docx_bytes, processed_image_assets)
-    except Exception as exc:
-        error_message = present_error(
-            "docx_build_failed",
-            exc,
-            "Ошибка сборки DOCX",
-            filename=uploaded_filename,
-            final_markdown_chars=len(final_markdown),
-        )
-        _emit_or_apply_state(runtime, last_error=error_message)
-        _emit_or_apply_finalize(runtime, "Ошибка сборки DOCX", error_message, 1.0)
-        _emit_or_apply_activity(runtime, "Ошибка на этапе сборки DOCX.")
-        _emit_or_apply_log(
-            runtime,
-            status="ERROR",
-            block_index=len(jobs),
-            block_count=len(jobs),
-            target_chars=len(final_markdown),
-            context_chars=0,
-            details=error_message,
-        )
-        return "failed"
-
-    if not docx_bytes:
-        critical_message = present_error(
-            "empty_docx_bytes",
-            RuntimeError("Сборка DOCX завершилась без содержимого файла."),
-            "Критическая ошибка сборки DOCX",
-            filename=uploaded_filename,
-        )
-        _emit_or_apply_state(runtime, last_error=critical_message)
-        _emit_or_apply_finalize(runtime, "Критическая ошибка", critical_message, 1.0)
-        _emit_or_apply_activity(runtime, "DOCX собран без содержимого.")
-        _emit_or_apply_log(
-            runtime,
-            status="ERROR",
-            block_index=len(jobs),
-            block_count=len(jobs),
-            target_chars=len(final_markdown),
-            context_chars=0,
-            details=critical_message,
-        )
-        return "failed"
-
-    _emit_or_apply_state(runtime, latest_docx_bytes=docx_bytes, latest_markdown=final_markdown, last_error="")
-    _emit_or_apply_finalize(
-        runtime,
-        "Обработка завершена",
-        f"Документ обработан за {time.perf_counter() - started_at:.1f} сек.",
-        1.0,
-    )
-    _emit_or_apply_activity(runtime, "Документ обработан полностью.")
-    log_event(
-        logging.INFO,
-        "processing_completed",
-        "Документ обработан полностью",
-        filename=uploaded_filename,
-        block_count=len(jobs),
-        final_markdown_chars=len(final_markdown),
-        elapsed_seconds=round(time.perf_counter() - started_at, 2),
-    )
-    _emit_or_apply_log(
-        runtime,
-        status="DONE",
-        block_index=len(jobs),
-        block_count=len(jobs),
-        target_chars=len(final_markdown),
-        context_chars=0,
-        details=f"весь документ обработан за {time.perf_counter() - started_at:.1f} сек.",
-    )
-    return "succeeded"
 
 
 def main() -> None:

@@ -69,17 +69,45 @@ def analyze_image(image_bytes: bytes, *, model: str, mime_type: str | None = Non
                 structure_summary="Infographic-like image with bright background, multiple content zones, and colored emphasis.",
                 extracted_labels=[],
             )
+        if _looks_like_screenshot(visual_features):
+            return ImageAnalysisResult(
+                image_type="screenshot",
+                image_subtype="ui_screenshot_like",
+                contains_text=True,
+                semantic_redraw_allowed=False,
+                confidence=0.79,
+                structured_parse_confidence=0.18,
+                prompt_key="screenshot_safe_fallback",
+                render_strategy="safe_mode",
+                structure_summary="Interface or screen-like raster image; preserve original layout and text safely.",
+                extracted_labels=[],
+                fallback_reason="screenshot_safe_only",
+            )
+        if _looks_like_structured_diagram(visual_features):
+            return ImageAnalysisResult(
+                image_type="diagram",
+                image_subtype=None,
+                contains_text=True,
+                semantic_redraw_allowed=True,
+                confidence=0.81,
+                structured_parse_confidence=0.74,
+                prompt_key="diagram_semantic_redraw",
+                render_strategy="semantic_redraw_structured",
+                structure_summary="Diagram-like image with labels and layout relationships.",
+                extracted_labels=[],
+            )
         return ImageAnalysisResult(
-            image_type="diagram",
-            image_subtype=None,
-            contains_text=True,
-            semantic_redraw_allowed=True,
-            confidence=0.81,
-            structured_parse_confidence=0.74,
-            prompt_key="diagram_semantic_redraw",
-            render_strategy="semantic_redraw_structured",
-            structure_summary="Diagram-like image with labels and layout relationships.",
+            image_type="mixed_or_ambiguous",
+            image_subtype="raster_ambiguous",
+            contains_text=False,
+            semantic_redraw_allowed=False,
+            confidence=0.58,
+            structured_parse_confidence=0.16,
+            prompt_key="mixed_or_ambiguous_fallback",
+            render_strategy="safe_mode",
+            structure_summary="Raster image without reliable diagram evidence; preserve original appearance.",
             extracted_labels=[],
+            fallback_reason="raster_safe_only",
         )
 
     return ImageAnalysisResult(
@@ -196,4 +224,20 @@ def _looks_like_infographic(visual_features: dict[str, float] | None) -> bool:
         and visual_features["colorful_ratio"] >= 0.12
         and visual_features["edge_ratio"] >= 0.08
         and visual_features["dark_ratio"] <= 0.05
+    )
+
+
+def _looks_like_screenshot(visual_features: dict[str, float] | None) -> bool:
+    if not visual_features:
+        return False
+
+    return (
+        visual_features["bright_ratio"] >= 0.45
+        and visual_features["white_ratio"] >= 0.18
+        and visual_features["white_ratio"] <= 0.9
+        and visual_features["edge_ratio"] >= 0.01
+        and visual_features["edge_ratio"] <= 0.16
+        and visual_features["colorful_ratio"] >= 0.01
+        and visual_features["colorful_ratio"] <= 0.2
+        and visual_features["dark_ratio"] <= 0.2
     )

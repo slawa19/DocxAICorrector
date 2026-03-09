@@ -33,6 +33,23 @@ def _make_photo_like_jpeg() -> bytes:
     return output.getvalue()
 
 
+def _make_screenshot_like_png() -> bytes:
+    image = Image.new("RGB", (480, 320), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, 479, 42), fill=(32, 78, 145))
+    draw.rectangle((24, 72, 220, 132), outline=(210, 210, 210), width=2, fill=(248, 248, 248))
+    draw.rectangle((248, 72, 456, 132), outline=(210, 210, 210), width=2, fill=(248, 248, 248))
+    draw.rectangle((24, 156, 456, 288), outline=(220, 220, 220), width=2, fill=(252, 252, 252))
+    for y_coord in (86, 98, 110, 182, 196, 210, 224):
+        draw.line((40, y_coord, 200, y_coord), fill=(80, 80, 80), width=2)
+    for y_coord in (86, 98, 110):
+        draw.line((264, y_coord, 420, y_coord), fill=(80, 80, 80), width=2)
+    draw.rectangle((312, 238, 432, 270), fill=(46, 125, 50))
+    output = BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
+
+
 def test_analyze_image_allows_semantic_redraw_for_diagram_like_jpeg():
     result = image_analysis.analyze_image(_make_diagram_like_jpeg(), model="gpt-4.1", mime_type="image/jpeg")
 
@@ -48,4 +65,13 @@ def test_analyze_image_keeps_photo_like_jpeg_in_safe_mode():
     assert result.image_type == "photo"
     assert result.semantic_redraw_allowed is False
     assert result.prompt_key == "photo_safe_fallback"
+    assert result.render_strategy == "safe_mode"
+
+
+def test_analyze_image_routes_screenshot_like_png_to_safe_mode():
+    result = image_analysis.analyze_image(_make_screenshot_like_png(), model="gpt-4.1", mime_type="image/png")
+
+    assert result.image_type == "screenshot"
+    assert result.semantic_redraw_allowed is False
+    assert result.prompt_key == "screenshot_safe_fallback"
     assert result.render_strategy == "safe_mode"

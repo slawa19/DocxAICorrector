@@ -1,11 +1,17 @@
 import re
+import zipfile
 from io import BytesIO
 
 from docx import Document
+from docx.shared import Emu
 
 from models import DocumentBlock, ImageAsset, ParagraphUnit
 
 IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_IMAGE_img_\d+\]\]")
+MAX_DOCX_ARCHIVE_SIZE_BYTES = 25 * 1024 * 1024
+MAX_DOCX_UNCOMPRESSED_SIZE_BYTES = 100 * 1024 * 1024
+MAX_DOCX_ENTRY_COUNT = 2048
+MAX_DOCX_COMPRESSION_RATIO = 150.0
 
 
 def classify_paragraph_role(text: str, style_name: str) -> str:
@@ -38,8 +44,9 @@ def extract_inline_images(uploaded_file) -> list[ImageAsset]:
 
 
 def extract_document_content_from_docx(uploaded_file) -> tuple[list[ParagraphUnit], list[ImageAsset]]:
-    uploaded_file.seek(0)
-    document = Document(uploaded_file)
+    source_bytes = _read_uploaded_docx_bytes(uploaded_file)
+    _validate_docx_archive(source_bytes)
+    document = Document(BytesIO(source_bytes))
     paragraphs: list[ParagraphUnit] = []
     image_assets: list[ImageAsset] = []
 
@@ -99,7 +106,8 @@ def reinsert_inline_images(docx_bytes: bytes, image_assets: list[ImageAsset]) ->
             image_bytes = resolve_final_image_bytes(asset)
             if not image_bytes:
                 continue
-            paragraph.add_run().add_picture(BytesIO(image_bytes))
+            add_picture_kwargs = _build_picture_size_kwargs(asset)
+            paragraph.add_run().add_picture(BytesIO(image_bytes), **add_picture_kwargs)
 
     output_stream = BytesIO()
     document.save(output_stream)
@@ -242,7 +250,7 @@ def _build_paragraph_text_with_placeholders(paragraph, image_assets: list[ImageA
     for run in paragraph.runs:
         if run.text:
             parts.append(run.text)
-        for image_blob, mime_type in _extract_run_images(run):
+        for image_blob, mime_type, width_emu, height_emu in _extract_run_images(run):
             image_index = len(image_assets) + 1
             placeholder = f"[[DOCX_IMAGE_img_{image_index:03d}]]"
             image_assets.append(
@@ -252,16 +260,19 @@ def _build_paragraph_text_with_placeholders(paragraph, image_assets: list[ImageA
                     original_bytes=image_blob,
                     mime_type=mime_type,
                     position_index=image_index - 1,
+                    width_emu=width_emu,
+                    height_emu=height_emu,
                 )
             )
             parts.append(placeholder)
     return "".join(parts)
 
 
-def _extract_run_images(run) -> list[tuple[bytes, str | None]]:
-    images: list[tuple[bytes, str | None]] = []
+def _extract_run_images(run) -> list[tuple[bytes, str | None, int | None, int | None]]:
+    images: list[tuple[bytes, str | None, int | None, int | None]] = []
     for drawing in run._element.xpath(".//w:drawing"):
         blips = drawing.xpath(".//a:blip")
+        width_emu, height_emu = _resolve_drawing_extent_emu(drawing)
         for blip in blips:
             embed_id = blip.get(f"{{http://schemas.openxmlformats.org/officeDocument/2006/relationships}}embed")
             if not embed_id:
@@ -269,11 +280,81 @@ def _extract_run_images(run) -> list[tuple[bytes, str | None]]:
             image_part = run.part.related_parts.get(embed_id)
             if image_part is None:
                 continue
-            images.append((image_part.blob, getattr(image_part, "content_type", None)))
+            images.append((image_part.blob, getattr(image_part, "content_type", None), width_emu, height_emu))
     return images
 
 
 def _clear_paragraph_runs(paragraph) -> None:
     paragraph_element = paragraph._element
     for child in list(paragraph_element):
-        paragraph_element.remove(child)
+        if _xml_local_name(child.tag) in {"r", "hyperlink"}:
+            paragraph_element.remove(child)
+
+
+def _build_picture_size_kwargs(asset: ImageAsset) -> dict[str, Emu]:
+    size_kwargs: dict[str, Emu] = {}
+    if isinstance(asset.width_emu, int) and asset.width_emu > 0:
+        size_kwargs["width"] = Emu(asset.width_emu)
+    if isinstance(asset.height_emu, int) and asset.height_emu > 0:
+        size_kwargs["height"] = Emu(asset.height_emu)
+    return size_kwargs
+
+
+def _resolve_drawing_extent_emu(drawing) -> tuple[int | None, int | None]:
+    extents = drawing.xpath(".//wp:extent")
+    if not extents:
+        return None, None
+
+    extent = extents[0]
+    try:
+        width_emu = int(extent.get("cx"))
+        height_emu = int(extent.get("cy"))
+    except (TypeError, ValueError):
+        return None, None
+
+    if width_emu <= 0 or height_emu <= 0:
+        return None, None
+    return width_emu, height_emu
+
+
+def _xml_local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _read_uploaded_docx_bytes(uploaded_file) -> bytes:
+    if hasattr(uploaded_file, "seek"):
+        uploaded_file.seek(0)
+    if hasattr(uploaded_file, "getvalue"):
+        source_bytes = uploaded_file.getvalue()
+    else:
+        source_bytes = uploaded_file.read()
+    if not isinstance(source_bytes, (bytes, bytearray)) or not source_bytes:
+        raise ValueError("Не удалось прочитать содержимое DOCX-файла.")
+    return bytes(source_bytes)
+
+
+def _validate_docx_archive(source_bytes: bytes) -> None:
+    if len(source_bytes) > MAX_DOCX_ARCHIVE_SIZE_BYTES:
+        raise RuntimeError("DOCX-файл превышает допустимый размер архива.")
+
+    try:
+        with zipfile.ZipFile(BytesIO(source_bytes)) as archive:
+            entries = archive.infolist()
+    except zipfile.BadZipFile as exc:
+        raise RuntimeError("Передан поврежденный или неподдерживаемый DOCX-архив.") from exc
+
+    if not entries:
+        raise RuntimeError("Передан пустой DOCX-архив.")
+    if len(entries) > MAX_DOCX_ENTRY_COUNT:
+        raise RuntimeError("DOCX-архив содержит слишком много файлов и отклонен из соображений безопасности.")
+
+    total_uncompressed_size = sum(max(0, entry.file_size) for entry in entries)
+    total_compressed_size = sum(max(0, entry.compress_size) for entry in entries)
+    if total_uncompressed_size > MAX_DOCX_UNCOMPRESSED_SIZE_BYTES:
+        raise RuntimeError("DOCX-архив слишком велик после распаковки и отклонен из соображений безопасности.")
+    if total_compressed_size > 0 and (total_uncompressed_size / total_compressed_size) > MAX_DOCX_COMPRESSION_RATIO:
+        raise RuntimeError("DOCX-архив имеет подозрительно высокий коэффициент сжатия и отклонен из соображений безопасности.")
+
+    filenames = {entry.filename for entry in entries}
+    if "[Content_Types].xml" not in filenames:
+        raise RuntimeError("Передан невалидный DOCX-архив: отсутствует [Content_Types].xml.")

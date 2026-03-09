@@ -17,3 +17,5 @@ min_structure_match_score = 0.70
 validator_confidence_threshold = 0.75
 allow_accept_with_partial_text_loss = false
 prefer_structured_redraw = true
+semantic_redraw_max_attempts = 3
+semantic_redraw_max_model_calls_per_image = 9

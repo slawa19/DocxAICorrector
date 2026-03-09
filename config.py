@@ -79,6 +79,13 @@ def parse_config_score(config_data: dict[str, object], field_name: str, default:
     return clamp_score(float(value))
 
 
+def parse_config_int(config_data: dict[str, object], field_name: str, default: int) -> int:
+    value = config_data.get(field_name, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RuntimeError(f"Некорректное поле {field_name} в {CONFIG_PATH}")
+    return value
+
+
 def load_app_config() -> dict[str, object]:
     config_data: dict[str, object] = {}
     if CONFIG_PATH.exists():
@@ -114,6 +121,12 @@ def load_app_config() -> dict[str, object]:
         False,
     )
     prefer_structured_redraw = parse_config_bool(config_data, "prefer_structured_redraw", True)
+    semantic_redraw_max_attempts = parse_config_int(config_data, "semantic_redraw_max_attempts", 3)
+    semantic_redraw_max_model_calls_per_image = parse_config_int(
+        config_data,
+        "semantic_redraw_max_model_calls_per_image",
+        semantic_redraw_max_attempts * 3,
+    )
 
     env_model_options = parse_csv_env("DOCX_AI_MODEL_OPTIONS")
     if env_model_options is not None:
@@ -142,6 +155,14 @@ def load_app_config() -> dict[str, object]:
         "DOCX_AI_ALLOW_ACCEPT_WITH_PARTIAL_TEXT_LOSS",
         allow_accept_with_partial_text_loss,
     )
+    semantic_redraw_max_attempts = parse_int_env(
+        "DOCX_AI_SEMANTIC_REDRAW_MAX_ATTEMPTS",
+        semantic_redraw_max_attempts,
+    )
+    semantic_redraw_max_model_calls_per_image = parse_int_env(
+        "DOCX_AI_SEMANTIC_REDRAW_MAX_MODEL_CALLS_PER_IMAGE",
+        semantic_redraw_max_model_calls_per_image,
+    )
 
     if default_model not in model_options:
         model_options = [default_model, *[item for item in model_options if item != default_model]]
@@ -160,6 +181,8 @@ def load_app_config() -> dict[str, object]:
         "validator_confidence_threshold": validator_confidence_threshold,
         "allow_accept_with_partial_text_loss": allow_accept_with_partial_text_loss,
         "prefer_structured_redraw": prefer_structured_redraw,
+        "semantic_redraw_max_attempts": max(1, min(semantic_redraw_max_attempts, 5)),
+        "semantic_redraw_max_model_calls_per_image": max(1, min(semantic_redraw_max_model_calls_per_image, 20)),
     }
 
 

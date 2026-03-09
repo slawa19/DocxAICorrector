@@ -136,14 +136,29 @@ class TestRedrawRoutingRealInputs:
 
         captured = {}
 
+        class FakeResponsesClient:
+            def create(self, **kwargs):
+                captured["vision"] = kwargs
+                return SimpleNamespace(output_text="structured redraw description")
+
         class FakeImagesClient:
             def edit(self, **kwargs):
-                captured.update(kwargs)
+                captured["edit"] = kwargs
                 return SimpleNamespace(
                     data=[SimpleNamespace(b64_json=base64.b64encode(PNG_STUB_BYTES).decode("ascii"), revised_prompt=None)]
                 )
 
-        monkeypatch.setattr(image_generation, "get_client", lambda: SimpleNamespace(images=FakeImagesClient()))
+            def generate(self, **kwargs):
+                captured["generate"] = kwargs
+                return SimpleNamespace(
+                    data=[SimpleNamespace(b64_json=base64.b64encode(PNG_STUB_BYTES).decode("ascii"), revised_prompt=None)]
+                )
+
+        monkeypatch.setattr(
+            image_generation,
+            "get_client",
+            lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
+        )
         monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
         started_at = time.perf_counter()
@@ -153,13 +168,13 @@ class TestRedrawRoutingRealInputs:
         assert candidate
         with Image.open(BytesIO(image_bytes)) as original_image, Image.open(BytesIO(candidate)) as candidate_image:
             assert candidate_image.size == original_image.size
-        assert captured["model"] == image_generation.IMAGE_EDIT_MODEL
-        assert captured["response_format"] == "b64_json"
         if requested_mode == "semantic_redraw_structured":
-            assert captured["input_fidelity"] == "high"
-            assert captured["quality"] == "high"
+            assert captured["vision"]["model"] == image_generation.IMAGE_STRUCTURE_VISION_MODEL
+            assert captured["generate"]["model"] == image_generation.IMAGE_GENERATE_MODEL
+            assert captured["generate"]["response_format"] == "b64_json"
         else:
-            assert captured["input_fidelity"] in {"low", "high"}
+            assert captured["edit"]["model"] == image_generation.IMAGE_EDIT_MODEL
+            assert captured["edit"]["response_format"] == "b64_json"
         assert elapsed_seconds < 1.0
 
     @pytest.mark.skipif(not LIVE_API_ENABLED, reason="Set DOCX_AI_RUN_LIVE_IMAGE_API_TESTS=1 to run live image API smoke tests.")

@@ -317,7 +317,7 @@ def _build_conservative_candidate_analysis(analysis_before: ImageAnalysisResult)
     return ImageAnalysisResult(
         image_type=analysis_before.image_type,
         image_subtype=analysis_before.image_subtype,
-        contains_text=False if analysis_before.contains_text else analysis_before.contains_text,
+        contains_text=analysis_before.contains_text,
         semantic_redraw_allowed=analysis_before.semantic_redraw_allowed,
         confidence=0.35,
         structured_parse_confidence=0.35,

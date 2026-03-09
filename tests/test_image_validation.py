@@ -95,6 +95,15 @@ def test_validate_redraw_result_detects_text_loss():
     assert result.text_match_score == 0.0
 
 
+def test_build_conservative_candidate_analysis_preserves_contains_text_flag():
+    analysis_before = build_analysis_result(contains_text=True)
+
+    candidate_analysis = image_validation._build_conservative_candidate_analysis(analysis_before)
+
+    assert candidate_analysis.contains_text is True
+    assert candidate_analysis.fallback_reason == "candidate_analysis_missing"
+
+
 def test_validate_redraw_result_detects_image_type_change():
     analysis_before = build_analysis_result()
     candidate_analysis = build_analysis_result(
