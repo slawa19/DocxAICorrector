@@ -59,7 +59,7 @@ def _build_heuristic_analysis(
                 confidence=0.76,
                 structured_parse_confidence=0.64,
                 prompt_key="infographic_semantic_redraw",
-                render_strategy="semantic_redraw_direct",
+                render_strategy="deterministic_reconstruction",
                 structure_summary="Editorial infographic-like image with bright background, colored accents, and dense visual layout.",
                 extracted_labels=[],
             )
@@ -72,7 +72,7 @@ def _build_heuristic_analysis(
                 confidence=0.72,
                 structured_parse_confidence=0.62,
                 prompt_key="diagram_semantic_redraw",
-                render_strategy="semantic_redraw_structured",
+                render_strategy="deterministic_reconstruction",
                 structure_summary="JPEG image with strong diagram-like layout, edges, and light background.",
                 extracted_labels=[],
             )
@@ -100,7 +100,7 @@ def _build_heuristic_analysis(
                 confidence=0.86,
                 structured_parse_confidence=0.7,
                 prompt_key="infographic_semantic_redraw",
-                render_strategy="semantic_redraw_direct",
+                render_strategy="deterministic_reconstruction",
                 structure_summary="Infographic-like image with bright background, multiple content zones, and colored emphasis.",
                 extracted_labels=[],
             )
@@ -127,22 +127,21 @@ def _build_heuristic_analysis(
                 confidence=0.81,
                 structured_parse_confidence=0.74,
                 prompt_key="diagram_semantic_redraw",
-                render_strategy="semantic_redraw_structured",
+                render_strategy="deterministic_reconstruction",
                 structure_summary="Diagram-like image with labels and layout relationships.",
                 extracted_labels=[],
             )
         return ImageAnalysisResult(
-            image_type="mixed_or_ambiguous",
-            image_subtype="raster_ambiguous",
-            contains_text=False,
-            semantic_redraw_allowed=False,
-            confidence=0.58,
-            structured_parse_confidence=0.16,
-            prompt_key="mixed_or_ambiguous_fallback",
-            render_strategy="safe_mode",
-            structure_summary="Raster image without reliable diagram evidence; preserve original appearance.",
+            image_type="diagram",
+            image_subtype=None,
+            contains_text=True,
+            semantic_redraw_allowed=True,
+            confidence=0.81,
+            structured_parse_confidence=0.74,
+            prompt_key="diagram_semantic_redraw",
+            render_strategy="deterministic_reconstruction",
+            structure_summary="Diagram-like image with labels and layout relationships.",
             extracted_labels=[],
-            fallback_reason="raster_safe_only",
         )
 
     return ImageAnalysisResult(
@@ -346,6 +345,13 @@ def _normalize_render_strategy(route_hint: object, fallback_strategy: str) -> tu
         return fallback_strategy, False
     if route in {"bypass", "safe", "safe_mode"}:
         return "safe_mode", True
+    if fallback_strategy == "deterministic_reconstruction" and route in {
+        "deterministic_reconstruction",
+        "gpt-image-1",
+        "semantic_redraw_direct",
+        "semantic_redraw_structured",
+    }:
+        return "deterministic_reconstruction", False
     if route == "gpt-image-1":
         if fallback_strategy in {"semantic_redraw_direct", "semantic_redraw_structured"}:
             return fallback_strategy, False

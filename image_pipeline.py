@@ -102,10 +102,13 @@ def select_best_semantic_asset(
     for attempt_index in range(1, attempt_count + 1):
         try:
             attempt_asset = _clone_image_asset_for_attempt(asset)
-            attempt_asset.redrawn_bytes = generate_image_candidate_fn(
+            attempt_asset.redrawn_bytes = _call_with_supported_kwargs(
+                generate_image_candidate_fn,
                 attempt_asset.original_bytes,
                 analysis,
                 mode=image_mode,
+                prefer_deterministic_reconstruction=bool(config.get("prefer_deterministic_reconstruction", True)),
+                reconstruction_model=str(config.get("reconstruction_model", "")) or None,
                 client=client,
                 budget=call_budget,
             )
@@ -248,7 +251,14 @@ def process_document_images(
             asset.render_strategy = analysis.render_strategy
 
             if image_mode == "safe" or not analysis.semantic_redraw_allowed:
-                asset.safe_bytes = generate_image_candidate_fn(asset.original_bytes, analysis, mode="safe", client=image_client)
+                asset.safe_bytes = _call_with_supported_kwargs(
+                    generate_image_candidate_fn,
+                    asset.original_bytes,
+                    analysis,
+                    mode="safe",
+                    prefer_deterministic_reconstruction=bool(config.get("prefer_deterministic_reconstruction", True)),
+                    client=image_client,
+                )
                 asset.validation_status = "skipped"
                 asset.final_decision = "accept"
                 asset.final_variant = "safe" if asset.safe_bytes else "original"
@@ -256,7 +266,14 @@ def process_document_images(
             else:
                 if image_client is None:
                     image_client = get_client_fn()
-                asset.safe_bytes = generate_image_candidate_fn(asset.original_bytes, analysis, mode="safe", client=image_client)
+                asset.safe_bytes = _call_with_supported_kwargs(
+                    generate_image_candidate_fn,
+                    asset.original_bytes,
+                    analysis,
+                    mode="safe",
+                    prefer_deterministic_reconstruction=bool(config.get("prefer_deterministic_reconstruction", True)),
+                    client=image_client,
+                )
                 asset = select_best_semantic_asset(
                     asset,
                     analysis,
@@ -340,6 +357,7 @@ def _clone_image_asset_for_attempt(asset):
         final_variant=None,
         final_reason=None,
         redrawn_bytes=None,
+        reconstruction_scene_graph=None,
         redrawn_mime_type=None,
         metadata=replace(asset.metadata),
     )

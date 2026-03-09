@@ -82,6 +82,7 @@ class ImageAsset:
     render_strategy: str | None = None
     safe_bytes: bytes | None = None
     redrawn_bytes: bytes | None = None
+    reconstruction_scene_graph: dict[str, object] | None = None
     redrawn_mime_type: str | None = None
     metadata: ImagePipelineMetadata = field(default_factory=ImagePipelineMetadata)
     validation_result: ImageValidationResult | dict[str, object] | None = None

@@ -121,6 +121,10 @@ def load_app_config() -> dict[str, object]:
         False,
     )
     prefer_structured_redraw = parse_config_bool(config_data, "prefer_structured_redraw", True)
+    prefer_deterministic_reconstruction = parse_config_bool(
+        config_data, "prefer_deterministic_reconstruction", True
+    )
+    reconstruction_model = parse_config_str(config_data, "reconstruction_model", "gpt-4.1")
     enable_vision_image_analysis = parse_config_bool(config_data, "enable_vision_image_analysis", True)
     enable_vision_image_validation = parse_config_bool(config_data, "enable_vision_image_validation", True)
     semantic_redraw_max_attempts = parse_config_int(config_data, "semantic_redraw_max_attempts", 3)
@@ -157,6 +161,11 @@ def load_app_config() -> dict[str, object]:
         "DOCX_AI_ALLOW_ACCEPT_WITH_PARTIAL_TEXT_LOSS",
         allow_accept_with_partial_text_loss,
     )
+    prefer_deterministic_reconstruction = parse_bool_env(
+        "DOCX_AI_PREFER_DETERMINISTIC_RECONSTRUCTION",
+        prefer_deterministic_reconstruction,
+    )
+    reconstruction_model = os.getenv("DOCX_AI_RECONSTRUCTION_MODEL", reconstruction_model).strip() or reconstruction_model
     enable_vision_image_analysis = parse_bool_env(
         "DOCX_AI_ENABLE_VISION_IMAGE_ANALYSIS",
         enable_vision_image_analysis,
@@ -191,6 +200,8 @@ def load_app_config() -> dict[str, object]:
         "validator_confidence_threshold": validator_confidence_threshold,
         "allow_accept_with_partial_text_loss": allow_accept_with_partial_text_loss,
         "prefer_structured_redraw": prefer_structured_redraw,
+        "prefer_deterministic_reconstruction": prefer_deterministic_reconstruction,
+        "reconstruction_model": reconstruction_model,
         "enable_vision_image_analysis": enable_vision_image_analysis,
         "enable_vision_image_validation": enable_vision_image_validation,
         "semantic_redraw_max_attempts": max(1, min(semantic_redraw_max_attempts, 5)),

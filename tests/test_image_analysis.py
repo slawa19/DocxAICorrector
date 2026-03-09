@@ -85,7 +85,7 @@ def test_analyze_image_allows_semantic_redraw_for_diagram_like_jpeg():
     assert result.image_type == "diagram"
     assert result.semantic_redraw_allowed is True
     assert result.prompt_key == "diagram_semantic_redraw"
-    assert result.render_strategy == "semantic_redraw_structured"
+    assert result.render_strategy == "deterministic_reconstruction"
 
 
 def test_analyze_image_keeps_photo_like_jpeg_in_safe_mode():
