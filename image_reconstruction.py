@@ -116,7 +116,7 @@ def render_scene_graph(
     height = int(canvas_spec.get("height", 600))
     bg_color = canvas_spec.get("background_color", "#FFFFFF")
 
-    image = Image.new("RGBA", (width, height), _hex_to_rgba(bg_color))
+    image = Image.new("RGBA", (width, height), _hex_to_rgba(bg_color) or (255, 255, 255, 255))
     draw = ImageDraw.Draw(image)
 
     elements = scene_graph.get("elements", [])
@@ -346,7 +346,17 @@ def _render_text_content(
     bold = el.get("font_weight", "normal") == "bold"
     font = _get_font(font_size, bold=bold)
     color = el.get("font_color") or "#000000"
-    _draw_centered_text(draw, text, x, y, w, h, font, _hex_to_rgba(color))
+    _draw_centered_text(
+        draw,
+        text,
+        x,
+        y,
+        w,
+        h,
+        font,
+        _hex_to_rgba(color),
+        text_align=str(el.get("text_align", "center")),
+    )
 
 
 def _draw_centered_text(
@@ -358,11 +368,18 @@ def _draw_centered_text(
     h: int,
     font: ImageFont.ImageFont | ImageFont.FreeTypeFont,
     color: tuple[int, ...],
+    text_align: str = "center",
 ) -> None:
     bbox = draw.textbbox((0, 0), text, font=font)
     tw = bbox[2] - bbox[0]
     th = bbox[3] - bbox[1]
-    tx = x + (w - tw) // 2
+    normalized_align = text_align.lower()
+    if normalized_align == "left":
+        tx = x
+    elif normalized_align == "right":
+        tx = x + w - tw
+    else:
+        tx = x + (w - tw) // 2
     ty = y + (h - th) // 2
     draw.text((tx, ty), text, fill=color, font=font)
 
@@ -551,4 +568,8 @@ def _get_image_size(image_bytes: bytes) -> tuple[int, int]:
     with Image.open(BytesIO(image_bytes)) as img:
         img.load()
         normalized = ImageOps.exif_transpose(img)
-        return normalized.size
+        try:
+            return normalized.size
+        finally:
+            if normalized is not img:
+                normalized.close()

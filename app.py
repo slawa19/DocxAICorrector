@@ -297,6 +297,7 @@ def _select_best_semantic_asset(asset, analysis, image_mode: str, config: dict[s
                 attempt_asset.original_bytes,
                 analysis,
                 mode=image_mode,
+                prefer_deterministic_reconstruction=bool(config.get("prefer_deterministic_reconstruction", True)),
                 reconstruction_model=str(config.get("reconstruction_model", "")) or None,
             )
             candidate_analysis = analyze_image(
@@ -395,13 +396,23 @@ def process_document_images(
             asset.render_strategy = analysis.render_strategy
 
             if image_mode == "safe" or not analysis.semantic_redraw_allowed:
-                asset.safe_bytes = generate_image_candidate(asset.original_bytes, analysis, mode="safe")
+                asset.safe_bytes = generate_image_candidate(
+                    asset.original_bytes,
+                    analysis,
+                    mode="safe",
+                    prefer_deterministic_reconstruction=bool(config.get("prefer_deterministic_reconstruction", True)),
+                )
                 asset.validation_status = "skipped"
                 asset.final_decision = "accept"
                 asset.final_variant = "safe" if asset.safe_bytes else "original"
                 asset.final_reason = "Изображение обработано в safe-mode."
             else:
-                asset.safe_bytes = generate_image_candidate(asset.original_bytes, analysis, mode="safe")
+                asset.safe_bytes = generate_image_candidate(
+                    asset.original_bytes,
+                    analysis,
+                    mode="safe",
+                    prefer_deterministic_reconstruction=bool(config.get("prefer_deterministic_reconstruction", True)),
+                )
                 asset = _select_best_semantic_asset(asset, analysis, image_mode, config)
 
             validation_result = asset.validation_result if hasattr(asset, "validation_result") else None

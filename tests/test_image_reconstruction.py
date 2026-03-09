@@ -131,6 +131,12 @@ class TestRenderSceneGraph:
             assert img.size == (200, 100)
             assert img.format == "PNG"
 
+    def test_invalid_background_color_falls_back_to_white(self):
+        sg = _build_minimal_scene_graph(canvas={"width": 200, "height": 100, "background_color": "not-a-color"})
+        png_bytes = render_scene_graph(sg)
+        with Image.open(BytesIO(png_bytes)) as img:
+            assert img.getpixel((0, 0)) == (255, 255, 255, 255)
+
     def test_renders_rect_element(self):
         sg = _build_minimal_scene_graph(
             elements=[
@@ -173,6 +179,33 @@ class TestRenderSceneGraph:
         png_bytes = render_scene_graph(sg)
         with Image.open(BytesIO(png_bytes)) as img:
             assert img.size == (200, 100)
+
+    def test_renders_left_aligned_text(self):
+        sg = _build_minimal_scene_graph(
+            elements=[
+                {
+                    "id": "t1",
+                    "type": "text",
+                    "x": 20,
+                    "y": 10,
+                    "width": 160,
+                    "height": 30,
+                    "text_content": "Hello",
+                    "font_size": 18,
+                    "font_color": "#000000",
+                    "text_align": "left",
+                    "z_index": 1,
+                }
+            ]
+        )
+        png_bytes = render_scene_graph(sg)
+        with Image.open(BytesIO(png_bytes)) as img:
+            dark_columns = [
+                x_coord
+                for x_coord in range(img.width)
+                if any(img.getpixel((x_coord, y_coord))[:3] != (255, 255, 255) for y_coord in range(img.height))
+            ]
+            assert min(dark_columns) < 40
 
     def test_renders_arrow_element(self):
         sg = _build_minimal_scene_graph(

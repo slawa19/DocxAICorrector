@@ -30,6 +30,8 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["validator_confidence_threshold"] == 0.75
     assert app_config["allow_accept_with_partial_text_loss"] is False
     assert app_config["prefer_structured_redraw"] is True
+    assert app_config["prefer_deterministic_reconstruction"] is True
+    assert app_config["reconstruction_model"] == "gpt-4.1"
 
 
 def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
@@ -42,6 +44,8 @@ def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
     monkeypatch.setenv("DOCX_AI_MIN_STRUCTURE_MATCH_SCORE", "0.91")
     monkeypatch.setenv("DOCX_AI_VALIDATOR_CONFIDENCE_THRESHOLD", "2")
     monkeypatch.setenv("DOCX_AI_ALLOW_ACCEPT_WITH_PARTIAL_TEXT_LOSS", "yes")
+    monkeypatch.setenv("DOCX_AI_PREFER_DETERMINISTIC_RECONSTRUCTION", "false")
+    monkeypatch.setenv("DOCX_AI_RECONSTRUCTION_MODEL", "gpt-4.1-mini")
 
     app_config = config.load_app_config()
 
@@ -53,6 +57,8 @@ def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
     assert app_config["min_structure_match_score"] == 0.91
     assert app_config["validator_confidence_threshold"] == 1.0
     assert app_config["allow_accept_with_partial_text_loss"] is True
+    assert app_config["prefer_deterministic_reconstruction"] is False
+    assert app_config["reconstruction_model"] == "gpt-4.1-mini"
 
 
 def test_parse_csv_env_rejects_empty_effective_list(monkeypatch):

@@ -431,3 +431,33 @@ def test_generate_image_candidate_semantic_falls_back_to_safe_when_redraw_is_for
     )
 
     assert candidate.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_generate_image_candidate_uses_legacy_semantic_path_when_reconstruction_disabled(monkeypatch):
+    captured = {}
+
+    class FakeImagesClient:
+        def edit(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(
+                        b64_json=base64.b64encode(PNG_BYTES + b"-legacy").decode("ascii"),
+                        revised_prompt=None,
+                    )
+                ]
+            )
+
+    monkeypatch.setattr(image_generation, "get_client", lambda: SimpleNamespace(images=FakeImagesClient()))
+    monkeypatch.setattr(image_generation, "reconstruct_image", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError()))
+    monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
+
+    candidate = image_generation.generate_image_candidate(
+        build_detailed_png_bytes(),
+        build_analysis_result(render_strategy="deterministic_reconstruction"),
+        mode="semantic_redraw_structured",
+        prefer_deterministic_reconstruction=False,
+    )
+
+    assert candidate.startswith(b"\x89PNG\r\n\x1a\n")
+    assert captured["model"] == image_generation.IMAGE_EDIT_MODEL

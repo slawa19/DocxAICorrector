@@ -135,7 +135,8 @@ class TestRedrawRoutingRealInputs:
             return
 
         if analysis_result.render_strategy == "deterministic_reconstruction":
-            original_size = Image.open(BytesIO(image_bytes)).size
+            with Image.open(BytesIO(image_bytes)) as original_image:
+                original_size = original_image.size
             stub_image = Image.new("RGB", original_size, (200, 200, 200))
             stub_buf = BytesIO()
             stub_image.save(stub_buf, format="PNG")

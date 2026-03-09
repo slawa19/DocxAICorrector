@@ -20,6 +20,7 @@ def generate_image_candidate(
     analysis: ImageAnalysisResult,
     *,
     mode: str,
+    prefer_deterministic_reconstruction: bool = True,
     reconstruction_model: str | None = None,
 ) -> bytes:
     if not _is_supported_image_bytes(image_bytes):
@@ -31,7 +32,11 @@ def generate_image_candidate(
 
     if requested_mode == "safe":
         candidate_bytes = _generate_safe_candidate(image_bytes)
-    elif analysis.render_strategy == RECONSTRUCTION_STRATEGY and requested_mode in SEMANTIC_MODES:
+    elif _should_use_reconstruction(
+        analysis,
+        requested_mode=requested_mode,
+        prefer_deterministic_reconstruction=prefer_deterministic_reconstruction,
+    ):
         candidate_bytes = _generate_reconstructed_candidate(
             image_bytes,
             analysis,
@@ -65,6 +70,19 @@ def _resolve_requested_mode(mode: str, analysis: ImageAnalysisResult) -> str:
     if requested_mode in SEMANTIC_MODES and not analysis.semantic_redraw_allowed:
         return "safe"
     return requested_mode
+
+
+def _should_use_reconstruction(
+    analysis: ImageAnalysisResult,
+    *,
+    requested_mode: str,
+    prefer_deterministic_reconstruction: bool,
+) -> bool:
+    return (
+        prefer_deterministic_reconstruction
+        and analysis.render_strategy == RECONSTRUCTION_STRATEGY
+        and requested_mode in SEMANTIC_MODES
+    )
 
 
 def _generate_safe_candidate(image_bytes: bytes) -> bytes:
@@ -104,11 +122,9 @@ def _generate_reconstructed_candidate(
 
     Falls back to safe candidate if reconstruction fails.
     """
-    from image_reconstruction import reconstruct_image as _reconstruct
-
     model = reconstruction_model or "gpt-4.1"
     try:
-        candidate_bytes, scene_graph = _reconstruct(
+        candidate_bytes, scene_graph = reconstruct_image(
             image_bytes,
             model=model,
             mime_type=None,

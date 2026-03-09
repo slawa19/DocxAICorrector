@@ -146,6 +146,11 @@ def load_app_config() -> dict[str, object]:
         "DOCX_AI_ALLOW_ACCEPT_WITH_PARTIAL_TEXT_LOSS",
         allow_accept_with_partial_text_loss,
     )
+    prefer_deterministic_reconstruction = parse_bool_env(
+        "DOCX_AI_PREFER_DETERMINISTIC_RECONSTRUCTION",
+        prefer_deterministic_reconstruction,
+    )
+    reconstruction_model = os.getenv("DOCX_AI_RECONSTRUCTION_MODEL", reconstruction_model).strip() or reconstruction_model
 
     if default_model not in model_options:
         model_options = [default_model, *[item for item in model_options if item != default_model]]
