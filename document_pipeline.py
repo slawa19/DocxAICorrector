@@ -257,6 +257,8 @@ def run_document_processing(
         return "stopped"
 
     placeholder_integrity = inspect_placeholder_integrity(final_markdown, processed_image_assets)
+    for asset in processed_image_assets:
+        asset.update_pipeline_metadata(placeholder_status=placeholder_integrity.get(asset.image_id))
     placeholder_mismatches: dict[str, str] = {}
     for image_id, placeholder_status in placeholder_integrity.items():
         if placeholder_status == "ok":

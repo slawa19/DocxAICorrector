@@ -134,6 +134,8 @@ max_retries = 3
 image_mode_default = "safe"
 enable_post_redraw_validation = true
 validation_model = "gpt-4.1"
+enable_vision_image_analysis = true
+enable_vision_image_validation = true
 semantic_redraw_max_attempts = 3
 semantic_redraw_max_model_calls_per_image = 9
 ```
@@ -148,6 +150,8 @@ DOCX_AI_MAX_RETRIES=3
 DOCX_AI_IMAGE_MODE_DEFAULT=safe
 DOCX_AI_ENABLE_POST_REDRAW_VALIDATION=true
 DOCX_AI_VALIDATION_MODEL=gpt-4.1
+DOCX_AI_ENABLE_VISION_IMAGE_ANALYSIS=true
+DOCX_AI_ENABLE_VISION_IMAGE_VALIDATION=true
 DOCX_AI_SEMANTIC_REDRAW_MAX_ATTEMPTS=3
 DOCX_AI_SEMANTIC_REDRAW_MAX_MODEL_CALLS_PER_IMAGE=9
 ```

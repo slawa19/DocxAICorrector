@@ -1,5 +1,6 @@
-import copy
+import inspect
 import logging
+from dataclasses import replace
 
 
 def score_semantic_candidate(asset) -> float:
@@ -72,6 +73,7 @@ def try_soft_accept_semantic_candidate(asset, analysis, image_mode: str, config:
         "Применен мягкий accept для лучшего semantic redraw candidate.",
         **asset.to_log_context(),
     )
+    asset.update_pipeline_metadata(soft_accepted=True)
     return asset
 
 
@@ -99,7 +101,7 @@ def select_best_semantic_asset(
 
     for attempt_index in range(1, attempt_count + 1):
         try:
-            attempt_asset = copy.deepcopy(asset)
+            attempt_asset = _clone_image_asset_for_attempt(asset)
             attempt_asset.redrawn_bytes = generate_image_candidate_fn(
                 attempt_asset.original_bytes,
                 analysis,
@@ -108,16 +110,23 @@ def select_best_semantic_asset(
                 budget=call_budget,
             )
             attempt_asset.redrawn_mime_type = detect_image_mime_type_fn(attempt_asset.redrawn_bytes)
-            candidate_analysis = analyze_image_fn(
+            attempt_asset.update_pipeline_metadata(rendered_mime_type=attempt_asset.redrawn_mime_type)
+            candidate_analysis = _call_with_supported_kwargs(
+                analyze_image_fn,
                 attempt_asset.redrawn_bytes,
                 model=str(config.get("validation_model", "")),
                 mime_type=attempt_asset.redrawn_mime_type or attempt_asset.mime_type,
+                client=client,
+                enable_vision=bool(config.get("enable_vision_image_analysis", True)),
             )
-            attempt_asset = process_image_asset_fn(
+            attempt_asset = _call_with_supported_kwargs(
+                process_image_asset_fn,
                 attempt_asset,
                 image_mode=image_mode,
                 config=config,
                 candidate_analysis=candidate_analysis,
+                client=client,
+                enable_vision_validation=bool(config.get("enable_vision_image_validation", True)),
             )
         except image_model_call_budget_exceeded_cls as exc:
             budget_exhausted = True
@@ -226,10 +235,13 @@ def process_document_images(
         on_progress(preview_title="Текущий Markdown")
         analysis = None
         try:
-            analysis = analyze_image_fn(
+            analysis = _call_with_supported_kwargs(
+                analyze_image_fn,
                 asset.original_bytes,
                 model=str(config.get("validation_model", "")),
                 mime_type=asset.mime_type,
+                client=image_client,
+                enable_vision=bool(config.get("enable_vision_image_analysis", True)),
             )
             asset.analysis_result = analysis
             asset.prompt_key = analysis.prompt_key
@@ -311,3 +323,30 @@ def process_document_images(
 
         emit_state(runtime, image_assets=processed_assets)
     return processed_assets
+
+
+def _call_with_supported_kwargs(callable_obj, *args, **kwargs):
+    signature = inspect.signature(callable_obj)
+    supported_kwargs = {name: value for name, value in kwargs.items() if name in signature.parameters}
+    return callable_obj(*args, **supported_kwargs)
+
+
+def _clone_image_asset_for_attempt(asset):
+    cloned_asset = replace(
+        asset,
+        validation_result=None,
+        validation_status="pending",
+        final_decision=None,
+        final_variant=None,
+        final_reason=None,
+        redrawn_bytes=None,
+        redrawn_mime_type=None,
+        metadata=replace(asset.metadata),
+    )
+    cloned_asset.update_pipeline_metadata(
+        rendered_mime_type=None,
+        strict_validation_decision=None,
+        strict_validation_passed=None,
+        soft_accepted=False,
+    )
+    return cloned_asset

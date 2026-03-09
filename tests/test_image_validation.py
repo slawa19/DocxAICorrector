@@ -5,6 +5,19 @@ from models import ImageAnalysisResult, ImageAsset, ImageValidationResult
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"test-image-payload"
 
 
+class _FakeResponsesClient:
+    def __init__(self, output_text: str):
+        self.output_text = output_text
+        self.responses = self
+
+    def create(self, **kwargs):
+        class _Response:
+            def __init__(self, output_text: str):
+                self.output_text = output_text
+
+        return _Response(self.output_text)
+
+
 def build_analysis_result(**overrides):
     payload = {
         "image_type": "diagram",
@@ -234,3 +247,29 @@ def test_process_image_asset_accepts_redrawn_variant_when_validation_passes():
     assert processed_asset.validation_status == "passed"
     assert processed_asset.final_decision == "accept"
     assert processed_asset.final_variant == "redrawn"
+
+
+def test_validate_redraw_result_uses_vision_assessment_conservatively():
+    analysis_before = build_analysis_result()
+    candidate_analysis = build_analysis_result()
+    client = _FakeResponsesClient(
+        '{"semantic_match_score":0.92,"text_match_score":0.4,"structure_match_score":0.9,'
+        '"validator_confidence":0.86,"candidate_contains_text":false,"missing_labels":["Review"],'
+        '"added_entities":[],"suspicious_reasons":["vision_text_loss_detected"]}'
+    )
+
+    result = image_validation.validate_redraw_result(
+        PNG_BYTES,
+        PNG_BYTES,
+        analysis_before,
+        candidate_analysis=candidate_analysis,
+        client=client,
+        enable_vision_validation=True,
+        validation_model="gpt-4.1",
+    )
+
+    assert result.validation_passed is False
+    assert result.decision == "fallback_safe"
+    assert "text_missing_in_candidate" in result.suspicious_reasons
+    assert "vision_text_loss_detected" in result.suspicious_reasons
+    assert result.missing_labels == ["review"]

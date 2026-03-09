@@ -30,6 +30,8 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["validator_confidence_threshold"] == 0.75
     assert app_config["allow_accept_with_partial_text_loss"] is False
     assert app_config["prefer_structured_redraw"] is True
+    assert app_config["enable_vision_image_analysis"] is True
+    assert app_config["enable_vision_image_validation"] is True
     assert app_config["semantic_redraw_max_attempts"] == 3
     assert app_config["semantic_redraw_max_model_calls_per_image"] == 9
 
@@ -44,6 +46,8 @@ def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
     monkeypatch.setenv("DOCX_AI_MIN_STRUCTURE_MATCH_SCORE", "0.91")
     monkeypatch.setenv("DOCX_AI_VALIDATOR_CONFIDENCE_THRESHOLD", "2")
     monkeypatch.setenv("DOCX_AI_ALLOW_ACCEPT_WITH_PARTIAL_TEXT_LOSS", "yes")
+    monkeypatch.setenv("DOCX_AI_ENABLE_VISION_IMAGE_ANALYSIS", "false")
+    monkeypatch.setenv("DOCX_AI_ENABLE_VISION_IMAGE_VALIDATION", "false")
     monkeypatch.setenv("DOCX_AI_SEMANTIC_REDRAW_MAX_ATTEMPTS", "9")
     monkeypatch.setenv("DOCX_AI_SEMANTIC_REDRAW_MAX_MODEL_CALLS_PER_IMAGE", "99")
 
@@ -57,6 +61,8 @@ def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
     assert app_config["min_structure_match_score"] == 0.91
     assert app_config["validator_confidence_threshold"] == 1.0
     assert app_config["allow_accept_with_partial_text_loss"] is True
+    assert app_config["enable_vision_image_analysis"] is False
+    assert app_config["enable_vision_image_validation"] is False
     assert app_config["semantic_redraw_max_attempts"] == 5
     assert app_config["semantic_redraw_max_model_calls_per_image"] == 20
 

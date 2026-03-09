@@ -5,6 +5,19 @@ from PIL import Image, ImageDraw
 import image_analysis
 
 
+class _FakeResponsesClient:
+    def __init__(self, output_text: str):
+        self.output_text = output_text
+        self.responses = self
+
+    def create(self, **kwargs):
+        class _Response:
+            def __init__(self, output_text: str):
+                self.output_text = output_text
+
+        return _Response(self.output_text)
+
+
 def _make_diagram_like_jpeg() -> bytes:
     image = Image.new("RGB", (480, 320), "white")
     draw = ImageDraw.Draw(image)
@@ -75,3 +88,26 @@ def test_analyze_image_routes_screenshot_like_png_to_safe_mode():
     assert result.semantic_redraw_allowed is False
     assert result.prompt_key == "screenshot_safe_fallback"
     assert result.render_strategy == "safe_mode"
+
+
+def test_analyze_image_uses_vision_labels_when_available():
+    client = _FakeResponsesClient(
+        '{"image_type":"diagram","image_subtype":"flowchart","contains_text":true,'
+        '"semantic_redraw_allowed":true,"confidence":0.94,"structured_parse_confidence":0.91,'
+        '"prompt_key":"diagram_semantic_redraw","render_strategy":"semantic_redraw_structured",'
+        '"structure_summary":"three boxes connected by arrows","extracted_labels":["Start","Review","Finish"],'
+        '"fallback_reason":null}'
+    )
+
+    result = image_analysis.analyze_image(
+        _make_diagram_like_jpeg(),
+        model="gpt-4.1",
+        mime_type="image/jpeg",
+        client=client,
+        enable_vision=True,
+    )
+
+    assert result.image_type == "diagram"
+    assert result.semantic_redraw_allowed is True
+    assert result.extracted_labels == ["Start", "Review", "Finish"]
+    assert result.contains_text is True

@@ -121,6 +121,8 @@ def load_app_config() -> dict[str, object]:
         False,
     )
     prefer_structured_redraw = parse_config_bool(config_data, "prefer_structured_redraw", True)
+    enable_vision_image_analysis = parse_config_bool(config_data, "enable_vision_image_analysis", True)
+    enable_vision_image_validation = parse_config_bool(config_data, "enable_vision_image_validation", True)
     semantic_redraw_max_attempts = parse_config_int(config_data, "semantic_redraw_max_attempts", 3)
     semantic_redraw_max_model_calls_per_image = parse_config_int(
         config_data,
@@ -155,6 +157,14 @@ def load_app_config() -> dict[str, object]:
         "DOCX_AI_ALLOW_ACCEPT_WITH_PARTIAL_TEXT_LOSS",
         allow_accept_with_partial_text_loss,
     )
+    enable_vision_image_analysis = parse_bool_env(
+        "DOCX_AI_ENABLE_VISION_IMAGE_ANALYSIS",
+        enable_vision_image_analysis,
+    )
+    enable_vision_image_validation = parse_bool_env(
+        "DOCX_AI_ENABLE_VISION_IMAGE_VALIDATION",
+        enable_vision_image_validation,
+    )
     semantic_redraw_max_attempts = parse_int_env(
         "DOCX_AI_SEMANTIC_REDRAW_MAX_ATTEMPTS",
         semantic_redraw_max_attempts,
@@ -181,6 +191,8 @@ def load_app_config() -> dict[str, object]:
         "validator_confidence_threshold": validator_confidence_threshold,
         "allow_accept_with_partial_text_loss": allow_accept_with_partial_text_loss,
         "prefer_structured_redraw": prefer_structured_redraw,
+        "enable_vision_image_analysis": enable_vision_image_analysis,
+        "enable_vision_image_validation": enable_vision_image_validation,
         "semantic_redraw_max_attempts": max(1, min(semantic_redraw_max_attempts, 5)),
         "semantic_redraw_max_model_calls_per_image": max(1, min(semantic_redraw_max_model_calls_per_image, 20)),
     }

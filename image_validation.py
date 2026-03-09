@@ -1,7 +1,11 @@
 import logging
+import base64
+import json
 import re
+import time
 from typing import Mapping
 
+from generation import is_retryable_error
 from logger import log_event
 from models import ImageAnalysisResult, ImageAsset, ImageValidationResult
 
@@ -21,6 +25,8 @@ _IMAGE_SIGNATURES = (
     b"BM",
     b"RIFF",
 )
+VISION_VALIDATION_TIMEOUT_SECONDS = 45.0
+VISION_VALIDATION_MAX_RETRIES = 2
 
 
 def validate_redraw_result(
@@ -31,6 +37,9 @@ def validate_redraw_result(
     candidate_analysis: ImageAnalysisResult | dict[str, object] | None = None,
     config: Mapping[str, object] | None = None,
     image_context: Mapping[str, object] | None = None,
+    client=None,
+    enable_vision_validation: bool = True,
+    validation_model: str | None = None,
 ) -> ImageValidationResult:
     normalized_context = dict(image_context or {})
     try:
@@ -49,6 +58,15 @@ def validate_redraw_result(
             normalized_analysis,
             candidate_analysis=candidate_analysis,
             config=config,
+            vision_assessment=_maybe_build_vision_validation_assessment(
+                original_image=original_image,
+                candidate_image=candidate_image,
+                analysis_before=normalized_analysis,
+                candidate_analysis=_coerce_analysis_result(candidate_analysis) if candidate_analysis else None,
+                client=client,
+                model=validation_model or str((config or {}).get("validation_model", "gpt-4.1")),
+                enable_vision_validation=enable_vision_validation,
+            ),
         )
     except Exception as exc:
         log_event(
@@ -102,6 +120,8 @@ def process_image_asset(
     image_mode: str,
     config: Mapping[str, object],
     candidate_analysis: ImageAnalysisResult | dict[str, object] | None = None,
+    client=None,
+    enable_vision_validation: bool = True,
 ) -> ImageAsset:
     asset.mode_requested = image_mode
     context = {
@@ -150,9 +170,16 @@ def process_image_asset(
         candidate_analysis=candidate_analysis,
         config=config,
         image_context=context,
+        client=client,
+        enable_vision_validation=enable_vision_validation,
+        validation_model=str(config.get("validation_model", "gpt-4.1")),
     )
     asset.validation_result = result
     asset.validation_status = "passed" if result.validation_passed else "failed"
+    asset.update_pipeline_metadata(
+        strict_validation_decision=result.decision,
+        strict_validation_passed=result.validation_passed,
+    )
 
     if result.decision == "accept":
         asset.final_decision = "accept"
@@ -188,6 +215,7 @@ def _validate_redraw_result(
     *,
     candidate_analysis: ImageAnalysisResult | dict[str, object] | None,
     config: Mapping[str, object] | None,
+    vision_assessment: dict[str, object] | None = None,
 ) -> ImageValidationResult:
     resolved_config = {**DEFAULT_VALIDATION_CONFIG, **dict(config or {})}
 
@@ -280,7 +308,7 @@ def _validate_redraw_result(
     )
 
     decision = "accept" if validation_passed else "fallback_safe"
-    return ImageValidationResult(
+    heuristic_result = ImageValidationResult(
         validation_passed=validation_passed,
         decision=decision,
         semantic_match_score=semantic_match_score,
@@ -290,6 +318,15 @@ def _validate_redraw_result(
         missing_labels=missing_labels,
         added_entities_detected=added_entities_detected,
         suspicious_reasons=suspicious_reasons,
+    )
+    if vision_assessment is None:
+        return heuristic_result
+    return _merge_with_vision_assessment(
+        heuristic_result,
+        analysis_before,
+        normalized_candidate_analysis,
+        resolved_config,
+        vision_assessment,
     )
 
 
@@ -403,3 +440,210 @@ def _safe_image_type(analysis_before: ImageAnalysisResult | dict[str, object]) -
     if isinstance(analysis_before, dict):
         return str(analysis_before.get("image_type", "unknown"))
     return "unknown"
+
+
+def _build_vision_validation_assessment(
+    *,
+    original_image: bytes,
+    candidate_image: bytes,
+    analysis_before: ImageAnalysisResult,
+    candidate_analysis: ImageAnalysisResult | None,
+    client,
+    model: str,
+) -> dict[str, object]:
+    original_mime = _detect_mime_type(original_image)
+    candidate_mime = _detect_mime_type(candidate_image)
+    if original_mime is None or candidate_mime is None:
+        raise RuntimeError("Vision validation requires readable image payloads.")
+
+    response = _call_responses_create_with_retry(
+        client,
+        {
+            "model": model or "gpt-4.1",
+            "input": [
+                {
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "You compare original and candidate document images conservatively. "
+                                "Return strict JSON only and prefer fallback when uncertain."
+                            ),
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "Return JSON with keys: semantic_match_score, text_match_score, structure_match_score, "
+                                "validator_confidence, candidate_contains_text, missing_labels, added_entities, suspicious_reasons. "
+                                f"Original image_type={analysis_before.image_type}; original_labels={analysis_before.extracted_labels}; "
+                                f"candidate_labels={candidate_analysis.extracted_labels if candidate_analysis else []}."
+                            ),
+                        },
+                        {
+                            "type": "input_image",
+                            "image_url": f"data:{original_mime};base64,{base64.b64encode(original_image).decode('ascii')}",
+                        },
+                        {
+                            "type": "input_image",
+                            "image_url": f"data:{candidate_mime};base64,{base64.b64encode(candidate_image).decode('ascii')}",
+                        },
+                    ],
+                },
+            ],
+            "timeout": VISION_VALIDATION_TIMEOUT_SECONDS,
+        },
+    )
+    return _parse_json_object(getattr(response, "output_text", ""))
+
+
+def _maybe_build_vision_validation_assessment(
+    *,
+    original_image: bytes,
+    candidate_image: bytes,
+    analysis_before: ImageAnalysisResult,
+    candidate_analysis: ImageAnalysisResult | None,
+    client,
+    model: str,
+    enable_vision_validation: bool,
+) -> dict[str, object] | None:
+    if not enable_vision_validation or not _supports_responses_client(client):
+        return None
+    try:
+        return _build_vision_validation_assessment(
+            original_image=original_image,
+            candidate_image=candidate_image,
+            analysis_before=analysis_before,
+            candidate_analysis=candidate_analysis,
+            client=client,
+            model=model,
+        )
+    except Exception:
+        return None
+
+
+def _call_responses_create_with_retry(client, request_payload: dict[str, object]):
+    current_payload = dict(request_payload)
+    for attempt in range(1, VISION_VALIDATION_MAX_RETRIES + 1):
+        try:
+            return client.responses.create(**current_payload)
+        except TypeError as exc:
+            if "timeout" in str(exc) and "timeout" in current_payload:
+                current_payload.pop("timeout", None)
+                continue
+            raise
+        except Exception as exc:
+            if attempt >= VISION_VALIDATION_MAX_RETRIES or not is_retryable_error(exc):
+                raise
+            time.sleep(min(2 ** (attempt - 1), 4))
+    raise RuntimeError("Vision validation retry loop exhausted unexpectedly.")
+
+
+def _parse_json_object(raw_text: str) -> dict[str, object]:
+    text = raw_text.strip()
+    if not text:
+        raise RuntimeError("Vision validation returned empty output.")
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise RuntimeError("Vision validation did not return JSON.")
+    return json.loads(text[start:end + 1])
+
+
+def _merge_with_vision_assessment(
+    heuristic_result: ImageValidationResult,
+    analysis_before: ImageAnalysisResult,
+    candidate_analysis: ImageAnalysisResult,
+    resolved_config: Mapping[str, object],
+    vision_assessment: dict[str, object],
+) -> ImageValidationResult:
+    missing_labels = sorted(set(heuristic_result.missing_labels) | set(_normalize_labels_list(vision_assessment.get("missing_labels", []))))
+    added_entities = _normalize_labels_list(vision_assessment.get("added_entities", []))
+    suspicious_reasons = list(dict.fromkeys(
+        list(heuristic_result.suspicious_reasons)
+        + [str(reason).strip() for reason in vision_assessment.get("suspicious_reasons", []) if str(reason).strip()]
+    ))
+
+    semantic_match_score = _clamp_score(
+        (heuristic_result.semantic_match_score + _clamp_score(vision_assessment.get("semantic_match_score", 0.0))) / 2.0
+    )
+    vision_text_score = _clamp_score(vision_assessment.get("text_match_score", heuristic_result.text_match_score))
+    text_match_score = min(heuristic_result.text_match_score, vision_text_score) if analysis_before.contains_text else max(heuristic_result.text_match_score, vision_text_score)
+    structure_match_score = _clamp_score(
+        (heuristic_result.structure_match_score + _clamp_score(vision_assessment.get("structure_match_score", 0.0))) / 2.0
+    )
+    validator_confidence = _clamp_score(
+        (heuristic_result.validator_confidence + _clamp_score(vision_assessment.get("validator_confidence", 0.0))) / 2.0
+    )
+    added_entities_detected = heuristic_result.added_entities_detected or bool(added_entities)
+    candidate_contains_text = bool(vision_assessment.get("candidate_contains_text", candidate_analysis.contains_text))
+
+    if analysis_before.contains_text and not candidate_contains_text and "text_missing_in_candidate" not in suspicious_reasons:
+        suspicious_reasons.append("text_missing_in_candidate")
+    if missing_labels and not any(str(reason).startswith("missing_labels:") for reason in suspicious_reasons):
+        suspicious_reasons.append(f"missing_labels:{', '.join(missing_labels)}")
+    if added_entities_detected and not any(str(reason).startswith("added_entities:") for reason in suspicious_reasons):
+        suspicious_reasons.append(f"added_entities:{', '.join(added_entities)}")
+
+    validation_passed = (
+        semantic_match_score >= float(resolved_config["min_semantic_match_score"])
+        and text_match_score >= float(resolved_config["min_text_match_score"])
+        and structure_match_score >= float(resolved_config["min_structure_match_score"])
+        and validator_confidence >= float(resolved_config["validator_confidence_threshold"])
+        and not added_entities_detected
+        and (not missing_labels or bool(resolved_config["allow_accept_with_partial_text_loss"]))
+        and (not analysis_before.contains_text or candidate_contains_text)
+    )
+    return ImageValidationResult(
+        validation_passed=validation_passed,
+        decision="accept" if validation_passed else "fallback_safe",
+        semantic_match_score=semantic_match_score,
+        text_match_score=text_match_score,
+        structure_match_score=structure_match_score,
+        validator_confidence=validator_confidence,
+        missing_labels=missing_labels,
+        added_entities_detected=added_entities_detected,
+        suspicious_reasons=suspicious_reasons,
+    )
+
+
+def _detect_mime_type(image_bytes: bytes | None) -> str | None:
+    if not isinstance(image_bytes, bytes):
+        return None
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if image_bytes.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if image_bytes.startswith(b"BM"):
+        return "image/bmp"
+    return None
+
+
+def _normalize_labels_list(labels: object) -> list[str]:
+    if not isinstance(labels, list):
+        return []
+    return sorted(
+        {
+            " ".join(re.findall(r"[a-zA-Zа-яА-Я0-9]+", str(item).lower())).strip()
+            for item in labels
+            if str(item).strip()
+        }
+        - {""}
+    )
+
+
+def _supports_responses_client(client) -> bool:
+    responses = getattr(client, "responses", None)
+    create = getattr(responses, "create", None)
+    return callable(create)

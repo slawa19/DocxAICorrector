@@ -323,6 +323,8 @@ Worker cleanup завязан на событие `worker_complete`, но `_run_
 
 ### S2. Формулировку про `copy.deepcopy()` нужно держать в зоне object churn, а не агрессивной memory panic
 
+**Статус:** исправлено 2026-03-09
+
 - **Файл:** `app.py`
 - **Функция:** `_select_best_semantic_asset()`
 
@@ -336,6 +338,8 @@ Concern по лишнему клонированию остаётся валид
 ---
 
 ### S3. Image pipeline нуждается в явном metadata contract
+
+**Статус:** исправлено 2026-03-09
 
 Часть текущих рисков имеет общий источник: pipeline не хранит и не прокидывает в одном контракте критичные свойства candidate-изображения.
 
@@ -353,6 +357,8 @@ Concern по лишнему клонированию остаётся валид
 
 ### S4. Для дальнейшей документации лучше опираться на function-level references, а не на псевдоточные строки
 
+**Статус:** исправлено 2026-03-09
+
 В предыдущей версии отчёта часть line references уже устарела. Для такого быстро меняющегося кода надёжнее:
 
 - указывать файл и функцию как основную точку привязки;
@@ -368,21 +374,19 @@ Concern по лишнему клонированию остаётся валид
 - проект уже не выглядит как полностью монолитный single-file prototype;
 - отдельные модули для анализа, генерации, валидации, документа и runtime действительно существуют;
 - `processing_runtime.py` улучшил background UX и частично отделил событийную механику от UI-потока.
+- orchestration для document flow и image flow вынесен из `app.py` в отдельные coordinator-модули.
 
 ### Что остаётся архитектурным узким местом
 
-Главная архитектурная проблема всё ещё в `app.py`: этот модуль остаётся application hub, где смешаны UI, orchestration, scoring/select logic, runtime adapters и document pipeline decisions.
+Главный remaining gap теперь не в размере `app.py`, а в качестве и природе сигналов image pipeline:
 
-Это означает, что:
-
-- ключевые product-policy решения находятся не рядом с domain-слоями, а в orchestration-файле;
-- image pipeline труднее тестировать изолированно;
-- soft-accept, retry policy и post-validation semantics оказываются размазаны между несколькими helper-функциями в одном месте;
-- background runtime улучшен, но слой принятия решений по обработке документа всё ещё перегружен.
+- `analyze_image()` и `validate_redraw_result()` всё ещё во многом зависят от эвристик;
+- quality policy по изображениям уже декомпозирована по модулям, но остаётся ограниченной качеством analysis/validation layer;
+- дальнейшее улучшение теперь скорее про качество multimodal signals, чем про разрезание orchestration-файлов.
 
 ### Архитектурный вывод
 
-Текущую систему корректно описывать не как `монолит без декомпозиции`, а как `частично декомпозированный проект с перегруженным application layer`.
+Текущую систему корректно описывать не как `монолит без декомпозиции`, а как `декомпозированный проект с выделенными coordinator-модулями и оставшимся quality-gap в image analysis/validation`.
 
 Это важное уточнение по сравнению с предыдущей версией отчёта.
 
@@ -446,10 +450,10 @@ flowchart TD
 
 ### P2 — качество сигналов и архитектурная ясность
 
-10. Усилить `analyze_image()` и `validate_redraw_result()` более содержательным Vision-based слоем или явно задокументировать их как heuristic-only.
-11. Ввести явный metadata contract для image candidate.
-12. Вынести orchestration и image decision policy из `app.py` в отдельный application service слой.
-13. Закрыть самые рискованные regressions таргетированными тестами.
+10. [x] Явно задокументировать `analyze_image()` и `validate_redraw_result()` как heuristic-only до внедрения стабильного Vision-based слоя.
+11. [x] Ввести явный metadata contract для image candidate.
+12. [x] Вынести orchestration и image decision policy из `app.py` в отдельный application service слой.
+13. [x] Закрыть самые рискованные regressions таргетированными тестами.
 
 ---
 
