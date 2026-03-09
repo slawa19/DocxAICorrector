@@ -568,8 +568,7 @@ def _get_image_size(image_bytes: bytes) -> tuple[int, int]:
     with Image.open(BytesIO(image_bytes)) as img:
         img.load()
         normalized = ImageOps.exif_transpose(img)
-        try:
-            return normalized.size
-        finally:
-            if normalized is not img:
-                normalized.close()
+        size = normalized.size
+        if normalized is not img:
+            normalized.close()
+        return size
