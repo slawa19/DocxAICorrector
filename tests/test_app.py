@@ -36,3 +36,56 @@ def test_main_logs_app_start_only_once(monkeypatch):
 
     assert len(logged_events) == 1
     assert session_state.app_start_logged is True
+
+
+class UploadedFileStub:
+    def __init__(self, name: str, size: int):
+        self.name = name
+        self.size = size
+
+
+def test_build_uploaded_file_token_uses_name_and_size():
+    token = app.build_uploaded_file_token(UploadedFileStub("report.docx", 321))
+
+    assert token == "report.docx:321"
+
+
+def test_build_start_button_label_changes_with_result_state():
+    assert app.build_start_button_label(has_current_result=False, has_previous_result=False) == "Начать обработку"
+    assert app.build_start_button_label(has_current_result=True, has_previous_result=False) == "Запустить заново"
+    assert app.build_start_button_label(has_current_result=False, has_previous_result=True) == "Начать обработку нового файла"
+
+
+def test_sync_selected_file_context_resets_run_state_for_new_file(monkeypatch):
+    session_state = SessionState(
+        selected_source_token="old.docx:10",
+        previous_result=None,
+        latest_docx_bytes=b"docx",
+        latest_source_name="old.docx",
+        latest_source_token="old.docx:10",
+        latest_markdown="markdown",
+        run_log=[{"status": "STOP"}],
+        activity_feed=[{"time": "10:00:00", "message": "stale"}],
+        processed_block_markdowns=["partial"],
+        markdown_preview_render_nonce=1,
+        last_error="",
+        markdown_preview_block_index=1,
+        image_assets=[],
+        image_validation_failures=[],
+        image_processing_summary={},
+        processing_status={},
+        processing_stop_requested=False,
+        processing_worker=None,
+        processing_event_queue=None,
+        processing_stop_event=None,
+        processing_outcome="idle",
+        prepared_source_key="old.docx:10:6000",
+    )
+    monkeypatch.setattr(app.st, "session_state", session_state)
+
+    app._sync_selected_file_context("new.docx:20")
+
+    assert session_state.selected_source_token == "new.docx:20"
+    assert session_state.previous_result["source_token"] == "old.docx:10"
+    assert session_state.run_log == []
+    assert session_state.activity_feed == []

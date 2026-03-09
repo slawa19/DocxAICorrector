@@ -74,14 +74,14 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
     monkeypatch.setattr(
         ui.st.sidebar,
         "selectbox",
-        lambda label, options, index=0, format_func=None, help=None: (
+        lambda label, options, index=0, format_func=None, help=None, key=None: (
             sidebar_calls.append(("selectbox", label, help))
             or ("semantic_redraw_direct" if label == "Режим обработки изображений" else options[index])
         ),
     )
     monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
     monkeypatch.setattr(ui.st.sidebar, "slider", lambda label, **kwargs: kwargs["value"])
-    monkeypatch.setattr(ui.st.sidebar, "checkbox", lambda label, value: value)
+    monkeypatch.setattr(ui.st.sidebar, "checkbox", lambda label, value, key=None: value)
 
     result = ui.render_sidebar(config)
 
@@ -138,3 +138,21 @@ def test_render_image_validation_summary_shows_metrics(monkeypatch):
         "Ошибки валидации изображений:",
         "• img-2: validator_exception:RuntimeError",
     ]
+
+
+def test_render_partial_result_shows_preview_instead_of_download(monkeypatch):
+    session_state = SessionState(
+        latest_markdown="chunk-1",
+        latest_docx_bytes=None,
+    )
+    warnings = []
+    previews = []
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "warning", lambda text: warnings.append(text))
+    monkeypatch.setattr(ui, "render_markdown_preview", lambda *args, **kwargs: previews.append(kwargs.get("title")))
+
+    ui.render_partial_result()
+
+    assert warnings == ["Доступен промежуточный Markdown-результат последнего запуска."]
+    assert previews == ["Текущий Markdown"]

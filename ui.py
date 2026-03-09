@@ -77,6 +77,31 @@ def inject_ui_styles() -> None:
             color: #031b1c !important;
         }
 
+        .stButton > button:disabled,
+        .stDownloadButton > button:disabled {
+            background: rgba(100, 116, 139, 0.22) !important;
+            border-color: rgba(148, 163, 184, 0.24) !important;
+            color: rgba(203, 213, 225, 0.65) !important;
+            box-shadow: none !important;
+            cursor: not-allowed !important;
+            opacity: 0.55 !important;
+        }
+
+        div[data-baseweb="select"],
+        div[data-baseweb="select"] *,
+        div[data-baseweb="select"] > div,
+        div[data-baseweb="select"] [role="combobox"],
+        div[data-baseweb="select"] input,
+        div[data-baseweb="select"] span,
+        div[data-baseweb="popover"],
+        div[data-baseweb="popover"] *,
+        div[data-baseweb="popover"] [role="option"] {
+            font-family: "Source Sans Pro", sans-serif !important;
+            font-size: 1rem !important;
+            font-weight: 400 !important;
+            letter-spacing: normal !important;
+        }
+
         div[data-testid="stProgressBar"] > div > div > div > div {
             background: linear-gradient(90deg, var(--accent-main), #67e8f9) !important;
         }
@@ -283,7 +308,7 @@ def render_sidebar(config: dict[str, object]) -> tuple[str, int, int, str, bool]
     model_options = [*config["model_options"], "custom"]
     default_model = str(config["default_model"])
     default_index = model_options.index(default_model) if default_model in model_options else 0
-    selected_model = st.sidebar.selectbox("Модель", model_options, index=default_index)
+    selected_model = st.sidebar.selectbox("Модель", model_options, index=default_index, key="sidebar_model")
     custom_model = ""
     if selected_model == "custom":
         custom_model = st.sidebar.text_input("Имя модели", value=default_model).strip()
@@ -311,10 +336,12 @@ def render_sidebar(config: dict[str, object]) -> tuple[str, int, int, str, bool]
         index=image_mode_index,
         format_func=lambda mode: IMAGE_MODE_LABELS.get(mode, mode),
         help=IMAGE_MODE_HELP,
+        key="sidebar_image_mode",
     )
     enable_post_redraw_validation = st.sidebar.checkbox(
         "Включить post-check validation",
         value=bool(config.get("enable_post_redraw_validation", True)),
+        key="sidebar_enable_post_redraw_validation",
     )
     return model, chunk_size, max_retries, image_mode, enable_post_redraw_validation
 
@@ -350,7 +377,29 @@ def render_markdown_preview(target=None, *, title: str) -> None:
 
 
 def render_result(docx_bytes: bytes, markdown_text: str, original_filename: str) -> None:
-    st.success("Документ обработан.")
+    render_result_bundle(
+        docx_bytes=docx_bytes,
+        markdown_text=markdown_text,
+        original_filename=original_filename,
+        title=None,
+        success_message="Документ обработан.",
+        preview_title="Предпросмотр Markdown",
+    )
+
+
+def render_result_bundle(
+    *,
+    docx_bytes: bytes,
+    markdown_text: str,
+    original_filename: str,
+    title: str | None,
+    success_message: str | None,
+    preview_title: str | None,
+) -> None:
+    if title:
+        st.subheader(title)
+    if success_message:
+        st.success(success_message)
     st.download_button(
         label="Скачать итоговый DOCX",
         data=docx_bytes,
@@ -365,7 +414,8 @@ def render_result(docx_bytes: bytes, markdown_text: str, original_filename: str)
         mime="text/markdown",
         use_container_width=True,
     )
-    render_markdown_preview(title="Предпросмотр Markdown")
+    if preview_title:
+        render_markdown_preview(title=preview_title)
 
 
 def render_partial_result() -> None:
@@ -373,12 +423,5 @@ def render_partial_result() -> None:
     if not markdown_text or st.session_state.latest_docx_bytes is not None:
         return
 
-    source_name = st.session_state.latest_source_name or "result.docx"
     st.warning("Доступен промежуточный Markdown-результат последнего запуска.")
-    st.download_button(
-        label="Скачать текущий Markdown",
-        data=markdown_text.encode("utf-8"),
-        file_name=build_markdown_filename(source_name),
-        mime="text/markdown",
-        use_container_width=True,
-    )
+    render_markdown_preview(title="Текущий Markdown")

@@ -136,3 +136,59 @@ def test_process_document_images_keeps_document_flow_when_validator_raises(monke
     assert result[0].final_decision == "fallback_original"
     assert result[0].final_variant == "original"
     assert result[0].validation_status == "error"
+
+
+def test_process_document_images_soft_accepts_best_semantic_candidate(monkeypatch):
+    _prepare_state(monkeypatch)
+    analyses = iter(
+        [
+            build_analysis_result(),
+            build_analysis_result(
+                image_type="diagram",
+                contains_text=True,
+                extracted_labels=["Start", "Review", "Finish"],
+                structure_summary="three boxes connected by arrows and slightly shifted spacing",
+                confidence=0.74,
+            ),
+            build_analysis_result(
+                image_type="diagram",
+                contains_text=True,
+                extracted_labels=["Start", "Review", "Finish"],
+                structure_summary="three boxes connected by arrows and slightly shifted spacing",
+                confidence=0.74,
+            ),
+        ]
+    )
+    monkeypatch.setattr(app, "analyze_image", lambda *args, **kwargs: next(analyses))
+
+    class ValidationResultStub:
+        validation_passed = False
+        decision = "fallback_safe"
+        semantic_match_score = 0.72
+        text_match_score = 0.90
+        structure_match_score = 0.70
+        validator_confidence = 0.69
+        missing_labels = []
+        added_entities_detected = False
+        suspicious_reasons = ["structure_mismatch"]
+
+    def fake_process_image_asset(asset, **kwargs):
+        asset.validation_result = ValidationResultStub()
+        asset.validation_status = "failed"
+        asset.final_decision = "fallback_safe"
+        asset.final_variant = "safe"
+        asset.final_reason = "structure_mismatch"
+        return asset
+
+    monkeypatch.setattr(app, "process_image_asset", fake_process_image_asset)
+
+    result = app.process_document_images(
+        image_assets=[build_asset()],
+        image_mode="semantic_redraw_structured",
+        config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1", "semantic_redraw_max_attempts": 2},
+        on_progress=lambda **kwargs: None,
+    )
+
+    assert result[0].final_decision == "accept_soft"
+    assert result[0].final_variant == "redrawn"
+    assert result[0].validation_status == "soft-pass"

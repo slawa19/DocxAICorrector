@@ -6,69 +6,8 @@ import streamlit as st
 from constants import APP_LOG_PATH
 
 
-def init_session_state() -> None:
-    st.session_state.setdefault("app_start_logged", False)
-    st.session_state.setdefault("run_log", [])
-    st.session_state.setdefault("activity_feed", [])
-    st.session_state.setdefault("latest_markdown", "")
-    st.session_state.setdefault("processed_block_markdowns", [])
-    st.session_state.setdefault("markdown_preview_render_nonce", 0)
-    st.session_state.setdefault("latest_docx_bytes", None)
-    st.session_state.setdefault("latest_source_name", "")
-    st.session_state.setdefault("last_error", "")
-    st.session_state.setdefault("last_log_hint", f"Подробный лог приложения: {APP_LOG_PATH}")
-    st.session_state.setdefault(
-        "processing_status",
-        {
-            "is_running": False,
-            "stage": "Ожидание запуска",
-            "detail": "Загрузите файл и запустите обработку.",
-            "current_block": 0,
-            "block_count": 0,
-            "target_chars": 0,
-            "context_chars": 0,
-            "started_at": None,
-            "last_update_at": None,
-            "progress": 0.0,
-        },
-    )
-    st.session_state.setdefault("markdown_preview_block_index", 1)
-    st.session_state.setdefault("image_assets", [])
-    st.session_state.setdefault("image_validation_failures", [])
-    st.session_state.setdefault(
-        "image_processing_summary",
-        {
-            "total_images": 0,
-            "processed_images": 0,
-            "images_validated": 0,
-            "validation_passed": 0,
-            "fallbacks_applied": 0,
-            "validation_errors": [],
-        },
-    )
-
-
-def reset_run_state() -> None:
-    st.session_state.run_log = []
-    st.session_state.activity_feed = []
-    st.session_state.latest_markdown = ""
-    st.session_state.processed_block_markdowns = []
-    st.session_state.markdown_preview_render_nonce = 0
-    st.session_state.latest_docx_bytes = None
-    st.session_state.latest_source_name = ""
-    st.session_state.last_error = ""
-    st.session_state.markdown_preview_block_index = 1
-    st.session_state.image_assets = []
-    st.session_state.image_validation_failures = []
-    st.session_state.image_processing_summary = {
-        "total_images": 0,
-        "processed_images": 0,
-        "images_validated": 0,
-        "validation_passed": 0,
-        "fallbacks_applied": 0,
-        "validation_errors": [],
-    }
-    st.session_state.processing_status = {
+def _default_processing_status() -> dict[str, object]:
+    return {
         "is_running": False,
         "stage": "Ожидание запуска",
         "detail": "Загрузите файл и запустите обработку.",
@@ -80,6 +19,71 @@ def reset_run_state() -> None:
         "last_update_at": None,
         "progress": 0.0,
     }
+
+
+def _default_image_processing_summary() -> dict[str, object]:
+    return {
+        "total_images": 0,
+        "processed_images": 0,
+        "images_validated": 0,
+        "validation_passed": 0,
+        "fallbacks_applied": 0,
+        "validation_errors": [],
+    }
+
+
+def init_session_state() -> None:
+    st.session_state.setdefault("app_start_logged", False)
+    st.session_state.setdefault("run_log", [])
+    st.session_state.setdefault("activity_feed", [])
+    st.session_state.setdefault("latest_markdown", "")
+    st.session_state.setdefault("processed_block_markdowns", [])
+    st.session_state.setdefault("markdown_preview_render_nonce", 0)
+    st.session_state.setdefault("latest_docx_bytes", None)
+    st.session_state.setdefault("latest_source_name", "")
+    st.session_state.setdefault("latest_source_token", "")
+    st.session_state.setdefault("selected_source_token", "")
+    st.session_state.setdefault("last_error", "")
+    st.session_state.setdefault("last_log_hint", f"Подробный лог приложения: {APP_LOG_PATH}")
+    st.session_state.setdefault("processing_status", _default_processing_status())
+    st.session_state.setdefault("markdown_preview_block_index", 1)
+    st.session_state.setdefault("image_assets", [])
+    st.session_state.setdefault("image_validation_failures", [])
+    st.session_state.setdefault("image_processing_summary", _default_image_processing_summary())
+    st.session_state.setdefault("previous_result", None)
+    st.session_state.setdefault("processing_stop_requested", False)
+    st.session_state.setdefault("processing_worker", None)
+    st.session_state.setdefault("processing_event_queue", None)
+    st.session_state.setdefault("processing_stop_event", None)
+    st.session_state.setdefault("processing_outcome", "idle")
+    st.session_state.setdefault("prepared_source_key", "")
+
+
+def reset_run_state(*, keep_previous_result: bool = True) -> None:
+    st.session_state.run_log = []
+    st.session_state.activity_feed = []
+    st.session_state.latest_markdown = ""
+    st.session_state.processed_block_markdowns = []
+    st.session_state.markdown_preview_render_nonce = 0
+    st.session_state.latest_docx_bytes = None
+    st.session_state.latest_source_name = ""
+    st.session_state.latest_source_token = ""
+    st.session_state.last_error = ""
+    st.session_state.markdown_preview_block_index = 1
+    st.session_state.image_assets = []
+    st.session_state.image_validation_failures = []
+    st.session_state.image_processing_summary = _default_image_processing_summary()
+    st.session_state.processing_status = _default_processing_status()
+    st.session_state.processing_stop_requested = False
+    st.session_state.processing_worker = None
+    st.session_state.processing_event_queue = None
+    st.session_state.processing_stop_event = None
+    st.session_state.processing_outcome = "idle"
+    st.session_state.prepared_source_key = ""
+    if not keep_previous_result:
+        st.session_state.previous_result = None
+
+
 def push_activity(message: str) -> None:
     timestamp = datetime.now().strftime("%H:%M:%S")
     st.session_state.activity_feed.append({"time": timestamp, "message": message})
@@ -146,7 +150,7 @@ def append_image_log(
 
     if status == "validated":
         summary["images_validated"] = int(summary.get("images_validated", 0)) + 1
-        if decision == "accept":
+        if decision in {"accept", "accept_soft"}:
             summary["validation_passed"] = int(summary.get("validation_passed", 0)) + 1
         elif decision.startswith("fallback_"):
             summary["fallbacks_applied"] = int(summary.get("fallbacks_applied", 0)) + 1

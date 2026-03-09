@@ -1,0 +1,38 @@
+[
+  {
+    "filename": "кпсс.jpg",
+    "recognized_type": "photo",
+    "requested_mode": "safe",
+    "prompt_key": "photo_safe_fallback",
+    "render_strategy": "safe_mode",
+    "semantic_redraw_allowed": false,
+    "analysis_elapsed_seconds": 0.061,
+    "generation_elapsed_seconds": 0.016,
+    "bytes_in": 46725,
+    "bytes_out": 71138
+  },
+  {
+    "filename": "pic1_lietaer.jpg",
+    "recognized_type": "diagram",
+    "requested_mode": "semantic_redraw_structured",
+    "prompt_key": "diagram_semantic_redraw",
+    "render_strategy": "semantic_redraw_structured",
+    "semantic_redraw_allowed": true,
+    "analysis_elapsed_seconds": 0.051,
+    "generation_elapsed_seconds": 14.917,
+    "bytes_in": 40424,
+    "bytes_out": 86476
+  },
+  {
+    "filename": "журналистика факты манипуляции.png",
+    "recognized_type": "infographic",
+    "requested_mode": "semantic_redraw_direct",
+    "prompt_key": "infographic_semantic_redraw",
+    "render_strategy": "semantic_redraw_direct",
+    "semantic_redraw_allowed": true,
+    "analysis_elapsed_seconds": 0.087,
+    "generation_elapsed_seconds": 21.719,
+    "bytes_in": 504646,
+    "bytes_out": 789033
+  }
+]
