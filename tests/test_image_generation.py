@@ -651,10 +651,10 @@ def test_generate_image_candidate_structured_retries_with_fallback_size(monkeypa
 
         def generate(self, **kwargs):
             captured_calls.append(dict(kwargs))
-            if not self.failed_once and kwargs.get("size") == "1792x1024":
+            if not self.failed_once and kwargs.get("size") == "auto":
                 self.failed_once = True
                 raise RuntimeError(
-                    "Error code: 400 - {'error': {'message': \"Invalid value: '1792x1024'. Supported values are: '1024x1024'.\", 'param': 'size'}}"
+                    "Error code: 400 - {'error': {'message': \"Invalid value: 'auto'. Supported values are: '1536x1024', '1024x1536', '1024x1024'.\", 'param': 'size'}}"
                 )
             return SimpleNamespace(
                 data=[
@@ -680,8 +680,8 @@ def test_generate_image_candidate_structured_retries_with_fallback_size(monkeypa
 
     assert candidate
     assert len(captured_calls) == 2
-    assert captured_calls[0]["size"] == "1792x1024"
-    assert captured_calls[1]["size"] == "1024x1024"
+    assert captured_calls[0]["size"] == "auto"
+    assert captured_calls[1]["size"] == "1536x1024"
 
 
 def test_generate_image_candidate_structured_retries_generate_request_after_server_error(monkeypatch):

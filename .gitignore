@@ -22,5 +22,6 @@ build/
 .idea/
 .history/
 .vscode/
+.pr3-merge-resolve/
 Thumbs.db
 Desktop.ini
