@@ -19,9 +19,9 @@
     "render_strategy": "semantic_redraw_structured",
     "semantic_redraw_allowed": true,
     "analysis_elapsed_seconds": 0.049,
-    "generation_elapsed_seconds": 57.505,
+    "generation_elapsed_seconds": 60.226,
     "bytes_in": 40424,
-    "bytes_out": 41420
+    "bytes_out": 52965
   },
   {
     "filename": "журналистика факты манипуляции.png",
@@ -30,9 +30,9 @@
     "prompt_key": "infographic_semantic_redraw",
     "render_strategy": "semantic_redraw_direct",
     "semantic_redraw_allowed": true,
-    "analysis_elapsed_seconds": 0.101,
-    "generation_elapsed_seconds": 74.425,
+    "analysis_elapsed_seconds": 0.084,
+    "generation_elapsed_seconds": 72.031,
     "bytes_in": 504646,
-    "bytes_out": 1681320
+    "bytes_out": 1552115
   }
 ]
