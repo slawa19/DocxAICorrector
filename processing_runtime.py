@@ -190,6 +190,7 @@ def start_background_processing(
     st.session_state.latest_source_name = uploaded_filename
     st.session_state.latest_source_token = uploaded_token
     st.session_state.selected_source_token = uploaded_token
+    st.session_state.latest_image_mode = image_mode
     st.session_state.processing_outcome = "running"
 
     processing_events = queue.Queue()

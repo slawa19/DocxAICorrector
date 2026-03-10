@@ -12,6 +12,7 @@ from document import (
     build_semantic_blocks,
     extract_document_content_from_docx,
     inspect_placeholder_integrity,
+    resolve_final_image_bytes,
     reinsert_inline_images,
 )
 from models import ImageAsset
@@ -118,6 +119,25 @@ def test_reinsert_inline_images_replaces_placeholder_with_picture():
     assert len(updated_doc.inline_shapes) == 1
     assert updated_doc.inline_shapes[0].width == 914400
     assert updated_doc.inline_shapes[0].height == 914400
+
+
+def test_resolve_final_image_bytes_prefers_selected_compare_variant():
+    asset = ImageAsset(
+        image_id="img_001",
+        placeholder="[[DOCX_IMAGE_img_001]]",
+        original_bytes=b"original",
+        mime_type="image/png",
+        position_index=0,
+        safe_bytes=b"safe",
+        redrawn_bytes=b"redrawn",
+        final_variant="redrawn",
+        comparison_variants={
+            "semantic_redraw_direct": {"bytes": b"chosen"},
+        },
+        selected_compare_variant="semantic_redraw_direct",
+    )
+
+    assert resolve_final_image_bytes(asset) == b"chosen"
 
 
 def test_extract_document_content_from_docx_rejects_suspicious_uncompressed_archive(monkeypatch):

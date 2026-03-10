@@ -268,7 +268,7 @@ def process_document_images(
             asset.prompt_key = analysis.prompt_key
             asset.render_strategy = analysis.render_strategy
 
-            if image_mode == "safe" or not analysis.semantic_redraw_allowed:
+            if image_mode == "safe":
                 asset.safe_bytes = _call_with_supported_kwargs(
                     generate_image_candidate_fn,
                     asset.original_bytes,
@@ -282,6 +282,32 @@ def process_document_images(
                 asset.final_decision = "accept"
                 asset.final_variant = "safe" if asset.safe_bytes else "original"
                 asset.final_reason = "Изображение обработано в safe-mode."
+            elif image_mode == "compare_all":
+                if image_client is None:
+                    image_client = get_client_fn()
+                asset = _prepare_compare_variants(
+                    asset,
+                    analysis,
+                    config,
+                    client=image_client,
+                    generate_image_candidate_fn=generate_image_candidate_fn,
+                    detect_image_mime_type_fn=detect_image_mime_type_fn,
+                    log_event_fn=log_event_fn,
+                )
+            elif not analysis.semantic_redraw_allowed:
+                asset.safe_bytes = _call_with_supported_kwargs(
+                    generate_image_candidate_fn,
+                    asset.original_bytes,
+                    analysis,
+                    mode="safe",
+                    prefer_deterministic_reconstruction=bool(config.get("prefer_deterministic_reconstruction", True)),
+                    reconstruction_render_config=_build_reconstruction_render_config(config),
+                    client=image_client,
+                )
+                asset.validation_status = "skipped"
+                asset.final_decision = "accept"
+                asset.final_variant = "safe" if asset.safe_bytes else "original"
+                asset.final_reason = "Semantic redraw отключен для этого изображения, применен safe-mode."
             else:
                 if image_client is None:
                     image_client = get_client_fn()
@@ -319,9 +345,13 @@ def process_document_images(
                 runtime,
                 image_id=asset.image_id,
                 status=(
+                    "compared"
+                    if asset.validation_status == "compared"
+                    else (
                     "validated"
                     if asset.validation_status in {"passed", "failed", "soft-pass"}
                     else asset.validation_status
+                    )
                 ),
                 decision=asset.final_decision or "accept",
                 confidence=confidence,
@@ -388,6 +418,61 @@ def _clone_image_asset_for_attempt(asset):
         soft_accepted=False,
     )
     return cloned_asset
+
+
+def _prepare_compare_variants(
+    asset,
+    analysis,
+    config: dict[str, object],
+    *,
+    client,
+    generate_image_candidate_fn,
+    detect_image_mime_type_fn,
+    log_event_fn,
+):
+    variant_map: dict[str, dict[str, object]] = {}
+    candidate_modes = ["safe"]
+    if analysis.semantic_redraw_allowed:
+        candidate_modes.extend(["semantic_redraw_direct", "semantic_redraw_structured"])
+
+    for candidate_mode in candidate_modes:
+        try:
+            candidate_bytes = _call_with_supported_kwargs(
+                generate_image_candidate_fn,
+                asset.original_bytes,
+                analysis,
+                mode=candidate_mode,
+                prefer_deterministic_reconstruction=bool(config.get("prefer_deterministic_reconstruction", True)),
+                reconstruction_model=str(config.get("reconstruction_model", "")) or None,
+                reconstruction_render_config=_build_reconstruction_render_config(config),
+                client=client,
+            )
+        except Exception as exc:
+            log_event_fn(
+                logging.WARNING,
+                "image_compare_variant_failed",
+                "Не удалось подготовить один из compare-all вариантов изображения.",
+                image_id=asset.image_id,
+                candidate_mode=candidate_mode,
+                error_type=exc.__class__.__name__,
+                error_message=str(exc),
+            )
+            continue
+
+        variant_map[candidate_mode] = {
+            "bytes": candidate_bytes,
+            "mime_type": detect_image_mime_type_fn(candidate_bytes),
+        }
+        if candidate_mode == "safe":
+            asset.safe_bytes = candidate_bytes
+
+    asset.comparison_variants = variant_map
+    asset.selected_compare_variant = "original"
+    asset.validation_status = "compared"
+    asset.final_decision = "compared"
+    asset.final_variant = "original"
+    asset.final_reason = "Подготовлены варианты safe, free и structured для ручного выбора."
+    return asset
 
 
 def _build_reconstruction_render_config(config: dict[str, object]) -> dict[str, object]:

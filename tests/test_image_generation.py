@@ -148,14 +148,17 @@ def test_generate_image_candidate_structured_uses_vision_and_images_generate(mon
     assert captured["generate"]["model"] == image_generation.IMAGE_GENERATE_MODEL
     assert captured["generate"]["response_format"] == "b64_json"
     assert captured["generate"]["quality"] == "high"
+    assert captured["generate"]["size"] == "1024x1024"
     assert "Three columns with arrows" in captured["generate"]["prompt"]
-    assert "Generate a brand-new clean vector-style diagram from scratch" in captured["generate"]["prompt"]
+    assert "office-presentation-style diagram" in captured["generate"]["prompt"]
     assert "Start -> Review -> Finish" in captured["generate"]["prompt"]
     with Image.open(BytesIO(candidate)) as generated_image:
-        assert generated_image.size == (12, 12)
+        assert generated_image.width > 12
+        assert generated_image.height > 12
+        assert generated_image.width == generated_image.height
 
 
-def test_generate_image_candidate_structured_restores_original_size_without_cropping_edge_content(monkeypatch):
+def test_generate_image_candidate_structured_preserves_generated_resolution_without_cropping_edge_content(monkeypatch):
     class FakeResponsesClient:
         def create(self, **kwargs):
             return SimpleNamespace(output_text="layout description")
@@ -185,15 +188,16 @@ def test_generate_image_candidate_structured_restores_original_size_without_crop
     )
 
     with Image.open(BytesIO(candidate)) as restored_image:
-        assert restored_image.size == (18, 10)
+        assert restored_image.width >= 18
+        assert restored_image.height >= 10
         top_band_detected = False
         bottom_band_detected = False
         for x_coord in range(restored_image.width):
-            for y_coord in range(min(2, restored_image.height)):
+            for y_coord in range(max(1, restored_image.height // 3)):
                 top_pixel = restored_image.getpixel((x_coord, y_coord))
                 if top_pixel[1] > top_pixel[0] + 40 and top_pixel[1] > top_pixel[2] + 20:
                     top_band_detected = True
-            for y_coord in range(max(0, restored_image.height - 2), restored_image.height):
+            for y_coord in range(max(0, restored_image.height - max(1, restored_image.height // 3)), restored_image.height):
                 bottom_pixel = restored_image.getpixel((x_coord, y_coord))
                 if bottom_pixel[0] > bottom_pixel[1] + 40 and bottom_pixel[0] > bottom_pixel[2] + 40:
                     bottom_band_detected = True
@@ -232,7 +236,8 @@ def test_generate_image_candidate_structured_trims_large_generated_margins_befor
     )
 
     with Image.open(BytesIO(candidate)) as restored_image:
-        assert restored_image.size == (18, 10)
+        assert restored_image.width >= 18
+        assert restored_image.height >= 10
         leftmost_blue = restored_image.width
         rightmost_blue = -1
         for y_coord in range(restored_image.height):
@@ -285,10 +290,19 @@ def test_generate_image_candidate_direct_uses_creative_vision_and_images_generat
     assert captured["generate"]["model"] == image_generation.IMAGE_GENERATE_MODEL
     assert captured["generate"]["response_format"] == "b64_json"
     assert captured["generate"]["quality"] == "high"
+    assert captured["generate"]["size"] == "1024x1024"
     assert "Creative redraw brief" in captured["generate"]["prompt"]
     assert "Do not make it look like an Excel sheet" in captured["generate"]["prompt"]
     with Image.open(BytesIO(candidate)) as edited_image:
-        assert edited_image.size == (12, 12)
+        assert edited_image.width > 12
+        assert edited_image.height > 12
+        assert edited_image.width == edited_image.height
+
+
+def test_select_generate_size_uses_fixed_aspect_presets():
+    assert image_generation._select_generate_size((400, 400)) == "1024x1024"
+    assert image_generation._select_generate_size((800, 400)) == "1536x1024"
+    assert image_generation._select_generate_size((400, 800)) == "1024x1536"
 
 
 def test_generate_image_candidate_uses_provided_client_without_calling_get_client(monkeypatch):
@@ -407,7 +421,7 @@ def test_generate_image_candidate_direct_falls_back_to_direct_edit_then_structur
     assert "Fallback structured description" in captured["generate_calls"][1]["prompt"]
 
 
-def test_generate_image_candidate_direct_restores_original_dimensions_after_generate(monkeypatch):
+def test_generate_image_candidate_direct_preserves_aspect_ratio_without_downscaling_back_to_source(monkeypatch):
     class FakeResponsesClient:
         def create(self, **kwargs):
             return SimpleNamespace(output_text="creative redraw brief")
@@ -438,7 +452,9 @@ def test_generate_image_candidate_direct_restores_original_dimensions_after_gene
     )
 
     with Image.open(BytesIO(candidate)) as restored_image:
-        assert restored_image.size == (18, 10)
+        assert restored_image.width >= 18
+        assert restored_image.height >= 10
+        assert abs((restored_image.width / restored_image.height) - (18 / 10)) < 0.2
 
 
 def test_generate_image_candidate_direct_retries_without_unknown_optional_param(monkeypatch):
@@ -724,7 +740,7 @@ def test_generate_image_candidate_structured_retries_vision_request_after_retrya
     assert vision_calls[0]["timeout"] == image_generation.IMAGE_API_TIMEOUT_SECONDS
 
 
-def test_generate_image_candidate_structured_retries_with_fallback_size(monkeypatch):
+def test_generate_image_candidate_structured_uses_fixed_generate_size_without_auto_retry(monkeypatch):
     captured_calls = []
 
     class FakeResponsesClient:
@@ -737,10 +753,10 @@ def test_generate_image_candidate_structured_retries_with_fallback_size(monkeypa
 
         def generate(self, **kwargs):
             captured_calls.append(dict(kwargs))
-            if not self.failed_once and kwargs.get("size") == "auto":
+            if not self.failed_once and kwargs.get("size") == "1536x1024":
                 self.failed_once = True
                 raise RuntimeError(
-                    "Error code: 400 - {'error': {'message': \"Invalid value: 'auto'. Supported values are: '1536x1024', '1024x1536', '1024x1024'.\", 'param': 'size'}}"
+                    "Error code: 400 - {'error': {'message': \"Invalid value: '1536x1024'. Supported values are: '1024x1024'.\", 'param': 'size'}}"
                 )
             return SimpleNamespace(
                 data=[
@@ -766,8 +782,8 @@ def test_generate_image_candidate_structured_retries_with_fallback_size(monkeypa
 
     assert candidate
     assert len(captured_calls) == 2
-    assert captured_calls[0]["size"] == "auto"
-    assert captured_calls[1]["size"] == "1536x1024"
+    assert captured_calls[0]["size"] == "1536x1024"
+    assert captured_calls[1]["size"] == "1024x1024"
 
 
 def test_generate_image_candidate_structured_retries_generate_request_after_server_error(monkeypatch):

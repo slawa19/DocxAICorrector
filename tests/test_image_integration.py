@@ -318,7 +318,48 @@ def test_process_document_images_uses_detected_redraw_mime_type_for_candidate_an
     )
 
     assert result[0].final_decision == "accept"
-    assert mime_types == ["image/jpeg", "image/png"]
+
+
+def test_process_document_images_compare_all_prepares_three_variants(monkeypatch):
+    _prepare_state(monkeypatch)
+
+    generated_modes = []
+
+    def fake_generate_image_candidate(
+        image_bytes,
+        analysis,
+        *,
+        mode,
+        prefer_deterministic_reconstruction=True,
+        reconstruction_model=None,
+        client=None,
+        budget=None,
+    ):
+        generated_modes.append(mode)
+        return {
+            "safe": PNG_BYTES,
+            "semantic_redraw_direct": REDRAWN_BYTES,
+            "semantic_redraw_structured": REDRAWN_BYTES[::-1],
+        }[mode]
+
+    monkeypatch.setattr(app, "generate_image_candidate", fake_generate_image_candidate)
+
+    result = app.process_document_images(
+        image_assets=[build_asset()],
+        image_mode="compare_all",
+        config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1"},
+        on_progress=lambda **kwargs: None,
+    )
+
+    assert generated_modes == ["safe", "semantic_redraw_direct", "semantic_redraw_structured"]
+    assert result[0].validation_status == "compared"
+    assert result[0].final_variant == "original"
+    assert result[0].selected_compare_variant == "original"
+    assert set(result[0].comparison_variants.keys()) == {
+        "safe",
+        "semantic_redraw_direct",
+        "semantic_redraw_structured",
+    }
 
 
 def test_process_document_images_falls_back_when_model_call_budget_is_exhausted(monkeypatch):

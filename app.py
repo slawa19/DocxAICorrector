@@ -62,6 +62,7 @@ from state import (
 )
 from ui import (
     inject_ui_styles,
+    render_image_compare_selector,
     render_image_validation_summary,
     render_live_status,
     render_markdown_preview,
@@ -241,6 +242,33 @@ def _build_prepared_source_key(uploaded_file_token: str, chunk_size: int) -> str
 
 def _should_log_document_prepared(prepared_source_key: str) -> bool:
     return st.session_state.get("prepared_source_key", "") != prepared_source_key
+
+
+def _apply_selected_compare_variants() -> None:
+    image_assets = list(st.session_state.get("image_assets", []))
+    markdown_text = str(st.session_state.get("latest_markdown", ""))
+    if not image_assets or not markdown_text:
+        raise RuntimeError("Нет готовых данных для пересборки DOCX с выбранными вариантами изображений.")
+
+    for asset in image_assets:
+        image_id = getattr(asset, "image_id", None)
+        if not image_id:
+            continue
+        selected_variant = str(st.session_state.get(f"compare_choice_{image_id}", "original"))
+        asset.selected_compare_variant = selected_variant
+        if selected_variant == "original":
+            asset.final_variant = "original"
+        elif selected_variant == "safe":
+            asset.final_variant = "safe"
+        else:
+            asset.final_variant = "redrawn"
+        asset.final_decision = "accept"
+        asset.final_reason = f"compare_variant_selected:{selected_variant}"
+
+    rebuilt_docx_bytes = convert_markdown_to_docx_bytes(markdown_text)
+    rebuilt_docx_bytes = reinsert_inline_images(rebuilt_docx_bytes, image_assets)
+    st.session_state.image_assets = image_assets
+    st.session_state.latest_docx_bytes = rebuilt_docx_bytes
 
 
 def process_document_images(
@@ -466,6 +494,28 @@ def main() -> None:
     render_partial_result()
     render_run_log()
     render_image_validation_summary()
+
+    if has_completed_result and st.session_state.latest_image_mode == "compare_all":
+        render_section_gap("lg")
+        render_image_compare_selector()
+        if st.button(
+            "Собрать итоговый DOCX с выбранными изображениями",
+            type="primary",
+            use_container_width=True,
+            key="apply_compare_variants_button",
+        ):
+            try:
+                _apply_selected_compare_variants()
+                st.success("Итоговый DOCX пересобран с выбранными вариантами изображений.")
+            except Exception as exc:
+                user_message = present_error(
+                    "compare_variant_apply_failed",
+                    exc,
+                    "Ошибка применения выбранных вариантов изображений",
+                    filename=uploaded_file.name,
+                )
+                st.error(user_message)
+        st.caption("До пересборки итоговый DOCX сохраняет исходные изображения. После нажатия кнопки будут вставлены выбранные варианты.")
 
     if has_completed_result:
         render_result(st.session_state.latest_docx_bytes, st.session_state.latest_markdown, uploaded_file.name)

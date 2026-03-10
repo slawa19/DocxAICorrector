@@ -75,7 +75,7 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
     def fake_selectbox(label, options, index=0, format_func=None, help=None, key=None):
         sidebar_calls.append(("selectbox", label, help, tuple(options), format_func))
         if label == "Режим обработки изображений":
-            return ui.IMAGE_MODE_LABELS["semantic_redraw_direct"]
+            return "semantic_redraw_direct"
         return options[index]
 
     monkeypatch.setattr(ui.st.sidebar, "selectbox", fake_selectbox)
@@ -93,10 +93,69 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
             "selectbox",
             "Режим обработки изображений",
             ui.IMAGE_MODE_HELP,
-            tuple(ui.IMAGE_MODE_LABELS.values()),
-            None,
+            tuple(ui.IMAGE_MODE_LABELS.keys()),
+            sidebar_calls[2][4],
         ),
     ]
+    assert callable(sidebar_calls[2][4])
+
+
+class FakeImageColumn:
+    def __init__(self):
+        self.images = []
+        self.captions = []
+
+    def image(self, payload, caption=None, use_container_width=None):
+        self.images.append((payload, caption, use_container_width))
+
+    def caption(self, text):
+        self.captions.append(text)
+
+
+def test_render_image_compare_selector_returns_current_selections(monkeypatch):
+    session_state = SessionState(
+        image_assets=[
+            {
+                "image_id": "img_001",
+                "original_bytes": b"orig",
+                "selected_compare_variant": "semantic_redraw_direct",
+                "comparison_variants": {
+                    "safe": {"bytes": b"safe"},
+                    "semantic_redraw_direct": {"bytes": b"direct"},
+                    "semantic_redraw_structured": {"bytes": b"structured"},
+                },
+            }
+        ]
+    )
+    markdowns = []
+    columns = [FakeImageColumn(), FakeImageColumn(), FakeImageColumn(), FakeImageColumn()]
+    radio_calls = []
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.st, "markdown", lambda text: markdowns.append(text))
+    monkeypatch.setattr(ui.st, "columns", lambda n: columns)
+    monkeypatch.setattr(
+        ui.st,
+        "radio",
+        lambda label, options, index, format_func, key, horizontal: radio_calls.append((label, tuple(options), index, key)) or options[index],
+    )
+
+    selections = ui.render_image_compare_selector(FakeTarget())
+
+    assert markdowns == ["**img_001**"]
+    assert columns[0].images[0][1] == ui.IMAGE_COMPARE_LABELS["original"]
+    assert columns[1].images[0][1] == ui.IMAGE_COMPARE_LABELS["safe"]
+    assert columns[2].images[0][1] == ui.IMAGE_COMPARE_LABELS["semantic_redraw_direct"]
+    assert columns[3].images[0][1] == ui.IMAGE_COMPARE_LABELS["semantic_redraw_structured"]
+    assert radio_calls == [(
+        "Выбрать вариант для img_001",
+        ("original", "safe", "semantic_redraw_direct", "semantic_redraw_structured"),
+        2,
+        "compare_choice_img_001",
+    )]
+    assert selections == {"img_001": "semantic_redraw_direct"}
 
 
 def test_render_image_validation_summary_shows_metrics(monkeypatch):

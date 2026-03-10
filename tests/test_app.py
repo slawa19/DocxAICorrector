@@ -171,3 +171,33 @@ def test_run_processing_worker_emits_worker_complete_after_unhandled_crash(monke
     assert emitted_events[-1] == {"type": "worker_complete", "outcome": "failed"}
     assert any(event["type"] == "set_state" and event["values"]["last_error"].startswith("Критическая ошибка фоновой обработки") for event in emitted_events)
     assert any(event["type"] == "finalize_processing_status" for event in emitted_events)
+
+
+def test_apply_selected_compare_variants_rebuilds_docx(monkeypatch):
+    session_state = SessionState(
+        latest_markdown="body",
+        latest_docx_bytes=None,
+        image_assets=[
+            ImageAsset(
+                image_id="img_001",
+                placeholder="[[DOCX_IMAGE_img_001]]",
+                original_bytes=b"original",
+                mime_type="image/png",
+                position_index=0,
+                comparison_variants={
+                    "safe": {"bytes": b"safe"},
+                    "semantic_redraw_direct": {"bytes": b"direct"},
+                },
+            )
+        ],
+        compare_choice_img_001="semantic_redraw_direct",
+    )
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app, "convert_markdown_to_docx_bytes", lambda markdown: f"docx:{markdown}".encode("utf-8"))
+    monkeypatch.setattr(app, "reinsert_inline_images", lambda docx_bytes, image_assets: docx_bytes + b":rebuilt")
+
+    app._apply_selected_compare_variants()
+
+    assert session_state.image_assets[0].selected_compare_variant == "semantic_redraw_direct"
+    assert session_state.image_assets[0].final_variant == "redrawn"
+    assert session_state.latest_docx_bytes == b"docx:body:rebuilt"

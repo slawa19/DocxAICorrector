@@ -90,6 +90,8 @@ class ImageAsset:
     final_decision: str | None = None
     final_variant: str | None = None
     final_reason: str | None = None
+    comparison_variants: dict[str, dict[str, object]] = field(default_factory=dict)
+    selected_compare_variant: str | None = None
 
     def __post_init__(self) -> None:
         self.sync_pipeline_metadata()

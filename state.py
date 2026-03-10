@@ -57,6 +57,7 @@ def init_session_state() -> None:
     st.session_state.setdefault("processing_stop_event", None)
     st.session_state.setdefault("processing_outcome", "idle")
     st.session_state.setdefault("prepared_source_key", "")
+    st.session_state.setdefault("latest_image_mode", "safe")
 
 
 def reset_run_state(*, keep_previous_result: bool = True) -> None:
@@ -80,6 +81,7 @@ def reset_run_state(*, keep_previous_result: bool = True) -> None:
     st.session_state.processing_stop_event = None
     st.session_state.processing_outcome = "idle"
     st.session_state.prepared_source_key = ""
+    st.session_state.latest_image_mode = "safe"
     if not keep_previous_result:
         st.session_state.previous_result = None
 
@@ -148,7 +150,7 @@ def append_image_log(
     summary["total_images"] = int(summary.get("total_images", 0)) + 1
     summary["processed_images"] = int(summary.get("processed_images", 0)) + 1
 
-    if status == "validated":
+    if status in {"validated", "skipped", "compared"}:
         summary["images_validated"] = int(summary.get("images_validated", 0)) + 1
         if decision in {"accept", "accept_soft"}:
             summary["validation_passed"] = int(summary.get("validation_passed", 0)) + 1

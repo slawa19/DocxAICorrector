@@ -115,6 +115,11 @@ def reinsert_inline_images(docx_bytes: bytes, image_assets: list[ImageAsset]) ->
 
 
 def resolve_final_image_bytes(asset: ImageAsset) -> bytes:
+    if asset.selected_compare_variant:
+        selected_variant = asset.comparison_variants.get(asset.selected_compare_variant, {})
+        selected_bytes = selected_variant.get("bytes") if isinstance(selected_variant, dict) else None
+        if isinstance(selected_bytes, (bytes, bytearray)) and selected_bytes:
+            return bytes(selected_bytes)
     if asset.final_variant == "redrawn" and asset.redrawn_bytes:
         return asset.redrawn_bytes
     if asset.final_variant == "safe" and asset.safe_bytes:

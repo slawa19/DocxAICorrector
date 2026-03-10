@@ -805,8 +805,9 @@ def _restore_semantic_output(
                 min(normalized_image.height, int(round(bottom * scale_y))),
             )
             cropped = normalized_image.crop(scaled_crop_box)
-            if cropped.size != original_size:
-                cropped = cropped.resize(original_size, Image.Resampling.LANCZOS)
+            target_size = _select_preserved_output_size(original_size, cropped.size)
+            if cropped.size != target_size:
+                cropped = ImageOps.fit(cropped, target_size, Image.Resampling.LANCZOS, centering=(0.5, 0.5))
 
             output = BytesIO()
             output_format = _select_pillow_output_format(semantic_image.format)
@@ -839,8 +840,8 @@ def _build_image_edit_prompt(
             "while preserving meaning, key labels, and the overall information hierarchy."
         ),
         "semantic_redraw_structured": (
-            "Use the original image strictly as a structural reference and fully reconstruct the diagram from scratch with clean vector-like shapes and typeset text. "
-            "Preserve layout, block count, connectors, arrows, table structure, and readable labels as strictly as possible."
+            "Use the original image as a content-accurate structural reference and redraw it in a conservative office presentation style. "
+            "Preserve blocks, connectors, table logic, reading order, and readable labels, but improve spacing, typography, alignment, and visual consistency instead of reproducing pixel coordinates literally."
         ),
     }[requested_mode]
     labels = ", ".join(label for label in analysis.extracted_labels[:20] if label.strip())
@@ -881,10 +882,12 @@ def _build_structured_generate_prompt(
         f"Profile: {prompt_profile['description']}",
         f"Detected image type: {analysis.image_type}.",
         f"Original content aspect ratio: {source_size[0]}:{source_size[1]}. Fill the entire generated canvas completely from edge to edge — no empty outer margins, padding, or borders.",
-        "Generate a brand-new clean vector-style diagram from scratch. Do not mimic scan artifacts, JPEG noise, blur, shadows, or the original raster texture.",
+        "Generate a brand-new clean office-presentation-style diagram from scratch. Do not mimic scan artifacts, JPEG noise, blur, shadows, or the original raster texture.",
         "Preserve every readable label, connector, block, lane, table cell, legend item, and hierarchy level from the source structure.",
+        "Be conservative in content but not literal in coordinates: improve spacing, alignment, typography, grouping, and visual hierarchy so the result looks like a polished PowerPoint or Office presentation graphic.",
+        "Avoid spreadsheet aesthetics, cramped grids, raw Excel-table styling, and mechanical box repetition unless the source is truly a table.",
         base_prompt,
-        "Structured layout description for exact redraw:",
+        "Structured layout description for conservative redraw:",
         layout_description,
     ]
     if analysis.extracted_text.strip():
@@ -947,8 +950,8 @@ def _extract_structured_layout_description(
                         {
                             "type": "input_text",
                             "text": (
-                                "You convert diagrams, tables, and infographics into exact redraw specifications for image generation. "
-                                "List every readable label verbatim, preserve structure conservatively, and never invent missing content."
+                                "You convert diagrams, tables, and infographics into conservative redraw specifications for image generation. "
+                                "List every readable label verbatim, preserve content faithfully, improve presentation quality, and never invent missing content."
                             ),
                         }
                     ],
@@ -961,6 +964,7 @@ def _extract_structured_layout_description(
                             "text": (
                                 "Describe this image as a production-ready redraw specification. Include layout, reading order, block geometry, arrows, "
                                 "table structure, colors, and all readable text verbatim. If text is unreadable, say unreadable instead of guessing. "
+                                "Optimize for office-presentation-style clarity rather than literal coordinate copying. "
                                 f"Detected image type: {analysis.image_type}. Structure summary: {analysis.structure_summary}."
                             ),
                         },
@@ -1041,8 +1045,15 @@ def _read_image_size(image_bytes: bytes) -> tuple[int, int]:
 
 
 def _select_generate_size(_source_size: tuple[int, int]) -> str:
-    """Request auto-sizing so gpt-image-1 picks the aspect ratio closest to the source."""
-    return "auto"
+    source_width, source_height = _source_size
+    if source_width <= 0 or source_height <= 0:
+        return "1024x1024"
+    aspect_ratio = source_width / source_height
+    if aspect_ratio >= 1.2:
+        return "1536x1024"
+    if aspect_ratio <= (1 / 1.2):
+        return "1024x1536"
+    return "1024x1024"
 
 
 def _restore_generated_output(image_bytes: bytes, original_size: tuple[int, int]) -> bytes:
@@ -1051,20 +1062,20 @@ def _restore_generated_output(image_bytes: bytes, original_size: tuple[int, int]
             generated_image.load()
             normalized_image = ImageOps.exif_transpose(generated_image)
             trimmed_image = _trim_generated_outer_padding(normalized_image)
-            fitted = ImageOps.contain(trimmed_image, original_size, Image.Resampling.LANCZOS)
-            if fitted.size != original_size:
-                background_color = _pick_generated_background_color(fitted)
-                canvas_mode = "RGBA" if fitted.mode in {"RGBA", "LA"} else "RGB"
-                canvas = Image.new(canvas_mode, original_size, background_color)
-                offset_x = (original_size[0] - fitted.width) // 2
-                offset_y = (original_size[1] - fitted.height) // 2
-                if canvas_mode == "RGBA":
-                    canvas.alpha_composite(fitted.convert("RGBA"), (offset_x, offset_y))
-                else:
-                    canvas.paste(fitted, (offset_x, offset_y))
-                restored_image = canvas
+            target_size = _select_preserved_output_size(original_size, trimmed_image.size)
+            contained_image = ImageOps.contain(trimmed_image, target_size, Image.Resampling.LANCZOS)
+            if contained_image.size == target_size:
+                restored_image = contained_image
             else:
-                restored_image = fitted
+                background_color = _pick_generated_background_color(contained_image)
+                canvas_mode = "RGBA" if contained_image.mode in {"RGBA", "LA"} else "RGB"
+                restored_image = Image.new(canvas_mode, target_size, background_color)
+                offset_x = (target_size[0] - contained_image.width) // 2
+                offset_y = (target_size[1] - contained_image.height) // 2
+                if canvas_mode == "RGBA":
+                    restored_image.alpha_composite(contained_image.convert("RGBA"), (offset_x, offset_y))
+                else:
+                    restored_image.paste(contained_image, (offset_x, offset_y))
 
             output = BytesIO()
             output_format = _select_pillow_output_format(generated_image.format)
@@ -1109,6 +1120,31 @@ def _trim_generated_outer_padding(image: Image.Image) -> Image.Image:
     if cropped.width <= 0 or cropped.height <= 0:
         return image
     return cropped
+
+
+def _select_preserved_output_size(
+    original_size: tuple[int, int],
+    available_size: tuple[int, int],
+) -> tuple[int, int]:
+    original_width, original_height = original_size
+    available_width, available_height = available_size
+    if original_width <= 0 or original_height <= 0 or available_width <= 0 or available_height <= 0:
+        return available_size
+
+    aspect_ratio = original_width / original_height
+    longest_available_side = max(available_width, available_height)
+    if abs(aspect_ratio - 1.0) <= 0.08:
+        side = max(original_width, original_height, longest_available_side)
+        return (side, side)
+
+    if aspect_ratio >= 1.0:
+        target_width = max(original_width, longest_available_side)
+        target_height = max(original_height, int(round(target_width / aspect_ratio)))
+        return (target_width, target_height)
+
+    target_height = max(original_height, longest_available_side)
+    target_width = max(original_width, int(round(target_height * aspect_ratio)))
+    return (target_width, target_height)
 
 
 def _pick_generated_background_color(image: Image.Image) -> tuple[int, ...]:

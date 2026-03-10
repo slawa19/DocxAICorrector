@@ -11,6 +11,14 @@ IMAGE_MODE_LABELS = {
     "safe": "Просто улучшить без перерисовки",
     "semantic_redraw_direct": "Свободная AI-перерисовка по смыслу",
     "semantic_redraw_structured": "Точная AI-перерисовка схем и таблиц",
+    "compare_all": "Сгенерировать 3 варианта для выбора",
+}
+
+IMAGE_COMPARE_LABELS = {
+    "original": "Оригинал",
+    "safe": "Просто улучшить",
+    "semantic_redraw_direct": "Свободная AI-перерисовка",
+    "semantic_redraw_structured": "Консервативная AI-перерисовка",
 }
 
 IMAGE_MODE_VALUES_BY_LABEL = {label: value for value, label in IMAGE_MODE_LABELS.items()}
@@ -18,7 +26,8 @@ IMAGE_MODE_VALUES_BY_LABEL = {label: value for value, label in IMAGE_MODE_LABELS
 IMAGE_MODE_HELP = (
     "Просто улучшить: слегка улучшает исходную картинку без смысловой перерисовки.\n"
     "Свободная AI-перерисовка: делает creative redraw через vision + generate, лучше для инфографики, композиции, цвета и сложного оформления.\n"
-    "Точная AI-перерисовка: делает exact/structured redraw, лучше для таблиц, блок-схем, графиков и других структурных изображений, где важна строгая сохранность структуры."
+    "Точная AI-перерисовка: делает content-conservative redraw в стиле office presentation, лучше для схем, таблиц и структурных изображений.\n"
+    "Сгенерировать 3 варианта: строит safe, свободный и консервативный варианты сразу, чтобы выбрать лучший перед итоговым DOCX."
 )
 
 
@@ -305,6 +314,49 @@ def _asset_value(asset, field_name: str, default=None):
     return getattr(asset, field_name, default)
 
 
+def render_image_compare_selector(target=None) -> dict[str, str]:
+    image_assets = list(st.session_state.get("image_assets", []))
+    comparable_assets = [asset for asset in image_assets if _asset_value(asset, "comparison_variants", {})]
+    if not comparable_assets:
+        return {}
+
+    sink = target if target is not None else st
+    selections: dict[str, str] = {}
+    with sink.container():
+        with st.expander("Сравнение вариантов изображений", expanded=True):
+            st.caption("Здесь можно сравнить три сгенерированных режима и выбрать, какой вариант попадет в итоговый DOCX.")
+            for asset in comparable_assets:
+                image_id = str(_asset_value(asset, "image_id", "unknown"))
+                st.markdown(f"**{image_id}**")
+                columns = st.columns(4)
+
+                original_bytes = _asset_value(asset, "original_bytes")
+                if original_bytes:
+                    columns[0].image(original_bytes, caption=IMAGE_COMPARE_LABELS["original"], use_container_width=True)
+
+                variant_map = dict(_asset_value(asset, "comparison_variants", {}))
+                ordered_modes = ["safe", "semantic_redraw_direct", "semantic_redraw_structured"]
+                for index, mode in enumerate(ordered_modes, start=1):
+                    variant = variant_map.get(mode, {})
+                    variant_bytes = variant.get("bytes") if isinstance(variant, dict) else None
+                    if variant_bytes:
+                        columns[index].image(variant_bytes, caption=IMAGE_COMPARE_LABELS[mode], use_container_width=True)
+                    else:
+                        columns[index].caption(f"{IMAGE_COMPARE_LABELS[mode]}: недоступно")
+
+                default_choice = _asset_value(asset, "selected_compare_variant") or "original"
+                option_values = ["original", *ordered_modes]
+                selections[image_id] = st.radio(
+                    f"Выбрать вариант для {image_id}",
+                    options=option_values,
+                    index=option_values.index(default_choice) if default_choice in option_values else 0,
+                    format_func=lambda option: IMAGE_COMPARE_LABELS.get(option, option),
+                    key=f"compare_choice_{image_id}",
+                    horizontal=True,
+                )
+    return selections
+
+
 def render_sidebar(config: dict[str, object]) -> tuple[str, int, int, str, bool]:
     st.sidebar.header("Настройки")
     model_options = [*config["model_options"], "custom"]
@@ -329,18 +381,17 @@ def render_sidebar(config: dict[str, object]) -> tuple[str, int, int, str, bool]
         max_value=5,
         value=int(config["max_retries"]),
     )
-    image_mode_options = list(IMAGE_MODE_LABELS.values())
+    image_mode_options = list(IMAGE_MODE_LABELS.keys())
     image_mode_default = str(config.get("image_mode_default", "safe"))
-    image_mode_default_label = IMAGE_MODE_LABELS.get(image_mode_default, image_mode_default)
-    image_mode_index = image_mode_options.index(image_mode_default_label) if image_mode_default_label in image_mode_options else 0
-    selected_image_mode_label = st.sidebar.selectbox(
+    image_mode_index = image_mode_options.index(image_mode_default) if image_mode_default in image_mode_options else 0
+    image_mode = st.sidebar.selectbox(
         "Режим обработки изображений",
         image_mode_options,
         index=image_mode_index,
+        format_func=lambda mode: IMAGE_MODE_LABELS.get(mode, mode),
         help=IMAGE_MODE_HELP,
         key="sidebar_image_mode",
     )
-    image_mode = IMAGE_MODE_VALUES_BY_LABEL.get(selected_image_mode_label, image_mode_default)
     enable_post_redraw_validation = st.sidebar.checkbox(
         "Включить post-check validation",
         value=bool(config.get("enable_post_redraw_validation", True)),
