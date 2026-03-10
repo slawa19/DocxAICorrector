@@ -149,6 +149,8 @@ def test_generate_image_candidate_structured_uses_vision_and_images_generate(mon
     assert captured["generate"]["response_format"] == "b64_json"
     assert captured["generate"]["quality"] == "high"
     assert captured["generate"]["size"] == "1024x1024"
+    assert captured["generate"]["background"] == "transparent"
+    assert captured["generate"]["output_format"] == "png"
     assert "Three columns with arrows" in captured["generate"]["prompt"]
     assert "office-presentation-style diagram" in captured["generate"]["prompt"]
     assert "Start -> Review -> Finish" in captured["generate"]["prompt"]
@@ -291,12 +293,29 @@ def test_generate_image_candidate_direct_uses_creative_vision_and_images_generat
     assert captured["generate"]["response_format"] == "b64_json"
     assert captured["generate"]["quality"] == "high"
     assert captured["generate"]["size"] == "1024x1024"
+    assert captured["generate"]["background"] == "transparent"
+    assert captured["generate"]["output_format"] == "png"
     assert "Creative redraw brief" in captured["generate"]["prompt"]
     assert "Do not make it look like an Excel sheet" in captured["generate"]["prompt"]
     with Image.open(BytesIO(candidate)) as edited_image:
         assert edited_image.width > 12
         assert edited_image.height > 12
         assert edited_image.width == edited_image.height
+
+
+def test_generate_image_candidate_direct_normalizes_dark_outer_background_to_white(monkeypatch):
+    image = Image.new("RGB", (24, 24), (0, 0, 0))
+    for x_coord in range(5, 19):
+        for y_coord in range(5, 19):
+            image.putpixel((x_coord, y_coord), (210, 235, 226))
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+
+    restored = image_generation._restore_generated_output(buffer.getvalue(), (24, 24), prefer_light_background=True)
+
+    with Image.open(BytesIO(restored)).convert("RGBA") as normalized_image:
+        assert normalized_image.getpixel((0, 0))[:3] == (255, 255, 255)
+        assert normalized_image.getpixel((23, 23))[:3] == (255, 255, 255)
 
 
 def test_select_generate_size_uses_fixed_aspect_presets():
@@ -623,7 +642,7 @@ def test_generate_image_candidate_direct_retries_with_shorter_prompt(monkeypatch
     assert len(captured_calls[1]["prompt"]) <= 1000
 
 
-def test_generate_image_candidate_direct_does_not_force_reconstruction_for_free_mode(monkeypatch):
+def test_generate_image_candidate_direct_does_not_force_reconstruction_for_direct_mode(monkeypatch):
     calls = {"creative": 0, "reconstruct": 0}
 
     monkeypatch.setattr(
@@ -878,6 +897,36 @@ def test_generate_image_candidate_uses_legacy_semantic_path_when_reconstruction_
     assert candidate
     assert captured["vision"]["model"] == image_generation.IMAGE_STRUCTURE_VISION_MODEL
     assert captured["generate"]["model"] == image_generation.IMAGE_GENERATE_MODEL
+
+
+def test_generate_image_candidate_structured_prefers_high_fidelity_edit_before_generate(monkeypatch):
+    captured = {}
+
+    class FakeImagesClient:
+        def edit(self, **kwargs):
+            captured["edit"] = kwargs
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(
+                        b64_json=base64.b64encode(build_square_semantic_output_bytes()).decode("ascii"),
+                        revised_prompt=None,
+                    )
+                ]
+            )
+
+    monkeypatch.setattr(image_generation, "get_client", lambda: SimpleNamespace(images=FakeImagesClient()))
+    monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
+
+    candidate = image_generation.generate_image_candidate(
+        build_detailed_png_bytes(),
+        build_analysis_result(render_strategy="semantic_redraw_structured"),
+        mode="semantic_redraw_structured",
+    )
+
+    assert candidate
+    assert captured["edit"]["model"] == image_generation.IMAGE_EDIT_MODEL
+    assert captured["edit"]["input_fidelity"] == "high"
+    assert captured["edit"]["output_format"] == "png"
 
 
 def test_generate_image_candidate_direct_includes_extracted_text_in_prompt(monkeypatch):

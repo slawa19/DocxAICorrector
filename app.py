@@ -1,5 +1,4 @@
 import logging
-import time
 
 from dotenv import load_dotenv
 
@@ -11,7 +10,23 @@ st.set_page_config(
 )
 
 from constants import ENV_PATH
+from compare_apply import apply_selected_compare_variants as apply_selected_compare_variants_impl
+from compare_panel import render_compare_all_apply_panel
 from config import get_client, load_app_config, load_system_prompt
+from app_runtime import (
+    BackgroundRuntime,
+    drain_processing_events as _drain_processing_events,
+    emit_activity as _emit_or_apply_activity,
+    emit_finalize as _emit_or_apply_finalize,
+    emit_image_log as _emit_or_apply_image_log,
+    emit_image_reset as _emit_or_apply_image_reset,
+    emit_log as _emit_or_apply_log,
+    emit_state as _emit_or_apply_state,
+    emit_status as _emit_or_apply_status,
+    processing_worker_is_active as _processing_worker_is_active,
+    request_processing_stop as _request_processing_stop,
+    start_background_processing,
+)
 from document import (
     build_document_text,
     build_editing_jobs,
@@ -33,28 +48,14 @@ from image_pipeline import process_document_images as process_document_images_im
 from image_validation import process_image_asset
 from logger import fail_critical, log_event, present_error
 from processing_runtime import (
-    BackgroundRuntime,
     get_current_result_bundle,
     build_uploaded_file_token,
-    drain_processing_events,
-    emit_or_apply_activity,
-    emit_or_apply_finalize,
-    emit_or_apply_image_log,
-    emit_or_apply_image_reset,
-    emit_or_apply_log,
-    emit_or_apply_state,
-    emit_or_apply_status,
     get_previous_result_bundle,
-    processing_worker_is_active,
-    request_processing_stop,
     resolve_uploaded_filename,
     should_stop_processing,
-    start_background_processing,
 )
 from state import (
     append_image_log,
-    append_log,
-    finalize_processing_status,
     init_session_state,
     push_activity,
     reset_run_state,
@@ -77,64 +78,12 @@ from ui import (
 load_dotenv(dotenv_path=ENV_PATH)
 
 
-def _emit_or_apply_state(runtime: BackgroundRuntime | None, **values) -> None:
-    emit_or_apply_state(runtime, **values)
-
-
-def _emit_or_apply_image_reset(runtime: BackgroundRuntime | None) -> None:
-    emit_or_apply_image_reset(runtime)
-
-
-def _emit_or_apply_status(runtime: BackgroundRuntime | None, **payload) -> None:
-    emit_or_apply_status(runtime, set_processing_status=set_processing_status, **payload)
-
-
-def _emit_or_apply_finalize(runtime: BackgroundRuntime | None, stage: str, detail: str, progress: float) -> None:
-    emit_or_apply_finalize(
-        runtime,
-        finalize_processing_status=finalize_processing_status,
-        stage=stage,
-        detail=detail,
-        progress=progress,
-    )
-
-
-def _emit_or_apply_activity(runtime: BackgroundRuntime | None, message: str) -> None:
-    emit_or_apply_activity(runtime, push_activity=push_activity, message=message)
-
-
-def _emit_or_apply_log(runtime: BackgroundRuntime | None, **payload) -> None:
-    emit_or_apply_log(runtime, append_log=append_log, **payload)
-
-
-def _emit_or_apply_image_log(runtime: BackgroundRuntime | None, **payload) -> None:
-    emit_or_apply_image_log(runtime, append_image_log=append_image_log, **payload)
-
-
 def _should_stop_processing(runtime: BackgroundRuntime | None) -> bool:
     return should_stop_processing(runtime)
 
 
 def _resolve_uploaded_filename(uploaded_file) -> str:
     return resolve_uploaded_filename(uploaded_file)
-
-
-def _drain_processing_events() -> None:
-    drain_processing_events(
-        set_processing_status=set_processing_status,
-        finalize_processing_status=finalize_processing_status,
-        push_activity=push_activity,
-        append_log=append_log,
-        append_image_log=append_image_log,
-    )
-
-
-def _processing_worker_is_active() -> bool:
-    return processing_worker_is_active()
-
-
-def _request_processing_stop() -> None:
-    request_processing_stop()
 
 
 def _start_background_processing(
@@ -150,9 +99,6 @@ def _start_background_processing(
 ) -> None:
     start_background_processing(
         worker_target=_run_processing_worker,
-        reset_run_state=reset_run_state,
-        push_activity=push_activity,
-        set_processing_status=set_processing_status,
         uploaded_filename=uploaded_filename,
         uploaded_token=uploaded_token,
         jobs=jobs,
@@ -245,30 +191,11 @@ def _should_log_document_prepared(prepared_source_key: str) -> bool:
 
 
 def _apply_selected_compare_variants() -> None:
-    image_assets = list(st.session_state.get("image_assets", []))
-    markdown_text = str(st.session_state.get("latest_markdown", ""))
-    if not image_assets or not markdown_text:
-        raise RuntimeError("Нет готовых данных для пересборки DOCX с выбранными вариантами изображений.")
-
-    for asset in image_assets:
-        image_id = getattr(asset, "image_id", None)
-        if not image_id:
-            continue
-        selected_variant = str(st.session_state.get(f"compare_choice_{image_id}", "original"))
-        asset.selected_compare_variant = selected_variant
-        if selected_variant == "original":
-            asset.final_variant = "original"
-        elif selected_variant == "safe":
-            asset.final_variant = "safe"
-        else:
-            asset.final_variant = "redrawn"
-        asset.final_decision = "accept"
-        asset.final_reason = f"compare_variant_selected:{selected_variant}"
-
-    rebuilt_docx_bytes = convert_markdown_to_docx_bytes(markdown_text)
-    rebuilt_docx_bytes = reinsert_inline_images(rebuilt_docx_bytes, image_assets)
-    st.session_state.image_assets = image_assets
-    st.session_state.latest_docx_bytes = rebuilt_docx_bytes
+    apply_selected_compare_variants_impl(
+        st.session_state,
+        convert_markdown_to_docx_bytes=convert_markdown_to_docx_bytes,
+        reinsert_inline_images=reinsert_inline_images,
+    )
 
 
 def process_document_images(
@@ -495,27 +422,15 @@ def main() -> None:
     render_run_log()
     render_image_validation_summary()
 
-    if has_completed_result and st.session_state.latest_image_mode == "compare_all":
-        render_section_gap("lg")
-        render_image_compare_selector()
-        if st.button(
-            "Собрать итоговый DOCX с выбранными изображениями",
-            type="primary",
-            use_container_width=True,
-            key="apply_compare_variants_button",
-        ):
-            try:
-                _apply_selected_compare_variants()
-                st.success("Итоговый DOCX пересобран с выбранными вариантами изображений.")
-            except Exception as exc:
-                user_message = present_error(
-                    "compare_variant_apply_failed",
-                    exc,
-                    "Ошибка применения выбранных вариантов изображений",
-                    filename=uploaded_file.name,
-                )
-                st.error(user_message)
-        st.caption("До пересборки итоговый DOCX сохраняет исходные изображения. После нажатия кнопки будут вставлены выбранные варианты.")
+    render_compare_all_apply_panel(
+        has_completed_result=has_completed_result,
+        latest_image_mode=st.session_state.latest_image_mode,
+        uploaded_filename=uploaded_file.name,
+        render_section_gap=render_section_gap,
+        render_image_compare_selector=render_image_compare_selector,
+        apply_selected_compare_variants=_apply_selected_compare_variants,
+        present_error=present_error,
+    )
 
     if has_completed_result:
         render_result(st.session_state.latest_docx_bytes, st.session_state.latest_markdown, uploaded_file.name)

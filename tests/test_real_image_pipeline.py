@@ -170,7 +170,7 @@ class TestRedrawRoutingRealInputs:
             assert candidate
             return
 
-        if analysis_result.render_strategy == "deterministic_reconstruction":
+        if analysis_result.render_strategy == "deterministic_reconstruction" and image_generation._is_reconstruction_first_candidate(analysis_result):
             with Image.open(BytesIO(image_bytes)) as original_image:
                 original_size = original_image.size
             stub_image = Image.new("RGB", original_size, (200, 200, 200))
@@ -230,9 +230,14 @@ class TestRedrawRoutingRealInputs:
         with Image.open(BytesIO(image_bytes)) as original_image, Image.open(BytesIO(candidate)) as candidate_image:
             assert candidate_image.size == original_image.size
         if requested_mode == "semantic_redraw_structured":
-            assert captured["vision"]["model"] == image_generation.IMAGE_STRUCTURE_VISION_MODEL
-            assert captured["generate"]["model"] == image_generation.IMAGE_GENERATE_MODEL
-            assert captured["generate"]["response_format"] == "b64_json"
+            if "edit" in captured:
+                assert captured["edit"]["model"] == image_generation.IMAGE_EDIT_MODEL
+                assert captured["edit"]["response_format"] == "b64_json"
+                assert captured["edit"]["input_fidelity"] == "high"
+            else:
+                assert captured["vision"]["model"] == image_generation.IMAGE_STRUCTURE_VISION_MODEL
+                assert captured["generate"]["model"] == image_generation.IMAGE_GENERATE_MODEL
+                assert captured["generate"]["response_format"] == "b64_json"
         else:
             assert captured["edit"]["model"] == image_generation.IMAGE_EDIT_MODEL
             assert captured["edit"]["response_format"] == "b64_json"

@@ -16,7 +16,8 @@ import app
 from config import get_client, load_app_config
 from image_analysis import analyze_image
 from image_generation import detect_image_mime_type, generate_image_candidate
-from models import ImageAsset
+from models import ImageAsset, get_image_variant_bytes
+from state import init_session_state
 
 
 def _detect_extension(payload: bytes) -> str:
@@ -52,6 +53,7 @@ def _write_artifact(base_name: str, payload: bytes) -> str:
 
 
 def main() -> None:
+    init_session_state()
     config = load_app_config()
     client = get_client()
     image_bytes = SOURCE_IMAGE.read_bytes()
@@ -110,7 +112,7 @@ def main() -> None:
     compare_asset = compare_assets[0]
     compare_variants: dict[str, object] = {}
     for variant_name, variant in compare_asset.comparison_variants.items():
-        payload = variant.get("bytes") if isinstance(variant, dict) else None
+        payload = get_image_variant_bytes(variant)
         if not payload:
             continue
         compare_variants[variant_name] = {

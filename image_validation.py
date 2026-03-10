@@ -6,6 +6,7 @@ import time
 from typing import Mapping
 
 from generation import is_retryable_error
+from image_pipeline_policy import resolve_validation_delivery_outcome
 from logger import log_event
 from models import ImageAnalysisResult, ImageAsset, ImageValidationResult
 
@@ -124,10 +125,12 @@ def process_image_asset(
     enable_vision_validation: bool = True,
 ) -> ImageAsset:
     asset.mode_requested = image_mode
+    validation_policy = str(config.get("semantic_validation_policy", "advisory")).strip().lower() or "advisory"
     context = {
         "image_id": asset.image_id,
         "placeholder": asset.placeholder,
         "image_mode": image_mode,
+        "semantic_validation_policy": validation_policy,
     }
 
     if image_mode not in {"semantic_redraw_direct", "semantic_redraw_structured"}:
@@ -181,20 +184,30 @@ def process_image_asset(
         strict_validation_passed=result.validation_passed,
     )
 
-    if result.decision == "accept":
-        asset.final_decision = "accept"
-        asset.final_variant = "redrawn"
-        asset.final_reason = "Validator подтвердил semantic redraw."
+    outcome = resolve_validation_delivery_outcome(
+        result,
+        validation_policy=validation_policy,
+        has_safe_fallback=bool(asset.safe_bytes),
+    )
+    asset.validation_status = str(outcome["validation_status"])
+    asset.final_decision = str(outcome["final_decision"])
+    asset.final_variant = str(outcome["final_variant"])
+    asset.final_reason = str(outcome["final_reason"])
+    asset.update_pipeline_metadata(soft_accepted=bool(outcome["soft_accepted"]))
+
+    if asset.final_decision == "accept":
         return asset
 
-    asset.final_decision = result.decision
-    if result.decision == "fallback_safe" and asset.safe_bytes:
-        asset.final_variant = "safe"
-        asset.final_reason = "; ".join(result.suspicious_reasons) or "Validator запросил safe fallback."
-    else:
-        asset.final_decision = "fallback_original"
-        asset.final_variant = "original"
-        asset.final_reason = "; ".join(result.suspicious_reasons) or "Validator запросил fallback на оригинал."
+    if asset.final_decision == "accept_soft":
+        log_event(
+            logging.INFO,
+            "image_validation_advisory_accept",
+            "Validator вернул fallback, но semantic redraw сохранен по advisory-policy.",
+            validator_decision=result.decision,
+            suspicious_reasons=result.suspicious_reasons,
+            **context,
+        )
+        return asset
 
     log_event(
         logging.WARNING,

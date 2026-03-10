@@ -8,6 +8,7 @@ from PIL import Image, ImageEnhance, ImageOps
 from PIL import ImageChops
 
 from config import get_client
+from image_pipeline_policy import resolve_generation_mode
 from image_prompts import get_image_prompt_profile, load_image_prompt_text
 from image_reconstruction import reconstruct_image
 from logger import log_event
@@ -63,7 +64,7 @@ def generate_image_candidate(
 
     prompt_profile = get_image_prompt_profile(analysis.prompt_key)
     prompt_text = load_image_prompt_text(analysis.prompt_key)
-    requested_mode = _resolve_requested_mode(mode, analysis)
+    requested_mode = resolve_generation_mode(mode, analysis)
 
     if requested_mode == "safe":
         candidate_bytes = _generate_safe_candidate(image_bytes)
@@ -87,6 +88,9 @@ def generate_image_candidate(
             requested_mode=requested_mode,
             prompt_text=prompt_text,
             prompt_profile=prompt_profile,
+            prefer_deterministic_reconstruction=prefer_deterministic_reconstruction,
+            reconstruction_model=reconstruction_model,
+            reconstruction_render_config=reconstruction_render_config,
             client=client,
             budget=budget,
         )
@@ -105,13 +109,6 @@ def generate_image_candidate(
     return candidate_bytes
 
 
-def _resolve_requested_mode(mode: str, analysis: ImageAnalysisResult) -> str:
-    requested_mode = mode if mode in {"safe", *SEMANTIC_MODES} else "safe"
-    if requested_mode in SEMANTIC_MODES and not analysis.semantic_redraw_allowed:
-        return "safe"
-    return requested_mode
-
-
 def _should_use_reconstruction(
     analysis: ImageAnalysisResult,
     *,
@@ -122,7 +119,12 @@ def _should_use_reconstruction(
         prefer_deterministic_reconstruction
         and analysis.render_strategy == RECONSTRUCTION_STRATEGY
         and requested_mode == "semantic_redraw_structured"
+        and _is_reconstruction_first_candidate(analysis)
     )
+
+
+def _is_reconstruction_first_candidate(analysis: ImageAnalysisResult) -> bool:
+    return analysis.image_type == "table" or analysis.prompt_key == "table_semantic_redraw"
 
 
 def _generate_safe_candidate(image_bytes: bytes) -> bytes:
@@ -227,6 +229,9 @@ def _generate_semantic_candidate(
     requested_mode: str,
     prompt_text: str,
     prompt_profile: dict[str, str],
+    prefer_deterministic_reconstruction: bool,
+    reconstruction_model: str | None = None,
+    reconstruction_render_config: dict[str, object] | None = None,
     client=None,
     budget: ImageModelCallBudget | None = None,
 ) -> bytes:
@@ -240,15 +245,36 @@ def _generate_semantic_candidate(
     )
 
     if requested_mode == "semantic_redraw_structured":
-        return _generate_structured_candidate(
-            resolved_client,
-            image_bytes,
-            analysis,
-            prompt_text=prompt_text,
-            prompt_profile=prompt_profile,
-            prompt=prompt,
-            budget=budget,
-        )
+        try:
+            return _generate_structured_candidate(
+                resolved_client,
+                image_bytes,
+                analysis,
+                prompt_text=prompt_text,
+                prompt_profile=prompt_profile,
+                prompt=prompt,
+                budget=budget,
+            )
+        except Exception as exc:
+            if prefer_deterministic_reconstruction and analysis.render_strategy == RECONSTRUCTION_STRATEGY:
+                log_event(
+                    logging.WARNING,
+                    "structured_generate_fallback_to_reconstruction",
+                    "Structured edit/generate path не удался, перехожу на deterministic reconstruction fallback.",
+                    error_type=exc.__class__.__name__,
+                    error_message=str(exc),
+                    image_type=analysis.image_type,
+                    prompt_key=analysis.prompt_key,
+                )
+                return _generate_reconstructed_candidate(
+                    image_bytes,
+                    analysis,
+                    client=resolved_client,
+                    budget=budget,
+                    reconstruction_model=reconstruction_model,
+                    reconstruction_render_config=reconstruction_render_config,
+                )
+            raise
 
     try:
         return _generate_creative_candidate(
@@ -324,11 +350,13 @@ def _generate_creative_candidate(
         "prompt": generate_prompt,
         "size": _select_generate_size(original_size),
         "quality": "high",
+        "background": "transparent",
+        "output_format": "png",
         "response_format": "b64_json",
     }
     response = _call_images_generate(client, request_payload, budget=budget)
     candidate_bytes, revised_prompt = _extract_image_bytes(response)
-    candidate_bytes = _restore_generated_output(candidate_bytes, original_size)
+    candidate_bytes = _restore_generated_output(candidate_bytes, original_size, prefer_light_background=True)
     log_event(
         logging.INFO,
         "creative_semantic_generate_completed",
@@ -347,26 +375,29 @@ def _generate_direct_semantic_candidate(
     analysis: ImageAnalysisResult,
     *,
     prompt: str,
+    requested_mode: str = "semantic_redraw_direct",
     budget: ImageModelCallBudget | None = None,
 ) -> bytes:
-    use_high_fidelity = _uses_high_fidelity_semantic_edit(analysis, "semantic_redraw_direct")
+    use_high_fidelity = _uses_high_fidelity_semantic_edit(analysis, requested_mode)
     semantic_upload, restore_context = _prepare_semantic_edit_image(image_bytes)
     request_payload = {
         "model": IMAGE_EDIT_MODEL,
         "image": [_build_edit_file_like(semantic_upload)],
         "prompt": prompt,
         "quality": "high" if use_high_fidelity else "medium",
+        "input_fidelity": "high" if use_high_fidelity else "low",
+        "output_format": "png",
         "size": _select_generate_size(restore_context["original_size"]),
         "response_format": "b64_json",
     }
     response = _call_images_edit(client, request_payload, budget=budget)
     candidate_bytes, revised_prompt = _extract_image_bytes(response)
-    candidate_bytes = _restore_semantic_output(candidate_bytes, restore_context)
+    candidate_bytes = _restore_semantic_output(candidate_bytes, restore_context, prefer_light_background=True)
     log_event(
         logging.INFO,
         "semantic_image_edit_completed",
         "Direct semantic redraw завершен через OpenAI Images API.",
-        requested_mode="semantic_redraw_direct",
+        requested_mode=requested_mode,
         prompt_key=analysis.prompt_key,
         image_type=analysis.image_type,
         revised_prompt=revised_prompt,
@@ -384,6 +415,26 @@ def _generate_structured_candidate(
     prompt: str,
     budget: ImageModelCallBudget | None = None,
 ) -> bytes:
+    try:
+        return _generate_direct_semantic_candidate(
+            client,
+            image_bytes,
+            analysis,
+            prompt=prompt,
+            requested_mode="semantic_redraw_structured",
+            budget=budget,
+        )
+    except Exception as exc:
+        log_event(
+            logging.WARNING,
+            "structured_edit_fallback_to_generate",
+            "Structured semantic edit не удался, пробую Vision + Images.generate fallback.",
+            error_type=exc.__class__.__name__,
+            error_message=str(exc),
+            image_type=analysis.image_type,
+            prompt_key=analysis.prompt_key,
+        )
+
     original_size = _read_image_size(image_bytes)
     layout_description = _extract_structured_layout_description(client, image_bytes, analysis, budget=budget)
     generate_prompt = _build_structured_generate_prompt(
@@ -399,11 +450,13 @@ def _generate_structured_candidate(
         "prompt": generate_prompt,
         "size": _select_generate_size(original_size),
         "quality": "high",
+        "background": "transparent",
+        "output_format": "png",
         "response_format": "b64_json",
     }
     response = _call_images_generate(client, request_payload, budget=budget)
     candidate_bytes, revised_prompt = _extract_image_bytes(response)
-    candidate_bytes = _restore_generated_output(candidate_bytes, original_size)
+    candidate_bytes = _restore_generated_output(candidate_bytes, original_size, prefer_light_background=True)
     log_event(
         logging.INFO,
         "structured_image_generate_completed",
@@ -494,7 +547,7 @@ def _call_images_edit(client, request_payload: dict[str, object], *, budget: Ima
 
 
 def _call_images_generate(client, request_payload: dict[str, object], *, budget: ImageModelCallBudget | None = None):
-    retryable_optional_params = {"quality", "response_format", "size", "timeout"}
+    retryable_optional_params = {"background", "output_format", "quality", "response_format", "size", "timeout"}
     current_payload = dict(request_payload)
     attempt = 1
     while True:
@@ -781,6 +834,7 @@ def _prepare_semantic_edit_image(
 def _restore_semantic_output(
     image_bytes: bytes,
     restore_context: dict[str, int | tuple[int, int] | tuple[int, int, int, int]],
+    prefer_light_background: bool = False,
 ) -> bytes:
     original_size = restore_context.get("original_size")
     crop_box = restore_context.get("crop_box")
@@ -805,6 +859,8 @@ def _restore_semantic_output(
                 min(normalized_image.height, int(round(bottom * scale_y))),
             )
             cropped = normalized_image.crop(scaled_crop_box)
+            if prefer_light_background:
+                cropped = _normalize_generated_document_background(cropped)
             target_size = _select_preserved_output_size(original_size, cropped.size)
             if cropped.size != target_size:
                 cropped = ImageOps.fit(cropped, target_size, Image.Resampling.LANCZOS, centering=(0.5, 0.5))
@@ -863,6 +919,7 @@ def _build_image_edit_prompt(
         prompt_parts.append(f"Avoid the failure mode noted during analysis: {analysis.fallback_reason}.")
     if analysis.contains_text:
         prompt_parts.append("Prioritize legible text and preserve the same count of labeled elements and connectors.")
+    prompt_parts.append("Use a white or transparent background only. Never use a black, charcoal, dark, or night-style canvas.")
     prompt_parts.append("Do not merely upscale, sharpen, or restyle the existing pixels. Rebuild the visual from scratch while keeping the same meaning and layout.")
     prompt_parts.append("Return a single edited image, not a textual explanation.")
     return "\n\n".join(part for part in prompt_parts if part)
@@ -914,6 +971,7 @@ def _build_creative_generate_prompt(
         "Create a polished, publication-ready infographic from scratch instead of tracing the source literally.",
         "You may redesign composition, spacing, typography, card shapes, connector styling, icon treatment, and color hierarchy to make the result feel intentional, contemporary, and visually rich.",
         "Do not make it look like an Excel sheet, raw spreadsheet, scan, or low-level vector export.",
+        "The final background must be white or transparent, never black, charcoal, or dark.",
         "Preserve meaning, reading order, hierarchy, and every readable label from the source. Do not remove, translate, paraphrase, or invent text.",
         "Use a cohesive editorial design system: balanced whitespace, clear grouping, softer shapes, restrained but confident colors, and typographic contrast between headers and body text.",
         base_prompt,
@@ -1054,20 +1112,24 @@ def _select_generate_size(_source_size: tuple[int, int]) -> str:
     if aspect_ratio <= (1 / 1.2):
         return "1024x1536"
     return "1024x1024"
-
-
-def _restore_generated_output(image_bytes: bytes, original_size: tuple[int, int]) -> bytes:
+def _restore_generated_output(
+    image_bytes: bytes,
+    original_size: tuple[int, int],
+    prefer_light_background: bool = False,
+) -> bytes:
     try:
         with Image.open(BytesIO(image_bytes)) as generated_image:
             generated_image.load()
             normalized_image = ImageOps.exif_transpose(generated_image)
             trimmed_image = _trim_generated_outer_padding(normalized_image)
+            if prefer_light_background:
+                trimmed_image = _normalize_generated_document_background(trimmed_image)
             target_size = _select_preserved_output_size(original_size, trimmed_image.size)
             contained_image = ImageOps.contain(trimmed_image, target_size, Image.Resampling.LANCZOS)
             if contained_image.size == target_size:
                 restored_image = contained_image
             else:
-                background_color = _pick_generated_background_color(contained_image)
+                background_color = (255, 255, 255, 255) if prefer_light_background else _pick_generated_background_color(contained_image)
                 canvas_mode = "RGBA" if contained_image.mode in {"RGBA", "LA"} else "RGB"
                 restored_image = Image.new(canvas_mode, target_size, background_color)
                 offset_x = (target_size[0] - contained_image.width) // 2
@@ -1120,6 +1182,69 @@ def _trim_generated_outer_padding(image: Image.Image) -> Image.Image:
     if cropped.width <= 0 or cropped.height <= 0:
         return image
     return cropped
+
+
+def _normalize_generated_document_background(image: Image.Image) -> Image.Image:
+    rgba_image = image.convert("RGBA")
+    background_rgba = _pick_generated_background_color(rgba_image)
+    if not _is_dark_uniform_background(background_rgba):
+        return image
+
+    border_mask = _build_connected_background_mask(rgba_image, background_rgba)
+    if border_mask is None:
+        return image
+
+    normalized = rgba_image.copy()
+    pixels = normalized.load()
+    mask_pixels = border_mask.load()
+    for y_coord in range(normalized.height):
+        for x_coord in range(normalized.width):
+            if mask_pixels[x_coord, y_coord]:
+                pixels[x_coord, y_coord] = (255, 255, 255, 255)
+    return normalized
+
+
+def _build_connected_background_mask(image: Image.Image, background_rgba: tuple[int, ...]) -> Image.Image | None:
+    from collections import deque
+
+    width, height = image.size
+    if width <= 0 or height <= 0:
+        return None
+
+    rgb_pixels = image.convert("RGB").load()
+    background_rgb = background_rgba[:3]
+    mask = Image.new("1", (width, height), 0)
+    mask_pixels = mask.load()
+    queue = deque()
+
+    def is_background(x_coord: int, y_coord: int) -> bool:
+        pixel = rgb_pixels[x_coord, y_coord]
+        return sum(abs(int(pixel[index]) - int(background_rgb[index])) for index in range(3)) <= 48
+
+    for start in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)):
+        x_coord, y_coord = start
+        if is_background(x_coord, y_coord) and not mask_pixels[x_coord, y_coord]:
+            mask_pixels[x_coord, y_coord] = 1
+            queue.append((x_coord, y_coord))
+
+    if not queue:
+        return None
+
+    while queue:
+        x_coord, y_coord = queue.popleft()
+        for next_x, next_y in ((x_coord - 1, y_coord), (x_coord + 1, y_coord), (x_coord, y_coord - 1), (x_coord, y_coord + 1)):
+            if next_x < 0 or next_y < 0 or next_x >= width or next_y >= height:
+                continue
+            if mask_pixels[next_x, next_y] or not is_background(next_x, next_y):
+                continue
+            mask_pixels[next_x, next_y] = 1
+            queue.append((next_x, next_y))
+    return mask
+
+
+def _is_dark_uniform_background(background_rgba: tuple[int, ...]) -> bool:
+    red_value, green_value, blue_value = background_rgba[:3]
+    return (red_value + green_value + blue_value) / 3.0 <= 40.0
 
 
 def _select_preserved_output_size(

@@ -78,6 +78,13 @@ def parse_config_str(config_data: dict[str, object], field_name: str, default: s
     return value
 
 
+def parse_choice_str(config_data: dict[str, object], field_name: str, default: str, allowed_values: set[str]) -> str:
+    value = parse_config_str(config_data, field_name, default).strip().lower()
+    if value not in allowed_values:
+        raise RuntimeError(f"Некорректное поле {field_name} в {CONFIG_PATH}")
+    return value
+
+
 def parse_config_score(config_data: dict[str, object], field_name: str, default: float) -> float:
     value = config_data.get(field_name, default)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -123,6 +130,12 @@ def load_app_config() -> dict[str, object]:
         raise RuntimeError(f"Некорректное поле max_retries в {CONFIG_PATH}")
 
     image_mode_default = parse_config_str(config_data, "image_mode_default", "safe")
+    semantic_validation_policy = parse_choice_str(
+        config_data,
+        "semantic_validation_policy",
+        "advisory",
+        {"advisory", "strict"},
+    )
     enable_post_redraw_validation = parse_config_bool(config_data, "enable_post_redraw_validation", True)
     validation_model = parse_config_str(config_data, "validation_model", "gpt-4.1")
     min_semantic_match_score = parse_config_score(config_data, "min_semantic_match_score", 0.75)
@@ -184,6 +197,14 @@ def load_app_config() -> dict[str, object]:
         "DOCX_AI_ENABLE_POST_REDRAW_VALIDATION",
         enable_post_redraw_validation,
     )
+    semantic_validation_policy = os.getenv(
+        "DOCX_AI_SEMANTIC_VALIDATION_POLICY",
+        semantic_validation_policy,
+    ).strip().lower() or semantic_validation_policy
+    if semantic_validation_policy not in {"advisory", "strict"}:
+        raise RuntimeError(
+            f"Некорректное значение в DOCX_AI_SEMANTIC_VALIDATION_POLICY: {semantic_validation_policy}"
+        )
     validation_model = os.getenv("DOCX_AI_VALIDATION_MODEL", validation_model).strip() or validation_model
     min_semantic_match_score = clamp_score(
         parse_float_env("DOCX_AI_MIN_SEMANTIC_MATCH_SCORE", min_semantic_match_score)
@@ -262,6 +283,7 @@ def load_app_config() -> dict[str, object]:
         "chunk_size": max(3000, min(chunk_size, 12000)),
         "max_retries": max(1, min(max_retries, 5)),
         "image_mode_default": image_mode_default,
+        "semantic_validation_policy": semantic_validation_policy,
         "enable_post_redraw_validation": enable_post_redraw_validation,
         "validation_model": validation_model,
         "min_semantic_match_score": min_semantic_match_score,

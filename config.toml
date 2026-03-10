@@ -9,6 +9,7 @@ model_options = [
 chunk_size = 6000
 max_retries = 3
 image_mode_default = "safe"
+semantic_validation_policy = "advisory"
 enable_post_redraw_validation = true
 validation_model = "gpt-4.1"
 min_semantic_match_score = 0.75

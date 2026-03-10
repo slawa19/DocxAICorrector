@@ -121,3 +121,25 @@ def test_append_image_log_counts_soft_accept_as_success(monkeypatch):
 
     assert session_state.image_processing_summary["images_validated"] == 1
     assert session_state.image_processing_summary["validation_passed"] == 1
+
+
+def test_append_image_log_counts_skipped_fallback_without_validation_error(monkeypatch):
+    session_state = SessionState()
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    state.init_session_state()
+
+    state.append_image_log(
+        image_id="img-unsupported",
+        status="skipped",
+        decision="fallback_original",
+        confidence=0.0,
+        suspicious_reasons=["unsupported_source_image_format:image/x-emf"],
+    )
+
+    assert session_state.image_processing_summary["total_images"] == 1
+    assert session_state.image_processing_summary["processed_images"] == 1
+    assert session_state.image_processing_summary["images_validated"] == 1
+    assert session_state.image_processing_summary["fallbacks_applied"] == 1
+    assert session_state.image_processing_summary["validation_errors"] == []
+    assert session_state.image_validation_failures == []

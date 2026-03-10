@@ -580,13 +580,13 @@ class TestGenerationReconstructionPath:
         """When render_strategy is deterministic_reconstruction, the generation
         function should attempt reconstruction instead of DALL-E semantic redraw."""
         analysis = ImageAnalysisResult(
-            image_type="diagram",
+            image_type="table",
             image_subtype=None,
             contains_text=True,
             semantic_redraw_allowed=True,
             confidence=0.85,
             structured_parse_confidence=0.8,
-            prompt_key="diagram_semantic_redraw",
+            prompt_key="table_semantic_redraw",
             render_strategy="deterministic_reconstruction",
             structure_summary="boxes and arrows",
             extracted_labels=["A", "B"],
@@ -612,13 +612,13 @@ class TestGenerationReconstructionPath:
     def test_reconstruction_fallback_to_safe_on_error(self):
         """If reconstruction fails, safe fallback should be used."""
         analysis = ImageAnalysisResult(
-            image_type="diagram",
+            image_type="table",
             image_subtype=None,
             contains_text=True,
             semantic_redraw_allowed=True,
             confidence=0.85,
             structured_parse_confidence=0.8,
-            prompt_key="diagram_semantic_redraw",
+            prompt_key="table_semantic_redraw",
             render_strategy="deterministic_reconstruction",
             structure_summary="boxes",
             extracted_labels=[],

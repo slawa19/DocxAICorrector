@@ -22,6 +22,7 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     app_config = config.load_app_config()
 
     assert app_config["image_mode_default"] == "safe"
+    assert app_config["semantic_validation_policy"] == "advisory"
     assert app_config["enable_post_redraw_validation"] is True
     assert app_config["validation_model"] == "gpt-4.1"
     assert app_config["min_semantic_match_score"] == 0.75
@@ -46,6 +47,7 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
 def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
     monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
     monkeypatch.setenv("DOCX_AI_IMAGE_MODE_DEFAULT", "semantic_redraw_direct")
+    monkeypatch.setenv("DOCX_AI_SEMANTIC_VALIDATION_POLICY", "strict")
     monkeypatch.setenv("DOCX_AI_ENABLE_POST_REDRAW_VALIDATION", "false")
     monkeypatch.setenv("DOCX_AI_VALIDATION_MODEL", "gpt-5.4")
     monkeypatch.setenv("DOCX_AI_MIN_SEMANTIC_MATCH_SCORE", "1.2")
@@ -68,6 +70,7 @@ def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
     app_config = config.load_app_config()
 
     assert app_config["image_mode_default"] == "semantic_redraw_direct"
+    assert app_config["semantic_validation_policy"] == "strict"
     assert app_config["enable_post_redraw_validation"] is False
     assert app_config["validation_model"] == "gpt-5.4"
     assert app_config["min_semantic_match_score"] == 1.0
@@ -109,6 +112,18 @@ def test_load_app_config_rejects_invalid_image_env_value(monkeypatch):
         assert "DOCX_AI_ENABLE_POST_REDRAW_VALIDATION" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError for an invalid image bool env override")
+
+
+def test_load_app_config_rejects_invalid_semantic_validation_policy(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.setenv("DOCX_AI_SEMANTIC_VALIDATION_POLICY", "legacy")
+
+    try:
+        config.load_app_config()
+    except RuntimeError as exc:
+        assert "DOCX_AI_SEMANTIC_VALIDATION_POLICY" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError for an invalid semantic validation policy")
 
 
 def test_get_client_loads_openai_api_key_from_dotenv(monkeypatch, tmp_path):

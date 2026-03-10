@@ -116,7 +116,7 @@ def test_process_document_images_accepts_semantic_redraw(monkeypatch):
     assert result[0].validation_status == "passed"
 
 
-def test_process_document_images_applies_fallback_safe(monkeypatch):
+def test_process_document_images_soft_accepts_advisory_type_drift(monkeypatch):
     _prepare_state(monkeypatch)
     analyses = iter(
         [
@@ -133,9 +133,9 @@ def test_process_document_images_applies_fallback_safe(monkeypatch):
         on_progress=lambda **kwargs: None,
     )
 
-    assert result[0].final_decision == "fallback_safe"
-    assert result[0].final_variant == "safe"
-    assert result[0].validation_status == "failed"
+    assert result[0].final_decision == "accept_soft"
+    assert result[0].final_variant == "redrawn"
+    assert result[0].validation_status == "soft-pass"
 
 
 def test_process_document_images_applies_fallback_original_for_unreadable_candidate(monkeypatch):
@@ -360,6 +360,47 @@ def test_process_document_images_compare_all_prepares_three_variants(monkeypatch
         "semantic_redraw_direct",
         "semantic_redraw_structured",
     }
+    assert result[0].comparison_variants["safe"].final_variant == "safe"
+    assert result[0].comparison_variants["semantic_redraw_direct"].validation_status in {"passed", "failed", "soft-pass"}
+
+
+def test_process_document_images_attempts_semantic_mode_for_advisory_dense_text_bypass(monkeypatch):
+    _prepare_state(monkeypatch)
+
+    advisory_analysis = build_analysis_result(
+        semantic_redraw_allowed=False,
+        render_strategy="safe_mode",
+        fallback_reason="dense_text_bypass:22_nodes",
+        text_node_count=22,
+        image_type="infographic",
+    )
+    generated_modes = []
+
+    def fake_generate_image_candidate(
+        image_bytes,
+        analysis,
+        *,
+        mode,
+        prefer_deterministic_reconstruction=True,
+        reconstruction_model=None,
+        client=None,
+        budget=None,
+    ):
+        generated_modes.append((mode, analysis.semantic_redraw_allowed))
+        return PNG_BYTES if mode == "safe" else REDRAWN_BYTES
+
+    monkeypatch.setattr(app, "analyze_image", lambda *args, **kwargs: advisory_analysis)
+    monkeypatch.setattr(app, "generate_image_candidate", fake_generate_image_candidate)
+
+    result = app.process_document_images(
+        image_assets=[build_asset()],
+        image_mode="semantic_redraw_direct",
+        config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1"},
+        on_progress=lambda **kwargs: None,
+    )
+
+    assert generated_modes == [("safe", False), ("semantic_redraw_direct", True)]
+    assert result[0].final_variant == "redrawn"
 
 
 def test_process_document_images_falls_back_when_model_call_budget_is_exhausted(monkeypatch):
@@ -418,3 +459,45 @@ def test_process_document_images_uses_safe_variant_when_semantic_candidate_colla
     assert result[0].final_decision == "fallback_safe"
     assert result[0].final_variant == "safe"
     assert result[0].final_reason == "semantic_redraw_fell_back_to_safe_candidate"
+
+
+def test_process_document_images_skips_unsupported_source_image_without_validation_error(monkeypatch):
+    _prepare_state(monkeypatch)
+    image_logs = []
+
+    asset = build_asset()
+    asset.original_bytes = b"\x01\x02not-a-supported-raster"
+    asset.mime_type = "image/x-emf"
+
+    monkeypatch.setattr(app, "_emit_or_apply_image_log", lambda runtime, **kwargs: image_logs.append(kwargs))
+    monkeypatch.setattr(
+        app,
+        "analyze_image",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("analyze_image should not run")),
+    )
+    monkeypatch.setattr(
+        app,
+        "generate_image_candidate",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("generate_image_candidate should not run")),
+    )
+
+    result = app.process_document_images(
+        image_assets=[asset],
+        image_mode="compare_all",
+        config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1"},
+        on_progress=lambda **kwargs: None,
+    )
+
+    assert result[0].final_decision == "fallback_original"
+    assert result[0].final_variant == "original"
+    assert result[0].validation_status == "skipped"
+    assert result[0].final_reason == "unsupported_source_image_format:image/x-emf"
+    assert image_logs == [
+        {
+            "image_id": "img_001",
+            "status": "skipped",
+            "decision": "fallback_original",
+            "confidence": 0.0,
+            "suspicious_reasons": ["unsupported_source_image_format:image/x-emf"],
+        }
+    ]

@@ -1,4 +1,6 @@
 import app
+import compare_apply
+import compare_panel
 from models import ImageAsset
 
 
@@ -201,3 +203,82 @@ def test_apply_selected_compare_variants_rebuilds_docx(monkeypatch):
     assert session_state.image_assets[0].selected_compare_variant == "semantic_redraw_direct"
     assert session_state.image_assets[0].final_variant == "redrawn"
     assert session_state.latest_docx_bytes == b"docx:body:rebuilt"
+
+
+def test_compare_apply_module_rebuilds_docx_for_selected_variants():
+    session_state = SessionState(
+        latest_markdown="body",
+        latest_docx_bytes=None,
+        image_assets=[
+            ImageAsset(
+                image_id="img_001",
+                placeholder="[[DOCX_IMAGE_img_001]]",
+                original_bytes=b"original",
+                mime_type="image/png",
+                position_index=0,
+                comparison_variants={
+                    "safe": {"bytes": b"safe"},
+                    "semantic_redraw_direct": {"bytes": b"direct"},
+                },
+            )
+        ],
+        compare_choice_img_001="safe",
+    )
+
+    rebuilt_docx_bytes = compare_apply.apply_selected_compare_variants(
+        session_state,
+        convert_markdown_to_docx_bytes=lambda markdown: f"docx:{markdown}".encode("utf-8"),
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes + b":rebuilt",
+    )
+
+    assert rebuilt_docx_bytes == b"docx:body:rebuilt"
+    assert session_state.image_assets[0].selected_compare_variant == "safe"
+    assert session_state.image_assets[0].final_variant == "safe"
+    assert session_state.latest_docx_bytes == rebuilt_docx_bytes
+
+
+def test_compare_panel_applies_selected_variants_and_shows_success(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(compare_panel.st, "button", lambda *args, **kwargs: True)
+    monkeypatch.setattr(compare_panel.st, "success", lambda message: calls.append(("success", message)))
+    monkeypatch.setattr(compare_panel.st, "error", lambda message: calls.append(("error", message)))
+    monkeypatch.setattr(compare_panel.st, "caption", lambda message: calls.append(("caption", message)))
+
+    compare_panel.render_compare_all_apply_panel(
+        has_completed_result=True,
+        latest_image_mode="compare_all",
+        uploaded_filename="report.docx",
+        render_section_gap=lambda gap: calls.append(("gap", gap)),
+        render_image_compare_selector=lambda: calls.append(("selector", None)),
+        apply_selected_compare_variants=lambda: calls.append(("apply", None)),
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+    )
+
+    assert ("gap", "lg") in calls
+    assert ("selector", None) in calls
+    assert ("apply", None) in calls
+    assert any(kind == "success" for kind, _ in calls)
+    assert not any(kind == "error" for kind, _ in calls)
+
+
+def test_compare_panel_reports_apply_errors(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(compare_panel.st, "button", lambda *args, **kwargs: True)
+    monkeypatch.setattr(compare_panel.st, "success", lambda message: calls.append(("success", message)))
+    monkeypatch.setattr(compare_panel.st, "error", lambda message: calls.append(("error", message)))
+    monkeypatch.setattr(compare_panel.st, "caption", lambda message: calls.append(("caption", message)))
+
+    compare_panel.render_compare_all_apply_panel(
+        has_completed_result=True,
+        latest_image_mode="compare_all",
+        uploaded_filename="report.docx",
+        render_section_gap=lambda gap: calls.append(("gap", gap)),
+        render_image_compare_selector=lambda: calls.append(("selector", None)),
+        apply_selected_compare_variants=lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+    )
+
+    assert any(kind == "error" and value == "Ошибка применения выбранных вариантов изображений: boom" for kind, value in calls)
+    assert not any(kind == "success" for kind, _ in calls)

@@ -5,30 +5,68 @@ import streamlit as st
 
 from generation import build_markdown_filename, build_output_filename
 from logger import format_elapsed
+from models import get_image_variant_bytes
 
 
 IMAGE_MODE_LABELS = {
-    "safe": "Просто улучшить без перерисовки",
-    "semantic_redraw_direct": "Свободная AI-перерисовка по смыслу",
-    "semantic_redraw_structured": "Точная AI-перерисовка схем и таблиц",
-    "compare_all": "Сгенерировать 3 варианта для выбора",
+    "safe": "Просто улучшить",
+    "semantic_redraw_direct": "Креативная AI-перерисовка",
+    "semantic_redraw_structured": "Структурная AI-перерисовка",
+    "compare_all": "Сгенерировать 3 варианта",
+}
+
+IMAGE_MODE_DESCRIPTIONS = {
+    "safe": "Слегка улучшает исходную картинку без смысловой перерисовки.",
+    "semantic_redraw_direct": "Делает creative redraw через vision + generate. Лучше для инфографики, композиции, цвета и сложного оформления.",
+    "semantic_redraw_structured": "Делает content-conservative redraw в стиле office presentation. Лучше для схем, таблиц и структурных изображений.",
+    "compare_all": "Строит safe, креативный и структурный варианты сразу, чтобы выбрать лучший перед итоговым DOCX.",
 }
 
 IMAGE_COMPARE_LABELS = {
     "original": "Оригинал",
     "safe": "Просто улучшить",
-    "semantic_redraw_direct": "Свободная AI-перерисовка",
-    "semantic_redraw_structured": "Консервативная AI-перерисовка",
+    "semantic_redraw_direct": "Креативная AI-перерисовка",
+    "semantic_redraw_structured": "Структурная AI-перерисовка",
 }
 
 IMAGE_MODE_VALUES_BY_LABEL = {label: value for value, label in IMAGE_MODE_LABELS.items()}
 
-IMAGE_MODE_HELP = (
-    "Просто улучшить: слегка улучшает исходную картинку без смысловой перерисовки.\n"
-    "Свободная AI-перерисовка: делает creative redraw через vision + generate, лучше для инфографики, композиции, цвета и сложного оформления.\n"
-    "Точная AI-перерисовка: делает content-conservative redraw в стиле office presentation, лучше для схем, таблиц и структурных изображений.\n"
-    "Сгенерировать 3 варианта: строит safe, свободный и консервативный варианты сразу, чтобы выбрать лучший перед итоговым DOCX."
-)
+_SIDEBAR_DD = 'section[data-testid="stSidebar"] div[data-baseweb="select"]'
+
+# Typography fix for sidebar dropdowns.
+# Keep custom typography only for the closed select control.
+SIDEBAR_DROPDOWN_CSS = f"""
+        /* --- Sidebar dropdown: closed state typography --- */
+        {_SIDEBAR_DD},
+        {_SIDEBAR_DD} > div,
+        {_SIDEBAR_DD} [role="combobox"],
+        {_SIDEBAR_DD} input {{
+            font-family: var(--sidebar-dropdown-font-family) !important;
+            font-size: var(--sidebar-dropdown-font-size) !important;
+            font-weight: var(--sidebar-dropdown-font-weight) !important;
+            font-style: normal !important;
+            line-height: var(--sidebar-dropdown-line-height) !important;
+            letter-spacing: var(--sidebar-dropdown-letter-spacing) !important;
+            font-synthesis: none !important;
+        }}
+
+        {_SIDEBAR_DD} span,
+        {_SIDEBAR_DD} p,
+        {_SIDEBAR_DD} [data-testid="stMarkdownContainer"],
+        {_SIDEBAR_DD} [data-testid="stMarkdownContainer"] p,
+        {_SIDEBAR_DD} [data-testid="stMarkdownContainer"] span,
+        {_SIDEBAR_DD} [data-testid="stMarkdownContainer"] div {{
+            font-family: inherit !important;
+            font-size: inherit !important;
+            font-weight: inherit !important;
+            font-style: inherit !important;
+            line-height: inherit !important;
+            letter-spacing: inherit !important;
+            font-synthesis: inherit !important;
+            color: inherit !important;
+            margin: 0 !important;
+        }}
+"""
 
 
 def inject_ui_styles() -> None:
@@ -41,6 +79,11 @@ def inject_ui_styles() -> None:
             --accent-soft: rgba(25, 198, 183, 0.14);
             --accent-border: rgba(45, 212, 191, 0.38);
             --text-soft: rgba(226, 232, 240, 0.82);
+            --sidebar-dropdown-font-family: "Source Sans Pro", sans-serif;
+            --sidebar-dropdown-font-size: 1rem;
+            --sidebar-dropdown-font-weight: 400;
+            --sidebar-dropdown-line-height: 1.5;
+            --sidebar-dropdown-letter-spacing: normal;
         }
 
         .stApp .main .block-container,
@@ -97,21 +140,9 @@ def inject_ui_styles() -> None:
             cursor: not-allowed !important;
             opacity: 0.55 !important;
         }
-
-        div[data-baseweb="select"],
-        div[data-baseweb="select"] *,
-        div[data-baseweb="select"] > div,
-        div[data-baseweb="select"] [role="combobox"],
-        div[data-baseweb="select"] input,
-        div[data-baseweb="select"] span,
-        div[data-baseweb="popover"],
-        div[data-baseweb="popover"] *,
-        div[data-baseweb="popover"] [role="option"] {
-            font-family: "Source Sans Pro", sans-serif !important;
-            font-size: 1rem !important;
-            font-weight: 400 !important;
-            letter-spacing: normal !important;
-        }
+        """
+        + SIDEBAR_DROPDOWN_CSS
+        + """
 
         div[data-testid="stProgressBar"] > div > div > div > div {
             background: linear-gradient(90deg, var(--accent-main), #67e8f9) !important;
@@ -191,6 +222,17 @@ def inject_ui_styles() -> None:
 def render_section_gap(size: str = "md") -> None:
     normalized_size = "lg" if size == "lg" else "md"
     st.markdown(f'<div class="section-gap-{normalized_size}"></div>', unsafe_allow_html=True)
+
+
+def render_sidebar_selectbox(
+    label: str,
+    options: list[str],
+    index: int = 0,
+    *,
+    help: str | None = None,
+    key: str | None = None,
+) -> str:
+    return st.sidebar.selectbox(label, options, index=index, help=help, key=key)
 
 
 def render_live_status(target=None) -> None:
@@ -337,8 +379,8 @@ def render_image_compare_selector(target=None) -> dict[str, str]:
                 variant_map = dict(_asset_value(asset, "comparison_variants", {}))
                 ordered_modes = ["safe", "semantic_redraw_direct", "semantic_redraw_structured"]
                 for index, mode in enumerate(ordered_modes, start=1):
-                    variant = variant_map.get(mode, {})
-                    variant_bytes = variant.get("bytes") if isinstance(variant, dict) else None
+                    variant = variant_map.get(mode)
+                    variant_bytes = get_image_variant_bytes(variant)
                     if variant_bytes:
                         columns[index].image(variant_bytes, caption=IMAGE_COMPARE_LABELS[mode], use_container_width=True)
                     else:
@@ -362,7 +404,7 @@ def render_sidebar(config: dict[str, object]) -> tuple[str, int, int, str, bool]
     model_options = [*config["model_options"], "custom"]
     default_model = str(config["default_model"])
     default_index = model_options.index(default_model) if default_model in model_options else 0
-    selected_model = st.sidebar.selectbox("Модель", model_options, index=default_index, key="sidebar_model")
+    selected_model = render_sidebar_selectbox("Модель", model_options, index=default_index, key="sidebar_model")
     custom_model = ""
     if selected_model == "custom":
         custom_model = st.sidebar.text_input("Имя модели", value=default_model).strip()
@@ -381,20 +423,22 @@ def render_sidebar(config: dict[str, object]) -> tuple[str, int, int, str, bool]
         max_value=5,
         value=int(config["max_retries"]),
     )
-    image_mode_options = list(IMAGE_MODE_LABELS.keys())
     image_mode_default = str(config.get("image_mode_default", "safe"))
-    image_mode_index = image_mode_options.index(image_mode_default) if image_mode_default in image_mode_options else 0
-    image_mode = st.sidebar.selectbox(
+    image_mode_options = list(IMAGE_MODE_LABELS.values())
+    image_mode_default_label = IMAGE_MODE_LABELS.get(image_mode_default, IMAGE_MODE_LABELS["safe"])
+    image_mode_index = image_mode_options.index(image_mode_default_label) if image_mode_default_label in image_mode_options else 0
+    selected_image_mode_label = render_sidebar_selectbox(
         "Режим обработки изображений",
         image_mode_options,
         index=image_mode_index,
-        format_func=lambda mode: IMAGE_MODE_LABELS.get(mode, mode),
-        help=IMAGE_MODE_HELP,
         key="sidebar_image_mode",
     )
+    image_mode = IMAGE_MODE_VALUES_BY_LABEL.get(selected_image_mode_label, "safe")
+    st.sidebar.caption(IMAGE_MODE_DESCRIPTIONS.get(image_mode, ""))
     enable_post_redraw_validation = st.sidebar.checkbox(
         "Включить post-check validation",
         value=bool(config.get("enable_post_redraw_validation", True)),
+        help="Проверяет AI-перерисовку перед вставкой в DOCX и при проблемах откатывает изображение к safe/original.",
         key="sidebar_enable_post_redraw_validation",
     )
     return model, chunk_size, max_retries, image_mode, enable_post_redraw_validation

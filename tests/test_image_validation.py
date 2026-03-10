@@ -1,4 +1,5 @@
 import image_validation
+from image_pipeline_policy import resolve_validation_delivery_outcome
 from models import ImageAnalysisResult, ImageAsset, ImageValidationResult
 
 
@@ -196,7 +197,7 @@ def test_validate_redraw_result_handles_internal_exception_conservatively(monkey
     assert result.suspicious_reasons == ["validator_exception:ValueError"]
 
 
-def test_process_image_asset_promotes_fallback_original_when_safe_variant_absent():
+def test_process_image_asset_keeps_redrawn_variant_under_advisory_policy_when_safe_variant_absent():
     analysis_before = build_analysis_result()
     asset = ImageAsset(
         image_id="img-2",
@@ -220,9 +221,9 @@ def test_process_image_asset_promotes_fallback_original_when_safe_variant_absent
         candidate_analysis=candidate_analysis,
     )
 
-    assert processed_asset.validation_status == "failed"
-    assert processed_asset.final_decision == "fallback_original"
-    assert processed_asset.final_variant == "original"
+    assert processed_asset.validation_status == "soft-pass"
+    assert processed_asset.final_decision == "accept_soft"
+    assert processed_asset.final_variant == "redrawn"
     assert processed_asset.final_reason
 
 
@@ -249,6 +250,62 @@ def test_process_image_asset_accepts_redrawn_variant_when_validation_passes():
     assert processed_asset.validation_status == "passed"
     assert processed_asset.final_decision == "accept"
     assert processed_asset.final_variant == "redrawn"
+
+
+def test_process_image_asset_keeps_redrawn_variant_under_advisory_policy():
+    analysis_before = build_analysis_result()
+    asset = ImageAsset(
+        image_id="img-4",
+        placeholder="[[image-4]]",
+        original_bytes=PNG_BYTES,
+        mime_type="image/png",
+        position_index=3,
+        analysis_result=analysis_before,
+        safe_bytes=PNG_BYTES,
+        redrawn_bytes=PNG_BYTES,
+    )
+    candidate_analysis = build_analysis_result(
+        confidence=0.2,
+        structure_summary="boxes with visual restyling",
+        extracted_labels=["Start", "Review", "Finish"],
+    )
+
+    processed_asset = image_validation.process_image_asset(
+        asset,
+        image_mode="semantic_redraw_structured",
+        config={"enable_post_redraw_validation": True, "semantic_validation_policy": "advisory"},
+        candidate_analysis=candidate_analysis,
+    )
+
+    assert processed_asset.validation_status == "soft-pass"
+    assert processed_asset.final_decision == "accept_soft"
+    assert processed_asset.final_variant == "redrawn"
+    assert processed_asset.metadata.soft_accepted is True
+
+
+def test_process_image_asset_keeps_hard_validation_failures_blocking_under_advisory_policy():
+    analysis_before = build_analysis_result()
+    asset = ImageAsset(
+        image_id="img-5",
+        placeholder="[[image-5]]",
+        original_bytes=PNG_BYTES,
+        mime_type="image/png",
+        position_index=4,
+        analysis_result=analysis_before,
+        safe_bytes=PNG_BYTES,
+        redrawn_bytes=b"not-an-image",
+    )
+
+    processed_asset = image_validation.process_image_asset(
+        asset,
+        image_mode="semantic_redraw_direct",
+        config={"enable_post_redraw_validation": True, "semantic_validation_policy": "advisory"},
+        candidate_analysis=build_analysis_result(),
+    )
+
+    assert processed_asset.validation_status == "failed"
+    assert processed_asset.final_decision == "fallback_original"
+    assert processed_asset.final_variant == "original"
 
 
 def test_validate_redraw_result_uses_vision_assessment_conservatively():
@@ -304,3 +361,49 @@ def test_validate_redraw_result_keeps_type_change_as_hard_reject_after_vision_me
     assert result.validation_passed is False
     assert result.decision == "fallback_safe"
     assert "image_type_changed" in result.suspicious_reasons
+
+
+def test_resolve_validation_delivery_outcome_promotes_missing_safe_fallback_to_original():
+    outcome = resolve_validation_delivery_outcome(
+        ImageValidationResult(
+            validation_passed=False,
+            decision="fallback_safe",
+            semantic_match_score=0.1,
+            text_match_score=0.0,
+            structure_match_score=0.2,
+            validator_confidence=0.9,
+            missing_labels=["review"],
+            added_entities_detected=False,
+            suspicious_reasons=["text_missing_in_candidate"],
+        ),
+        validation_policy="strict",
+        has_safe_fallback=False,
+    )
+
+    assert outcome["validation_status"] == "failed"
+    assert outcome["final_decision"] == "fallback_original"
+    assert outcome["final_variant"] == "original"
+    assert outcome["soft_accepted"] is False
+
+
+def test_resolve_validation_delivery_outcome_keeps_type_drift_advisory_soft_accept():
+    outcome = resolve_validation_delivery_outcome(
+        ImageValidationResult(
+            validation_passed=False,
+            decision="fallback_safe",
+            semantic_match_score=0.62,
+            text_match_score=0.84,
+            structure_match_score=0.70,
+            validator_confidence=0.81,
+            missing_labels=[],
+            added_entities_detected=False,
+            suspicious_reasons=["image_type_changed"],
+        ),
+        validation_policy="advisory",
+        has_safe_fallback=True,
+    )
+
+    assert outcome["validation_status"] == "soft-pass"
+    assert outcome["final_decision"] == "accept_soft"
+    assert outcome["final_variant"] == "redrawn"
+    assert outcome["soft_accepted"] is True

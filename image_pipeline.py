@@ -2,6 +2,26 @@ import inspect
 import logging
 from dataclasses import replace
 
+from image_pipeline_policy import build_generation_analysis, should_attempt_semantic_redraw
+from models import ImageVariantCandidate
+
+
+def _mark_asset_as_unsupported_source(asset, *, detected_mime_type, log_event_fn):
+    source_mime_type = detected_mime_type or asset.mime_type or "unknown"
+    asset.validation_status = "skipped"
+    asset.final_decision = "fallback_original"
+    asset.final_variant = "original"
+    asset.final_reason = f"unsupported_source_image_format:{source_mime_type}"
+    log_event_fn(
+        logging.WARNING,
+        "image_processing_skipped_unsupported_source",
+        "Исходное изображение имеет неподдерживаемый формат; оставляю оригинал без AI-обработки.",
+        source_mime_type=asset.mime_type,
+        detected_source_mime_type=detected_mime_type,
+        **asset.to_log_context(),
+    )
+    return asset
+
 
 def score_semantic_candidate(asset) -> float:
     validation_result = getattr(asset, "validation_result", None)
@@ -32,9 +52,7 @@ def try_soft_accept_semantic_candidate(asset, analysis, image_mode: str, config:
         return asset
 
     suspicious_reasons = list(getattr(validation_result, "suspicious_reasons", []))
-    if any(reason in {"candidate_image_unreadable", "image_type_changed"} for reason in suspicious_reasons):
-        return asset
-    if any(str(reason).startswith("added_entities:") for reason in suspicious_reasons):
+    if any(reason == "candidate_image_unreadable" for reason in suspicious_reasons):
         return asset
 
     min_confidence = float(
@@ -75,6 +93,82 @@ def try_soft_accept_semantic_candidate(asset, analysis, image_mode: str, config:
     )
     asset.update_pipeline_metadata(soft_accepted=True)
     return asset
+
+
+def _build_compare_variant_candidate(
+    asset,
+    analysis,
+    candidate_mode: str,
+    config: dict[str, object],
+    *,
+    client,
+    analyze_image_fn,
+    generate_image_candidate_fn,
+    process_image_asset_fn,
+    detect_image_mime_type_fn,
+):
+    candidate_bytes = _call_with_supported_kwargs(
+        generate_image_candidate_fn,
+        asset.original_bytes,
+        analysis,
+        mode=candidate_mode,
+        prefer_deterministic_reconstruction=bool(config.get("prefer_deterministic_reconstruction", True)),
+        reconstruction_model=str(config.get("reconstruction_model", "")) or None,
+        reconstruction_render_config=_build_reconstruction_render_config(config),
+        client=client,
+    )
+    candidate_mime_type = detect_image_mime_type_fn(candidate_bytes)
+    variant = ImageVariantCandidate(
+        mode=candidate_mode,
+        bytes=candidate_bytes,
+        mime_type=candidate_mime_type,
+    )
+
+    if candidate_mode == "safe":
+        variant.validation_status = "skipped"
+        variant.final_decision = "accept"
+        variant.final_variant = "safe"
+        variant.final_reason = "compare_all_safe_variant_prepared"
+        asset.safe_bytes = candidate_bytes
+        return variant
+
+    if asset.safe_bytes and candidate_bytes == asset.safe_bytes:
+        variant.validation_status = "skipped"
+        variant.final_decision = "fallback_safe"
+        variant.final_variant = "safe"
+        variant.final_reason = "semantic_redraw_fell_back_to_safe_candidate"
+        return variant
+
+    attempt_asset = _clone_image_asset_for_attempt(asset)
+    attempt_asset.safe_bytes = asset.safe_bytes
+    attempt_asset.redrawn_bytes = candidate_bytes
+    attempt_asset.redrawn_mime_type = candidate_mime_type
+    attempt_asset.update_pipeline_metadata(rendered_mime_type=candidate_mime_type)
+    candidate_analysis = _call_with_supported_kwargs(
+        analyze_image_fn,
+        candidate_bytes,
+        model=str(config.get("validation_model", "")),
+        mime_type=candidate_mime_type or attempt_asset.mime_type,
+        client=client,
+        enable_vision=bool(config.get("enable_vision_image_analysis", True)),
+        dense_text_bypass_threshold=int(config.get("dense_text_bypass_threshold", 18)),
+        non_latin_text_bypass_threshold=int(config.get("non_latin_text_bypass_threshold", 12)),
+    )
+    attempt_asset = _call_with_supported_kwargs(
+        process_image_asset_fn,
+        attempt_asset,
+        image_mode=candidate_mode,
+        config=config,
+        candidate_analysis=candidate_analysis,
+        client=client,
+        enable_vision_validation=bool(config.get("enable_vision_image_validation", True)),
+    )
+    variant.validation_result = attempt_asset.validation_result
+    variant.validation_status = attempt_asset.validation_status
+    variant.final_decision = attempt_asset.final_decision
+    variant.final_variant = attempt_asset.final_variant
+    variant.final_reason = attempt_asset.final_reason
+    return variant
 
 
 def select_best_semantic_asset(
@@ -254,6 +348,29 @@ def process_document_images(
         on_progress(preview_title="Текущий Markdown")
         analysis = None
         try:
+            detected_source_mime_type = detect_image_mime_type_fn(asset.original_bytes)
+            if detected_source_mime_type is None:
+                asset = _mark_asset_as_unsupported_source(
+                    asset,
+                    detected_mime_type=detected_source_mime_type,
+                    log_event_fn=log_event_fn,
+                )
+                emit_image_log(
+                    runtime,
+                    image_id=asset.image_id,
+                    status="skipped",
+                    decision=asset.final_decision,
+                    confidence=0.0,
+                    suspicious_reasons=[asset.final_reason],
+                )
+                processed_assets.append(asset)
+                emit_activity(
+                    runtime,
+                    f"Изображение {asset.image_id}: {asset.final_variant or 'original'} | {asset.final_decision or 'accept'}.",
+                )
+                emit_state(runtime, image_assets=processed_assets)
+                continue
+
             analysis = _call_with_supported_kwargs(
                 analyze_image_fn,
                 asset.original_bytes,
@@ -267,6 +384,8 @@ def process_document_images(
             asset.analysis_result = analysis
             asset.prompt_key = analysis.prompt_key
             asset.render_strategy = analysis.render_strategy
+            generation_analysis = build_generation_analysis(analysis)
+            semantic_attempt_allowed = should_attempt_semantic_redraw(analysis, image_mode)
 
             if image_mode == "safe":
                 asset.safe_bytes = _call_with_supported_kwargs(
@@ -287,14 +406,16 @@ def process_document_images(
                     image_client = get_client_fn()
                 asset = _prepare_compare_variants(
                     asset,
-                    analysis,
+                    generation_analysis,
                     config,
                     client=image_client,
+                    analyze_image_fn=analyze_image_fn,
                     generate_image_candidate_fn=generate_image_candidate_fn,
+                    process_image_asset_fn=process_image_asset_fn,
                     detect_image_mime_type_fn=detect_image_mime_type_fn,
                     log_event_fn=log_event_fn,
                 )
-            elif not analysis.semantic_redraw_allowed:
+            elif not semantic_attempt_allowed:
                 asset.safe_bytes = _call_with_supported_kwargs(
                     generate_image_candidate_fn,
                     asset.original_bytes,
@@ -322,7 +443,7 @@ def process_document_images(
                 )
                 asset = select_best_semantic_asset(
                     asset,
-                    analysis,
+                    generation_analysis,
                     image_mode,
                     config,
                     client=image_client,
@@ -426,26 +547,29 @@ def _prepare_compare_variants(
     config: dict[str, object],
     *,
     client,
+    analyze_image_fn,
     generate_image_candidate_fn,
+    process_image_asset_fn,
     detect_image_mime_type_fn,
     log_event_fn,
 ):
-    variant_map: dict[str, dict[str, object]] = {}
+    variant_map: dict[str, ImageVariantCandidate] = {}
     candidate_modes = ["safe"]
-    if analysis.semantic_redraw_allowed:
+    if should_attempt_semantic_redraw(analysis, "compare_all"):
         candidate_modes.extend(["semantic_redraw_direct", "semantic_redraw_structured"])
 
     for candidate_mode in candidate_modes:
         try:
-            candidate_bytes = _call_with_supported_kwargs(
-                generate_image_candidate_fn,
-                asset.original_bytes,
+            variant = _build_compare_variant_candidate(
+                asset,
                 analysis,
-                mode=candidate_mode,
-                prefer_deterministic_reconstruction=bool(config.get("prefer_deterministic_reconstruction", True)),
-                reconstruction_model=str(config.get("reconstruction_model", "")) or None,
-                reconstruction_render_config=_build_reconstruction_render_config(config),
+                candidate_mode,
+                config,
                 client=client,
+                analyze_image_fn=analyze_image_fn,
+                generate_image_candidate_fn=generate_image_candidate_fn,
+                process_image_asset_fn=process_image_asset_fn,
+                detect_image_mime_type_fn=detect_image_mime_type_fn,
             )
         except Exception as exc:
             log_event_fn(
@@ -459,19 +583,15 @@ def _prepare_compare_variants(
             )
             continue
 
-        variant_map[candidate_mode] = {
-            "bytes": candidate_bytes,
-            "mime_type": detect_image_mime_type_fn(candidate_bytes),
-        }
-        if candidate_mode == "safe":
-            asset.safe_bytes = candidate_bytes
+        variant_map[candidate_mode] = variant
 
     asset.comparison_variants = variant_map
     asset.selected_compare_variant = "original"
     asset.validation_status = "compared"
     asset.final_decision = "compared"
     asset.final_variant = "original"
-    asset.final_reason = "Подготовлены варианты safe, free и structured для ручного выбора."
+    prepared_modes = [mode for mode in ["safe", "semantic_redraw_direct", "semantic_redraw_structured"] if mode in variant_map]
+    asset.final_reason = f"Подготовлены compare-all варианты: {', '.join(prepared_modes)}."
     return asset
 
 

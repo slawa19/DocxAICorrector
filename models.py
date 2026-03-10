@@ -1,3 +1,4 @@
+import builtins
 from dataclasses import asdict, dataclass, field
 
 
@@ -68,6 +69,49 @@ class ImagePipelineMetadata:
 
 
 @dataclass
+class ImageVariantCandidate:
+    mode: str
+    bytes: builtins.bytes | None = None
+    mime_type: str | None = None
+    validation_result: "ImageValidationResult | dict[str, object] | None" = None
+    validation_status: str = "pending"
+    final_decision: str | None = None
+    final_variant: str | None = None
+    final_reason: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "mode": self.mode,
+            "bytes": self.bytes,
+            "mime_type": self.mime_type,
+            "validation_result": (
+                self.validation_result.to_dict()
+                if isinstance(self.validation_result, ImageValidationResult)
+                else self.validation_result
+            ),
+            "validation_status": self.validation_status,
+            "final_decision": self.final_decision,
+            "final_variant": self.final_variant,
+            "final_reason": self.final_reason,
+        }
+
+
+def get_image_variant_value(variant: "ImageVariantCandidate | dict[str, object] | None", field_name: str, default=None):
+    if isinstance(variant, dict):
+        return variant.get(field_name, default)
+    if isinstance(variant, ImageVariantCandidate):
+        return getattr(variant, field_name, default)
+    return default
+
+
+def get_image_variant_bytes(variant: "ImageVariantCandidate | dict[str, object] | None") -> bytes | None:
+    payload = get_image_variant_value(variant, "bytes")
+    if isinstance(payload, (bytes, bytearray)) and payload:
+        return bytes(payload)
+    return None
+
+
+@dataclass
 class ImageAsset:
     image_id: str
     placeholder: str
@@ -90,7 +134,7 @@ class ImageAsset:
     final_decision: str | None = None
     final_variant: str | None = None
     final_reason: str | None = None
-    comparison_variants: dict[str, dict[str, object]] = field(default_factory=dict)
+    comparison_variants: dict[str, ImageVariantCandidate | dict[str, object]] = field(default_factory=dict)
     selected_compare_variant: str | None = None
 
     def __post_init__(self) -> None:

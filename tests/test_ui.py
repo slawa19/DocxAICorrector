@@ -71,17 +71,23 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
 
     sidebar_calls = []
     monkeypatch.setattr(ui.st.sidebar, "header", lambda text: sidebar_calls.append(("header", text)))
+    monkeypatch.setattr(ui.st.sidebar, "caption", lambda text: sidebar_calls.append(("caption", text)))
 
     def fake_selectbox(label, options, index=0, format_func=None, help=None, key=None):
         sidebar_calls.append(("selectbox", label, help, tuple(options), format_func))
         if label == "Режим обработки изображений":
-            return "semantic_redraw_direct"
+            return ui.IMAGE_MODE_LABELS["semantic_redraw_direct"]
         return options[index]
 
     monkeypatch.setattr(ui.st.sidebar, "selectbox", fake_selectbox)
     monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
     monkeypatch.setattr(ui.st.sidebar, "slider", lambda label, **kwargs: kwargs["value"])
-    monkeypatch.setattr(ui.st.sidebar, "checkbox", lambda label, value, key=None: value)
+    checkbox_calls = []
+    monkeypatch.setattr(
+        ui.st.sidebar,
+        "checkbox",
+        lambda label, value, key=None, help=None: checkbox_calls.append((label, value, key, help)) or value,
+    )
 
     result = ui.render_sidebar(config)
 
@@ -92,12 +98,34 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
         (
             "selectbox",
             "Режим обработки изображений",
-            ui.IMAGE_MODE_HELP,
-            tuple(ui.IMAGE_MODE_LABELS.keys()),
-            sidebar_calls[2][4],
+            None,
+            tuple(ui.IMAGE_MODE_LABELS.values()),
+            None,
         ),
+        ("caption", ui.IMAGE_MODE_DESCRIPTIONS["semantic_redraw_direct"]),
     ]
-    assert callable(sidebar_calls[2][4])
+    assert checkbox_calls == [
+        (
+            "Включить post-check validation",
+            False,
+            "sidebar_enable_post_redraw_validation",
+            "Проверяет AI-перерисовку перед вставкой в DOCX и при проблемах откатывает изображение к safe/original.",
+        )
+    ]
+
+
+def test_inject_ui_styles_normalizes_selectbox_typography(monkeypatch):
+    injected = []
+
+    monkeypatch.setattr(ui.st, "markdown", lambda text, unsafe_allow_html: injected.append((text, unsafe_allow_html)))
+
+    ui.inject_ui_styles()
+
+    assert injected == [(injected[0][0], True)]
+    css = injected[0][0]
+    assert 'section[data-testid="stSidebar"] div[data-baseweb="select"] [data-testid="stMarkdownContainer"] p' in css
+    assert 'font-weight: var(--sidebar-dropdown-font-weight) !important;' in css
+    assert 'color: inherit !important;' in css
 
 
 class FakeImageColumn:

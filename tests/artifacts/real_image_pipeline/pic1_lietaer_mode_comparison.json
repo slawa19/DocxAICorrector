@@ -1,0 +1,53 @@
+{
+  "source": "D:\\www\\Projects\\2025\\DocxAICorrector\\tests\\pic1_lietaer.jpg",
+  "analysis": {
+    "image_type": "diagram",
+    "prompt_key": "diagram_semantic_redraw",
+    "render_strategy": "deterministic_reconstruction",
+    "semantic_redraw_allowed": true,
+    "analysis_elapsed_seconds": 5.694
+  },
+  "modes": {
+    "safe": {
+      "path": "D:\\www\\Projects\\2025\\DocxAICorrector\\tests\\artifacts\\real_image_pipeline\\pic1_lietaer_safe.jpg",
+      "bytes_out": 36145,
+      "mime_type": "image/jpeg",
+      "generation_elapsed_seconds": 0.006
+    },
+    "semantic_redraw_direct": {
+      "path": "D:\\www\\Projects\\2025\\DocxAICorrector\\tests\\artifacts\\real_image_pipeline\\pic1_lietaer_semantic_redraw_direct.png",
+      "bytes_out": 953139,
+      "mime_type": "image/png",
+      "generation_elapsed_seconds": 65.134
+    },
+    "semantic_redraw_structured": {
+      "path": "D:\\www\\Projects\\2025\\DocxAICorrector\\tests\\artifacts\\real_image_pipeline\\pic1_lietaer_semantic_redraw_structured.png",
+      "bytes_out": 443200,
+      "mime_type": "image/png",
+      "generation_elapsed_seconds": 60.77
+    }
+  },
+  "compare_all": {
+    "generation_elapsed_seconds": 121.426,
+    "selected_compare_variant": "original",
+    "final_variant": "original",
+    "final_decision": "compared",
+    "variants": {
+      "safe": {
+        "path": "D:\\www\\Projects\\2025\\DocxAICorrector\\tests\\artifacts\\real_image_pipeline\\pic1_lietaer_compare_all_safe.jpg",
+        "bytes_out": 36145,
+        "mime_type": "image/jpeg"
+      },
+      "semantic_redraw_direct": {
+        "path": "D:\\www\\Projects\\2025\\DocxAICorrector\\tests\\artifacts\\real_image_pipeline\\pic1_lietaer_compare_all_semantic_redraw_direct.png",
+        "bytes_out": 828320,
+        "mime_type": "image/png"
+      },
+      "semantic_redraw_structured": {
+        "path": "D:\\www\\Projects\\2025\\DocxAICorrector\\tests\\artifacts\\real_image_pipeline\\pic1_lietaer_compare_all_semantic_redraw_structured.png",
+        "bytes_out": 491806,
+        "mime_type": "image/png"
+      }
+    }
+  }
+}
