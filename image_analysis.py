@@ -1,12 +1,11 @@
 import base64
-import json
-import time
 from dataclasses import replace
 from io import BytesIO
 
 from PIL import Image, ImageFile, ImageFilter, ImageOps
 
 from generation import is_retryable_error
+from image_shared import clamp_score, detect_image_mime_type, parse_json_object, call_responses_create_with_retry
 from models import ImageAnalysisResult
 
 
@@ -27,7 +26,7 @@ def analyze_image(
     dense_text_bypass_threshold: int = DENSE_TEXT_BYPASS_THRESHOLD,
     non_latin_text_bypass_threshold: int = NON_LATIN_DENSE_TEXT_BYPASS_THRESHOLD,
 ) -> ImageAnalysisResult:
-    detected_mime_type = mime_type or _detect_mime_type(image_bytes)
+    detected_mime_type = mime_type or detect_image_mime_type(image_bytes)
     visual_features = _extract_visual_features(image_bytes)
     heuristic_result = _build_heuristic_analysis(detected_mime_type, visual_features)
 
@@ -176,7 +175,7 @@ def _extract_vision_analysis(
     model: str,
     heuristic_result: ImageAnalysisResult,
 ) -> ImageAnalysisResult:
-    response = _call_responses_create_with_retry(
+    response = call_responses_create_with_retry(
         client,
         {
             "model": model or "gpt-4.1",
@@ -217,41 +216,15 @@ def _extract_vision_analysis(
             ],
             "timeout": VISION_ANALYSIS_TIMEOUT_SECONDS,
         },
+        max_retries=VISION_ANALYSIS_MAX_RETRIES,
+        retryable_error_predicate=is_retryable_error,
     )
-    payload = _parse_json_object(getattr(response, "output_text", ""))
+    payload = parse_json_object(
+        getattr(response, "output_text", ""),
+        empty_message="Vision analysis returned empty output.",
+        no_json_message="Vision analysis did not return JSON.",
+    )
     return _coerce_vision_analysis_payload(payload, heuristic_result)
-
-
-def _call_responses_create_with_retry(client, request_payload: dict[str, object]):
-    current_payload = dict(request_payload)
-    for attempt in range(1, VISION_ANALYSIS_MAX_RETRIES + 1):
-        try:
-            return client.responses.create(**current_payload)
-        except TypeError as exc:
-            if "timeout" in str(exc) and "timeout" in current_payload:
-                current_payload.pop("timeout", None)
-                continue
-            raise
-        except Exception as exc:
-            if attempt >= VISION_ANALYSIS_MAX_RETRIES or not is_retryable_error(exc):
-                raise
-            time.sleep(min(2 ** (attempt - 1), 4))
-    raise RuntimeError("Vision analysis retry loop exhausted unexpectedly.")
-
-
-def _parse_json_object(raw_text: str) -> dict[str, object]:
-    text = raw_text.strip()
-    if not text:
-        raise RuntimeError("Vision analysis returned empty output.")
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.lower().startswith("json"):
-            text = text[4:].strip()
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise RuntimeError("Vision analysis did not return JSON.")
-    return json.loads(text[start : end + 1])
 
 
 def _coerce_vision_analysis_payload(
@@ -405,18 +378,6 @@ def _normalize_render_strategy(route_hint: object, fallback_strategy: str) -> tu
     return str(route_hint).strip() or fallback_strategy, False
 
 
-def _detect_mime_type(image_bytes: bytes) -> str | None:
-    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if image_bytes.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if image_bytes.startswith((b"GIF87a", b"GIF89a")):
-        return "image/gif"
-    if image_bytes.startswith(b"BM"):
-        return "image/bmp"
-    return None
-
-
 def _extract_visual_features(image_bytes: bytes) -> dict[str, float] | None:
     try:
         with Image.open(BytesIO(image_bytes)) as source_image:
@@ -524,10 +485,7 @@ def _looks_like_screenshot(visual_features: dict[str, float] | None) -> bool:
 
 
 def _clamp_score(value: object) -> float:
-    try:
-        return max(0.0, min(float(value), 1.0))
-    except (TypeError, ValueError):
-        return 0.0
+    return clamp_score(value)
 
 
 def _contains_non_latin_text(extracted_text: str, extracted_labels: list[str]) -> bool:

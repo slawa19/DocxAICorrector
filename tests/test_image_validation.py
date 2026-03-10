@@ -1,4 +1,5 @@
 import image_validation
+from image_pipeline import _apply_validation_result_to_asset
 from image_pipeline_policy import resolve_validation_delivery_outcome
 from models import ImageAnalysisResult, ImageAsset, ImageValidationResult
 
@@ -37,6 +38,29 @@ def build_analysis_result(**overrides):
     }
     payload.update(overrides)
     return ImageAnalysisResult(**payload)
+
+
+def _apply_validation_for_asset(
+    asset: ImageAsset,
+    *,
+    image_mode: str,
+    config: dict[str, object],
+    candidate_analysis: ImageAnalysisResult,
+):
+    validation_result = image_validation.validate_redraw_result(
+        asset.original_bytes,
+        asset.redrawn_bytes or b"",
+        asset.analysis_result,
+        candidate_analysis=candidate_analysis,
+        config=config,
+    )
+    return _apply_validation_result_to_asset(
+        asset,
+        validation_result,
+        image_mode=image_mode,
+        config=config,
+        log_event_fn=lambda *args, **kwargs: None,
+    )
 
 
 def test_image_validation_result_and_asset_log_context_are_serializable():
@@ -197,7 +221,7 @@ def test_validate_redraw_result_handles_internal_exception_conservatively(monkey
     assert result.suspicious_reasons == ["validator_exception:ValueError"]
 
 
-def test_process_image_asset_keeps_redrawn_variant_under_advisory_policy_when_safe_variant_absent():
+def test_apply_validation_result_keeps_redrawn_variant_under_advisory_policy_when_safe_variant_absent():
     analysis_before = build_analysis_result()
     asset = ImageAsset(
         image_id="img-2",
@@ -214,7 +238,7 @@ def test_process_image_asset_keeps_redrawn_variant_under_advisory_policy_when_sa
         structure_summary="three boxes connected by arrows",
     )
 
-    processed_asset = image_validation.process_image_asset(
+    processed_asset = _apply_validation_for_asset(
         asset,
         image_mode="semantic_redraw_direct",
         config={"enable_post_redraw_validation": True},
@@ -227,7 +251,7 @@ def test_process_image_asset_keeps_redrawn_variant_under_advisory_policy_when_sa
     assert processed_asset.final_reason
 
 
-def test_process_image_asset_accepts_redrawn_variant_when_validation_passes():
+def test_apply_validation_result_accepts_redrawn_variant_when_validation_passes():
     analysis_before = build_analysis_result()
     asset = ImageAsset(
         image_id="img-3",
@@ -240,7 +264,7 @@ def test_process_image_asset_accepts_redrawn_variant_when_validation_passes():
         redrawn_bytes=PNG_BYTES,
     )
 
-    processed_asset = image_validation.process_image_asset(
+    processed_asset = _apply_validation_for_asset(
         asset,
         image_mode="semantic_redraw_structured",
         config={"enable_post_redraw_validation": True},
@@ -252,7 +276,7 @@ def test_process_image_asset_accepts_redrawn_variant_when_validation_passes():
     assert processed_asset.final_variant == "redrawn"
 
 
-def test_process_image_asset_keeps_redrawn_variant_under_advisory_policy():
+def test_apply_validation_result_keeps_redrawn_variant_under_advisory_policy():
     analysis_before = build_analysis_result()
     asset = ImageAsset(
         image_id="img-4",
@@ -270,7 +294,7 @@ def test_process_image_asset_keeps_redrawn_variant_under_advisory_policy():
         extracted_labels=["Start", "Review", "Finish"],
     )
 
-    processed_asset = image_validation.process_image_asset(
+    processed_asset = _apply_validation_for_asset(
         asset,
         image_mode="semantic_redraw_structured",
         config={"enable_post_redraw_validation": True, "semantic_validation_policy": "advisory"},
@@ -283,7 +307,7 @@ def test_process_image_asset_keeps_redrawn_variant_under_advisory_policy():
     assert processed_asset.metadata.soft_accepted is True
 
 
-def test_process_image_asset_keeps_hard_validation_failures_blocking_under_advisory_policy():
+def test_apply_validation_result_keeps_hard_validation_failures_blocking_under_advisory_policy():
     analysis_before = build_analysis_result()
     asset = ImageAsset(
         image_id="img-5",
@@ -296,7 +320,7 @@ def test_process_image_asset_keeps_hard_validation_failures_blocking_under_advis
         redrawn_bytes=b"not-an-image",
     )
 
-    processed_asset = image_validation.process_image_asset(
+    processed_asset = _apply_validation_for_asset(
         asset,
         image_mode="semantic_redraw_direct",
         config={"enable_post_redraw_validation": True, "semantic_validation_policy": "advisory"},

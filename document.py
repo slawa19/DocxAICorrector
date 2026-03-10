@@ -116,6 +116,8 @@ def reinsert_inline_images(docx_bytes: bytes, image_assets: list[ImageAsset]) ->
 
 def resolve_final_image_bytes(asset: ImageAsset) -> bytes:
     if asset.selected_compare_variant:
+        if asset.selected_compare_variant == "original":
+            return asset.original_bytes
         selected_variant = asset.comparison_variants.get(asset.selected_compare_variant)
         selected_bytes = get_image_variant_bytes(selected_variant)
         if selected_bytes:

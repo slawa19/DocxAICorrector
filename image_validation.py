@@ -1,14 +1,18 @@
 import logging
 import base64
-import json
 import re
-import time
 from typing import Mapping
 
 from generation import is_retryable_error
-from image_pipeline_policy import resolve_validation_delivery_outcome
+from image_shared import (
+    call_responses_create_with_retry,
+    clamp_score,
+    detect_image_mime_type,
+    is_supported_image_bytes as shared_is_supported_image_bytes,
+    parse_json_object,
+)
 from logger import log_event
-from models import ImageAnalysisResult, ImageAsset, ImageValidationResult
+from models import ImageAnalysisResult, ImageValidationResult
 
 DEFAULT_VALIDATION_CONFIG: dict[str, object] = {
     "min_semantic_match_score": 0.75,
@@ -18,14 +22,6 @@ DEFAULT_VALIDATION_CONFIG: dict[str, object] = {
     "allow_accept_with_partial_text_loss": False,
 }
 
-_IMAGE_SIGNATURES = (
-    b"\x89PNG\r\n\x1a\n",
-    b"\xff\xd8\xff",
-    b"GIF87a",
-    b"GIF89a",
-    b"BM",
-    b"RIFF",
-)
 VISION_VALIDATION_TIMEOUT_SECONDS = 45.0
 VISION_VALIDATION_MAX_RETRIES = 2
 
@@ -113,112 +109,6 @@ def validate_redraw_result(
         **normalized_context,
     )
     return result
-
-
-def process_image_asset(
-    asset: ImageAsset,
-    *,
-    image_mode: str,
-    config: Mapping[str, object],
-    candidate_analysis: ImageAnalysisResult | dict[str, object] | None = None,
-    client=None,
-    enable_vision_validation: bool = True,
-) -> ImageAsset:
-    asset.mode_requested = image_mode
-    validation_policy = str(config.get("semantic_validation_policy", "advisory")).strip().lower() or "advisory"
-    context = {
-        "image_id": asset.image_id,
-        "placeholder": asset.placeholder,
-        "image_mode": image_mode,
-        "semantic_validation_policy": validation_policy,
-    }
-
-    if image_mode not in {"semantic_redraw_direct", "semantic_redraw_structured"}:
-        asset.validation_status = "skipped"
-        asset.final_decision = "accept"
-        asset.final_variant = "safe" if asset.safe_bytes else "original"
-        asset.final_reason = "Пост-проверка пропущена для не-semantic режима."
-        return asset
-
-    if not asset.redrawn_bytes:
-        asset.validation_status = "failed"
-        asset.final_decision = "fallback_safe" if asset.safe_bytes else "fallback_original"
-        asset.final_variant = "safe" if asset.safe_bytes else "original"
-        asset.final_reason = "Не получен candidate image для post-check."
-        log_event(
-            logging.WARNING,
-            "image_fallback_applied",
-            "Пост-проверка не выполнена: отсутствует candidate image",
-            final_decision=asset.final_decision,
-            final_variant=asset.final_variant,
-            **context,
-        )
-        return asset
-
-    analysis_before = _coerce_analysis_result(asset.analysis_result)
-    asset.prompt_key = asset.prompt_key or analysis_before.prompt_key
-    asset.render_strategy = asset.render_strategy or analysis_before.render_strategy
-
-    if not bool(config.get("enable_post_redraw_validation", True)):
-        asset.validation_status = "skipped"
-        asset.final_decision = "accept"
-        asset.final_variant = "redrawn"
-        asset.final_reason = "Пост-проверка отключена конфигурацией."
-        return asset
-
-    result = validate_redraw_result(
-        asset.original_bytes,
-        asset.redrawn_bytes,
-        analysis_before,
-        candidate_analysis=candidate_analysis,
-        config=config,
-        image_context=context,
-        client=client,
-        enable_vision_validation=enable_vision_validation,
-        validation_model=str(config.get("validation_model", "gpt-4.1")),
-    )
-    asset.validation_result = result
-    asset.validation_status = "passed" if result.validation_passed else "failed"
-    asset.update_pipeline_metadata(
-        strict_validation_decision=result.decision,
-        strict_validation_passed=result.validation_passed,
-    )
-
-    outcome = resolve_validation_delivery_outcome(
-        result,
-        validation_policy=validation_policy,
-        has_safe_fallback=bool(asset.safe_bytes),
-    )
-    asset.validation_status = str(outcome["validation_status"])
-    asset.final_decision = str(outcome["final_decision"])
-    asset.final_variant = str(outcome["final_variant"])
-    asset.final_reason = str(outcome["final_reason"])
-    asset.update_pipeline_metadata(soft_accepted=bool(outcome["soft_accepted"]))
-
-    if asset.final_decision == "accept":
-        return asset
-
-    if asset.final_decision == "accept_soft":
-        log_event(
-            logging.INFO,
-            "image_validation_advisory_accept",
-            "Validator вернул fallback, но semantic redraw сохранен по advisory-policy.",
-            validator_decision=result.decision,
-            suspicious_reasons=result.suspicious_reasons,
-            **context,
-        )
-        return asset
-
-    log_event(
-        logging.WARNING,
-        "image_fallback_applied",
-        "Применен fallback по результату post-check",
-        final_decision=asset.final_decision,
-        final_variant=asset.final_variant,
-        final_reason=asset.final_reason,
-        **context,
-    )
-    return asset
 
 
 def _validate_redraw_result(
@@ -438,13 +328,11 @@ def _normalize_labels(labels: list[str]) -> set[str]:
 
 
 def _is_supported_image_bytes(image_bytes: bytes | None) -> bool:
-    if not isinstance(image_bytes, bytes) or len(image_bytes) < 8:
-        return False
-    return any(image_bytes.startswith(signature) for signature in _IMAGE_SIGNATURES)
+    return shared_is_supported_image_bytes(image_bytes)
 
 
 def _clamp_score(value: float) -> float:
-    return max(0.0, min(float(value), 1.0))
+    return clamp_score(value)
 
 
 def _safe_image_type(analysis_before: ImageAnalysisResult | dict[str, object]) -> str:
@@ -464,12 +352,12 @@ def _build_vision_validation_assessment(
     client,
     model: str,
 ) -> dict[str, object]:
-    original_mime = _detect_mime_type(original_image)
-    candidate_mime = _detect_mime_type(candidate_image)
+    original_mime = detect_image_mime_type(original_image)
+    candidate_mime = detect_image_mime_type(candidate_image)
     if original_mime is None or candidate_mime is None:
         raise RuntimeError("Vision validation requires readable image payloads.")
 
-    response = _call_responses_create_with_retry(
+    response = call_responses_create_with_retry(
         client,
         {
             "model": model or "gpt-4.1",
@@ -511,8 +399,14 @@ def _build_vision_validation_assessment(
             ],
             "timeout": VISION_VALIDATION_TIMEOUT_SECONDS,
         },
+        max_retries=VISION_VALIDATION_MAX_RETRIES,
+        retryable_error_predicate=is_retryable_error,
     )
-    return _parse_json_object(getattr(response, "output_text", ""))
+    return parse_json_object(
+        getattr(response, "output_text", ""),
+        empty_message="Vision validation returned empty output.",
+        no_json_message="Vision validation did not return JSON.",
+    )
 
 
 def _maybe_build_vision_validation_assessment(
@@ -540,36 +434,6 @@ def _maybe_build_vision_validation_assessment(
         return None
 
 
-def _call_responses_create_with_retry(client, request_payload: dict[str, object]):
-    current_payload = dict(request_payload)
-    for attempt in range(1, VISION_VALIDATION_MAX_RETRIES + 1):
-        try:
-            return client.responses.create(**current_payload)
-        except TypeError as exc:
-            if "timeout" in str(exc) and "timeout" in current_payload:
-                current_payload.pop("timeout", None)
-                continue
-            raise
-        except Exception as exc:
-            if attempt >= VISION_VALIDATION_MAX_RETRIES or not is_retryable_error(exc):
-                raise
-            time.sleep(min(2 ** (attempt - 1), 4))
-    raise RuntimeError("Vision validation retry loop exhausted unexpectedly.")
-
-
-def _parse_json_object(raw_text: str) -> dict[str, object]:
-    text = raw_text.strip()
-    if not text:
-        raise RuntimeError("Vision validation returned empty output.")
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.lower().startswith("json"):
-            text = text[4:].strip()
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise RuntimeError("Vision validation did not return JSON.")
-    return json.loads(text[start:end + 1])
 
 
 def _merge_with_vision_assessment(
@@ -633,18 +497,6 @@ def _merge_with_vision_assessment(
     )
 
 
-def _detect_mime_type(image_bytes: bytes | None) -> str | None:
-    if not isinstance(image_bytes, bytes):
-        return None
-    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if image_bytes.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if image_bytes.startswith((b"GIF87a", b"GIF89a")):
-        return "image/gif"
-    if image_bytes.startswith(b"BM"):
-        return "image/bmp"
-    return None
 
 
 def _normalize_labels_list(labels: object) -> list[str]:

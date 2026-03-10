@@ -22,6 +22,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from config import get_client
 from constants import PROMPTS_DIR
+from image_shared import detect_image_mime_type
 from logger import log_event
 
 SCENE_GRAPH_PROMPT_PATH = PROMPTS_DIR / "scene_graph_extraction.txt"
@@ -1056,21 +1057,13 @@ def _load_scene_graph_prompt() -> str:
 
 def _image_bytes_to_data_uri(image_bytes: bytes, mime_type: str | None = None) -> str:
     if mime_type is None:
-        mime_type = _detect_mime_type(image_bytes) or "image/png"
+        mime_type = detect_image_mime_type(image_bytes) or "image/png"
     encoded = base64.b64encode(image_bytes).decode("ascii")
     return f"data:{mime_type};base64,{encoded}"
 
 
 def _detect_mime_type(image_bytes: bytes) -> str | None:
-    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if image_bytes.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if image_bytes.startswith((b"GIF87a", b"GIF89a")):
-        return "image/gif"
-    if image_bytes.startswith(b"BM"):
-        return "image/bmp"
-    return None
+    return detect_image_mime_type(image_bytes)
 
 
 def _get_image_size(image_bytes: bytes) -> tuple[int, int]:

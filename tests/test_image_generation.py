@@ -40,6 +40,13 @@ PNG_BYTES = base64.b64decode(
 )
 
 
+def build_semantic_client(*, images=None, responses=None):
+    return SimpleNamespace(
+        images=images or SimpleNamespace(),
+        responses=responses or SimpleNamespace(create=lambda **kwargs: SimpleNamespace(output_text="")),
+    )
+
+
 def build_detailed_png_bytes() -> bytes:
     image = Image.new("RGB", (12, 12))
     for x in range(12):
@@ -130,17 +137,14 @@ def test_generate_image_candidate_structured_uses_vision_and_images_generate(mon
                 ]
             )
 
-    monkeypatch.setattr(
-        image_generation,
-        "get_client",
-        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
-    )
+    client = build_semantic_client(images=FakeImagesClient(), responses=FakeResponsesClient())
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
     candidate = image_generation.generate_image_candidate(
         build_detailed_png_bytes(),
         build_analysis_result(),
         mode="semantic_redraw_structured",
+        client=client,
     )
 
     assert candidate
@@ -176,17 +180,14 @@ def test_generate_image_candidate_structured_preserves_generated_resolution_with
                 ]
             )
 
-    monkeypatch.setattr(
-        image_generation,
-        "get_client",
-        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
-    )
+    client = build_semantic_client(images=FakeImagesClient(), responses=FakeResponsesClient())
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
     candidate = image_generation.generate_image_candidate(
         build_rectangular_png_bytes(),
         build_analysis_result(),
         mode="semantic_redraw_structured",
+        client=client,
     )
 
     with Image.open(BytesIO(candidate)) as restored_image:
@@ -224,17 +225,14 @@ def test_generate_image_candidate_structured_trims_large_generated_margins_befor
                 ]
             )
 
-    monkeypatch.setattr(
-        image_generation,
-        "get_client",
-        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
-    )
+    client = build_semantic_client(images=FakeImagesClient(), responses=FakeResponsesClient())
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
     candidate = image_generation.generate_image_candidate(
         build_rectangular_png_bytes(),
         build_analysis_result(),
         mode="semantic_redraw_structured",
+        client=client,
     )
 
     with Image.open(BytesIO(candidate)) as restored_image:
@@ -273,11 +271,7 @@ def test_generate_image_candidate_direct_uses_creative_vision_and_images_generat
                 ]
             )
 
-    monkeypatch.setattr(
-        image_generation,
-        "get_client",
-        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
-    )
+    client = build_semantic_client(images=FakeImagesClient(), responses=FakeResponsesClient())
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
     source_bytes = build_detailed_png_bytes()
@@ -285,6 +279,7 @@ def test_generate_image_candidate_direct_uses_creative_vision_and_images_generat
         source_bytes,
         build_analysis_result(render_strategy="semantic_redraw_direct"),
         mode="semantic_redraw_direct",
+        client=client,
     )
 
     assert candidate
@@ -324,7 +319,7 @@ def test_select_generate_size_uses_fixed_aspect_presets():
     assert image_generation._select_generate_size((400, 800)) == "1024x1536"
 
 
-def test_generate_image_candidate_uses_provided_client_without_calling_get_client(monkeypatch):
+def test_generate_image_candidate_uses_provided_client(monkeypatch):
     provided_client = SimpleNamespace(
         responses=SimpleNamespace(
             create=lambda **kwargs: SimpleNamespace(output_text="creative redraw brief")
@@ -341,7 +336,6 @@ def test_generate_image_candidate_uses_provided_client_without_calling_get_clien
         )
     )
 
-    monkeypatch.setattr(image_generation, "get_client", lambda: (_ for _ in ()).throw(AssertionError("should reuse provided client")))
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
     candidate = image_generation.generate_image_candidate(
@@ -373,17 +367,14 @@ def test_generate_image_candidate_direct_passes_source_image_to_vision_for_jpeg_
                 ]
             )
 
-    monkeypatch.setattr(
-        image_generation,
-        "get_client",
-        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
-    )
+    client = build_semantic_client(images=FakeImagesClient(), responses=FakeResponsesClient())
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
     candidate = image_generation.generate_image_candidate(
         build_detailed_jpeg_bytes(),
         build_analysis_result(render_strategy="semantic_redraw_direct"),
         mode="semantic_redraw_direct",
+        client=client,
     )
 
     assert candidate
@@ -421,17 +412,14 @@ def test_generate_image_candidate_direct_falls_back_to_direct_edit_then_structur
                 ]
             )
 
-    monkeypatch.setattr(
-        image_generation,
-        "get_client",
-        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
-    )
+    client = build_semantic_client(images=FakeImagesClient(), responses=FakeResponsesClient())
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
     candidate = image_generation.generate_image_candidate(
         build_detailed_png_bytes(),
         build_analysis_result(render_strategy="semantic_redraw_direct", contains_text=True),
         mode="semantic_redraw_direct",
+        client=client,
     )
 
     assert candidate
@@ -456,11 +444,7 @@ def test_generate_image_candidate_direct_preserves_aspect_ratio_without_downscal
                 ]
             )
 
-    monkeypatch.setattr(
-        image_generation,
-        "get_client",
-        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
-    )
+    client = build_semantic_client(images=FakeImagesClient(), responses=FakeResponsesClient())
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
     source_bytes = build_rectangular_png_bytes()
@@ -468,6 +452,7 @@ def test_generate_image_candidate_direct_preserves_aspect_ratio_without_downscal
         source_bytes,
         build_analysis_result(render_strategy="semantic_redraw_direct"),
         mode="semantic_redraw_direct",
+        client=client,
     )
 
     with Image.open(BytesIO(candidate)) as restored_image:
@@ -497,17 +482,14 @@ def test_generate_image_candidate_direct_retries_without_unknown_optional_param(
                 ]
             )
 
-    monkeypatch.setattr(
-        image_generation,
-        "get_client",
-        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
-    )
+    client = build_semantic_client(images=FakeImagesClient(), responses=FakeResponsesClient())
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
     candidate = image_generation.generate_image_candidate(
         build_detailed_png_bytes(),
         build_analysis_result(render_strategy="semantic_redraw_direct"),
         mode="semantic_redraw_direct",
+        client=client,
     )
 
     assert candidate
@@ -538,11 +520,7 @@ def test_generate_image_candidate_direct_retries_after_retryable_error(monkeypat
                 ]
             )
 
-    monkeypatch.setattr(
-        image_generation,
-        "get_client",
-        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
-    )
+    client = build_semantic_client(images=FakeImagesClient(), responses=FakeResponsesClient())
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(image_generation.time, "sleep", sleep_calls.append)
 
@@ -550,6 +528,7 @@ def test_generate_image_candidate_direct_retries_after_retryable_error(monkeypat
         build_detailed_png_bytes(),
         build_analysis_result(render_strategy="semantic_redraw_direct"),
         mode="semantic_redraw_direct",
+        client=client,
     )
 
     assert candidate
@@ -571,11 +550,7 @@ def test_generate_image_candidate_direct_stops_when_model_call_budget_is_exhaust
             captured_calls.append(dict(kwargs))
             raise RetryableError("rate limited")
 
-    monkeypatch.setattr(
-        image_generation,
-        "get_client",
-        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
-    )
+    client = build_semantic_client(images=FakeImagesClient(), responses=FakeResponsesClient())
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(image_generation.time, "sleep", sleep_calls.append)
 
@@ -584,6 +559,7 @@ def test_generate_image_candidate_direct_stops_when_model_call_budget_is_exhaust
             build_detailed_png_bytes(),
             build_analysis_result(render_strategy="semantic_redraw_direct"),
             mode="semantic_redraw_direct",
+            client=client,
             budget=image_generation.ImageModelCallBudget(max_calls=1),
         )
     except image_generation.ImageModelCallBudgetExceeded as exc:
@@ -623,17 +599,14 @@ def test_generate_image_candidate_direct_retries_with_shorter_prompt(monkeypatch
                 ]
             )
 
-    monkeypatch.setattr(
-        image_generation,
-        "get_client",
-        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
-    )
+    client = build_semantic_client(images=FakeImagesClient(), responses=FakeResponsesClient())
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
     candidate = image_generation.generate_image_candidate(
         build_detailed_png_bytes(),
         build_analysis_result(render_strategy="semantic_redraw_direct", structure_summary="x" * 1500),
         mode="semantic_redraw_direct",
+        client=client,
     )
 
     assert candidate
@@ -655,17 +628,15 @@ def test_generate_image_candidate_direct_does_not_force_reconstruction_for_direc
         "_generate_reconstructed_candidate",
         lambda *args, **kwargs: calls.__setitem__("reconstruct", calls["reconstruct"] + 1) or PNG_BYTES,
     )
-    monkeypatch.setattr(
-        image_generation,
-        "get_client",
-        lambda: SimpleNamespace(images=SimpleNamespace(), responses=SimpleNamespace()),
-    )
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
+
+    client = build_semantic_client(images=SimpleNamespace(), responses=SimpleNamespace())
 
     candidate = image_generation.generate_image_candidate(
         build_detailed_png_bytes(),
         build_analysis_result(render_strategy="deterministic_reconstruction"),
         mode="semantic_redraw_direct",
+        client=client,
     )
 
     assert candidate == PNG_BYTES
@@ -698,17 +669,14 @@ def test_generate_image_candidate_structured_retries_with_shorter_prompt(monkeyp
                 ]
             )
 
-    monkeypatch.setattr(
-        image_generation,
-        "get_client",
-        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
-    )
+    client = build_semantic_client(images=FakeImagesClient(), responses=FakeResponsesClient())
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
     candidate = image_generation.generate_image_candidate(
         build_detailed_png_bytes(),
         build_analysis_result(),
         mode="semantic_redraw_structured",
+        client=client,
     )
 
     assert candidate
@@ -739,11 +707,7 @@ def test_generate_image_candidate_structured_retries_vision_request_after_retrya
                 ]
             )
 
-    monkeypatch.setattr(
-        image_generation,
-        "get_client",
-        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
-    )
+    client = build_semantic_client(images=FakeImagesClient(), responses=FakeResponsesClient())
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(image_generation.time, "sleep", sleep_calls.append)
 
@@ -751,6 +715,7 @@ def test_generate_image_candidate_structured_retries_vision_request_after_retrya
         build_detailed_png_bytes(),
         build_analysis_result(),
         mode="semantic_redraw_structured",
+        client=client,
     )
 
     assert candidate
@@ -786,17 +751,14 @@ def test_generate_image_candidate_structured_uses_fixed_generate_size_without_au
                 ]
             )
 
-    monkeypatch.setattr(
-        image_generation,
-        "get_client",
-        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
-    )
+    client = build_semantic_client(images=FakeImagesClient(), responses=FakeResponsesClient())
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
     candidate = image_generation.generate_image_candidate(
         build_rectangular_png_bytes(),
         build_analysis_result(structure_summary="x" * 1500),
         mode="semantic_redraw_structured",
+        client=client,
     )
 
     assert candidate
@@ -827,11 +789,7 @@ def test_generate_image_candidate_structured_retries_generate_request_after_serv
                 ]
             )
 
-    monkeypatch.setattr(
-        image_generation,
-        "get_client",
-        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
-    )
+    client = build_semantic_client(images=FakeImagesClient(), responses=FakeResponsesClient())
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(image_generation.time, "sleep", sleep_calls.append)
 
@@ -839,6 +797,7 @@ def test_generate_image_candidate_structured_retries_generate_request_after_serv
         build_rectangular_png_bytes(),
         build_analysis_result(),
         mode="semantic_redraw_structured",
+        client=client,
     )
 
     assert candidate
@@ -848,8 +807,6 @@ def test_generate_image_candidate_structured_retries_generate_request_after_serv
 
 
 def test_generate_image_candidate_semantic_falls_back_to_safe_when_redraw_is_forbidden(monkeypatch):
-    monkeypatch.setattr(image_generation, "get_client", lambda: (_ for _ in ()).throw(AssertionError("should not call client")))
-
     candidate = image_generation.generate_image_candidate(
         PNG_BYTES,
         build_analysis_result(semantic_redraw_allowed=False),
@@ -879,11 +836,7 @@ def test_generate_image_candidate_uses_legacy_semantic_path_when_reconstruction_
                 ]
             )
 
-    monkeypatch.setattr(
-        image_generation,
-        "get_client",
-        lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
-    )
+    client = build_semantic_client(images=FakeImagesClient(), responses=FakeResponsesClient())
     monkeypatch.setattr(image_generation, "reconstruct_image", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError()))
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
@@ -891,6 +844,7 @@ def test_generate_image_candidate_uses_legacy_semantic_path_when_reconstruction_
         build_detailed_png_bytes(),
         build_analysis_result(render_strategy="deterministic_reconstruction"),
         mode="semantic_redraw_structured",
+        client=client,
         prefer_deterministic_reconstruction=False,
     )
 
@@ -914,13 +868,14 @@ def test_generate_image_candidate_structured_prefers_high_fidelity_edit_before_g
                 ]
             )
 
-    monkeypatch.setattr(image_generation, "get_client", lambda: SimpleNamespace(images=FakeImagesClient()))
+    client = build_semantic_client(images=FakeImagesClient())
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
     candidate = image_generation.generate_image_candidate(
         build_detailed_png_bytes(),
         build_analysis_result(render_strategy="semantic_redraw_structured"),
         mode="semantic_redraw_structured",
+        client=client,
     )
 
     assert candidate
@@ -944,13 +899,14 @@ def test_generate_image_candidate_direct_includes_extracted_text_in_prompt(monke
                 ]
             )
 
-    monkeypatch.setattr(image_generation, "get_client", lambda: SimpleNamespace(images=FakeImagesClient()))
+    client = build_semantic_client(images=FakeImagesClient())
     monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
     candidate = image_generation.generate_image_candidate(
         build_detailed_png_bytes(),
         build_analysis_result(render_strategy="semantic_redraw_direct", extracted_text="Факты -> Анализ -> Вывод"),
         mode="semantic_redraw_direct",
+        client=client,
     )
 
     assert candidate

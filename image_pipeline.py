@@ -2,7 +2,7 @@ import inspect
 import logging
 from dataclasses import replace
 
-from image_pipeline_policy import build_generation_analysis, should_attempt_semantic_redraw
+from image_pipeline_policy import build_generation_analysis, resolve_validation_delivery_outcome, should_attempt_semantic_redraw
 from models import ImageVariantCandidate
 
 
@@ -46,53 +46,90 @@ def score_semantic_candidate(asset) -> float:
     return score
 
 
-def try_soft_accept_semantic_candidate(asset, analysis, image_mode: str, config: dict[str, object], *, log_event_fn):
-    validation_result = getattr(asset, "validation_result", None)
-    if validation_result is None or not getattr(asset, "redrawn_bytes", None):
-        return asset
+def _apply_validation_result_to_asset(asset, validation_result, *, image_mode: str, config: dict[str, object], log_event_fn):
+    validation_policy = str(config.get("semantic_validation_policy", "advisory")).strip().lower() or "advisory"
+    context = {
+        "image_id": asset.image_id,
+        "placeholder": asset.placeholder,
+        "image_mode": image_mode,
+        "semantic_validation_policy": validation_policy,
+    }
 
-    suspicious_reasons = list(getattr(validation_result, "suspicious_reasons", []))
-    if any(reason == "candidate_image_unreadable" for reason in suspicious_reasons):
-        return asset
+    asset.mode_requested = image_mode
+    asset.validation_result = validation_result
+    asset.validation_status = "passed" if validation_result.validation_passed else "failed"
+    asset.update_pipeline_metadata(
+        strict_validation_decision=validation_result.decision,
+        strict_validation_passed=validation_result.validation_passed,
+    )
 
-    min_confidence = float(
-        config.get(
-            "semantic_soft_accept_confidence",
-            0.64 if image_mode == "semantic_redraw_structured" or analysis.contains_text else 0.58,
+    outcome = resolve_validation_delivery_outcome(
+        validation_result,
+        validation_policy=validation_policy,
+        has_safe_fallback=bool(asset.safe_bytes),
+    )
+    asset.validation_status = str(outcome["validation_status"])
+    asset.final_decision = str(outcome["final_decision"])
+    asset.final_variant = str(outcome["final_variant"])
+    asset.final_reason = str(outcome["final_reason"])
+    asset.update_pipeline_metadata(soft_accepted=bool(outcome["soft_accepted"]))
+
+    if asset.final_decision == "accept_soft":
+        log_event_fn(
+            logging.INFO,
+            "image_validation_advisory_accept",
+            "Validator вернул fallback, но semantic redraw сохранен по advisory-policy.",
+            validator_decision=validation_result.decision,
+            suspicious_reasons=validation_result.suspicious_reasons,
+            **context,
         )
-    )
-    min_semantic = float(config.get("semantic_soft_accept_semantic_match", 0.58))
-    min_text = float(config.get("semantic_soft_accept_text_match", 0.72 if analysis.contains_text else 0.0))
-    min_structure = float(
-        config.get(
-            "semantic_soft_accept_structure_match",
-            0.64 if analysis.render_strategy == "semantic_redraw_structured" else 0.48,
+    elif asset.final_decision not in {"accept", "accept_soft"}:
+        log_event_fn(
+            logging.WARNING,
+            "image_fallback_applied",
+            "Применен fallback по результату post-check",
+            final_decision=asset.final_decision,
+            final_variant=asset.final_variant,
+            final_reason=asset.final_reason,
+            **context,
         )
-    )
 
-    if (
-        float(getattr(validation_result, "validator_confidence", 0.0)) < min_confidence
-        or float(getattr(validation_result, "semantic_match_score", 0.0)) < min_semantic
-        or float(getattr(validation_result, "text_match_score", 0.0)) < min_text
-        or float(getattr(validation_result, "structure_match_score", 0.0)) < min_structure
-    ):
-        return asset
-
-    asset.validation_status = "soft-pass"
-    asset.final_decision = "accept_soft"
-    asset.final_variant = "redrawn"
-    asset.final_reason = (
-        "Выбран лучший semantic redraw после нескольких попыток; "
-        f"validator отметил умеренные расхождения: {'; '.join(suspicious_reasons) or 'нет'}"
-    )
-    log_event_fn(
-        logging.INFO,
-        "image_soft_accept_applied",
-        "Применен мягкий accept для лучшего semantic redraw candidate.",
-        **asset.to_log_context(),
-    )
-    asset.update_pipeline_metadata(soft_accepted=True)
     return asset
+
+
+def _validate_semantic_attempt(
+    attempt_asset,
+    *,
+    image_mode: str,
+    config: dict[str, object],
+    candidate_analysis,
+    client,
+    validate_redraw_result_fn,
+    log_event_fn,
+):
+    validation_result = _call_with_supported_kwargs(
+        validate_redraw_result_fn,
+        attempt_asset.original_bytes,
+        attempt_asset.redrawn_bytes,
+        attempt_asset.analysis_result,
+        candidate_analysis=candidate_analysis,
+        config=config,
+        image_context={
+            "image_id": attempt_asset.image_id,
+            "placeholder": attempt_asset.placeholder,
+            "image_mode": image_mode,
+        },
+        client=client,
+        enable_vision_validation=bool(config.get("enable_vision_image_validation", True)),
+        validation_model=str(config.get("validation_model", "gpt-4.1")),
+    )
+    return _apply_validation_result_to_asset(
+        attempt_asset,
+        validation_result,
+        image_mode=image_mode,
+        config=config,
+        log_event_fn=log_event_fn,
+    )
 
 
 def _build_compare_variant_candidate(
@@ -104,8 +141,9 @@ def _build_compare_variant_candidate(
     client,
     analyze_image_fn,
     generate_image_candidate_fn,
-    process_image_asset_fn,
+    validate_redraw_result_fn,
     detect_image_mime_type_fn,
+    log_event_fn,
 ):
     candidate_bytes = _call_with_supported_kwargs(
         generate_image_candidate_fn,
@@ -154,14 +192,14 @@ def _build_compare_variant_candidate(
         dense_text_bypass_threshold=int(config.get("dense_text_bypass_threshold", 18)),
         non_latin_text_bypass_threshold=int(config.get("non_latin_text_bypass_threshold", 12)),
     )
-    attempt_asset = _call_with_supported_kwargs(
-        process_image_asset_fn,
+    attempt_asset = _validate_semantic_attempt(
         attempt_asset,
         image_mode=candidate_mode,
         config=config,
         candidate_analysis=candidate_analysis,
         client=client,
-        enable_vision_validation=bool(config.get("enable_vision_image_validation", True)),
+        validate_redraw_result_fn=validate_redraw_result_fn,
+        log_event_fn=log_event_fn,
     )
     variant.validation_result = attempt_asset.validation_result
     variant.validation_status = attempt_asset.validation_status
@@ -180,7 +218,7 @@ def select_best_semantic_asset(
     client,
     analyze_image_fn,
     generate_image_candidate_fn,
-    process_image_asset_fn,
+    validate_redraw_result_fn,
     log_event_fn,
     detect_image_mime_type_fn,
     image_model_call_budget_cls,
@@ -232,14 +270,14 @@ def select_best_semantic_asset(
                 dense_text_bypass_threshold=int(config.get("dense_text_bypass_threshold", 18)),
                 non_latin_text_bypass_threshold=int(config.get("non_latin_text_bypass_threshold", 12)),
             )
-            attempt_asset = _call_with_supported_kwargs(
-                process_image_asset_fn,
+            attempt_asset = _validate_semantic_attempt(
                 attempt_asset,
                 image_mode=image_mode,
                 config=config,
                 candidate_analysis=candidate_analysis,
                 client=client,
-                enable_vision_validation=bool(config.get("enable_vision_image_validation", True)),
+                validate_redraw_result_fn=validate_redraw_result_fn,
+                log_event_fn=log_event_fn,
             )
         except image_model_call_budget_exceeded_cls as exc:
             budget_exhausted = True
@@ -289,7 +327,7 @@ def select_best_semantic_asset(
             "semantic_model_call_budget_exhausted" if budget_exhausted else "semantic_candidate_attempts_exhausted"
         )
         return asset
-    return try_soft_accept_semantic_candidate(asset=best_asset, analysis=analysis, image_mode=image_mode, config=config, log_event_fn=log_event_fn)
+    return best_asset
 
 
 def process_document_images(
@@ -309,7 +347,7 @@ def process_document_images(
     should_stop,
     analyze_image_fn,
     generate_image_candidate_fn,
-    process_image_asset_fn,
+    validate_redraw_result_fn,
     get_client_fn,
     log_event_fn,
     detect_image_mime_type_fn,
@@ -411,7 +449,7 @@ def process_document_images(
                     client=image_client,
                     analyze_image_fn=analyze_image_fn,
                     generate_image_candidate_fn=generate_image_candidate_fn,
-                    process_image_asset_fn=process_image_asset_fn,
+                    validate_redraw_result_fn=validate_redraw_result_fn,
                     detect_image_mime_type_fn=detect_image_mime_type_fn,
                     log_event_fn=log_event_fn,
                 )
@@ -449,14 +487,14 @@ def process_document_images(
                     client=image_client,
                     analyze_image_fn=analyze_image_fn,
                     generate_image_candidate_fn=generate_image_candidate_fn,
-                    process_image_asset_fn=process_image_asset_fn,
+                    validate_redraw_result_fn=validate_redraw_result_fn,
                     log_event_fn=log_event_fn,
                     detect_image_mime_type_fn=detect_image_mime_type_fn,
                     image_model_call_budget_cls=image_model_call_budget_cls,
                     image_model_call_budget_exceeded_cls=image_model_call_budget_exceeded_cls,
                 )
 
-            validation_result = asset.validation_result if hasattr(asset, "validation_result") else None
+            validation_result = asset.validation_result
             confidence = (
                 float(getattr(validation_result, "validator_confidence", 0.0))
                 if validation_result is not None
@@ -528,7 +566,6 @@ def _clone_image_asset_for_attempt(asset):
         final_variant=None,
         final_reason=None,
         redrawn_bytes=None,
-        reconstruction_scene_graph=None,
         redrawn_mime_type=None,
         metadata=replace(asset.metadata),
     )
@@ -549,7 +586,7 @@ def _prepare_compare_variants(
     client,
     analyze_image_fn,
     generate_image_candidate_fn,
-    process_image_asset_fn,
+    validate_redraw_result_fn,
     detect_image_mime_type_fn,
     log_event_fn,
 ):
@@ -568,8 +605,9 @@ def _prepare_compare_variants(
                 client=client,
                 analyze_image_fn=analyze_image_fn,
                 generate_image_candidate_fn=generate_image_candidate_fn,
-                process_image_asset_fn=process_image_asset_fn,
+                validate_redraw_result_fn=validate_redraw_result_fn,
                 detect_image_mime_type_fn=detect_image_mime_type_fn,
+                log_event_fn=log_event_fn,
             )
         except Exception as exc:
             log_event_fn(

@@ -4,11 +4,10 @@ import time
 from io import BytesIO
 from types import SimpleNamespace
 
-from PIL import Image, ImageEnhance, ImageOps
+from PIL import Image, ImageDraw, ImageEnhance, ImageOps
 from PIL import ImageChops
 
-from config import get_client
-from image_pipeline_policy import resolve_generation_mode
+from image_shared import detect_image_mime_type as shared_detect_image_mime_type, is_supported_image_bytes
 from image_prompts import get_image_prompt_profile, load_image_prompt_text
 from image_reconstruction import reconstruct_image
 from logger import log_event
@@ -20,6 +19,7 @@ IMAGE_STRUCTURE_VISION_MODEL = "gpt-4.1"
 IMAGE_API_TIMEOUT_SECONDS = 90.0
 IMAGE_API_MAX_RETRIES = 3
 IMAGE_API_MAX_BACKOFF_SECONDS = 8.0
+IMAGE_API_MAX_ADAPTATION_RETRIES = 12
 SEMANTIC_MODES = {"semantic_redraw_direct", "semantic_redraw_structured"}
 RECONSTRUCTION_STRATEGY = "deterministic_reconstruction"
 
@@ -59,12 +59,14 @@ def generate_image_candidate(
     client=None,
     budget: ImageModelCallBudget | None = None,
 ) -> bytes:
-    if not _is_supported_image_bytes(image_bytes):
+    if not is_supported_image_bytes(image_bytes):
         raise RuntimeError("Передан неподдерживаемый image payload.")
 
     prompt_profile = get_image_prompt_profile(analysis.prompt_key)
     prompt_text = load_image_prompt_text(analysis.prompt_key)
-    requested_mode = resolve_generation_mode(mode, analysis)
+    requested_mode = mode if mode in {"safe", "semantic_redraw_direct", "semantic_redraw_structured"} else "safe"
+    if requested_mode != "safe" and not analysis.semantic_redraw_allowed:
+        requested_mode = "safe"
 
     if requested_mode == "safe":
         candidate_bytes = _generate_safe_candidate(image_bytes)
@@ -235,7 +237,9 @@ def _generate_semantic_candidate(
     client=None,
     budget: ImageModelCallBudget | None = None,
 ) -> bytes:
-    resolved_client = client or get_client()
+    if client is None:
+        raise RuntimeError("Semantic image generation requires an explicit client.")
+    resolved_client = client
     prompt = _build_image_edit_prompt(
         analysis,
         requested_mode=requested_mode,
@@ -314,15 +318,15 @@ def _generate_semantic_candidate(
                 image_type=analysis.image_type,
                 prompt_key=analysis.prompt_key,
             )
-        return _generate_structured_candidate(
-            resolved_client,
-            image_bytes,
-            analysis,
-            prompt_text=prompt_text,
-            prompt_profile=prompt_profile,
-            prompt=prompt,
-            budget=budget,
-        )
+            return _generate_structured_candidate(
+                resolved_client,
+                image_bytes,
+                analysis,
+                prompt_text=prompt_text,
+                prompt_profile=prompt_profile,
+                prompt=prompt,
+                budget=budget,
+            )
 
 
 def _generate_creative_candidate(
@@ -481,6 +485,7 @@ def _call_images_edit(client, request_payload: dict[str, object], *, budget: Ima
     }
     current_payload = dict(request_payload)
     attempt = 1
+    adaptation_attempts = 0
     while True:
         try:
             _consume_budget(budget, "images.edit")
@@ -490,6 +495,9 @@ def _call_images_edit(client, request_payload: dict[str, object], *, budget: Ima
             if unsupported_param not in retryable_optional_params or unsupported_param not in current_payload:
                 raise
             current_payload.pop(unsupported_param, None)
+            adaptation_attempts += 1
+            if adaptation_attempts > IMAGE_API_MAX_ADAPTATION_RETRIES:
+                raise RuntimeError("Images.edit adaptation retry limit exceeded.") from exc
             log_event(
                 logging.INFO,
                 "semantic_image_edit_retry_without_optional_param",
@@ -501,6 +509,9 @@ def _call_images_edit(client, request_payload: dict[str, object], *, budget: Ima
             prompt_limit = _extract_prompt_limit(str(exc))
             if prompt_limit is not None and isinstance(current_payload.get("prompt"), str):
                 current_payload["prompt"] = _shorten_prompt_for_limit(str(current_payload["prompt"]), prompt_limit)
+                adaptation_attempts += 1
+                if adaptation_attempts > IMAGE_API_MAX_ADAPTATION_RETRIES:
+                    raise RuntimeError("Images.edit adaptation retry limit exceeded.") from exc
                 log_event(
                     logging.INFO,
                     "semantic_image_edit_retry_with_shorter_prompt",
@@ -511,6 +522,9 @@ def _call_images_edit(client, request_payload: dict[str, object], *, budget: Ima
             fallback_size = _extract_supported_size_fallback(str(exc), str(current_payload.get("size", "")))
             if fallback_size is not None:
                 current_payload["size"] = fallback_size
+                adaptation_attempts += 1
+                if adaptation_attempts > IMAGE_API_MAX_ADAPTATION_RETRIES:
+                    raise RuntimeError("Images.edit adaptation retry limit exceeded.") from exc
                 log_event(
                     logging.INFO,
                     "semantic_image_edit_retry_with_fallback_size",
@@ -521,6 +535,9 @@ def _call_images_edit(client, request_payload: dict[str, object], *, budget: Ima
             unsupported_param = _extract_unsupported_parameter_name(str(exc))
             if unsupported_param in retryable_optional_params and unsupported_param in current_payload:
                 current_payload.pop(unsupported_param, None)
+                adaptation_attempts += 1
+                if adaptation_attempts > IMAGE_API_MAX_ADAPTATION_RETRIES:
+                    raise RuntimeError("Images.edit adaptation retry limit exceeded.") from exc
                 log_event(
                     logging.INFO,
                     "semantic_image_edit_retry_without_optional_param",
@@ -550,6 +567,7 @@ def _call_images_generate(client, request_payload: dict[str, object], *, budget:
     retryable_optional_params = {"background", "output_format", "quality", "response_format", "size", "timeout"}
     current_payload = dict(request_payload)
     attempt = 1
+    adaptation_attempts = 0
     while True:
         try:
             _consume_budget(budget, "images.generate")
@@ -559,6 +577,9 @@ def _call_images_generate(client, request_payload: dict[str, object], *, budget:
             if unsupported_param not in retryable_optional_params or unsupported_param not in current_payload:
                 raise
             current_payload.pop(unsupported_param, None)
+            adaptation_attempts += 1
+            if adaptation_attempts > IMAGE_API_MAX_ADAPTATION_RETRIES:
+                raise RuntimeError("Images.generate adaptation retry limit exceeded.") from exc
             log_event(
                 logging.INFO,
                 "structured_image_generate_retry_without_optional_param",
@@ -570,6 +591,9 @@ def _call_images_generate(client, request_payload: dict[str, object], *, budget:
             prompt_limit = _extract_prompt_limit(str(exc))
             if prompt_limit is not None and isinstance(current_payload.get("prompt"), str):
                 current_payload["prompt"] = _shorten_prompt_for_limit(str(current_payload["prompt"]), prompt_limit)
+                adaptation_attempts += 1
+                if adaptation_attempts > IMAGE_API_MAX_ADAPTATION_RETRIES:
+                    raise RuntimeError("Images.generate adaptation retry limit exceeded.") from exc
                 log_event(
                     logging.INFO,
                     "structured_image_generate_retry_with_shorter_prompt",
@@ -580,6 +604,9 @@ def _call_images_generate(client, request_payload: dict[str, object], *, budget:
             fallback_size = _extract_supported_generate_size_fallback(str(exc), str(current_payload.get("size", "")))
             if fallback_size is not None:
                 current_payload["size"] = fallback_size
+                adaptation_attempts += 1
+                if adaptation_attempts > IMAGE_API_MAX_ADAPTATION_RETRIES:
+                    raise RuntimeError("Images.generate adaptation retry limit exceeded.") from exc
                 log_event(
                     logging.INFO,
                     "structured_image_generate_retry_with_fallback_size",
@@ -590,6 +617,9 @@ def _call_images_generate(client, request_payload: dict[str, object], *, budget:
             unsupported_param = _extract_unsupported_parameter_name(str(exc))
             if unsupported_param in retryable_optional_params and unsupported_param in current_payload:
                 current_payload.pop(unsupported_param, None)
+                adaptation_attempts += 1
+                if adaptation_attempts > IMAGE_API_MAX_ADAPTATION_RETRIES:
+                    raise RuntimeError("Images.generate adaptation retry limit exceeded.") from exc
                 log_event(
                     logging.INFO,
                     "structured_image_generate_retry_without_optional_param",
@@ -1205,41 +1235,39 @@ def _normalize_generated_document_background(image: Image.Image) -> Image.Image:
 
 
 def _build_connected_background_mask(image: Image.Image, background_rgba: tuple[int, ...]) -> Image.Image | None:
-    from collections import deque
-
     width, height = image.size
     if width <= 0 or height <= 0:
         return None
 
-    rgb_pixels = image.convert("RGB").load()
     background_rgb = background_rgba[:3]
-    mask = Image.new("1", (width, height), 0)
-    mask_pixels = mask.load()
-    queue = deque()
+    work_image = image.convert("RGB")
+    if max(width, height) > 512:
+        scale = 512.0 / max(width, height)
+        work_size = (max(1, int(width * scale)), max(1, int(height * scale)))
+        work_image = work_image.resize(work_size, Image.Resampling.BILINEAR)
 
-    def is_background(x_coord: int, y_coord: int) -> bool:
-        pixel = rgb_pixels[x_coord, y_coord]
-        return sum(abs(int(pixel[index]) - int(background_rgb[index])) for index in range(3)) <= 48
+    distance = ImageChops.add(
+        ImageChops.add(
+            ImageChops.difference(work_image.getchannel("R"), Image.new("L", work_image.size, background_rgb[0])),
+            ImageChops.difference(work_image.getchannel("G"), Image.new("L", work_image.size, background_rgb[1])),
+        ),
+        ImageChops.difference(work_image.getchannel("B"), Image.new("L", work_image.size, background_rgb[2])),
+    )
+    candidate_mask = distance.point(lambda value: 255 if value <= 48 else 0, mode="L")
+    flood_mask = candidate_mask.copy()
+    work_width, work_height = work_image.size
 
-    for start in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)):
-        x_coord, y_coord = start
-        if is_background(x_coord, y_coord) and not mask_pixels[x_coord, y_coord]:
-            mask_pixels[x_coord, y_coord] = 1
-            queue.append((x_coord, y_coord))
+    for start in ((0, 0), (work_width - 1, 0), (0, work_height - 1), (work_width - 1, work_height - 1)):
+        if flood_mask.getpixel(start) == 255:
+            ImageDraw.floodfill(flood_mask, start, 128, border=0)
 
-    if not queue:
+    if flood_mask.getbbox() is None or flood_mask.histogram()[128] == 0:
         return None
 
-    while queue:
-        x_coord, y_coord = queue.popleft()
-        for next_x, next_y in ((x_coord - 1, y_coord), (x_coord + 1, y_coord), (x_coord, y_coord - 1), (x_coord, y_coord + 1)):
-            if next_x < 0 or next_y < 0 or next_x >= width or next_y >= height:
-                continue
-            if mask_pixels[next_x, next_y] or not is_background(next_x, next_y):
-                continue
-            mask_pixels[next_x, next_y] = 1
-            queue.append((next_x, next_y))
-    return mask
+    connected_mask = flood_mask.point(lambda value: 255 if value == 128 else 0, mode="L")
+    if connected_mask.size != (width, height):
+        connected_mask = connected_mask.resize((width, height), Image.Resampling.NEAREST)
+    return connected_mask
 
 
 def _is_dark_uniform_background(background_rgba: tuple[int, ...]) -> bool:
@@ -1349,15 +1377,7 @@ def _uses_high_fidelity_semantic_edit(analysis: ImageAnalysisResult, requested_m
 
 
 def _detect_mime_type(image_bytes: bytes) -> str | None:
-    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if image_bytes.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    if image_bytes.startswith((b"GIF87a", b"GIF89a")):
-        return "image/gif"
-    if image_bytes.startswith(b"BM"):
-        return "image/bmp"
-    return None
+    return shared_detect_image_mime_type(image_bytes)
 
 
 def detect_image_mime_type(image_bytes: bytes) -> str | None:
@@ -1365,12 +1385,4 @@ def detect_image_mime_type(image_bytes: bytes) -> str | None:
 
 
 def _is_supported_image_bytes(image_bytes: bytes) -> bool:
-    return image_bytes.startswith(
-        (
-            b"\x89PNG\r\n\x1a\n",
-            b"\xff\xd8\xff",
-            b"GIF87a",
-            b"GIF89a",
-            b"BM",
-        )
-    )
+    return is_supported_image_bytes(image_bytes)

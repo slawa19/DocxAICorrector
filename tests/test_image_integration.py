@@ -2,7 +2,7 @@ from io import BytesIO
 
 import app
 from PIL import Image, ImageDraw
-from models import ImageAnalysisResult, ImageAsset
+from models import ImageAnalysisResult, ImageAsset, ImageValidationResult
 
 
 class SessionState(dict):
@@ -78,6 +78,22 @@ def build_asset() -> ImageAsset:
         mime_type="image/png",
         position_index=0,
     )
+
+
+def build_validation_result(**overrides) -> ImageValidationResult:
+    payload = {
+        "validation_passed": True,
+        "decision": "accept",
+        "semantic_match_score": 0.95,
+        "text_match_score": 0.95,
+        "structure_match_score": 0.95,
+        "validator_confidence": 0.95,
+        "missing_labels": [],
+        "added_entities_detected": False,
+        "suspicious_reasons": [],
+    }
+    payload.update(overrides)
+    return ImageValidationResult(**payload)
 
 
 def _prepare_state(monkeypatch):
@@ -171,7 +187,7 @@ def test_process_document_images_applies_fallback_original_for_unreadable_candid
 
 def test_process_document_images_keeps_document_flow_when_validator_raises(monkeypatch):
     _prepare_state(monkeypatch)
-    monkeypatch.setattr(app, "process_image_asset", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(app, "validate_redraw_result", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
 
     result = app.process_document_images(
         image_assets=[build_asset()],
@@ -186,7 +202,7 @@ def test_process_document_images_keeps_document_flow_when_validator_raises(monke
     assert result[0].validation_status == "error"
 
 
-def test_process_document_images_soft_accepts_best_semantic_candidate(monkeypatch):
+def test_process_document_images_uses_single_policy_soft_accept_path(monkeypatch):
     _prepare_state(monkeypatch)
     analyses = iter(
         [
@@ -209,26 +225,19 @@ def test_process_document_images_soft_accepts_best_semantic_candidate(monkeypatc
     )
     monkeypatch.setattr(app, "analyze_image", lambda *args, **kwargs: next(analyses))
 
-    class ValidationResultStub:
-        validation_passed = False
-        decision = "fallback_safe"
-        semantic_match_score = 0.72
-        text_match_score = 0.90
-        structure_match_score = 0.70
-        validator_confidence = 0.69
-        missing_labels = []
-        added_entities_detected = False
-        suspicious_reasons = ["structure_mismatch"]
-
-    def fake_process_image_asset(asset, **kwargs):
-        asset.validation_result = ValidationResultStub()
-        asset.validation_status = "failed"
-        asset.final_decision = "fallback_safe"
-        asset.final_variant = "safe"
-        asset.final_reason = "structure_mismatch"
-        return asset
-
-    monkeypatch.setattr(app, "process_image_asset", fake_process_image_asset)
+    monkeypatch.setattr(
+        app,
+        "validate_redraw_result",
+        lambda *args, **kwargs: build_validation_result(
+            validation_passed=False,
+            decision="fallback_safe",
+            semantic_match_score=0.72,
+            text_match_score=0.90,
+            structure_match_score=0.70,
+            validator_confidence=0.69,
+            suspicious_reasons=["structure_mismatch"],
+        ),
+    )
 
     result = app.process_document_images(
         image_assets=[build_asset()],
@@ -263,24 +272,22 @@ def test_process_document_images_reuses_single_client_for_image_attempts(monkeyp
         generation_clients.append(client)
         return PNG_BYTES if mode == "safe" else REDRAWN_BYTES
 
-    def fake_process_image_asset(asset, **kwargs):
-        if not hasattr(fake_process_image_asset, "calls"):
-            fake_process_image_asset.calls = 0
-        fake_process_image_asset.calls += 1
-        if fake_process_image_asset.calls == 1:
-            asset.validation_status = "failed"
-            asset.final_decision = "fallback_safe"
-            asset.final_variant = "safe"
-        else:
-            asset.validation_status = "passed"
-            asset.final_decision = "accept"
-            asset.final_variant = "redrawn"
-        return asset
+    def fake_validate_redraw_result(*args, **kwargs):
+        if not hasattr(fake_validate_redraw_result, "calls"):
+            fake_validate_redraw_result.calls = 0
+        fake_validate_redraw_result.calls += 1
+        if fake_validate_redraw_result.calls == 1:
+            return build_validation_result(
+                validation_passed=False,
+                decision="fallback_safe",
+                suspicious_reasons=["structure_mismatch"],
+            )
+        return build_validation_result()
 
     monkeypatch.setattr(app, "get_client", get_client_once)
     monkeypatch.setattr(app, "generate_image_candidate", fake_generate_image_candidate)
     monkeypatch.setattr(app, "analyze_image", lambda *args, **kwargs: next(analyses))
-    monkeypatch.setattr(app, "process_image_asset", fake_process_image_asset)
+    monkeypatch.setattr(app, "validate_redraw_result", fake_validate_redraw_result)
 
     result = app.process_document_images(
         image_assets=[build_asset()],
@@ -444,7 +451,7 @@ def test_process_document_images_uses_safe_variant_when_semantic_candidate_colla
     monkeypatch.setattr(app, "generate_image_candidate", generate_candidate)
     monkeypatch.setattr(
         app,
-        "process_image_asset",
+        "validate_redraw_result",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("post-check should not run for safe fallback")),
     )
 

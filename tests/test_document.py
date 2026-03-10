@@ -140,6 +140,23 @@ def test_resolve_final_image_bytes_prefers_selected_compare_variant():
     assert resolve_final_image_bytes(asset) == b"chosen"
 
 
+def test_resolve_final_image_bytes_returns_original_for_explicit_original_compare_choice():
+    asset = ImageAsset(
+        image_id="img_001",
+        placeholder="[[DOCX_IMAGE_img_001]]",
+        original_bytes=b"original",
+        mime_type="image/png",
+        position_index=0,
+        safe_bytes=b"safe",
+        redrawn_bytes=b"redrawn",
+        final_variant="redrawn",
+        comparison_variants={"semantic_redraw_direct": {"bytes": b"chosen"}},
+        selected_compare_variant="original",
+    )
+
+    assert resolve_final_image_bytes(asset) == b"original"
+
+
 def test_extract_document_content_from_docx_rejects_suspicious_uncompressed_archive(monkeypatch):
     monkeypatch.setattr(document, "MAX_DOCX_UNCOMPRESSED_SIZE_BYTES", 100)
 

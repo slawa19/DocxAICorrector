@@ -13,6 +13,7 @@ from constants import (
     ENV_PATH,
     SYSTEM_PROMPT_PATH,
 )
+from image_shared import clamp_score
 
 
 def load_project_dotenv() -> None:
@@ -58,10 +59,6 @@ def parse_float_env(name: str, default: float) -> float:
         return float(raw_value)
     except ValueError as exc:
         raise RuntimeError(f"Некорректное число в {name}: {raw_value}") from exc
-
-
-def clamp_score(value: float) -> float:
-    return max(0.0, min(float(value), 1.0))
 
 
 def parse_config_bool(config_data: dict[str, object], field_name: str, default: bool) -> bool:
@@ -147,7 +144,6 @@ def load_app_config() -> dict[str, object]:
         "allow_accept_with_partial_text_loss",
         False,
     )
-    prefer_structured_redraw = parse_config_bool(config_data, "prefer_structured_redraw", True)
     prefer_deterministic_reconstruction = parse_config_bool(
         config_data, "prefer_deterministic_reconstruction", True
     )
@@ -291,7 +287,6 @@ def load_app_config() -> dict[str, object]:
         "min_structure_match_score": min_structure_match_score,
         "validator_confidence_threshold": validator_confidence_threshold,
         "allow_accept_with_partial_text_loss": allow_accept_with_partial_text_loss,
-        "prefer_structured_redraw": prefer_structured_redraw,
         "prefer_deterministic_reconstruction": prefer_deterministic_reconstruction,
         "reconstruction_model": reconstruction_model,
         "enable_vision_image_analysis": enable_vision_image_analysis,

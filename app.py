@@ -45,7 +45,7 @@ from image_generation import (
     generate_image_candidate,
 )
 from image_pipeline import process_document_images as process_document_images_impl
-from image_validation import process_image_asset
+from image_validation import validate_redraw_result
 from logger import fail_critical, log_event, present_error
 from processing_runtime import (
     get_current_result_bundle,
@@ -223,7 +223,7 @@ def process_document_images(
         should_stop=_should_stop_processing,
         analyze_image_fn=analyze_image,
         generate_image_candidate_fn=generate_image_candidate,
-        process_image_asset_fn=process_image_asset,
+        validate_redraw_result_fn=validate_redraw_result,
         get_client_fn=get_client,
         log_event_fn=log_event,
         detect_image_mime_type_fn=detect_image_mime_type,

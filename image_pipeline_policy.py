@@ -28,13 +28,6 @@ def build_generation_analysis(analysis: ImageAnalysisResult) -> ImageAnalysisRes
     return replace(analysis, semantic_redraw_allowed=True)
 
 
-def resolve_generation_mode(image_mode: str, analysis: ImageAnalysisResult) -> str:
-    requested_mode = image_mode if image_mode in {"safe", "semantic_redraw_direct", "semantic_redraw_structured"} else "safe"
-    if requested_mode == "safe":
-        return requested_mode
-    return requested_mode if should_attempt_semantic_redraw(analysis, requested_mode) else "safe"
-
-
 def is_advisory_safe_fallback(analysis: ImageAnalysisResult) -> bool:
     fallback_reason = str(analysis.fallback_reason or "")
     return any(fallback_reason.startswith(prefix) for prefix in _ADVISORY_SAFE_FALLBACK_PREFIXES)

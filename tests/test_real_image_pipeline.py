@@ -95,8 +95,8 @@ def _artifact_basename(filename: str) -> str:
 
 def _write_pipeline_artifact(case: dict[str, object], candidate: bytes, metadata: dict[str, object]) -> Path:
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = ARTIFACTS_DIR / f"{_artifact_basename(str(case['filename']))}_output{_detect_output_extension(candidate)}"
-    for stale_path in ARTIFACTS_DIR.glob(f"{_artifact_basename(str(case['filename']))}_output.*"):
+    output_path = ARTIFACTS_DIR / f"{_artifact_basename(str(case['filename']))}_candidate{_detect_output_extension(candidate)}"
+    for stale_path in ARTIFACTS_DIR.glob(f"{_artifact_basename(str(case['filename']))}_candidate.*"):
         if stale_path != output_path:
             stale_path.unlink(missing_ok=True)
     output_path.write_bytes(candidate)
@@ -215,15 +215,11 @@ class TestRedrawRoutingRealInputs:
                     data=[SimpleNamespace(b64_json=base64.b64encode(PNG_STUB_BYTES).decode("ascii"), revised_prompt=None)]
                 )
 
-        monkeypatch.setattr(
-            image_generation,
-            "get_client",
-            lambda: SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient()),
-        )
+        fake_client = SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient())
         monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
         started_at = time.perf_counter()
-        candidate = image_generation.generate_image_candidate(image_bytes, analysis_result, mode=requested_mode)
+        candidate = image_generation.generate_image_candidate(image_bytes, analysis_result, mode=requested_mode, client=fake_client)
         elapsed_seconds = time.perf_counter() - started_at
 
         assert candidate

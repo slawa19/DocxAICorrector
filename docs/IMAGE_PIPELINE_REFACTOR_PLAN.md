@@ -29,6 +29,72 @@
 - legacy `free` убран из runtime-кода и основных UI/docs;
 - в артефактах подтверждены legacy suffix names вида `*_output.*`, тогда как `*_free_output.*` в текущем репозитории уже не подтверждаются.
 
+### 0.2. Дополнение по second-pass audit
+
+По дополнительному аудиту A-F подтверждены и скорректированы следующие остаточные хвосты refactor wave:
+
+- устранено дублирование low-level image helpers: MIME detection, supported-image checks, JSON parsing, score clamp и retry wrapper вынесены в `image_shared.py`;
+- удалён второй competing soft-accept path в `image_pipeline.py`: orchestration больше не переопределяет решение policy layer повторным threshold-set'ом;
+- удалён dead config `prefer_structured_redraw` из runtime config surface и тестов;
+- удалён dead field `ImageAsset.reconstruction_scene_graph`;
+- `document.resolve_final_image_bytes()` теперь имеет явный контракт для `selected_compare_variant == "original"`;
+- legacy artifact suffix в `tests/test_real_image_pipeline.py` переведён с `_output.*` на `_candidate.*`;
+- в `image_generation.py` убрано повторное mode resolution, а adaptive API fallback loops получили finite retry cap.
+
+Решения по финальному закрытию wave:
+
+- runtime полностью переведён на validator-only contract `validate_redraw_result()`; delivery application живёт только в orchestration-layer `image_pipeline.py`;
+- semantic generation требует explicit client на уровне runtime и тестов; скрытый fallback client из generation layer удалён;
+- physical package split формально отложен отдельным decision gate: текущая flat-структура признана допустимой для этого этапа, так как логические границы слоёв уже зафиксированы контрактами, DI и прямыми unit/integration tests.
+
+### 0.3. Трекинг замечаний A-F
+
+Ниже зафиксирован поштучный статус подтверждённых замечаний. Этот раздел является рабочим трекером до полного закрытия wave.
+
+#### A. Дублирование кода
+
+- `A1` `_detect_mime_type`: подтверждено, исправлено. Общий helper вынесен в `image_shared.py`, локальные копии в analysis/validation/reconstruction убраны, generation переведён на shared helper.
+- `A2` `_call_responses_create_with_retry`: подтверждено, исправлено. Общая retry-обёртка вынесена в `image_shared.py`.
+- `A3` `_parse_json_object`: подтверждено, исправлено. Общий parser вынесен в `image_shared.py`.
+- `A4` `_clamp_score`: подтверждено, исправлено. Общий clamp вынесен в `image_shared.py`; analysis/validation/config используют единый helper.
+- `A5` `_is_supported_image_bytes`: подтверждено, исправлено. Общий helper вынесен в `image_shared.py`, локальные вызовы сведены к нему.
+
+#### B. Архитектурные и контрактные замечания
+
+- `B1` двойная soft-accept семантика: подтверждено, исправлено. Конкурирующий путь `try_soft_accept_semantic_candidate()` удалён, orchestration больше не переопределяет policy outcome вторым набором порогов.
+- `B2` `semantic_soft_accept_*` не управляются config/env: подтверждено, исправлено удалением. После удаления второго soft-accept path эти ключи больше не используются runtime-кодом.
+- `B3` `prefer_structured_redraw` dead config: подтверждено, исправлено. Ключ удалён из runtime config surface и тестов.
+- `B4` `resolve_generation_mode` вызывается дважды: подтверждено, исправлено. Повторный вызов убран из generation layer, неиспользуемый export удалён из policy layer.
+- `B5` несогласованность `analysis` vs `generation_analysis`: подтверждено, исправлено по корню вместе с `B4`. Generation больше не делает повторное mode-gating на переданном analysis.
+- `B6` `reconstruction_scene_graph` никогда не заполняется: подтверждено, исправлено. Поле удалено из `ImageAsset`.
+- `B7` `hasattr(asset, "validation_result")` избыточен: подтверждено, исправлено. Проверка удалена.
+
+#### C. Тестовые пробелы
+
+- `C1` нет прямых unit-тестов на policy layer: подтверждено, исправлено. Добавлены прямые тесты на `should_attempt_semantic_redraw`, `build_generation_analysis`, `is_advisory_safe_fallback`, `is_hard_validation_failure`, `resolve_validation_delivery_outcome`.
+- `C2` нет теста на `try_soft_accept_semantic_candidate`: подтверждено, закрыто удалением объекта тестирования. Функция удалена вместе с `B1`.
+- `C3` нет теста на `score_semantic_candidate`: подтверждено, исправлено. Добавлен прямой unit-тест.
+- `C4` нет тестов на `_prepare_compare_variants` и `_build_compare_variant_candidate`: подтверждено, исправлено. Добавлены прямые unit-тесты.
+- `C5` нет теста на compare apply для `selected_variant == "original"`: подтверждено, исправлено.
+
+#### D. Потенциальные баги и edge cases
+
+- `D1` неявный fallback при `selected_compare_variant == "original"`: подтверждено, исправлено. Контракт в `resolve_final_image_bytes()` сделан явным.
+- `D2` O(width×height) BFS в background normalization: подтверждено, исправлено. Python BFS заменён на downsampled mask + `ImageDraw.floodfill()`/Pillow-пайплайн с последующим upsample, что убирает прежний Python-level performance hotspot.
+- `D3` визуально неочевидный fallback-chain в `_generate_semantic_candidate`: подтверждено, исправлено. Flow разведен на явную structured-ветку и явную creative -> direct -> structured fallback-цепочку с обязательным explicit client и отдельными логами на каждом переходе.
+- `D4` unbounded adaptation retries в `_call_images_edit/_call_images_generate`: подтверждено, исправлено. Добавлен finite cap на adaptation retries.
+
+#### E. Legacy и документационный шум
+
+- `E1` `_output.*` artifact pattern: подтверждено, исправлено. Паттерн в real-image test artifacts переименован в `_candidate.*`.
+- `E2` исторические `free` упоминания в документации: подтверждено как допустимый doc-legacy. Runtime cleanup уже выполнен; документационные упоминания сохраняются только как исторический контекст.
+
+#### F. Структурные замечания относительно целевой архитектуры
+
+- `F1` `image_validation.py` всё ещё совмещает validation и delivery application: подтверждено, исправлено. Runtime и тесты переведены на validator-only contract; delivery application остаётся только в orchestration-layer.
+- `F2` generation layer знает про config fallback client: подтверждено, исправлено. Semantic generation принимает только explicit client; скрытый fallback удалён из runtime и тестового surface.
+- `F3` физическая декомпозиция в package не начата: подтверждено, закрыто decision gate. Для этой wave package split сознательно отложен; flat-layout признан допустимым до отдельной structural wave, поскольку логические границы модулей уже стабилизированы контрактами и тестами.
+
 ---
 
 ## 1. Findings code review

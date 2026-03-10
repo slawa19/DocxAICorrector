@@ -237,6 +237,34 @@ def test_compare_apply_module_rebuilds_docx_for_selected_variants():
     assert session_state.latest_docx_bytes == rebuilt_docx_bytes
 
 
+def test_compare_apply_module_uses_original_bytes_for_original_choice():
+    session_state = SessionState(
+        latest_markdown="body",
+        latest_docx_bytes=None,
+        image_assets=[
+            ImageAsset(
+                image_id="img_001",
+                placeholder="[[DOCX_IMAGE_img_001]]",
+                original_bytes=b"original",
+                mime_type="image/png",
+                position_index=0,
+                comparison_variants={"safe": {"bytes": b"safe"}},
+            )
+        ],
+        compare_choice_img_001="original",
+    )
+
+    rebuilt_docx_bytes = compare_apply.apply_selected_compare_variants(
+        session_state,
+        convert_markdown_to_docx_bytes=lambda markdown: f"docx:{markdown}".encode("utf-8"),
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes + b":" + image_assets[0].original_bytes,
+    )
+
+    assert rebuilt_docx_bytes == b"docx:body:original"
+    assert session_state.image_assets[0].selected_compare_variant == "original"
+    assert session_state.image_assets[0].final_variant == "original"
+
+
 def test_compare_panel_applies_selected_variants_and_shows_success(monkeypatch):
     calls = []
 

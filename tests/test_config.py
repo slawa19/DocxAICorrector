@@ -30,7 +30,6 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["min_structure_match_score"] == 0.7
     assert app_config["validator_confidence_threshold"] == 0.75
     assert app_config["allow_accept_with_partial_text_loss"] is False
-    assert app_config["prefer_structured_redraw"] is True
     assert app_config["prefer_deterministic_reconstruction"] is True
     assert app_config["reconstruction_model"] == "gpt-4.1"
     assert app_config["enable_vision_image_analysis"] is True
