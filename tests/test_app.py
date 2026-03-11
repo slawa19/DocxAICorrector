@@ -58,6 +58,104 @@ def test_build_uploaded_file_token_uses_name_size_and_content_hash():
     assert token == "report.docx:3:ba7816bf8f01cfea"
 
 
+def test_build_preparation_request_marker_includes_chunk_size():
+    marker = processing_runtime.build_preparation_request_marker(UploadedFileStub("report.docx", b"abc"), chunk_size=6000)
+
+    assert marker == "report.docx:3:6000"
+
+
+def test_store_preparation_summary_uses_preparation_context_not_processing_status(monkeypatch):
+    session_state = SessionState(
+        processing_status={
+            "stage": "Ожидание запуска",
+            "detail": "stale detail",
+            "cached": False,
+            "started_at": 1.0,
+        }
+    )
+    prepared_run_context = type("PreparedRunContextStub", (), {
+        "uploaded_file_bytes": b"abc",
+        "paragraphs": ["p1", "p2"],
+        "image_assets": ["img"],
+        "source_text": "text-value",
+        "jobs": [{"target_text": "block"}],
+        "preparation_stage": "Документ подготовлен",
+        "preparation_detail": "Анализ завершён без фонового worker.",
+        "preparation_cached": True,
+        "preparation_elapsed_seconds": 1.25,
+    })()
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+
+    app._store_preparation_summary(prepared_run_context=prepared_run_context)
+
+    assert session_state.latest_preparation_summary == {
+        "stage": "Документ подготовлен",
+        "detail": "Анализ завершён без фонового worker.",
+        "file_size_bytes": 3,
+        "paragraph_count": 2,
+        "image_count": 1,
+        "source_chars": len("text-value"),
+        "block_count": 1,
+        "cached": True,
+        "elapsed": "1.2 c",
+    }
+
+
+def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatch):
+    session_state = SessionState(
+        app_start_logged=True,
+        preparation_input_marker="report.docx:3:6000",
+        preparation_failed_marker="",
+        prepared_run_context=object(),
+        processing_status={},
+        activity_feed=[],
+    )
+    uploaded_file = UploadedFileStub("report.docx", b"abc")
+    start_calls = []
+
+    class RerunRequested(Exception):
+        pass
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app, "init_session_state", lambda: None)
+    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
+    monkeypatch.setattr(app, "load_app_config", lambda: {})
+    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 7000, 3, "safe", True))
+    monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
+    monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
+    monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
+    monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
+    monkeypatch.setattr(app, "has_resettable_state", lambda **kwargs: False)
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "error", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_start_background_preparation", lambda **kwargs: start_calls.append(kwargs))
+    monkeypatch.setattr(app.st, "rerun", lambda: (_ for _ in ()).throw(RerunRequested()))
+
+    try:
+        app.main()
+    except RerunRequested:
+        pass
+    else:
+        raise AssertionError("Expected rerun after starting background preparation")
+
+    assert start_calls == [{
+        "uploaded_file": uploaded_file,
+        "upload_marker": "report.docx:3:7000",
+        "chunk_size": 7000,
+        "image_mode": "safe",
+        "enable_post_redraw_validation": True,
+    }]
+
+
 def test_sync_selected_file_context_resets_run_state_for_new_file(monkeypatch):
     session_state = SessionState(
         selected_source_token="old.docx:10",
@@ -99,8 +197,10 @@ def test_sync_selected_file_context_resets_run_state_for_new_file(monkeypatch):
     assert session_state.activity_feed == []
 
 
-def test_has_resettable_state_depends_on_restartable_source(monkeypatch):
-    session_state = SessionState(processing_outcome="stopped", restart_source={"filename": "report.docx", "storage_path": "restart.bin"})
+def test_has_resettable_state_depends_on_restartable_source(tmp_path):
+    restart_path = tmp_path / "restart.bin"
+    restart_path.write_bytes(b"abc")
+    session_state = SessionState(processing_outcome="stopped", restart_source={"filename": "report.docx", "storage_path": str(restart_path)})
 
     assert application_flow.has_resettable_state(current_result=None, session_state=session_state) is True
 
@@ -109,8 +209,10 @@ def test_has_resettable_state_depends_on_restartable_source(monkeypatch):
     assert application_flow.has_resettable_state(current_result=None, session_state=session_state) is False
 
 
-def test_derive_idle_view_state_covers_idle_paths(monkeypatch):
-    session_state = SessionState(processing_outcome="stopped", restart_source={"filename": "report.docx", "storage_path": "restart.bin"})
+def test_derive_idle_view_state_covers_idle_paths(tmp_path):
+    restart_path = tmp_path / "restart.bin"
+    restart_path.write_bytes(b"abc")
+    session_state = SessionState(processing_outcome="stopped", restart_source={"filename": "report.docx", "storage_path": str(restart_path)})
 
     assert application_flow.derive_app_idle_view_state(current_result=None, uploaded_file=object(), session_state=session_state) == "file_selected"
     assert application_flow.derive_app_idle_view_state(current_result={"docx_bytes": b"x"}, uploaded_file=None, session_state=session_state) == "completed"
@@ -144,12 +246,24 @@ def test_resolve_effective_uploaded_file_uses_completed_source_after_success():
     assert uploaded_file.getvalue() == b"abc"
 
 
-def test_has_restartable_source_does_not_materialize_restart_bytes(monkeypatch):
-    session_state = SessionState(processing_outcome="stopped", restart_source={"filename": "report.docx", "storage_path": "restart.bin"})
+def test_has_restartable_source_does_not_materialize_restart_bytes(tmp_path, monkeypatch):
+    restart_path = tmp_path / "restart.bin"
+    restart_path.write_bytes(b"abc")
+    session_state = SessionState(processing_outcome="stopped", restart_source={"filename": "report.docx", "storage_path": str(restart_path)})
     load_calls = []
+    monkeypatch.setattr(application_flow, "load_restart_source_bytes", lambda restart_source: load_calls.append(restart_source) or b"abc")
 
     assert application_flow.has_restartable_source(session_state=session_state) is True
     assert load_calls == []
+
+
+def test_has_restartable_source_returns_false_when_restart_file_was_removed(tmp_path):
+    restart_path = tmp_path / "restart.bin"
+    restart_path.write_bytes(b"abc")
+    session_state = SessionState(processing_outcome="stopped", restart_source={"filename": "report.docx", "storage_path": str(restart_path)})
+    restart_path.unlink()
+
+    assert application_flow.has_restartable_source(session_state=session_state) is False
 def test_compare_panel_applies_selected_variants_and_shows_success(monkeypatch):
     calls = []
 

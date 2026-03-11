@@ -255,29 +255,66 @@ def render_live_status(target=None) -> None:
         block_count = int(status.get("block_count") or 0)
         target_chars = int(status.get("target_chars") or 0)
         context_chars = int(status.get("context_chars") or 0)
-        title = "Идет обработка" if status.get("is_running") else "Состояние"
-        stage = escape(str(status.get("stage") or "Ожидание"))
-        detail = escape(str(status.get("detail") or ""))
-        st.markdown(
-            f"""
-            <div class="live-status-card">
-                <div class="live-status-title">{title}</div>
-                <div class="live-status-stage">{stage}</div>
-                <div class="live-status-meta">{detail}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        metric_columns = st.columns(4)
-        metric_columns[0].metric("Блок", f"{current_block}/{block_count}" if block_count else "0/0")
-        metric_columns[1].metric("Цель", f"{target_chars} симв.")
-        metric_columns[2].metric("Контекст", f"{context_chars} симв.")
-        metric_columns[3].metric("Прошло", elapsed)
+        phase = str(status.get("phase") or "processing")
+        if phase == "preparing":
+            file_size_bytes = int(status.get("file_size_bytes") or 0)
+            paragraph_count = int(status.get("paragraph_count") or 0)
+            image_count = int(status.get("image_count") or 0)
+            source_chars = int(status.get("source_chars") or 0)
+            cached = bool(status.get("cached", False))
+            progress_percent = int(max(0.0, min(float(status.get("progress") or 0.0), 1.0)) * 100)
+            preparing_lines = [
+                str(status.get("detail") or "Идет анализ файла."),
+                f"Прогресс: {progress_percent}%",
+                f"Размер: {file_size_bytes / 1024 / 1024:.2f} MB" if file_size_bytes else "Размер: -",
+                f"Абзацы: {paragraph_count}",
+                f"Изображения: {image_count}",
+                f"Символы: {source_chars}",
+                f"Блоки: {block_count}",
+                f"Источник: {'cache' if cached else 'DOCX'}",
+                f"Этап: {str(status.get('stage') or 'Подготовка документа')} | Прошло: {elapsed}",
+            ]
+            if activity_feed:
+                preparing_lines.append("Бегущие строки:")
+                preparing_lines.extend(
+                    f"{entry['time']}  {entry['message']}"
+                    for entry in activity_feed[-5:]
+                )
+            items = "".join(f'<div class="activity-feed-item">{escape(line)}</div>' for line in preparing_lines)
+            st.markdown(
+                f"""
+                <div class="activity-feed">
+                    <div class="activity-feed-title">Последний анализ файла</div>
+                    <div class="activity-feed-items">{items}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            title = "Идет обработка" if status.get("is_running") else "Состояние"
+            stage = escape(str(status.get("stage") or "Ожидание"))
+            detail = escape(str(status.get("detail") or ""))
+            st.markdown(
+                f"""
+                <div class="live-status-card">
+                    <div class="live-status-title">{title}</div>
+                    <div class="live-status-stage">{stage}</div>
+                    <div class="live-status-meta">{detail}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            metric_columns = st.columns(4)
+            metric_columns[0].metric("Блок", f"{current_block}/{block_count}" if block_count else "0/0")
+            metric_columns[1].metric("Цель", f"{target_chars} симв.")
+            metric_columns[2].metric("Контекст", f"{context_chars} симв.")
+            metric_columns[3].metric("Прошло", elapsed)
         progress_value = float(status.get("progress") or 0.0)
-        st.progress(progress_value)
-        st.caption("Если текущий блок обрабатывается долго, это нормально: ответ OpenAI может занимать десятки секунд.")
+        if phase != "preparing":
+            st.progress(progress_value)
+            st.caption("Если текущий блок обрабатывается долго, это нормально: ответ OpenAI может занимать десятки секунд.")
 
-        if activity_feed:
+        if activity_feed and phase != "preparing":
             items = "".join(
                 f"<div class=\"activity-feed-item\">{escape(entry['time'])}  {escape(entry['message'])}</div>"
                 for entry in activity_feed[-5:]
@@ -285,12 +322,44 @@ def render_live_status(target=None) -> None:
             st.markdown(
                 f"""
                 <div class="activity-feed">
-                    <div class="activity-feed-title">Последние события</div>
+                    <div class="activity-feed-title">Бегущие строки</div>
                     <div class="activity-feed-items">{items}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
+
+
+def render_preparation_summary(summary: dict[str, object] | None, target=None) -> None:
+    if not summary:
+        return
+
+    sink = target if target is not None else st
+    with sink.container():
+        file_size_bytes = int(summary.get("file_size_bytes") or 0)
+        source_label = "cache" if bool(summary.get("cached", False)) else "DOCX"
+        stage = str(summary.get("stage") or "Документ подготовлен")
+        elapsed = str(summary.get("elapsed") or "")
+        summary_lines = [
+            str(summary.get("detail") or "Анализ завершён."),
+            f"Размер: {file_size_bytes / 1024 / 1024:.2f} MB" if file_size_bytes else "Размер: -",
+            f"Абзацы: {int(summary.get('paragraph_count') or 0)}",
+            f"Изображения: {int(summary.get('image_count') or 0)}",
+            f"Символы: {int(summary.get('source_chars') or 0)}",
+            f"Блоки: {int(summary.get('block_count') or 0)}",
+            f"Источник: {source_label}",
+            f"Этап: {stage} | Подготовка заняла: {elapsed}" if elapsed else f"Этап: {stage}",
+        ]
+        items = "".join(f'<div class="activity-feed-item">{escape(line)}</div>' for line in summary_lines)
+        st.markdown(
+            f"""
+            <div class="activity-feed">
+                <div class="activity-feed-title">Последний анализ файла</div>
+                <div class="activity-feed-items">{items}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 def render_run_log(target=None) -> None:
@@ -309,7 +378,7 @@ def render_run_log(target=None) -> None:
             st.progress(progress_value)
             status = st.session_state.processing_status
             st.caption(f"Этап: {status['stage']} | {status['detail']}")
-            for entry in st.session_state.run_log:
+            for entry in reversed(st.session_state.run_log):
                 st.write(
                     f"[{entry['status']}] Блок {entry['block_index']}/{entry['block_count']} | "
                     f"цель: {entry['target_chars']} симв. | контекст: {entry['context_chars']} симв. | {entry['details']}"
@@ -450,7 +519,7 @@ def render_sidebar(config: dict[str, object]) -> tuple[str, int, int, str, bool]
     return model, chunk_size, max_retries, image_mode, enable_post_redraw_validation
 
 
-def render_markdown_preview(target=None, *, title: str) -> None:
+def render_markdown_preview(target=None, *, title: str, focus_latest: bool = False) -> None:
     blocks = st.session_state.processed_block_markdowns
     if not blocks:
         return
@@ -459,6 +528,8 @@ def render_markdown_preview(target=None, *, title: str) -> None:
     option_count = len(blocks)
     st.session_state.markdown_preview_render_nonce += 1
     widget_key_base = f"markdown_preview_{st.session_state.markdown_preview_render_nonce}"
+    if focus_latest and option_count:
+        st.session_state.markdown_preview_block_index = option_count
     if st.session_state.markdown_preview_block_index > option_count:
         st.session_state.markdown_preview_block_index = option_count
 
@@ -519,7 +590,7 @@ def render_result_bundle(
         use_container_width=True,
     )
     if preview_title:
-        render_markdown_preview(title=preview_title)
+        render_markdown_preview(title=preview_title, focus_latest=True)
 
 
 def render_partial_result() -> None:
@@ -528,4 +599,4 @@ def render_partial_result() -> None:
         return
 
     st.warning("Доступен промежуточный Markdown-результат последнего запуска.")
-    render_markdown_preview(title="Текущий Markdown")
+    render_markdown_preview(title="Текущий Markdown", focus_latest=True)

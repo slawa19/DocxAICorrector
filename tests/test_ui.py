@@ -27,6 +27,14 @@ class FakeMetricTarget:
         self.calls.append((label, value))
 
 
+class FakeProgressBar:
+    def __init__(self):
+        self.values = []
+
+    def __call__(self, value):
+        self.values.append(value)
+
+
 def test_render_markdown_preview_uses_unique_widget_keys_on_repeat(monkeypatch):
     session_state = SessionState(
         processed_block_markdowns=["one", "two"],
@@ -57,6 +65,30 @@ def test_render_markdown_preview_uses_unique_widget_keys_on_repeat(monkeypatch):
     assert select_keys == ["markdown_preview_1_select", "markdown_preview_2_select"]
     assert text_keys == ["markdown_preview_1_text", "markdown_preview_2_text"]
     assert session_state.markdown_preview_render_nonce == 2
+
+
+def test_render_markdown_preview_focuses_latest_block_when_requested(monkeypatch):
+    session_state = SessionState(
+        processed_block_markdowns=["one", "two", "three"],
+        markdown_preview_block_index=1,
+        markdown_preview_render_nonce=0,
+    )
+    select_calls = []
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        ui.st,
+        "selectbox",
+        lambda label, options, index, key: select_calls.append((tuple(options), index, key)) or options[index],
+    )
+    monkeypatch.setattr(ui.st, "text_area", lambda *args, **kwargs: None)
+
+    ui.render_markdown_preview(FakeTarget(), title="Текущий Markdown", focus_latest=True)
+
+    assert session_state.markdown_preview_block_index == 3
+    assert select_calls == [((1, 2, 3), 2, "markdown_preview_1_select")]
 
 
 def test_render_sidebar_returns_image_settings(monkeypatch):
@@ -233,6 +265,76 @@ def test_render_image_validation_summary_shows_metrics(monkeypatch):
     ]
 
 
+def test_render_live_status_shows_cache_source_for_preparation(monkeypatch):
+    session_state = SessionState(
+        processing_status={
+            "is_running": True,
+            "phase": "preparing",
+            "stage": "Подготовка документа",
+            "detail": "Использую кэш подготовки для текущего файла.",
+            "file_size_bytes": 1048576,
+            "paragraph_count": 12,
+            "image_count": 2,
+            "source_chars": 5000,
+            "block_count": 4,
+            "cached": True,
+            "progress": 0.9,
+            "started_at": None,
+        },
+        activity_feed=[{"time": "10:00:00", "message": "[Анализ] Разбор DOCX: Ищу абзацы."}],
+    )
+    markdowns = []
+    captions = []
+    progress_calls = []
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "markdown", lambda text, unsafe_allow_html=True: markdowns.append(text))
+    monkeypatch.setattr(ui.st, "progress", lambda value: progress_calls.append(value))
+    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
+
+    ui.render_live_status(FakeTarget())
+
+    assert any("Последний анализ файла" in text for text in markdowns)
+    assert any("Использую кэш подготовки для текущего файла." in text for text in markdowns)
+    assert any("Прогресс: 90%" in text for text in markdowns)
+    assert any("Размер: 1.00 MB" in text for text in markdowns)
+    assert any("Источник: cache" in text for text in markdowns)
+    assert any("Бегущие строки:" in text for text in markdowns)
+    assert any("10:00:00  [Анализ] Разбор DOCX: Ищу абзацы." in text for text in markdowns)
+    assert not any("<div class=\"activity-feed-title\">Бегущие строки</div>" in text for text in markdowns)
+    assert progress_calls == []
+    assert captions == []
+
+
+def test_render_preparation_summary_shows_persistent_metrics(monkeypatch):
+    summary = {
+        "stage": "Документ подготовлен",
+        "detail": "Анализ завершён. Можно запускать обработку.",
+        "file_size_bytes": 1048576,
+        "paragraph_count": 12,
+        "image_count": 2,
+        "source_chars": 5000,
+        "block_count": 4,
+        "cached": True,
+        "elapsed": "1.2 c",
+    }
+    markdowns = []
+
+    monkeypatch.setattr(ui.st, "markdown", lambda text, unsafe_allow_html=True: markdowns.append(text))
+
+    ui.render_preparation_summary(summary, FakeTarget())
+
+    assert any("Последний анализ файла" in text for text in markdowns)
+    assert any("Анализ завершён. Можно запускать обработку." in text for text in markdowns)
+    assert any("Размер: 1.00 MB" in text for text in markdowns)
+    assert any("Абзацы: 12" in text for text in markdowns)
+    assert any("Изображения: 2" in text for text in markdowns)
+    assert any("Символы: 5000" in text for text in markdowns)
+    assert any("Блоки: 4" in text for text in markdowns)
+    assert any("Источник: cache" in text for text in markdowns)
+    assert any("Этап: Документ подготовлен | Подготовка заняла: 1.2 c" in text for text in markdowns)
+
+
 def test_render_partial_result_shows_preview_instead_of_download(monkeypatch):
     session_state = SessionState(
         latest_markdown="chunk-1",
@@ -249,3 +351,29 @@ def test_render_partial_result_shows_preview_instead_of_download(monkeypatch):
 
     assert warnings == ["Доступен промежуточный Markdown-результат последнего запуска."]
     assert previews == ["Текущий Markdown"]
+
+
+def test_render_run_log_shows_newest_entries_first(monkeypatch):
+    session_state = SessionState(
+        run_log=[
+            {"status": "OK", "block_index": 1, "block_count": 3, "target_chars": 10, "context_chars": 2, "details": "first"},
+            {"status": "OK", "block_index": 2, "block_count": 3, "target_chars": 12, "context_chars": 3, "details": "second"},
+        ],
+        processing_status={"stage": "Блок обработан", "detail": "Последний блок готов."},
+        last_log_hint="hint",
+    )
+    writes = []
+    captions = []
+    progress_calls = []
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(ui.st, "progress", lambda value: progress_calls.append(value))
+    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
+    monkeypatch.setattr(ui.st, "write", lambda text: writes.append(text))
+
+    ui.render_run_log(FakeTarget())
+
+    assert progress_calls == [2 / 3]
+    assert writes[0].endswith("second")
+    assert writes[1].endswith("first")

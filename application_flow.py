@@ -1,5 +1,7 @@
 import logging
+import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from preparation import prepare_document_for_processing
 from processing_runtime import (
@@ -22,6 +24,16 @@ class PreparedRunContext:
     image_assets: list
     jobs: list[dict[str, str | int]]
     prepared_source_key: str
+    preparation_stage: str
+    preparation_detail: str
+    preparation_cached: bool
+    preparation_elapsed_seconds: float
+
+
+def _emit_preparation_progress(progress_callback, *, stage: str, detail: str, progress: float, metrics: dict[str, object] | None = None) -> None:
+    if progress_callback is None:
+        return
+    progress_callback(stage=stage, detail=detail, progress=progress, metrics=metrics or {})
 
 
 def sync_selected_file_context(*, session_state, reset_run_state_fn, uploaded_file_token: str) -> None:
@@ -75,6 +87,15 @@ def should_log_document_prepared(*, session_state, prepared_source_key: str) -> 
     return session_state.get("prepared_source_key", "") != prepared_source_key
 
 
+def consume_completed_source_if_used(*, session_state, uploaded_file_token: str) -> None:
+    completed_source = session_state.get("completed_source")
+    if not completed_source:
+        return
+    if str(completed_source.get("token", "")) != uploaded_file_token:
+        return
+    session_state.completed_source = None
+
+
 def has_restartable_source(
     *,
     session_state,
@@ -84,7 +105,11 @@ def has_restartable_source(
         return False
     if not has_restartable_outcome(session_state.get("processing_outcome")):
         return False
-    return bool(str(restart_source.get("filename", "")) and str(restart_source.get("storage_path", "")))
+    source_name = str(restart_source.get("filename", ""))
+    storage_path = str(restart_source.get("storage_path", ""))
+    if not source_name or not storage_path:
+        return False
+    return Path(storage_path).is_file()
 
 
 def has_resettable_state(
@@ -150,7 +175,9 @@ def prepare_run_context(
     resolve_uploaded_filename_fn=None,
     read_uploaded_file_bytes_fn=None,
     build_uploaded_file_token_fn=None,
+    progress_callback=None,
 ) -> PreparedRunContext:
+    started_at = time.perf_counter()
     if prepare_document_for_processing_fn is None:
         prepare_document_for_processing_fn = prepare_document_for_processing
     if resolve_uploaded_filename_fn is None:
@@ -160,8 +187,23 @@ def prepare_run_context(
     if build_uploaded_file_token_fn is None:
         build_uploaded_file_token_fn = build_uploaded_file_token
     uploaded_filename = resolve_uploaded_filename_fn(uploaded_file)
+    _emit_preparation_progress(
+        progress_callback,
+        stage="Чтение файла",
+        detail=f"Читаю содержимое {uploaded_filename}",
+        progress=0.05,
+    )
     uploaded_file_bytes = read_uploaded_file_bytes_fn(uploaded_file)
     uploaded_file_token = build_uploaded_file_token_fn(source_name=uploaded_filename, source_bytes=uploaded_file_bytes)
+    _emit_preparation_progress(
+        progress_callback,
+        stage="Файл прочитан",
+        detail="Формирую идентификатор источника и подготавливаю анализ.",
+        progress=0.15,
+        metrics={
+            "file_size_bytes": len(uploaded_file_bytes),
+        },
+    )
     sync_selected_file_context(
         session_state=session_state,
         reset_run_state_fn=reset_run_state_fn,
@@ -174,7 +216,9 @@ def prepare_run_context(
         uploaded_file_token=uploaded_file_token,
         chunk_size=chunk_size,
         session_state=session_state,
+        progress_callback=progress_callback,
     )
+    consume_completed_source_if_used(session_state=session_state, uploaded_file_token=uploaded_file_token)
     if not prepared_document.jobs:
         fail_critical_fn("no_jobs_built", "Не удалось собрать ни одного блока для обработки.", filename=uploaded_filename)
     if any(not str(job["target_text"]).strip() for job in prepared_document.jobs):
@@ -194,6 +238,21 @@ def prepare_run_context(
             enable_post_redraw_validation=enable_post_redraw_validation,
         )
         session_state.prepared_source_key = prepared_document.prepared_source_key
+    _emit_preparation_progress(
+        progress_callback,
+        stage="Документ подготовлен",
+        detail="Анализ завершён. Можно запускать обработку.",
+        progress=1.0,
+        metrics={
+            "file_size_bytes": len(uploaded_file_bytes),
+            "paragraph_count": len(prepared_document.paragraphs),
+            "image_count": len(prepared_document.image_assets),
+            "source_chars": len(prepared_document.source_text),
+            "block_count": len(prepared_document.jobs),
+            "cached": prepared_document.cached,
+        },
+    )
+    elapsed_seconds = max(0.0, time.perf_counter() - started_at)
 
     return PreparedRunContext(
         uploaded_filename=uploaded_filename,
@@ -204,4 +263,88 @@ def prepare_run_context(
         image_assets=prepared_document.image_assets,
         jobs=prepared_document.jobs,
         prepared_source_key=prepared_document.prepared_source_key,
+        preparation_stage="Документ подготовлен",
+        preparation_detail="Анализ завершён. Можно запускать обработку.",
+        preparation_cached=prepared_document.cached,
+        preparation_elapsed_seconds=elapsed_seconds,
+    )
+
+
+def prepare_run_context_for_background(
+    *,
+    uploaded_file,
+    chunk_size: int,
+    image_mode: str,
+    enable_post_redraw_validation: bool,
+    prepare_document_for_processing_fn=None,
+    resolve_uploaded_filename_fn=None,
+    read_uploaded_file_bytes_fn=None,
+    build_uploaded_file_token_fn=None,
+    progress_callback=None,
+) -> PreparedRunContext:
+    started_at = time.perf_counter()
+    if prepare_document_for_processing_fn is None:
+        prepare_document_for_processing_fn = prepare_document_for_processing
+    if resolve_uploaded_filename_fn is None:
+        resolve_uploaded_filename_fn = resolve_uploaded_filename
+    if read_uploaded_file_bytes_fn is None:
+        read_uploaded_file_bytes_fn = read_uploaded_file_bytes
+    if build_uploaded_file_token_fn is None:
+        build_uploaded_file_token_fn = build_uploaded_file_token
+    uploaded_filename = resolve_uploaded_filename_fn(uploaded_file)
+    _emit_preparation_progress(
+        progress_callback,
+        stage="Чтение файла",
+        detail=f"Читаю содержимое {uploaded_filename}",
+        progress=0.05,
+    )
+    uploaded_file_bytes = read_uploaded_file_bytes_fn(uploaded_file)
+    uploaded_file_token = build_uploaded_file_token_fn(source_name=uploaded_filename, source_bytes=uploaded_file_bytes)
+    _emit_preparation_progress(
+        progress_callback,
+        stage="Файл прочитан",
+        detail="Формирую идентификатор источника и подготавливаю анализ.",
+        progress=0.15,
+        metrics={"file_size_bytes": len(uploaded_file_bytes)},
+    )
+    prepared_document = prepare_document_for_processing_fn(
+        uploaded_filename=uploaded_filename,
+        source_bytes=uploaded_file_bytes,
+        uploaded_file_token=uploaded_file_token,
+        chunk_size=chunk_size,
+        session_state=None,
+        progress_callback=progress_callback,
+    )
+    if not prepared_document.jobs:
+        raise ValueError("Не удалось собрать ни одного блока для обработки.")
+    if any(not str(job["target_text"]).strip() for job in prepared_document.jobs):
+        raise ValueError("Обнаружен пустой целевой блок перед отправкой в модель.")
+    _emit_preparation_progress(
+        progress_callback,
+        stage="Документ подготовлен",
+        detail="Анализ завершён. Можно запускать обработку.",
+        progress=1.0,
+        metrics={
+            "file_size_bytes": len(uploaded_file_bytes),
+            "paragraph_count": len(prepared_document.paragraphs),
+            "image_count": len(prepared_document.image_assets),
+            "source_chars": len(prepared_document.source_text),
+            "block_count": len(prepared_document.jobs),
+            "cached": prepared_document.cached,
+        },
+    )
+    elapsed_seconds = max(0.0, time.perf_counter() - started_at)
+    return PreparedRunContext(
+        uploaded_filename=uploaded_filename,
+        uploaded_file_bytes=uploaded_file_bytes,
+        uploaded_file_token=uploaded_file_token,
+        source_text=prepared_document.source_text,
+        paragraphs=prepared_document.paragraphs,
+        image_assets=prepared_document.image_assets,
+        jobs=prepared_document.jobs,
+        prepared_source_key=prepared_document.prepared_source_key,
+        preparation_stage="Документ подготовлен",
+        preparation_detail="Анализ завершён. Можно запускать обработку.",
+        preparation_cached=prepared_document.cached,
+        preparation_elapsed_seconds=elapsed_seconds,
     )

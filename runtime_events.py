@@ -43,6 +43,18 @@ class WorkerCompleteEvent:
     outcome: str
 
 
+@dataclass(frozen=True)
+class PreparationCompleteEvent:
+    prepared_run_context: object
+    upload_marker: str
+
+
+@dataclass(frozen=True)
+class PreparationFailedEvent:
+    upload_marker: str
+    error_message: str
+
+
 ProcessingEvent = (
     SetStateEvent
     | ResetImageStateEvent
@@ -52,4 +64,6 @@ ProcessingEvent = (
     | AppendLogEvent
     | AppendImageLogEvent
     | WorkerCompleteEvent
+    | PreparationCompleteEvent
+    | PreparationFailedEvent
 )

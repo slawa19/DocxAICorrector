@@ -1,5 +1,8 @@
 from processing_runtime import (
     BackgroundRuntime,
+    build_preparation_request_marker,
+    build_uploaded_file_selection_marker,
+    drain_preparation_events as drain_preparation_events_impl,
     drain_processing_events as drain_processing_events_impl,
     emit_or_apply_activity as emit_or_apply_activity_impl,
     emit_or_apply_finalize as emit_or_apply_finalize_impl,
@@ -8,8 +11,10 @@ from processing_runtime import (
     emit_or_apply_log as emit_or_apply_log_impl,
     emit_or_apply_state as emit_or_apply_state_impl,
     emit_or_apply_status as emit_or_apply_status_impl,
+    preparation_worker_is_active as preparation_worker_is_active_impl,
     processing_worker_is_active as processing_worker_is_active_impl,
     request_processing_stop as request_processing_stop_impl,
+    start_background_preparation as start_background_preparation_impl,
     start_background_processing as start_background_processing_impl,
 )
 from state import (
@@ -66,12 +71,39 @@ def drain_processing_events() -> None:
     )
 
 
+def drain_preparation_events() -> None:
+    drain_preparation_events_impl(
+        reset_run_state=reset_run_state,
+        set_processing_status=set_processing_status,
+        finalize_processing_status=finalize_processing_status,
+        push_activity=push_activity,
+    )
+
+
+def preparation_worker_is_active() -> bool:
+    return preparation_worker_is_active_impl()
+
+
 def processing_worker_is_active() -> bool:
     return processing_worker_is_active_impl()
 
 
 def request_processing_stop() -> None:
     request_processing_stop_impl()
+
+
+def start_background_preparation(*, worker_target, uploaded_file, upload_marker: str, chunk_size: int, image_mode: str, enable_post_redraw_validation: bool) -> None:
+    start_background_preparation_impl(
+        worker_target=worker_target,
+        reset_run_state=reset_run_state,
+        push_activity=push_activity,
+        set_processing_status=set_processing_status,
+        uploaded_file=uploaded_file,
+        upload_marker=upload_marker,
+        chunk_size=chunk_size,
+        image_mode=image_mode,
+        enable_post_redraw_validation=enable_post_redraw_validation,
+    )
 
 
 def start_background_processing(*, worker_target, uploaded_filename: str, uploaded_token: str, source_bytes: bytes, jobs, image_assets, image_mode: str, app_config: dict[str, object], model: str, max_retries: int) -> None:

@@ -67,11 +67,44 @@ def test_init_session_state_initializes_image_processing_summary(monkeypatch):
     assert session_state.processing_worker is None
     assert session_state.processing_event_queue is None
     assert session_state.processing_stop_event is None
+    assert session_state.preparation_worker is None
+    assert session_state.preparation_event_queue is None
+    assert session_state.prepared_run_context is None
+    assert session_state.latest_preparation_summary is None
+    assert session_state.preparation_input_marker == ""
+    assert session_state.preparation_failed_marker == ""
     assert session_state.processing_outcome == "idle"
     assert session_state.prepared_source_key == ""
     assert session_state.preparation_cache == {}
+    assert session_state.processing_status["cached"] is False
     assert session_state.restart_source is None
     assert session_state.completed_source is None
+
+
+def test_set_processing_status_updates_preparation_metrics(monkeypatch):
+    session_state = SessionState()
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    state.init_session_state()
+    state.set_processing_status(
+        stage="Разбор DOCX",
+        detail="detail",
+        progress=0.5,
+        is_running=True,
+        phase="preparing",
+        file_size_bytes=1024,
+        paragraph_count=12,
+        image_count=3,
+        source_chars=5000,
+        cached=True,
+    )
+
+    assert session_state.processing_status["phase"] == "preparing"
+    assert session_state.processing_status["file_size_bytes"] == 1024
+    assert session_state.processing_status["paragraph_count"] == 12
+    assert session_state.processing_status["image_count"] == 3
+    assert session_state.processing_status["source_chars"] == 5000
+    assert session_state.processing_status["cached"] is True
 
 
 def test_reset_run_state_can_clear_restart_source(monkeypatch):

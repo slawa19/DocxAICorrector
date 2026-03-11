@@ -12,12 +12,18 @@ from workflow_state import ProcessingOutcome
 def _default_processing_status() -> dict[str, object]:
     return {
         "is_running": False,
+        "phase": "processing",
         "stage": "Ожидание запуска",
         "detail": "Загрузите файл и запустите обработку.",
         "current_block": 0,
         "block_count": 0,
         "target_chars": 0,
         "context_chars": 0,
+        "file_size_bytes": 0,
+        "paragraph_count": 0,
+        "image_count": 0,
+        "source_chars": 0,
+        "cached": False,
         "started_at": None,
         "last_update_at": None,
         "progress": 0.0,
@@ -57,6 +63,12 @@ def init_session_state() -> None:
     st.session_state.setdefault("processing_worker", None)
     st.session_state.setdefault("processing_event_queue", None)
     st.session_state.setdefault("processing_stop_event", None)
+    st.session_state.setdefault("preparation_worker", None)
+    st.session_state.setdefault("preparation_event_queue", None)
+    st.session_state.setdefault("prepared_run_context", None)
+    st.session_state.setdefault("latest_preparation_summary", None)
+    st.session_state.setdefault("preparation_input_marker", "")
+    st.session_state.setdefault("preparation_failed_marker", "")
     st.session_state.setdefault("processing_outcome", ProcessingOutcome.IDLE.value)
     st.session_state.setdefault("prepared_source_key", "")
     st.session_state.setdefault("preparation_cache", {})
@@ -86,6 +98,12 @@ def reset_run_state(*, keep_restart_source: bool = True) -> None:
     st.session_state.processing_worker = None
     st.session_state.processing_event_queue = None
     st.session_state.processing_stop_event = None
+    st.session_state.preparation_worker = None
+    st.session_state.preparation_event_queue = None
+    st.session_state.prepared_run_context = None
+    st.session_state.latest_preparation_summary = None
+    st.session_state.preparation_input_marker = ""
+    st.session_state.preparation_failed_marker = ""
     st.session_state.processing_outcome = ProcessingOutcome.IDLE.value
     st.session_state.prepared_source_key = ""
     st.session_state.preparation_cache = {}
@@ -110,12 +128,20 @@ def set_processing_status(
     block_count: int = 0,
     target_chars: int = 0,
     context_chars: int = 0,
+    file_size_bytes: int | None = None,
+    paragraph_count: int | None = None,
+    image_count: int | None = None,
+    source_chars: int | None = None,
+    cached: bool | None = None,
     progress: float = 0.0,
     is_running: bool | None = None,
+    phase: str | None = None,
 ) -> None:
     status = dict(st.session_state.processing_status)
     if is_running is not None:
         status["is_running"] = is_running
+    if phase is not None:
+        status["phase"] = phase
     status.update(
         {
             "stage": stage,
@@ -128,6 +154,16 @@ def set_processing_status(
             "progress": max(0.0, min(progress, 1.0)),
         }
     )
+    if file_size_bytes is not None:
+        status["file_size_bytes"] = file_size_bytes
+    if paragraph_count is not None:
+        status["paragraph_count"] = paragraph_count
+    if image_count is not None:
+        status["image_count"] = image_count
+    if source_chars is not None:
+        status["source_chars"] = source_chars
+    if cached is not None:
+        status["cached"] = cached
     if status["is_running"] and not status.get("started_at"):
         status["started_at"] = time.time()
     st.session_state.processing_status = status
