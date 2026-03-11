@@ -74,7 +74,7 @@ def request_processing_stop() -> None:
     request_processing_stop_impl()
 
 
-def start_background_processing(*, worker_target, uploaded_filename: str, uploaded_token: str, jobs, image_assets, image_mode: str, app_config: dict[str, object], model: str, max_retries: int) -> None:
+def start_background_processing(*, worker_target, uploaded_filename: str, uploaded_token: str, source_bytes: bytes, jobs, image_assets, image_mode: str, app_config: dict[str, object], model: str, max_retries: int) -> None:
     start_background_processing_impl(
         worker_target=worker_target,
         reset_run_state=reset_run_state,
@@ -82,6 +82,7 @@ def start_background_processing(*, worker_target, uploaded_filename: str, upload
         set_processing_status=set_processing_status,
         uploaded_filename=uploaded_filename,
         uploaded_token=uploaded_token,
+        source_bytes=source_bytes,
         jobs=jobs,
         image_assets=image_assets,
         image_mode=image_mode,

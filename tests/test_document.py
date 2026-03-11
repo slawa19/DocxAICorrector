@@ -12,6 +12,7 @@ from document import (
     build_semantic_blocks,
     extract_document_content_from_docx,
     inspect_placeholder_integrity,
+    resolve_image_insertions,
     resolve_final_image_bytes,
     reinsert_inline_images,
 )
@@ -121,6 +122,42 @@ def test_reinsert_inline_images_replaces_placeholder_with_picture():
     assert updated_doc.inline_shapes[0].height == 914400
 
 
+def test_reinsert_inline_images_in_compare_all_mode_inserts_all_generated_variants():
+    doc = Document()
+    doc.add_paragraph("До")
+    doc.add_paragraph("[[DOCX_IMAGE_img_001]]")
+    doc.add_paragraph("После")
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    updated_bytes = reinsert_inline_images(
+        buffer.getvalue(),
+        [
+            ImageAsset(
+                image_id="img_001",
+                placeholder="[[DOCX_IMAGE_img_001]]",
+                original_bytes=b"original",
+                mime_type="image/png",
+                position_index=0,
+                width_emu=914400,
+                height_emu=914400,
+                validation_status="compared",
+                comparison_variants={
+                    "safe": {"bytes": PNG_BYTES},
+                    "semantic_redraw_direct": {"bytes": PNG_BYTES},
+                    "semantic_redraw_structured": {"bytes": PNG_BYTES},
+                },
+            )
+        ],
+    )
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    assert len(updated_doc.inline_shapes) == 3
+    assert "Вариант 1: Просто улучшить" in updated_doc.paragraphs[1].text
+    assert "Вариант 2: Креативная AI-перерисовка" in updated_doc.paragraphs[1].text
+    assert "Вариант 3: Структурная AI-перерисовка" in updated_doc.paragraphs[1].text
+
+
 def test_resolve_final_image_bytes_prefers_selected_compare_variant():
     asset = ImageAsset(
         image_id="img_001",
@@ -155,6 +192,28 @@ def test_resolve_final_image_bytes_returns_original_for_explicit_original_compar
     )
 
     assert resolve_final_image_bytes(asset) == b"original"
+
+
+def test_resolve_image_insertions_returns_all_compare_all_variants_before_single_final_choice():
+    asset = ImageAsset(
+        image_id="img_001",
+        placeholder="[[DOCX_IMAGE_img_001]]",
+        original_bytes=b"original",
+        mime_type="image/png",
+        position_index=0,
+        validation_status="compared",
+        comparison_variants={
+            "safe": {"bytes": b"safe"},
+            "semantic_redraw_direct": {"bytes": b"direct"},
+            "semantic_redraw_structured": {"bytes": b"structured"},
+        },
+    )
+
+    assert resolve_image_insertions(asset) == [
+        ("Вариант 1: Просто улучшить", b"safe"),
+        ("Вариант 2: Креативная AI-перерисовка", b"direct"),
+        ("Вариант 3: Структурная AI-перерисовка", b"structured"),
+    ]
 
 
 def test_extract_document_content_from_docx_rejects_suspicious_uncompressed_archive(monkeypatch):

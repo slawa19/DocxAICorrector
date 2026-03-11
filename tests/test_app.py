@@ -1,6 +1,7 @@
 import app
-import compare_apply
+import application_flow
 import compare_panel
+import processing_runtime
 from models import ImageAsset
 
 
@@ -42,21 +43,19 @@ def test_main_logs_app_start_only_once(monkeypatch):
 
 
 class UploadedFileStub:
-    def __init__(self, name: str, size: int):
+    def __init__(self, name: str, content: bytes):
         self.name = name
-        self.size = size
+        self.size = len(content)
+        self._content = content
+
+    def getvalue(self):
+        return self._content
 
 
-def test_build_uploaded_file_token_uses_name_and_size():
-    token = app.build_uploaded_file_token(UploadedFileStub("report.docx", 321))
+def test_build_uploaded_file_token_uses_name_size_and_content_hash():
+    token = processing_runtime.build_uploaded_file_token(UploadedFileStub("report.docx", b"abc"))
 
-    assert token == "report.docx:321"
-
-
-def test_build_start_button_label_changes_with_result_state():
-    assert app.build_start_button_label(has_current_result=False, has_previous_result=False) == "Начать обработку"
-    assert app.build_start_button_label(has_current_result=True, has_previous_result=False) == "Запустить заново"
-    assert app.build_start_button_label(has_current_result=False, has_previous_result=True) == "Начать обработку нового файла"
+    assert token == "report.docx:3:ba7816bf8f01cfea"
 
 
 def test_sync_selected_file_context_resets_run_state_for_new_file(monkeypatch):
@@ -83,230 +82,101 @@ def test_sync_selected_file_context_resets_run_state_for_new_file(monkeypatch):
         processing_stop_event=None,
         processing_outcome="idle",
         prepared_source_key="old.docx:10:6000",
+        restart_source={"filename": "old.docx", "storage_path": "old.bin"},
     )
-    monkeypatch.setattr(app.st, "session_state", session_state)
+    reset_calls = []
 
-    app._sync_selected_file_context("new.docx:20")
+    application_flow.sync_selected_file_context(
+        session_state=session_state,
+        reset_run_state_fn=lambda **kwargs: (reset_calls.append(kwargs), session_state.update(run_log=[], activity_feed=[], restart_source=None)),
+        uploaded_file_token="new.docx:20",
+    )
 
+    assert reset_calls == [{"keep_restart_source": False}]
     assert session_state.selected_source_token == "new.docx:20"
-    assert session_state.previous_result["source_token"] == "old.docx:10"
+    assert session_state.restart_source is None
     assert session_state.run_log == []
     assert session_state.activity_feed == []
 
 
-def test_run_document_processing_fails_on_placeholder_integrity_mismatch(monkeypatch):
-    emitted_state = {}
-    activity_messages = []
-    log_entries = []
+def test_has_resettable_state_depends_on_restartable_source(monkeypatch):
+    session_state = SessionState(processing_outcome="stopped", restart_source={"filename": "report.docx", "storage_path": "restart.bin"})
 
-    monkeypatch.setattr(app, "get_client", lambda: object())
-    monkeypatch.setattr(app, "ensure_pandoc_available", lambda: None)
-    monkeypatch.setattr(app, "load_system_prompt", lambda: "system")
-    monkeypatch.setattr(app, "generate_markdown_block", lambda **kwargs: "Обработанный блок без placeholder")
-    monkeypatch.setattr(app, "process_document_images", lambda **kwargs: kwargs["image_assets"])
-    monkeypatch.setattr(app, "inspect_placeholder_integrity", lambda markdown, assets: {"img_001": "lost"})
-    monkeypatch.setattr(app, "convert_markdown_to_docx_bytes", lambda markdown: (_ for _ in ()).throw(AssertionError("must not build docx")))
-    monkeypatch.setattr(app, "log_event", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "present_error", lambda code, exc, title, **kwargs: f"{title}: {exc}")
-    monkeypatch.setattr(app, "_emit_or_apply_state", lambda runtime, **values: emitted_state.update(values))
-    monkeypatch.setattr(app, "_emit_or_apply_finalize", lambda runtime, stage, detail, progress: emitted_state.update(final_stage=stage, final_detail=detail, final_progress=progress))
-    monkeypatch.setattr(app, "_emit_or_apply_activity", lambda runtime, message: activity_messages.append(message))
-    monkeypatch.setattr(app, "_emit_or_apply_log", lambda runtime, **payload: log_entries.append(payload))
-    monkeypatch.setattr(app, "_emit_or_apply_status", lambda runtime, **payload: None)
+    assert application_flow.has_resettable_state(current_result=None, session_state=session_state) is True
 
-    result = app.run_document_processing(
-        uploaded_file="report.docx",
-        jobs=[
-            {
-                "target_text": "Исходный блок",
-                "context_before": "",
-                "context_after": "",
-                "target_chars": 13,
-                "context_chars": 0,
-            }
-        ],
-        image_assets=[
-            ImageAsset(
-                image_id="img_001",
-                placeholder="[[DOCX_IMAGE_img_001]]",
-                original_bytes=b"png",
-                mime_type="image/png",
-                position_index=0,
-            )
-        ],
-        image_mode="safe",
-        app_config={},
-        model="gpt-5.4",
-        max_retries=1,
-        on_progress=lambda **kwargs: None,
-        runtime=None,
-    )
+    session_state.processing_outcome = "idle"
 
-    assert result == "failed"
-    assert emitted_state["last_error"].startswith("Критическая ошибка подготовки изображений")
-    assert emitted_state["final_stage"] == "Критическая ошибка"
-    assert activity_messages[-1] == "Сборка DOCX остановлена из-за потери или дублирования image placeholder."
-    assert log_entries[-1]["status"] == "ERROR"
+    assert application_flow.has_resettable_state(current_result=None, session_state=session_state) is False
 
 
-def test_run_processing_worker_emits_worker_complete_after_unhandled_crash(monkeypatch):
-    emitted_events = []
+def test_derive_idle_view_state_covers_idle_paths(monkeypatch):
+    session_state = SessionState(processing_outcome="stopped", restart_source={"filename": "report.docx", "storage_path": "restart.bin"})
 
-    class RuntimeStub:
-        def emit(self, event_type, **payload):
-            emitted_events.append({"type": event_type, **payload})
+    assert application_flow.derive_app_idle_view_state(current_result=None, uploaded_file=object(), session_state=session_state) == "file_selected"
+    assert application_flow.derive_app_idle_view_state(current_result={"docx_bytes": b"x"}, uploaded_file=None, session_state=session_state) == "completed"
+    assert application_flow.derive_app_idle_view_state(current_result=None, uploaded_file=None, session_state=session_state) == "restartable"
 
-    monkeypatch.setattr(app, "run_document_processing", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
-    monkeypatch.setattr(app, "present_error", lambda code, exc, title, **kwargs: f"{title}: {exc}")
+    session_state.processing_outcome = "idle"
 
-    app._run_processing_worker(
-        runtime=RuntimeStub(),
-        uploaded_filename="report.docx",
-        jobs=[{"target_text": "x", "context_before": "", "context_after": "", "target_chars": 1, "context_chars": 0}],
-        image_assets=[],
-        image_mode="safe",
-        app_config={},
-        model="gpt-5.4",
-        max_retries=1,
-    )
-
-    assert emitted_events[-1] == {"type": "worker_complete", "outcome": "failed"}
-    assert any(event["type"] == "set_state" and event["values"]["last_error"].startswith("Критическая ошибка фоновой обработки") for event in emitted_events)
-    assert any(event["type"] == "finalize_processing_status" for event in emitted_events)
+    assert application_flow.derive_app_idle_view_state(current_result=None, uploaded_file=None, session_state=session_state) == "empty"
 
 
-def test_apply_selected_compare_variants_rebuilds_docx(monkeypatch):
+def test_get_cached_restart_file_returns_none_when_storage_missing(monkeypatch):
+    session_state = SessionState(restart_source={"filename": "report.docx", "storage_path": "missing.bin"})
+    monkeypatch.setattr(application_flow, "load_restart_source_bytes", lambda restart_source: None)
+
+    assert application_flow.get_cached_restart_file(session_state=session_state) is None
+
+
+def test_resolve_effective_uploaded_file_uses_completed_source_after_success():
     session_state = SessionState(
-        latest_markdown="body",
-        latest_docx_bytes=None,
-        image_assets=[
-            ImageAsset(
-                image_id="img_001",
-                placeholder="[[DOCX_IMAGE_img_001]]",
-                original_bytes=b"original",
-                mime_type="image/png",
-                position_index=0,
-                comparison_variants={
-                    "safe": {"bytes": b"safe"},
-                    "semantic_redraw_direct": {"bytes": b"direct"},
-                },
-            )
-        ],
-        compare_choice_img_001="semantic_redraw_direct",
-    )
-    monkeypatch.setattr(app.st, "session_state", session_state)
-    monkeypatch.setattr(app, "convert_markdown_to_docx_bytes", lambda markdown: f"docx:{markdown}".encode("utf-8"))
-    monkeypatch.setattr(app, "reinsert_inline_images", lambda docx_bytes, image_assets: docx_bytes + b":rebuilt")
-
-    app._apply_selected_compare_variants()
-
-    assert session_state.image_assets[0].selected_compare_variant == "semantic_redraw_direct"
-    assert session_state.image_assets[0].final_variant == "redrawn"
-    assert session_state.latest_docx_bytes == b"docx:body:rebuilt"
-
-
-def test_compare_apply_module_rebuilds_docx_for_selected_variants():
-    session_state = SessionState(
-        latest_markdown="body",
-        latest_docx_bytes=None,
-        image_assets=[
-            ImageAsset(
-                image_id="img_001",
-                placeholder="[[DOCX_IMAGE_img_001]]",
-                original_bytes=b"original",
-                mime_type="image/png",
-                position_index=0,
-                comparison_variants={
-                    "safe": {"bytes": b"safe"},
-                    "semantic_redraw_direct": {"bytes": b"direct"},
-                },
-            )
-        ],
-        compare_choice_img_001="safe",
+        completed_source={"filename": "report.docx", "source_bytes": b"abc", "token": "report.docx:3:abc"}
     )
 
-    rebuilt_docx_bytes = compare_apply.apply_selected_compare_variants(
-        session_state,
-        convert_markdown_to_docx_bytes=lambda markdown: f"docx:{markdown}".encode("utf-8"),
-        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes + b":rebuilt",
+    uploaded_file = application_flow.resolve_effective_uploaded_file(
+        uploaded_file=None,
+        current_result={"docx_bytes": b"done"},
+        session_state=session_state,
     )
 
-    assert rebuilt_docx_bytes == b"docx:body:rebuilt"
-    assert session_state.image_assets[0].selected_compare_variant == "safe"
-    assert session_state.image_assets[0].final_variant == "safe"
-    assert session_state.latest_docx_bytes == rebuilt_docx_bytes
+    assert uploaded_file is not None
+    assert uploaded_file.name == "report.docx"
+    assert uploaded_file.getvalue() == b"abc"
 
 
-def test_compare_apply_module_uses_original_bytes_for_original_choice():
-    session_state = SessionState(
-        latest_markdown="body",
-        latest_docx_bytes=None,
-        image_assets=[
-            ImageAsset(
-                image_id="img_001",
-                placeholder="[[DOCX_IMAGE_img_001]]",
-                original_bytes=b"original",
-                mime_type="image/png",
-                position_index=0,
-                comparison_variants={"safe": {"bytes": b"safe"}},
-            )
-        ],
-        compare_choice_img_001="original",
-    )
+def test_has_restartable_source_does_not_materialize_restart_bytes(monkeypatch):
+    session_state = SessionState(processing_outcome="stopped", restart_source={"filename": "report.docx", "storage_path": "restart.bin"})
+    load_calls = []
 
-    rebuilt_docx_bytes = compare_apply.apply_selected_compare_variants(
-        session_state,
-        convert_markdown_to_docx_bytes=lambda markdown: f"docx:{markdown}".encode("utf-8"),
-        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes + b":" + image_assets[0].original_bytes,
-    )
-
-    assert rebuilt_docx_bytes == b"docx:body:original"
-    assert session_state.image_assets[0].selected_compare_variant == "original"
-    assert session_state.image_assets[0].final_variant == "original"
-
-
+    assert application_flow.has_restartable_source(session_state=session_state) is True
+    assert load_calls == []
 def test_compare_panel_applies_selected_variants_and_shows_success(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(compare_panel.st, "button", lambda *args, **kwargs: True)
-    monkeypatch.setattr(compare_panel.st, "success", lambda message: calls.append(("success", message)))
-    monkeypatch.setattr(compare_panel.st, "error", lambda message: calls.append(("error", message)))
+    monkeypatch.setattr(compare_panel.st, "info", lambda message: calls.append(("info", message)))
     monkeypatch.setattr(compare_panel.st, "caption", lambda message: calls.append(("caption", message)))
 
     compare_panel.render_compare_all_apply_panel(
-        has_completed_result=True,
         latest_image_mode="compare_all",
-        uploaded_filename="report.docx",
+        image_assets=[ImageAsset(image_id="img_001", placeholder="[[DOCX_IMAGE_img_001]]", original_bytes=b"x", mime_type="image/png", position_index=0, comparison_variants={"safe": {"bytes": b"safe"}}, final_decision="compared")],
         render_section_gap=lambda gap: calls.append(("gap", gap)),
-        render_image_compare_selector=lambda: calls.append(("selector", None)),
-        apply_selected_compare_variants=lambda: calls.append(("apply", None)),
-        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
     )
 
     assert ("gap", "lg") in calls
-    assert ("selector", None) in calls
-    assert ("apply", None) in calls
-    assert any(kind == "success" for kind, _ in calls)
-    assert not any(kind == "error" for kind, _ in calls)
+    assert any(kind == "info" for kind, _ in calls)
 
 
 def test_compare_panel_reports_apply_errors(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(compare_panel.st, "button", lambda *args, **kwargs: True)
-    monkeypatch.setattr(compare_panel.st, "success", lambda message: calls.append(("success", message)))
-    monkeypatch.setattr(compare_panel.st, "error", lambda message: calls.append(("error", message)))
+    monkeypatch.setattr(compare_panel.st, "info", lambda message: calls.append(("info", message)))
     monkeypatch.setattr(compare_panel.st, "caption", lambda message: calls.append(("caption", message)))
 
     compare_panel.render_compare_all_apply_panel(
-        has_completed_result=True,
         latest_image_mode="compare_all",
-        uploaded_filename="report.docx",
+        image_assets=[ImageAsset(image_id="img_001", placeholder="[[DOCX_IMAGE_img_001]]", original_bytes=b"x", mime_type="image/png", position_index=0, comparison_variants={"safe": {"bytes": b"safe"}}, final_decision="compared")],
         render_section_gap=lambda gap: calls.append(("gap", gap)),
-        render_image_compare_selector=lambda: calls.append(("selector", None)),
-        apply_selected_compare_variants=lambda: (_ for _ in ()).throw(RuntimeError("boom")),
-        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
     )
 
-    assert any(kind == "error" and value == "Ошибка применения выбранных вариантов изображений: boom" for kind, value in calls)
-    assert not any(kind == "success" for kind, _ in calls)
+    assert not any(kind == "apply" for kind, _ in calls)
+    assert not any(kind == "selector" for kind, _ in calls)

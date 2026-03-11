@@ -8,6 +8,11 @@ from docx.shared import Emu
 from models import DocumentBlock, ImageAsset, ParagraphUnit, get_image_variant_bytes
 
 IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_IMAGE_img_\d+\]\]")
+COMPARE_ALL_VARIANT_LABELS = {
+    "safe": "Вариант 1: Просто улучшить",
+    "semantic_redraw_direct": "Вариант 2: Креативная AI-перерисовка",
+    "semantic_redraw_structured": "Вариант 3: Структурная AI-перерисовка",
+}
 MAX_DOCX_ARCHIVE_SIZE_BYTES = 25 * 1024 * 1024
 MAX_DOCX_UNCOMPRESSED_SIZE_BYTES = 100 * 1024 * 1024
 MAX_DOCX_ENTRY_COUNT = 2048
@@ -103,11 +108,23 @@ def reinsert_inline_images(docx_bytes: bytes, image_assets: list[ImageAsset]) ->
             if asset is None:
                 paragraph.add_run(part)
                 continue
-            image_bytes = resolve_final_image_bytes(asset)
-            if not image_bytes:
+            insertions = resolve_image_insertions(asset)
+            if not insertions:
                 continue
             add_picture_kwargs = _build_picture_size_kwargs(asset)
-            paragraph.add_run().add_picture(BytesIO(image_bytes), **add_picture_kwargs)
+            if len(insertions) == 1 and insertions[0][0] is None:
+                paragraph.add_run().add_picture(BytesIO(insertions[0][1]), **add_picture_kwargs)
+                continue
+
+            for index, (label, image_bytes) in enumerate(insertions):
+                if label:
+                    label_run = paragraph.add_run(label)
+                    label_run.bold = True
+                    paragraph.add_run().add_break()
+                paragraph.add_run().add_picture(BytesIO(image_bytes), **add_picture_kwargs)
+                if index < len(insertions) - 1:
+                    paragraph.add_run().add_break()
+                    paragraph.add_run().add_break()
 
     output_stream = BytesIO()
     document.save(output_stream)
@@ -127,6 +144,23 @@ def resolve_final_image_bytes(asset: ImageAsset) -> bytes:
     if asset.final_variant == "safe" and asset.safe_bytes:
         return asset.safe_bytes
     return asset.original_bytes
+
+
+def resolve_image_insertions(asset: ImageAsset) -> list[tuple[str | None, bytes]]:
+    if getattr(asset, "validation_status", None) == "compared" and getattr(asset, "comparison_variants", None):
+        insertions: list[tuple[str | None, bytes]] = []
+        for mode in ["safe", "semantic_redraw_direct", "semantic_redraw_structured"]:
+            variant = asset.comparison_variants.get(mode)
+            variant_bytes = get_image_variant_bytes(variant)
+            if variant_bytes:
+                insertions.append((COMPARE_ALL_VARIANT_LABELS[mode], variant_bytes))
+        if insertions:
+            return insertions
+
+    final_bytes = resolve_final_image_bytes(asset)
+    if not final_bytes:
+        return []
+    return [(None, final_bytes)]
 
 
 def build_semantic_blocks(paragraphs: list[ParagraphUnit], max_chars: int = 6000) -> list[DocumentBlock]:

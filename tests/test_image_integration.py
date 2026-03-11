@@ -1,8 +1,9 @@
 from io import BytesIO
 
-import app
 from PIL import Image, ImageDraw
 from models import ImageAnalysisResult, ImageAsset, ImageValidationResult
+import processing_service
+import state
 
 
 class SessionState(dict):
@@ -98,28 +99,28 @@ def build_validation_result(**overrides) -> ImageValidationResult:
 
 def _prepare_state(monkeypatch):
     session_state = SessionState()
-    monkeypatch.setattr(app.st, "session_state", session_state)
-    app.init_session_state()
-    monkeypatch.setattr(app, "set_processing_status", lambda **kwargs: None)
-    monkeypatch.setattr(app, "push_activity", lambda message: None)
-    monkeypatch.setattr(app, "append_image_log", lambda **kwargs: None)
-    monkeypatch.setattr(app, "log_event", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "analyze_image", lambda *args, **kwargs: build_analysis_result())
-    monkeypatch.setattr(app, "get_client", lambda: object())
+    monkeypatch.setattr(state.st, "session_state", session_state)
+    state.init_session_state()
+    monkeypatch.setattr(processing_service, "emit_status_impl", lambda runtime, **kwargs: None)
+    monkeypatch.setattr(processing_service, "emit_activity_impl", lambda runtime, message: None)
+    monkeypatch.setattr(processing_service, "emit_image_log_impl", lambda runtime, **kwargs: None)
+    monkeypatch.setattr(processing_service, "log_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(processing_service, "analyze_image", lambda *args, **kwargs: build_analysis_result())
+    monkeypatch.setattr(processing_service, "get_client", lambda: object())
     monkeypatch.setattr(
-        app,
+        processing_service,
         "generate_image_candidate",
         lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, client=None, budget=None: (
             PNG_BYTES if mode == "safe" else REDRAWN_BYTES
         ),
     )
-    return session_state
+    return session_state, processing_service.build_processing_service()
 
 
 def test_process_document_images_accepts_semantic_redraw(monkeypatch):
-    _prepare_state(monkeypatch)
+    _, service = _prepare_state(monkeypatch)
 
-    result = app.process_document_images(
+    result = service.process_document_images(
         image_assets=[build_asset()],
         image_mode="semantic_redraw_direct",
         config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1"},
@@ -133,16 +134,17 @@ def test_process_document_images_accepts_semantic_redraw(monkeypatch):
 
 
 def test_process_document_images_soft_accepts_advisory_type_drift(monkeypatch):
-    _prepare_state(monkeypatch)
+    _, service = _prepare_state(monkeypatch)
     analyses = iter(
         [
             build_analysis_result(),
             build_analysis_result(image_type="photo", structure_summary="photo", extracted_labels=["Start"]),
         ]
     )
-    monkeypatch.setattr(app, "analyze_image", lambda *args, **kwargs: next(analyses))
+    monkeypatch.setattr(processing_service, "analyze_image", lambda *args, **kwargs: next(analyses))
+    service = processing_service.build_processing_service()
 
-    result = app.process_document_images(
+    result = service.process_document_images(
         image_assets=[build_asset()],
         image_mode="semantic_redraw_direct",
         config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1"},
@@ -155,7 +157,7 @@ def test_process_document_images_soft_accepts_advisory_type_drift(monkeypatch):
 
 
 def test_process_document_images_applies_fallback_original_for_unreadable_candidate(monkeypatch):
-    _prepare_state(monkeypatch)
+    _, service = _prepare_state(monkeypatch)
 
     def generate_candidate(
         image_bytes,
@@ -171,9 +173,10 @@ def test_process_document_images_applies_fallback_original_for_unreadable_candid
             return b""
         return b"not-an-image"
 
-    monkeypatch.setattr(app, "generate_image_candidate", generate_candidate)
+    monkeypatch.setattr(processing_service, "generate_image_candidate", generate_candidate)
+    service = processing_service.build_processing_service()
 
-    result = app.process_document_images(
+    result = service.process_document_images(
         image_assets=[build_asset()],
         image_mode="semantic_redraw_direct",
         config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1"},
@@ -186,10 +189,11 @@ def test_process_document_images_applies_fallback_original_for_unreadable_candid
 
 
 def test_process_document_images_keeps_document_flow_when_validator_raises(monkeypatch):
-    _prepare_state(monkeypatch)
-    monkeypatch.setattr(app, "validate_redraw_result", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+    _, service = _prepare_state(monkeypatch)
+    monkeypatch.setattr(processing_service, "validate_redraw_result", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+    service = processing_service.build_processing_service()
 
-    result = app.process_document_images(
+    result = service.process_document_images(
         image_assets=[build_asset()],
         image_mode="semantic_redraw_structured",
         config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1"},
@@ -203,7 +207,7 @@ def test_process_document_images_keeps_document_flow_when_validator_raises(monke
 
 
 def test_process_document_images_uses_single_policy_soft_accept_path(monkeypatch):
-    _prepare_state(monkeypatch)
+    _, service = _prepare_state(monkeypatch)
     analyses = iter(
         [
             build_analysis_result(),
@@ -223,10 +227,10 @@ def test_process_document_images_uses_single_policy_soft_accept_path(monkeypatch
             ),
         ]
     )
-    monkeypatch.setattr(app, "analyze_image", lambda *args, **kwargs: next(analyses))
+    monkeypatch.setattr(processing_service, "analyze_image", lambda *args, **kwargs: next(analyses))
 
     monkeypatch.setattr(
-        app,
+        processing_service,
         "validate_redraw_result",
         lambda *args, **kwargs: build_validation_result(
             validation_passed=False,
@@ -238,8 +242,9 @@ def test_process_document_images_uses_single_policy_soft_accept_path(monkeypatch
             suspicious_reasons=["structure_mismatch"],
         ),
     )
+    service = processing_service.build_processing_service()
 
-    result = app.process_document_images(
+    result = service.process_document_images(
         image_assets=[build_asset()],
         image_mode="semantic_redraw_structured",
         config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1", "semantic_redraw_max_attempts": 2},
@@ -252,7 +257,7 @@ def test_process_document_images_uses_single_policy_soft_accept_path(monkeypatch
 
 
 def test_process_document_images_reuses_single_client_for_image_attempts(monkeypatch):
-    _prepare_state(monkeypatch)
+    _, service = _prepare_state(monkeypatch)
     client_calls = []
     generation_clients = []
     analyses = iter(
@@ -284,12 +289,13 @@ def test_process_document_images_reuses_single_client_for_image_attempts(monkeyp
             )
         return build_validation_result()
 
-    monkeypatch.setattr(app, "get_client", get_client_once)
-    monkeypatch.setattr(app, "generate_image_candidate", fake_generate_image_candidate)
-    monkeypatch.setattr(app, "analyze_image", lambda *args, **kwargs: next(analyses))
-    monkeypatch.setattr(app, "validate_redraw_result", fake_validate_redraw_result)
+    monkeypatch.setattr(processing_service, "get_client", get_client_once)
+    monkeypatch.setattr(processing_service, "generate_image_candidate", fake_generate_image_candidate)
+    monkeypatch.setattr(processing_service, "analyze_image", lambda *args, **kwargs: next(analyses))
+    monkeypatch.setattr(processing_service, "validate_redraw_result", fake_validate_redraw_result)
+    service = processing_service.build_processing_service()
 
-    result = app.process_document_images(
+    result = service.process_document_images(
         image_assets=[build_asset()],
         image_mode="semantic_redraw_direct",
         config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1", "semantic_redraw_max_attempts": 2},
@@ -302,7 +308,7 @@ def test_process_document_images_reuses_single_client_for_image_attempts(monkeyp
 
 
 def test_process_document_images_uses_detected_redraw_mime_type_for_candidate_analysis(monkeypatch):
-    _prepare_state(monkeypatch)
+    _, service = _prepare_state(monkeypatch)
     mime_types = []
     analyses = iter([build_analysis_result(), build_analysis_result()])
 
@@ -313,10 +319,11 @@ def test_process_document_images_uses_detected_redraw_mime_type_for_candidate_an
         mime_types.append(mime_type)
         return next(analyses)
 
-    monkeypatch.setattr(app, "analyze_image", capture_analyze_image)
-    monkeypatch.setattr(app, "generate_image_candidate", lambda image_bytes, analysis, *, mode, client=None, budget=None: PNG_BYTES if mode == "safe" else REDRAWN_BYTES)
+    monkeypatch.setattr(processing_service, "analyze_image", capture_analyze_image)
+    monkeypatch.setattr(processing_service, "generate_image_candidate", lambda image_bytes, analysis, *, mode, client=None, budget=None: PNG_BYTES if mode == "safe" else REDRAWN_BYTES)
+    service = processing_service.build_processing_service()
 
-    result = app.process_document_images(
+    result = service.process_document_images(
         image_assets=[asset],
         image_mode="semantic_redraw_direct",
         config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1", "semantic_redraw_max_attempts": 1},
@@ -328,7 +335,7 @@ def test_process_document_images_uses_detected_redraw_mime_type_for_candidate_an
 
 
 def test_process_document_images_compare_all_prepares_three_variants(monkeypatch):
-    _prepare_state(monkeypatch)
+    _, service = _prepare_state(monkeypatch)
 
     generated_modes = []
 
@@ -349,9 +356,10 @@ def test_process_document_images_compare_all_prepares_three_variants(monkeypatch
             "semantic_redraw_structured": REDRAWN_BYTES[::-1],
         }[mode]
 
-    monkeypatch.setattr(app, "generate_image_candidate", fake_generate_image_candidate)
+    monkeypatch.setattr(processing_service, "generate_image_candidate", fake_generate_image_candidate)
+    service = processing_service.build_processing_service()
 
-    result = app.process_document_images(
+    result = service.process_document_images(
         image_assets=[build_asset()],
         image_mode="compare_all",
         config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1"},
@@ -372,7 +380,7 @@ def test_process_document_images_compare_all_prepares_three_variants(monkeypatch
 
 
 def test_process_document_images_attempts_semantic_mode_for_advisory_dense_text_bypass(monkeypatch):
-    _prepare_state(monkeypatch)
+    _, service = _prepare_state(monkeypatch)
 
     advisory_analysis = build_analysis_result(
         semantic_redraw_allowed=False,
@@ -396,10 +404,11 @@ def test_process_document_images_attempts_semantic_mode_for_advisory_dense_text_
         generated_modes.append((mode, analysis.semantic_redraw_allowed))
         return PNG_BYTES if mode == "safe" else REDRAWN_BYTES
 
-    monkeypatch.setattr(app, "analyze_image", lambda *args, **kwargs: advisory_analysis)
-    monkeypatch.setattr(app, "generate_image_candidate", fake_generate_image_candidate)
+    monkeypatch.setattr(processing_service, "analyze_image", lambda *args, **kwargs: advisory_analysis)
+    monkeypatch.setattr(processing_service, "generate_image_candidate", fake_generate_image_candidate)
+    service = processing_service.build_processing_service()
 
-    result = app.process_document_images(
+    result = service.process_document_images(
         image_assets=[build_asset()],
         image_mode="semantic_redraw_direct",
         config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1"},
@@ -411,19 +420,20 @@ def test_process_document_images_attempts_semantic_mode_for_advisory_dense_text_
 
 
 def test_process_document_images_falls_back_when_model_call_budget_is_exhausted(monkeypatch):
-    _prepare_state(monkeypatch)
-    monkeypatch.setattr(app, "analyze_image", lambda *args, **kwargs: build_analysis_result())
+    _, service = _prepare_state(monkeypatch)
+    monkeypatch.setattr(processing_service, "analyze_image", lambda *args, **kwargs: build_analysis_result())
     monkeypatch.setattr(
-        app,
+        processing_service,
         "generate_image_candidate",
         lambda image_bytes, analysis, *, mode, client=None, budget=None: (_ for _ in ()).throw(
-            app.ImageModelCallBudgetExceeded("budget exhausted")
+            processing_service.ImageModelCallBudgetExceeded("budget exhausted")
         )
         if mode != "safe"
         else PNG_BYTES,
     )
+    service = processing_service.build_processing_service()
 
-    result = app.process_document_images(
+    result = service.process_document_images(
         image_assets=[build_asset()],
         image_mode="semantic_redraw_direct",
         config={
@@ -442,20 +452,21 @@ def test_process_document_images_falls_back_when_model_call_budget_is_exhausted(
 
 
 def test_process_document_images_uses_safe_variant_when_semantic_candidate_collapses_to_safe(monkeypatch):
-    _prepare_state(monkeypatch)
-    monkeypatch.setattr(app, "analyze_image", lambda *args, **kwargs: build_analysis_result(render_strategy="deterministic_reconstruction"))
+    _, service = _prepare_state(monkeypatch)
+    monkeypatch.setattr(processing_service, "analyze_image", lambda *args, **kwargs: build_analysis_result(render_strategy="deterministic_reconstruction"))
 
     def generate_candidate(image_bytes, analysis, *, mode, client=None, budget=None, **kwargs):
         return PNG_BYTES
 
-    monkeypatch.setattr(app, "generate_image_candidate", generate_candidate)
+    monkeypatch.setattr(processing_service, "generate_image_candidate", generate_candidate)
     monkeypatch.setattr(
-        app,
+        processing_service,
         "validate_redraw_result",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("post-check should not run for safe fallback")),
     )
+    service = processing_service.build_processing_service()
 
-    result = app.process_document_images(
+    result = service.process_document_images(
         image_assets=[build_asset()],
         image_mode="semantic_redraw_structured",
         config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1", "semantic_redraw_max_attempts": 1},
@@ -469,26 +480,27 @@ def test_process_document_images_uses_safe_variant_when_semantic_candidate_colla
 
 
 def test_process_document_images_skips_unsupported_source_image_without_validation_error(monkeypatch):
-    _prepare_state(monkeypatch)
+    _, service = _prepare_state(monkeypatch)
     image_logs = []
 
     asset = build_asset()
     asset.original_bytes = b"\x01\x02not-a-supported-raster"
     asset.mime_type = "image/x-emf"
 
-    monkeypatch.setattr(app, "_emit_or_apply_image_log", lambda runtime, **kwargs: image_logs.append(kwargs))
+    monkeypatch.setattr(processing_service, "emit_image_log_impl", lambda runtime, **kwargs: image_logs.append(kwargs))
     monkeypatch.setattr(
-        app,
+        processing_service,
         "analyze_image",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("analyze_image should not run")),
     )
     monkeypatch.setattr(
-        app,
+        processing_service,
         "generate_image_candidate",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("generate_image_candidate should not run")),
     )
+    service = processing_service.build_processing_service()
 
-    result = app.process_document_images(
+    result = service.process_document_images(
         image_assets=[asset],
         image_mode="compare_all",
         config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1"},

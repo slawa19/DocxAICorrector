@@ -1,7 +1,25 @@
+import hashlib
+import logging
 import queue
 import threading
+from io import BytesIO
 
 import streamlit as st
+
+from logger import log_event
+from restart_store import clear_restart_source, load_restart_source_bytes, store_restart_source
+from runtime_events import (
+    AppendImageLogEvent,
+    AppendLogEvent,
+    FinalizeProcessingStatusEvent,
+    ProcessingEvent,
+    PushActivityEvent,
+    ResetImageStateEvent,
+    SetProcessingStatusEvent,
+    SetStateEvent,
+    WorkerCompleteEvent,
+)
+from workflow_state import ProcessingOutcome
 
 
 class BackgroundRuntime:
@@ -9,20 +27,41 @@ class BackgroundRuntime:
         self._event_queue = event_queue
         self._stop_event = stop_event
 
-    def emit(self, event_type: str, **payload) -> None:
-        self._event_queue.put({"type": event_type, **payload})
+    def emit(self, event: ProcessingEvent) -> None:
+        self._event_queue.put(event)
 
     def should_stop(self) -> bool:
         return self._stop_event.is_set()
 
 
-def build_uploaded_file_token(uploaded_file) -> str:
-    file_name = getattr(uploaded_file, "name", "")
-    file_size = getattr(uploaded_file, "size", None)
-    if file_size is None:
-        raw_value = uploaded_file.getvalue() if hasattr(uploaded_file, "getvalue") else b""
-        file_size = len(raw_value)
-    return f"{file_name}:{file_size}"
+def read_uploaded_file_bytes(uploaded_file) -> bytes:
+    if hasattr(uploaded_file, "seek"):
+        uploaded_file.seek(0)
+    if hasattr(uploaded_file, "getvalue"):
+        source_bytes = uploaded_file.getvalue()
+    else:
+        source_bytes = uploaded_file.read()
+    if not isinstance(source_bytes, (bytes, bytearray)) or not source_bytes:
+        raise ValueError("Не удалось прочитать содержимое загруженного файла.")
+    if hasattr(uploaded_file, "seek"):
+        uploaded_file.seek(0)
+    return bytes(source_bytes)
+
+
+def build_uploaded_file_token(uploaded_file=None, *, source_name: str | None = None, source_bytes: bytes | None = None) -> str:
+    if source_bytes is None:
+        source_bytes = read_uploaded_file_bytes(uploaded_file)
+    file_name = source_name if source_name is not None else getattr(uploaded_file, "name", "")
+    file_size = len(source_bytes)
+    content_hash = hashlib.sha256(source_bytes).hexdigest()[:16]
+    return f"{file_name}:{file_size}:{content_hash}"
+
+
+def build_in_memory_uploaded_file(*, source_name: str, source_bytes: bytes):
+    uploaded_file = BytesIO(source_bytes)
+    uploaded_file.name = source_name
+    uploaded_file.size = len(source_bytes)
+    return uploaded_file
 
 
 def build_result_bundle(*, source_name: str, source_token: str, docx_bytes: bytes, markdown_text: str) -> dict[str, object]:
@@ -46,16 +85,6 @@ def get_current_result_bundle() -> dict[str, object] | None:
     )
 
 
-def get_previous_result_bundle(selected_source_token: str) -> dict[str, object] | None:
-    current_bundle = get_current_result_bundle()
-    if current_bundle and current_bundle["source_token"] != selected_source_token:
-        return current_bundle
-    previous_bundle = st.session_state.get("previous_result")
-    if previous_bundle and previous_bundle.get("source_token") != selected_source_token:
-        return previous_bundle
-    return None
-
-
 def set_session_values(**values) -> None:
     for key, value in values.items():
         st.session_state[key] = value
@@ -65,7 +94,7 @@ def emit_or_apply_state(runtime: BackgroundRuntime | None, **values) -> None:
     if runtime is None:
         set_session_values(**values)
         return
-    runtime.emit("set_state", values=values)
+    runtime.emit(SetStateEvent(values=values))
 
 
 def emit_or_apply_image_reset(runtime: BackgroundRuntime | None) -> None:
@@ -73,42 +102,42 @@ def emit_or_apply_image_reset(runtime: BackgroundRuntime | None) -> None:
         st.session_state.image_assets = []
         st.session_state.image_validation_failures = []
         return
-    runtime.emit("reset_image_state")
+    runtime.emit(ResetImageStateEvent())
 
 
 def emit_or_apply_status(runtime: BackgroundRuntime | None, *, set_processing_status, **payload) -> None:
     if runtime is None:
         set_processing_status(**payload)
         return
-    runtime.emit("set_processing_status", payload=payload)
+    runtime.emit(SetProcessingStatusEvent(payload=payload))
 
 
 def emit_or_apply_finalize(runtime: BackgroundRuntime | None, *, finalize_processing_status, stage: str, detail: str, progress: float) -> None:
     if runtime is None:
         finalize_processing_status(stage, detail, progress)
         return
-    runtime.emit("finalize_processing_status", stage=stage, detail=detail, progress=progress)
+    runtime.emit(FinalizeProcessingStatusEvent(stage=stage, detail=detail, progress=progress))
 
 
 def emit_or_apply_activity(runtime: BackgroundRuntime | None, *, push_activity, message: str) -> None:
     if runtime is None:
         push_activity(message)
         return
-    runtime.emit("push_activity", message=message)
+    runtime.emit(PushActivityEvent(message=message))
 
 
 def emit_or_apply_log(runtime: BackgroundRuntime | None, *, append_log, **payload) -> None:
     if runtime is None:
         append_log(**payload)
         return
-    runtime.emit("append_log", payload=payload)
+    runtime.emit(AppendLogEvent(payload=payload))
 
 
 def emit_or_apply_image_log(runtime: BackgroundRuntime | None, *, append_image_log, **payload) -> None:
     if runtime is None:
         append_image_log(**payload)
         return
-    runtime.emit("append_image_log", payload=payload)
+    runtime.emit(AppendImageLogEvent(payload=payload))
 
 
 def should_stop_processing(runtime: BackgroundRuntime | None) -> bool:
@@ -131,24 +160,35 @@ def drain_processing_events(*, set_processing_status, finalize_processing_status
         except queue.Empty:
             break
 
-        event_type = event.get("type")
-        if event_type == "set_state":
-            set_session_values(**event["values"])
-        elif event_type == "reset_image_state":
+        if isinstance(event, SetStateEvent):
+            set_session_values(**event.values)
+        elif isinstance(event, ResetImageStateEvent):
             st.session_state.image_assets = []
             st.session_state.image_validation_failures = []
-        elif event_type == "set_processing_status":
-            set_processing_status(**event["payload"])
-        elif event_type == "finalize_processing_status":
-            finalize_processing_status(event["stage"], event["detail"], event["progress"])
-        elif event_type == "push_activity":
-            push_activity(event["message"])
-        elif event_type == "append_log":
-            append_log(**event["payload"])
-        elif event_type == "append_image_log":
-            append_image_log(**event["payload"])
-        elif event_type == "worker_complete":
-            st.session_state.processing_outcome = event["outcome"]
+        elif isinstance(event, SetProcessingStatusEvent):
+            set_processing_status(**event.payload)
+        elif isinstance(event, FinalizeProcessingStatusEvent):
+            finalize_processing_status(event.stage, event.detail, event.progress)
+        elif isinstance(event, PushActivityEvent):
+            push_activity(event.message)
+        elif isinstance(event, AppendLogEvent):
+            append_log(**event.payload)
+        elif isinstance(event, AppendImageLogEvent):
+            append_image_log(**event.payload)
+        elif isinstance(event, WorkerCompleteEvent):
+            restart_source = st.session_state.get("restart_source")
+            if event.outcome == ProcessingOutcome.SUCCEEDED.value and restart_source:
+                source_bytes = load_restart_source_bytes(restart_source)
+                if source_bytes:
+                    st.session_state.completed_source = {
+                        "filename": str(restart_source.get("filename", "")),
+                        "token": str(restart_source.get("token", "")),
+                        "source_bytes": source_bytes,
+                        "size": len(source_bytes),
+                    }
+                clear_restart_source(restart_source)
+                st.session_state.restart_source = None
+            st.session_state.processing_outcome = event.outcome
             st.session_state.processing_worker = None
             st.session_state.processing_event_queue = None
             st.session_state.processing_stop_event = None
@@ -175,6 +215,7 @@ def start_background_processing(
     set_processing_status,
     uploaded_filename: str,
     uploaded_token: str,
+    source_bytes: bytes,
     jobs: list[dict[str, str | int]],
     image_assets: list,
     image_mode: str,
@@ -182,16 +223,33 @@ def start_background_processing(
     model: str,
     max_retries: int,
 ) -> None:
-    existing_result = get_current_result_bundle()
-    if existing_result is not None:
-        st.session_state.previous_result = existing_result
-
+    previous_restart_source = st.session_state.get("restart_source")
+    restart_session_id = str(st.session_state.get("restart_session_id", ""))
     reset_run_state()
     st.session_state.latest_source_name = uploaded_filename
     st.session_state.latest_source_token = uploaded_token
     st.session_state.selected_source_token = uploaded_token
+    try:
+        st.session_state.restart_source = store_restart_source(
+            session_id=restart_session_id,
+            source_name=uploaded_filename,
+            source_token=uploaded_token,
+            source_bytes=source_bytes,
+            previous_restart_source=previous_restart_source,
+        )
+    except OSError as exc:
+        st.session_state.restart_source = None
+        log_event(
+            logging.WARNING,
+            "restart_source_store_failed",
+            "Не удалось сохранить временный restart source; продолжаю обработку без возможности restart без повторной загрузки.",
+            filename=uploaded_filename,
+            source_token=uploaded_token,
+            error_message=str(exc),
+        )
+        push_activity("Не удалось сохранить временный файл для restart. Повторный запуск без загрузки файла будет недоступен.")
     st.session_state.latest_image_mode = image_mode
-    st.session_state.processing_outcome = "running"
+    st.session_state.processing_outcome = ProcessingOutcome.RUNNING.value
 
     processing_events = queue.Queue()
     stop_event = threading.Event()

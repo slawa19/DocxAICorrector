@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $venvPython = Join-Path $projectRoot '.venv\Scripts\python.exe'
@@ -88,6 +88,10 @@ try {
     if (-not (Test-Path $envPath))    { throw "Не найден .env: $envPath" }
     if (-not (Test-Path $runDir))     { New-Item -ItemType Directory -Path $runDir | Out-Null }
     Write-Ok 'Файлы проекта на месте'
+
+    # Добавляем .venv\Scripts в PATH — там лежит pandoc и другие инструменты venv
+    $venvScripts = Join-Path $projectRoot '.venv\Scripts'
+    $env:PATH = "$venvScripts;$env:PATH"
 
     Write-Step 'Проверяю, не запущен ли уже проект'
     Remove-StalePid

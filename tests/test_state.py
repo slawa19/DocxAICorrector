@@ -63,13 +63,28 @@ def test_init_session_state_initializes_image_processing_summary(monkeypatch):
     }
     assert session_state.latest_source_token == ""
     assert session_state.selected_source_token == ""
-    assert session_state.previous_result is None
     assert session_state.processing_stop_requested is False
     assert session_state.processing_worker is None
     assert session_state.processing_event_queue is None
     assert session_state.processing_stop_event is None
     assert session_state.processing_outcome == "idle"
     assert session_state.prepared_source_key == ""
+    assert session_state.preparation_cache == {}
+    assert session_state.restart_source is None
+    assert session_state.completed_source is None
+
+
+def test_reset_run_state_can_clear_restart_source(monkeypatch):
+    session_state = SessionState(restart_source={"filename": "report.docx", "storage_path": "restart.bin"})
+    monkeypatch.setattr(state.st, "session_state", session_state)
+    cleared = []
+    monkeypatch.setattr(state, "clear_restart_source", lambda restart_source: cleared.append(restart_source))
+
+    state.init_session_state()
+    state.reset_run_state(keep_restart_source=False)
+
+    assert cleared == [{"filename": "report.docx", "storage_path": "restart.bin"}]
+    assert session_state.restart_source is None
 
 
 def test_append_image_log_updates_summary_and_activity(monkeypatch):

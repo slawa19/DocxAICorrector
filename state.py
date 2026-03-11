@@ -1,9 +1,12 @@
 import time
+from uuid import uuid4
 from datetime import datetime
 
 import streamlit as st
 
 from constants import APP_LOG_PATH
+from restart_store import clear_restart_source
+from workflow_state import ProcessingOutcome
 
 
 def _default_processing_status() -> dict[str, object]:
@@ -50,17 +53,21 @@ def init_session_state() -> None:
     st.session_state.setdefault("image_assets", [])
     st.session_state.setdefault("image_validation_failures", [])
     st.session_state.setdefault("image_processing_summary", _default_image_processing_summary())
-    st.session_state.setdefault("previous_result", None)
     st.session_state.setdefault("processing_stop_requested", False)
     st.session_state.setdefault("processing_worker", None)
     st.session_state.setdefault("processing_event_queue", None)
     st.session_state.setdefault("processing_stop_event", None)
-    st.session_state.setdefault("processing_outcome", "idle")
+    st.session_state.setdefault("processing_outcome", ProcessingOutcome.IDLE.value)
     st.session_state.setdefault("prepared_source_key", "")
+    st.session_state.setdefault("preparation_cache", {})
+    st.session_state.setdefault("restart_source", None)
+    st.session_state.setdefault("completed_source", None)
+    st.session_state.setdefault("restart_session_id", uuid4().hex)
     st.session_state.setdefault("latest_image_mode", "safe")
 
 
-def reset_run_state(*, keep_previous_result: bool = True) -> None:
+def reset_run_state(*, keep_restart_source: bool = True) -> None:
+    restart_source = st.session_state.get("restart_source")
     st.session_state.run_log = []
     st.session_state.activity_feed = []
     st.session_state.latest_markdown = ""
@@ -79,11 +86,14 @@ def reset_run_state(*, keep_previous_result: bool = True) -> None:
     st.session_state.processing_worker = None
     st.session_state.processing_event_queue = None
     st.session_state.processing_stop_event = None
-    st.session_state.processing_outcome = "idle"
+    st.session_state.processing_outcome = ProcessingOutcome.IDLE.value
     st.session_state.prepared_source_key = ""
+    st.session_state.preparation_cache = {}
     st.session_state.latest_image_mode = "safe"
-    if not keep_previous_result:
-        st.session_state.previous_result = None
+    st.session_state.completed_source = None
+    if not keep_restart_source:
+        clear_restart_source(restart_source)
+        st.session_state.restart_source = None
 
 
 def push_activity(message: str) -> None:

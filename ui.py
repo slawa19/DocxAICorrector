@@ -193,6 +193,12 @@ def inject_ui_styles() -> None:
             background: rgba(15, 23, 42, 0.42);
         }
 
+        .activity-feed-items {
+            max-height: 6.2rem;
+            overflow-y: auto;
+            padding-right: 0.25rem;
+        }
+
         .activity-feed-title {
             color: #d5fffb;
             font-size: 0.92rem;
@@ -280,7 +286,7 @@ def render_live_status(target=None) -> None:
                 f"""
                 <div class="activity-feed">
                     <div class="activity-feed-title">Последние события</div>
-                    {items}
+                    <div class="activity-feed-items">{items}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
