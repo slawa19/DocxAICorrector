@@ -1,14 +1,35 @@
 ﻿$ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
+$wslDistro = 'Debian'
+$wslControlScript = Join-Path $PSScriptRoot 'project-control-wsl.sh'
 $runDir = Join-Path $projectRoot '.run'
-$pidPath = Join-Path $runDir 'streamlit.pid'
 $projectLogPath = Join-Path $runDir 'project.log'
 $serverHost = 'localhost'
 $port = 8501
 $appUrl = "http://${serverHost}:${port}"
 
 if (-not (Test-Path $runDir)) { New-Item -ItemType Directory -Path $runDir | Out-Null }
+
+function Convert-ToWslPath {
+    param([string]$WindowsPath)
+
+    $resolvedPath = (Resolve-Path -LiteralPath $WindowsPath).Path
+    $normalizedPath = $resolvedPath -replace '\\', '/'
+    if ($normalizedPath -notmatch '^([A-Za-z]):/(.+)$') {
+        throw "Не удалось преобразовать путь в WSL-формат: $WindowsPath"
+    }
+    return "/mnt/$($matches[1].ToLower())/$($matches[2])"
+}
+
+function Stop-WslStreamlit {
+    if (-not (Test-Path $wslControlScript)) {
+        return
+    }
+
+    $wslScriptPath = Convert-ToWslPath $wslControlScript
+    & wsl.exe -d $wslDistro bash $wslScriptPath stop-streamlit 2>$null | Out-Null
+}
 
 function Write-LogLine {
     param(
@@ -44,68 +65,61 @@ function Write-Fail {
 
 function Test-TcpPort {
     param([string]$ComputerName, [int]$Port)
+
+    $tcp = $null
+    $asyncResult = $null
     try {
         $tcp = [System.Net.Sockets.TcpClient]::new()
-        $tcp.Connect($ComputerName, $Port)
+        $asyncResult = $tcp.BeginConnect($ComputerName, $Port, $null, $null)
+        if (-not $asyncResult.AsyncWaitHandle.WaitOne(1000, $false)) {
+            return $false
+        }
+        $tcp.EndConnect($asyncResult)
         $tcp.Close()
         return $true
     }
     catch {
         return $false
     }
+    finally {
+        if ($asyncResult -and $asyncResult.AsyncWaitHandle) {
+            $asyncResult.AsyncWaitHandle.Close()
+        }
+        if ($tcp) {
+            $tcp.Dispose()
+        }
+    }
 }
 
 try {
     Write-Step 'Останавливаю проект'
 
-    $processId = $null
-    if (Test-Path $pidPath) {
-        $raw = (Get-Content -Path $pidPath -TotalCount 1 -ErrorAction SilentlyContinue | Out-String).Trim()
-        try { $processId = [int]$raw } catch { $processId = $null }
-    }
-
-    if (-not $processId) {
-        if (Test-TcpPort -ComputerName $serverHost -Port $port) {
-            Write-Warn "PID-файл не найден, но порт $port занят. Остановите процесс вручную."
-            Write-Host 'Status: UNKNOWN' -ForegroundColor Yellow
-            exit 1
-        }
+    if (-not (Test-TcpPort -ComputerName $serverHost -Port $port)) {
         Write-Ok 'Проект уже остановлен'
         Write-Host 'Status: STOPPED' -ForegroundColor Green
         exit 0
     }
 
-    $proc = Get-Process -Id $processId -ErrorAction SilentlyContinue
-    if (-not $proc) {
-        Write-Warn "Процесс PID=$processId уже не существует. Удаляю stale state."
-        Remove-Item $pidPath -Force -ErrorAction SilentlyContinue
-        Write-Host 'Status: STOPPED' -ForegroundColor Green
-        exit 0
-    }
-
-    Write-Step "Завершаю дерево процессов PID=$processId"
-    # taskkill /T убивает дерево: pwsh -> python -> streamlit
-    taskkill /PID $processId /T /F 2>$null | Out-Null
+    # Streamlit всегда запускается через WSL — останавливаем через WSL helper.
+    # helper читает .run/wsl_streamlit.pid и посылает kill.
+    Stop-WslStreamlit
 
     $stopped = $false
     for ($i = 1; $i -le 20; $i++) {
         Start-Sleep -Milliseconds 500
-        if (-not (Get-Process -Id $processId -ErrorAction SilentlyContinue)) {
+        if (-not (Test-TcpPort -ComputerName $serverHost -Port $port)) {
             $stopped = $true
             break
         }
     }
 
     if (-not $stopped) {
-        throw "Не удалось завершить процесс PID=$processId."
+        throw "Порт $port всё ещё занят после команды остановки."
     }
 
-    if (Test-Path $pidPath) { Remove-Item $pidPath -Force -ErrorAction SilentlyContinue }
-
-    Write-Ok "Процесс PID=$processId остановлен"
     Add-Content -Path $projectLogPath -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') | INFO | Status: STOPPED" -Encoding utf8
+    Write-Ok 'Проект остановлен'
     Write-Host 'Status: STOPPED' -ForegroundColor Green
-    Write-Host "App: $appUrl" -ForegroundColor Green
     exit 0
 }
 catch {

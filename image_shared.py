@@ -75,13 +75,24 @@ def call_responses_create_with_retry(
     max_backoff_seconds: float = 4.0,
     budget=None,
 ):
+    def ensure_budget_available() -> None:
+        if budget is None:
+            return
+        ensure_available = getattr(budget, "ensure_available", None)
+        if callable(ensure_available):
+            ensure_available("responses.create")
+
+    def consume_budget() -> None:
+        if budget is None:
+            return
+        budget.consume("responses.create")
+
     current_payload = dict(request_payload)
     timeout_removed = False
     for attempt in range(1, max_retries + 1):
         try:
-            if budget is not None:
-                budget.consume("responses.create")
-            return client.responses.create(**current_payload)
+            ensure_budget_available()
+            response = client.responses.create(**current_payload)
         except TypeError as exc:
             if "timeout" in str(exc) and "timeout" in current_payload:
                 current_payload.pop("timeout", None)
@@ -89,11 +100,16 @@ def call_responses_create_with_retry(
                 continue
             raise
         except Exception as exc:
+            consume_budget()
             if attempt >= max_retries or not retryable_error_predicate(exc):
                 raise
             time.sleep(min(2 ** (attempt - 1), max_backoff_seconds))
+        else:
+            consume_budget()
+            return response
     if timeout_removed:
-        if budget is not None:
-            budget.consume("responses.create")
-        return client.responses.create(**current_payload)
+        ensure_budget_available()
+        response = client.responses.create(**current_payload)
+        consume_budget()
+        return response
     raise RuntimeError("Responses retry loop exhausted unexpectedly.")

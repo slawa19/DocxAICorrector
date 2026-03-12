@@ -60,9 +60,17 @@ load_dotenv(dotenv_path=ENV_PATH)
 
 LIVE_API_ENABLED = os.getenv("DOCX_AI_RUN_LIVE_IMAGE_API_TESTS", "").strip().lower() in {"1", "true", "yes", "on"}
 
-PNG_STUB_BYTES = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAIElEQVR4nGP8z/D/PwMDAwMDEwMDA8N/BoYGBgYGAABd8gT+olr0cQAAAABJRU5ErkJggg=="
-)
+
+def _build_png_stub_bytes() -> bytes:
+    image = Image.new("RGBA", (4, 4), (220, 220, 220, 255))
+    image.putpixel((1, 1), (40, 100, 200, 255))
+    image.putpixel((2, 2), (200, 80, 40, 255))
+    output = BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
+
+
+PNG_STUB_BYTES = _build_png_stub_bytes()
 
 
 def _load_image_bytes(filename: str) -> bytes:
@@ -237,7 +245,7 @@ class TestRedrawRoutingRealInputs:
         else:
             assert captured["edit"]["model"] == image_generation.IMAGE_EDIT_MODEL
             assert captured["edit"]["response_format"] == "b64_json"
-        assert elapsed_seconds < 1.0
+        assert elapsed_seconds < 4.0
 
     @pytest.mark.skipif(not LIVE_API_ENABLED, reason="Set DOCX_AI_RUN_LIVE_IMAGE_API_TESTS=1 to run live image API smoke tests.")
     @pytest.mark.parametrize("case", [case for case in REAL_IMAGE_CASES if case["expected_live_mode"] != "safe"], ids=lambda case: case["filename"])

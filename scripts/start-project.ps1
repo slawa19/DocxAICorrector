@@ -1,7 +1,8 @@
 ﻿$ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$venvPython = Join-Path $projectRoot '.venv\Scripts\python.exe'
+$wslDistro = 'Debian'
+$wslControlScript = Join-Path $PSScriptRoot 'project-control-wsl.sh'
 $appPath = Join-Path $projectRoot 'app.py'
 $envPath = Join-Path $projectRoot '.env'
 $runDir = Join-Path $projectRoot '.run'
@@ -12,6 +13,27 @@ $port = 8501
 $appUrl = "http://${serverHost}:${port}"
 
 if (-not (Test-Path $runDir)) { New-Item -ItemType Directory -Path $runDir | Out-Null }
+
+function Convert-ToWslPath {
+    param([string]$WindowsPath)
+
+    $resolvedPath = (Resolve-Path -LiteralPath $WindowsPath).Path
+    $normalizedPath = $resolvedPath -replace '\\', '/'
+    if ($normalizedPath -notmatch '^([A-Za-z]):/(.+)$') {
+        throw "Не удалось преобразовать путь в WSL-формат: $WindowsPath"
+    }
+    return "/mnt/$($matches[1].ToLower())/$($matches[2])"
+}
+
+function Invoke-WslInProject {
+    param(
+        [string]$Action,
+        [string[]]$Arguments = @()
+    )
+
+    $wslScriptPath = Convert-ToWslPath $wslControlScript
+    & wsl.exe -d $wslDistro bash $wslScriptPath $Action @Arguments
+}
 
 function Write-LogLine {
     param(
@@ -47,15 +69,58 @@ function Write-Fail {
 
 function Test-TcpPort {
     param([string]$ComputerName, [int]$Port)
+
+    $tcp = $null
+    $asyncResult = $null
     try {
         $tcp = [System.Net.Sockets.TcpClient]::new()
-        $tcp.Connect($ComputerName, $Port)
+        $asyncResult = $tcp.BeginConnect($ComputerName, $Port, $null, $null)
+        if (-not $asyncResult.AsyncWaitHandle.WaitOne(1000, $false)) {
+            return $false
+        }
+        $tcp.EndConnect($asyncResult)
         $tcp.Close()
         return $true
     }
     catch {
         return $false
     }
+    finally {
+        if ($asyncResult -and $asyncResult.AsyncWaitHandle) {
+            $asyncResult.AsyncWaitHandle.Close()
+        }
+        if ($tcp) {
+            $tcp.Dispose()
+        }
+    }
+}
+
+function Test-HttpHealth {
+    param([string]$Url)
+
+    try {
+        $response = Invoke-WebRequest -UseBasicParsing $Url -TimeoutSec 2
+        return (($response.Content | Out-String).Trim() -eq 'ok')
+    }
+    catch {
+        return $false
+    }
+}
+
+function Wait-HttpHealth {
+    param(
+        [string]$Url,
+        [int]$TimeoutSeconds = 30
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-HttpHealth -Url $Url) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    return $false
 }
 
 function Remove-StalePid {
@@ -83,15 +148,11 @@ function Remove-StalePid {
 
 try {
     Write-Step 'Проверяю структуру проекта'
-    if (-not (Test-Path $venvPython)) { throw "Не найден Python в .venv: $venvPython" }
+    if (-not (Test-Path $wslControlScript)) { throw "Не найден WSL helper script: $wslControlScript" }
     if (-not (Test-Path $appPath))    { throw "Не найден app.py: $appPath" }
     if (-not (Test-Path $envPath))    { throw "Не найден .env: $envPath" }
     if (-not (Test-Path $runDir))     { New-Item -ItemType Directory -Path $runDir | Out-Null }
     Write-Ok 'Файлы проекта на месте'
-
-    # Добавляем .venv\Scripts в PATH — там лежит pandoc и другие инструменты venv
-    $venvScripts = Join-Path $projectRoot '.venv\Scripts'
-    $env:PATH = "$venvScripts;$env:PATH"
 
     Write-Step 'Проверяю, не запущен ли уже проект'
     Remove-StalePid
@@ -101,22 +162,33 @@ try {
     Write-Ok "Порт $port свободен"
 
     Write-Step 'Проверяю Python-зависимости'
-    & $venvPython -c "import openai, streamlit, docx, pypandoc, dotenv" 2>&1 | Out-Null
+    Invoke-WslInProject 'check-python' 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Одна или несколько Python-зависимостей не установлены.' }
     Write-Ok 'Python-зависимости доступны'
 
     Write-Step 'Проверяю Pandoc'
-    $pandocCheck = & pandoc --version 2>$null
-    if (-not $pandocCheck) { throw 'Pandoc не найден в PATH.' }
+    Invoke-WslInProject 'check-pandoc' 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Pandoc не найден в WSL PATH.' }
     Write-Ok 'Pandoc доступен'
 
     Write-Step 'Проверяю .env и API-ключ'
-    $keyCheck = & $venvPython -c "from dotenv import load_dotenv; import os; load_dotenv(dotenv_path=r'$envPath'); v=os.getenv('OPENAI_API_KEY','').strip(); print('KEY_OK' if v and v!='your_api_key_here' else 'KEY_MISSING')" 2>&1
+    $keyCheck = Invoke-WslInProject 'check-api-key' 2>&1
     if (($keyCheck | Out-String).Trim() -ne 'KEY_OK') {
         throw 'OPENAI_API_KEY не задан или остался placeholder в .env.'
     }
     Write-Ok 'API-ключ найден'
 
+    Write-Step 'Запускаю Streamlit в WSL'
+    Invoke-WslInProject 'run-streamlit' @($serverHost, "$port") 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Не удалось запустить Streamlit в WSL.' }
+
+    Write-Step 'Ожидаю доступности health endpoint (через WSL)'
+    $healthResult = Invoke-WslInProject 'wait-health' @("$port", '90') 2>&1
+    if (($healthResult | Out-String).Trim() -ne 'ok') {
+        throw 'Streamlit не стал доступен по health endpoint за 90 секунд.'
+    }
+
+    Write-Ok 'Сервер доступен'
     Write-Host '' -ForegroundColor Green
     Write-Host '========================================' -ForegroundColor Green
     Write-Host "  App: $appUrl" -ForegroundColor Green
@@ -125,19 +197,7 @@ try {
     Write-Host '========================================' -ForegroundColor Green
     Write-Host '' -ForegroundColor Green
     Add-Content -Path $projectLogPath -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') | INFO | App URL: $appUrl" -Encoding utf8
-
-    # Записываем PID текущего процесса pwsh (stop-скрипт убьет дерево через taskkill /T)
-    Set-Content -Path $pidPath -Value $PID -NoNewline
-
-    # Запускаем Streamlit прямо в этом процессе — VS Code task держит его живым
-    Set-Location $projectRoot
-    & $venvPython -m streamlit run app.py --server.headless true --server.address $serverHost --server.port $port
-
-    # Сюда попадаем только когда Streamlit завершится
     if (Test-Path $pidPath) { Remove-Item $pidPath -Force -ErrorAction SilentlyContinue }
-    Write-Ok 'Сервер завершил работу'
-    Add-Content -Path $projectLogPath -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') | INFO | Status: STOPPED" -Encoding utf8
-    Write-Host 'Status: STOPPED' -ForegroundColor Green
     exit 0
 }
 catch {

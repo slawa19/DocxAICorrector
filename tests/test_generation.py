@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from PIL import Image
 
 import generation
+import image_shared
 from image_generation import _normalize_generated_document_background
 
 
@@ -92,6 +93,79 @@ def test_convert_markdown_to_docx_bytes_calls_pandoc_and_reads_output(monkeypatc
     result = generation.convert_markdown_to_docx_bytes("# Title")
 
     assert result == b"docx-bytes"
+
+
+def test_normalize_model_output_strips_any_code_fence_language_tag():
+    assert generation.normalize_model_output("```python\nprint(1)\n```") == "print(1)"
+
+
+def test_call_responses_create_with_retry_retries_without_timeout_on_final_attempt():
+    calls = []
+
+    class Client:
+        class Responses:
+            def create(self, **kwargs):
+                calls.append(dict(kwargs))
+                if len(calls) == 1:
+                    raise TypeError("unexpected keyword argument 'timeout'")
+                return SimpleNamespace(output_text="ok")
+
+        responses = Responses()
+
+    result = image_shared.call_responses_create_with_retry(
+        Client(),
+        {"model": "gpt-5.4", "input": [], "timeout": 1},
+        max_retries=1,
+        retryable_error_predicate=lambda exc: False,
+    )
+
+    assert result.output_text == "ok"
+    assert calls == [
+        {"model": "gpt-5.4", "input": [], "timeout": 1},
+        {"model": "gpt-5.4", "input": []},
+    ]
+
+
+def test_call_responses_create_with_retry_does_not_double_consume_budget_after_timeout_removal():
+    class BudgetExceeded(RuntimeError):
+        pass
+
+    class Budget:
+        def __init__(self):
+            self.used_calls = 0
+
+        def consume(self, operation_name):
+            if self.used_calls >= 1:
+                raise BudgetExceeded("exhausted")
+            self.used_calls += 1
+
+    calls = []
+    budget = Budget()
+
+    class Client:
+        class Responses:
+            def create(self, **kwargs):
+                calls.append(dict(kwargs))
+                if len(calls) == 1:
+                    raise TypeError("unexpected keyword argument 'timeout'")
+                return SimpleNamespace(output_text="ok")
+
+        responses = Responses()
+
+    result = image_shared.call_responses_create_with_retry(
+        Client(),
+        {"model": "gpt-5.4", "input": [], "timeout": 1},
+        max_retries=1,
+        retryable_error_predicate=lambda exc: False,
+        budget=budget,
+    )
+
+    assert result.output_text == "ok"
+    assert budget.used_calls == 1
+    assert calls == [
+        {"model": "gpt-5.4", "input": [], "timeout": 1},
+        {"model": "gpt-5.4", "input": []},
+    ]
 
 
 def test_normalize_generated_document_background_whitens_dark_border_only():

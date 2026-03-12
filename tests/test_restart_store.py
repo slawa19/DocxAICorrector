@@ -46,6 +46,29 @@ def test_store_restart_source_replaces_previous_file(tmp_path, monkeypatch):
     assert restart_store.load_restart_source_bytes(second) == b"two"
 
 
+def test_store_restart_source_overwrites_same_path_without_deleting_new_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(restart_store, "RUN_DIR", tmp_path)
+
+    first = restart_store.store_restart_source(
+        session_id="session-a",
+        source_name="report.docx",
+        source_token="report.docx:3:same",
+        source_bytes=b"one",
+    )
+
+    second = restart_store.store_restart_source(
+        session_id="session-a",
+        source_name="report.docx",
+        source_token="report.docx:3:same",
+        source_bytes=b"two",
+        previous_restart_source=first,
+    )
+
+    assert first["storage_path"] == second["storage_path"]
+    assert Path(second["storage_path"]).exists()
+    assert restart_store.load_restart_source_bytes(second) == b"two"
+
+
 def test_store_restart_source_uses_session_scoped_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(restart_store, "RUN_DIR", tmp_path)
 

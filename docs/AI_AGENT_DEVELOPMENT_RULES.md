@@ -323,6 +323,26 @@
 
 ---
 
+### 5.4. В этом репозитории полный pytest нужно запускать из PowerShell через WSL-venv
+
+Для этого проекта недостаточно абстрактной команды `pytest` из любой оболочки.
+
+Обязательное правило:
+
+- если нужно прогнать весь test suite, ИИ-агент должен запускать его из `PowerShell`, но выполнять внутри `WSL` с активацией `.venv/bin/activate`;
+- нельзя полагаться на `.venv\Scripts\python.exe` как на источник истины, потому что этот репозиторий использует WSL-based virtualenv;
+- перед интерпретацией результатов нужно убедиться, что pytest видит корень проекта в `sys.path` и может импортировать `app.py`, `generation.py`, `restart_store.py` и остальные top-level модули.
+
+Канонический запуск:
+
+```powershell
+wsl.exe -d Debian bash -lc "cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate && pytest tests -q"
+```
+
+Если запуск делается из VS Code task или через automation, это всё равно должен быть путь `PowerShell -> WSL -> .venv/bin/activate -> pytest`.
+
+---
+
 ## 6. Правила для документации и ревью
 
 ### 6.1. Не используй ложную точность

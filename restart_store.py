@@ -26,8 +26,10 @@ def _store_persisted_source(
 ) -> dict[str, object]:
     RUN_DIR.mkdir(parents=True, exist_ok=True)
     storage_path = _build_persisted_source_path(prefix, session_id, source_token, source_name)
+    previous_storage_path = previous_source.get("storage_path") if isinstance(previous_source, dict) else None
     storage_path.write_bytes(source_bytes)
-    clear_restart_source(previous_source)
+    if previous_storage_path != str(storage_path):
+        clear_restart_source(previous_source)
     return {
         "session_id": session_id,
         "filename": source_name,
