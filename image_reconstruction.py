@@ -20,7 +20,6 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-from config import get_client
 from constants import PROMPTS_DIR
 from image_shared import detect_image_mime_type
 from logger import log_event
@@ -123,11 +122,13 @@ def extract_scene_graph(
     client=None,
 ) -> dict[str, Any]:
     """Call a multimodal VLM to extract a structured JSON scene graph."""
+    if client is None:
+        raise RuntimeError("Scene graph extraction requires an explicit client.")
+
     prompt_text = _load_scene_graph_prompt()
     data_uri = _image_bytes_to_data_uri(image_bytes, mime_type)
 
-    resolved_client = client or get_client()
-    response = resolved_client.responses.create(
+    response = client.responses.create(
         model=model,
         input=[
             {
@@ -351,6 +352,31 @@ def _render_table(draw: ImageDraw.ImageDraw, image: Image.Image, el: dict[str, A
                 fill=_hex_to_rgba(cell_fill),
             )
 
+        text = str(cell.get("text", "")).strip()
+        if not text:
+            continue
+
+        explicit_font_size = cell.get("font_size") or el.get("font_size")
+        default_font_size = int(ch * 0.32)
+        font_size = max(_MIN_FONT_SIZE, min(int(explicit_font_size) if explicit_font_size else default_font_size, _MAX_FONT_SIZE))
+        bold = bool(cell.get("bold", False))
+        font_family = cell.get("font_family") or el.get("font_family")
+        font = _get_font(font_size, bold=bold, family=font_family)
+        font_color = _hex_to_rgba(cell.get("font_color") or "#000000") or (0, 0, 0, 255)
+        _draw_box_text(
+            draw,
+            text,
+            cell_x + max(2, stroke_w),
+            cell_y + max(2, stroke_w),
+            max(1, cw - max(4, stroke_w * 2)),
+            max(1, ch - max(4, stroke_w * 2)),
+            font,
+            font_color,
+            text_align=str(cell.get("text_align") or el.get("text_align") or "center"),
+            family=font_family,
+            bold=bold,
+        )
+
 
 def _should_render_styled_matrix(el: dict[str, Any], *, w: int, h: int, rows: int, cols: int) -> bool:
     if rows < 3 or cols < 2 or cols > 4:
@@ -460,31 +486,6 @@ def _render_styled_matrix_table(
                 font,
                 font_color,
                 text_align=text_align,
-                family=font_family,
-                bold=bold,
-            )
-
-        text = cell.get("text", "")
-        if text:
-            explicit_font_size = cell.get("font_size") or el.get("font_size")
-            font_size = max(
-                _MIN_FONT_SIZE,
-                min(int(explicit_font_size) if explicit_font_size else int(ch * 0.5), _MAX_FONT_SIZE),
-            )
-            bold = cell.get("bold", False)
-            font_family = cell.get("font_family") or el.get("font_family")
-            font = _get_font(font_size, bold=bold, family=font_family)
-            font_color = cell.get("font_color") or "#000000"
-            _draw_box_text(
-                draw,
-                text,
-                cell_x,
-                cell_y,
-                cw,
-                ch,
-                font,
-                _hex_to_rgba(font_color) or (0, 0, 0, 255),
-                text_align=str(cell.get("text_align") or el.get("text_align") or "center"),
                 family=font_family,
                 bold=bold,
             )
@@ -933,15 +934,11 @@ def _sample_source_background(
 
     width, height = rgb_image.size
     sample = max(1, int(round(min(width, height) * sample_ratio)))
-    pixels: list[tuple[int, int, int]] = []
-    for x_coord in range(width):
-        for y_coord in range(sample):
-            pixels.append(rgb_image.getpixel((x_coord, y_coord)))
-            pixels.append(rgb_image.getpixel((x_coord, height - 1 - y_coord)))
-    for y_coord in range(height):
-        for x_coord in range(sample):
-            pixels.append(rgb_image.getpixel((x_coord, y_coord)))
-            pixels.append(rgb_image.getpixel((width - 1 - x_coord, y_coord)))
+    top_strip = _image_rgb_pixels(rgb_image.crop((0, 0, width, sample)))
+    bottom_strip = _image_rgb_pixels(rgb_image.crop((0, max(0, height - sample), width, height)))
+    left_strip = _image_rgb_pixels(rgb_image.crop((0, 0, sample, height)))
+    right_strip = _image_rgb_pixels(rgb_image.crop((max(0, width - sample), 0, width, height)))
+    pixels = top_strip + bottom_strip + left_strip + right_strip
     if not pixels:
         return None, float("inf")
 
@@ -951,6 +948,14 @@ def _sample_source_background(
         for pixel in pixels
     ) / len(pixels)
     return (median_color[0], median_color[1], median_color[2], 255), average_deviation
+
+
+def _image_rgb_pixels(image: Image.Image) -> list[tuple[int, int, int]]:
+    image_bytes = image.tobytes()
+    return [
+        (image_bytes[index], image_bytes[index + 1], image_bytes[index + 2])
+        for index in range(0, len(image_bytes), 3)
+    ]
 
 
 def _rgba_distance(left: tuple[int, ...], right: tuple[int, ...]) -> float:

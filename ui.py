@@ -5,31 +5,37 @@ import streamlit as st
 
 from generation import build_markdown_filename, build_output_filename
 from logger import format_elapsed
-from models import get_image_variant_bytes
+from models import DOCX_COMPARE_VARIANT_MODE_VALUES, ImageMode, get_image_variant_bytes
 
 
 IMAGE_MODE_LABELS = {
-    "safe": "Просто улучшить",
-    "semantic_redraw_direct": "Креативная AI-перерисовка",
-    "semantic_redraw_structured": "Структурная AI-перерисовка",
-    "compare_all": "Сгенерировать 3 варианта",
+    ImageMode.SAFE.value: "Просто улучшить",
+    ImageMode.SEMANTIC_REDRAW_DIRECT.value: "Креативная AI-перерисовка",
+    ImageMode.SEMANTIC_REDRAW_STRUCTURED.value: "Структурная AI-перерисовка",
+    ImageMode.COMPARE_ALL.value: "Сгенерировать 3 варианта",
 }
 
 IMAGE_MODE_DESCRIPTIONS = {
-    "safe": "Слегка улучшает исходную картинку без смысловой перерисовки.",
-    "semantic_redraw_direct": "Делает creative redraw через vision + generate. Лучше для инфографики, композиции, цвета и сложного оформления.",
-    "semantic_redraw_structured": "Делает content-conservative redraw в стиле office presentation. Лучше для схем, таблиц и структурных изображений.",
-    "compare_all": "Строит safe, креативный и структурный варианты сразу, чтобы выбрать лучший перед итоговым DOCX.",
+    ImageMode.SAFE.value: "Слегка улучшает исходную картинку без смысловой перерисовки.",
+    ImageMode.SEMANTIC_REDRAW_DIRECT.value: "Делает creative redraw через vision + generate. Лучше для инфографики, композиции, цвета и сложного оформления.",
+    ImageMode.SEMANTIC_REDRAW_STRUCTURED.value: "Делает content-conservative redraw в стиле office presentation. Лучше для схем, таблиц и структурных изображений.",
+    ImageMode.COMPARE_ALL.value: "Строит safe, креативный и структурный варианты сразу, чтобы выбрать лучший перед итоговым DOCX.",
 }
 
 IMAGE_COMPARE_LABELS = {
     "original": "Оригинал",
-    "safe": "Просто улучшить",
-    "semantic_redraw_direct": "Креативная AI-перерисовка",
-    "semantic_redraw_structured": "Структурная AI-перерисовка",
+    ImageMode.SAFE.value: "Просто улучшить",
+    ImageMode.SEMANTIC_REDRAW_DIRECT.value: "Креативная AI-перерисовка",
+    ImageMode.SEMANTIC_REDRAW_STRUCTURED.value: "Структурная AI-перерисовка",
 }
 
 IMAGE_MODE_VALUES_BY_LABEL = {label: value for value, label in IMAGE_MODE_LABELS.items()}
+
+
+def _render_trusted_html(html_markup: str) -> None:
+    # This helper is reserved for trusted markup assembled inside this module.
+    # Dynamic user-visible values interpolated into HTML must be escaped first.
+    st.markdown(html_markup, unsafe_allow_html=True)
 
 _SIDEBAR_DD = 'section[data-testid="stSidebar"] div[data-baseweb="select"]'
 
@@ -70,7 +76,7 @@ SIDEBAR_DROPDOWN_CSS = f"""
 
 
 def inject_ui_styles() -> None:
-    st.markdown(
+    _render_trusted_html(
         """
         <style>
         :root {
@@ -221,13 +227,12 @@ def inject_ui_styles() -> None:
         }
         </style>
         """,
-        unsafe_allow_html=True,
     )
 
 
 def render_section_gap(size: str = "md") -> None:
     normalized_size = "lg" if size == "lg" else "md"
-    st.markdown(f'<div class="section-gap-{normalized_size}"></div>', unsafe_allow_html=True)
+    _render_trusted_html(f'<div class="section-gap-{normalized_size}"></div>')
 
 
 def render_sidebar_selectbox(
@@ -281,28 +286,26 @@ def render_live_status(target=None) -> None:
                     for entry in activity_feed[-5:]
                 )
             items = "".join(f'<div class="activity-feed-item">{escape(line)}</div>' for line in preparing_lines)
-            st.markdown(
+            _render_trusted_html(
                 f"""
                 <div class="activity-feed">
                     <div class="activity-feed-title">Последний анализ файла</div>
                     <div class="activity-feed-items">{items}</div>
                 </div>
-                """,
-                unsafe_allow_html=True,
+                """
             )
         else:
             title = "Идет обработка" if status.get("is_running") else "Состояние"
             stage = escape(str(status.get("stage") or "Ожидание"))
             detail = escape(str(status.get("detail") or ""))
-            st.markdown(
+            _render_trusted_html(
                 f"""
                 <div class="live-status-card">
                     <div class="live-status-title">{title}</div>
                     <div class="live-status-stage">{stage}</div>
                     <div class="live-status-meta">{detail}</div>
                 </div>
-                """,
-                unsafe_allow_html=True,
+                """
             )
             metric_columns = st.columns(4)
             metric_columns[0].metric("Блок", f"{current_block}/{block_count}" if block_count else "0/0")
@@ -319,14 +322,13 @@ def render_live_status(target=None) -> None:
                 f"<div class=\"activity-feed-item\">{escape(entry['time'])}  {escape(entry['message'])}</div>"
                 for entry in activity_feed[-5:]
             )
-            st.markdown(
+            _render_trusted_html(
                 f"""
                 <div class="activity-feed">
                     <div class="activity-feed-title">Бегущие строки</div>
                     <div class="activity-feed-items">{items}</div>
                 </div>
-                """,
-                unsafe_allow_html=True,
+                """
             )
 
 
@@ -351,14 +353,13 @@ def render_preparation_summary(summary: dict[str, object] | None, target=None) -
             f"Этап: {stage} | Подготовка заняла: {elapsed}" if elapsed else f"Этап: {stage}",
         ]
         items = "".join(f'<div class="activity-feed-item">{escape(line)}</div>' for line in summary_lines)
-        st.markdown(
+        _render_trusted_html(
             f"""
             <div class="activity-feed">
                 <div class="activity-feed-title">Последний анализ файла</div>
                 <div class="activity-feed-items">{items}</div>
             </div>
-            """,
-            unsafe_allow_html=True,
+            """
         )
 
 
@@ -452,7 +453,7 @@ def render_image_compare_selector(target=None) -> dict[str, str]:
                     columns[0].image(original_bytes, caption=IMAGE_COMPARE_LABELS["original"], use_container_width=True)
 
                 variant_map = dict(_asset_value(asset, "comparison_variants", {}))
-                ordered_modes = ["safe", "semantic_redraw_direct", "semantic_redraw_structured"]
+                ordered_modes = list(DOCX_COMPARE_VARIANT_MODE_VALUES)
                 for index, mode in enumerate(ordered_modes, start=1):
                     variant = variant_map.get(mode)
                     variant_bytes = get_image_variant_bytes(variant)
@@ -498,9 +499,9 @@ def render_sidebar(config: dict[str, object]) -> tuple[str, int, int, str, bool]
         max_value=5,
         value=int(config["max_retries"]),
     )
-    image_mode_default = str(config.get("image_mode_default", "safe"))
+    image_mode_default = str(config.get("image_mode_default", ImageMode.SAFE.value))
     image_mode_options = list(IMAGE_MODE_LABELS.values())
-    image_mode_default_label = IMAGE_MODE_LABELS.get(image_mode_default, IMAGE_MODE_LABELS["safe"])
+    image_mode_default_label = IMAGE_MODE_LABELS.get(image_mode_default, IMAGE_MODE_LABELS[ImageMode.SAFE.value])
     image_mode_index = image_mode_options.index(image_mode_default_label) if image_mode_default_label in image_mode_options else 0
     selected_image_mode_label = render_sidebar_selectbox(
         "Режим обработки изображений",
@@ -508,7 +509,7 @@ def render_sidebar(config: dict[str, object]) -> tuple[str, int, int, str, bool]
         index=image_mode_index,
         key="sidebar_image_mode",
     )
-    image_mode = IMAGE_MODE_VALUES_BY_LABEL.get(selected_image_mode_label, "safe")
+    image_mode = IMAGE_MODE_VALUES_BY_LABEL.get(selected_image_mode_label, ImageMode.SAFE.value)
     st.sidebar.caption(IMAGE_MODE_DESCRIPTIONS.get(image_mode, ""))
     enable_post_redraw_validation = st.sidebar.checkbox(
         "Включить post-check validation",

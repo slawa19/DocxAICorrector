@@ -208,15 +208,28 @@ def test_start_background_preparation_propagates_cached_flag(monkeypatch):
 def test_drain_processing_events_moves_restart_source_to_completed_cache_on_success(monkeypatch):
     session_state = SessionState(
         processing_event_queue=queue.Queue(),
-        restart_source={"filename": "report.docx", "token": "report.docx:3:abc", "storage_path": "restart.bin"},
+        restart_source={"filename": "report.docx", "token": "report.docx:3:abc", "storage_path": "restart.bin", "session_id": "session-a"},
         processing_worker=object(),
         processing_stop_event=object(),
         processing_stop_requested=True,
+        restart_session_id="session-a",
     )
     monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
     monkeypatch.setattr(processing_runtime, "load_restart_source_bytes", lambda restart_source: b"abc")
     cleared = []
     monkeypatch.setattr(processing_runtime, "clear_restart_source", lambda restart_source: cleared.append(restart_source))
+    monkeypatch.setattr(
+        processing_runtime,
+        "store_completed_source",
+        lambda **kwargs: {
+            "filename": kwargs["source_name"],
+            "token": kwargs["source_token"],
+            "storage_path": "completed.bin",
+            "size": len(kwargs["source_bytes"]),
+            "session_id": kwargs["session_id"],
+            "storage_kind": "completed",
+        },
+    )
 
     session_state.processing_event_queue.put(WorkerCompleteEvent(outcome="succeeded"))
 
@@ -231,17 +244,19 @@ def test_drain_processing_events_moves_restart_source_to_completed_cache_on_succ
     assert session_state.completed_source == {
         "filename": "report.docx",
         "token": "report.docx:3:abc",
-        "source_bytes": b"abc",
+        "storage_path": "completed.bin",
         "size": 3,
+        "session_id": "session-a",
+        "storage_kind": "completed",
     }
     assert session_state.restart_source is None
-    assert cleared == [{"filename": "report.docx", "token": "report.docx:3:abc", "storage_path": "restart.bin"}]
+    assert cleared == [{"filename": "report.docx", "token": "report.docx:3:abc", "storage_path": "restart.bin", "session_id": "session-a"}]
 
 
 def test_drain_processing_events_skips_completed_cache_for_large_sources(monkeypatch):
     session_state = SessionState(
         processing_event_queue=queue.Queue(),
-        restart_source={"filename": "report.docx", "token": "report.docx:12:abc", "storage_path": "restart.bin"},
+        restart_source={"filename": "report.docx", "token": "report.docx:12:abc", "storage_path": "restart.bin", "session_id": "session-a"},
         processing_worker=object(),
         processing_stop_event=object(),
         processing_stop_requested=True,
@@ -267,7 +282,7 @@ def test_drain_processing_events_skips_completed_cache_for_large_sources(monkeyp
     assert session_state.restart_source is None
     assert len(activities) == 1
     assert "слишком большой" in activities[0].lower()
-    assert cleared == [{"filename": "report.docx", "token": "report.docx:12:abc", "storage_path": "restart.bin"}]
+    assert cleared == [{"filename": "report.docx", "token": "report.docx:12:abc", "storage_path": "restart.bin", "session_id": "session-a"}]
 
 
 def test_start_background_processing_degrades_gracefully_when_restart_store_fails(monkeypatch):

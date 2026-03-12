@@ -1,6 +1,9 @@
 from types import SimpleNamespace
 
+from PIL import Image
+
 import generation
+from image_generation import _normalize_generated_document_background
 
 
 class RetryableError(Exception):
@@ -72,3 +75,32 @@ def test_ensure_pandoc_available_converts_os_error(monkeypatch):
         assert "Pandoc не найден" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError when pandoc is unavailable")
+
+
+def test_convert_markdown_to_docx_bytes_calls_pandoc_and_reads_output(monkeypatch, tmp_path):
+    monkeypatch.setattr(generation, "ensure_pandoc_available", lambda: None)
+
+    def fake_convert_file(source_path, *, to, format, outputfile):
+        assert source_path.endswith("result.md")
+        assert to == "docx"
+        assert format == "md"
+        with open(outputfile, "wb") as file_handle:
+            file_handle.write(b"docx-bytes")
+
+    monkeypatch.setattr(generation.pypandoc, "convert_file", fake_convert_file)
+
+    result = generation.convert_markdown_to_docx_bytes("# Title")
+
+    assert result == b"docx-bytes"
+
+
+def test_normalize_generated_document_background_whitens_dark_border_only():
+    image = Image.new("RGBA", (12, 12), (0, 0, 0, 255))
+    for x_coord in range(3, 9):
+        for y_coord in range(3, 9):
+            image.putpixel((x_coord, y_coord), (200, 0, 0, 255))
+
+    normalized = _normalize_generated_document_background(image)
+
+    assert normalized.getpixel((0, 0)) == (255, 255, 255, 255)
+    assert normalized.getpixel((5, 5)) == (200, 0, 0, 255)

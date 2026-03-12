@@ -6,12 +6,16 @@ from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from image_reconstruction import (
     _draw_arrowhead,
     _hex_to_rgba,
     _parse_scene_graph_json,
+    _render_styled_matrix_table,
+    _render_table,
+    _sample_source_background,
+    extract_scene_graph,
     _validate_scene_graph,
     render_scene_graph as _render_scene_graph_impl,
 )
@@ -269,6 +273,63 @@ class TestRenderSceneGraph:
         png_bytes = render_scene_graph(sg)
         with Image.open(BytesIO(png_bytes)) as img:
             assert img.size == (300, 200)
+
+    def test_plain_table_path_renders_text_for_each_non_empty_cell(self, monkeypatch):
+        draw_calls = []
+        monkeypatch.setattr("image_reconstruction._draw_box_text", lambda *args, **kwargs: draw_calls.append(args[1]))
+
+        image = Image.new("RGBA", (220, 120), (255, 255, 255, 255))
+        draw = ImageDraw.Draw(image)
+        _render_table(
+            draw,
+            image,
+            {
+                "x": 10,
+                "y": 10,
+                "width": 180,
+                "height": 60,
+                "rows": 2,
+                "cols": 5,
+                "stroke": "#000000",
+                "cells": [
+                    {"row": 0, "col": 0, "text": "A"},
+                    {"row": 0, "col": 1, "text": "B"},
+                    {"row": 1, "col": 0, "text": "C"},
+                    {"row": 1, "col": 1, "text": ""},
+                ],
+            },
+        )
+
+        assert draw_calls == ["A", "B", "C"]
+
+    def test_styled_matrix_renders_each_cell_text_once(self, monkeypatch):
+        draw_calls = []
+        monkeypatch.setattr("image_reconstruction._draw_box_text", lambda *args, **kwargs: draw_calls.append(args[1]))
+
+        image = Image.new("RGBA", (320, 220), (255, 255, 255, 255))
+        draw = ImageDraw.Draw(image)
+        _render_styled_matrix_table(
+            draw,
+            image,
+            {
+                "cells": [
+                    {"row": 0, "col": 0, "text": "H1"},
+                    {"row": 0, "col": 1, "text": "H2"},
+                    {"row": 1, "col": 0, "text": "A1"},
+                    {"row": 1, "col": 1, "text": "A2"},
+                    {"row": 2, "col": 0, "text": "B1"},
+                    {"row": 2, "col": 1, "text": "B2"},
+                ]
+            },
+            x=10,
+            y=10,
+            w=220,
+            h=150,
+            rows=3,
+            cols=2,
+        )
+
+        assert draw_calls == ["H1", "H2", "A1", "A2", "B1", "B2"]
 
     def test_renders_rounded_rect(self):
         sg = _build_minimal_scene_graph(
@@ -531,6 +592,35 @@ class TestReconstructionRouting:
         jpeg_bytes = _build_photo_like_jpeg()
         result = analyze_image(jpeg_bytes, model="test-model", mime_type="image/jpeg")
         assert result.render_strategy == "safe_mode"
+
+
+def test_extract_scene_graph_requires_explicit_client():
+    try:
+        extract_scene_graph(_build_test_png())
+    except RuntimeError as exc:
+        assert "explicit client" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError when reconstruction client is not provided")
+
+
+def test_sample_source_background_reads_border_color():
+    image = Image.new("RGB", (40, 30), (255, 255, 255))
+    for x_coord in range(40):
+        for y_coord in range(3):
+            image.putpixel((x_coord, y_coord), (240, 240, 240))
+            image.putpixel((x_coord, 29 - y_coord), (240, 240, 240))
+    for y_coord in range(30):
+        for x_coord in range(3):
+            image.putpixel((x_coord, y_coord), (240, 240, 240))
+            image.putpixel((39 - x_coord, y_coord), (240, 240, 240))
+
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+
+    background, deviation = _sample_source_background(buffer.getvalue(), 0.1)
+
+    assert background == (240, 240, 240, 255)
+    assert deviation <= 1.0
 
 
 def _build_diagram_like_png():

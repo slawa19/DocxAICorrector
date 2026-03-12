@@ -110,7 +110,7 @@ def _prepare_state(monkeypatch):
     monkeypatch.setattr(
         processing_service,
         "generate_image_candidate",
-        lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, client=None, budget=None: (
+        lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, reconstruction_render_config=None, client=None, budget=None: (
             PNG_BYTES if mode == "safe" else REDRAWN_BYTES
         ),
     )
@@ -166,6 +166,7 @@ def test_process_document_images_applies_fallback_original_for_unreadable_candid
         mode,
         prefer_deterministic_reconstruction=True,
         reconstruction_model=None,
+        reconstruction_render_config=None,
         client=None,
         budget=None,
     ):
@@ -273,7 +274,17 @@ def test_process_document_images_reuses_single_client_for_image_attempts(monkeyp
         client_calls.append(client)
         return client
 
-    def fake_generate_image_candidate(image_bytes, analysis, *, mode, client=None, budget=None):
+    def fake_generate_image_candidate(
+        image_bytes,
+        analysis,
+        *,
+        mode,
+        prefer_deterministic_reconstruction=True,
+        reconstruction_model=None,
+        reconstruction_render_config=None,
+        client=None,
+        budget=None,
+    ):
         generation_clients.append(client)
         return PNG_BYTES if mode == "safe" else REDRAWN_BYTES
 
@@ -315,12 +326,26 @@ def test_process_document_images_uses_detected_redraw_mime_type_for_candidate_an
     asset = build_asset()
     asset.mime_type = "image/jpeg"
 
-    def capture_analyze_image(image_bytes, *, model, mime_type):
+    def capture_analyze_image(
+        image_bytes,
+        *,
+        model,
+        mime_type,
+        client=None,
+        enable_vision=True,
+        dense_text_bypass_threshold=18,
+        non_latin_text_bypass_threshold=12,
+        budget=None,
+    ):
         mime_types.append(mime_type)
         return next(analyses)
 
     monkeypatch.setattr(processing_service, "analyze_image", capture_analyze_image)
-    monkeypatch.setattr(processing_service, "generate_image_candidate", lambda image_bytes, analysis, *, mode, client=None, budget=None: PNG_BYTES if mode == "safe" else REDRAWN_BYTES)
+    monkeypatch.setattr(
+        processing_service,
+        "generate_image_candidate",
+        lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, reconstruction_render_config=None, client=None, budget=None: PNG_BYTES if mode == "safe" else REDRAWN_BYTES,
+    )
     service = processing_service.build_processing_service()
 
     result = service.process_document_images(
@@ -346,6 +371,7 @@ def test_process_document_images_compare_all_prepares_three_variants(monkeypatch
         mode,
         prefer_deterministic_reconstruction=True,
         reconstruction_model=None,
+        reconstruction_render_config=None,
         client=None,
         budget=None,
     ):
@@ -398,6 +424,7 @@ def test_process_document_images_attempts_semantic_mode_for_advisory_dense_text_
         mode,
         prefer_deterministic_reconstruction=True,
         reconstruction_model=None,
+        reconstruction_render_config=None,
         client=None,
         budget=None,
     ):
@@ -425,7 +452,7 @@ def test_process_document_images_falls_back_when_model_call_budget_is_exhausted(
     monkeypatch.setattr(
         processing_service,
         "generate_image_candidate",
-        lambda image_bytes, analysis, *, mode, client=None, budget=None: (_ for _ in ()).throw(
+        lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, reconstruction_render_config=None, client=None, budget=None: (_ for _ in ()).throw(
             processing_service.ImageModelCallBudgetExceeded("budget exhausted")
         )
         if mode != "safe"
@@ -477,6 +504,84 @@ def test_process_document_images_uses_safe_variant_when_semantic_candidate_colla
     assert result[0].final_decision == "fallback_safe"
     assert result[0].final_variant == "safe"
     assert result[0].final_reason == "semantic_redraw_fell_back_to_safe_candidate"
+
+
+def test_process_document_images_stops_future_images_when_document_budget_is_exhausted(monkeypatch):
+    _, service = _prepare_state(monkeypatch)
+    budgeted_analyses = []
+
+    def budgeted_analyze_image(
+        image_bytes,
+        *,
+        model,
+        mime_type=None,
+        client=None,
+        enable_vision=True,
+        dense_text_bypass_threshold=18,
+        non_latin_text_bypass_threshold=12,
+        budget=None,
+    ):
+        if budget is not None:
+            budget.consume("test.analyze")
+            if hasattr(budget, "used_calls"):
+                budgeted_analyses.append(budget.used_calls)
+        return build_analysis_result()
+
+    def budgeted_generate_candidate(
+        image_bytes,
+        analysis,
+        *,
+        mode,
+        prefer_deterministic_reconstruction=True,
+        reconstruction_model=None,
+        reconstruction_render_config=None,
+        client=None,
+        budget=None,
+    ):
+        if budget is not None and mode != "safe":
+            budget.consume("test.generate")
+        return PNG_BYTES if mode == "safe" else REDRAWN_BYTES
+
+    def budgeted_validate_redraw_result(
+        original_image,
+        candidate_image,
+        analysis_before,
+        *,
+        candidate_analysis=None,
+        config=None,
+        image_context=None,
+        client=None,
+        enable_vision_validation=True,
+        validation_model=None,
+        budget=None,
+    ):
+        if budget is not None:
+            budget.consume("test.validate")
+        return build_validation_result()
+
+    monkeypatch.setattr(processing_service, "analyze_image", budgeted_analyze_image)
+    monkeypatch.setattr(processing_service, "generate_image_candidate", budgeted_generate_candidate)
+    monkeypatch.setattr(processing_service, "validate_redraw_result", budgeted_validate_redraw_result)
+    service = processing_service.build_processing_service()
+
+    result = service.process_document_images(
+        image_assets=[build_asset(), build_asset()],
+        image_mode="semantic_redraw_direct",
+        config={
+            "enable_post_redraw_validation": True,
+            "validation_model": "gpt-4.1",
+            "semantic_redraw_max_attempts": 1,
+            "image_model_call_budget_per_document": 4,
+        },
+        on_progress=lambda **kwargs: None,
+        client=object(),
+    )
+
+    assert len(result) == 2
+    assert result[0].final_decision == "accept"
+    assert result[1].final_decision == "fallback_original"
+    assert result[1].final_reason == "document_model_call_budget_exhausted"
+    assert budgeted_analyses == [1]
 
 
 def test_process_document_images_skips_unsupported_source_image_without_validation_error(monkeypatch):

@@ -231,3 +231,16 @@ def test_extract_document_content_from_docx_rejects_suspicious_uncompressed_arch
         assert "слишком велик после распаковки" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError for suspiciously large uncompressed DOCX archive")
+
+
+def test_read_uploaded_docx_bytes_preserves_original_cause(monkeypatch):
+    failing_error = ValueError("bad upload")
+    monkeypatch.setattr(document, "read_uploaded_file_bytes", lambda uploaded_file: (_ for _ in ()).throw(failing_error))
+
+    try:
+        document._read_uploaded_docx_bytes(object())
+    except ValueError as exc:
+        assert "Не удалось прочитать содержимое DOCX-файла" in str(exc)
+        assert exc.__cause__ is failing_error
+    else:
+        raise AssertionError("Expected ValueError when uploaded DOCX bytes cannot be read")

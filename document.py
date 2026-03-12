@@ -6,6 +6,7 @@ from docx import Document
 from docx.shared import Emu
 
 from models import DocumentBlock, ImageAsset, ParagraphUnit, get_image_variant_bytes
+from processing_runtime import read_uploaded_file_bytes
 
 IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_IMAGE_img_\d+\]\]")
 COMPARE_ALL_VARIANT_LABELS = {
@@ -363,15 +364,11 @@ def _xml_local_name(tag: str) -> str:
 
 
 def _read_uploaded_docx_bytes(uploaded_file) -> bytes:
-    if hasattr(uploaded_file, "seek"):
-        uploaded_file.seek(0)
-    if hasattr(uploaded_file, "getvalue"):
-        source_bytes = uploaded_file.getvalue()
-    else:
-        source_bytes = uploaded_file.read()
-    if not isinstance(source_bytes, (bytes, bytearray)) or not source_bytes:
-        raise ValueError("Не удалось прочитать содержимое DOCX-файла.")
-    return bytes(source_bytes)
+    try:
+        source_bytes = read_uploaded_file_bytes(uploaded_file)
+    except ValueError as exc:
+        raise ValueError("Не удалось прочитать содержимое DOCX-файла.") from exc
+    return source_bytes
 
 
 def _validate_docx_archive(source_bytes: bytes) -> None:

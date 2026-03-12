@@ -1,5 +1,7 @@
 import os
 import tomllib
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -14,6 +16,57 @@ from constants import (
     SYSTEM_PROMPT_PATH,
 )
 from image_shared import clamp_score
+from models import IMAGE_MODE_VALUES, ImageMode
+
+
+@dataclass(frozen=True)
+class AppConfig(Mapping[str, object]):
+    default_model: str
+    model_options: list[str]
+    chunk_size: int
+    max_retries: int
+    image_mode_default: str
+    semantic_validation_policy: str
+    enable_post_redraw_validation: bool
+    validation_model: str
+    min_semantic_match_score: float
+    min_text_match_score: float
+    min_structure_match_score: float
+    validator_confidence_threshold: float
+    allow_accept_with_partial_text_loss: bool
+    prefer_deterministic_reconstruction: bool
+    reconstruction_model: str
+    enable_vision_image_analysis: bool
+    enable_vision_image_validation: bool
+    semantic_redraw_max_attempts: int
+    semantic_redraw_max_model_calls_per_image: int
+    dense_text_bypass_threshold: int
+    non_latin_text_bypass_threshold: int
+    reconstruction_min_canvas_short_side_px: int
+    reconstruction_target_min_font_px: int
+    reconstruction_max_upscale_factor: float
+    reconstruction_background_sample_ratio: float
+    reconstruction_background_color_distance_threshold: float
+    reconstruction_background_uniformity_threshold: float
+
+    def __getitem__(self, key: str) -> object:
+        return getattr(self, key)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.__dataclass_fields__)
+
+    def __len__(self) -> int:
+        return len(self.__dataclass_fields__)
+
+    def to_dict(self) -> dict[str, object]:
+        return {field_name: getattr(self, field_name) for field_name in self}
+
+
+def _parse_image_mode(value: str, *, source_name: str) -> str:
+    normalized = value.strip().lower()
+    if normalized not in IMAGE_MODE_VALUES:
+        raise RuntimeError(f"Некорректное значение image_mode в {source_name}: {value}")
+    return ImageMode(normalized).value
 
 
 def load_project_dotenv() -> None:
@@ -103,7 +156,7 @@ def parse_config_int(config_data: dict[str, object], field_name: str, default: i
     return value
 
 
-def load_app_config() -> dict[str, object]:
+def load_app_config() -> AppConfig:
     load_project_dotenv()
     config_data: dict[str, object] = {}
     if CONFIG_PATH.exists():
@@ -126,7 +179,10 @@ def load_app_config() -> dict[str, object]:
     if not isinstance(max_retries, int):
         raise RuntimeError(f"Некорректное поле max_retries в {CONFIG_PATH}")
 
-    image_mode_default = parse_config_str(config_data, "image_mode_default", "safe")
+    image_mode_default = _parse_image_mode(
+        parse_config_str(config_data, "image_mode_default", ImageMode.SAFE.value),
+        source_name=str(CONFIG_PATH),
+    )
     semantic_validation_policy = parse_choice_str(
         config_data,
         "semantic_validation_policy",
@@ -188,7 +244,10 @@ def load_app_config() -> dict[str, object]:
     default_model = os.getenv("DOCX_AI_DEFAULT_MODEL", default_model).strip() or default_model
     chunk_size = parse_int_env("DOCX_AI_CHUNK_SIZE", chunk_size)
     max_retries = parse_int_env("DOCX_AI_MAX_RETRIES", max_retries)
-    image_mode_default = os.getenv("DOCX_AI_IMAGE_MODE_DEFAULT", image_mode_default).strip() or image_mode_default
+    image_mode_default = _parse_image_mode(
+        os.getenv("DOCX_AI_IMAGE_MODE_DEFAULT", image_mode_default).strip() or image_mode_default,
+        source_name="DOCX_AI_IMAGE_MODE_DEFAULT",
+    )
     enable_post_redraw_validation = parse_bool_env(
         "DOCX_AI_ENABLE_POST_REDRAW_VALIDATION",
         enable_post_redraw_validation,
@@ -273,35 +332,35 @@ def load_app_config() -> dict[str, object]:
     if default_model not in model_options:
         model_options = [default_model, *[item for item in model_options if item != default_model]]
 
-    return {
-        "default_model": default_model,
-        "model_options": model_options,
-        "chunk_size": max(3000, min(chunk_size, 12000)),
-        "max_retries": max(1, min(max_retries, 5)),
-        "image_mode_default": image_mode_default,
-        "semantic_validation_policy": semantic_validation_policy,
-        "enable_post_redraw_validation": enable_post_redraw_validation,
-        "validation_model": validation_model,
-        "min_semantic_match_score": min_semantic_match_score,
-        "min_text_match_score": min_text_match_score,
-        "min_structure_match_score": min_structure_match_score,
-        "validator_confidence_threshold": validator_confidence_threshold,
-        "allow_accept_with_partial_text_loss": allow_accept_with_partial_text_loss,
-        "prefer_deterministic_reconstruction": prefer_deterministic_reconstruction,
-        "reconstruction_model": reconstruction_model,
-        "enable_vision_image_analysis": enable_vision_image_analysis,
-        "enable_vision_image_validation": enable_vision_image_validation,
-        "semantic_redraw_max_attempts": max(1, min(semantic_redraw_max_attempts, 5)),
-        "semantic_redraw_max_model_calls_per_image": max(1, min(semantic_redraw_max_model_calls_per_image, 20)),
-        "dense_text_bypass_threshold": max(1, min(dense_text_bypass_threshold, 80)),
-        "non_latin_text_bypass_threshold": max(1, min(non_latin_text_bypass_threshold, 80)),
-        "reconstruction_min_canvas_short_side_px": max(256, min(reconstruction_min_canvas_short_side_px, 4096)),
-        "reconstruction_target_min_font_px": max(10, min(reconstruction_target_min_font_px, 48)),
-        "reconstruction_max_upscale_factor": max(1.0, min(reconstruction_max_upscale_factor, 6.0)),
-        "reconstruction_background_sample_ratio": max(0.01, min(reconstruction_background_sample_ratio, 0.2)),
-        "reconstruction_background_color_distance_threshold": max(5.0, min(reconstruction_background_color_distance_threshold, 255.0)),
-        "reconstruction_background_uniformity_threshold": max(1.0, min(reconstruction_background_uniformity_threshold, 64.0)),
-    }
+    return AppConfig(
+        default_model=default_model,
+        model_options=model_options,
+        chunk_size=max(3000, min(chunk_size, 12000)),
+        max_retries=max(1, min(max_retries, 5)),
+        image_mode_default=image_mode_default,
+        semantic_validation_policy=semantic_validation_policy,
+        enable_post_redraw_validation=enable_post_redraw_validation,
+        validation_model=validation_model,
+        min_semantic_match_score=min_semantic_match_score,
+        min_text_match_score=min_text_match_score,
+        min_structure_match_score=min_structure_match_score,
+        validator_confidence_threshold=validator_confidence_threshold,
+        allow_accept_with_partial_text_loss=allow_accept_with_partial_text_loss,
+        prefer_deterministic_reconstruction=prefer_deterministic_reconstruction,
+        reconstruction_model=reconstruction_model,
+        enable_vision_image_analysis=enable_vision_image_analysis,
+        enable_vision_image_validation=enable_vision_image_validation,
+        semantic_redraw_max_attempts=max(1, min(semantic_redraw_max_attempts, 5)),
+        semantic_redraw_max_model_calls_per_image=max(1, min(semantic_redraw_max_model_calls_per_image, 20)),
+        dense_text_bypass_threshold=max(1, min(dense_text_bypass_threshold, 80)),
+        non_latin_text_bypass_threshold=max(1, min(non_latin_text_bypass_threshold, 80)),
+        reconstruction_min_canvas_short_side_px=max(256, min(reconstruction_min_canvas_short_side_px, 4096)),
+        reconstruction_target_min_font_px=max(10, min(reconstruction_target_min_font_px, 48)),
+        reconstruction_max_upscale_factor=max(1.0, min(reconstruction_max_upscale_factor, 6.0)),
+        reconstruction_background_sample_ratio=max(0.01, min(reconstruction_background_sample_ratio, 0.2)),
+        reconstruction_background_color_distance_threshold=max(5.0, min(reconstruction_background_color_distance_threshold, 255.0)),
+        reconstruction_background_uniformity_threshold=max(1.0, min(reconstruction_background_uniformity_threshold, 64.0)),
+    )
 
 
 def load_system_prompt() -> str:

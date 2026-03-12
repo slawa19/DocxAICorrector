@@ -3,11 +3,12 @@ import logging
 import queue
 import threading
 from io import BytesIO
+from typing import Protocol, runtime_checkable
 
 import streamlit as st
 
 from logger import log_event
-from restart_store import clear_restart_source, load_restart_source_bytes, store_restart_source
+from restart_store import clear_restart_source, load_restart_source_bytes, store_completed_source, store_restart_source
 from runtime_events import (
     AppendImageLogEvent,
     AppendLogEvent,
@@ -39,7 +40,18 @@ class BackgroundRuntime:
         return self._stop_event.is_set()
 
 
-def read_uploaded_file_bytes(uploaded_file) -> bytes:
+@runtime_checkable
+class UploadedFileLike(Protocol):
+    name: str
+
+    def read(self, size: int = -1) -> bytes: ...
+
+    def getvalue(self) -> bytes: ...
+
+    def seek(self, offset: int, whence: int = 0) -> int: ...
+
+
+def read_uploaded_file_bytes(uploaded_file: UploadedFileLike | BytesIO) -> bytes:
     if hasattr(uploaded_file, "seek"):
         uploaded_file.seek(0)
     if hasattr(uploaded_file, "getvalue"):
@@ -53,7 +65,7 @@ def read_uploaded_file_bytes(uploaded_file) -> bytes:
     return bytes(source_bytes)
 
 
-def build_uploaded_file_token(uploaded_file=None, *, source_name: str | None = None, source_bytes: bytes | None = None) -> str:
+def build_uploaded_file_token(uploaded_file: UploadedFileLike | BytesIO | None = None, *, source_name: str | None = None, source_bytes: bytes | None = None) -> str:
     if source_bytes is None:
         source_bytes = read_uploaded_file_bytes(uploaded_file)
     file_name = source_name if source_name is not None else getattr(uploaded_file, "name", "")
@@ -199,17 +211,37 @@ def drain_processing_events(*, set_processing_status, finalize_processing_status
             append_image_log(**event.payload)
         elif isinstance(event, WorkerCompleteEvent):
             restart_source = st.session_state.get("restart_source")
+            previous_completed_source = st.session_state.get("completed_source")
             if event.outcome == ProcessingOutcome.SUCCEEDED.value and restart_source:
                 source_bytes = load_restart_source_bytes(restart_source)
                 if source_bytes:
                     if should_cache_completed_source(source_bytes=source_bytes):
-                        st.session_state.completed_source = {
-                            "filename": str(restart_source.get("filename", "")),
-                            "token": str(restart_source.get("token", "")),
-                            "source_bytes": source_bytes,
-                            "size": len(source_bytes),
-                        }
+                        try:
+                            st.session_state.completed_source = store_completed_source(
+                                session_id=str(restart_source.get("session_id", st.session_state.get("restart_session_id", ""))),
+                                source_name=str(restart_source.get("filename", "")),
+                                source_token=str(restart_source.get("token", "")),
+                                source_bytes=source_bytes,
+                                previous_completed_source=previous_completed_source,
+                            )
+                        except OSError as exc:
+                            if previous_completed_source:
+                                clear_restart_source(previous_completed_source)
+                            st.session_state.completed_source = None
+                            log_event(
+                                logging.WARNING,
+                                "completed_source_store_failed",
+                                "Не удалось сохранить completed source во временное файловое хранилище.",
+                                filename=str(restart_source.get("filename", "")),
+                                source_token=str(restart_source.get("token", "")),
+                                error_message=str(exc),
+                            )
+                            push_activity(
+                                "Не удалось сохранить исходный DOCX для повторного запуска после завершения. Для нового запуска загрузите файл заново."
+                            )
                     else:
+                        if previous_completed_source:
+                            clear_restart_source(previous_completed_source)
                         st.session_state.completed_source = None
                         push_activity(
                             "Исходный файл слишком большой для повторного запуска из памяти. Для нового запуска загрузите DOCX заново."

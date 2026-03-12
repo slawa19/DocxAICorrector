@@ -1,5 +1,7 @@
 import streamlit as st
 
+from models import ImageMode
+
 
 def render_compare_all_apply_panel(
     *,
@@ -7,7 +9,7 @@ def render_compare_all_apply_panel(
     image_assets,
     render_section_gap,
 ) -> None:
-    if latest_image_mode != "compare_all":
+    if latest_image_mode != ImageMode.COMPARE_ALL.value:
         return
 
     if not any(getattr(asset, "comparison_variants", None) for asset in image_assets):

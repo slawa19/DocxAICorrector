@@ -30,12 +30,14 @@ from app_runtime import (
     start_background_preparation,
     start_background_processing,
 )
+from document import MAX_DOCX_ARCHIVE_SIZE_BYTES
 from logger import fail_critical, log_event, present_error
 from processing_runtime import (
     get_current_result_bundle,
     resolve_uploaded_filename,
 )
 from processing_service import get_processing_service
+from restart_store import cleanup_stale_persisted_sources
 from state import (
     init_session_state,
     push_activity,
@@ -57,6 +59,20 @@ from ui import (
 from workflow_state import IdleViewState, ProcessingOutcome
 
 load_dotenv(dotenv_path=ENV_PATH)
+
+PERSISTED_SOURCE_TTL_SECONDS = 12 * 60 * 60
+
+
+def _cleanup_stale_persisted_sources_once() -> None:
+    if st.session_state.get("persisted_source_cleanup_done", False):
+        return
+    cleanup_stale_persisted_sources(max_age_seconds=PERSISTED_SOURCE_TTL_SECONDS)
+    st.session_state.persisted_source_cleanup_done = True
+
+
+def _is_uploaded_file_too_large(uploaded_file) -> bool:
+    file_size = getattr(uploaded_file, "size", None)
+    return isinstance(file_size, int) and file_size > MAX_DOCX_ARCHIVE_SIZE_BYTES
 
 
 def _start_background_processing(
@@ -121,6 +137,7 @@ def _store_preparation_summary(*, prepared_run_context) -> None:
 
 def main() -> None:
     init_session_state()
+    _cleanup_stale_persisted_sources_once()
     _drain_processing_events()
     _drain_preparation_events()
     inject_ui_styles()
@@ -179,6 +196,13 @@ def main() -> None:
         return
 
     uploaded_widget_file = st.file_uploader("Загрузите DOCX-файл", type=["docx"])
+
+    if uploaded_widget_file is not None and _is_uploaded_file_too_large(uploaded_widget_file):
+        st.error(
+            f"Размер DOCX превышает допустимый предел {MAX_DOCX_ARCHIVE_SIZE_BYTES // (1024 * 1024)} МБ. Загрузите файл меньшего размера."
+        )
+        render_live_status()
+        return
 
     if preparation_active:
         @st.fragment(run_every=1)

@@ -1,6 +1,6 @@
 from collections import OrderedDict
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from io import BytesIO
 from threading import Lock
 
@@ -10,6 +10,7 @@ from document import (
     build_semantic_blocks,
     extract_document_content_from_docx,
 )
+from models import ImageAsset, ImagePipelineMetadata, ImageValidationResult, ImageVariantCandidate
 
 
 @dataclass
@@ -27,7 +28,7 @@ _shared_preparation_cache: OrderedDict[str, PreparedDocumentData] = OrderedDict(
 _shared_preparation_cache_lock = Lock()
 
 
-def _emit_preparation_progress(progress_callback, *, stage: str, detail: str, progress: float, metrics: dict[str, object] | None = None) -> None:
+def emit_preparation_progress(progress_callback, *, stage: str, detail: str, progress: float, metrics: dict[str, object] | None = None) -> None:
     if progress_callback is None:
         return
     progress_callback(stage=stage, detail=detail, progress=progress, metrics=metrics or {})
@@ -93,14 +94,45 @@ def _clone_prepared_document(data: PreparedDocumentData, prepared_source_key: st
     return PreparedDocumentData(
         source_text=data.source_text,
         paragraphs=deepcopy(data.paragraphs),
-        image_assets=deepcopy(data.image_assets),
-        jobs=deepcopy(data.jobs),
+        image_assets=[_clone_prepared_image_asset(asset) for asset in data.image_assets],
+        jobs=[dict(job) for job in data.jobs],
         prepared_source_key=prepared_source_key,
         cached=cached,
     )
 
 
+def _clone_prepared_image_variant(variant):
+    if isinstance(variant, ImageVariantCandidate):
+        return replace(
+            variant,
+            validation_result=deepcopy(variant.validation_result),
+        )
+    if isinstance(variant, dict):
+        cloned_variant = dict(variant)
+        if "validation_result" in cloned_variant:
+            cloned_variant["validation_result"] = deepcopy(cloned_variant["validation_result"])
+        return cloned_variant
+    return deepcopy(variant)
+
+
+def _clone_prepared_image_asset(asset):
+    if not isinstance(asset, ImageAsset):
+        return deepcopy(asset)
+    return replace(
+        asset,
+        analysis_result=deepcopy(asset.analysis_result),
+        metadata=replace(asset.metadata) if isinstance(asset.metadata, ImagePipelineMetadata) else deepcopy(asset.metadata),
+        validation_result=deepcopy(asset.validation_result),
+        comparison_variants={
+            variant_key: _clone_prepared_image_variant(variant)
+            for variant_key, variant in asset.comparison_variants.items()
+        },
+    )
+
+
 def _read_cached_prepared_document(*, session_state, prepared_source_key: str):
+    # Session cache is only touched from the Streamlit rerun thread. Background preparation
+    # workers always pass session_state=None and only participate in the shared cache path.
     session_cache = _get_preparation_cache(session_state) if session_state is not None else None
     if session_cache is not None:
         cached = _read_cache_entry(session_cache, prepared_source_key)
@@ -141,7 +173,7 @@ def prepare_document_for_processing(*, uploaded_filename: str, source_bytes: byt
     prepared_source_key = build_prepared_source_key(uploaded_file_token, chunk_size)
     cached = _read_cached_prepared_document(session_state=session_state, prepared_source_key=prepared_source_key)
     if cached is not None:
-        _emit_preparation_progress(
+        emit_preparation_progress(
             progress_callback,
             stage="Подготовка документа",
             detail="Использую кэш подготовки для текущего файла.",
@@ -156,7 +188,7 @@ def prepare_document_for_processing(*, uploaded_filename: str, source_bytes: byt
         )
         return cached
 
-    _emit_preparation_progress(
+    emit_preparation_progress(
         progress_callback,
         stage="Разбор DOCX",
         detail="Извлекаю абзацы и встроенные изображения.",
@@ -164,7 +196,7 @@ def prepare_document_for_processing(*, uploaded_filename: str, source_bytes: byt
     )
     uploaded_file = _build_in_memory_uploaded_file(source_name=uploaded_filename, source_bytes=source_bytes)
     paragraphs, image_assets = extract_document_content_from_docx(uploaded_file)
-    _emit_preparation_progress(
+    emit_preparation_progress(
         progress_callback,
         stage="Структура извлечена",
         detail="Документ прочитан, собираю текст для анализа.",
@@ -175,7 +207,7 @@ def prepare_document_for_processing(*, uploaded_filename: str, source_bytes: byt
         },
     )
     source_text = build_document_text(paragraphs)
-    _emit_preparation_progress(
+    emit_preparation_progress(
         progress_callback,
         stage="Текст собран",
         detail="Формирую цельный текст документа и считаю объём.",
@@ -187,7 +219,7 @@ def prepare_document_for_processing(*, uploaded_filename: str, source_bytes: byt
         },
     )
     blocks = build_semantic_blocks(paragraphs, max_chars=chunk_size)
-    _emit_preparation_progress(
+    emit_preparation_progress(
         progress_callback,
         stage="Смысловые блоки",
         detail="Группирую абзацы в блоки для модели.",
@@ -200,7 +232,7 @@ def prepare_document_for_processing(*, uploaded_filename: str, source_bytes: byt
         },
     )
     jobs = build_editing_jobs(blocks, max_chars=chunk_size)
-    _emit_preparation_progress(
+    emit_preparation_progress(
         progress_callback,
         stage="Задания собраны",
         detail="Готовлю финальный набор задач для обработки.",

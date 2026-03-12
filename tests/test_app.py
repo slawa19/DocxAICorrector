@@ -2,6 +2,7 @@ import app
 import application_flow
 import compare_panel
 import processing_runtime
+from document import MAX_DOCX_ARCHIVE_SIZE_BYTES
 from models import ImageAsset
 
 
@@ -232,18 +233,51 @@ def test_get_cached_restart_file_returns_none_when_storage_missing(monkeypatch):
 
 def test_resolve_effective_uploaded_file_uses_completed_source_after_success():
     session_state = SessionState(
-        completed_source={"filename": "report.docx", "source_bytes": b"abc", "token": "report.docx:3:abc"}
+        completed_source={"filename": "report.docx", "storage_path": "completed.bin", "token": "report.docx:3:abc"}
     )
 
     uploaded_file = application_flow.resolve_effective_uploaded_file(
         uploaded_file=None,
         current_result={"docx_bytes": b"done"},
         session_state=session_state,
+        load_restart_source_bytes_fn=lambda source: b"abc",
     )
 
     assert uploaded_file is not None
     assert uploaded_file.name == "report.docx"
     assert uploaded_file.getvalue() == b"abc"
+
+
+def test_main_rejects_oversized_upload_before_preparation(monkeypatch):
+    session_state = SessionState(app_start_logged=True, processing_status={}, activity_feed=[])
+    uploaded_file = UploadedFileStub("report.docx", b"abc")
+    uploaded_file.size = MAX_DOCX_ARCHIVE_SIZE_BYTES + 1
+    errors = []
+    preparation_calls = []
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app, "init_session_state", lambda: session_state.setdefault("persisted_source_cleanup_done", False))
+    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
+    monkeypatch.setattr(app, "load_app_config", lambda: {})
+    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", True))
+    monkeypatch.setattr(app, "_cleanup_stale_persisted_sources_once", lambda: None)
+    monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
+    monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
+    monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
+    monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
+    monkeypatch.setattr(app.st, "error", lambda message: errors.append(message))
+    monkeypatch.setattr(app, "render_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_start_background_preparation", lambda **kwargs: preparation_calls.append(kwargs))
+
+    app.main()
+
+    assert len(errors) == 1
+    assert "25 МБ" in errors[0]
+    assert preparation_calls == []
 
 
 def test_has_restartable_source_does_not_materialize_restart_bytes(tmp_path, monkeypatch):

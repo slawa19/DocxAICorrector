@@ -2,18 +2,22 @@ import base64
 from dataclasses import replace
 from io import BytesIO
 
-from PIL import Image, ImageFile, ImageFilter, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 
-from generation import is_retryable_error
-from image_shared import clamp_score, detect_image_mime_type, parse_json_object, call_responses_create_with_retry
+from image_shared import clamp_score, detect_image_mime_type, is_retryable_error, parse_json_object, call_responses_create_with_retry
 from models import ImageAnalysisResult
 
 
-ImageFile.LOAD_TRUNCATED_IMAGES = True
 VISION_ANALYSIS_TIMEOUT_SECONDS = 45.0
 VISION_ANALYSIS_MAX_RETRIES = 2
-DENSE_TEXT_BYPASS_THRESHOLD = 18  # text nodes at which image regeneration loses too much fidelity
+# Empirical thresholds from image-pipeline tuning: above these values the pipeline
+# should keep the original raster more often than attempt semantic redraw.
+DENSE_TEXT_BYPASS_THRESHOLD = 18
 NON_LATIN_DENSE_TEXT_BYPASS_THRESHOLD = 12
+HEURISTIC_WHITE_RATIO_THRESHOLD = 0.55
+HEURISTIC_EDGE_RATIO_THRESHOLD = 0.06
+HEURISTIC_BRIGHT_RATIO_THRESHOLD = 0.82
+HEURISTIC_COLORFUL_RATIO_THRESHOLD = 0.12
 
 
 def analyze_image(
@@ -25,6 +29,7 @@ def analyze_image(
     enable_vision: bool = True,
     dense_text_bypass_threshold: int = DENSE_TEXT_BYPASS_THRESHOLD,
     non_latin_text_bypass_threshold: int = NON_LATIN_DENSE_TEXT_BYPASS_THRESHOLD,
+    budget=None,
 ) -> ImageAnalysisResult:
     detected_mime_type = mime_type or detect_image_mime_type(image_bytes)
     visual_features = _extract_visual_features(image_bytes)
@@ -40,6 +45,7 @@ def analyze_image(
             mime_type=detected_mime_type,
             model=model,
             heuristic_result=heuristic_result,
+            budget=budget,
         )
     except Exception:
         return heuristic_result
@@ -174,6 +180,7 @@ def _extract_vision_analysis(
     mime_type: str,
     model: str,
     heuristic_result: ImageAnalysisResult,
+    budget=None,
 ) -> ImageAnalysisResult:
     response = call_responses_create_with_retry(
         client,
@@ -218,6 +225,7 @@ def _extract_vision_analysis(
         },
         max_retries=VISION_ANALYSIS_MAX_RETRIES,
         retryable_error_predicate=is_retryable_error,
+        budget=budget,
     )
     payload = parse_json_object(
         getattr(response, "output_text", ""),
@@ -391,35 +399,33 @@ def _extract_visual_features(image_bytes: bytes) -> dict[str, float] | None:
 
     preview = rgb_image.resize((min(256, rgb_image.width), min(256, rgb_image.height)))
     pixel_count = max(1, preview.width * preview.height)
+    preview_bytes = preview.tobytes()
 
     white_pixels = 0
     low_saturation_pixels = 0
     dark_pixels = 0
     colorful_pixels = 0
     bright_pixels = 0
-    for y_coord in range(preview.height):
-        for x_coord in range(preview.width):
-            red, green, blue = preview.getpixel((x_coord, y_coord))
-            maximum = max(red, green, blue)
-            minimum = min(red, green, blue)
-            if maximum >= 245 and minimum >= 235:
-                white_pixels += 1
-            if maximum - minimum <= 24:
-                low_saturation_pixels += 1
-            if maximum <= 72:
-                dark_pixels += 1
-            if maximum >= 1 and (maximum - minimum) / maximum >= 0.25:
-                colorful_pixels += 1
-            if maximum >= 204:
-                bright_pixels += 1
+    for index in range(0, len(preview_bytes), 3):
+        red = preview_bytes[index]
+        green = preview_bytes[index + 1]
+        blue = preview_bytes[index + 2]
+        maximum = max(red, green, blue)
+        minimum = min(red, green, blue)
+        channel_delta = maximum - minimum
+        if maximum >= 245 and minimum >= 235:
+            white_pixels += 1
+        if channel_delta <= 24:
+            low_saturation_pixels += 1
+        if maximum <= 72:
+            dark_pixels += 1
+        if maximum >= 1 and channel_delta / maximum >= 0.25:
+            colorful_pixels += 1
+        if maximum >= 204:
+            bright_pixels += 1
 
     edge_map = preview.convert("L").filter(ImageFilter.FIND_EDGES)
-    strong_edges = sum(
-        1
-        for y_coord in range(edge_map.height)
-        for x_coord in range(edge_map.width)
-        if edge_map.getpixel((x_coord, y_coord)) >= 40
-    )
+    strong_edges = sum(pixel >= 40 for pixel in edge_map.tobytes())
 
     white_ratio = white_pixels / pixel_count
     low_saturation_ratio = low_saturation_pixels / pixel_count
@@ -447,7 +453,7 @@ def _looks_like_structured_diagram(visual_features: dict[str, float] | None) -> 
     dark_ratio = visual_features["dark_ratio"]
     edge_ratio = visual_features["edge_ratio"]
 
-    if white_ratio >= 0.55 and edge_ratio >= 0.06:
+    if white_ratio >= HEURISTIC_WHITE_RATIO_THRESHOLD and edge_ratio >= HEURISTIC_EDGE_RATIO_THRESHOLD:
         return True
     if white_ratio >= 0.45 and low_saturation_ratio >= 0.7 and edge_ratio >= 0.055 and dark_ratio >= 0.03:
         return True
@@ -461,8 +467,8 @@ def _looks_like_infographic(visual_features: dict[str, float] | None) -> bool:
         return False
 
     return (
-        visual_features["bright_ratio"] >= 0.82
-        and visual_features["colorful_ratio"] >= 0.12
+        visual_features["bright_ratio"] >= HEURISTIC_BRIGHT_RATIO_THRESHOLD
+        and visual_features["colorful_ratio"] >= HEURISTIC_COLORFUL_RATIO_THRESHOLD
         and visual_features["edge_ratio"] >= 0.08
         and visual_features["dark_ratio"] <= 0.05
     )

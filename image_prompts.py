@@ -1,9 +1,11 @@
+from functools import lru_cache
 from pathlib import Path
 import tomllib
 
 from constants import PROMPTS_DIR
 
 
+@lru_cache(maxsize=1)
 def load_image_prompt_registry() -> dict[str, object]:
     registry_path = PROMPTS_DIR / "image_prompt_registry.toml"
     try:

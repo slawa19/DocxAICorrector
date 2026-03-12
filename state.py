@@ -9,6 +9,14 @@ from restart_store import clear_restart_source
 from workflow_state import ProcessingOutcome
 
 
+def _current_unix_timestamp() -> float:
+    return time.time()
+
+
+def _current_clock_label() -> str:
+    return datetime.now().strftime("%H:%M:%S")
+
+
 def _default_processing_status() -> dict[str, object]:
     return {
         "is_running": False,
@@ -74,12 +82,14 @@ def init_session_state() -> None:
     st.session_state.setdefault("preparation_cache", {})
     st.session_state.setdefault("restart_source", None)
     st.session_state.setdefault("completed_source", None)
+    st.session_state.setdefault("persisted_source_cleanup_done", False)
     st.session_state.setdefault("restart_session_id", uuid4().hex)
     st.session_state.setdefault("latest_image_mode", "safe")
 
 
 def reset_run_state(*, keep_restart_source: bool = True) -> None:
     restart_source = st.session_state.get("restart_source")
+    completed_source = st.session_state.get("completed_source")
     st.session_state.run_log = []
     st.session_state.activity_feed = []
     st.session_state.latest_markdown = ""
@@ -108,6 +118,7 @@ def reset_run_state(*, keep_restart_source: bool = True) -> None:
     st.session_state.prepared_source_key = ""
     st.session_state.preparation_cache = {}
     st.session_state.latest_image_mode = "safe"
+    clear_restart_source(completed_source)
     st.session_state.completed_source = None
     if not keep_restart_source:
         clear_restart_source(restart_source)
@@ -115,7 +126,7 @@ def reset_run_state(*, keep_restart_source: bool = True) -> None:
 
 
 def push_activity(message: str) -> None:
-    timestamp = datetime.now().strftime("%H:%M:%S")
+    timestamp = _current_clock_label()
     st.session_state.activity_feed.append({"time": timestamp, "message": message})
     st.session_state.activity_feed = st.session_state.activity_feed[-8:]
 
@@ -150,7 +161,7 @@ def set_processing_status(
             "block_count": block_count,
             "target_chars": target_chars,
             "context_chars": context_chars,
-            "last_update_at": time.time(),
+            "last_update_at": _current_unix_timestamp(),
             "progress": max(0.0, min(progress, 1.0)),
         }
     )
@@ -165,7 +176,7 @@ def set_processing_status(
     if cached is not None:
         status["cached"] = cached
     if status["is_running"] and not status.get("started_at"):
-        status["started_at"] = time.time()
+        status["started_at"] = _current_unix_timestamp()
     st.session_state.processing_status = status
 
 
@@ -176,7 +187,7 @@ def finalize_processing_status(stage: str, detail: str, progress: float) -> None
             "is_running": False,
             "stage": stage,
             "detail": detail,
-            "last_update_at": time.time(),
+            "last_update_at": _current_unix_timestamp(),
             "progress": max(0.0, min(progress, 1.0)),
         }
     )

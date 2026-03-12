@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import restart_store
@@ -70,3 +71,38 @@ def test_clear_restart_source_ignores_missing_file(tmp_path, monkeypatch):
     monkeypatch.setattr(restart_store, "RUN_DIR", tmp_path)
 
     restart_store.clear_restart_source({"storage_path": str(tmp_path / "missing.docx")})
+
+
+def test_store_completed_source_uses_distinct_prefix(tmp_path, monkeypatch):
+    monkeypatch.setattr(restart_store, "RUN_DIR", tmp_path)
+
+    metadata = restart_store.store_completed_source(
+        session_id="session-a",
+        source_name="report.docx",
+        source_token="report.docx:3:abc",
+        source_bytes=b"docx-bytes",
+    )
+
+    assert Path(metadata["storage_path"]).name.startswith("completed_")
+    assert restart_store.load_restart_source_bytes(metadata) == b"docx-bytes"
+
+
+def test_cleanup_stale_persisted_sources_removes_old_restart_and_completed_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(restart_store, "RUN_DIR", tmp_path)
+    stale_restart = tmp_path / "restart_session_token.docx"
+    stale_completed = tmp_path / "completed_session_token.docx"
+    fresh_restart = tmp_path / "restart_recent_token.docx"
+    stale_restart.write_bytes(b"x")
+    stale_completed.write_bytes(b"x")
+    fresh_restart.write_bytes(b"x")
+
+    os.utime(stale_restart, (10.0, 10.0))
+    os.utime(stale_completed, (10.0, 10.0))
+    os.utime(fresh_restart, (95.0, 95.0))
+
+    removed_count = restart_store.cleanup_stale_persisted_sources(max_age_seconds=20, now_timestamp=100.0)
+
+    assert removed_count == 2
+    assert not stale_restart.exists()
+    assert not stale_completed.exists()
+    assert fresh_restart.exists()

@@ -7,11 +7,11 @@ from types import SimpleNamespace
 from PIL import Image, ImageDraw, ImageEnhance, ImageOps
 from PIL import ImageChops
 
-from image_shared import detect_image_mime_type as shared_detect_image_mime_type, is_supported_image_bytes
+from image_shared import detect_image_mime_type as shared_detect_image_mime_type, is_retryable_error, is_supported_image_bytes
 from image_prompts import get_image_prompt_profile, load_image_prompt_text
 from image_reconstruction import reconstruct_image
 from logger import log_event
-from models import ImageAnalysisResult
+from models import ImageAnalysisResult, ImageMode, SEMANTIC_IMAGE_MODE_VALUES
 
 IMAGE_EDIT_MODEL = "gpt-image-1"
 IMAGE_GENERATE_MODEL = "gpt-image-1"
@@ -20,7 +20,7 @@ IMAGE_API_TIMEOUT_SECONDS = 90.0
 IMAGE_API_MAX_RETRIES = 3
 IMAGE_API_MAX_BACKOFF_SECONDS = 8.0
 IMAGE_API_MAX_ADAPTATION_RETRIES = 12
-SEMANTIC_MODES = {"semantic_redraw_direct", "semantic_redraw_structured"}
+SEMANTIC_MODES = set(SEMANTIC_IMAGE_MODE_VALUES)
 RECONSTRUCTION_STRATEGY = "deterministic_reconstruction"
 
 
@@ -64,11 +64,11 @@ def generate_image_candidate(
 
     prompt_profile = get_image_prompt_profile(analysis.prompt_key)
     prompt_text = load_image_prompt_text(analysis.prompt_key)
-    requested_mode = mode if mode in {"safe", "semantic_redraw_direct", "semantic_redraw_structured"} else "safe"
-    if requested_mode != "safe" and not analysis.semantic_redraw_allowed:
-        requested_mode = "safe"
+    requested_mode = mode if mode in {ImageMode.SAFE.value, *SEMANTIC_MODES} else ImageMode.SAFE.value
+    if requested_mode != ImageMode.SAFE.value and not analysis.semantic_redraw_allowed:
+        requested_mode = ImageMode.SAFE.value
 
-    if requested_mode == "safe":
+    if requested_mode == ImageMode.SAFE.value:
         candidate_bytes = _generate_safe_candidate(image_bytes)
     elif _should_use_reconstruction(
         analysis,
@@ -120,7 +120,7 @@ def _should_use_reconstruction(
     return (
         prefer_deterministic_reconstruction
         and analysis.render_strategy == RECONSTRUCTION_STRATEGY
-        and requested_mode == "semantic_redraw_structured"
+        and requested_mode == ImageMode.SEMANTIC_REDRAW_STRUCTURED.value
         and _is_reconstruction_first_candidate(analysis)
     )
 
@@ -701,12 +701,7 @@ def _with_timeout(request_payload: dict[str, object]) -> dict[str, object]:
 
 
 def _is_retryable_api_error(exc: Exception) -> bool:
-    status_code = getattr(exc, "status_code", None)
-    if status_code in {408, 409, 429}:
-        return True
-    if isinstance(status_code, int) and status_code >= 500:
-        return True
-    return exc.__class__.__name__ in {"APIConnectionError", "APITimeoutError", "RateLimitError", "InternalServerError"}
+    return is_retryable_error(exc)
 
 
 def _compute_retry_delay(attempt: int) -> float:
@@ -1224,14 +1219,8 @@ def _normalize_generated_document_background(image: Image.Image) -> Image.Image:
     if border_mask is None:
         return image
 
-    normalized = rgba_image.copy()
-    pixels = normalized.load()
-    mask_pixels = border_mask.load()
-    for y_coord in range(normalized.height):
-        for x_coord in range(normalized.width):
-            if mask_pixels[x_coord, y_coord]:
-                pixels[x_coord, y_coord] = (255, 255, 255, 255)
-    return normalized
+    white_canvas = Image.new("RGBA", rgba_image.size, (255, 255, 255, 255))
+    return Image.composite(white_canvas, rgba_image, border_mask)
 
 
 def _build_connected_background_mask(image: Image.Image, background_rgba: tuple[int, ...]) -> Image.Image | None:

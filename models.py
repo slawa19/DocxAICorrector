@@ -1,5 +1,25 @@
 import builtins
+from enum import StrEnum
 from dataclasses import asdict, dataclass, field
+
+
+class ImageMode(StrEnum):
+    SAFE = "safe"
+    SEMANTIC_REDRAW_DIRECT = "semantic_redraw_direct"
+    SEMANTIC_REDRAW_STRUCTURED = "semantic_redraw_structured"
+    COMPARE_ALL = "compare_all"
+
+
+IMAGE_MODE_VALUES = tuple(mode.value for mode in ImageMode)
+SEMANTIC_IMAGE_MODE_VALUES = (
+    ImageMode.SEMANTIC_REDRAW_DIRECT.value,
+    ImageMode.SEMANTIC_REDRAW_STRUCTURED.value,
+)
+DOCX_COMPARE_VARIANT_MODE_VALUES = (
+    ImageMode.SAFE.value,
+    ImageMode.SEMANTIC_REDRAW_DIRECT.value,
+    ImageMode.SEMANTIC_REDRAW_STRUCTURED.value,
+)
 
 
 @dataclass
@@ -82,7 +102,8 @@ class ImageVariantCandidate:
     def to_dict(self) -> dict[str, object]:
         return {
             "mode": self.mode,
-            "bytes": self.bytes,
+            "has_bytes": self.bytes is not None,
+            "bytes_size": len(self.bytes) if isinstance(self.bytes, (bytes, bytearray)) else 0,
             "mime_type": self.mime_type,
             "validation_result": (
                 self.validation_result.to_dict()

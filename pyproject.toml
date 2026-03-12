@@ -1,0 +1,9 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+filterwarnings = [
+  "ignore::DeprecationWarning:docx.*",
+]
+markers = [
+  "integration: tests that require external tools or broader system setup",
+]

@@ -1,6 +1,6 @@
 from dataclasses import replace
 
-from models import ImageAnalysisResult, ImageValidationResult
+from models import ImageAnalysisResult, ImageMode, ImageValidationResult, SEMANTIC_IMAGE_MODE_VALUES
 
 
 _ADVISORY_SAFE_FALLBACK_PREFIXES = (
@@ -15,7 +15,7 @@ _HARD_VALIDATION_REASONS = {
 
 
 def should_attempt_semantic_redraw(analysis: ImageAnalysisResult, image_mode: str) -> bool:
-    if image_mode not in {"semantic_redraw_direct", "semantic_redraw_structured", "compare_all"}:
+    if image_mode not in {*SEMANTIC_IMAGE_MODE_VALUES, ImageMode.COMPARE_ALL.value}:
         return False
     if analysis.semantic_redraw_allowed:
         return True

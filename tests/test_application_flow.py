@@ -32,7 +32,7 @@ def test_prepare_run_context_updates_selected_token_and_prepared_key():
     session_state = SessionState(
         selected_source_token="",
         prepared_source_key="",
-        completed_source={"filename": "report.docx", "token": "report.docx:3:ba7816bf8f01cfea", "source_bytes": b"abc"},
+        completed_source={"filename": "report.docx", "token": "report.docx:3:ba7816bf8f01cfea", "storage_path": "completed.bin"},
     )
     logged = []
     progress_events = []
@@ -118,7 +118,7 @@ def test_prepare_run_context_keeps_other_completed_source_tokens():
     session_state = SessionState(
         selected_source_token="",
         prepared_source_key="",
-        completed_source={"filename": "other.docx", "token": "other.docx:3:def", "source_bytes": b"def"},
+        completed_source={"filename": "other.docx", "token": "other.docx:3:def", "storage_path": "other.bin"},
     )
 
     prepared_document = SimpleNamespace(
@@ -142,7 +142,31 @@ def test_prepare_run_context_keeps_other_completed_source_tokens():
         prepare_document_for_processing_fn=lambda **kwargs: prepared_document,
     )
 
-    assert session_state.completed_source == {"filename": "other.docx", "token": "other.docx:3:def", "source_bytes": b"def"}
+    assert session_state.completed_source == {"filename": "other.docx", "token": "other.docx:3:def", "storage_path": "other.bin"}
+
+
+def test_get_cached_completed_file_loads_bytes_from_store():
+    session_state = SessionState(completed_source={"filename": "report.docx", "token": "report.docx:3:abc", "storage_path": "completed.bin"})
+
+    uploaded_file = application_flow.get_cached_completed_file(
+        session_state=session_state,
+        load_completed_source_bytes_fn=lambda source: b"abc",
+    )
+
+    assert uploaded_file is not None
+    assert uploaded_file.name == "report.docx"
+    assert uploaded_file.getvalue() == b"abc"
+
+
+def test_consume_completed_source_if_used_clears_persisted_file(monkeypatch):
+    session_state = SessionState(completed_source={"filename": "report.docx", "token": "report.docx:3:abc", "storage_path": "completed.bin"})
+    cleared = []
+    monkeypatch.setattr(application_flow, "clear_restart_source", lambda source: cleared.append(source))
+
+    application_flow.consume_completed_source_if_used(session_state=session_state, uploaded_file_token="report.docx:3:abc")
+
+    assert session_state.completed_source is None
+    assert cleared == [{"filename": "report.docx", "token": "report.docx:3:abc", "storage_path": "completed.bin"}]
 
 
 def test_restart_flow_restores_uploaded_file_from_run_store_and_cleans_up(tmp_path, monkeypatch):

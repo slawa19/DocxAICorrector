@@ -118,6 +118,32 @@ notepad .env
 OPENAI_API_KEY=sk-...
 ```
 
+Поддерживаемые переменные `.env`:
+
+- `OPENAI_API_KEY` — обязательный API-ключ OpenAI для текстовой и image-обработки.
+- `DOCX_AI_DEFAULT_MODEL` — модель редактирования текста по умолчанию.
+- `DOCX_AI_MODEL_OPTIONS` — список моделей для sidebar через запятую.
+- `DOCX_AI_CHUNK_SIZE` — размер целевого блока документа.
+- `DOCX_AI_MAX_RETRIES` — число retry для текстовых вызовов.
+- `DOCX_AI_IMAGE_MODE_DEFAULT` — режим изображений по умолчанию: `safe`, `semantic_redraw_direct`, `semantic_redraw_structured`, `compare_all`.
+- `DOCX_AI_SEMANTIC_VALIDATION_POLICY` — политика post-check: `advisory` или `strict`.
+- `DOCX_AI_ENABLE_POST_REDRAW_VALIDATION` — включает Level 1 post-check для AI-перерисовки.
+- `DOCX_AI_VALIDATION_MODEL` — модель, используемая validator-веткой.
+
+Пример полного `.env`:
+
+```env
+OPENAI_API_KEY=sk-...
+DOCX_AI_DEFAULT_MODEL=gpt-5-mini
+DOCX_AI_MODEL_OPTIONS=gpt-5.4,gpt-5.4-pro,gpt-5.2,gpt-5.1,gpt-5-mini
+DOCX_AI_CHUNK_SIZE=6000
+DOCX_AI_MAX_RETRIES=3
+DOCX_AI_IMAGE_MODE_DEFAULT=safe
+DOCX_AI_SEMANTIC_VALIDATION_POLICY=advisory
+DOCX_AI_ENABLE_POST_REDRAW_VALIDATION=true
+DOCX_AI_VALIDATION_MODEL=gpt-4.1
+```
+
 ### 5. Запустить приложение
 
 Вариант напрямую:
@@ -197,6 +223,8 @@ Prompt registry для изображений хранится в `prompts/image
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests -q
 ```
+
+Локальная конфигурация pytest хранится в `pyproject.toml`.
 
 ## Структура репозитория
 

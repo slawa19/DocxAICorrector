@@ -1,9 +1,115 @@
-import inspect
 import logging
-from dataclasses import replace
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 
 from image_pipeline_policy import build_generation_analysis, resolve_validation_delivery_outcome, should_attempt_semantic_redraw
-from models import ImageVariantCandidate
+from models import ImageMode, ImageVariantCandidate
+
+
+@dataclass(frozen=True)
+class _CompositeImageModelCallBudget:
+    budgets: tuple[object, ...]
+
+    def ensure_available(self, operation_name: str) -> None:
+        for budget in self.budgets:
+            budget.ensure_available(operation_name)
+
+    def consume(self, operation_name: str) -> None:
+        self.ensure_available(operation_name)
+        for budget in self.budgets:
+            budget.consume(operation_name)
+
+
+@dataclass
+class ImageProcessingContext:
+    config: Mapping[str, object]
+    on_progress: object
+    runtime: object
+    client: object
+    emit_state: object
+    emit_image_reset: object
+    emit_finalize: object
+    emit_activity: object
+    emit_status: object
+    emit_image_log: object
+    should_stop: object
+    analyze_image_fn: object
+    generate_image_candidate_fn: object
+    validate_redraw_result_fn: object
+    get_client_fn: object
+    log_event_fn: object
+    detect_image_mime_type_fn: object
+    image_model_call_budget_cls: type
+    image_model_call_budget_exceeded_cls: type
+    document_call_budget: object | None = None
+
+    def ensure_client(self):
+        if self.client is None:
+            self.client = self.get_client_fn()
+        return self.client
+
+    def analyze_image(self, image_bytes: bytes, *, mime_type: str | None, client=None, budget=None):
+        return self.analyze_image_fn(
+            image_bytes,
+            model=str(self.config.get("validation_model", "")),
+            mime_type=mime_type,
+            client=client,
+            enable_vision=bool(self.config.get("enable_vision_image_analysis", True)),
+            dense_text_bypass_threshold=int(self.config.get("dense_text_bypass_threshold", 18)),
+            non_latin_text_bypass_threshold=int(self.config.get("non_latin_text_bypass_threshold", 12)),
+            budget=budget,
+        )
+
+    def generate_candidate(self, image_bytes: bytes, analysis, *, mode: str, client=None, budget=None):
+        return self.generate_image_candidate_fn(
+            image_bytes,
+            analysis,
+            mode=mode,
+            prefer_deterministic_reconstruction=bool(self.config.get("prefer_deterministic_reconstruction", True)),
+            reconstruction_model=str(self.config.get("reconstruction_model", "")) or None,
+            reconstruction_render_config=_build_reconstruction_render_config(self.config),
+            client=client,
+            budget=budget,
+        )
+
+    def validate_redraw_result(
+        self,
+        original_image: bytes,
+        candidate_image: bytes,
+        analysis_before,
+        *,
+        candidate_analysis,
+        image_context: Mapping[str, object],
+        client=None,
+        budget=None,
+    ):
+        return self.validate_redraw_result_fn(
+            original_image,
+            candidate_image,
+            analysis_before,
+            candidate_analysis=candidate_analysis,
+            config=self.config,
+            image_context=image_context,
+            client=client,
+            enable_vision_validation=bool(self.config.get("enable_vision_image_validation", True)),
+            validation_model=str(self.config.get("validation_model", "gpt-4.1")),
+            budget=budget,
+        )
+
+    def build_document_call_budget(self, *, total_images: int, image_mode: str):
+        if self.document_call_budget is None:
+            self.document_call_budget = self.image_model_call_budget_cls(
+                _resolve_document_model_call_budget(self.config, total_images=total_images, image_mode=image_mode)
+            )
+        return self.document_call_budget
+
+    def compose_budget(self, *budgets):
+        active_budgets = tuple(budget for budget in budgets if budget is not None)
+        if not active_budgets:
+            return None
+        if len(active_budgets) == 1:
+            return active_budgets[0]
+        return _CompositeImageModelCallBudget(active_budgets)
 
 
 def _mark_asset_as_unsupported_source(asset, *, detected_mime_type, log_event_fn):
@@ -101,34 +207,30 @@ def _validate_semantic_attempt(
     attempt_asset,
     *,
     image_mode: str,
-    config: dict[str, object],
+    pipeline_context: ImageProcessingContext,
     candidate_analysis,
     client,
-    validate_redraw_result_fn,
-    log_event_fn,
+    budget=None,
 ):
-    validation_result = _call_with_supported_kwargs(
-        validate_redraw_result_fn,
+    validation_result = pipeline_context.validate_redraw_result(
         attempt_asset.original_bytes,
         attempt_asset.redrawn_bytes,
         attempt_asset.analysis_result,
         candidate_analysis=candidate_analysis,
-        config=config,
         image_context={
             "image_id": attempt_asset.image_id,
             "placeholder": attempt_asset.placeholder,
             "image_mode": image_mode,
         },
         client=client,
-        enable_vision_validation=bool(config.get("enable_vision_image_validation", True)),
-        validation_model=str(config.get("validation_model", "gpt-4.1")),
+        budget=budget,
     )
     return _apply_validation_result_to_asset(
         attempt_asset,
         validation_result,
         image_mode=image_mode,
-        config=config,
-        log_event_fn=log_event_fn,
+        config=dict(pipeline_context.config),
+        log_event_fn=pipeline_context.log_event_fn,
     )
 
 
@@ -136,36 +238,29 @@ def _build_compare_variant_candidate(
     asset,
     analysis,
     candidate_mode: str,
-    config: dict[str, object],
+    pipeline_context: ImageProcessingContext,
     *,
     client,
-    analyze_image_fn,
-    generate_image_candidate_fn,
-    validate_redraw_result_fn,
-    detect_image_mime_type_fn,
-    log_event_fn,
+    budget=None,
 ):
-    candidate_bytes = _call_with_supported_kwargs(
-        generate_image_candidate_fn,
+    candidate_bytes = pipeline_context.generate_candidate(
         asset.original_bytes,
         analysis,
         mode=candidate_mode,
-        prefer_deterministic_reconstruction=bool(config.get("prefer_deterministic_reconstruction", True)),
-        reconstruction_model=str(config.get("reconstruction_model", "")) or None,
-        reconstruction_render_config=_build_reconstruction_render_config(config),
         client=client,
+        budget=budget,
     )
-    candidate_mime_type = detect_image_mime_type_fn(candidate_bytes)
+    candidate_mime_type = pipeline_context.detect_image_mime_type_fn(candidate_bytes)
     variant = ImageVariantCandidate(
         mode=candidate_mode,
         bytes=candidate_bytes,
         mime_type=candidate_mime_type,
     )
 
-    if candidate_mode == "safe":
+    if candidate_mode == ImageMode.SAFE.value:
         variant.validation_status = "skipped"
         variant.final_decision = "accept"
-        variant.final_variant = "safe"
+        variant.final_variant = ImageMode.SAFE.value
         variant.final_reason = "compare_all_safe_variant_prepared"
         asset.safe_bytes = candidate_bytes
         return variant
@@ -173,7 +268,7 @@ def _build_compare_variant_candidate(
     if asset.safe_bytes and candidate_bytes == asset.safe_bytes:
         variant.validation_status = "skipped"
         variant.final_decision = "fallback_safe"
-        variant.final_variant = "safe"
+        variant.final_variant = ImageMode.SAFE.value
         variant.final_reason = "semantic_redraw_fell_back_to_safe_candidate"
         return variant
 
@@ -182,24 +277,19 @@ def _build_compare_variant_candidate(
     attempt_asset.redrawn_bytes = candidate_bytes
     attempt_asset.redrawn_mime_type = candidate_mime_type
     attempt_asset.update_pipeline_metadata(rendered_mime_type=candidate_mime_type)
-    candidate_analysis = _call_with_supported_kwargs(
-        analyze_image_fn,
+    candidate_analysis = pipeline_context.analyze_image(
         candidate_bytes,
-        model=str(config.get("validation_model", "")),
         mime_type=candidate_mime_type or attempt_asset.mime_type,
         client=client,
-        enable_vision=bool(config.get("enable_vision_image_analysis", True)),
-        dense_text_bypass_threshold=int(config.get("dense_text_bypass_threshold", 18)),
-        non_latin_text_bypass_threshold=int(config.get("non_latin_text_bypass_threshold", 12)),
+        budget=budget,
     )
     attempt_asset = _validate_semantic_attempt(
         attempt_asset,
         image_mode=candidate_mode,
-        config=config,
+        pipeline_context=pipeline_context,
         candidate_analysis=candidate_analysis,
         client=client,
-        validate_redraw_result_fn=validate_redraw_result_fn,
-        log_event_fn=log_event_fn,
+        budget=budget,
     )
     variant.validation_result = attempt_asset.validation_result
     variant.validation_status = attempt_asset.validation_status
@@ -213,44 +303,35 @@ def select_best_semantic_asset(
     asset,
     analysis,
     image_mode: str,
-    config: dict[str, object],
     *,
+    pipeline_context: ImageProcessingContext,
     client,
-    analyze_image_fn,
-    generate_image_candidate_fn,
-    validate_redraw_result_fn,
-    log_event_fn,
-    detect_image_mime_type_fn,
-    image_model_call_budget_cls,
-    image_model_call_budget_exceeded_cls,
 ):
-    attempt_count = max(1, int(config.get("semantic_redraw_max_attempts", 3)))
-    max_model_calls = max(1, int(config.get("semantic_redraw_max_model_calls_per_image", attempt_count * 3)))
-    call_budget = image_model_call_budget_cls(max_model_calls)
+    attempt_count = max(1, int(pipeline_context.config.get("semantic_redraw_max_attempts", 3)))
+    max_model_calls = max(1, int(pipeline_context.config.get("semantic_redraw_max_model_calls_per_image", attempt_count * 3)))
+    image_call_budget = pipeline_context.image_model_call_budget_cls(max_model_calls)
+    operation_budget = pipeline_context.compose_budget(image_call_budget, pipeline_context.document_call_budget)
     best_asset = None
     best_score = -1.0
     budget_exhausted = False
+    budget_exhausted_reason = "semantic_model_call_budget_exhausted"
 
     for attempt_index in range(1, attempt_count + 1):
         try:
             attempt_asset = _clone_image_asset_for_attempt(asset)
-            attempt_asset.redrawn_bytes = _call_with_supported_kwargs(
-                generate_image_candidate_fn,
+            attempt_asset.redrawn_bytes = pipeline_context.generate_candidate(
                 attempt_asset.original_bytes,
                 analysis,
                 mode=image_mode,
-                prefer_deterministic_reconstruction=bool(config.get("prefer_deterministic_reconstruction", True)),
-                reconstruction_model=str(config.get("reconstruction_model", "")) or None,
-                reconstruction_render_config=_build_reconstruction_render_config(config),
                 client=client,
-                budget=call_budget,
+                budget=operation_budget,
             )
             if attempt_asset.safe_bytes and attempt_asset.redrawn_bytes == attempt_asset.safe_bytes:
                 attempt_asset.validation_status = "skipped"
                 attempt_asset.final_decision = "fallback_safe"
-                attempt_asset.final_variant = "safe"
+                attempt_asset.final_variant = ImageMode.SAFE.value
                 attempt_asset.final_reason = "semantic_redraw_fell_back_to_safe_candidate"
-                log_event_fn(
+                pipeline_context.log_event_fn(
                     logging.WARNING,
                     "semantic_candidate_resolved_to_safe_fallback",
                     "Semantic redraw candidate совпал с safe candidate; применяю safe fallback без post-check.",
@@ -258,42 +339,44 @@ def select_best_semantic_asset(
                     **attempt_asset.to_log_context(),
                 )
                 return attempt_asset
-            attempt_asset.redrawn_mime_type = detect_image_mime_type_fn(attempt_asset.redrawn_bytes)
+            attempt_asset.redrawn_mime_type = pipeline_context.detect_image_mime_type_fn(attempt_asset.redrawn_bytes)
             attempt_asset.update_pipeline_metadata(rendered_mime_type=attempt_asset.redrawn_mime_type)
-            candidate_analysis = _call_with_supported_kwargs(
-                analyze_image_fn,
+            candidate_analysis = pipeline_context.analyze_image(
                 attempt_asset.redrawn_bytes,
-                model=str(config.get("validation_model", "")),
                 mime_type=attempt_asset.redrawn_mime_type or attempt_asset.mime_type,
                 client=client,
-                enable_vision=bool(config.get("enable_vision_image_analysis", True)),
-                dense_text_bypass_threshold=int(config.get("dense_text_bypass_threshold", 18)),
-                non_latin_text_bypass_threshold=int(config.get("non_latin_text_bypass_threshold", 12)),
+                budget=operation_budget,
             )
             attempt_asset = _validate_semantic_attempt(
                 attempt_asset,
                 image_mode=image_mode,
-                config=config,
+                pipeline_context=pipeline_context,
                 candidate_analysis=candidate_analysis,
                 client=client,
-                validate_redraw_result_fn=validate_redraw_result_fn,
-                log_event_fn=log_event_fn,
+                budget=operation_budget,
             )
-        except image_model_call_budget_exceeded_cls as exc:
+        except pipeline_context.image_model_call_budget_exceeded_cls as exc:
             budget_exhausted = True
-            log_event_fn(
+            budget_exhausted_reason = _resolve_budget_exhausted_reason(
+                document_call_budget=pipeline_context.document_call_budget,
+                image_call_budget=image_call_budget,
+            )
+            pipeline_context.log_event_fn(
                 logging.WARNING,
                 "semantic_candidate_budget_exhausted",
                 "Достигнут budget внешних model calls для semantic redraw; дальнейшие попытки остановлены.",
                 attempt_index=attempt_index,
-                max_model_calls=call_budget.max_calls,
-                used_model_calls=call_budget.used_calls,
+                max_model_calls=image_call_budget.max_calls,
+                used_model_calls=image_call_budget.used_calls,
+                document_max_model_calls=getattr(pipeline_context.document_call_budget, "max_calls", None),
+                document_used_model_calls=getattr(pipeline_context.document_call_budget, "used_calls", None),
+                exhausted_reason=budget_exhausted_reason,
                 error_message=str(exc),
                 **asset.to_log_context(),
             )
             break
         except Exception as exc:
-            log_event_fn(
+            pipeline_context.log_event_fn(
                 logging.WARNING,
                 "semantic_candidate_attempt_failed",
                 "Не удалось оценить semantic redraw candidate, пробую следующую попытку.",
@@ -305,7 +388,7 @@ def select_best_semantic_asset(
             continue
 
         score = score_semantic_candidate(attempt_asset)
-        log_event_fn(
+        pipeline_context.log_event_fn(
             logging.INFO,
             "semantic_candidate_evaluated",
             "Оценен semantic redraw candidate.",
@@ -323,9 +406,7 @@ def select_best_semantic_asset(
         asset.validation_status = "failed" if budget_exhausted else "error"
         asset.final_decision = "fallback_original"
         asset.final_variant = "original"
-        asset.final_reason = (
-            "semantic_model_call_budget_exhausted" if budget_exhausted else "semantic_candidate_attempts_exhausted"
-        )
+        asset.final_reason = budget_exhausted_reason if budget_exhausted else "semantic_candidate_attempts_exhausted"
         return asset
     return best_asset
 
@@ -334,47 +415,52 @@ def process_document_images(
     *,
     image_assets,
     image_mode: str,
-    config: dict[str, object],
-    on_progress,
-    runtime,
-    client,
-    emit_state,
-    emit_image_reset,
-    emit_finalize,
-    emit_activity,
-    emit_status,
-    emit_image_log,
-    should_stop,
-    analyze_image_fn,
-    generate_image_candidate_fn,
-    validate_redraw_result_fn,
-    get_client_fn,
-    log_event_fn,
-    detect_image_mime_type_fn,
-    image_model_call_budget_cls,
-    image_model_call_budget_exceeded_cls,
+    context: ImageProcessingContext,
 ):
     if not image_assets:
-        emit_state(runtime, image_assets=[])
+        context.emit_state(context.runtime, image_assets=[])
         return []
 
     processed_assets = []
-    image_client = client
-    emit_image_reset(runtime)
+    image_client = context.client
+    document_call_budget = context.build_document_call_budget(total_images=len(image_assets), image_mode=image_mode)
+    document_budget_exhausted = False
+    context.emit_image_reset(context.runtime)
     total_images = len(image_assets)
     for index, asset in enumerate(image_assets, start=1):
-        if should_stop(runtime):
-            emit_finalize(
-                runtime,
+        if context.should_stop(context.runtime):
+            context.emit_finalize(
+                context.runtime,
                 "Остановлено пользователем",
                 "Обработка изображений остановлена пользователем.",
                 (index - 1) / max(total_images, 1),
             )
-            emit_activity(runtime, "Обработка изображений остановлена пользователем.")
+            context.emit_activity(context.runtime, "Обработка изображений остановлена пользователем.")
             return processed_assets
 
-        emit_status(
-            runtime,
+        if document_budget_exhausted:
+            asset.validation_status = "failed"
+            asset.final_decision = "fallback_original"
+            asset.final_variant = "original"
+            asset.final_reason = "document_model_call_budget_exhausted"
+            context.emit_image_log(
+                context.runtime,
+                image_id=asset.image_id,
+                status="failed",
+                decision=asset.final_decision,
+                confidence=0.0,
+                suspicious_reasons=[asset.final_reason],
+            )
+            processed_assets.append(asset)
+            context.emit_activity(
+                context.runtime,
+                f"Изображение {asset.image_id}: {asset.final_variant or 'original'} | {asset.final_decision or 'accept'}.",
+            )
+            context.emit_state(context.runtime, image_assets=processed_assets)
+            continue
+
+        context.emit_status(
+            context.runtime,
             stage="Обработка изображений",
             detail=f"Обрабатываю изображение {index} из {total_images}.",
             current_block=index,
@@ -382,19 +468,19 @@ def process_document_images(
             progress=index / max(total_images, 1),
             is_running=True,
         )
-        emit_activity(runtime, f"Начата обработка изображения {index} из {total_images}.")
-        on_progress(preview_title="Текущий Markdown")
+        context.emit_activity(context.runtime, f"Начата обработка изображения {index} из {total_images}.")
+        context.on_progress(preview_title="Текущий Markdown")
         analysis = None
         try:
-            detected_source_mime_type = detect_image_mime_type_fn(asset.original_bytes)
+            detected_source_mime_type = context.detect_image_mime_type_fn(asset.original_bytes)
             if detected_source_mime_type is None:
                 asset = _mark_asset_as_unsupported_source(
                     asset,
                     detected_mime_type=detected_source_mime_type,
-                    log_event_fn=log_event_fn,
+                    log_event_fn=context.log_event_fn,
                 )
-                emit_image_log(
-                    runtime,
+                context.emit_image_log(
+                    context.runtime,
                     image_id=asset.image_id,
                     status="skipped",
                     decision=asset.final_decision,
@@ -402,22 +488,18 @@ def process_document_images(
                     suspicious_reasons=[asset.final_reason],
                 )
                 processed_assets.append(asset)
-                emit_activity(
-                    runtime,
+                context.emit_activity(
+                    context.runtime,
                     f"Изображение {asset.image_id}: {asset.final_variant or 'original'} | {asset.final_decision or 'accept'}.",
                 )
-                emit_state(runtime, image_assets=processed_assets)
+                context.emit_state(context.runtime, image_assets=processed_assets)
                 continue
 
-            analysis = _call_with_supported_kwargs(
-                analyze_image_fn,
+            analysis = context.analyze_image(
                 asset.original_bytes,
-                model=str(config.get("validation_model", "")),
                 mime_type=asset.mime_type,
                 client=image_client,
-                enable_vision=bool(config.get("enable_vision_image_analysis", True)),
-                dense_text_bypass_threshold=int(config.get("dense_text_bypass_threshold", 18)),
-                non_latin_text_bypass_threshold=int(config.get("non_latin_text_bypass_threshold", 12)),
+                budget=document_call_budget,
             )
             asset.analysis_result = analysis
             asset.prompt_key = analysis.prompt_key
@@ -425,73 +507,56 @@ def process_document_images(
             generation_analysis = build_generation_analysis(analysis)
             semantic_attempt_allowed = should_attempt_semantic_redraw(analysis, image_mode)
 
-            if image_mode == "safe":
-                asset.safe_bytes = _call_with_supported_kwargs(
-                    generate_image_candidate_fn,
+            if image_mode == ImageMode.SAFE.value:
+                asset.safe_bytes = context.generate_candidate(
                     asset.original_bytes,
                     analysis,
-                    mode="safe",
-                    prefer_deterministic_reconstruction=bool(config.get("prefer_deterministic_reconstruction", True)),
-                    reconstruction_render_config=_build_reconstruction_render_config(config),
+                    mode=ImageMode.SAFE.value,
                     client=image_client,
+                    budget=document_call_budget,
                 )
                 asset.validation_status = "skipped"
                 asset.final_decision = "accept"
-                asset.final_variant = "safe" if asset.safe_bytes else "original"
+                asset.final_variant = ImageMode.SAFE.value if asset.safe_bytes else "original"
                 asset.final_reason = "Изображение обработано в safe-mode."
-            elif image_mode == "compare_all":
+            elif image_mode == ImageMode.COMPARE_ALL.value:
                 if image_client is None:
-                    image_client = get_client_fn()
+                    image_client = context.ensure_client()
                 asset = _prepare_compare_variants(
                     asset,
                     generation_analysis,
-                    config,
+                    pipeline_context=context,
                     client=image_client,
-                    analyze_image_fn=analyze_image_fn,
-                    generate_image_candidate_fn=generate_image_candidate_fn,
-                    validate_redraw_result_fn=validate_redraw_result_fn,
-                    detect_image_mime_type_fn=detect_image_mime_type_fn,
-                    log_event_fn=log_event_fn,
+                    budget=document_call_budget,
                 )
             elif not semantic_attempt_allowed:
-                asset.safe_bytes = _call_with_supported_kwargs(
-                    generate_image_candidate_fn,
+                asset.safe_bytes = context.generate_candidate(
                     asset.original_bytes,
                     analysis,
-                    mode="safe",
-                    prefer_deterministic_reconstruction=bool(config.get("prefer_deterministic_reconstruction", True)),
-                    reconstruction_render_config=_build_reconstruction_render_config(config),
+                    mode=ImageMode.SAFE.value,
                     client=image_client,
+                    budget=document_call_budget,
                 )
                 asset.validation_status = "skipped"
                 asset.final_decision = "accept"
-                asset.final_variant = "safe" if asset.safe_bytes else "original"
+                asset.final_variant = ImageMode.SAFE.value if asset.safe_bytes else "original"
                 asset.final_reason = "Semantic redraw отключен для этого изображения, применен safe-mode."
             else:
                 if image_client is None:
-                    image_client = get_client_fn()
-                asset.safe_bytes = _call_with_supported_kwargs(
-                    generate_image_candidate_fn,
+                    image_client = context.ensure_client()
+                asset.safe_bytes = context.generate_candidate(
                     asset.original_bytes,
                     analysis,
-                    mode="safe",
-                    prefer_deterministic_reconstruction=bool(config.get("prefer_deterministic_reconstruction", True)),
-                    reconstruction_render_config=_build_reconstruction_render_config(config),
+                    mode=ImageMode.SAFE.value,
                     client=image_client,
+                    budget=document_call_budget,
                 )
                 asset = select_best_semantic_asset(
                     asset,
                     generation_analysis,
                     image_mode,
-                    config,
+                    pipeline_context=context,
                     client=image_client,
-                    analyze_image_fn=analyze_image_fn,
-                    generate_image_candidate_fn=generate_image_candidate_fn,
-                    validate_redraw_result_fn=validate_redraw_result_fn,
-                    log_event_fn=log_event_fn,
-                    detect_image_mime_type_fn=detect_image_mime_type_fn,
-                    image_model_call_budget_cls=image_model_call_budget_cls,
-                    image_model_call_budget_exceeded_cls=image_model_call_budget_exceeded_cls,
                 )
 
             validation_result = asset.validation_result
@@ -500,8 +565,8 @@ def process_document_images(
                 if validation_result is not None
                 else float(getattr(analysis, "confidence", 0.0))
             )
-            emit_image_log(
-                runtime,
+            context.emit_image_log(
+                context.runtime,
                 image_id=asset.image_id,
                 status=(
                     "compared"
@@ -522,24 +587,52 @@ def process_document_images(
                 ),
             )
             processed_assets.append(asset)
-            emit_activity(
-                runtime,
+            context.emit_activity(
+                context.runtime,
                 f"Изображение {asset.image_id}: {asset.final_variant or 'original'} | {asset.final_decision or 'accept'}.",
             )
+        except context.image_model_call_budget_exceeded_cls as exc:
+            document_budget_exhausted = _is_budget_exhausted(document_call_budget)
+            asset.validation_status = "failed"
+            asset.final_decision = "fallback_original"
+            asset.final_variant = "original"
+            asset.final_reason = (
+                "document_model_call_budget_exhausted" if document_budget_exhausted else "image_model_call_budget_exhausted"
+            )
+            context.emit_image_log(
+                context.runtime,
+                image_id=asset.image_id,
+                status="failed",
+                decision=asset.final_decision,
+                confidence=float(getattr(analysis, "confidence", 0.0)) if analysis is not None else 0.0,
+                suspicious_reasons=[asset.final_reason],
+            )
+            context.log_event_fn(
+                logging.WARNING,
+                "image_processing_budget_exhausted",
+                "Обработка изображения остановлена из-за исчерпания model call budget.",
+                exhausted_reason=asset.final_reason,
+                document_max_model_calls=getattr(document_call_budget, "max_calls", None),
+                document_used_model_calls=getattr(document_call_budget, "used_calls", None),
+                error_type=exc.__class__.__name__,
+                error_message=str(exc),
+                **asset.to_log_context(),
+            )
+            processed_assets.append(asset)
         except Exception as exc:
             asset.validation_status = "error"
             asset.final_decision = "fallback_original"
             asset.final_variant = "original"
             asset.final_reason = f"image_processing_exception:{exc.__class__.__name__}"
-            emit_image_log(
-                runtime,
+            context.emit_image_log(
+                context.runtime,
                 image_id=asset.image_id,
                 status="error",
                 decision=asset.final_decision,
                 confidence=float(getattr(analysis, "confidence", 0.0)) if analysis is not None else 0.0,
                 suspicious_reasons=[asset.final_reason],
             )
-            log_event_fn(
+            context.log_event_fn(
                 logging.ERROR,
                 "image_processing_failed",
                 "Обработка изображения завершилась ошибкой, применен fallback на оригинал.",
@@ -547,14 +640,8 @@ def process_document_images(
             )
             processed_assets.append(asset)
 
-        emit_state(runtime, image_assets=processed_assets)
+        context.emit_state(context.runtime, image_assets=processed_assets)
     return processed_assets
-
-
-def _call_with_supported_kwargs(callable_obj, *args, **kwargs):
-    signature = inspect.signature(callable_obj)
-    supported_kwargs = {name: value for name, value in kwargs.items() if name in signature.parameters}
-    return callable_obj(*args, **supported_kwargs)
 
 
 def _clone_image_asset_for_attempt(asset):
@@ -581,19 +668,18 @@ def _clone_image_asset_for_attempt(asset):
 def _prepare_compare_variants(
     asset,
     analysis,
-    config: dict[str, object],
+    pipeline_context: ImageProcessingContext,
     *,
     client,
-    analyze_image_fn,
-    generate_image_candidate_fn,
-    validate_redraw_result_fn,
-    detect_image_mime_type_fn,
-    log_event_fn,
+    budget=None,
 ):
     variant_map: dict[str, ImageVariantCandidate] = {}
-    candidate_modes = ["safe"]
-    if should_attempt_semantic_redraw(analysis, "compare_all"):
-        candidate_modes.extend(["semantic_redraw_direct", "semantic_redraw_structured"])
+    candidate_modes = [ImageMode.SAFE.value]
+    if should_attempt_semantic_redraw(analysis, ImageMode.COMPARE_ALL.value):
+        candidate_modes.extend([
+            ImageMode.SEMANTIC_REDRAW_DIRECT.value,
+            ImageMode.SEMANTIC_REDRAW_STRUCTURED.value,
+        ])
 
     for candidate_mode in candidate_modes:
         try:
@@ -601,16 +687,12 @@ def _prepare_compare_variants(
                 asset,
                 analysis,
                 candidate_mode,
-                config,
+                pipeline_context,
                 client=client,
-                analyze_image_fn=analyze_image_fn,
-                generate_image_candidate_fn=generate_image_candidate_fn,
-                validate_redraw_result_fn=validate_redraw_result_fn,
-                detect_image_mime_type_fn=detect_image_mime_type_fn,
-                log_event_fn=log_event_fn,
+                budget=budget,
             )
         except Exception as exc:
-            log_event_fn(
+            pipeline_context.log_event_fn(
                 logging.WARNING,
                 "image_compare_variant_failed",
                 "Не удалось подготовить один из compare-all вариантов изображения.",
@@ -628,9 +710,69 @@ def _prepare_compare_variants(
     asset.validation_status = "compared"
     asset.final_decision = "compared"
     asset.final_variant = "original"
-    prepared_modes = [mode for mode in ["safe", "semantic_redraw_direct", "semantic_redraw_structured"] if mode in variant_map]
+    prepared_modes = [
+        mode
+        for mode in [
+            ImageMode.SAFE.value,
+            ImageMode.SEMANTIC_REDRAW_DIRECT.value,
+            ImageMode.SEMANTIC_REDRAW_STRUCTURED.value,
+        ]
+        if mode in variant_map
+    ]
     asset.final_reason = f"Подготовлены compare-all варианты: {', '.join(prepared_modes)}."
     return asset
+
+
+def _resolve_document_model_call_budget(
+    config: Mapping[str, object],
+    *,
+    total_images: int,
+    image_mode: str,
+) -> int:
+    explicit_limit = _coerce_positive_int(
+        config.get("image_model_call_budget_per_document", config.get("semantic_redraw_max_model_calls_per_document"))
+    )
+    if explicit_limit is not None:
+        return explicit_limit
+
+    per_image_attempt_budget = max(
+        1,
+        int(
+            config.get(
+                "semantic_redraw_max_model_calls_per_image",
+                max(1, int(config.get("semantic_redraw_max_attempts", 3))) * 3,
+            )
+        ),
+    )
+    estimated_calls_per_image = 7 if image_mode == ImageMode.COMPARE_ALL.value else per_image_attempt_budget + 1
+    return max(estimated_calls_per_image, max(1, total_images) * estimated_calls_per_image)
+
+
+def _resolve_budget_exhausted_reason(*, document_call_budget, image_call_budget) -> str:
+    if _is_budget_exhausted(document_call_budget):
+        return "document_model_call_budget_exhausted"
+    if image_call_budget is not None:
+        return "semantic_model_call_budget_exhausted"
+    return "image_model_call_budget_exhausted"
+
+
+def _is_budget_exhausted(budget) -> bool:
+    if budget is None:
+        return False
+    remaining_calls = getattr(budget, "remaining_calls", None)
+    if isinstance(remaining_calls, int):
+        return remaining_calls <= 0
+    max_calls = getattr(budget, "max_calls", None)
+    used_calls = getattr(budget, "used_calls", None)
+    return isinstance(max_calls, int) and isinstance(used_calls, int) and used_calls >= max_calls
+
+
+def _coerce_positive_int(value: object) -> int | None:
+    try:
+        parsed_value = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed_value if parsed_value > 0 else None
 
 
 def _build_reconstruction_render_config(config: dict[str, object]) -> dict[str, object]:

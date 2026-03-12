@@ -1,5 +1,5 @@
-from models import ImageAnalysisResult, ImageAsset, ImageValidationResult
-from image_pipeline import _build_compare_variant_candidate, _prepare_compare_variants
+from models import ImageAnalysisResult, ImageAsset, ImageValidationResult, ImageVariantCandidate
+from image_pipeline import ImageProcessingContext, _build_compare_variant_candidate, _prepare_compare_variants
 
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"compare-helpers-payload"
@@ -51,21 +51,56 @@ def _build_validation_result(**overrides) -> ImageValidationResult:
     return ImageValidationResult(**payload)
 
 
+def _build_context(**overrides) -> ImageProcessingContext:
+    payload = {
+        "config": {},
+        "on_progress": lambda **kwargs: None,
+        "runtime": None,
+        "client": None,
+        "emit_state": lambda *args, **kwargs: None,
+        "emit_image_reset": lambda *args, **kwargs: None,
+        "emit_finalize": lambda *args, **kwargs: None,
+        "emit_activity": lambda *args, **kwargs: None,
+        "emit_status": lambda *args, **kwargs: None,
+        "emit_image_log": lambda *args, **kwargs: None,
+        "should_stop": lambda runtime: False,
+        "analyze_image_fn": lambda *args, **kwargs: _build_analysis(),
+        "generate_image_candidate_fn": lambda image_bytes, analysis, **kwargs: PNG_BYTES,
+        "validate_redraw_result_fn": lambda *args, **kwargs: _build_validation_result(),
+        "get_client_fn": lambda: object(),
+        "log_event_fn": lambda *args, **kwargs: None,
+        "detect_image_mime_type_fn": lambda image_bytes: "image/png",
+        "image_model_call_budget_cls": type(
+            "Budget",
+            (),
+            {
+                "__init__": lambda self, max_calls: setattr(self, "max_calls", max_calls) or setattr(self, "used_calls", 0),
+                "remaining_calls": property(lambda self: max(0, self.max_calls - self.used_calls)),
+                "ensure_available": lambda self, operation_name: None,
+                "consume": lambda self, operation_name: setattr(self, "used_calls", self.used_calls + 1),
+            },
+        ),
+        "image_model_call_budget_exceeded_cls": RuntimeError,
+    }
+    payload.update(overrides)
+    return ImageProcessingContext(**payload)
+
+
 def test_build_compare_variant_candidate_marks_safe_variant_without_validation():
     asset = _build_asset()
     analysis = _build_analysis()
+    context = _build_context(
+        analyze_image_fn=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("analyze should not run")),
+        generate_image_candidate_fn=lambda image_bytes, analysis, **kwargs: PNG_BYTES,
+        validate_redraw_result_fn=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("validation should not run")),
+    )
 
     variant = _build_compare_variant_candidate(
         asset,
         analysis,
         "safe",
-        {},
+        context,
         client=object(),
-        analyze_image_fn=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("analyze should not run")),
-        generate_image_candidate_fn=lambda image_bytes, analysis, **kwargs: PNG_BYTES,
-        validate_redraw_result_fn=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("validation should not run")),
-        detect_image_mime_type_fn=lambda image_bytes: "image/png",
-        log_event_fn=lambda *args, **kwargs: None,
     )
 
     assert variant.mode == "safe"
@@ -78,13 +113,8 @@ def test_build_compare_variant_candidate_uses_processed_semantic_outcome():
     asset = _build_asset()
     asset.safe_bytes = PNG_BYTES[:-1] + b"s"
     analysis = _build_analysis()
-
-    variant = _build_compare_variant_candidate(
-        asset,
-        analysis,
-        "semantic_redraw_direct",
-        {"validation_model": "gpt-4.1"},
-        client=object(),
+    context = _build_context(
+        config={"validation_model": "gpt-4.1"},
         analyze_image_fn=lambda *args, **kwargs: _build_analysis(),
         generate_image_candidate_fn=lambda image_bytes, analysis, **kwargs: PNG_BYTES,
         validate_redraw_result_fn=lambda *args, **kwargs: _build_validation_result(
@@ -96,8 +126,14 @@ def test_build_compare_variant_candidate_uses_processed_semantic_outcome():
             validator_confidence=0.8,
             suspicious_reasons=["structure_mismatch"],
         ),
-        detect_image_mime_type_fn=lambda image_bytes: "image/png",
-        log_event_fn=lambda *args, **kwargs: None,
+    )
+
+    variant = _build_compare_variant_candidate(
+        asset,
+        analysis,
+        "semantic_redraw_direct",
+        context,
+        client=object(),
     )
 
     assert variant.validation_status == "soft-pass"
@@ -109,17 +145,19 @@ def test_prepare_compare_variants_keeps_original_as_selected_default():
     asset = _build_asset()
     analysis = _build_analysis()
     logged = []
+    context = _build_context(
+        config={"validation_model": "gpt-4.1"},
+        analyze_image_fn=lambda *args, **kwargs: _build_analysis(),
+        generate_image_candidate_fn=lambda image_bytes, analysis, *, mode, **kwargs: PNG_BYTES + mode.encode("ascii"),
+        validate_redraw_result_fn=lambda *args, **kwargs: _build_validation_result(),
+        log_event_fn=lambda *args, **kwargs: logged.append((args, kwargs)),
+    )
 
     result = _prepare_compare_variants(
         asset,
         analysis,
-        {"validation_model": "gpt-4.1"},
+        context,
         client=object(),
-        analyze_image_fn=lambda *args, **kwargs: _build_analysis(),
-        generate_image_candidate_fn=lambda image_bytes, analysis, *, mode, **kwargs: PNG_BYTES + mode.encode("ascii"),
-        validate_redraw_result_fn=lambda *args, **kwargs: _build_validation_result(),
-        detect_image_mime_type_fn=lambda image_bytes: "image/png",
-        log_event_fn=lambda *args, **kwargs: logged.append((args, kwargs)),
     )
 
     assert result.selected_compare_variant == "original"
@@ -129,3 +167,18 @@ def test_prepare_compare_variants_keeps_original_as_selected_default():
         "semantic_redraw_direct",
         "semantic_redraw_structured",
     }
+
+
+def test_image_variant_candidate_to_dict_is_json_safe_summary():
+    variant = ImageVariantCandidate(
+        mode="safe",
+        bytes=b"payload",
+        mime_type="image/png",
+        validation_result=_build_validation_result(),
+    )
+
+    payload = variant.to_dict()
+
+    assert "bytes" not in payload
+    assert payload["has_bytes"] is True
+    assert payload["bytes_size"] == len(b"payload")

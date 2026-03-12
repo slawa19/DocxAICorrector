@@ -5,6 +5,8 @@ from pathlib import Path
 import pypandoc
 from openai import OpenAI
 
+from image_shared import is_retryable_error
+
 
 def ensure_pandoc_available() -> None:
     try:
@@ -18,23 +20,15 @@ def ensure_pandoc_available() -> None:
 
 def normalize_model_output(text: str) -> str:
     cleaned = text.strip()
-    if cleaned.startswith("```markdown"):
-        cleaned = cleaned[len("```markdown"):].strip()
-    elif cleaned.startswith("```"):
-        cleaned = cleaned[len("```"):].strip()
+    if cleaned.startswith("```"):
+        first_newline = cleaned.find("\n")
+        if first_newline != -1:
+            cleaned = cleaned[first_newline + 1:].strip()
+        else:
+            cleaned = cleaned[3:].strip()
     if cleaned.endswith("```"):
         cleaned = cleaned[:-3].strip()
     return cleaned
-
-
-def is_retryable_error(exc: Exception) -> bool:
-    status_code = getattr(exc, "status_code", None)
-    if status_code in {408, 409, 429}:
-        return True
-    if isinstance(status_code, int) and status_code >= 500:
-        return True
-    return exc.__class__.__name__ in {"APIConnectionError", "APITimeoutError"}
-
 
 def generate_markdown_block(
     client: OpenAI,

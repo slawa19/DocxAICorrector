@@ -387,6 +387,31 @@ def test_validate_redraw_result_keeps_type_change_as_hard_reject_after_vision_me
     assert "image_type_changed" in result.suspicious_reasons
 
 
+def test_maybe_build_vision_validation_assessment_logs_failures(monkeypatch):
+    logged_events = []
+
+    monkeypatch.setattr(
+        image_validation,
+        "_build_vision_validation_assessment",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("vision failed")),
+    )
+    monkeypatch.setattr(image_validation, "log_event", lambda *args, **kwargs: logged_events.append((args, kwargs)))
+
+    result = image_validation._maybe_build_vision_validation_assessment(
+        original_image=PNG_BYTES,
+        candidate_image=PNG_BYTES,
+        analysis_before=build_analysis_result(),
+        candidate_analysis=build_analysis_result(),
+        client=_FakeResponsesClient("{}"),
+        model="gpt-4.1",
+        enable_vision_validation=True,
+    )
+
+    assert result is None
+    assert logged_events
+    assert logged_events[0][0][1] == "image_vision_validation_skipped_after_failure"
+
+
 def test_resolve_validation_delivery_outcome_promotes_missing_safe_fallback_to_original():
     outcome = resolve_validation_delivery_outcome(
         ImageValidationResult(

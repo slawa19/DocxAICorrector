@@ -177,7 +177,7 @@ def test_prepare_document_for_processing_miss_uses_single_deepcopy_for_return(mo
         session_state=session_state,
     )
 
-    assert deepcopy_calls == ["list", "list", "list"]
+    assert deepcopy_calls == ["list", "dict"]
 
 
 def test_prepare_document_for_processing_reports_stage_metrics(monkeypatch):

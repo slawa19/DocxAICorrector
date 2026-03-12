@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from threading import Lock
 
 from app_runtime import (
     emit_activity as emit_activity_impl,
@@ -20,7 +21,7 @@ from image_generation import (
     detect_image_mime_type,
     generate_image_candidate,
 )
-from image_pipeline import process_document_images as process_document_images_impl
+from image_pipeline import ImageProcessingContext, process_document_images as process_document_images_impl
 from image_validation import validate_redraw_result
 from logger import log_event, present_error
 from processing_runtime import resolve_uploaded_filename, should_stop_processing
@@ -66,9 +67,7 @@ class ProcessingService:
         runtime=None,
         client=None,
     ) -> list:
-        return self.process_document_images_impl_fn(
-            image_assets=image_assets,
-            image_mode=image_mode,
+        pipeline_context = ImageProcessingContext(
             config=config,
             on_progress=on_progress,
             runtime=runtime,
@@ -88,6 +87,11 @@ class ProcessingService:
             detect_image_mime_type_fn=self.detect_image_mime_type_fn,
             image_model_call_budget_cls=self.image_model_call_budget_cls,
             image_model_call_budget_exceeded_cls=self.image_model_call_budget_exceeded_cls,
+        )
+        return self.process_document_images_impl_fn(
+            image_assets=image_assets,
+            image_mode=image_mode,
+            context=pipeline_context,
         )
 
     def run_document_processing(
@@ -216,15 +220,19 @@ def build_processing_service() -> ProcessingService:
 
 
 _DEFAULT_PROCESSING_SERVICE: ProcessingService | None = None
+_DEFAULT_PROCESSING_SERVICE_LOCK = Lock()
 
 
 def get_processing_service() -> ProcessingService:
     global _DEFAULT_PROCESSING_SERVICE
     if _DEFAULT_PROCESSING_SERVICE is None:
-        _DEFAULT_PROCESSING_SERVICE = build_processing_service()
+        with _DEFAULT_PROCESSING_SERVICE_LOCK:
+            if _DEFAULT_PROCESSING_SERVICE is None:
+                _DEFAULT_PROCESSING_SERVICE = build_processing_service()
     return _DEFAULT_PROCESSING_SERVICE
 
 
 def reset_processing_service() -> None:
     global _DEFAULT_PROCESSING_SERVICE
-    _DEFAULT_PROCESSING_SERVICE = None
+    with _DEFAULT_PROCESSING_SERVICE_LOCK:
+        _DEFAULT_PROCESSING_SERVICE = None

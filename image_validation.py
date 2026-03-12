@@ -3,11 +3,11 @@ import base64
 import re
 from typing import Mapping
 
-from generation import is_retryable_error
 from image_shared import (
     call_responses_create_with_retry,
     clamp_score,
     detect_image_mime_type,
+    is_retryable_error,
     is_supported_image_bytes as shared_is_supported_image_bytes,
     parse_json_object,
 )
@@ -37,6 +37,7 @@ def validate_redraw_result(
     client=None,
     enable_vision_validation: bool = True,
     validation_model: str | None = None,
+    budget=None,
 ) -> ImageValidationResult:
     normalized_context = dict(image_context or {})
     try:
@@ -63,6 +64,7 @@ def validate_redraw_result(
                 client=client,
                 model=validation_model or str((config or {}).get("validation_model", "gpt-4.1")),
                 enable_vision_validation=enable_vision_validation,
+                budget=budget,
             ),
         )
     except Exception as exc:
@@ -351,6 +353,7 @@ def _build_vision_validation_assessment(
     candidate_analysis: ImageAnalysisResult | None,
     client,
     model: str,
+    budget=None,
 ) -> dict[str, object]:
     original_mime = detect_image_mime_type(original_image)
     candidate_mime = detect_image_mime_type(candidate_image)
@@ -401,6 +404,7 @@ def _build_vision_validation_assessment(
         },
         max_retries=VISION_VALIDATION_MAX_RETRIES,
         retryable_error_predicate=is_retryable_error,
+        budget=budget,
     )
     return parse_json_object(
         getattr(response, "output_text", ""),
@@ -418,6 +422,7 @@ def _maybe_build_vision_validation_assessment(
     client,
     model: str,
     enable_vision_validation: bool,
+    budget=None,
 ) -> dict[str, object] | None:
     if not enable_vision_validation or not _supports_responses_client(client):
         return None
@@ -429,8 +434,18 @@ def _maybe_build_vision_validation_assessment(
             candidate_analysis=candidate_analysis,
             client=client,
             model=model,
+            budget=budget,
         )
-    except Exception:
+    except Exception as exc:
+        log_event(
+            logging.WARNING,
+            "image_vision_validation_skipped_after_failure",
+            "Vision validation недоступен; продолжаю heuristic-only validation.",
+            error_type=exc.__class__.__name__,
+            error_message=str(exc),
+            image_type=analysis_before.image_type,
+            validation_model=model,
+        )
         return None
 
 

@@ -108,7 +108,10 @@ def test_set_processing_status_updates_preparation_metrics(monkeypatch):
 
 
 def test_reset_run_state_can_clear_restart_source(monkeypatch):
-    session_state = SessionState(restart_source={"filename": "report.docx", "storage_path": "restart.bin"})
+    session_state = SessionState(
+        restart_source={"filename": "report.docx", "storage_path": "restart.bin"},
+        completed_source={"filename": "report.docx", "storage_path": "completed.bin"},
+    )
     monkeypatch.setattr(state.st, "session_state", session_state)
     cleared = []
     monkeypatch.setattr(state, "clear_restart_source", lambda restart_source: cleared.append(restart_source))
@@ -116,8 +119,12 @@ def test_reset_run_state_can_clear_restart_source(monkeypatch):
     state.init_session_state()
     state.reset_run_state(keep_restart_source=False)
 
-    assert cleared == [{"filename": "report.docx", "storage_path": "restart.bin"}]
+    assert cleared == [
+        {"filename": "report.docx", "storage_path": "completed.bin"},
+        {"filename": "report.docx", "storage_path": "restart.bin"},
+    ]
     assert session_state.restart_source is None
+    assert session_state.completed_source is None
 
 
 def test_append_image_log_updates_summary_and_activity(monkeypatch):

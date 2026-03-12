@@ -7,6 +7,9 @@ from pathlib import Path
 from constants import APP_LOG_PATH, RUN_DIR
 
 
+_LOGGER: logging.Logger | None = None
+
+
 def setup_logger() -> logging.Logger:
     RUN_DIR.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("docxaicorrector")
@@ -22,7 +25,11 @@ def setup_logger() -> logging.Logger:
     return logger
 
 
-LOGGER = setup_logger()
+def get_logger() -> logging.Logger:
+    global _LOGGER
+    if _LOGGER is None:
+        _LOGGER = setup_logger()
+    return _LOGGER
 
 
 def make_event_id(prefix: str = "evt") -> str:
@@ -58,7 +65,7 @@ def log_event(level: int, event: str, message: str, **context: object) -> str:
         "message": message,
         "context": sanitize_log_context(context),
     }
-    LOGGER.log(level, json.dumps(payload, ensure_ascii=False))
+    get_logger().log(level, json.dumps(payload, ensure_ascii=False))
     return event_id
 
 
@@ -132,7 +139,7 @@ def log_exception(event: str, exc: Exception, message: str, **context: object) -
         "status_code": getattr(exc, "status_code", None),
         "context": sanitize_log_context(context),
     }
-    LOGGER.exception(json.dumps(payload, ensure_ascii=False))
+    get_logger().exception(json.dumps(payload, ensure_ascii=False))
     return event_id
 
 
