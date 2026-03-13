@@ -6,6 +6,7 @@ def run_document_processing(
     *,
     uploaded_file,
     jobs: list[dict[str, str | int]],
+    source_paragraphs=None,
     image_assets: list,
     image_mode: str,
     app_config: dict[str, object],
@@ -29,6 +30,8 @@ def run_document_processing(
     process_document_images,
     inspect_placeholder_integrity,
     convert_markdown_to_docx_bytes,
+    preserve_source_paragraph_properties,
+    normalize_semantic_output_docx,
     reinsert_inline_images,
 ):
     uploaded_filename = resolve_uploaded_filename(uploaded_file)
@@ -313,6 +316,9 @@ def run_document_processing(
 
     try:
         docx_bytes = convert_markdown_to_docx_bytes(final_markdown)
+        if source_paragraphs:
+            docx_bytes = preserve_source_paragraph_properties(docx_bytes, source_paragraphs)
+            docx_bytes = normalize_semantic_output_docx(docx_bytes, source_paragraphs)
         if processed_image_assets:
             docx_bytes = reinsert_inline_images(docx_bytes, processed_image_assets)
     except Exception as exc:

@@ -69,6 +69,7 @@ def test_start_background_processing_passes_state_callbacks(monkeypatch):
         uploaded_token="token",
         source_bytes=b"abc",
         jobs=[{"target_text": "block"}],
+        source_paragraphs=["paragraph"],
         image_assets=[],
         image_mode="safe",
         app_config={"x": 1},
@@ -81,4 +82,5 @@ def test_start_background_processing_passes_state_callbacks(monkeypatch):
     assert captured["push_activity"] is push_stub
     assert captured["set_processing_status"] is status_stub
     assert captured["uploaded_filename"] == "report.docx"
+    assert captured["source_paragraphs"] == ["paragraph"]
     assert captured["model"] == "gpt-5.4"

@@ -2,7 +2,16 @@
 
 ## Локальная разработка
 
+Проект использует основной Python runtime в WSL. Для штатной разработки, запуска приложения и тестов используйте `.venv/bin/activate` внутри WSL.
+
 1. Создайте виртуальное окружение:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Если нужен отдельный Windows venv для вспомогательных сценариев, его можно поднять отдельно:
 
 ```powershell
 python -m venv .venv
@@ -11,7 +20,7 @@ python -m venv .venv
 
 2. Установите зависимости:
 
-```powershell
+```bash
 pip install -r requirements.txt
 ```
 
@@ -19,17 +28,55 @@ pip install -r requirements.txt
 
 4. Запустите приложение:
 
-```powershell
+```bash
+source .venv/bin/activate
 streamlit run app.py
 ```
 
-## Перед pull request
-
-Перед отправкой изменений:
+Если запуск идёт из Windows shell, используйте WSL-проксирование:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests -q
+wsl.exe -d Debian bash -lc "cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate && streamlit run app.py"
 ```
+
+## Видимый запуск тестов в VS Code
+
+Во встроенном терминале VS Code:
+
+```bash
+bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate && pytest tests -q'
+```
+
+Для живого прогресса по каждому тесту:
+
+```bash
+bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate && pytest tests -vv'
+```
+
+Через VS Code Task:
+
+```text
+Tasks: Run Task -> Run Full Pytest WSL Visible
+```
+
+Task открывает отдельный терминал и оставляет его видимым после завершения.
+
+## Перед pull request
+
+Перед отправкой изменений выполняйте полный прогон в каноническом WSL-окружении:
+
+```bash
+source .venv/bin/activate
+pytest tests -q
+```
+
+Если запуск делается из Windows shell, используйте WSL-проксирование:
+
+```powershell
+wsl.exe -d Debian bash -lc "cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate && pytest tests -q"
+```
+
+Если нужен именно видимый прогон в UI VS Code, используйте task `Run Full Pytest WSL Visible`.
 
 Если правки затрагивают UI или блокировку документа, проверьте также ручной smoke-test на небольшом `.docx`.
 

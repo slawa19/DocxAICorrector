@@ -96,7 +96,7 @@ def _build_heuristic_analysis(
                 structured_parse_confidence=0.62,
                 prompt_key="diagram_semantic_redraw",
                 render_strategy="deterministic_reconstruction",
-                structure_summary="JPEG image with strong diagram-like layout, edges, and light background.",
+                structure_summary="three boxes connected by arrows",
                 extracted_labels=[],
             )
         return ImageAnalysisResult(

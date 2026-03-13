@@ -308,6 +308,7 @@ def test_start_background_processing_degrades_gracefully_when_restart_store_fail
         uploaded_token="report.docx:3:abc",
         source_bytes=b"abc",
         jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
+        source_paragraphs=["paragraph"],
         image_assets=[],
         image_mode="safe",
         app_config={},

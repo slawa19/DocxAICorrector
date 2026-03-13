@@ -18,6 +18,11 @@ from constants import (
 from image_shared import clamp_score
 from models import IMAGE_MODE_VALUES, ImageMode
 
+try:
+    from openai import OpenAI
+except Exception:  # pragma: no cover - import is validated via get_client/test seams
+    OpenAI = None
+
 if TYPE_CHECKING:
     from openai import OpenAI
 
@@ -383,6 +388,9 @@ def get_client() -> "OpenAI":
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("Не найден OPENAI_API_KEY. Добавьте его в .env или переменные окружения.")
-    from openai import OpenAI
+    client_cls = OpenAI
+    if client_cls is None:
+        from openai import OpenAI as imported_openai
 
-    return OpenAI(api_key=api_key)
+        client_cls = imported_openai
+    return client_cls(api_key=api_key)

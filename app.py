@@ -25,6 +25,12 @@ from app_runtime import (
     start_background_processing,
 )
 from logger import fail_critical, log_event, present_error
+from application_flow import (
+    derive_app_idle_view_state,
+    has_resettable_state,
+    prepare_run_context,
+    resolve_effective_uploaded_file,
+)
 from processing_runtime import (
     get_current_result_bundle,
     resolve_uploaded_filename,
@@ -72,19 +78,21 @@ def _start_background_processing(
     uploaded_token: str,
     source_bytes: bytes,
     jobs: list[dict[str, str | int]],
+    source_paragraphs: list,
     image_assets: list,
     image_mode: str,
     app_config: dict[str, object],
     model: str,
     max_retries: int,
 ) -> None:
-    def worker_entrypoint(*, runtime, uploaded_filename, jobs, image_assets, image_mode, app_config, model, max_retries) -> None:
+    def worker_entrypoint(*, runtime, uploaded_filename, jobs, source_paragraphs, image_assets, image_mode, app_config, model, max_retries) -> None:
         from processing_service import get_processing_service
 
         get_processing_service().run_processing_worker(
             runtime=runtime,
             uploaded_filename=uploaded_filename,
             jobs=jobs,
+            source_paragraphs=source_paragraphs,
             image_assets=image_assets,
             image_mode=image_mode,
             app_config=app_config,
@@ -98,6 +106,7 @@ def _start_background_processing(
         uploaded_token=uploaded_token,
         source_bytes=source_bytes,
         jobs=jobs,
+        source_paragraphs=source_paragraphs,
         image_assets=image_assets,
         image_mode=image_mode,
         app_config=app_config,
@@ -267,20 +276,12 @@ def main() -> None:
                 image_mode=image_mode,
                 enable_post_redraw_validation=enable_post_redraw_validation,
             )
-            render_preparation_panel()
-            return
+            st.rerun()
         if preparation_failed_marker == preparation_request_marker and prepared_run_context is None:
             if st.session_state.last_error:
                 st.error(st.session_state.last_error)
             render_live_status()
             return
-
-    from application_flow import (
-        derive_app_idle_view_state,
-        has_resettable_state,
-        prepare_run_context,
-        resolve_effective_uploaded_file,
-    )
 
     uploaded_file = resolve_effective_uploaded_file(
         uploaded_file=uploaded_widget_file,
@@ -415,6 +416,7 @@ def main() -> None:
             uploaded_token=uploaded_file_token,
             source_bytes=uploaded_file_bytes,
             jobs=jobs,
+            source_paragraphs=paragraphs,
             image_assets=image_assets,
             image_mode=image_mode,
             app_config=app_config,

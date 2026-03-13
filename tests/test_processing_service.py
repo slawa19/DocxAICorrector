@@ -17,6 +17,8 @@ def _build_service(**overrides):
         "validate_redraw_result_fn": lambda *args, **kwargs: None,
         "detect_image_mime_type_fn": lambda *args, **kwargs: "image/png",
         "inspect_placeholder_integrity_fn": lambda markdown, assets: {},
+        "preserve_source_paragraph_properties_fn": lambda docx_bytes, paragraphs: docx_bytes,
+        "normalize_semantic_output_docx_fn": lambda docx_bytes, paragraphs: docx_bytes,
         "reinsert_inline_images_fn": lambda *args, **kwargs: b"final-docx",
         "run_document_processing_impl_fn": None,
         "present_error_fn": lambda code, exc, title, **kwargs: f"{title}: {exc}",

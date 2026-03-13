@@ -5,13 +5,19 @@ from io import BytesIO
 import document
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.opc.constants import RELATIONSHIP_TYPE
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from docx.shared import Inches
 
 from document import (
+    build_document_text,
     build_editing_jobs,
     build_semantic_blocks,
     extract_document_content_from_docx,
     inspect_placeholder_integrity,
+    normalize_semantic_output_docx,
+    preserve_source_paragraph_properties,
     resolve_image_insertions,
     resolve_final_image_bytes,
     reinsert_inline_images,
@@ -21,6 +27,41 @@ from models import ParagraphUnit
 
 
 PNG_BYTES = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK3cAAAAASUVORK5CYII=")
+
+
+def _add_hyperlink(paragraph, text: str, url: str) -> None:
+    relationship_id = paragraph.part.relate_to(url, RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), relationship_id)
+
+    run = OxmlElement("w:r")
+    text_element = OxmlElement("w:t")
+    text_element.text = text
+    run.append(text_element)
+    hyperlink.append(run)
+    paragraph._p.append(hyperlink)
+
+
+def _append_tab(run) -> None:
+    run._element.append(OxmlElement("w:tab"))
+
+
+def _set_raw_paragraph_alignment(paragraph, value: str) -> None:
+    paragraph_properties = paragraph._element.get_or_add_pPr()
+    alignment = paragraph_properties.find(qn("w:jc"))
+    if alignment is None:
+        alignment = OxmlElement("w:jc")
+        paragraph_properties.append(alignment)
+    alignment.set(qn("w:val"), value)
+
+
+def _set_outline_level(paragraph, value: int) -> None:
+    paragraph_properties = paragraph._element.get_or_add_pPr()
+    outline_level = paragraph_properties.find(qn("w:outlineLvl"))
+    if outline_level is None:
+        outline_level = OxmlElement("w:outlineLvl")
+        paragraph_properties.append(outline_level)
+    outline_level.set(qn("w:val"), str(value))
 
 
 def test_build_semantic_blocks_keeps_heading_with_following_body():
@@ -83,6 +124,190 @@ def test_extract_document_content_from_docx_inserts_image_placeholders(tmp_path)
     assert inspect_placeholder_integrity("\n\n".join(paragraph.text for paragraph in paragraphs), image_assets) == {
         "img_001": "ok"
     }
+
+
+def test_build_document_text_renders_word_numbered_and_bulleted_lists_as_markdown():
+    doc = Document()
+    doc.add_paragraph("Вступление")
+    doc.add_paragraph("Первый пункт", style="List Number")
+    doc.add_paragraph("Второй пункт", style="List Number")
+    doc.add_paragraph("Подпункт", style="List Bullet 2")
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.role for paragraph in paragraphs] == ["body", "list", "list", "list"]
+    assert paragraphs[1].list_kind == "ordered"
+    assert paragraphs[2].list_kind == "ordered"
+    assert paragraphs[3].list_kind == "unordered"
+    assert paragraphs[3].list_level == 1
+    assert build_document_text(paragraphs) == (
+        "Вступление\n\n"
+        "1. Первый пункт\n\n"
+        "1. Второй пункт\n\n"
+        "    - Подпункт"
+    )
+
+
+def test_build_document_text_does_not_duplicate_existing_list_markers():
+    paragraphs = [
+        ParagraphUnit(text="1. Уже размеченный пункт", role="list", list_kind="ordered"),
+        ParagraphUnit(text="- Уже размеченный маркер", role="list", list_kind="unordered"),
+    ]
+
+    assert build_document_text(paragraphs) == "1. Уже размеченный пункт\n\n- Уже размеченный маркер"
+
+
+def test_extract_document_content_from_docx_renders_title_and_outline_levels_as_markdown_headings():
+    doc = Document()
+    doc.add_paragraph("Название главы", style="Title")
+    subheading = doc.add_paragraph("Подзаголовок")
+    _set_outline_level(subheading, 1)
+    doc.add_paragraph("Основной текст.")
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.role for paragraph in paragraphs] == ["heading", "heading", "body"]
+    assert paragraphs[0].heading_level == 1
+    assert paragraphs[1].heading_level == 2
+    assert build_document_text(paragraphs) == "# Название главы\n\n## Подзаголовок\n\nОсновной текст."
+
+
+def test_extract_document_content_from_docx_keeps_tables_in_document_order():
+    doc = Document()
+    doc.add_paragraph("Перед таблицей")
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Колонка A"
+    table.cell(0, 1).text = "Колонка B"
+    table.cell(1, 0).text = "Значение 1"
+    table.cell(1, 1).text = "Значение 2"
+    doc.add_paragraph("После таблицы")
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.role for paragraph in paragraphs] == ["body", "table", "body"]
+    assert paragraphs[1].text.startswith("<table>")
+    assert "Колонка A" in paragraphs[1].text
+    assert build_document_text(paragraphs).startswith("Перед таблицей\n\n<table>")
+
+
+def test_extract_document_content_from_docx_marks_caption_after_image():
+    image_path = BytesIO(PNG_BYTES)
+    with open("/tmp/docx_caption_image.png", "wb") as file_handle:
+        file_handle.write(PNG_BYTES)
+
+    doc = Document()
+    doc.add_paragraph().add_run().add_picture("/tmp/docx_caption_image.png")
+    doc.add_paragraph("Рис. 1. Подпись к изображению")
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.role for paragraph in paragraphs] == ["image", "caption"]
+
+
+def test_extract_document_content_from_docx_marks_caption_after_table():
+    doc = Document()
+    table = doc.add_table(rows=1, cols=1)
+    table.cell(0, 0).text = "Ячейка"
+    doc.add_paragraph("Таблица 1. Подпись к таблице")
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.role for paragraph in paragraphs] == ["table", "caption"]
+
+
+def test_extract_document_content_from_docx_preserves_hyperlinks_tabs_and_inline_emphasis():
+    doc = Document()
+    paragraph = doc.add_paragraph()
+    paragraph.add_run("До ")
+    bold_run = paragraph.add_run("важно")
+    bold_run.bold = True
+    paragraph.add_run(" и ")
+    italic_run = paragraph.add_run("курсив")
+    italic_run.italic = True
+    tab_run = paragraph.add_run()
+    _append_tab(tab_run)
+    _add_hyperlink(paragraph, "ссылка", "https://example.com")
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert len(paragraphs) == 1
+    assert paragraphs[0].text == "До **важно** и *курсив*\t[ссылка](https://example.com)"
+
+
+def test_preserve_source_paragraph_properties_restores_raw_xml_paragraph_formatting():
+    source_doc = Document()
+    source_paragraph = source_doc.add_paragraph("Абзац")
+    source_paragraph.paragraph_format.left_indent = Inches(0.5)
+    source_paragraph.paragraph_format.first_line_indent = Inches(0.25)
+    _set_raw_paragraph_alignment(source_paragraph, "start")
+
+    source_buffer = BytesIO()
+    source_doc.save(source_buffer)
+    source_buffer.seek(0)
+    source_paragraphs, _ = extract_document_content_from_docx(source_buffer)
+
+    target_doc = Document()
+    target_doc.add_paragraph("Абзац")
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    updated_bytes = preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
+    updated_doc = Document(BytesIO(updated_bytes))
+    paragraph_properties = updated_doc.paragraphs[0]._element.pPr
+    alignment = paragraph_properties.find(qn("w:jc"))
+    indentation = paragraph_properties.find(qn("w:ind"))
+
+    assert alignment is not None
+    assert alignment.get(qn("w:val")) == "start"
+    assert indentation is not None
+    assert indentation.get(qn("w:start")) == "720" or indentation.get(qn("w:left")) == "720"
+    assert indentation.get(qn("w:firstLine")) == "360"
+
+
+def test_normalize_semantic_output_docx_applies_semantic_styles():
+    source_paragraphs = [
+        ParagraphUnit(text="Глава", role="heading", heading_level=1),
+        ParagraphUnit(text="[[DOCX_IMAGE_img_001]]", role="image"),
+        ParagraphUnit(text="Рис. 1. Подпись", role="caption"),
+        ParagraphUnit(text="Обычный текст", role="body"),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("Глава")
+    target_doc.add_paragraph("[[DOCX_IMAGE_img_001]]")
+    target_doc.add_paragraph("Рис. 1. Подпись")
+    target_doc.add_paragraph("Обычный текст")
+    table = target_doc.add_table(rows=1, cols=1)
+    table.cell(0, 0).text = "A"
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    updated_bytes = normalize_semantic_output_docx(target_buffer.getvalue(), source_paragraphs)
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    assert updated_doc.paragraphs[0].style.name == "Heading 1"
+    assert updated_doc.paragraphs[1].alignment == WD_ALIGN_PARAGRAPH.CENTER
+    assert updated_doc.paragraphs[2].style.name == "Caption"
+    assert updated_doc.paragraphs[3].style.name in {"Body Text", "Normal"}
+    assert updated_doc.tables[0].style.name == "Table Grid"
 
 
 def test_reinsert_inline_images_replaces_placeholder_with_picture():

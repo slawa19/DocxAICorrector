@@ -81,10 +81,11 @@ def test_ensure_pandoc_available_converts_os_error(monkeypatch):
 def test_convert_markdown_to_docx_bytes_calls_pandoc_and_reads_output(monkeypatch, tmp_path):
     monkeypatch.setattr(generation, "ensure_pandoc_available", lambda: None)
 
-    def fake_convert_file(source_path, *, to, format, outputfile):
+    def fake_convert_file(source_path, *, to, format, outputfile, extra_args):
         assert source_path.endswith("result.md")
         assert to == "docx"
         assert format == "md"
+        assert any(str(argument).startswith("--reference-doc=") for argument in extra_args)
         with open(outputfile, "wb") as file_handle:
             file_handle.write(b"docx-bytes")
 

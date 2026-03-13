@@ -1,15 +1,32 @@
 import logging
 import traceback
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
+from typing import Protocol, TypeAlias
 
 from image_pipeline_policy import build_generation_analysis, resolve_validation_delivery_outcome, should_attempt_semantic_redraw
-from models import ImageMode, ImageVariantCandidate
+from models import ImageAnalysisResult, ImageMode, ImageValidationResult, ImageVariantCandidate
+
+
+class _ImageModelCallBudgetLike(Protocol):
+    def ensure_available(self, operation_name: str) -> None:
+        ...
+
+    def consume(self, operation_name: str) -> None:
+        ...
+
+
+_Callback: TypeAlias = Callable[..., object]
+_BudgetFactory: TypeAlias = Callable[[int], _ImageModelCallBudgetLike]
+_BudgetExceededClass: TypeAlias = type[Exception]
+_AnalyzeImageFn: TypeAlias = Callable[..., ImageAnalysisResult]
+_GenerateImageCandidateFn: TypeAlias = Callable[..., bytes]
+_ValidateRedrawResultFn: TypeAlias = Callable[..., ImageValidationResult]
 
 
 @dataclass(frozen=True)
 class _CompositeImageModelCallBudget:
-    budgets: tuple[object, ...]
+    budgets: tuple[_ImageModelCallBudgetLike, ...]
 
     def ensure_available(self, operation_name: str) -> None:
         for budget in self.budgets:
@@ -24,50 +41,65 @@ class _CompositeImageModelCallBudget:
 @dataclass
 class ImageProcessingContext:
     config: Mapping[str, object]
-    on_progress: object
-    runtime: object
-    client: object
-    emit_state: object
-    emit_image_reset: object
-    emit_finalize: object
-    emit_activity: object
-    emit_status: object
-    emit_image_log: object
-    should_stop: object
-    analyze_image_fn: object
-    generate_image_candidate_fn: object
-    validate_redraw_result_fn: object
-    get_client_fn: object
-    log_event_fn: object
-    detect_image_mime_type_fn: object
-    image_model_call_budget_cls: type
-    image_model_call_budget_exceeded_cls: type
-    document_call_budget: object | None = None
+    on_progress: _Callback
+    runtime: object | None
+    client: object | None
+    emit_state: _Callback
+    emit_image_reset: _Callback
+    emit_finalize: _Callback
+    emit_activity: _Callback
+    emit_status: _Callback
+    emit_image_log: _Callback
+    should_stop: Callable[[object | None], bool]
+    analyze_image_fn: _AnalyzeImageFn
+    generate_image_candidate_fn: _GenerateImageCandidateFn
+    validate_redraw_result_fn: _ValidateRedrawResultFn
+    get_client_fn: Callable[[], object]
+    log_event_fn: _Callback
+    detect_image_mime_type_fn: Callable[[bytes], str | None]
+    image_model_call_budget_cls: _BudgetFactory
+    image_model_call_budget_exceeded_cls: _BudgetExceededClass
+    document_call_budget: _ImageModelCallBudgetLike | None = None
 
-    def ensure_client(self):
+    def ensure_client(self) -> object:
         if self.client is None:
             self.client = self.get_client_fn()
         return self.client
 
-    def analyze_image(self, image_bytes: bytes, *, mime_type: str | None, client=None, budget=None):
+    def analyze_image(
+        self,
+        image_bytes: bytes,
+        *,
+        mime_type: str | None,
+        client=None,
+        budget: _ImageModelCallBudgetLike | None = None,
+    ) -> ImageAnalysisResult:
         return self.analyze_image_fn(
             image_bytes,
-            model=str(self.config.get("validation_model", "")),
+            model=_config_str(self.config, "validation_model", ""),
             mime_type=mime_type,
             client=client,
-            enable_vision=bool(self.config.get("enable_vision_image_analysis", True)),
-            dense_text_bypass_threshold=int(self.config.get("dense_text_bypass_threshold", 18)),
-            non_latin_text_bypass_threshold=int(self.config.get("non_latin_text_bypass_threshold", 12)),
+            enable_vision=_config_bool(self.config, "enable_vision_image_analysis", True),
+            dense_text_bypass_threshold=_config_int(self.config, "dense_text_bypass_threshold", 18),
+            non_latin_text_bypass_threshold=_config_int(self.config, "non_latin_text_bypass_threshold", 12),
             budget=budget,
         )
 
-    def generate_candidate(self, image_bytes: bytes, analysis, *, mode: str, client=None, budget=None):
+    def generate_candidate(
+        self,
+        image_bytes: bytes,
+        analysis: ImageAnalysisResult,
+        *,
+        mode: str,
+        client=None,
+        budget: _ImageModelCallBudgetLike | None = None,
+    ) -> bytes:
         return self.generate_image_candidate_fn(
             image_bytes,
             analysis,
             mode=mode,
-            prefer_deterministic_reconstruction=bool(self.config.get("prefer_deterministic_reconstruction", True)),
-            reconstruction_model=str(self.config.get("reconstruction_model", "")) or None,
+            prefer_deterministic_reconstruction=_config_bool(self.config, "prefer_deterministic_reconstruction", True),
+            reconstruction_model=_config_optional_str(self.config.get("reconstruction_model")),
             reconstruction_render_config=_build_reconstruction_render_config(self.config),
             client=client,
             budget=budget,
@@ -77,13 +109,13 @@ class ImageProcessingContext:
         self,
         original_image: bytes,
         candidate_image: bytes,
-        analysis_before,
+        analysis_before: ImageAnalysisResult,
         *,
-        candidate_analysis,
+        candidate_analysis: ImageAnalysisResult,
         image_context: Mapping[str, object],
         client=None,
-        budget=None,
-    ):
+        budget: _ImageModelCallBudgetLike | None = None,
+    ) -> ImageValidationResult:
         return self.validate_redraw_result_fn(
             original_image,
             candidate_image,
@@ -92,19 +124,19 @@ class ImageProcessingContext:
             config=self.config,
             image_context=image_context,
             client=client,
-            enable_vision_validation=bool(self.config.get("enable_vision_image_validation", True)),
-            validation_model=str(self.config.get("validation_model", "gpt-4.1")),
+            enable_vision_validation=_config_bool(self.config, "enable_vision_image_validation", True),
+            validation_model=_config_str(self.config, "validation_model", "gpt-4.1"),
             budget=budget,
         )
 
-    def build_document_call_budget(self, *, total_images: int, image_mode: str):
+    def build_document_call_budget(self, *, total_images: int, image_mode: str) -> _ImageModelCallBudgetLike:
         if self.document_call_budget is None:
             self.document_call_budget = self.image_model_call_budget_cls(
                 _resolve_document_model_call_budget(self.config, total_images=total_images, image_mode=image_mode)
             )
         return self.document_call_budget
 
-    def compose_budget(self, *budgets):
+    def compose_budget(self, *budgets: _ImageModelCallBudgetLike | None) -> _ImageModelCallBudgetLike | None:
         active_budgets = tuple(budget for budget in budgets if budget is not None)
         if not active_budgets:
             return None
@@ -308,8 +340,11 @@ def select_best_semantic_asset(
     pipeline_context: ImageProcessingContext,
     client,
 ):
-    attempt_count = max(1, int(pipeline_context.config.get("semantic_redraw_max_attempts", 3)))
-    max_model_calls = max(1, int(pipeline_context.config.get("semantic_redraw_max_model_calls_per_image", attempt_count * 3)))
+    attempt_count = max(1, _config_int(pipeline_context.config, "semantic_redraw_max_attempts", 3))
+    max_model_calls = max(
+        1,
+        _config_int(pipeline_context.config, "semantic_redraw_max_model_calls_per_image", attempt_count * 3),
+    )
     image_call_budget = pipeline_context.image_model_call_budget_cls(max_model_calls)
     operation_budget = pipeline_context.compose_budget(image_call_budget, pipeline_context.document_call_budget)
     best_asset = None
@@ -367,8 +402,8 @@ def select_best_semantic_asset(
                 "semantic_candidate_budget_exhausted",
                 "Достигнут budget внешних model calls для semantic redraw; дальнейшие попытки остановлены.",
                 attempt_index=attempt_index,
-                max_model_calls=image_call_budget.max_calls,
-                used_model_calls=image_call_budget.used_calls,
+                max_model_calls=getattr(image_call_budget, "max_calls", None),
+                used_model_calls=getattr(image_call_budget, "used_calls", None),
                 document_max_model_calls=getattr(pipeline_context.document_call_budget, "max_calls", None),
                 document_used_model_calls=getattr(pipeline_context.document_call_budget, "used_calls", None),
                 exhausted_reason=budget_exhausted_reason,
@@ -741,11 +776,10 @@ def _resolve_document_model_call_budget(
 
     per_image_attempt_budget = max(
         1,
-        int(
-            config.get(
-                "semantic_redraw_max_model_calls_per_image",
-                max(1, int(config.get("semantic_redraw_max_attempts", 3))) * 3,
-            )
+        _config_int(
+            config,
+            "semantic_redraw_max_model_calls_per_image",
+            max(1, _config_int(config, "semantic_redraw_max_attempts", 3)) * 3,
         ),
     )
     estimated_calls_per_image = 7 if image_mode == ImageMode.COMPARE_ALL.value else per_image_attempt_budget + 1
@@ -772,23 +806,102 @@ def _is_budget_exhausted(budget) -> bool:
 
 
 def _coerce_positive_int(value: object) -> int | None:
-    try:
+    if isinstance(value, bool):
         parsed_value = int(value)
-    except (TypeError, ValueError):
+    elif isinstance(value, int):
+        parsed_value = value
+    elif isinstance(value, float):
+        parsed_value = int(value)
+    elif isinstance(value, str):
+        try:
+            parsed_value = int(value.strip())
+        except ValueError:
+            return None
+    else:
         return None
     return parsed_value if parsed_value > 0 else None
 
 
-def _build_reconstruction_render_config(config: dict[str, object]) -> dict[str, object]:
+def _config_int(config: Mapping[str, object], key: str, default: int) -> int:
+    value = config.get(key, default)
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return default
+    return default
+
+
+def _config_float(config: Mapping[str, object], key: str, default: float) -> float:
+    value = config.get(key, default)
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return default
+    return default
+
+
+def _config_bool(config: Mapping[str, object], key: str, default: bool) -> bool:
+    value = config.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized_value = value.strip().lower()
+        if normalized_value in {"1", "true", "yes", "on"}:
+            return True
+        if normalized_value in {"0", "false", "no", "off"}:
+            return False
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
+
+def _config_str(config: Mapping[str, object], key: str, default: str) -> str:
+    return _coerce_str(config.get(key), default)
+
+
+def _coerce_str(value: object, default: str = "") -> str:
+    if value is None:
+        return default
+    normalized_value = str(value).strip()
+    return normalized_value or default
+
+
+def _config_optional_str(value: object) -> str | None:
+    if value is None:
+        return None
+    normalized_value = str(value).strip()
+    if not normalized_value or normalized_value.lower() in {"none", "null"}:
+        return None
+    return normalized_value
+
+
+def _build_reconstruction_render_config(config: Mapping[str, object]) -> dict[str, object]:
     return {
-        "min_canvas_short_side_px": int(config.get("reconstruction_min_canvas_short_side_px", 900)),
-        "target_min_font_px": int(config.get("reconstruction_target_min_font_px", 18)),
-        "max_upscale_factor": float(config.get("reconstruction_max_upscale_factor", 3.0)),
-        "background_sample_ratio": float(config.get("reconstruction_background_sample_ratio", 0.04)),
-        "background_color_distance_threshold": float(
-            config.get("reconstruction_background_color_distance_threshold", 48.0)
+        "min_canvas_short_side_px": _config_int(config, "reconstruction_min_canvas_short_side_px", 900),
+        "target_min_font_px": _config_int(config, "reconstruction_target_min_font_px", 18),
+        "max_upscale_factor": _config_float(config, "reconstruction_max_upscale_factor", 3.0),
+        "background_sample_ratio": _config_float(config, "reconstruction_background_sample_ratio", 0.04),
+        "background_color_distance_threshold": _config_float(
+            config,
+            "reconstruction_background_color_distance_threshold",
+            48.0,
         ),
-        "background_uniformity_threshold": float(
-            config.get("reconstruction_background_uniformity_threshold", 10.0)
+        "background_uniformity_threshold": _config_float(
+            config,
+            "reconstruction_background_uniformity_threshold",
+            10.0,
         ),
     }

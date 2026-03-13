@@ -4,6 +4,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pypandoc
+from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Pt
 
 from image_shared import is_retryable_error
 
@@ -84,16 +87,110 @@ def convert_markdown_to_docx_bytes(markdown_text: str) -> bytes:
             temp_path = Path(temp_dir)
             markdown_path = temp_path / "result.md"
             docx_path = temp_path / "result.docx"
+            reference_docx_path = temp_path / "reference.docx"
             markdown_path.write_text(markdown_text, encoding="utf-8")
+            _build_reference_docx(reference_docx_path)
             pypandoc.convert_file(
                 str(markdown_path),
                 to="docx",
                 format="md",
                 outputfile=str(docx_path),
+                extra_args=[f"--reference-doc={reference_docx_path}"],
             )
             return docx_path.read_bytes()
     except Exception as exc:
         raise RuntimeError(f"Ошибка при сборке DOCX: {exc}") from exc
+
+
+def _build_reference_docx(reference_docx_path: Path) -> None:
+    reference_document = Document()
+    styles = reference_document.styles
+
+    _configure_paragraph_style(styles["Normal"], font_name="Aptos", font_size=11, space_after=8, line_spacing=1.15)
+
+    if "Body Text" in styles:
+        _configure_paragraph_style(styles["Body Text"], font_name="Aptos", font_size=11, space_after=8, line_spacing=1.15)
+
+    _configure_paragraph_style(
+        styles["Heading 1"],
+        font_name="Aptos Display",
+        font_size=18,
+        bold=True,
+        space_before=18,
+        space_after=8,
+        keep_with_next=True,
+    )
+    _configure_paragraph_style(
+        styles["Heading 2"],
+        font_name="Aptos Display",
+        font_size=15,
+        bold=True,
+        space_before=14,
+        space_after=6,
+        keep_with_next=True,
+    )
+    _configure_paragraph_style(
+        styles["Heading 3"],
+        font_name="Aptos Display",
+        font_size=12,
+        bold=True,
+        space_before=12,
+        space_after=4,
+        keep_with_next=True,
+    )
+
+    if "Caption" in styles:
+        _configure_paragraph_style(
+            styles["Caption"],
+            font_name="Aptos",
+            font_size=10,
+            italic=True,
+            space_before=4,
+            space_after=10,
+            alignment=WD_ALIGN_PARAGRAPH.CENTER,
+        )
+
+    if "List Paragraph" in styles:
+        _configure_paragraph_style(styles["List Paragraph"], font_name="Aptos", font_size=11, space_after=4, line_spacing=1.1)
+
+    if "Table Grid" in styles:
+        styles["Table Grid"].font.name = "Aptos"
+        styles["Table Grid"].font.size = Pt(10)
+
+    reference_document.save(reference_docx_path)
+
+
+def _configure_paragraph_style(
+    style,
+    *,
+    font_name: str,
+    font_size: int,
+    bold: bool | None = None,
+    italic: bool | None = None,
+    space_before: int | None = None,
+    space_after: int | None = None,
+    line_spacing: float | None = None,
+    keep_with_next: bool | None = None,
+    alignment=None,
+) -> None:
+    style.font.name = font_name
+    style.font.size = Pt(font_size)
+    if bold is not None:
+        style.font.bold = bold
+    if italic is not None:
+        style.font.italic = italic
+
+    paragraph_format = style.paragraph_format
+    if space_before is not None:
+        paragraph_format.space_before = Pt(space_before)
+    if space_after is not None:
+        paragraph_format.space_after = Pt(space_after)
+    if line_spacing is not None:
+        paragraph_format.line_spacing = line_spacing
+    if keep_with_next is not None:
+        paragraph_format.keep_with_next = keep_with_next
+    if alignment is not None:
+        paragraph_format.alignment = alignment
 
 
 def build_output_filename(filename: str) -> str:

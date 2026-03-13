@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-03-13
+
+- Усилена DOCX-semantic extraction: добавлены heading levels через style-name и `outlineLvl`, а также более консервативная классификация заголовков.
+- Введён ordered block traversal по DOCX body, чтобы сохранять таблицы в порядке документа вместо paragraph-only extraction.
+- Добавлена поддержка таблиц как отдельных semantic blocks с передачей в Pandoc через HTML table markup.
+- Добавлена семантика caption для подписей к изображениям и таблицам.
+- Расширено сохранение inline-semantics: hyperlinks, tabs, bold, italic, underline, superscript и subscript.
+- Добавлен controlled Pandoc `reference-doc` для более чистого и консистентного итогового DOCX.
+- Добавлен отдельный semantic post-normalization pass для headings, body, captions, lists, tables и image paragraphs.
+- Протянуты `source_paragraphs` и semantic DOCX normalization через background runtime, processing service и document pipeline.
+- Добавлена отдельная спецификация hardening-а форматирования DOCX в `docs/DOCX_FORMATTING_HARDENING_SPEC_2026-03-13.md`.
+- Полный pytest suite в WSL проходит: `244 passed, 4 skipped`.
+
 ## 2026-03-12
 
 - Переведено хранение `completed_source` на metadata-only с payload в `.run/`.

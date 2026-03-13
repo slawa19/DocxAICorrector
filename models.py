@@ -1,6 +1,11 @@
 import builtins
+import re
 from enum import StrEnum
 from dataclasses import asdict, dataclass, field
+
+
+EXPLICIT_LIST_MARKER_PATTERN = re.compile(r"^(?:\s*[-*•—]\s+|\s*\d+[\.)]\s+)")
+EXPLICIT_HEADING_PATTERN = re.compile(r"^#{1,6}\s+")
 
 
 class ImageMode(StrEnum):
@@ -26,6 +31,23 @@ DOCX_COMPARE_VARIANT_MODE_VALUES = (
 class ParagraphUnit:
     text: str
     role: str
+    heading_level: int | None = None
+    list_kind: str | None = None
+    list_level: int = 0
+    preserved_ppr_xml: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def rendered_text(self) -> str:
+        if self.role == "heading" and self.heading_level is not None and not EXPLICIT_HEADING_PATTERN.match(self.text):
+            level = min(max(self.heading_level, 1), 6)
+            return f"{'#' * level} {self.text}"
+
+        if self.role != "list" or EXPLICIT_LIST_MARKER_PATTERN.match(self.text):
+            return self.text
+
+        indent = "    " * max(0, self.list_level)
+        marker = "1." if self.list_kind == "ordered" else "-"
+        return f"{indent}{marker} {self.text}"
 
 
 @dataclass
@@ -34,7 +56,7 @@ class DocumentBlock:
 
     @property
     def text(self) -> str:
-        return "\n\n".join(paragraph.text for paragraph in self.paragraphs)
+        return "\n\n".join(paragraph.rendered_text for paragraph in self.paragraphs)
 
 
 @dataclass

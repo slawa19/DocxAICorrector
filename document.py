@@ -1,14 +1,23 @@
+import html
 import re
 import zipfile
 from io import BytesIO
 
 from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement, parse_xml
 from docx.shared import Emu
+from docx.table import Table
+from docx.text.paragraph import Paragraph
+from lxml import etree
 
 from models import DocumentBlock, ImageAsset, ParagraphUnit, get_image_variant_bytes
 from processing_runtime import read_uploaded_file_bytes
 
 IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_IMAGE_img_\d+\]\]")
+IMAGE_ONLY_PATTERN = re.compile(r"^(?:\s*\[\[DOCX_IMAGE_img_\d+\]\]\s*)+$")
+CAPTION_PREFIX_PATTERN = re.compile(r"^(?:рис\.?|рисунок|figure|fig\.?|табл\.?|таблица|table)\b", re.IGNORECASE)
+HEADING_STYLE_PATTERN = re.compile(r"^(?:heading|заголовок)\s*(\d+)?$", re.IGNORECASE)
 COMPARE_ALL_VARIANT_LABELS = {
     "safe": "Вариант 1: Просто улучшить",
     "semantic_redraw_direct": "Вариант 2: Креативная AI-перерисовка",
@@ -18,14 +27,90 @@ MAX_DOCX_ARCHIVE_SIZE_BYTES = 25 * 1024 * 1024
 MAX_DOCX_UNCOMPRESSED_SIZE_BYTES = 100 * 1024 * 1024
 MAX_DOCX_ENTRY_COUNT = 2048
 MAX_DOCX_COMPRESSION_RATIO = 150.0
+PRESERVED_PARAGRAPH_PROPERTY_NAMES = {
+    "adjustRightInd",
+    "bidi",
+    "contextualSpacing",
+    "ind",
+    "jc",
+    "keepLines",
+    "keepNext",
+    "mirrorIndents",
+    "numPr",
+    "outlineLvl",
+    "pStyle",
+    "pageBreakBefore",
+    "rPr",
+    "spacing",
+    "suppressAutoHyphens",
+    "tabs",
+    "textAlignment",
+    "textDirection",
+    "widowControl",
+}
+RELATIONSHIP_NAMESPACE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+ORDERED_LIST_FORMATS = {
+    "aiueo",
+    "cardinalText",
+    "chicago",
+    "decimal",
+    "decimalEnclosedCircle",
+    "decimalEnclosedFullstop",
+    "decimalEnclosedParen",
+    "decimalFullWidth",
+    "decimalFullWidth2",
+    "decimalHalfWidth",
+    "ganada",
+    "hebrew1",
+    "hebrew2",
+    "hindiConsonants",
+    "hindiCounting",
+    "hindiNumbers",
+    "hindiVowels",
+    "ideographDigital",
+    "ideographEnclosedCircle",
+    "ideographLegalTraditional",
+    "ideographTraditional",
+    "iroha",
+    "japaneseCounting",
+    "japaneseDigitalTenThousand",
+    "japaneseLegal",
+    "koreanCounting",
+    "koreanDigital",
+    "koreanDigital2",
+    "koreanLegal",
+    "lowerLetter",
+    "lowerRoman",
+    "numberInDash",
+    "ordinal",
+    "ordinalText",
+    "russianLower",
+    "russianUpper",
+    "taiwaneseCounting",
+    "taiwaneseCountingThousand",
+    "taiwaneseDigital",
+    "thaiCounting",
+    "thaiLetters",
+    "thaiNumbers",
+    "upperLetter",
+    "upperRoman",
+    "vietnameseCounting",
+}
+UNORDERED_LIST_FORMATS = {"bullet", "none"}
 
 
-def classify_paragraph_role(text: str, style_name: str) -> str:
+def classify_paragraph_role(text: str, style_name: str, *, heading_level: int | None = None) -> str:
     normalized_style = style_name.strip().lower()
     stripped_text = text.lstrip()
 
-    if normalized_style.startswith("heading") or normalized_style.startswith("заголовок"):
+    if _is_image_only_text(text):
+        return "image"
+
+    if heading_level is not None:
         return "heading"
+
+    if _is_caption_style(normalized_style):
+        return "caption"
 
     if "list" in normalized_style or "спис" in normalized_style:
         return "list"
@@ -56,13 +141,15 @@ def extract_document_content_from_docx(uploaded_file) -> tuple[list[ParagraphUni
     paragraphs: list[ParagraphUnit] = []
     image_assets: list[ImageAsset] = []
 
-    for paragraph in document.paragraphs:
-        text = _build_paragraph_text_with_placeholders(paragraph, image_assets).strip()
-        if not text:
-            continue
+    for block_kind, block in _iter_document_block_items(document):
+        if block_kind == "paragraph":
+            paragraph_unit = _build_paragraph_unit(block, image_assets)
+        else:
+            paragraph_unit = _build_table_unit(block, image_assets)
+        if paragraph_unit is not None:
+            paragraphs.append(paragraph_unit)
 
-        style_name = paragraph.style.name if paragraph.style and paragraph.style.name else ""
-        paragraphs.append(ParagraphUnit(text=text, role=classify_paragraph_role(text, style_name)))
+    _reclassify_adjacent_captions(paragraphs)
 
     if not paragraphs:
         raise ValueError("В документе не найден текст для обработки.")
@@ -70,7 +157,54 @@ def extract_document_content_from_docx(uploaded_file) -> tuple[list[ParagraphUni
 
 
 def build_document_text(paragraphs: list[ParagraphUnit]) -> str:
-    return "\n\n".join(paragraph.text for paragraph in paragraphs).strip()
+    return "\n\n".join(paragraph.rendered_text for paragraph in paragraphs).strip()
+
+
+def preserve_source_paragraph_properties(docx_bytes: bytes, paragraphs: list[ParagraphUnit]) -> bytes:
+    if not docx_bytes or not paragraphs:
+        return docx_bytes
+
+    source_paragraphs = [paragraph for paragraph in paragraphs if paragraph.role != "table"]
+    if not any(paragraph.preserved_ppr_xml for paragraph in source_paragraphs):
+        return docx_bytes
+
+    document = Document(BytesIO(docx_bytes))
+    target_paragraphs = [
+        paragraph
+        for paragraph in document.paragraphs
+        if paragraph.text.strip() or IMAGE_PLACEHOLDER_PATTERN.search(paragraph.text)
+    ]
+
+    for source_paragraph, target_paragraph in zip(source_paragraphs, target_paragraphs):
+        _apply_preserved_paragraph_properties(target_paragraph, source_paragraph.preserved_ppr_xml)
+
+    output_stream = BytesIO()
+    document.save(output_stream)
+    return output_stream.getvalue()
+
+
+def normalize_semantic_output_docx(docx_bytes: bytes, paragraphs: list[ParagraphUnit]) -> bytes:
+    if not docx_bytes or not paragraphs:
+        return docx_bytes
+
+    source_paragraphs = [paragraph for paragraph in paragraphs if paragraph.role != "table"]
+    document = Document(BytesIO(docx_bytes))
+    target_paragraphs = [
+        paragraph
+        for paragraph in document.paragraphs
+        if paragraph.text.strip() or IMAGE_PLACEHOLDER_PATTERN.search(paragraph.text)
+    ]
+
+    for source_paragraph, target_paragraph in zip(source_paragraphs, target_paragraphs):
+        _normalize_output_paragraph(document, target_paragraph, source_paragraph)
+
+    if _style_exists(document, "Table Grid"):
+        for table in document.tables:
+            table.style = document.styles["Table Grid"]
+
+    output_stream = BytesIO()
+    document.save(output_stream)
+    return output_stream.getvalue()
 
 
 def inspect_placeholder_integrity(markdown_text: str, image_assets: list[ImageAsset]) -> dict[str, str]:
@@ -184,14 +318,28 @@ def build_semantic_blocks(paragraphs: list[ParagraphUnit], max_chars: int = 6000
         nonlocal current_size
         separator_size = 2 if current else 0
         current.append(paragraph)
-        current_size += separator_size + len(paragraph.text)
+        current_size += separator_size + len(paragraph.rendered_text)
 
     for paragraph in paragraphs:
         if not current:
             append_paragraph(paragraph)
             continue
 
-        projected_size = current_size + 2 + len(paragraph.text)
+        current_contains_atomic_block = any(item.role in {"image", "table"} for item in current)
+        if current_contains_atomic_block:
+            if current[-1].role in {"image", "table"} and paragraph.role == "caption":
+                append_paragraph(paragraph)
+                continue
+            flush_current()
+            append_paragraph(paragraph)
+            continue
+
+        if paragraph.role in {"image", "table"}:
+            flush_current()
+            append_paragraph(paragraph)
+            continue
+
+        projected_size = current_size + 2 + len(paragraph.rendered_text)
         current_only_heading = len(current) == 1 and current[0].role == "heading"
         current_is_list = all(item.role == "list" for item in current)
 
@@ -201,6 +349,10 @@ def build_semantic_blocks(paragraphs: list[ParagraphUnit], max_chars: int = 6000
             continue
 
         if current_only_heading:
+            append_paragraph(paragraph)
+            continue
+
+        if current[-1].role == "heading" and paragraph.role == "caption":
             append_paragraph(paragraph)
             continue
 
@@ -222,7 +374,7 @@ def build_semantic_blocks(paragraphs: list[ParagraphUnit], max_chars: int = 6000
             append_paragraph(paragraph)
             continue
 
-        if projected_size <= max_chars and len(paragraph.text) <= max(500, max_chars // 4) and current_size < int(max_chars * 0.9):
+        if projected_size <= max_chars and len(paragraph.rendered_text) <= max(500, max_chars // 4) and current_size < int(max_chars * 0.9):
             append_paragraph(paragraph)
             continue
 
@@ -289,37 +441,110 @@ def build_editing_jobs(blocks: list[DocumentBlock], max_chars: int) -> list[dict
 
 def _build_paragraph_text_with_placeholders(paragraph, image_assets: list[ImageAsset]) -> str:
     parts: list[str] = []
-    for run in paragraph.runs:
-        if run.text:
-            parts.append(run.text)
-        for image_blob, mime_type, width_emu, height_emu in _extract_run_images(run):
-            image_index = len(image_assets) + 1
-            placeholder = f"[[DOCX_IMAGE_img_{image_index:03d}]]"
-            image_assets.append(
-                ImageAsset(
-                    image_id=f"img_{image_index:03d}",
-                    placeholder=placeholder,
-                    original_bytes=image_blob,
-                    mime_type=mime_type,
-                    position_index=image_index - 1,
-                    width_emu=width_emu,
-                    height_emu=height_emu,
-                )
-            )
-            parts.append(placeholder)
+    for child in paragraph._element:
+        local_name = _xml_local_name(child.tag)
+        if local_name == "r":
+            parts.append(_render_run_element(child, paragraph.part, image_assets))
+            continue
+        if local_name == "hyperlink":
+            parts.append(_render_hyperlink_element(child, paragraph, image_assets))
     return "".join(parts)
 
 
+def _build_paragraph_unit(paragraph, image_assets: list[ImageAsset]) -> ParagraphUnit | None:
+    text = _build_paragraph_text_with_placeholders(paragraph, image_assets).strip()
+    if not text:
+        return None
+
+    style_name = paragraph.style.name if paragraph.style and paragraph.style.name else ""
+    heading_level = _extract_heading_level(paragraph, text, style_name)
+    role = classify_paragraph_role(text, style_name, heading_level=heading_level)
+    list_kind, list_level = _extract_paragraph_list_metadata(paragraph, text, style_name, role)
+    return ParagraphUnit(
+        text=text,
+        role=role,
+        heading_level=heading_level,
+        list_kind=list_kind,
+        list_level=list_level,
+        preserved_ppr_xml=_capture_preserved_paragraph_properties(paragraph),
+    )
+
+
+def _build_table_unit(table: Table, image_assets: list[ImageAsset]) -> ParagraphUnit | None:
+    html_table = _render_table_html(table, image_assets)
+    if not html_table.strip():
+        return None
+    return ParagraphUnit(text=html_table, role="table")
+
+
+def _iter_document_block_items(document):
+    for child in document.element.body.iterchildren():
+        local_name = _xml_local_name(child.tag)
+        if local_name == "p":
+            yield "paragraph", Paragraph(child, document)
+        elif local_name == "tbl":
+            yield "table", Table(child, document)
+
+
+def _render_table_html(table: Table, image_assets: list[ImageAsset]) -> str:
+    rows: list[list[str]] = []
+    for row in table.rows:
+        rendered_row = [_render_table_cell(cell, image_assets) for cell in row.cells]
+        rows.append(rendered_row)
+
+    if not any(any(cell.strip() for cell in row) for row in rows):
+        return ""
+
+    has_header = len(rows) > 1 and all(cell.strip() for cell in rows[0])
+    lines = ["<table>"]
+    if has_header:
+        lines.append("<thead>")
+        lines.append(_render_table_html_row(rows[0], cell_tag="th"))
+        lines.append("</thead>")
+        body_rows = rows[1:]
+    else:
+        body_rows = rows
+
+    lines.append("<tbody>")
+    for row in body_rows:
+        lines.append(_render_table_html_row(row, cell_tag="td"))
+    lines.append("</tbody>")
+    lines.append("</table>")
+    return "\n".join(lines)
+
+
+def _render_table_cell(cell, image_assets: list[ImageAsset]) -> str:
+    cell_parts: list[str] = []
+    for paragraph in cell.paragraphs:
+        text = _build_paragraph_text_with_placeholders(paragraph, image_assets).strip()
+        if text:
+            cell_parts.append(_escape_html_preserving_breaks(text))
+    return "<br/>".join(cell_parts)
+
+
+def _render_table_html_row(cells: list[str], *, cell_tag: str) -> str:
+    rendered_cells = "".join(f"<{cell_tag}>{cell or '&nbsp;'}</{cell_tag}>" for cell in cells)
+    return f"<tr>{rendered_cells}</tr>"
+
+
+def _escape_html_preserving_breaks(text: str) -> str:
+    return "<br/>".join(html.escape(part, quote=False) for part in text.split("<br/>"))
+
+
 def _extract_run_images(run) -> list[tuple[bytes, str | None, int | None, int | None]]:
+    return _extract_run_element_images(run._element, run.part)
+
+
+def _extract_run_element_images(run_element, part) -> list[tuple[bytes, str | None, int | None, int | None]]:
     images: list[tuple[bytes, str | None, int | None, int | None]] = []
-    for drawing in run._element.xpath(".//w:drawing"):
+    for drawing in run_element.xpath(".//w:drawing"):
         blips = drawing.xpath(".//a:blip")
         width_emu, height_emu = _resolve_drawing_extent_emu(drawing)
         for blip in blips:
-            embed_id = blip.get(f"{{http://schemas.openxmlformats.org/officeDocument/2006/relationships}}embed")
+            embed_id = blip.get(f"{{{RELATIONSHIP_NAMESPACE}}}embed")
             if not embed_id:
                 continue
-            image_part = run.part.related_parts.get(embed_id)
+            image_part = part.related_parts.get(embed_id)
             if image_part is None:
                 continue
             images.append((image_part.blob, getattr(image_part, "content_type", None), width_emu, height_emu))
@@ -369,6 +594,418 @@ def _read_uploaded_docx_bytes(uploaded_file) -> bytes:
     except ValueError as exc:
         raise ValueError("Не удалось прочитать содержимое DOCX-файла.") from exc
     return source_bytes
+
+
+def _capture_preserved_paragraph_properties(paragraph) -> tuple[str, ...]:
+    paragraph_properties = _find_child_element(paragraph._element, "pPr")
+    if paragraph_properties is None:
+        return ()
+
+    preserved_children: list[str] = []
+    for child in paragraph_properties:
+        if _xml_local_name(child.tag) not in PRESERVED_PARAGRAPH_PROPERTY_NAMES:
+            continue
+        preserved_children.append(etree.tostring(child, encoding="unicode"))
+    return tuple(preserved_children)
+
+
+def _extract_heading_level(paragraph, text: str, style_name: str) -> int | None:
+    if _is_image_only_text(text):
+        return None
+
+    normalized_style = style_name.strip().lower()
+    if normalized_style == "title":
+        return 1
+    if normalized_style == "subtitle":
+        return 2
+
+    style_match = HEADING_STYLE_PATTERN.match(normalized_style)
+    if style_match is not None:
+        level_text = style_match.group(1)
+        if level_text:
+            try:
+                return max(1, min(int(level_text), 6))
+            except ValueError:
+                return 1
+        return 1
+
+    outline_level = _resolve_paragraph_outline_level(paragraph)
+    if outline_level is not None:
+        return outline_level
+
+    if _is_probable_heading(paragraph, text, normalized_style):
+        return 2
+    return None
+
+
+def _resolve_paragraph_outline_level(paragraph) -> int | None:
+    outline_element = _find_paragraph_property_element(paragraph, "outlineLvl")
+    outline_value = _get_xml_attribute(outline_element, "val") if outline_element is not None else None
+    try:
+        if outline_value is None:
+            return None
+        return max(1, min(int(outline_value) + 1, 6))
+    except (TypeError, ValueError):
+        return None
+
+
+def _find_paragraph_property_element(paragraph, local_name: str):
+    paragraph_properties = _find_child_element(paragraph._element, "pPr")
+    element = _find_child_element(paragraph_properties, local_name)
+    if element is not None:
+        return element
+
+    style = getattr(paragraph, "style", None)
+    while style is not None:
+        style_properties = _find_child_element(getattr(style, "_element", None), "pPr")
+        element = _find_child_element(style_properties, local_name)
+        if element is not None:
+            return element
+        style = getattr(style, "base_style", None)
+    return None
+
+
+def _is_probable_heading(paragraph, text: str, normalized_style: str) -> bool:
+    stripped_text = text.strip()
+    if not stripped_text or len(stripped_text) > 90:
+        return False
+    if len(stripped_text.split()) > 12:
+        return False
+    if stripped_text.endswith((".", "!", "?", ";")):
+        return False
+    if normalized_style in {"body text", "normal"} and not _paragraph_has_strong_heading_format(paragraph):
+        return False
+    return _paragraph_has_strong_heading_format(paragraph)
+
+
+def _paragraph_has_strong_heading_format(paragraph) -> bool:
+    paragraph_properties = _find_child_element(paragraph._element, "pPr")
+    alignment = _find_child_element(paragraph_properties, "jc")
+    alignment_value = _get_xml_attribute(alignment, "val") if alignment is not None else None
+    if alignment_value in {"center", "both"}:
+        return True
+
+    visible_runs = [run for run in paragraph.runs if run.text and run.text.strip()]
+    return bool(visible_runs) and all(bool(run.bold) for run in visible_runs)
+
+
+def _is_image_only_text(text: str) -> bool:
+    return IMAGE_ONLY_PATTERN.fullmatch(text.strip()) is not None
+
+
+def _is_caption_style(normalized_style: str) -> bool:
+    return normalized_style in {"caption", "подпись"} or "caption" in normalized_style or "подпись" in normalized_style
+
+
+def _is_likely_caption_text(text: str) -> bool:
+    stripped_text = text.strip()
+    if not stripped_text or len(stripped_text) > 140:
+        return False
+    return CAPTION_PREFIX_PATTERN.match(stripped_text) is not None
+
+
+def _reclassify_adjacent_captions(paragraphs: list[ParagraphUnit]) -> None:
+    for index, paragraph in enumerate(paragraphs):
+        if index == 0 or paragraph.role != "body":
+            continue
+        previous_paragraph = paragraphs[index - 1]
+        if previous_paragraph.role not in {"image", "table"}:
+            continue
+        if _is_likely_caption_text(paragraph.text):
+            paragraph.role = "caption"
+
+
+def _normalize_output_paragraph(document, paragraph, source_paragraph: ParagraphUnit) -> None:
+    if source_paragraph.role == "heading":
+        level = min(max(source_paragraph.heading_level or 1, 1), 6)
+        heading_style = f"Heading {level}"
+        if _style_exists(document, heading_style):
+            paragraph.style = document.styles[heading_style]
+        return
+
+    if source_paragraph.role == "caption":
+        if _style_exists(document, "Caption"):
+            paragraph.style = document.styles["Caption"]
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        return
+
+    if source_paragraph.role == "image":
+        if _style_exists(document, "Normal"):
+            paragraph.style = document.styles["Normal"]
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        return
+
+    if source_paragraph.role == "list":
+        if _style_exists(document, "List Paragraph"):
+            paragraph.style = document.styles["List Paragraph"]
+        return
+
+    if _style_exists(document, "Body Text"):
+        paragraph.style = document.styles["Body Text"]
+    elif _style_exists(document, "Normal"):
+        paragraph.style = document.styles["Normal"]
+
+
+def _style_exists(document, style_name: str) -> bool:
+    try:
+        document.styles[style_name]
+    except KeyError:
+        return False
+    return True
+
+
+def _apply_preserved_paragraph_properties(paragraph, preserved_ppr_xml: tuple[str, ...]) -> None:
+    if not preserved_ppr_xml:
+        return
+
+    paragraph_properties = _ensure_paragraph_properties(paragraph)
+    for child in list(paragraph_properties):
+        if _xml_local_name(child.tag) in PRESERVED_PARAGRAPH_PROPERTY_NAMES:
+            paragraph_properties.remove(child)
+
+    for xml_fragment in preserved_ppr_xml:
+        try:
+            paragraph_properties.append(parse_xml(xml_fragment))
+        except Exception:
+            continue
+
+
+def _ensure_paragraph_properties(paragraph):
+    paragraph_properties = _find_child_element(paragraph._element, "pPr")
+    if paragraph_properties is not None:
+        return paragraph_properties
+
+    paragraph_properties = OxmlElement("w:pPr")
+    paragraph._element.insert(0, paragraph_properties)
+    return paragraph_properties
+
+
+def _render_hyperlink_element(hyperlink_element, paragraph, image_assets: list[ImageAsset]) -> str:
+    text_parts: list[str] = []
+    for child in hyperlink_element:
+        if _xml_local_name(child.tag) != "r":
+            continue
+        text_parts.append(_render_run_element(child, paragraph.part, image_assets, allow_hyperlink_markdown=False))
+
+    text = "".join(text_parts)
+    if not text.strip():
+        return text
+
+    relationship_id = hyperlink_element.get(f"{{{RELATIONSHIP_NAMESPACE}}}id")
+    if not relationship_id:
+        return text
+
+    relationship = paragraph.part.rels.get(relationship_id)
+    url = getattr(relationship, "target_ref", None)
+    if not url:
+        return text
+    return f"[{text}]({url})"
+
+
+def _render_run_element(run_element, part, image_assets: list[ImageAsset], *, allow_hyperlink_markdown: bool = True) -> str:
+    text = _extract_run_text(run_element)
+    formatted_text = _apply_run_markdown(text, run_element) if allow_hyperlink_markdown else text
+    image_placeholders = _extract_run_image_placeholders(run_element, part, image_assets)
+    return formatted_text + "".join(image_placeholders)
+
+
+def _extract_run_text(run_element) -> str:
+    text_parts: list[str] = []
+    for child in run_element:
+        local_name = _xml_local_name(child.tag)
+        if local_name in {"t", "delText", "instrText"}:
+            text_parts.append(child.text or "")
+            continue
+        if local_name == "tab":
+            text_parts.append("\t")
+            continue
+        if local_name in {"br", "cr"}:
+            text_parts.append("<br/>")
+    return "".join(text_parts)
+
+
+def _apply_run_markdown(text: str, run_element) -> str:
+    if not text:
+        return text
+
+    run_properties = _find_child_element(run_element, "rPr")
+    if run_properties is None:
+        return text
+
+    is_bold = _find_child_element(run_properties, "b") is not None
+    is_italic = _find_child_element(run_properties, "i") is not None
+    is_underline = _find_child_element(run_properties, "u") is not None
+    vertical_align = _extract_vertical_align(run_properties)
+
+    formatted = text
+    if is_bold and is_italic:
+        formatted = f"***{formatted}***"
+    elif is_bold:
+        formatted = f"**{formatted}**"
+    elif is_italic:
+        formatted = f"*{formatted}*"
+
+    if is_underline:
+        formatted = f"<u>{formatted}</u>"
+    if vertical_align == "superscript":
+        formatted = f"<sup>{formatted}</sup>"
+    elif vertical_align == "subscript":
+        formatted = f"<sub>{formatted}</sub>"
+    return formatted
+
+
+def _extract_vertical_align(run_properties) -> str | None:
+    vertical_align = _find_child_element(run_properties, "vertAlign")
+    return _get_xml_attribute(vertical_align, "val") if vertical_align is not None else None
+
+
+def _extract_run_image_placeholders(run_element, part, image_assets: list[ImageAsset]) -> list[str]:
+    placeholders: list[str] = []
+    for image_blob, mime_type, width_emu, height_emu in _extract_run_element_images(run_element, part):
+        image_index = len(image_assets) + 1
+        placeholder = f"[[DOCX_IMAGE_img_{image_index:03d}]]"
+        image_assets.append(
+            ImageAsset(
+                image_id=f"img_{image_index:03d}",
+                placeholder=placeholder,
+                original_bytes=image_blob,
+                mime_type=mime_type,
+                position_index=image_index - 1,
+                width_emu=width_emu,
+                height_emu=height_emu,
+            )
+        )
+        placeholders.append(placeholder)
+    return placeholders
+
+
+def _extract_paragraph_list_metadata(paragraph, text: str, style_name: str, role: str) -> tuple[str | None, int]:
+    if role != "list":
+        return None, 0
+
+    explicit_kind = _detect_explicit_list_kind(text)
+    if explicit_kind is not None:
+        return explicit_kind, 0
+
+    style_level = _extract_style_list_level(style_name)
+    num_pr = _resolve_paragraph_num_pr(paragraph)
+    if num_pr is not None:
+        list_level = max(_extract_num_pr_level(num_pr), style_level)
+        numbering_format = _resolve_num_pr_format(paragraph, num_pr)
+        if numbering_format in ORDERED_LIST_FORMATS:
+            return "ordered", list_level
+        if numbering_format in UNORDERED_LIST_FORMATS:
+            return "unordered", list_level
+
+    normalized_style = style_name.strip().lower()
+    if any(token in normalized_style for token in ("number", "num", "нумер", "числ")):
+        return "ordered", style_level
+    if any(token in normalized_style for token in ("bullet", "bulleted", "маркир", "маркер")):
+        return "unordered", style_level
+    return "unordered", style_level
+
+
+def _detect_explicit_list_kind(text: str) -> str | None:
+    stripped_text = text.lstrip()
+    if stripped_text.startswith(("- ", "* ", "• ", "— ")):
+        return "unordered"
+    if re.match(r"^\d+[\.)]\s+", stripped_text):
+        return "ordered"
+    return None
+
+
+def _extract_style_list_level(style_name: str) -> int:
+    match = re.search(r"(\d+)\s*$", style_name.strip())
+    if match is None:
+        return 0
+    try:
+        return max(0, int(match.group(1)) - 1)
+    except ValueError:
+        return 0
+
+
+def _resolve_paragraph_num_pr(paragraph):
+    paragraph_properties = _find_child_element(paragraph._element, "pPr")
+    num_pr = _find_child_element(paragraph_properties, "numPr")
+    if num_pr is not None:
+        return num_pr
+
+    style = getattr(paragraph, "style", None)
+    while style is not None:
+        style_properties = _find_child_element(getattr(style, "_element", None), "pPr")
+        num_pr = _find_child_element(style_properties, "numPr")
+        if num_pr is not None:
+            return num_pr
+        style = getattr(style, "base_style", None)
+    return None
+
+
+def _extract_num_pr_level(num_pr) -> int:
+    ilvl = _find_child_element(num_pr, "ilvl")
+    level_value = _get_xml_attribute(ilvl, "val") if ilvl is not None else None
+    try:
+        return max(0, int(level_value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _resolve_num_pr_format(paragraph, num_pr) -> str | None:
+    num_id_element = _find_child_element(num_pr, "numId")
+    ilvl_element = _find_child_element(num_pr, "ilvl")
+    num_id = _get_xml_attribute(num_id_element, "val") if num_id_element is not None else None
+    ilvl = _get_xml_attribute(ilvl_element, "val") if ilvl_element is not None else "0"
+    if num_id is None:
+        return None
+
+    numbering_part = getattr(paragraph.part, "numbering_part", None)
+    numbering_root = getattr(numbering_part, "element", None)
+    if numbering_root is None:
+        return None
+
+    abstract_num_id = None
+    for child in numbering_root:
+        if _xml_local_name(child.tag) != "num":
+            continue
+        if _get_xml_attribute(child, "numId") != num_id:
+            continue
+        abstract_num = _find_child_element(child, "abstractNumId")
+        abstract_num_id = _get_xml_attribute(abstract_num, "val") if abstract_num is not None else None
+        break
+
+    if abstract_num_id is None:
+        return None
+
+    for child in numbering_root:
+        if _xml_local_name(child.tag) != "abstractNum":
+            continue
+        if _get_xml_attribute(child, "abstractNumId") != abstract_num_id:
+            continue
+        for level in child:
+            if _xml_local_name(level.tag) != "lvl":
+                continue
+            if _get_xml_attribute(level, "ilvl") != ilvl:
+                continue
+            num_format = _find_child_element(level, "numFmt")
+            return _get_xml_attribute(num_format, "val") if num_format is not None else None
+    return None
+
+
+def _find_child_element(parent, local_name: str):
+    if parent is None:
+        return None
+    for child in parent:
+        if _xml_local_name(child.tag) == local_name:
+            return child
+    return None
+
+
+def _get_xml_attribute(element, attribute_name: str) -> str | None:
+    if element is None:
+        return None
+    for key, value in element.attrib.items():
+        if _xml_local_name(key) == attribute_name:
+            return value
+    return None
 
 
 def _validate_docx_archive(source_bytes: bytes) -> None:

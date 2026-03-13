@@ -106,7 +106,7 @@ def start_background_preparation(*, worker_target, uploaded_file, upload_marker:
     )
 
 
-def start_background_processing(*, worker_target, uploaded_filename: str, uploaded_token: str, source_bytes: bytes, jobs, image_assets, image_mode: str, app_config: dict[str, object], model: str, max_retries: int) -> None:
+def start_background_processing(*, worker_target, uploaded_filename: str, uploaded_token: str, source_bytes: bytes, jobs, source_paragraphs=None, image_assets=None, image_mode: str, app_config: dict[str, object], model: str, max_retries: int) -> None:
     start_background_processing_impl(
         worker_target=worker_target,
         reset_run_state=reset_run_state,
@@ -116,6 +116,7 @@ def start_background_processing(*, worker_target, uploaded_filename: str, upload
         uploaded_token=uploaded_token,
         source_bytes=source_bytes,
         jobs=jobs,
+        source_paragraphs=source_paragraphs,
         image_assets=image_assets,
         image_mode=image_mode,
         app_config=app_config,

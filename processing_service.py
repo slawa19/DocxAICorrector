@@ -11,7 +11,7 @@ from app_runtime import (
     emit_status as emit_status_impl,
 )
 from config import get_client, load_system_prompt
-from document import inspect_placeholder_integrity, reinsert_inline_images
+from document import inspect_placeholder_integrity, normalize_semantic_output_docx, preserve_source_paragraph_properties, reinsert_inline_images
 from document_pipeline import run_document_processing as run_document_processing_impl
 from generation import convert_markdown_to_docx_bytes, ensure_pandoc_available, generate_markdown_block
 from image_analysis import analyze_image
@@ -41,6 +41,8 @@ class ProcessingService:
     validate_redraw_result_fn: object
     detect_image_mime_type_fn: object
     inspect_placeholder_integrity_fn: object
+    preserve_source_paragraph_properties_fn: object
+    normalize_semantic_output_docx_fn: object
     reinsert_inline_images_fn: object
     run_document_processing_impl_fn: object
     present_error_fn: object
@@ -99,6 +101,7 @@ class ProcessingService:
         *,
         uploaded_file,
         jobs: list[dict[str, str | int]],
+        source_paragraphs: list | None = None,
         image_assets: list,
         image_mode: str,
         app_config: dict[str, object],
@@ -110,6 +113,7 @@ class ProcessingService:
         return self.run_document_processing_impl_fn(
             uploaded_file=uploaded_file,
             jobs=jobs,
+            source_paragraphs=source_paragraphs,
             image_assets=image_assets,
             image_mode=image_mode,
             app_config=app_config,
@@ -133,6 +137,8 @@ class ProcessingService:
             process_document_images=self.process_document_images,
             inspect_placeholder_integrity=self.inspect_placeholder_integrity_fn,
             convert_markdown_to_docx_bytes=self.convert_markdown_to_docx_bytes_fn,
+            preserve_source_paragraph_properties=self.preserve_source_paragraph_properties_fn,
+            normalize_semantic_output_docx=self.normalize_semantic_output_docx_fn,
             reinsert_inline_images=self.reinsert_inline_images_fn,
         )
 
@@ -142,6 +148,7 @@ class ProcessingService:
         runtime,
         uploaded_filename: str,
         jobs: list[dict[str, str | int]],
+        source_paragraphs: list | None = None,
         image_assets: list,
         image_mode: str,
         app_config: dict[str, object],
@@ -153,6 +160,7 @@ class ProcessingService:
             outcome = self.run_document_processing(
                 uploaded_file=uploaded_filename,
                 jobs=jobs,
+                source_paragraphs=source_paragraphs,
                 image_assets=image_assets,
                 image_mode=image_mode,
                 app_config=app_config,
@@ -201,6 +209,8 @@ def build_processing_service() -> ProcessingService:
         validate_redraw_result_fn=validate_redraw_result,
         detect_image_mime_type_fn=detect_image_mime_type,
         inspect_placeholder_integrity_fn=inspect_placeholder_integrity,
+        preserve_source_paragraph_properties_fn=preserve_source_paragraph_properties,
+        normalize_semantic_output_docx_fn=normalize_semantic_output_docx,
         reinsert_inline_images_fn=reinsert_inline_images,
         run_document_processing_impl_fn=run_document_processing_impl,
         present_error_fn=present_error,
