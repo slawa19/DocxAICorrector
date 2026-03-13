@@ -241,7 +241,7 @@ def test_apply_validation_result_keeps_redrawn_variant_under_advisory_policy_whe
     processed_asset = _apply_validation_for_asset(
         asset,
         image_mode="semantic_redraw_direct",
-        config={"enable_post_redraw_validation": True},
+        config={"keep_all_image_variants": True},
         candidate_analysis=candidate_analysis,
     )
 
@@ -267,7 +267,7 @@ def test_apply_validation_result_accepts_redrawn_variant_when_validation_passes(
     processed_asset = _apply_validation_for_asset(
         asset,
         image_mode="semantic_redraw_structured",
-        config={"enable_post_redraw_validation": True},
+        config={"keep_all_image_variants": True},
         candidate_analysis=build_analysis_result(),
     )
 
@@ -297,7 +297,7 @@ def test_apply_validation_result_keeps_redrawn_variant_under_advisory_policy():
     processed_asset = _apply_validation_for_asset(
         asset,
         image_mode="semantic_redraw_structured",
-        config={"enable_post_redraw_validation": True, "semantic_validation_policy": "advisory"},
+        config={"keep_all_image_variants": True, "semantic_validation_policy": "advisory"},
         candidate_analysis=candidate_analysis,
     )
 
@@ -323,7 +323,7 @@ def test_apply_validation_result_keeps_hard_validation_failures_blocking_under_a
     processed_asset = _apply_validation_for_asset(
         asset,
         image_mode="semantic_redraw_direct",
-        config={"enable_post_redraw_validation": True, "semantic_validation_policy": "advisory"},
+        config={"keep_all_image_variants": True, "semantic_validation_policy": "advisory"},
         candidate_analysis=build_analysis_result(),
     )
 

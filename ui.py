@@ -592,13 +592,13 @@ def render_sidebar(config: dict[str, object]) -> tuple[str, int, int, str, bool]
     )
     image_mode = IMAGE_MODE_VALUES_BY_LABEL.get(selected_image_mode_label, ImageMode.SAFE.value)
     st.sidebar.caption(IMAGE_MODE_DESCRIPTIONS.get(image_mode, ""))
-    enable_post_redraw_validation = st.sidebar.checkbox(
-        "Включить post-check validation",
-        value=bool(config.get("enable_post_redraw_validation", True)),
-        help="Проверяет AI-перерисовку перед вставкой в DOCX и при проблемах откатывает изображение к safe/original.",
-        key="sidebar_enable_post_redraw_validation",
+    keep_all_image_variants = st.sidebar.checkbox(
+        "Сохранять все варианты изображений",
+        value=bool(config.get("keep_all_image_variants", False)),
+        help="Сохраняет все сгенерированные варианты изображений для последующего сравнения.",
+        key="sidebar_keep_all_image_variants",
     )
-    return model, chunk_size, max_retries, image_mode, enable_post_redraw_validation
+    return model, chunk_size, max_retries, image_mode, keep_all_image_variants
 
 
 def render_markdown_preview(target=None, *, title: str, focus_latest: bool = False) -> None:

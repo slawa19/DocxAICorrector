@@ -18,13 +18,10 @@ from constants import (
 from image_shared import clamp_score
 from models import IMAGE_MODE_VALUES, ImageMode
 
-try:
-    from openai import OpenAI
-except Exception:  # pragma: no cover - import is validated via get_client/test seams
-    OpenAI = None
+OpenAI = None
 
 if TYPE_CHECKING:
-    from openai import OpenAI
+    from openai import OpenAI as OpenAIClient
 
 
 @dataclass(frozen=True)
@@ -35,7 +32,7 @@ class AppConfig(Mapping[str, object]):
     max_retries: int
     image_mode_default: str
     semantic_validation_policy: str
-    enable_post_redraw_validation: bool
+    keep_all_image_variants: bool
     validation_model: str
     min_semantic_match_score: float
     min_text_match_score: float
@@ -58,7 +55,10 @@ class AppConfig(Mapping[str, object]):
     reconstruction_background_uniformity_threshold: float
 
     def __getitem__(self, key: str) -> object:
-        return getattr(self, key)
+        try:
+            return getattr(self, key)
+        except AttributeError:
+            raise KeyError(key)
 
     def __iter__(self) -> Iterator[str]:
         return iter(self.__dataclass_fields__)
@@ -164,12 +164,26 @@ def parse_config_int(config_data: dict[str, object], field_name: str, default: i
     return value
 
 
+def _reject_legacy_manual_review_aliases(config_data: dict[str, object]) -> None:
+    if "enable_post_redraw_validation" in config_data:
+        raise RuntimeError(
+            "Параметр enable_post_redraw_validation больше не поддерживается. "
+            "Используйте keep_all_image_variants."
+        )
+    if os.getenv("DOCX_AI_ENABLE_POST_REDRAW_VALIDATION", "").strip():
+        raise RuntimeError(
+            "Переменная DOCX_AI_ENABLE_POST_REDRAW_VALIDATION больше не поддерживается. "
+            "Используйте DOCX_AI_KEEP_ALL_IMAGE_VARIANTS."
+        )
+
+
 def load_app_config() -> AppConfig:
     load_project_dotenv()
     config_data: dict[str, object] = {}
     if CONFIG_PATH.exists():
         with CONFIG_PATH.open("rb") as file_handle:
             config_data = tomllib.load(file_handle)
+    _reject_legacy_manual_review_aliases(config_data)
 
     model_options = config_data.get("model_options", DEFAULT_MODEL_OPTIONS)
     if not isinstance(model_options, list) or not all(isinstance(item, str) and item.strip() for item in model_options):
@@ -197,7 +211,7 @@ def load_app_config() -> AppConfig:
         "advisory",
         {"advisory", "strict"},
     )
-    enable_post_redraw_validation = parse_config_bool(config_data, "enable_post_redraw_validation", True)
+    keep_all_image_variants = parse_config_bool(config_data, "keep_all_image_variants", False)
     validation_model = parse_config_str(config_data, "validation_model", "gpt-4.1")
     min_semantic_match_score = parse_config_score(config_data, "min_semantic_match_score", 0.75)
     min_text_match_score = parse_config_score(config_data, "min_text_match_score", 0.80)
@@ -214,7 +228,7 @@ def load_app_config() -> AppConfig:
     reconstruction_model = parse_config_str(config_data, "reconstruction_model", "gpt-4.1")
     enable_vision_image_analysis = parse_config_bool(config_data, "enable_vision_image_analysis", True)
     enable_vision_image_validation = parse_config_bool(config_data, "enable_vision_image_validation", True)
-    semantic_redraw_max_attempts = parse_config_int(config_data, "semantic_redraw_max_attempts", 3)
+    semantic_redraw_max_attempts = parse_config_int(config_data, "semantic_redraw_max_attempts", 2)
     semantic_redraw_max_model_calls_per_image = parse_config_int(
         config_data,
         "semantic_redraw_max_model_calls_per_image",
@@ -256,9 +270,9 @@ def load_app_config() -> AppConfig:
         os.getenv("DOCX_AI_IMAGE_MODE_DEFAULT", image_mode_default).strip() or image_mode_default,
         source_name="DOCX_AI_IMAGE_MODE_DEFAULT",
     )
-    enable_post_redraw_validation = parse_bool_env(
-        "DOCX_AI_ENABLE_POST_REDRAW_VALIDATION",
-        enable_post_redraw_validation,
+    keep_all_image_variants = parse_bool_env(
+        "DOCX_AI_KEEP_ALL_IMAGE_VARIANTS",
+        keep_all_image_variants,
     )
     semantic_validation_policy = os.getenv(
         "DOCX_AI_SEMANTIC_VALIDATION_POLICY",
@@ -347,7 +361,7 @@ def load_app_config() -> AppConfig:
         max_retries=max(1, min(max_retries, 5)),
         image_mode_default=image_mode_default,
         semantic_validation_policy=semantic_validation_policy,
-        enable_post_redraw_validation=enable_post_redraw_validation,
+        keep_all_image_variants=keep_all_image_variants,
         validation_model=validation_model,
         min_semantic_match_score=min_semantic_match_score,
         min_text_match_score=min_text_match_score,
@@ -358,7 +372,7 @@ def load_app_config() -> AppConfig:
         reconstruction_model=reconstruction_model,
         enable_vision_image_analysis=enable_vision_image_analysis,
         enable_vision_image_validation=enable_vision_image_validation,
-        semantic_redraw_max_attempts=max(1, min(semantic_redraw_max_attempts, 5)),
+        semantic_redraw_max_attempts=max(1, min(semantic_redraw_max_attempts, 2)),
         semantic_redraw_max_model_calls_per_image=max(1, min(semantic_redraw_max_model_calls_per_image, 20)),
         dense_text_bypass_threshold=max(1, min(dense_text_bypass_threshold, 80)),
         non_latin_text_bypass_threshold=max(1, min(non_latin_text_bypass_threshold, 80)),
@@ -383,14 +397,16 @@ def load_system_prompt() -> str:
     return prompt_text
 
 
-def get_client() -> "OpenAI":
+def get_client() -> "OpenAIClient":
     load_project_dotenv()
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("Не найден OPENAI_API_KEY. Добавьте его в .env или переменные окружения.")
+    global OpenAI
     client_cls = OpenAI
     if client_cls is None:
         from openai import OpenAI as imported_openai
 
         client_cls = imported_openai
+        OpenAI = imported_openai
     return client_cls(api_key=api_key)

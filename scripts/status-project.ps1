@@ -6,6 +6,7 @@ try {
 
     $status = Get-ProjectStatus
     $healthOk = ConvertTo-BoolFlag $status['health_ok']
+    $appPageOk = ConvertTo-BoolFlag $status['app_page_ok']
     $managedPidRunning = ConvertTo-BoolFlag $status['managed_pid_running']
     $portOpen = ConvertTo-BoolFlag $status['port_open']
     $venvOk = ConvertTo-BoolFlag $status['venv_ok']
@@ -14,11 +15,11 @@ try {
     $apiKeyOk = ConvertTo-BoolFlag $status['api_key_ok']
     $managedPid = $status['managed_pid']
 
-    if ($healthOk -and $managedPidRunning) {
+    if ($healthOk -and $appPageOk -and $managedPidRunning) {
         Write-Ok "Project is running. PID=$managedPid"
     }
     elseif ($managedPidRunning) {
-        Write-Warn "Managed project process exists, but health endpoint is not responding"
+        Write-Warn "Managed project process exists, but the app page is not fully ready yet"
     }
     elseif ($portOpen) {
         Write-Warn "Port $port is occupied by a foreign or unmanaged process"
@@ -56,11 +57,11 @@ try {
     }
 
     $finalStatus = 'READY'
-    if ($managedPidRunning -and $healthOk) {
+    if ($managedPidRunning -and $healthOk -and $appPageOk) {
         $finalStatus = 'RUNNING'
     }
     elseif ($managedPidRunning) {
-        $finalStatus = 'UNHEALTHY'
+        $finalStatus = 'STARTING'
     }
     elseif ($portOpen) {
         $finalStatus = 'CONFLICT'

@@ -3,7 +3,7 @@
 try {
     Write-Step 'Останавливаю проект'
 
-    $status = Get-ProjectStatus
+    $status = Get-ProjectRuntimeStatus
     $portOpen = ConvertTo-BoolFlag $status['port_open']
     $managedPidRunning = ConvertTo-BoolFlag $status['managed_pid_running']
 
@@ -32,14 +32,14 @@ try {
         throw "Порт $port всё ещё занят после команды остановки."
     }
 
-    Add-Content -Path $projectLogPath -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') | INFO | Status: STOPPED" -Encoding utf8
+    Append-ProjectLogEntry "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') | INFO | Status: STOPPED"
     Write-Ok 'Проект остановлен'
     Write-Host 'Status: STOPPED' -ForegroundColor Green
     exit 0
 }
 catch {
     Write-Fail $_.Exception.Message
-    Add-Content -Path $projectLogPath -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') | FAIL | Status: FAILED" -Encoding utf8
+    Append-ProjectLogEntry "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') | FAIL | Status: FAILED"
     Write-Host 'Status: FAILED' -ForegroundColor Red
     exit 1
 }

@@ -23,6 +23,7 @@ COMPARE_ALL_VARIANT_LABELS = {
     "semantic_redraw_direct": "Вариант 2: Креативная AI-перерисовка",
     "semantic_redraw_structured": "Вариант 3: Структурная AI-перерисовка",
 }
+MANUAL_REVIEW_SAFE_LABEL = "safe"
 MAX_DOCX_ARCHIVE_SIZE_BYTES = 25 * 1024 * 1024
 MAX_DOCX_UNCOMPRESSED_SIZE_BYTES = 100 * 1024 * 1024
 MAX_DOCX_ENTRY_COUNT = 2048
@@ -289,6 +290,21 @@ def resolve_image_insertions(asset: ImageAsset) -> list[tuple[str | None, bytes]
             variant_bytes = get_image_variant_bytes(variant)
             if variant_bytes:
                 insertions.append((COMPARE_ALL_VARIANT_LABELS[mode], variant_bytes))
+        if insertions:
+            return insertions
+
+    if bool(getattr(getattr(asset, "metadata", None), "preserve_all_variants_in_docx", False)):
+        # Manual review mode keeps the conservative safe result plus every
+        # generated semantic candidate so fallback decisions can be inspected in
+        # the final DOCX without rerunning the pipeline.
+        insertions: list[tuple[str | None, bytes]] = []
+        if asset.safe_bytes:
+            insertions.append((MANUAL_REVIEW_SAFE_LABEL, asset.safe_bytes))
+        for variant in list(getattr(asset, "attempt_variants", []))[:2]:
+            variant_label = str(getattr(variant, "mode", "")).strip() or None
+            variant_bytes = get_image_variant_bytes(variant)
+            if variant_label and variant_bytes:
+                insertions.append((variant_label, variant_bytes))
         if insertions:
             return insertions
 

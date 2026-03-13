@@ -1,7 +1,5 @@
 import logging
 
-from dotenv import load_dotenv
-
 import streamlit as st
 
 st.set_page_config(
@@ -10,8 +8,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-from constants import ENV_PATH, MAX_DOCX_ARCHIVE_SIZE_BYTES
-from compare_panel import render_compare_all_apply_panel
+from constants import MAX_DOCX_ARCHIVE_SIZE_BYTES
 from config import load_app_config
 from app_runtime import (
     build_preparation_request_marker,
@@ -25,17 +22,10 @@ from app_runtime import (
     start_background_processing,
 )
 from logger import fail_critical, log_event, present_error
-from application_flow import (
-    derive_app_idle_view_state,
-    has_resettable_state,
-    prepare_run_context,
-    resolve_effective_uploaded_file,
-)
 from processing_runtime import (
     get_current_result_bundle,
     resolve_uploaded_filename,
 )
-from restart_store import cleanup_stale_persisted_sources
 from state import (
     init_session_state,
     push_activity,
@@ -45,7 +35,6 @@ from state import (
 from ui import (
     inject_ui_styles,
     render_image_validation_summary,
-    render_live_status,
     render_partial_result,
     render_result,
     render_result_bundle,
@@ -55,14 +44,19 @@ from ui import (
 )
 from workflow_state import IdleViewState, ProcessingOutcome
 
-load_dotenv(dotenv_path=ENV_PATH)
-
 PERSISTED_SOURCE_TTL_SECONDS = 12 * 60 * 60
+
+
+@st.cache_resource
+def _cached_load_app_config():
+    return load_app_config()
 
 
 def _cleanup_stale_persisted_sources_once() -> None:
     if st.session_state.get("persisted_source_cleanup_done", False):
         return
+    from restart_store import cleanup_stale_persisted_sources
+
     cleanup_stale_persisted_sources(max_age_seconds=PERSISTED_SOURCE_TTL_SECONDS)
     st.session_state.persisted_source_cleanup_done = True
 
@@ -121,7 +115,7 @@ def _start_background_preparation(
     upload_marker: str,
     chunk_size: int,
     image_mode: str,
-    enable_post_redraw_validation: bool,
+    keep_all_image_variants: bool,
 ) -> None:
     from application_flow import prepare_run_context_for_background
 
@@ -131,7 +125,7 @@ def _start_background_preparation(
         upload_marker=upload_marker,
         chunk_size=chunk_size,
         image_mode=image_mode,
-        enable_post_redraw_validation=enable_post_redraw_validation,
+        keep_all_image_variants=keep_all_image_variants,
     )
 
 
@@ -186,34 +180,31 @@ def main() -> None:
         log_event(logging.INFO, "app_start", "Приложение инициализировано")
         st.session_state.app_start_logged = True
 
-    try:
-        app_config = load_app_config()
-    except Exception as exc:
-        user_message = present_error("config_load_failed", exc, "Ошибка загрузки конфигурации")
-        st.error(f"Ошибка загрузки конфигурации: {user_message}")
-        return
-
-    model, chunk_size, max_retries, image_mode, enable_post_redraw_validation = render_sidebar(app_config)
-    app_config = dict(app_config)
-    app_config["enable_post_redraw_validation"] = enable_post_redraw_validation
-
     st.title("AI-редактор DOCX через Markdown")
     st.write(
         "Загрузите DOCX, приложение соберет смысловые блоки из нескольких абзацев, "
         "добавит соседний контекст для модели и соберет новый DOCX."
     )
 
+    try:
+        app_config = _cached_load_app_config()
+    except Exception as exc:
+        user_message = present_error("config_load_failed", exc, "Ошибка загрузки конфигурации")
+        st.error(f"Ошибка загрузки конфигурации: {user_message}")
+        return
+
+    model, chunk_size, max_retries, image_mode, keep_all_image_variants = render_sidebar(app_config)
+    app_config = dict(app_config)
+    app_config["keep_all_image_variants"] = keep_all_image_variants
+
     processing_active = _processing_worker_is_active()
     preparation_active = _preparation_worker_is_active()
     current_result = get_current_result_bundle()
 
     if processing_active:
-        st.info(f"Идет обработка файла: {st.session_state.latest_source_name}")
-
         @st.fragment(run_every=1)
         def render_processing_panel() -> None:
             _drain_processing_events()
-            render_live_status()
             render_run_log()
             render_image_validation_summary()
             render_partial_result()
@@ -236,7 +227,7 @@ def main() -> None:
     @st.fragment(run_every=1)
     def render_preparation_panel() -> None:
         _drain_preparation_events()
-        render_live_status()
+        render_run_log()
         if not _preparation_worker_is_active():
             st.rerun()
 
@@ -244,7 +235,7 @@ def main() -> None:
         st.error(
             f"Размер DOCX превышает допустимый предел {MAX_DOCX_ARCHIVE_SIZE_BYTES // (1024 * 1024)} МБ. Загрузите файл меньшего размера."
         )
-        render_live_status()
+        render_run_log()
         return
 
     if preparation_active:
@@ -274,14 +265,22 @@ def main() -> None:
                 upload_marker=preparation_request_marker,
                 chunk_size=chunk_size,
                 image_mode=image_mode,
-                enable_post_redraw_validation=enable_post_redraw_validation,
+                keep_all_image_variants=keep_all_image_variants,
             )
-            st.rerun()
+            render_preparation_panel()
+            return
         if preparation_failed_marker == preparation_request_marker and prepared_run_context is None:
             if st.session_state.last_error:
                 st.error(st.session_state.last_error)
-            render_live_status()
+            render_run_log()
             return
+
+    from application_flow import (
+        derive_app_idle_view_state,
+        has_resettable_state,
+        prepare_run_context,
+        resolve_effective_uploaded_file,
+    )
 
     uploaded_file = resolve_effective_uploaded_file(
         uploaded_file=uploaded_widget_file,
@@ -299,7 +298,7 @@ def main() -> None:
                 "Подготовка файла еще не завершилась или состояние подготовки было сброшено. Подождите несколько секунд. "
                 "Если экран не обновляется, загрузите файл повторно."
             )
-            render_live_status()
+            render_run_log()
             return
 
     if has_resettable_state(current_result=current_result, session_state=st.session_state):
@@ -335,7 +334,7 @@ def main() -> None:
                 uploaded_file=uploaded_file,
                 chunk_size=chunk_size,
                 image_mode=image_mode,
-                enable_post_redraw_validation=enable_post_redraw_validation,
+                keep_all_image_variants=keep_all_image_variants,
                 session_state=st.session_state,
                 reset_run_state_fn=reset_run_state,
                 fail_critical_fn=fail_critical,
@@ -380,8 +379,6 @@ def main() -> None:
             is_running=False,
             phase="preparing",
         )
-    render_live_status()
-    render_section_gap("lg")
     if not st.session_state.activity_feed:
         push_activity(f"Документ разобран на {len(jobs)} блоков.")
 
@@ -398,6 +395,8 @@ def main() -> None:
     render_partial_result()
     render_run_log()
     render_image_validation_summary()
+
+    from compare_panel import render_compare_all_apply_panel
 
     render_compare_all_apply_panel(
         latest_image_mode=st.session_state.latest_image_mode,

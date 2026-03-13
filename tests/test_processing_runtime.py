@@ -156,7 +156,7 @@ def test_start_background_preparation_creates_worker_and_status(monkeypatch):
         upload_marker="report.docx:3",
         chunk_size=6000,
         image_mode="safe",
-        enable_post_redraw_validation=True,
+        keep_all_image_variants=True,
     )
 
     session_state.preparation_worker.join(timeout=5)
@@ -192,7 +192,7 @@ def test_start_background_preparation_propagates_cached_flag(monkeypatch):
         upload_marker="report.docx:3:6000",
         chunk_size=6000,
         image_mode="safe",
-        enable_post_redraw_validation=True,
+        keep_all_image_variants=True,
     )
 
     session_state.preparation_worker.join(timeout=5)

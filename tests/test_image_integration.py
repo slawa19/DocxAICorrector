@@ -123,7 +123,7 @@ def test_process_document_images_accepts_semantic_redraw(monkeypatch):
     result = service.process_document_images(
         image_assets=[build_asset()],
         image_mode="semantic_redraw_direct",
-        config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1"},
+        config={"keep_all_image_variants": True, "validation_model": "gpt-4.1"},
         on_progress=lambda **kwargs: None,
     )
 
@@ -147,7 +147,7 @@ def test_process_document_images_soft_accepts_advisory_type_drift(monkeypatch):
     result = service.process_document_images(
         image_assets=[build_asset()],
         image_mode="semantic_redraw_direct",
-        config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1"},
+        config={"keep_all_image_variants": True, "validation_model": "gpt-4.1"},
         on_progress=lambda **kwargs: None,
     )
 
@@ -180,7 +180,7 @@ def test_process_document_images_applies_fallback_original_for_unreadable_candid
     result = service.process_document_images(
         image_assets=[build_asset()],
         image_mode="semantic_redraw_direct",
-        config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1"},
+        config={"keep_all_image_variants": True, "validation_model": "gpt-4.1"},
         on_progress=lambda **kwargs: None,
     )
 
@@ -197,7 +197,7 @@ def test_process_document_images_keeps_document_flow_when_validator_raises(monke
     result = service.process_document_images(
         image_assets=[build_asset()],
         image_mode="semantic_redraw_structured",
-        config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1"},
+        config={"keep_all_image_variants": True, "validation_model": "gpt-4.1"},
         on_progress=lambda **kwargs: None,
     )
 
@@ -248,7 +248,7 @@ def test_process_document_images_uses_single_policy_soft_accept_path(monkeypatch
     result = service.process_document_images(
         image_assets=[build_asset()],
         image_mode="semantic_redraw_structured",
-        config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1", "semantic_redraw_max_attempts": 2},
+        config={"keep_all_image_variants": True, "validation_model": "gpt-4.1", "semantic_redraw_max_attempts": 2},
         on_progress=lambda **kwargs: None,
     )
 
@@ -309,13 +309,28 @@ def test_process_document_images_reuses_single_client_for_image_attempts(monkeyp
     result = service.process_document_images(
         image_assets=[build_asset()],
         image_mode="semantic_redraw_direct",
-        config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1", "semantic_redraw_max_attempts": 2},
+        config={"keep_all_image_variants": True, "validation_model": "gpt-4.1", "semantic_redraw_max_attempts": 2},
         on_progress=lambda **kwargs: None,
     )
 
     assert result[0].final_decision == "accept"
     assert len(client_calls) == 1
     assert generation_clients == [client_calls[0], client_calls[0], client_calls[0]]
+    assert [variant.mode for variant in result[0].attempt_variants] == ["candidate1", "candidate2"]
+
+
+def test_process_document_images_marks_assets_for_manual_review_output(monkeypatch):
+    _, service = _prepare_state(monkeypatch)
+
+    result = service.process_document_images(
+        image_assets=[build_asset()],
+        image_mode="semantic_redraw_direct",
+        config={"keep_all_image_variants": True, "validation_model": "gpt-4.1", "semantic_redraw_max_attempts": 1},
+        on_progress=lambda **kwargs: None,
+    )
+
+    assert result[0].metadata.preserve_all_variants_in_docx is True
+    assert [variant.mode for variant in result[0].attempt_variants] == ["candidate1"]
 
 
 def test_process_document_images_uses_detected_redraw_mime_type_for_candidate_analysis(monkeypatch):
@@ -351,7 +366,7 @@ def test_process_document_images_uses_detected_redraw_mime_type_for_candidate_an
     result = service.process_document_images(
         image_assets=[asset],
         image_mode="semantic_redraw_direct",
-        config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1", "semantic_redraw_max_attempts": 1},
+        config={"keep_all_image_variants": True, "validation_model": "gpt-4.1", "semantic_redraw_max_attempts": 1},
         on_progress=lambda **kwargs: None,
         client=object(),
     )
@@ -391,7 +406,7 @@ def test_process_document_images_compare_all_prepares_three_variants(monkeypatch
     result = service.process_document_images(
         image_assets=[build_asset()],
         image_mode="compare_all",
-        config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1"},
+        config={"keep_all_image_variants": True, "validation_model": "gpt-4.1"},
         on_progress=lambda **kwargs: None,
     )
 
@@ -441,7 +456,7 @@ def test_process_document_images_attempts_semantic_mode_for_advisory_dense_text_
     result = service.process_document_images(
         image_assets=[build_asset()],
         image_mode="semantic_redraw_direct",
-        config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1"},
+        config={"keep_all_image_variants": True, "validation_model": "gpt-4.1"},
         on_progress=lambda **kwargs: None,
     )
 
@@ -467,7 +482,7 @@ def test_process_document_images_falls_back_when_model_call_budget_is_exhausted(
         image_assets=[build_asset()],
         image_mode="semantic_redraw_direct",
         config={
-            "enable_post_redraw_validation": True,
+            "keep_all_image_variants": True,
             "validation_model": "gpt-4.1",
             "semantic_redraw_max_attempts": 2,
             "semantic_redraw_max_model_calls_per_image": 1,
@@ -499,7 +514,7 @@ def test_process_document_images_uses_safe_variant_when_semantic_candidate_colla
     result = service.process_document_images(
         image_assets=[build_asset()],
         image_mode="semantic_redraw_structured",
-        config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1", "semantic_redraw_max_attempts": 1},
+        config={"keep_all_image_variants": True, "validation_model": "gpt-4.1", "semantic_redraw_max_attempts": 1},
         on_progress=lambda **kwargs: None,
         client=object(),
     )
@@ -571,7 +586,7 @@ def test_process_document_images_stops_future_images_when_document_budget_is_exh
         image_assets=[build_asset(), build_asset()],
         image_mode="semantic_redraw_direct",
         config={
-            "enable_post_redraw_validation": True,
+            "keep_all_image_variants": True,
             "validation_model": "gpt-4.1",
             "semantic_redraw_max_attempts": 1,
             "image_model_call_budget_per_document": 4,
@@ -611,7 +626,7 @@ def test_process_document_images_skips_unsupported_source_image_without_validati
     result = service.process_document_images(
         image_assets=[asset],
         image_mode="compare_all",
-        config={"enable_post_redraw_validation": True, "validation_model": "gpt-4.1"},
+        config={"keep_all_image_variants": True, "validation_model": "gpt-4.1"},
         on_progress=lambda **kwargs: None,
     )
 
@@ -628,3 +643,46 @@ def test_process_document_images_skips_unsupported_source_image_without_validati
             "suspicious_reasons": ["unsupported_source_image_format:image/x-emf"],
         }
     ]
+
+
+def test_process_document_images_does_not_request_candidate2_after_hard_validation_failure(monkeypatch):
+    _, service = _prepare_state(monkeypatch)
+    analyses = iter([build_analysis_result(), build_analysis_result()])
+    generated_modes = []
+
+    def fake_generate_image_candidate(
+        image_bytes,
+        analysis,
+        *,
+        mode,
+        prefer_deterministic_reconstruction=True,
+        reconstruction_model=None,
+        reconstruction_render_config=None,
+        client=None,
+        budget=None,
+    ):
+        generated_modes.append(mode)
+        return PNG_BYTES if mode == "safe" else REDRAWN_BYTES
+
+    monkeypatch.setattr(processing_service, "analyze_image", lambda *args, **kwargs: next(analyses))
+    monkeypatch.setattr(processing_service, "generate_image_candidate", fake_generate_image_candidate)
+    monkeypatch.setattr(
+        processing_service,
+        "validate_redraw_result",
+        lambda *args, **kwargs: build_validation_result(
+            validation_passed=False,
+            decision="fallback_safe",
+            suspicious_reasons=["candidate_image_unreadable"],
+        ),
+    )
+    service = processing_service.build_processing_service()
+
+    result = service.process_document_images(
+        image_assets=[build_asset()],
+        image_mode="semantic_redraw_direct",
+        config={"keep_all_image_variants": True, "validation_model": "gpt-4.1", "semantic_redraw_max_attempts": 2},
+        on_progress=lambda **kwargs: None,
+    )
+
+    assert generated_modes == ["safe", "semantic_redraw_direct"]
+    assert [variant.mode for variant in result[0].attempt_variants] == ["candidate1"]

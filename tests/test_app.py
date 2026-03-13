@@ -27,7 +27,7 @@ def test_main_logs_app_start_only_once(monkeypatch):
     monkeypatch.setattr(app, "log_event", lambda *args, **kwargs: logged_events.append((args, kwargs)))
     monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", True))
     monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "button", lambda *args, **kwargs: False)
@@ -185,7 +185,7 @@ def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatc
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
     monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
-    monkeypatch.setattr(app, "load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 7000, 3, "safe", True))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
@@ -195,10 +195,8 @@ def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatc
     monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
-    monkeypatch.setattr(app, "has_resettable_state", lambda **kwargs: False)
     monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "error", lambda *args, **kwargs: None)
-    monkeypatch.setattr(app, "render_live_status", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
@@ -217,7 +215,7 @@ def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatc
         "upload_marker": "report.docx:3:7000",
         "chunk_size": 7000,
         "image_mode": "safe",
-        "enable_post_redraw_validation": True,
+        "keep_all_image_variants": True,
     }]
 
 
@@ -322,7 +320,7 @@ def test_main_rejects_oversized_upload_before_preparation(monkeypatch):
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: session_state.setdefault("persisted_source_cleanup_done", False))
     monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
-    monkeypatch.setattr(app, "load_app_config", lambda: {})
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", True))
     monkeypatch.setattr(app, "_cleanup_stale_persisted_sources_once", lambda: None)
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
@@ -334,7 +332,6 @@ def test_main_rejects_oversized_upload_before_preparation(monkeypatch):
     monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
     monkeypatch.setattr(app.st, "error", lambda message: errors.append(message))
-    monkeypatch.setattr(app, "render_live_status", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_start_background_preparation", lambda **kwargs: preparation_calls.append(kwargs))
 
     app.main()

@@ -329,12 +329,18 @@
 
 Обязательное правило:
 
-- если нужно прогнать весь test suite, ИИ-агент должен запускать его из `PowerShell`, но выполнять внутри `WSL` с активацией `.venv/bin/activate`;
-- для видимого прогона в VS Code приоритетны встроенный WSL-терминал или task `Run Full Pytest WSL Visible`;
+- если нужно прогнать весь test suite, ИИ-агент должен использовать wrapper `./scripts/run-tests.ps1` или task `Run Full Pytest WSL`; wrapper уже проксирует запуск в `WSL` с активацией `.venv/bin/activate`;
+- для штатного прогона через UI VS Code приоритетен task `Run Full Pytest WSL`, а для file-level и node-level сценариев используются `Run Current Test File WSL` и `Run Current Test Node WSL`;
 - нельзя полагаться на `.venv\Scripts\python.exe` как на источник истины, потому что этот репозиторий использует WSL-based virtualenv;
 - перед интерпретацией результатов нужно убедиться, что pytest видит корень проекта в `sys.path` и может импортировать `app.py`, `generation.py`, `restart_store.py` и остальные top-level модули.
 
-Канонический запуск:
+Канонический wrapper-driven запуск:
+
+```powershell
+./scripts/run-tests.ps1
+```
+
+Низкоуровневый fallback:
 
 ```bash
 bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate && pytest tests -q'

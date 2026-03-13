@@ -274,7 +274,7 @@ def prepare_run_context(
     uploaded_file,
     chunk_size: int,
     image_mode: str,
-    enable_post_redraw_validation: bool,
+    keep_all_image_variants: bool,
     session_state,
     reset_run_state_fn,
     fail_critical_fn,
@@ -310,7 +310,7 @@ def prepare_run_context(
             source_chars=len(prepared_document.source_text),
             chunk_size=chunk_size,
             image_mode=image_mode,
-            enable_post_redraw_validation=enable_post_redraw_validation,
+            keep_all_image_variants=keep_all_image_variants,
         )
         session_state.prepared_source_key = prepared_document.prepared_source_key
     emit_preparation_progress(
@@ -341,7 +341,7 @@ def prepare_run_context_for_background(
     uploaded_file,
     chunk_size: int,
     image_mode: str,
-    enable_post_redraw_validation: bool,
+    keep_all_image_variants: bool,
     prepare_document_for_processing_fn=None,
     resolve_uploaded_filename_fn=None,
     read_uploaded_file_bytes_fn=None,

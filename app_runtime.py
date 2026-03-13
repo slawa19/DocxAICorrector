@@ -92,7 +92,7 @@ def request_processing_stop() -> None:
     request_processing_stop_impl()
 
 
-def start_background_preparation(*, worker_target, uploaded_file, upload_marker: str, chunk_size: int, image_mode: str, enable_post_redraw_validation: bool) -> None:
+def start_background_preparation(*, worker_target, uploaded_file, upload_marker: str, chunk_size: int, image_mode: str, keep_all_image_variants: bool) -> None:
     start_background_preparation_impl(
         worker_target=worker_target,
         reset_run_state=reset_run_state,
@@ -102,7 +102,7 @@ def start_background_preparation(*, worker_target, uploaded_file, upload_marker:
         upload_marker=upload_marker,
         chunk_size=chunk_size,
         image_mode=image_mode,
-        enable_post_redraw_validation=enable_post_redraw_validation,
+        keep_all_image_variants=keep_all_image_variants,
     )
 
 

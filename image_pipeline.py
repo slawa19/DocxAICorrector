@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Protocol, TypeAlias
 
-from image_pipeline_policy import build_generation_analysis, resolve_validation_delivery_outcome, should_attempt_semantic_redraw
+from image_pipeline_policy import build_generation_analysis, is_hard_validation_failure, resolve_validation_delivery_outcome, should_attempt_semantic_redraw
 from models import ImageAnalysisResult, ImageMode, ImageValidationResult, ImageVariantCandidate
 
 
@@ -267,6 +267,35 @@ def _validate_semantic_attempt(
     )
 
 
+def _build_attempt_variant(attempt_asset, *, attempt_index: int) -> ImageVariantCandidate:
+    return ImageVariantCandidate(
+        mode=f"candidate{attempt_index}",
+        bytes=attempt_asset.redrawn_bytes,
+        mime_type=attempt_asset.redrawn_mime_type,
+        validation_result=attempt_asset.validation_result,
+        validation_status=attempt_asset.validation_status,
+        final_decision=attempt_asset.final_decision,
+        final_variant=attempt_asset.final_variant,
+        final_reason=attempt_asset.final_reason,
+    )
+
+
+def _should_request_challenger_candidate(attempt_asset, *, attempt_index: int, attempt_count: int) -> bool:
+    if attempt_index >= attempt_count:
+        return False
+    if getattr(attempt_asset, "final_variant", None) != "redrawn":
+        return False
+
+    validation_result = getattr(attempt_asset, "validation_result", None)
+    if validation_result is None:
+        return False
+    if is_hard_validation_failure(validation_result):
+        return False
+    if getattr(attempt_asset, "final_decision", None) == "accept_soft":
+        return True
+    return getattr(attempt_asset, "validation_status", None) == "failed"
+
+
 def _build_compare_variant_candidate(
     asset,
     analysis,
@@ -340,7 +369,10 @@ def select_best_semantic_asset(
     pipeline_context: ImageProcessingContext,
     client,
 ):
-    attempt_count = max(1, _config_int(pipeline_context.config, "semantic_redraw_max_attempts", 3))
+    # Keep semantic redraw bounded and explainable: at most two generated
+    # candidates are evaluated, and each successful candidate is preserved on the
+    # asset so manual-review DOCX output can show why the final verdict won.
+    attempt_count = max(1, min(_config_int(pipeline_context.config, "semantic_redraw_max_attempts", 2), 2))
     max_model_calls = max(
         1,
         _config_int(pipeline_context.config, "semantic_redraw_max_model_calls_per_image", attempt_count * 3),
@@ -351,6 +383,7 @@ def select_best_semantic_asset(
     best_score = -1.0
     budget_exhausted = False
     budget_exhausted_reason = "semantic_model_call_budget_exhausted"
+    attempt_variants: list[ImageVariantCandidate] = []
 
     for attempt_index in range(1, attempt_count + 1):
         try:
@@ -374,6 +407,7 @@ def select_best_semantic_asset(
                     attempt_index=attempt_index,
                     **attempt_asset.to_log_context(),
                 )
+                attempt_asset.attempt_variants = list(attempt_variants)
                 return attempt_asset
             attempt_asset.redrawn_mime_type = pipeline_context.detect_image_mime_type_fn(attempt_asset.redrawn_bytes)
             attempt_asset.update_pipeline_metadata(rendered_mime_type=attempt_asset.redrawn_mime_type)
@@ -423,6 +457,9 @@ def select_best_semantic_asset(
             )
             continue
 
+        attempt_variants.append(_build_attempt_variant(attempt_asset, attempt_index=attempt_index))
+        attempt_asset.attempt_variants = list(attempt_variants)
+
         score = score_semantic_candidate(attempt_asset)
         pipeline_context.log_event_fn(
             logging.INFO,
@@ -437,13 +474,21 @@ def select_best_semantic_asset(
             best_score = score
         if attempt_asset.final_variant == "redrawn" and attempt_asset.final_decision == "accept":
             return attempt_asset
+        if not _should_request_challenger_candidate(
+            attempt_asset,
+            attempt_index=attempt_index,
+            attempt_count=attempt_count,
+        ):
+            return attempt_asset
 
     if best_asset is None:
+        asset.attempt_variants = list(attempt_variants)
         asset.validation_status = "failed" if budget_exhausted else "error"
         asset.final_decision = "fallback_original"
         asset.final_variant = "original"
         asset.final_reason = budget_exhausted_reason if budget_exhausted else "semantic_candidate_attempts_exhausted"
         return asset
+    best_asset.attempt_variants = list(attempt_variants)
     return best_asset
 
 
@@ -464,6 +509,9 @@ def process_document_images(
     context.emit_image_reset(context.runtime)
     total_images = len(image_assets)
     for index, asset in enumerate(image_assets, start=1):
+        asset.update_pipeline_metadata(
+            preserve_all_variants_in_docx=_should_preserve_all_variants_in_docx(context.config),
+        )
         if context.should_stop(context.runtime):
             context.emit_finalize(
                 context.runtime,
@@ -693,6 +741,9 @@ def _clone_image_asset_for_attempt(asset):
         final_reason=None,
         redrawn_bytes=None,
         redrawn_mime_type=None,
+        attempt_variants=[],
+        comparison_variants={},
+        selected_compare_variant=None,
         metadata=replace(asset.metadata),
     )
     cloned_asset.update_pipeline_metadata(
@@ -779,7 +830,7 @@ def _resolve_document_model_call_budget(
         _config_int(
             config,
             "semantic_redraw_max_model_calls_per_image",
-            max(1, _config_int(config, "semantic_redraw_max_attempts", 3)) * 3,
+            max(1, min(_config_int(config, "semantic_redraw_max_attempts", 2), 2)) * 3,
         ),
     )
     estimated_calls_per_image = 7 if image_mode == ImageMode.COMPARE_ALL.value else per_image_attempt_budget + 1
@@ -870,6 +921,10 @@ def _config_bool(config: Mapping[str, object], key: str, default: bool) -> bool:
 
 def _config_str(config: Mapping[str, object], key: str, default: str) -> str:
     return _coerce_str(config.get(key), default)
+
+
+def _should_preserve_all_variants_in_docx(config: Mapping[str, object]) -> bool:
+    return _config_bool(config, "keep_all_image_variants", False)
 
 
 def _coerce_str(value: object, default: str = "") -> str:

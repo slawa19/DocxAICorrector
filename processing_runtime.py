@@ -411,7 +411,7 @@ def start_background_preparation(
     upload_marker: str,
     chunk_size: int,
     image_mode: str,
-    enable_post_redraw_validation: bool,
+    keep_all_image_variants: bool,
 ) -> None:
     reset_run_state(keep_restart_source=False)
     st.session_state.preparation_input_marker = upload_marker
@@ -460,7 +460,7 @@ def start_background_preparation(
                 uploaded_file=uploaded_file,
                 chunk_size=chunk_size,
                 image_mode=image_mode,
-                enable_post_redraw_validation=enable_post_redraw_validation,
+                keep_all_image_variants=keep_all_image_variants,
                 progress_callback=report_progress,
             )
         except Exception as exc:

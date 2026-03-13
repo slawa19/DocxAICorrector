@@ -50,7 +50,7 @@ def test_prepare_run_context_updates_selected_token_and_prepared_key():
         uploaded_file=UploadedFileStub("report.docx", b"abc"),
         chunk_size=6000,
         image_mode="safe",
-        enable_post_redraw_validation=True,
+        keep_all_image_variants=True,
         session_state=session_state,
         reset_run_state_fn=lambda **kwargs: None,
         fail_critical_fn=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected critical error")),
@@ -99,7 +99,7 @@ def test_prepare_run_context_raises_on_empty_job_target():
             uploaded_file=UploadedFileStub("report.docx", b"abc"),
             chunk_size=6000,
             image_mode="safe",
-            enable_post_redraw_validation=True,
+            keep_all_image_variants=True,
             session_state=session_state,
             reset_run_state_fn=lambda **kwargs: None,
             fail_critical_fn=fail_critical_stub,
@@ -134,7 +134,7 @@ def test_prepare_run_context_keeps_other_completed_source_tokens():
         uploaded_file=UploadedFileStub("report.docx", b"abc"),
         chunk_size=6000,
         image_mode="safe",
-        enable_post_redraw_validation=True,
+        keep_all_image_variants=True,
         session_state=session_state,
         reset_run_state_fn=lambda **kwargs: None,
         fail_critical_fn=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected critical error")),
@@ -235,14 +235,14 @@ def test_prepare_run_context_for_background_uses_real_cache(monkeypatch):
         uploaded_file=uploaded_file,
         chunk_size=6000,
         image_mode="safe",
-        enable_post_redraw_validation=True,
+        keep_all_image_variants=True,
         progress_callback=lambda **payload: progress_events.append(payload),
     )
     second = application_flow.prepare_run_context_for_background(
         uploaded_file=uploaded_file,
         chunk_size=6000,
         image_mode="safe",
-        enable_post_redraw_validation=True,
+        keep_all_image_variants=True,
         progress_callback=lambda **payload: progress_events.append(payload),
     )
 

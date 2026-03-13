@@ -98,7 +98,7 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
         "chunk_size": 6000,
         "max_retries": 3,
         "image_mode_default": "semantic_redraw_direct",
-        "enable_post_redraw_validation": False,
+        "keep_all_image_variants": False,
     }
 
     sidebar_calls = []
@@ -138,10 +138,10 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
     ]
     assert checkbox_calls == [
         (
-            "Включить post-check validation",
+            "Сохранять все варианты изображений",
             False,
-            "sidebar_enable_post_redraw_validation",
-            "Проверяет AI-перерисовку перед вставкой в DOCX и при проблемах откатывает изображение к safe/original.",
+            "sidebar_keep_all_image_variants",
+            "Сохраняет все сгенерированные варианты изображений для последующего сравнения.",
         )
     ]
 
@@ -291,48 +291,16 @@ def test_render_live_status_shows_cache_source_for_preparation(monkeypatch):
     monkeypatch.setattr(ui.st, "markdown", lambda text, unsafe_allow_html=True: markdowns.append(text))
     monkeypatch.setattr(ui.st, "progress", lambda value: progress_calls.append(value))
     monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
-    monkeypatch.setattr(ui, "_scroll_activity_feed_to_latest", lambda feed_id: None)
 
     ui.render_live_status(FakeTarget())
 
     assert any("Идет анализ файла" in text for text in markdowns)
-    assert any("Ход анализа" in text for text in markdowns)
     assert any("Использую кэш подготовки для текущего файла." in text for text in markdowns)
     assert any("Прогресс: 90%" in text for text in markdowns)
     assert any("Размер: 1.00 MB" in text for text in markdowns)
     assert any("Источник: cache" in text for text in markdowns)
-    assert any("10:00:00  [Анализ] Разбор DOCX: Ищу абзацы." in text for text in markdowns)
     assert progress_calls == [0.9]
     assert captions == []
-
-
-def test_render_preparation_summary_shows_persistent_metrics(monkeypatch):
-    summary = {
-        "stage": "Документ подготовлен",
-        "detail": "Анализ завершён. Можно запускать обработку.",
-        "file_size_bytes": 1048576,
-        "paragraph_count": 12,
-        "image_count": 2,
-        "source_chars": 5000,
-        "block_count": 4,
-        "cached": True,
-        "elapsed": "1.2 c",
-    }
-    markdowns = []
-
-    monkeypatch.setattr(ui.st, "markdown", lambda text, unsafe_allow_html=True: markdowns.append(text))
-
-    ui.render_preparation_summary(summary, FakeTarget())
-
-    assert any("Последний анализ файла" in text for text in markdowns)
-    assert any("Анализ завершён. Можно запускать обработку." in text for text in markdowns)
-    assert any("Размер: 1.00 MB" in text for text in markdowns)
-    assert any("Абзацы: 12" in text for text in markdowns)
-    assert any("Изображения: 2" in text for text in markdowns)
-    assert any("Символы: 5000" in text for text in markdowns)
-    assert any("Блоки: 4" in text for text in markdowns)
-    assert any("Источник: cache" in text for text in markdowns)
-    assert any("Этап: Документ подготовлен | Подготовка заняла: 1.2 c" in text for text in markdowns)
 
 
 def test_render_partial_result_shows_preview_instead_of_download(monkeypatch):
@@ -367,9 +335,11 @@ def test_render_run_log_shows_entries_in_chronological_order(monkeypatch):
     captions = []
     progress_calls = []
     markdowns = []
+    metrics = [FakeMetricTarget(), FakeMetricTarget(), FakeMetricTarget(), FakeMetricTarget()]
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(ui.st, "columns", lambda n: metrics)
     monkeypatch.setattr(ui.st, "progress", lambda value: progress_calls.append(value))
     monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
     monkeypatch.setattr(ui.st, "write", lambda text: writes.append(text))
@@ -395,6 +365,38 @@ def test_render_run_log_uses_processing_activity_without_block_entries(monkeypat
     progress_calls = []
     markdowns = []
     captions = []
+    metrics = [FakeMetricTarget(), FakeMetricTarget(), FakeMetricTarget(), FakeMetricTarget()]
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(ui.st, "columns", lambda n: metrics)
+    monkeypatch.setattr(ui.st, "progress", lambda value: progress_calls.append(value))
+    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
+    monkeypatch.setattr(ui.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.st, "markdown", lambda text, unsafe_allow_html=True: markdowns.append(text))
+    monkeypatch.setattr(ui, "_scroll_activity_feed_to_latest", lambda feed_id: None)
+
+    ui.render_run_log(FakeTarget())
+
+    assert progress_calls == [0.0]
+    assert captions[0] == "Этап: Инициализация | Проверяю окружение."
+    assert metrics[0].calls == [("Блок", "0/0")]
+    assert metrics[1].calls == [("Цель", "0 симв.")]
+    assert metrics[2].calls == [("Контекст", "0 симв.")]
+    assert metrics[3].calls == [("Прошло", "00:00")]
+    assert any("Запуск обработки документа." in text for text in markdowns)
+
+
+def test_render_run_log_shows_preparation_activity_in_single_journal(monkeypatch):
+    session_state = SessionState(
+        run_log=[],
+        activity_feed=[{"time": "10:00:00", "message": "[Анализ] Разбор DOCX: Ищу абзацы."}],
+        processing_status={"stage": "Подготовка документа", "detail": "Идет анализ файла.", "progress": 0.9, "phase": "preparing"},
+        last_log_hint="hint",
+    )
+    progress_calls = []
+    markdowns = []
+    captions = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
@@ -406,6 +408,7 @@ def test_render_run_log_uses_processing_activity_without_block_entries(monkeypat
 
     ui.render_run_log(FakeTarget())
 
-    assert progress_calls == [0.0]
-    assert captions[0] == "Этап: Инициализация | Проверяю окружение."
-    assert any("Запуск обработки документа." in text for text in markdowns)
+    assert progress_calls == [0.9]
+    assert captions[0] == "Этап: Подготовка документа | Идет анализ файла."
+    assert any("События" in text for text in markdowns)
+    assert any("10:00:00  [Анализ] Разбор DOCX: Ищу абзацы." in text for text in markdowns)

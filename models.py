@@ -105,6 +105,7 @@ class ImagePipelineMetadata:
     strict_validation_passed: bool | None = None
     soft_accepted: bool = False
     placeholder_status: str | None = None
+    preserve_all_variants_in_docx: bool = False
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -176,6 +177,7 @@ class ImageAsset:
     final_decision: str | None = None
     final_variant: str | None = None
     final_reason: str | None = None
+    attempt_variants: list[ImageVariantCandidate | dict[str, object]] = field(default_factory=list)
     comparison_variants: dict[str, ImageVariantCandidate | dict[str, object]] = field(default_factory=dict)
     selected_compare_variant: str | None = None
 
@@ -218,6 +220,10 @@ class ImageAsset:
             "final_decision": self.final_decision,
             "final_variant": self.final_variant,
             "final_reason": self.final_reason,
+            "attempt_variants": [
+                variant.to_dict() if isinstance(variant, ImageVariantCandidate) else variant
+                for variant in self.attempt_variants
+            ],
             "analysis_result": analysis_result.to_dict() if isinstance(analysis_result, ImageAnalysisResult) else analysis_result,
             "validation_result": (
                 validation_result.to_dict()

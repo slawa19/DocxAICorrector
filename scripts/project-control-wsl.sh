@@ -30,6 +30,79 @@ require_venv() {
     fi
 }
 
+validation_error() {
+    echo "$1" >&2
+    exit 2
+}
+
+is_canonical_test_file() {
+    local selector="$1"
+    [[ "$selector" == tests/*.py ]] && [[ "$selector" != *\\* ]] && [[ "$selector" != *::* ]]
+}
+
+is_canonical_test_node() {
+    local selector="$1"
+    [[ "$selector" == tests/*.py::* ]] && [[ "$selector" != *\\* ]]
+}
+
+validate_test_file_selector() {
+    local selector="$1"
+    if [[ -z "$selector" ]]; then
+        validation_error "Missing test file selector. Expected repo-relative path such as tests/test_config.py"
+    fi
+    if [[ "$selector" == *::* ]]; then
+        validation_error "Test file selector must not contain pytest node suffix: $selector"
+    fi
+    if [[ "$selector" == [A-Za-z]:* ]] || [[ "$selector" == /* ]] || [[ "$selector" == \\* ]]; then
+        validation_error "WSL dispatcher accepts only repo-relative test selectors: $selector"
+    fi
+    if ! is_canonical_test_file "$selector"; then
+        validation_error "Invalid test file selector. Expected canonical repo-relative path under tests/: $selector"
+    fi
+    if [[ ! -f "$PROJECT_ROOT/$selector" ]]; then
+        validation_error "Test file not found under repository root: $selector"
+    fi
+}
+
+validate_test_node_selector() {
+    local selector="$1"
+    local file_selector=""
+
+    if [[ -z "$selector" ]]; then
+        validation_error "Missing test node selector. Expected repo-relative node id such as tests/test_config.py::test_name"
+    fi
+    if [[ "$selector" == [A-Za-z]:* ]] || [[ "$selector" == /* ]] || [[ "$selector" == \\* ]]; then
+        validation_error "WSL dispatcher accepts only repo-relative test selectors: $selector"
+    fi
+    if ! is_canonical_test_node "$selector"; then
+        validation_error "Invalid test node selector. Expected canonical repo-relative node id under tests/: $selector"
+    fi
+
+    file_selector="${selector%%::*}"
+    validate_test_file_selector "$file_selector"
+}
+
+run_pytest() {
+    require_venv
+    (
+        cd "$PROJECT_ROOT"
+        . "$VENV_DIR/bin/activate"
+        pytest "$@"
+    )
+}
+
+has_explicit_verbosity_flag() {
+    local arg=""
+    for arg in "$@"; do
+        case "$arg" in
+            -q|-qq|-v|-vv|-vvv|--quiet|--verbose)
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
 is_port_open() {
     local port="${1:-$DEFAULT_PORT}"
     (echo > "/dev/tcp/127.0.0.1/$port") >/dev/null 2>&1
@@ -76,12 +149,27 @@ read_managed_pid() {
     tr -d '[:space:]' < "$WSL_PID_PATH"
 }
 
+app_page_ok() {
+    local port="${1:-$DEFAULT_PORT}"
+    local response=""
+    local attempt=""
+    for attempt in 1 2 3 4; do
+        response="$(curl -fsS --max-time 2 "http://127.0.0.1:${port}/" 2>/dev/null || true)"
+        if [[ "$response" == *"<title>Streamlit</title>"* || "$response" == *"<div id=\"root\"></div>"* ]]; then
+            return 0
+        fi
+        sleep 0.25
+    done
+    return 1
+}
+
 print_runtime_status() {
     local port="${1:-$DEFAULT_PORT}"
     local managed_pid=""
     local managed_pid_running="false"
     local port_open="false"
     local health_status="false"
+    local app_page_status="false"
 
     managed_pid="$(read_managed_pid)"
     if [[ -n "$managed_pid" ]] && kill -0 "$managed_pid" 2>/dev/null; then
@@ -99,11 +187,15 @@ print_runtime_status() {
         health_status="true"
     fi
 
+    if app_page_ok "$port"; then
+        app_page_status="true"
+    fi
+
     local state="stopped"
-    if [[ "$managed_pid_running" == "true" && "$health_status" == "true" ]]; then
+    if [[ "$managed_pid_running" == "true" && "$health_status" == "true" && "$app_page_status" == "true" ]]; then
         state="running"
     elif [[ "$managed_pid_running" == "true" ]]; then
-        state="managed-unhealthy"
+        state="managed-starting"
     elif [[ "$port_open" == "true" ]]; then
         state="port-conflict"
     fi
@@ -112,6 +204,7 @@ print_runtime_status() {
     printf 'managed_pid_running=%s\n' "$managed_pid_running"
     printf 'port_open=%s\n' "$port_open"
     printf 'health_ok=%s\n' "$health_status"
+    printf 'app_page_ok=%s\n' "$app_page_status"
     printf 'state=%s\n' "$state"
 }
 
@@ -188,6 +281,15 @@ for key, value in status.items():
 PY
 }
 
+runtime_status() {
+    local port="${1:-$DEFAULT_PORT}"
+    print_runtime_status "$port"
+}
+
+environment_status() {
+    print_environment_status
+}
+
 status() {
     local port="${1:-$DEFAULT_PORT}"
     print_runtime_status "$port"
@@ -253,13 +355,16 @@ run_streamlit() {
     local streamlit_pid="$!"
     disown "$streamlit_pid" 2>/dev/null || true
 
-    # Give the process 3 seconds to fail fast (bad import, port conflict, etc.)
-    sleep 3
-    if ! kill -0 "$streamlit_pid" 2>/dev/null; then
-        echo "streamlit process died immediately" >&2
-        [[ -s "$STREAMLIT_LOG_PATH" ]] && tail -n 80 "$STREAMLIT_LOG_PATH" >&2 || true
-        return 1
-    fi
+    # Fail fast without imposing a fixed 3-second startup penalty on every launch.
+    local probe=""
+    for probe in 1 2 3 4; do
+        sleep 0.25
+        if ! kill -0 "$streamlit_pid" 2>/dev/null; then
+            echo "streamlit process died immediately" >&2
+            [[ -s "$STREAMLIT_LOG_PATH" ]] && tail -n 80 "$STREAMLIT_LOG_PATH" >&2 || true
+            return 1
+        fi
+    done
 
     printf '%s\n' "$streamlit_pid" > "$WSL_PID_PATH"
 }
@@ -272,7 +377,21 @@ wait_health() {
             echo "ok"
             return 0
         fi
-        sleep 1
+        sleep 0.25
+    done
+    echo "timeout"
+    return 1
+}
+
+wait_ready() {
+    local port="${1:-$DEFAULT_PORT}"
+    local deadline=$((SECONDS + ${2:-90}))
+    while [[ $SECONDS -lt $deadline ]]; do
+        if health_ok "$port" && app_page_ok "$port"; then
+            echo "ok"
+            return 0
+        fi
+        sleep 0.25
     done
     echo "timeout"
     return 1
@@ -283,8 +402,14 @@ stop_streamlit() {
     streamlit_pid="$(read_managed_pid)"
     if [[ -n "$streamlit_pid" ]] && kill -0 "$streamlit_pid" 2>/dev/null; then
         kill "$streamlit_pid" 2>/dev/null || true
-        # Escalate to SIGKILL if SIGTERM is ignored
-        sleep 2
+        # Give SIGTERM a short grace period, but do not impose a fixed 2-second delay.
+        local probe=""
+        for probe in 1 2 3 4 5 6 7 8; do
+            if ! kill -0 "$streamlit_pid" 2>/dev/null; then
+                break
+            fi
+            sleep 0.25
+        done
         if kill -0 "$streamlit_pid" 2>/dev/null; then
             kill -9 "$streamlit_pid" 2>/dev/null || true
         fi
@@ -297,6 +422,41 @@ tail_log() {
     if [[ -f "$STREAMLIT_LOG_PATH" ]]; then
         tail -n "$lines" "$STREAMLIT_LOG_PATH"
     fi
+}
+
+run_tests() {
+    if has_explicit_verbosity_flag "$@"; then
+        run_pytest tests "$@"
+        return
+    fi
+
+    run_pytest tests -q "$@"
+}
+
+run_test_file() {
+    local selector="${1:-}"
+    shift || true
+    validate_test_file_selector "$selector"
+
+    if has_explicit_verbosity_flag "$@"; then
+        run_pytest "$selector" "$@"
+        return
+    fi
+
+    run_pytest "$selector" -vv "$@"
+}
+
+run_test_node() {
+    local selector="${1:-}"
+    shift || true
+    validate_test_node_selector "$selector"
+
+    if has_explicit_verbosity_flag "$@"; then
+        run_pytest "$selector" "$@"
+        return
+    fi
+
+    run_pytest "$selector" -vv "$@"
 }
 
 case "${1:-}" in
@@ -312,17 +472,38 @@ case "${1:-}" in
     status)
         status "${2:-$DEFAULT_PORT}"
         ;;
+    runtime-status)
+        runtime_status "${2:-$DEFAULT_PORT}"
+        ;;
+    env-status)
+        environment_status
+        ;;
     run-streamlit)
         run_streamlit "${2:-localhost}" "${3:-$DEFAULT_PORT}"
         ;;
     wait-health)
         wait_health "${2:-$DEFAULT_PORT}" "${3:-90}"
         ;;
+    wait-ready)
+        wait_ready "${2:-$DEFAULT_PORT}" "${3:-90}"
+        ;;
     stop-streamlit)
         stop_streamlit
         ;;
     tail-log)
         tail_log "${2:-80}"
+        ;;
+    run-tests)
+        shift
+        run_tests "$@"
+        ;;
+    run-test-file)
+        shift
+        run_test_file "$@"
+        ;;
+    run-test-node)
+        shift
+        run_test_node "$@"
         ;;
     *)
         echo "Unsupported action: ${1:-}" >&2

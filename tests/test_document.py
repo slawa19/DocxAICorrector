@@ -22,7 +22,7 @@ from document import (
     resolve_final_image_bytes,
     reinsert_inline_images,
 )
-from models import ImageAsset
+from models import ImageAsset, ImageVariantCandidate
 from models import ParagraphUnit
 
 
@@ -281,6 +281,57 @@ def test_preserve_source_paragraph_properties_restores_raw_xml_paragraph_formatt
     assert indentation is not None
     assert indentation.get(qn("w:start")) == "720" or indentation.get(qn("w:left")) == "720"
     assert indentation.get(qn("w:firstLine")) == "360"
+
+
+def test_resolve_image_insertions_keeps_safe_and_candidates_for_manual_review():
+    asset = ImageAsset(
+        image_id="img_001",
+        placeholder="[[DOCX_IMAGE_img_001]]",
+        original_bytes=PNG_BYTES,
+        mime_type="image/png",
+        position_index=0,
+        safe_bytes=PNG_BYTES,
+        attempt_variants=[
+            ImageVariantCandidate(mode="candidate1", bytes=PNG_BYTES, mime_type="image/png"),
+            ImageVariantCandidate(mode="candidate2", bytes=PNG_BYTES, mime_type="image/png"),
+        ],
+    )
+    asset.update_pipeline_metadata(preserve_all_variants_in_docx=True)
+
+    assert resolve_image_insertions(asset) == [
+        ("safe", PNG_BYTES),
+        ("candidate1", PNG_BYTES),
+        ("candidate2", PNG_BYTES),
+    ]
+
+
+def test_reinsert_inline_images_labels_manual_review_variants(tmp_path):
+    doc = Document()
+    doc.add_paragraph("[[DOCX_IMAGE_img_001]]")
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    asset = ImageAsset(
+        image_id="img_001",
+        placeholder="[[DOCX_IMAGE_img_001]]",
+        original_bytes=PNG_BYTES,
+        mime_type="image/png",
+        position_index=0,
+        safe_bytes=PNG_BYTES,
+        attempt_variants=[
+            ImageVariantCandidate(mode="candidate1", bytes=PNG_BYTES, mime_type="image/png"),
+            ImageVariantCandidate(mode="candidate2", bytes=PNG_BYTES, mime_type="image/png"),
+        ],
+    )
+    asset.update_pipeline_metadata(preserve_all_variants_in_docx=True)
+
+    updated_bytes = reinsert_inline_images(buffer.getvalue(), [asset])
+    updated_doc = Document(BytesIO(updated_bytes))
+    paragraph_text = updated_doc.paragraphs[0].text
+
+    assert "safe" in paragraph_text
+    assert "candidate1" in paragraph_text
+    assert "candidate2" in paragraph_text
 
 
 def test_normalize_semantic_output_docx_applies_semantic_styles():

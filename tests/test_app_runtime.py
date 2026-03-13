@@ -43,7 +43,7 @@ def test_start_background_preparation_passes_state_callbacks(monkeypatch):
         upload_marker="marker",
         chunk_size=6000,
         image_mode="safe",
-        enable_post_redraw_validation=True,
+        keep_all_image_variants=True,
     )
 
     assert captured["worker_target"] == "worker"
