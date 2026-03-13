@@ -4,9 +4,13 @@ headless = true
 enableCORS = false
 enableXsrfProtection = false
 address = "0.0.0.0"
+folderWatchBlacklist = [".run", ".git", ".venv", "__pycache__", ".pytest_cache"]
 
 [browser]
 gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
 
 [theme]
 primaryColor = "#19c6b7"

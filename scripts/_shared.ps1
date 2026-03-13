@@ -9,10 +9,10 @@ $wslControlScript = Join-Path $PSScriptRoot 'project-control-wsl.sh'
 $appPath = Join-Path $projectRoot 'app.py'
 $runDir = Join-Path $projectRoot '.run'
 $projectLogPath = Join-Path $runDir 'project.log'
-$serverHost = 'localhost'
+$serverHost = '0.0.0.0'   # used in stop-project.ps1 (Test-TcpPort) and start-project.ps1 (Invoke-WslInProject)
 $port = 8501
-$appUrl = "http://${serverHost}:${port}"
-$healthUrl = "$appUrl/_stcore/health"
+$appUrl = "http://localhost:$port"
+$healthUrl = "$appUrl/_stcore/health"   # used in start-project.ps1 (Wait-HttpHealth)
 
 if (-not (Test-Path $runDir)) { New-Item -ItemType Directory -Path $runDir | Out-Null }
 
@@ -21,7 +21,7 @@ function Convert-ToWslPath {
 
     $resolvedPath = (Resolve-Path -LiteralPath $WindowsPath).Path
     $normalizedPath = $resolvedPath -replace '\\', '/'
-    if ($normalizedPath -notmatch '^([A-Za-z]):/(.+)$') {
+    if ($normalizedPath -notmatch '^([A-Za-z]):/(.*)$') {
         throw "Failed to convert path to WSL format: $WindowsPath"
     }
     return "/mnt/$($matches[1].ToLower())/$($matches[2])"
@@ -107,7 +107,7 @@ function Test-TcpPort {
     try {
         $tcp = [System.Net.Sockets.TcpClient]::new()
         $asyncResult = $tcp.BeginConnect($ComputerName, $Port, $null, $null)
-        if (-not $asyncResult.AsyncWaitHandle.WaitOne(1000, $false)) {
+        if (-not $asyncResult.AsyncWaitHandle.WaitOne(1000)) {
             return $false
         }
         $tcp.EndConnect($asyncResult)
@@ -131,8 +131,8 @@ function Test-HttpHealth {
     param([string]$Url)
 
     try {
-        $response = Invoke-WebRequest -UseBasicParsing $Url -TimeoutSec 2
-        return (($response.Content | Out-String).Trim() -eq 'ok')
+        $result = & wsl.exe -d $wslDistro bash -c "curl -s --max-time 3 '$Url' 2>/dev/null" 2>$null
+        return (($result | Out-String).Trim() -eq 'ok')
     }
     catch {
         return $false
@@ -150,7 +150,7 @@ function Wait-HttpHealth {
         if (Test-HttpHealth -Url $Url) {
             return $true
         }
-        Start-Sleep -Milliseconds 500
+        Start-Sleep -Seconds 2
     }
     return $false
 }

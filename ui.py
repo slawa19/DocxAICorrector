@@ -1,9 +1,9 @@
 import time
 from html import escape
+from pathlib import Path
 
 import streamlit as st
 
-from generation import build_markdown_filename, build_output_filename
 from logger import format_elapsed
 from models import DOCX_COMPARE_VARIANT_MODE_VALUES, ImageMode, get_image_variant_bytes
 
@@ -30,6 +30,14 @@ IMAGE_COMPARE_LABELS = {
 }
 
 IMAGE_MODE_VALUES_BY_LABEL = {label: value for value, label in IMAGE_MODE_LABELS.items()}
+
+
+def _build_output_filename(filename: str) -> str:
+    return f"{Path(filename).stem}_edited.docx"
+
+
+def _build_markdown_filename(filename: str) -> str:
+    return f"{Path(filename).stem}_edited.md"
 
 
 def _render_trusted_html(html_markup: str) -> None:
@@ -579,14 +587,14 @@ def render_result_bundle(
     st.download_button(
         label="Скачать итоговый DOCX",
         data=docx_bytes,
-        file_name=build_output_filename(original_filename),
+        file_name=_build_output_filename(original_filename),
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         use_container_width=True,
     )
     st.download_button(
         label="Скачать итоговый Markdown",
         data=markdown_text.encode("utf-8"),
-        file_name=build_markdown_filename(original_filename),
+        file_name=_build_markdown_filename(original_filename),
         mime="text/markdown",
         use_container_width=True,
     )

@@ -1,11 +1,14 @@
 import tempfile
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pypandoc
-from openai import OpenAI
 
 from image_shared import is_retryable_error
+
+if TYPE_CHECKING:
+    from openai import OpenAI
 
 
 def ensure_pandoc_available() -> None:
@@ -31,7 +34,7 @@ def normalize_model_output(text: str) -> str:
     return cleaned
 
 def generate_markdown_block(
-    client: OpenAI,
+    client: "OpenAI",
     model: str,
     system_prompt: str,
     target_text: str,

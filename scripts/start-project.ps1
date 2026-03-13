@@ -62,13 +62,13 @@ try {
     }
 
     Write-Step 'Ожидаю доступности health endpoint'
-    if (-not (Wait-HttpHealth -Url $healthUrl -TimeoutSeconds 90)) {
+    if (-not (Wait-HttpHealth -Url $healthUrl -TimeoutSeconds 180)) {
         $tailOutput = Invoke-WslInProject 'tail-log' @('80') 2>&1
         $tailText = ($tailOutput | Out-String).Trim()
         if ($tailText) {
             Write-Warn "Последние строки streamlit.log:`n$tailText"
         }
-        throw 'Streamlit не стал доступен по health endpoint за 90 секунд.'
+        throw 'Streamlit не стал доступен по health endpoint за 180 секунд.'
     }
 
     Write-Ok 'Сервер доступен'

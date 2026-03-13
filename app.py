@@ -7,16 +7,10 @@ import streamlit as st
 st.set_page_config(
     page_title="AI DOCX Editor",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-from constants import ENV_PATH
-from application_flow import (
-    derive_app_idle_view_state,
-    has_resettable_state,
-    prepare_run_context,
-    prepare_run_context_for_background,
-    resolve_effective_uploaded_file,
-)
+from constants import ENV_PATH, MAX_DOCX_ARCHIVE_SIZE_BYTES
 from compare_panel import render_compare_all_apply_panel
 from config import load_app_config
 from app_runtime import (
@@ -30,13 +24,11 @@ from app_runtime import (
     start_background_preparation,
     start_background_processing,
 )
-from document import MAX_DOCX_ARCHIVE_SIZE_BYTES
 from logger import fail_critical, log_event, present_error
 from processing_runtime import (
     get_current_result_bundle,
     resolve_uploaded_filename,
 )
-from processing_service import get_processing_service
 from restart_store import cleanup_stale_persisted_sources
 from state import (
     init_session_state,
@@ -87,6 +79,8 @@ def _start_background_processing(
     model: str,
     max_retries: int,
 ) -> None:
+    from processing_service import get_processing_service
+
     start_background_processing(
         worker_target=get_processing_service().run_processing_worker,
         uploaded_filename=uploaded_filename,
@@ -109,6 +103,8 @@ def _start_background_preparation(
     image_mode: str,
     enable_post_redraw_validation: bool,
 ) -> None:
+    from application_flow import prepare_run_context_for_background
+
     start_background_preparation(
         worker_target=prepare_run_context_for_background,
         uploaded_file=uploaded_file,
@@ -144,11 +140,6 @@ def main() -> None:
     if not st.session_state.app_start_logged:
         log_event(logging.INFO, "app_start", "Приложение инициализировано")
         st.session_state.app_start_logged = True
-    st.title("AI-редактор DOCX через Markdown")
-    st.write(
-        "Загрузите DOCX, приложение соберет смысловые блоки из нескольких абзацев, "
-        "добавит соседний контекст для модели и соберет новый DOCX."
-    )
 
     try:
         app_config = load_app_config()
@@ -160,6 +151,13 @@ def main() -> None:
     model, chunk_size, max_retries, image_mode, enable_post_redraw_validation = render_sidebar(app_config)
     app_config = dict(app_config)
     app_config["enable_post_redraw_validation"] = enable_post_redraw_validation
+
+    st.title("AI-редактор DOCX через Markdown")
+    st.write(
+        "Загрузите DOCX, приложение соберет смысловые блоки из нескольких абзацев, "
+        "добавит соседний контекст для модели и соберет новый DOCX."
+    )
+
     processing_active = _processing_worker_is_active()
     preparation_active = _preparation_worker_is_active()
     current_result = get_current_result_bundle()
@@ -215,6 +213,18 @@ def main() -> None:
         render_preparation_panel()
         return
 
+    if (
+        uploaded_widget_file is None
+        and current_result is None
+        and not st.session_state.get("restart_source")
+        and not st.session_state.get("completed_source")
+    ):
+        st.info("Ожидается файл .docx")
+        render_run_log()
+        render_image_validation_summary()
+        render_partial_result()
+        return
+
     if uploaded_widget_file is not None:
         upload_marker = build_uploaded_file_selection_marker(uploaded_widget_file)
         preparation_request_marker = build_preparation_request_marker(uploaded_widget_file, chunk_size=chunk_size)
@@ -236,6 +246,13 @@ def main() -> None:
             render_live_status()
             return
 
+    from application_flow import (
+        derive_app_idle_view_state,
+        has_resettable_state,
+        prepare_run_context,
+        resolve_effective_uploaded_file,
+    )
+
     uploaded_file = resolve_effective_uploaded_file(
         uploaded_file=uploaded_widget_file,
         current_result=current_result,
@@ -248,6 +265,11 @@ def main() -> None:
         if str(st.session_state.get("preparation_input_marker", "")) == current_preparation_request_marker:
             prepared_run_context = st.session_state.get("prepared_run_context")
         if prepared_run_context is None:
+            st.warning(
+                "Подготовка файла еще не завершилась или состояние подготовки было сброшено. Подождите несколько секунд. "
+                "Если экран не обновляется, загрузите файл повторно."
+            )
+            render_live_status()
             return
 
     if has_resettable_state(current_result=current_result, session_state=st.session_state):

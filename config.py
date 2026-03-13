@@ -2,9 +2,9 @@ import os
 import tomllib
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
-from openai import OpenAI
 
 from constants import (
     CONFIG_PATH,
@@ -17,6 +17,9 @@ from constants import (
 )
 from image_shared import clamp_score
 from models import IMAGE_MODE_VALUES, ImageMode
+
+if TYPE_CHECKING:
+    from openai import OpenAI
 
 
 @dataclass(frozen=True)
@@ -375,9 +378,11 @@ def load_system_prompt() -> str:
     return prompt_text
 
 
-def get_client() -> OpenAI:
+def get_client() -> "OpenAI":
     load_project_dotenv()
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("Не найден OPENAI_API_KEY. Добавьте его в .env или переменные окружения.")
+    from openai import OpenAI
+
     return OpenAI(api_key=api_key)
