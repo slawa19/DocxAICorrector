@@ -128,7 +128,7 @@ def reset_run_state(*, keep_restart_source: bool = True) -> None:
 def push_activity(message: str) -> None:
     timestamp = _current_clock_label()
     st.session_state.activity_feed.append({"time": timestamp, "message": message})
-    st.session_state.activity_feed = st.session_state.activity_feed[-8:]
+    st.session_state.activity_feed = st.session_state.activity_feed[-20:]
 
 
 def set_processing_status(

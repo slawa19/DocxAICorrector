@@ -9,6 +9,16 @@ from models import ImageAnalysisResult
 
 
 VISION_ANALYSIS_TIMEOUT_SECONDS = 45.0
+_VALID_PROMPT_KEYS: frozenset[str] = frozenset({
+    "diagram_semantic_redraw",
+    "table_semantic_redraw",
+    "infographic_semantic_redraw",
+    "mindmap_semantic_redraw",
+    "chart_semantic_redraw",
+    "screenshot_safe_fallback",
+    "photo_safe_fallback",
+    "mixed_or_ambiguous_fallback",
+})
 VISION_ANALYSIS_MAX_RETRIES = 2
 # Empirical thresholds from image-pipeline tuning: above these values the pipeline
 # should keep the original raster more often than attempt semantic redraw.
@@ -239,38 +249,35 @@ def _coerce_vision_analysis_payload(
     payload: dict[str, object],
     heuristic_result: ImageAnalysisResult,
 ) -> ImageAnalysisResult:
-    extracted_labels = [str(item).strip() for item in payload.get("extracted_labels", []) if str(item).strip()][:12]
+    extracted_labels = _coerce_extracted_labels(payload.get("extracted_labels"))
     extracted_text = _coerce_extracted_text(payload.get("extracted_text"))
     text_node_count = _coerce_non_negative_int(payload.get("text_node_count"))
     render_strategy, force_safe_mode = _normalize_render_strategy(
         payload.get("recommended_route") or payload.get("render_strategy"),
         heuristic_result.render_strategy,
     )
-    semantic_redraw_allowed = bool(payload.get("semantic_redraw_allowed", heuristic_result.semantic_redraw_allowed))
+    semantic_redraw_allowed = _coerce_bool(
+        payload.get("semantic_redraw_allowed"),
+        heuristic_result.semantic_redraw_allowed,
+    )
     if force_safe_mode:
         semantic_redraw_allowed = False
+    contains_text = _coerce_bool(payload.get("contains_text"), heuristic_result.contains_text)
+    prompt_key = _coerce_non_empty_string(payload.get("prompt_key"), heuristic_result.prompt_key)
     return ImageAnalysisResult(
-        image_type=str(payload.get("image_type", heuristic_result.image_type)).strip() or heuristic_result.image_type,
-        image_subtype=(
-            str(payload.get("image_subtype")).strip()
-            if isinstance(payload.get("image_subtype"), str) and str(payload.get("image_subtype")).strip()
-            else heuristic_result.image_subtype
-        ),
-        contains_text=bool(payload.get("contains_text", heuristic_result.contains_text)) or bool(extracted_labels) or bool(extracted_text),
+        image_type=_coerce_non_empty_string(payload.get("image_type"), heuristic_result.image_type),
+        image_subtype=_coerce_optional_string(payload.get("image_subtype"), heuristic_result.image_subtype),
+        contains_text=contains_text or bool(extracted_labels) or bool(extracted_text),
         semantic_redraw_allowed=semantic_redraw_allowed,
         confidence=_clamp_score(payload.get("confidence", heuristic_result.confidence)),
         structured_parse_confidence=_clamp_score(payload.get("structured_parse_confidence", heuristic_result.structured_parse_confidence)),
-        prompt_key=str(payload.get("prompt_key", heuristic_result.prompt_key)).strip() or heuristic_result.prompt_key,
+        prompt_key=prompt_key if prompt_key in _VALID_PROMPT_KEYS else heuristic_result.prompt_key,
         render_strategy=render_strategy,
-        structure_summary=str(payload.get("structure_summary", heuristic_result.structure_summary)).strip() or heuristic_result.structure_summary,
+        structure_summary=_coerce_non_empty_string(payload.get("structure_summary"), heuristic_result.structure_summary),
         extracted_labels=extracted_labels or heuristic_result.extracted_labels,
         text_node_count=text_node_count,
         extracted_text=extracted_text,
-        fallback_reason=(
-            str(payload.get("fallback_reason")).strip()
-            if isinstance(payload.get("fallback_reason"), str) and str(payload.get("fallback_reason")).strip()
-            else heuristic_result.fallback_reason
-        ),
+        fallback_reason=_coerce_optional_string(payload.get("fallback_reason"), heuristic_result.fallback_reason),
     )
 
 
@@ -308,9 +315,18 @@ def _merge_analysis_results(
 
 
 def _coerce_non_negative_int(value: object) -> int | None:
-    try:
+    if isinstance(value, bool):
         parsed = int(value)
-    except (TypeError, ValueError):
+    elif isinstance(value, int):
+        parsed = value
+    elif isinstance(value, float):
+        parsed = int(value)
+    elif isinstance(value, str):
+        try:
+            parsed = int(value.strip())
+        except ValueError:
+            return None
+    else:
         return None
     return max(0, parsed)
 
@@ -319,6 +335,55 @@ def _coerce_extracted_text(value: object) -> str:
     if not isinstance(value, str):
         return ""
     return value.strip()
+
+
+def _coerce_extracted_labels(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        candidates = [value]
+    elif isinstance(value, (list, tuple, set)):
+        candidates = value
+    else:
+        return []
+
+    extracted_labels: list[str] = []
+    for item in candidates:
+        normalized = str(item).strip()
+        if not normalized:
+            continue
+        extracted_labels.append(normalized)
+        if len(extracted_labels) >= 12:
+            break
+    return extracted_labels
+
+
+def _coerce_non_empty_string(value: object, fallback: str) -> str:
+    if not isinstance(value, str):
+        return fallback
+    normalized = value.strip()
+    return normalized or fallback
+
+
+def _coerce_optional_string(value: object, fallback: str | None) -> str | None:
+    if not isinstance(value, str):
+        return fallback
+    normalized = value.strip()
+    return normalized or fallback
+
+
+def _coerce_bool(value: object, fallback: bool) -> bool:
+    if value is None:
+        return fallback
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    return bool(value)
 
 
 def _apply_routing_overrides(

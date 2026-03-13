@@ -1,6 +1,7 @@
 import time
 from html import escape
 from pathlib import Path
+import re
 
 import streamlit as st
 
@@ -30,6 +31,7 @@ IMAGE_COMPARE_LABELS = {
 }
 
 IMAGE_MODE_VALUES_BY_LABEL = {label: value for value, label in IMAGE_MODE_LABELS.items()}
+_FEED_ID_SANITIZER = re.compile(r"[^a-zA-Z0-9_-]+")
 
 
 def _build_output_filename(filename: str) -> str:
@@ -44,6 +46,61 @@ def _render_trusted_html(html_markup: str) -> None:
     # This helper is reserved for trusted markup assembled inside this module.
     # Dynamic user-visible values interpolated into HTML must be escaped first.
     st.markdown(html_markup, unsafe_allow_html=True)
+
+
+def _build_feed_id(prefix: str) -> str:
+    nonce = int(time.time() * 1000)
+    safe_prefix = _FEED_ID_SANITIZER.sub("-", prefix).strip("-") or "feed"
+    return f"{safe_prefix}-{nonce}"
+
+
+def _scroll_activity_feed_to_latest(feed_id: str) -> None:
+    try:
+        from streamlit.components.v1 import html as render_component_html
+    except Exception:
+        return
+
+    render_component_html(
+        f"""
+        <script>
+        const feed = window.parent.document.getElementById({feed_id!r});
+        if (feed) {{
+            feed.scrollTop = feed.scrollHeight;
+            const lastItem = feed.querySelector('.activity-feed-item-active');
+            if (lastItem) {{
+                lastItem.scrollIntoView({{ block: 'nearest', inline: 'nearest' }});
+            }}
+        }}
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+def _render_activity_feed(*, title: str, lines: list[str], feed_id: str | None = None, auto_scroll: bool = False) -> None:
+    if not lines:
+        return
+
+    resolved_feed_id = feed_id or _build_feed_id(title)
+    item_markup = []
+    last_index = len(lines) - 1
+    for index, line in enumerate(lines):
+        item_class = "activity-feed-item"
+        if index == last_index:
+            item_class += " activity-feed-item-active"
+        item_markup.append(f'<div class="{item_class}">{escape(line)}</div>')
+
+    _render_trusted_html(
+        f"""
+        <div class="activity-feed">
+            <div class="activity-feed-title">{escape(title)}</div>
+            <div class="activity-feed-items" id="{escape(resolved_feed_id)}">{''.join(item_markup)}</div>
+        </div>
+        """
+    )
+    if auto_scroll:
+        _scroll_activity_feed_to_latest(resolved_feed_id)
 
 _SIDEBAR_DD = 'section[data-testid="stSidebar"] div[data-baseweb="select"]'
 
@@ -208,9 +265,13 @@ def inject_ui_styles() -> None:
         }
 
         .activity-feed-items {
-            max-height: 6.2rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.2rem;
+            max-height: 12rem;
             overflow-y: auto;
             padding-right: 0.25rem;
+            scroll-behavior: smooth;
         }
 
         .activity-feed-title {
@@ -224,6 +285,14 @@ def inject_ui_styles() -> None:
             color: var(--text-soft);
             font-size: 0.88rem;
             margin: 4px 0;
+        }
+
+        .activity-feed-item-active {
+            color: #e6fffb;
+            font-weight: 600;
+            border-left: 2px solid var(--accent-main);
+            padding-left: 0.55rem;
+            margin-left: 0.1rem;
         }
 
         .section-gap-md {
@@ -275,32 +344,31 @@ def render_live_status(target=None) -> None:
             image_count = int(status.get("image_count") or 0)
             source_chars = int(status.get("source_chars") or 0)
             cached = bool(status.get("cached", False))
-            progress_percent = int(max(0.0, min(float(status.get("progress") or 0.0), 1.0)) * 100)
-            preparing_lines = [
-                str(status.get("detail") or "Идет анализ файла."),
-                f"Прогресс: {progress_percent}%",
-                f"Размер: {file_size_bytes / 1024 / 1024:.2f} MB" if file_size_bytes else "Размер: -",
-                f"Абзацы: {paragraph_count}",
-                f"Изображения: {image_count}",
-                f"Символы: {source_chars}",
-                f"Блоки: {block_count}",
-                f"Источник: {'cache' if cached else 'DOCX'}",
-                f"Этап: {str(status.get('stage') or 'Подготовка документа')} | Прошло: {elapsed}",
-            ]
-            if activity_feed:
-                preparing_lines.append("Бегущие строки:")
-                preparing_lines.extend(
-                    f"{entry['time']}  {entry['message']}"
-                    for entry in activity_feed[-5:]
-                )
-            items = "".join(f'<div class="activity-feed-item">{escape(line)}</div>' for line in preparing_lines)
+            progress_value = max(0.0, min(float(status.get("progress") or 0.0), 1.0))
+            progress_percent = int(progress_value * 100)
+            stage = str(status.get("stage") or "Подготовка документа")
+            detail = str(status.get("detail") or "Идет анализ файла.")
+            title = "Идет анализ файла" if status.get("is_running") else "Анализ файла завершён"
             _render_trusted_html(
                 f"""
-                <div class="activity-feed">
-                    <div class="activity-feed-title">Последний анализ файла</div>
-                    <div class="activity-feed-items">{items}</div>
+                <div class="live-status-card">
+                    <div class="live-status-title">{escape(title)}</div>
+                    <div class="live-status-stage">{escape(stage)}</div>
+                    <div class="live-status-meta">{escape(detail)}</div>
+                    <div class="live-status-meta">Прогресс: {progress_percent}% | Источник: {'cache' if cached else 'DOCX'} | Прошло: {escape(elapsed)}</div>
+                    <div class="live-status-meta">Размер: {file_size_bytes / 1024 / 1024:.2f} MB | Абзацы: {paragraph_count} | Изображения: {image_count} | Символы: {source_chars} | Блоки: {block_count}</div>
                 </div>
                 """
+            )
+            st.progress(progress_value)
+            preparing_lines = [f"{entry['time']}  {entry['message']}" for entry in activity_feed]
+            if not preparing_lines:
+                preparing_lines = [f"{stage}: {detail}"]
+            _render_activity_feed(
+                title="Ход анализа",
+                lines=preparing_lines,
+                feed_id="preparation-activity-feed",
+                auto_scroll=True,
             )
         else:
             title = "Идет обработка" if status.get("is_running") else "Состояние"
@@ -325,20 +393,6 @@ def render_live_status(target=None) -> None:
             st.progress(progress_value)
             st.caption("Если текущий блок обрабатывается долго, это нормально: ответ OpenAI может занимать десятки секунд.")
 
-        if activity_feed and phase != "preparing":
-            items = "".join(
-                f"<div class=\"activity-feed-item\">{escape(entry['time'])}  {escape(entry['message'])}</div>"
-                for entry in activity_feed[-5:]
-            )
-            _render_trusted_html(
-                f"""
-                <div class="activity-feed">
-                    <div class="activity-feed-title">Бегущие строки</div>
-                    <div class="activity-feed-items">{items}</div>
-                </div>
-                """
-            )
-
 
 def render_preparation_summary(summary: dict[str, object] | None, target=None) -> None:
     if not summary:
@@ -346,10 +400,23 @@ def render_preparation_summary(summary: dict[str, object] | None, target=None) -
 
     sink = target if target is not None else st
     with sink.container():
+        progress_value = max(0.0, min(float(summary.get("progress") or 0.0), 1.0))
+        progress_percent = int(progress_value * 100)
         file_size_bytes = int(summary.get("file_size_bytes") or 0)
         source_label = "cache" if bool(summary.get("cached", False)) else "DOCX"
         stage = str(summary.get("stage") or "Документ подготовлен")
         elapsed = str(summary.get("elapsed") or "")
+        _render_trusted_html(
+            f"""
+            <div class="live-status-card">
+                <div class="live-status-title">Анализ файла завершён</div>
+                <div class="live-status-stage">{escape(stage)}</div>
+                <div class="live-status-meta">{escape(str(summary.get('detail') or 'Анализ завершён.'))}</div>
+                <div class="live-status-meta">Прогресс: {progress_percent}% | Источник: {escape(source_label)}{f' | Подготовка заняла: {escape(elapsed)}' if elapsed else ''}</div>
+            </div>
+            """
+        )
+        st.progress(progress_value)
         summary_lines = [
             str(summary.get("detail") or "Анализ завершён."),
             f"Размер: {file_size_bytes / 1024 / 1024:.2f} MB" if file_size_bytes else "Размер: -",
@@ -360,34 +427,40 @@ def render_preparation_summary(summary: dict[str, object] | None, target=None) -
             f"Источник: {source_label}",
             f"Этап: {stage} | Подготовка заняла: {elapsed}" if elapsed else f"Этап: {stage}",
         ]
-        items = "".join(f'<div class="activity-feed-item">{escape(line)}</div>' for line in summary_lines)
-        _render_trusted_html(
-            f"""
-            <div class="activity-feed">
-                <div class="activity-feed-title">Последний анализ файла</div>
-                <div class="activity-feed-items">{items}</div>
-            </div>
-            """
-        )
+        _render_activity_feed(title="Последний анализ файла", lines=summary_lines)
 
 
 def render_run_log(target=None) -> None:
-    if not st.session_state.run_log:
+    run_log = list(st.session_state.get("run_log", []))
+    activity_feed = list(st.session_state.get("activity_feed", []))
+    status = dict(st.session_state.get("processing_status", {}))
+    phase = str(status.get("phase") or "processing")
+    show_processing_activity = bool(activity_feed) and phase != "preparing"
+
+    if not run_log and not show_processing_activity:
         return
 
     sink = target if target is not None else st
     with sink.container():
         with st.expander("Журнал обработки", expanded=True):
             max_block_count = max(
-                (entry["block_count"] for entry in st.session_state.run_log if entry["block_count"]),
+                (entry["block_count"] for entry in run_log if entry["block_count"]),
                 default=1,
             )
-            completed_steps = sum(1 for entry in st.session_state.run_log if entry["status"] in {"OK", "DONE"})
-            progress_value = min(1.0, completed_steps / max_block_count) if max_block_count else 0.0
+            completed_steps = sum(1 for entry in run_log if entry["status"] in {"OK", "DONE"})
+            progress_value = float(status.get("progress") or 0.0)
+            if max_block_count:
+                progress_value = max(progress_value, min(1.0, completed_steps / max_block_count))
             st.progress(progress_value)
-            status = st.session_state.processing_status
             st.caption(f"Этап: {status['stage']} | {status['detail']}")
-            for entry in reversed(st.session_state.run_log):
+            if show_processing_activity:
+                _render_activity_feed(
+                    title="События",
+                    lines=[f"{entry['time']}  {entry['message']}" for entry in activity_feed],
+                    feed_id="processing-journal-feed",
+                    auto_scroll=True,
+                )
+            for entry in run_log:
                 st.write(
                     f"[{entry['status']}] Блок {entry['block_index']}/{entry['block_count']} | "
                     f"цель: {entry['target_chars']} симв. | контекст: {entry['context_chars']} симв. | {entry['details']}"

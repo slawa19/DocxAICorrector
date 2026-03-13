@@ -41,7 +41,6 @@ from ui import (
     render_image_validation_summary,
     render_live_status,
     render_partial_result,
-    render_preparation_summary,
     render_result,
     render_result_bundle,
     render_run_log,
@@ -79,10 +78,22 @@ def _start_background_processing(
     model: str,
     max_retries: int,
 ) -> None:
-    from processing_service import get_processing_service
+    def worker_entrypoint(*, runtime, uploaded_filename, jobs, image_assets, image_mode, app_config, model, max_retries) -> None:
+        from processing_service import get_processing_service
+
+        get_processing_service().run_processing_worker(
+            runtime=runtime,
+            uploaded_filename=uploaded_filename,
+            jobs=jobs,
+            image_assets=image_assets,
+            image_mode=image_mode,
+            app_config=app_config,
+            model=model,
+            max_retries=max_retries,
+        )
 
     start_background_processing(
-        worker_target=get_processing_service().run_processing_worker,
+        worker_target=worker_entrypoint,
         uploaded_filename=uploaded_filename,
         uploaded_token=uploaded_token,
         source_bytes=source_bytes,
@@ -128,7 +139,32 @@ def _store_preparation_summary(*, prepared_run_context) -> None:
         "block_count": len(prepared_run_context.jobs),
         "cached": bool(getattr(prepared_run_context, "preparation_cached", False)),
         "elapsed": elapsed,
+        "progress": 1.0,
     }
+
+
+def _render_processing_controls(*, can_start: bool, is_processing: bool) -> str | None:
+    stop_requested = bool(st.session_state.get("processing_stop_requested", False))
+    start_col, stop_col = st.columns(2)
+
+    if start_col.button(
+        "Обработка запущена" if is_processing else "Начать обработку",
+        type="primary",
+        use_container_width=True,
+        disabled=(not can_start) or is_processing,
+        key="start_processing_button",
+    ):
+        return "start"
+
+    if stop_col.button(
+        "Останавливаю..." if stop_requested else "Стоп",
+        use_container_width=True,
+        disabled=(not is_processing) or stop_requested,
+        key="stop_processing_button",
+    ):
+        return "stop"
+
+    return None
 
 
 def main() -> None:
@@ -174,18 +210,11 @@ def main() -> None:
             render_partial_result()
             render_section_gap("lg")
 
-            stop_requested = st.session_state.get("processing_stop_requested", False)
-            stop_disabled = not _processing_worker_is_active() or stop_requested
-            if st.button("Стоп", use_container_width=True, disabled=stop_disabled, key="processing_stop_button"):
+            action = _render_processing_controls(can_start=False, is_processing=_processing_worker_is_active())
+            if action == "stop":
                 push_activity("Остановлено. Завершение текущего шага...")
                 _request_processing_stop()
                 st.rerun()
-            if stop_requested and _processing_worker_is_active():
-                st.caption("Остановлено. Завершение текущего шага...")
-            elif not stop_disabled:
-                st.caption("Останавливает обработку после текущего шага.")
-            else:
-                st.caption("Обработка завершена. Обновляю экран результата.")
 
             if not _processing_worker_is_active():
                 st.rerun()
@@ -195,6 +224,13 @@ def main() -> None:
 
     uploaded_widget_file = st.file_uploader("Загрузите DOCX-файл", type=["docx"])
 
+    @st.fragment(run_every=1)
+    def render_preparation_panel() -> None:
+        _drain_preparation_events()
+        render_live_status()
+        if not _preparation_worker_is_active():
+            st.rerun()
+
     if uploaded_widget_file is not None and _is_uploaded_file_too_large(uploaded_widget_file):
         st.error(
             f"Размер DOCX превышает допустимый предел {MAX_DOCX_ARCHIVE_SIZE_BYTES // (1024 * 1024)} МБ. Загрузите файл меньшего размера."
@@ -203,13 +239,6 @@ def main() -> None:
         return
 
     if preparation_active:
-        @st.fragment(run_every=1)
-        def render_preparation_panel() -> None:
-            _drain_preparation_events()
-            render_live_status()
-            if not _preparation_worker_is_active():
-                st.rerun()
-
         render_preparation_panel()
         return
 
@@ -219,7 +248,6 @@ def main() -> None:
         and not st.session_state.get("restart_source")
         and not st.session_state.get("completed_source")
     ):
-        st.info("Ожидается файл .docx")
         render_run_log()
         render_image_validation_summary()
         render_partial_result()
@@ -239,7 +267,8 @@ def main() -> None:
                 image_mode=image_mode,
                 enable_post_redraw_validation=enable_post_redraw_validation,
             )
-            st.rerun()
+            render_preparation_panel()
+            return
         if preparation_failed_marker == preparation_request_marker and prepared_run_context is None:
             if st.session_state.last_error:
                 st.error(st.session_state.last_error)
@@ -294,8 +323,6 @@ def main() -> None:
             )
         elif idle_view_state == IdleViewState.RESTARTABLE:
             st.info("Можно изменить настройки и запустить обработку заново без повторной загрузки файла.")
-        else:
-            st.info("Ожидается файл .docx")
         render_run_log()
         render_image_validation_summary()
         render_partial_result()
@@ -337,18 +364,23 @@ def main() -> None:
         )
 
     _store_preparation_summary(prepared_run_context=prepared_run_context)
-
-    render_preparation_summary(st.session_state.get("latest_preparation_summary"))
-    render_section_gap("lg")
     if not processing_active:
         set_processing_status(
             stage="Документ подготовлен",
             detail=f"Собрано {len(jobs)} блоков. Можно запускать обработку.",
             current_block=0,
             block_count=len(jobs),
-            progress=0.0,
+            file_size_bytes=len(uploaded_file_bytes),
+            paragraph_count=len(paragraphs),
+            image_count=len(image_assets),
+            source_chars=len(source_text),
+            cached=bool(getattr(prepared_run_context, "preparation_cached", False)),
+            progress=1.0,
             is_running=False,
+            phase="preparing",
         )
+    render_live_status()
+    render_section_gap("lg")
     if not st.session_state.activity_feed:
         push_activity(f"Документ разобран на {len(jobs)} блоков.")
 
@@ -376,8 +408,8 @@ def main() -> None:
         render_result(st.session_state.latest_docx_bytes, st.session_state.latest_markdown, uploaded_filename)
 
     render_section_gap("lg")
-    start_col, stop_col = st.columns(2)
-    if start_col.button("Начать обработку", type="primary", use_container_width=True):
+    action = _render_processing_controls(can_start=True, is_processing=False)
+    if action == "start":
         _start_background_processing(
             uploaded_filename=uploaded_filename,
             uploaded_token=uploaded_file_token,
@@ -390,15 +422,6 @@ def main() -> None:
             max_retries=max_retries,
         )
         st.rerun()
-
-    stop_col.button("Стоп", use_container_width=True, disabled=True, key="idle_stop_button")
-
-    start_col.caption(
-        "Запускает обработку выбранного файла."
-    )
-    stop_col.caption(
-        "Недоступно, пока обработка не запущена."
-    )
 
 
 if __name__ == "__main__":

@@ -419,11 +419,11 @@ def start_background_preparation(
     preparation_events = queue.Queue()
     runtime = BackgroundRuntime(preparation_events, threading.Event())
 
-    push_activity("Читаю и анализирую загруженный DOCX-файл.")
+    push_activity("Файл получен сервером. Запускаю анализ DOCX.")
     set_processing_status(
-        stage="Чтение файла",
-        detail="Подготавливаю документ к анализу.",
-        progress=0.0,
+        stage="Файл получен",
+        detail="Файл передан на сервер. Запускаю анализ документа.",
+        progress=0.02,
         is_running=True,
         phase="preparing",
     )

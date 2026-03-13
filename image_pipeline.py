@@ -1,4 +1,5 @@
 import logging
+import traceback
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 
@@ -495,9 +496,11 @@ def process_document_images(
                 context.emit_state(context.runtime, image_assets=processed_assets)
                 continue
 
+            asset.mime_type = detected_source_mime_type
+            asset.update_pipeline_metadata(source_mime_type=detected_source_mime_type)
             analysis = context.analyze_image(
                 asset.original_bytes,
-                mime_type=asset.mime_type,
+                mime_type=detected_source_mime_type,
                 client=image_client,
                 budget=document_call_budget,
             )
@@ -636,6 +639,7 @@ def process_document_images(
                 logging.ERROR,
                 "image_processing_failed",
                 "Обработка изображения завершилась ошибкой, применен fallback на оригинал.",
+                error_traceback=traceback.format_exc(),
                 **asset.to_log_context(),
             )
             processed_assets.append(asset)

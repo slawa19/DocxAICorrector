@@ -53,6 +53,16 @@ class UploadedFileStub:
         return self._content
 
 
+class FakeColumn:
+    def __init__(self, result=False):
+        self.result = result
+        self.calls = []
+
+    def button(self, label, **kwargs):
+        self.calls.append((label, kwargs))
+        return self.result
+
+
 def test_build_uploaded_file_token_uses_name_size_and_content_hash():
     token = processing_runtime.build_uploaded_file_token(UploadedFileStub("report.docx", b"abc"))
 
@@ -100,7 +110,61 @@ def test_store_preparation_summary_uses_preparation_context_not_processing_statu
         "block_count": 1,
         "cached": True,
         "elapsed": "1.2 c",
+        "progress": 1.0,
     }
+
+
+def test_render_processing_controls_keeps_start_visible_while_processing(monkeypatch):
+    session_state = SessionState(processing_stop_requested=False)
+    start_column = FakeColumn(result=False)
+    stop_column = FakeColumn(result=False)
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app.st, "columns", lambda n: [start_column, stop_column])
+
+    action = app._render_processing_controls(can_start=False, is_processing=True)
+
+    assert action is None
+    assert start_column.calls == [(
+        "Обработка запущена",
+        {
+            "type": "primary",
+            "use_container_width": True,
+            "disabled": True,
+            "key": "start_processing_button",
+        },
+    )]
+    assert stop_column.calls == [(
+        "Стоп",
+        {
+            "use_container_width": True,
+            "disabled": False,
+            "key": "stop_processing_button",
+        },
+    )]
+
+
+def test_render_processing_controls_enables_start_and_disables_stop_when_idle(monkeypatch):
+    session_state = SessionState(processing_stop_requested=False)
+    start_column = FakeColumn(result=True)
+    stop_column = FakeColumn(result=False)
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app.st, "columns", lambda n: [start_column, stop_column])
+
+    action = app._render_processing_controls(can_start=True, is_processing=False)
+
+    assert action == "start"
+    assert start_column.calls == [(
+        "Начать обработку",
+        {
+            "type": "primary",
+            "use_container_width": True,
+            "disabled": False,
+            "key": "start_processing_button",
+        },
+    )]
+    assert stop_column.calls == []
 
 
 def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatch):

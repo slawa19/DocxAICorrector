@@ -357,6 +357,9 @@ def test_process_document_images_uses_detected_redraw_mime_type_for_candidate_an
     )
 
     assert result[0].final_decision == "accept"
+    assert mime_types == ["image/png", "image/png"]
+    assert result[0].mime_type == "image/png"
+    assert result[0].metadata.source_mime_type == "image/png"
 
 
 def test_process_document_images_compare_all_prepares_three_variants(monkeypatch):

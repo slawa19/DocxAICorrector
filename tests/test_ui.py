@@ -291,18 +291,18 @@ def test_render_live_status_shows_cache_source_for_preparation(monkeypatch):
     monkeypatch.setattr(ui.st, "markdown", lambda text, unsafe_allow_html=True: markdowns.append(text))
     monkeypatch.setattr(ui.st, "progress", lambda value: progress_calls.append(value))
     monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
+    monkeypatch.setattr(ui, "_scroll_activity_feed_to_latest", lambda feed_id: None)
 
     ui.render_live_status(FakeTarget())
 
-    assert any("Последний анализ файла" in text for text in markdowns)
+    assert any("Идет анализ файла" in text for text in markdowns)
+    assert any("Ход анализа" in text for text in markdowns)
     assert any("Использую кэш подготовки для текущего файла." in text for text in markdowns)
     assert any("Прогресс: 90%" in text for text in markdowns)
     assert any("Размер: 1.00 MB" in text for text in markdowns)
     assert any("Источник: cache" in text for text in markdowns)
-    assert any("Бегущие строки:" in text for text in markdowns)
     assert any("10:00:00  [Анализ] Разбор DOCX: Ищу абзацы." in text for text in markdowns)
-    assert not any("<div class=\"activity-feed-title\">Бегущие строки</div>" in text for text in markdowns)
-    assert progress_calls == []
+    assert progress_calls == [0.9]
     assert captions == []
 
 
@@ -353,27 +353,59 @@ def test_render_partial_result_shows_preview_instead_of_download(monkeypatch):
     assert previews == ["Текущий Markdown"]
 
 
-def test_render_run_log_shows_newest_entries_first(monkeypatch):
+def test_render_run_log_shows_entries_in_chronological_order(monkeypatch):
     session_state = SessionState(
         run_log=[
             {"status": "OK", "block_index": 1, "block_count": 3, "target_chars": 10, "context_chars": 2, "details": "first"},
             {"status": "OK", "block_index": 2, "block_count": 3, "target_chars": 12, "context_chars": 3, "details": "second"},
         ],
-        processing_status={"stage": "Блок обработан", "detail": "Последний блок готов."},
+        activity_feed=[{"time": "10:00:00", "message": "Блок 2 отправлен в OpenAI."}],
+        processing_status={"stage": "Блок обработан", "detail": "Последний блок готов.", "progress": 0.1, "phase": "processing"},
         last_log_hint="hint",
     )
     writes = []
     captions = []
     progress_calls = []
+    markdowns = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(ui.st, "progress", lambda value: progress_calls.append(value))
     monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
     monkeypatch.setattr(ui.st, "write", lambda text: writes.append(text))
+    monkeypatch.setattr(ui.st, "markdown", lambda text, unsafe_allow_html=True: markdowns.append(text))
+    monkeypatch.setattr(ui, "_scroll_activity_feed_to_latest", lambda feed_id: None)
 
     ui.render_run_log(FakeTarget())
 
     assert progress_calls == [2 / 3]
-    assert writes[0].endswith("second")
-    assert writes[1].endswith("first")
+    assert any("События" in text for text in markdowns)
+    assert any("10:00:00  Блок 2 отправлен в OpenAI." in text for text in markdowns)
+    assert writes[0].endswith("first")
+    assert writes[1].endswith("second")
+
+
+def test_render_run_log_uses_processing_activity_without_block_entries(monkeypatch):
+    session_state = SessionState(
+        run_log=[],
+        activity_feed=[{"time": "10:00:00", "message": "Запуск обработки документа."}],
+        processing_status={"stage": "Инициализация", "detail": "Проверяю окружение.", "progress": 0.0, "phase": "processing"},
+        last_log_hint="hint",
+    )
+    progress_calls = []
+    markdowns = []
+    captions = []
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(ui.st, "progress", lambda value: progress_calls.append(value))
+    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
+    monkeypatch.setattr(ui.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.st, "markdown", lambda text, unsafe_allow_html=True: markdowns.append(text))
+    monkeypatch.setattr(ui, "_scroll_activity_feed_to_latest", lambda feed_id: None)
+
+    ui.render_run_log(FakeTarget())
+
+    assert progress_calls == [0.0]
+    assert captions[0] == "Этап: Инициализация | Проверяю окружение."
+    assert any("Запуск обработки документа." in text for text in markdowns)

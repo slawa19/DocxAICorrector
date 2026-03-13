@@ -3,6 +3,7 @@ from io import BytesIO
 from PIL import Image, ImageDraw
 
 import image_analysis
+import image_generation
 
 
 class _FakeResponsesClient:
@@ -265,3 +266,97 @@ def test_analyze_image_normalizes_prompt_key_like_semantic_redraw_route_to_recon
 
     assert result.render_strategy == "deterministic_reconstruction"
     assert result.semantic_redraw_allowed is True
+
+
+def test_analyze_image_falls_back_to_heuristic_prompt_key_when_vision_returns_unknown_key():
+    client = _FakeResponsesClient(
+        '{"image_type":"diagram","image_subtype":"flowchart","contains_text":true,'
+        '"semantic_redraw_allowed":true,"confidence":0.94,"structured_parse_confidence":0.91,'
+        '"prompt_key":"diagram","render_strategy":"semantic_redraw_structured",'
+        '"structure_summary":"three boxes connected by arrows","extracted_labels":["Start","Review","Finish"],'
+        '"fallback_reason":null}'
+    )
+
+    result = image_analysis.analyze_image(
+        _make_diagram_like_jpeg(),
+        model="gpt-4.1",
+        mime_type="image/jpeg",
+        client=client,
+        enable_vision=True,
+    )
+
+    assert result.prompt_key == "diagram_semantic_redraw"
+    assert result.image_type == "diagram"
+    assert result.semantic_redraw_allowed is True
+
+
+def test_analyze_image_unknown_prompt_key_still_allows_prompt_profile_loading_downstream():
+    client = _FakeResponsesClient(
+        '{"image_type":"diagram","image_subtype":"flowchart","contains_text":true,'
+        '"semantic_redraw_allowed":true,"confidence":0.94,"structured_parse_confidence":0.91,'
+        '"prompt_key":"diagram","render_strategy":"semantic_redraw_structured",'
+        '"structure_summary":"three boxes connected by arrows","extracted_labels":["Start","Review","Finish"],'
+        '"fallback_reason":null}'
+    )
+    source_bytes = _make_diagram_like_jpeg()
+
+    result = image_analysis.analyze_image(
+        source_bytes,
+        model="gpt-4.1",
+        mime_type="image/jpeg",
+        client=client,
+        enable_vision=True,
+    )
+
+    candidate_bytes = image_generation.generate_image_candidate(
+        source_bytes,
+        result,
+        mode="safe",
+    )
+
+    assert result.prompt_key == "diagram_semantic_redraw"
+    assert isinstance(candidate_bytes, bytes)
+    assert candidate_bytes
+
+
+def test_analyze_image_handles_string_booleans_from_vision_payload():
+    client = _FakeResponsesClient(
+        '{"image_type":"diagram","image_subtype":"flowchart","contains_text":"false",'
+        '"semantic_redraw_allowed":"false","confidence":0.94,"structured_parse_confidence":0.91,'
+        '"prompt_key":"diagram_semantic_redraw","render_strategy":"semantic_redraw_structured",'
+        '"structure_summary":"three boxes connected by arrows","extracted_labels":["Start"],'
+        '"fallback_reason":null}'
+    )
+
+    result = image_analysis.analyze_image(
+        _make_diagram_like_jpeg(),
+        model="gpt-4.1",
+        mime_type="image/jpeg",
+        client=client,
+        enable_vision=True,
+    )
+
+    assert result.semantic_redraw_allowed is False
+    assert result.contains_text is True
+
+
+def test_analyze_image_handles_null_or_scalar_vision_fields_without_crashing():
+    client = _FakeResponsesClient(
+        '{"image_type":null,"image_subtype":null,"contains_text":null,'
+        '"semantic_redraw_allowed":true,"confidence":0.94,"structured_parse_confidence":0.91,'
+        '"prompt_key":"diagram_semantic_redraw","render_strategy":"semantic_redraw_structured",'
+        '"structure_summary":null,"extracted_labels":"Start","fallback_reason":null}'
+    )
+
+    result = image_analysis.analyze_image(
+        _make_diagram_like_jpeg(),
+        model="gpt-4.1",
+        mime_type="image/jpeg",
+        client=client,
+        enable_vision=True,
+    )
+
+    assert result.image_type == "diagram"
+    assert result.image_subtype == "jpeg_diagram_like"
+    assert result.structure_summary == "three boxes connected by arrows"
+    assert result.extracted_labels == ["Start"]

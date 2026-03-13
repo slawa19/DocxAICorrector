@@ -165,7 +165,8 @@ def test_start_background_preparation_creates_worker_and_status(monkeypatch):
     assert session_state.preparation_event_queue is not None
     assert session_state.preparation_worker is not None
     assert statuses[0]["phase"] == "preparing"
-    assert activities == ["Читаю и анализирую загруженный DOCX-файл."]
+    assert statuses[0]["stage"] == "Файл получен"
+    assert activities == ["Файл получен сервером. Запускаю анализ DOCX."]
 
 
 def test_start_background_preparation_propagates_cached_flag(monkeypatch):
