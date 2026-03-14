@@ -365,11 +365,9 @@ def test_render_run_log_uses_processing_activity_without_block_entries(monkeypat
     progress_calls = []
     markdowns = []
     captions = []
-    metrics = [FakeMetricTarget(), FakeMetricTarget(), FakeMetricTarget(), FakeMetricTarget()]
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
-    monkeypatch.setattr(ui.st, "columns", lambda n: metrics)
     monkeypatch.setattr(ui.st, "progress", lambda value: progress_calls.append(value))
     monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
     monkeypatch.setattr(ui.st, "write", lambda *args, **kwargs: None)
@@ -380,14 +378,13 @@ def test_render_run_log_uses_processing_activity_without_block_entries(monkeypat
 
     assert progress_calls == [0.0]
     assert captions[0] == "Этап: Инициализация | Проверяю окружение."
-    assert metrics[0].calls == [("Блок", "0/0")]
-    assert metrics[1].calls == [("Цель", "0 симв.")]
-    assert metrics[2].calls == [("Контекст", "0 симв.")]
-    assert metrics[3].calls == [("Прошло", "00:00")]
     assert any("Запуск обработки документа." in text for text in markdowns)
 
 
-def test_render_run_log_shows_preparation_activity_in_single_journal(monkeypatch):
+def test_render_run_log_skips_preparation_phase_with_empty_run_log(monkeypatch):
+    """render_run_log returns early when phase is 'preparing' and run_log is empty.
+
+    Preparation activity is rendered by render_live_status, not render_run_log."""
     session_state = SessionState(
         run_log=[],
         activity_feed=[{"time": "10:00:00", "message": "[Анализ] Разбор DOCX: Ищу абзацы."}],
@@ -395,20 +392,11 @@ def test_render_run_log_shows_preparation_activity_in_single_journal(monkeypatch
         last_log_hint="hint",
     )
     progress_calls = []
-    markdowns = []
-    captions = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(ui.st, "progress", lambda value: progress_calls.append(value))
-    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
-    monkeypatch.setattr(ui.st, "write", lambda *args, **kwargs: None)
-    monkeypatch.setattr(ui.st, "markdown", lambda text, unsafe_allow_html=True: markdowns.append(text))
-    monkeypatch.setattr(ui, "_scroll_activity_feed_to_latest", lambda feed_id: None)
 
     ui.render_run_log(FakeTarget())
 
-    assert progress_calls == [0.9]
-    assert captions[0] == "Этап: Подготовка документа | Идет анализ файла."
-    assert any("События" in text for text in markdowns)
-    assert any("10:00:00  [Анализ] Разбор DOCX: Ищу абзацы." in text for text in markdowns)
+    assert progress_calls == []

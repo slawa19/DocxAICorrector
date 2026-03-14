@@ -2,9 +2,11 @@
 
 try {
     Write-Step 'Checking project status and environment'
-    if (-not (Test-Path $wslControlScript)) { throw "WSL helper script not found: $wslControlScript" }
+    $preferredRuntimeMode = Get-PreferredRuntimeMode
+    if ($preferredRuntimeMode -eq 'wsl' -and -not (Test-Path $wslControlScript)) { throw "WSL helper script not found: $wslControlScript" }
 
     $status = Get-ProjectStatus
+    $runtimeMode = [string]$status['runtime_mode']
     $healthOk = ConvertTo-BoolFlag $status['health_ok']
     $appPageOk = ConvertTo-BoolFlag $status['app_page_ok']
     $managedPidRunning = ConvertTo-BoolFlag $status['managed_pid_running']
@@ -29,10 +31,10 @@ try {
     }
 
     if ($venvOk) {
-        Write-Ok 'WSL virtualenv found'
+        Write-Ok 'Virtualenv found'
     }
     else {
-        Write-Warn 'WSL virtualenv not found'
+        Write-Warn 'Virtualenv not found'
     }
 
     if ($depsOk) {
@@ -73,6 +75,7 @@ try {
     Write-Host ''
     Write-Host '========================================' -ForegroundColor Cyan
     Write-Host "  Status: $finalStatus" -ForegroundColor Cyan
+    Write-Host "  Runtime: $runtimeMode" -ForegroundColor Cyan
     Write-Host "  App: $appUrl" -ForegroundColor Cyan
     Write-Host "  Health: $appUrl/_stcore/health" -ForegroundColor Cyan
     Write-Host '========================================' -ForegroundColor Cyan

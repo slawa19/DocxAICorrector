@@ -2,7 +2,7 @@ import app
 import application_flow
 import compare_panel
 import processing_runtime
-from document import MAX_DOCX_ARCHIVE_SIZE_BYTES
+from constants import MAX_DOCX_ARCHIVE_SIZE_BYTES
 from models import ImageAsset
 
 
@@ -197,6 +197,8 @@ def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatc
     monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
     monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "error", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "fragment", lambda **kw: (lambda fn: fn))
+    monkeypatch.setattr(app, "render_live_status", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
@@ -217,6 +219,107 @@ def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatc
         "image_mode": "safe",
         "keep_all_image_variants": True,
     }]
+
+
+def test_main_renders_live_status_during_active_preparation(monkeypatch):
+    session_state = SessionState(app_start_logged=True, processing_status={}, activity_feed=[])
+    calls = []
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app, "init_session_state", lambda: None)
+    monkeypatch.setattr(app, "_cleanup_stale_persisted_sources_once", lambda: None)
+    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
+    monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
+    monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
+    monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: True)
+    monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
+    monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "fragment", lambda **kw: (lambda fn: fn))
+    monkeypatch.setattr(app, "render_live_status", lambda *args, **kwargs: calls.append("live_status"))
+    monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: calls.append("run_log"))
+
+    app.main()
+
+    assert calls == ["live_status", "run_log"]
+
+
+def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):
+    prepared_run_context = type(
+        "PreparedRunContextStub",
+        (),
+        {
+            "uploaded_filename": "report.docx",
+            "uploaded_file_bytes": b"abc",
+            "uploaded_file_token": "report.docx:3:token",
+            "paragraphs": ["p1", "p2"],
+            "image_assets": [],
+            "jobs": [{"target_text": "block one"}, {"target_text": "block two"}],
+            "source_text": "source-text",
+            "preparation_stage": "Документ подготовлен",
+            "preparation_detail": "Анализ завершён. Можно запускать обработку.",
+            "preparation_cached": True,
+            "preparation_elapsed_seconds": 1.4,
+        },
+    )()
+    uploaded_file = UploadedFileStub("report.docx", b"abc")
+    session_state = SessionState(
+        app_start_logged=True,
+        processing_status={},
+        activity_feed=[],
+        image_assets=[],
+        preparation_input_marker="report.docx:3:6000",
+        preparation_failed_marker="",
+        prepared_run_context=prepared_run_context,
+        latest_docx_bytes=None,
+        latest_source_token="",
+        latest_markdown="",
+        latest_image_mode="safe",
+        last_error="",
+        last_log_hint="hint",
+        processing_outcome="idle",
+    )
+    summary_calls = []
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app, "init_session_state", lambda: None)
+    monkeypatch.setattr(app, "_cleanup_stale_persisted_sources_once", lambda: None)
+    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
+    monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
+    monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
+    monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
+    monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "error", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_preparation_summary", lambda summary, *args, **kwargs: summary_calls.append(summary))
+    monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
+    monkeypatch.setattr(compare_panel, "render_compare_all_apply_panel", lambda **kwargs: None)
+    monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)
+    monkeypatch.setattr(application_flow, "has_resettable_state", lambda **kwargs: False)
+    monkeypatch.setattr(application_flow, "derive_app_idle_view_state", lambda **kwargs: "file_selected")
+    monkeypatch.setattr(application_flow, "prepare_run_context", lambda **kwargs: (_ for _ in ()).throw(AssertionError("prepare_run_context should not be called")))
+
+    app.main()
+
+    assert len(summary_calls) == 1
+    assert summary_calls[0] == session_state.latest_preparation_summary
+    assert summary_calls[0]["cached"] is True
+    assert summary_calls[0]["block_count"] == 2
 
 
 def test_sync_selected_file_context_resets_run_state_for_new_file(monkeypatch):

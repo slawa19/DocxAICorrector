@@ -7,6 +7,7 @@ CONFIG_PATH = BASE_DIR / "config.toml"
 SYSTEM_PROMPT_PATH = PROMPTS_DIR / "system_prompt.txt"
 RUN_DIR = BASE_DIR / ".run"
 APP_LOG_PATH = RUN_DIR / "app.log"
+APP_READY_PATH = RUN_DIR / "app.ready"
 
 DEFAULT_MODEL = "gpt-5-mini"
 DEFAULT_MODEL_OPTIONS = [

@@ -1,7 +1,9 @@
 import time
+from collections.abc import Mapping
 from html import escape
 from pathlib import Path
 import re
+from typing import Any
 
 import streamlit as st
 
@@ -400,9 +402,9 @@ def render_preparation_summary(summary: dict[str, object] | None, target=None) -
 
     sink = target if target is not None else st
     with sink.container():
-        progress_value = max(0.0, min(float(summary.get("progress") or 0.0), 1.0))
+        progress_value = max(0.0, min(_to_float(summary.get("progress"), default=0.0), 1.0))
         progress_percent = int(progress_value * 100)
-        file_size_bytes = int(summary.get("file_size_bytes") or 0)
+        file_size_bytes = _to_int(summary.get("file_size_bytes"), default=0)
         source_label = "cache" if bool(summary.get("cached", False)) else "DOCX"
         stage = str(summary.get("stage") or "Документ подготовлен")
         elapsed = str(summary.get("elapsed") or "")
@@ -420,14 +422,39 @@ def render_preparation_summary(summary: dict[str, object] | None, target=None) -
         summary_lines = [
             str(summary.get("detail") or "Анализ завершён."),
             f"Размер: {file_size_bytes / 1024 / 1024:.2f} MB" if file_size_bytes else "Размер: -",
-            f"Абзацы: {int(summary.get('paragraph_count') or 0)}",
-            f"Изображения: {int(summary.get('image_count') or 0)}",
-            f"Символы: {int(summary.get('source_chars') or 0)}",
-            f"Блоки: {int(summary.get('block_count') or 0)}",
+            f"Абзацы: {_to_int(summary.get('paragraph_count'), default=0)}",
+            f"Изображения: {_to_int(summary.get('image_count'), default=0)}",
+            f"Символы: {_to_int(summary.get('source_chars'), default=0)}",
+            f"Блоки: {_to_int(summary.get('block_count'), default=0)}",
             f"Источник: {source_label}",
             f"Этап: {stage} | Подготовка заняла: {elapsed}" if elapsed else f"Этап: {stage}",
         ]
         _render_activity_feed(title="Последний анализ файла", lines=summary_lines)
+
+
+def _to_int(value: Any, *, default: int) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return default
+
+
+def _to_float(value: Any, *, default: float) -> float:
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return default
+
+
+def _get_list_of_str(config: Mapping[str, object], key: str) -> list[str]:
+    value = config[key]
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return []
 
 
 def render_run_log(target=None) -> None:
@@ -449,10 +476,12 @@ def render_run_log(target=None) -> None:
             )
             completed_steps = sum(1 for entry in run_log if entry["status"] in {"OK", "DONE"})
             progress_value = float(status.get("progress") or 0.0)
+            stage = str(status.get("stage") or "Ожидание")
+            detail = str(status.get("detail") or "")
             if max_block_count:
                 progress_value = max(progress_value, min(1.0, completed_steps / max_block_count))
             st.progress(progress_value)
-            st.caption(f"Этап: {status['stage']} | {status['detail']}")
+            st.caption(f"Этап: {stage} | {detail}")
             if show_processing_activity:
                 _render_activity_feed(
                     title="События",
@@ -556,9 +585,9 @@ def render_image_compare_selector(target=None) -> dict[str, str]:
     return selections
 
 
-def render_sidebar(config: dict[str, object]) -> tuple[str, int, int, str, bool]:
+def render_sidebar(config: Mapping[str, object]) -> tuple[str, int, int, str, bool]:
     st.sidebar.header("Настройки")
-    model_options = [*config["model_options"], "custom"]
+    model_options = [*_get_list_of_str(config, "model_options"), "custom"]
     default_model = str(config["default_model"])
     default_index = model_options.index(default_model) if default_model in model_options else 0
     selected_model = render_sidebar_selectbox("Модель", model_options, index=default_index, key="sidebar_model")
@@ -571,14 +600,14 @@ def render_sidebar(config: dict[str, object]) -> tuple[str, int, int, str, bool]
         "Размер целевого блока, символов",
         min_value=3000,
         max_value=12000,
-        value=int(config["chunk_size"]),
+        value=_to_int(config["chunk_size"], default=6000),
         step=500,
     )
     max_retries = st.sidebar.slider(
         "Количество retry",
         min_value=1,
         max_value=5,
-        value=int(config["max_retries"]),
+        value=_to_int(config["max_retries"], default=3),
     )
     image_mode_default = str(config.get("image_mode_default", ImageMode.SAFE.value))
     image_mode_options = list(IMAGE_MODE_LABELS.values())

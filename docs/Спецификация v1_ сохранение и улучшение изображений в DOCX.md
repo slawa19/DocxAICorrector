@@ -1,5 +1,7 @@
 # Спецификация v1-v2: image safe-mode и image semantic-redraw-mode для изображений в DOCX
 
+> Статус: archived image spec. Это базовая product/spec history для image-wave. Документ полезен как архитектурный и терминологический контекст, но часть design-терминов здесь отражает ранние naming/contracts и не заменяет текущий runtime/source-of-truth из `README.md`, `docs/WORKFLOW_AND_IMAGE_MODES.md` и актуальных review/spec follow-up документов.
+
 ## 0. Переименование режимов и предварительное предложение по UI/архитектуре
 
 ### 0.1. Новые названия режимов

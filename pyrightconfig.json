@@ -1,6 +1,6 @@
 {
   "venvPath": ".",
-  "venv": ".venv",
+  "venv": ".venv-win",
   "pythonVersion": "3.13",
   "typeCheckingMode": "basic",
   "reportMissingImports": "warning",

@@ -1,6 +1,7 @@
 [
   {
     "filename": "кпсс.jpg",
+    "output_artifact": "кпсс_output.jpg",
     "recognized_type": "photo",
     "requested_mode": "safe",
     "prompt_key": "photo_safe_fallback",
@@ -13,6 +14,7 @@
   },
   {
     "filename": "pic1_lietaer.jpg",
+    "output_artifact": "pic1_lietaer_output.png",
     "recognized_type": "diagram",
     "requested_mode": "semantic_redraw_structured",
     "prompt_key": "diagram_semantic_redraw",
@@ -21,10 +23,11 @@
     "analysis_elapsed_seconds": 7.26,
     "generation_elapsed_seconds": 103.699,
     "bytes_in": 40424,
-    "bytes_out": 122137
+    "bytes_out": 65894
   },
   {
     "filename": "журналистика факты манипуляции.png",
+    "output_artifact": "журналистика факты манипуляции_output.png",
     "recognized_type": "infographic",
     "requested_mode": "safe",
     "prompt_key": "infographic_semantic_redraw",

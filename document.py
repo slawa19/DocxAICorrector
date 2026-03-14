@@ -1,3 +1,4 @@
+from copy import deepcopy
 import html
 import re
 import zipfile
@@ -9,6 +10,7 @@ from docx.oxml import OxmlElement, parse_xml
 from docx.shared import Emu
 from docx.table import Table
 from docx.text.paragraph import Paragraph
+from docx.text.run import Run
 from lxml import etree
 
 from models import DocumentBlock, ImageAsset, ParagraphUnit, get_image_variant_bytes
@@ -222,50 +224,324 @@ def inspect_placeholder_integrity(markdown_text: str, image_assets: list[ImageAs
 
 
 def reinsert_inline_images(docx_bytes: bytes, image_assets: list[ImageAsset]) -> bytes:
-    if not image_assets:
+    if not docx_bytes or not image_assets:
         return docx_bytes
 
     source_stream = BytesIO(docx_bytes)
     document = Document(source_stream)
     asset_map = {asset.placeholder: asset for asset in image_assets}
 
-    for paragraph in document.paragraphs:
+    for paragraph in _iter_reinsertion_paragraphs(document):
         paragraph_text = paragraph.text
-        placeholders = [token for token in IMAGE_PLACEHOLDER_PATTERN.findall(paragraph_text) if token in asset_map]
+        placeholders = _find_known_placeholders(paragraph_text, asset_map)
         if not placeholders:
             continue
 
-        parts = re.split(f"({IMAGE_PLACEHOLDER_PATTERN.pattern})", paragraph_text)
-        _clear_paragraph_runs(paragraph)
-        for part in parts:
-            if not part:
-                continue
-            asset = asset_map.get(part)
-            if asset is None:
-                paragraph.add_run(part)
-                continue
-            insertions = resolve_image_insertions(asset)
-            if not insertions:
-                continue
-            add_picture_kwargs = _build_picture_size_kwargs(asset)
-            if len(insertions) == 1 and insertions[0][0] is None:
-                paragraph.add_run().add_picture(BytesIO(insertions[0][1]), **add_picture_kwargs)
-                continue
+        if _replace_run_level_placeholders(paragraph, placeholders, asset_map):
+            continue
 
-            for index, (label, image_bytes) in enumerate(insertions):
-                if label:
-                    label_run = paragraph.add_run(label)
-                    label_run.bold = True
-                    paragraph.add_run().add_break()
-                paragraph.add_run().add_picture(BytesIO(image_bytes), **add_picture_kwargs)
-                if index < len(insertions) - 1:
-                    paragraph.add_run().add_break()
-                    paragraph.add_run().add_break()
+        if _replace_multi_run_placeholders(paragraph, asset_map):
+            continue
+
+        _replace_paragraph_placeholders_fallback(paragraph, paragraph_text, asset_map)
 
     output_stream = BytesIO()
     document.save(output_stream)
     return output_stream.getvalue()
 
+
+
+def _iter_reinsertion_paragraphs(document):
+    visited_paragraph_ids: set[int] = set()
+
+    yield from _iter_container_paragraphs(
+        document,
+        _visited_cell_ids=set(),
+        _visited_paragraph_ids=visited_paragraph_ids,
+    )
+
+    for story_container in _iter_section_story_containers(document):
+        yield from _iter_container_paragraphs(
+            story_container,
+            _visited_cell_ids=set(),
+            _visited_paragraph_ids=visited_paragraph_ids,
+        )
+
+
+def _iter_section_story_containers(document):
+    visited_story_ids: set[int] = set()
+    for section in document.sections:
+        for attribute_name in (
+            "header",
+            "first_page_header",
+            "even_page_header",
+            "footer",
+            "first_page_footer",
+            "even_page_footer",
+        ):
+            story_container = getattr(section, attribute_name, None)
+            if story_container is None:
+                continue
+
+            story_id = id(getattr(story_container, "_element", story_container))
+            if story_id in visited_story_ids:
+                continue
+            visited_story_ids.add(story_id)
+            yield story_container
+
+
+def _iter_container_paragraphs(
+    container,
+    *,
+    _visited_cell_ids: set[int] | None = None,
+    _visited_paragraph_ids: set[int] | None = None,
+):
+    if _visited_cell_ids is None:
+        _visited_cell_ids = set()
+    if _visited_paragraph_ids is None:
+        _visited_paragraph_ids = set()
+
+    for paragraph in getattr(container, "paragraphs", []):
+        paragraph_id = id(paragraph._element)
+        if paragraph_id not in _visited_paragraph_ids:
+            _visited_paragraph_ids.add(paragraph_id)
+            yield paragraph
+
+        yield from _iter_textbox_paragraphs(paragraph, _visited_paragraph_ids)
+
+    for table in getattr(container, "tables", []):
+        for row in table.rows:
+            for cell in row.cells:
+                cell_id = id(cell._tc)
+                if cell_id in _visited_cell_ids:
+                    continue
+                _visited_cell_ids.add(cell_id)
+                yield from _iter_container_paragraphs(
+                    cell,
+                    _visited_cell_ids=_visited_cell_ids,
+                    _visited_paragraph_ids=_visited_paragraph_ids,
+                )
+
+
+def _iter_textbox_paragraphs(paragraph, visited_paragraph_ids: set[int]):
+    for textbox_paragraph_element in paragraph._element.xpath(".//w:txbxContent//w:p"):
+        paragraph_id = id(textbox_paragraph_element)
+        if paragraph_id in visited_paragraph_ids:
+            continue
+
+        visited_paragraph_ids.add(paragraph_id)
+        yield Paragraph(textbox_paragraph_element, paragraph._parent)
+
+
+def _find_known_placeholders(text: str, asset_map: dict[str, ImageAsset]) -> list[str]:
+    return [token for token in IMAGE_PLACEHOLDER_PATTERN.findall(text) if token in asset_map]
+
+
+def _replace_run_level_placeholders(paragraph, placeholders: list[str], asset_map: dict[str, ImageAsset]) -> bool:
+    runs = list(paragraph.runs)
+    run_placeholders: list[str] = []
+    for run in runs:
+        run_placeholders.extend(_find_known_placeholders(run.text, asset_map))
+
+    if len(run_placeholders) != len(placeholders):
+        return False
+
+    for run in runs:
+        run_text = run.text
+        run_tokens = _find_known_placeholders(run_text, asset_map)
+        if not run_tokens:
+            continue
+
+        replacement_elements = _build_run_replacement_elements(paragraph, run._element, run_text, asset_map)
+        _replace_xml_element_with_sequence(run._element, replacement_elements)
+    return True
+
+
+def _replace_multi_run_placeholders(paragraph, asset_map: dict[str, ImageAsset]) -> bool:
+    paragraph_children = [child for child in list(paragraph._element) if _xml_local_name(child.tag) in {"r", "hyperlink"}]
+    if not paragraph_children or any(_xml_local_name(child.tag) == "hyperlink" for child in paragraph_children):
+        return False
+
+    runs = list(paragraph.runs)
+    if not runs:
+        return False
+
+    run_texts = [run.text for run in runs]
+    full_text = "".join(run_texts)
+    placeholder_matches = [
+        match
+        for match in IMAGE_PLACEHOLDER_PATTERN.finditer(full_text)
+        if match.group(0) in asset_map
+    ]
+    if not placeholder_matches:
+        return False
+
+    replacement_elements = []
+    run_ranges: list[tuple[Run, int, int]] = []
+    cursor = 0
+    for run, run_text in zip(runs, run_texts):
+        next_cursor = cursor + len(run_text)
+        run_ranges.append((run, cursor, next_cursor))
+        cursor = next_cursor
+
+    match_index = 0
+    current_match = placeholder_matches[match_index] if placeholder_matches else None
+
+    for run, run_start, run_end in run_ranges:
+        position = run_start
+        while position < run_end:
+            while current_match is not None and current_match.end() <= position:
+                match_index += 1
+                current_match = placeholder_matches[match_index] if match_index < len(placeholder_matches) else None
+
+            if current_match is not None and position >= current_match.start() and position < current_match.end():
+                if position == current_match.start():
+                    placeholder_text = current_match.group(0)
+                    replacement_elements.extend(
+                        _build_insertion_run_elements(
+                            paragraph,
+                            run._element,
+                            asset_map[placeholder_text],
+                            placeholder_text=placeholder_text,
+                        )
+                    )
+                position = min(run_end, current_match.end())
+                continue
+
+            segment_end = run_end
+            if current_match is not None and position < current_match.start():
+                segment_end = min(segment_end, current_match.start())
+
+            if segment_end > position:
+                replacement_elements.append(
+                    _build_text_run_element(paragraph, run._element, full_text[position:segment_end])
+                )
+            position = segment_end
+
+    if not replacement_elements:
+        return False
+
+    _clear_paragraph_runs(paragraph)
+    for element in replacement_elements:
+        paragraph._element.append(element)
+    return True
+
+
+def _replace_paragraph_placeholders_fallback(paragraph, paragraph_text: str, asset_map: dict[str, ImageAsset]) -> None:
+    parts = re.split(f"({IMAGE_PLACEHOLDER_PATTERN.pattern})", paragraph_text)
+    _clear_paragraph_runs(paragraph)
+    for part in parts:
+        if not part:
+            continue
+        asset = asset_map.get(part)
+        if asset is None:
+            paragraph.add_run(part)
+            continue
+        _append_image_insertions_to_paragraph(paragraph, asset, placeholder_text=part)
+
+
+def _build_run_replacement_elements(paragraph, template_run_element, run_text: str, asset_map: dict[str, ImageAsset]):
+    replacement_elements = []
+    parts = re.split(f"({IMAGE_PLACEHOLDER_PATTERN.pattern})", run_text)
+    for part in parts:
+        if not part:
+            continue
+        asset = asset_map.get(part)
+        if asset is None:
+            replacement_elements.append(_build_text_run_element(paragraph, template_run_element, part))
+            continue
+        replacement_elements.extend(
+            _build_insertion_run_elements(paragraph, template_run_element, asset, placeholder_text=part)
+        )
+    return replacement_elements
+
+
+def _append_image_insertions_to_paragraph(paragraph, asset: ImageAsset, *, placeholder_text: str) -> None:
+    insertions = resolve_image_insertions(asset)
+    if not insertions:
+        paragraph.add_run(placeholder_text)
+        return
+
+    add_picture_kwargs = _build_picture_size_kwargs(asset)
+    if len(insertions) == 1 and insertions[0][0] is None:
+        paragraph.add_run().add_picture(BytesIO(insertions[0][1]), **add_picture_kwargs)
+        return
+
+    for index, (label, image_bytes) in enumerate(insertions):
+        if label:
+            label_run = paragraph.add_run(label)
+            label_run.bold = True
+            paragraph.add_run().add_break()
+        paragraph.add_run().add_picture(BytesIO(image_bytes), **add_picture_kwargs)
+        if index < len(insertions) - 1:
+            paragraph.add_run().add_break()
+            paragraph.add_run().add_break()
+
+
+def _build_insertion_run_elements(paragraph, template_run_element, asset: ImageAsset, *, placeholder_text: str):
+    insertions = resolve_image_insertions(asset)
+    if not insertions:
+        return [_build_text_run_element(paragraph, template_run_element, placeholder_text)]
+
+    add_picture_kwargs = _build_picture_size_kwargs(asset)
+    if len(insertions) == 1 and insertions[0][0] is None:
+        return [_build_picture_run_element(paragraph, template_run_element, insertions[0][1], add_picture_kwargs)]
+
+    replacement_elements = []
+    for index, (label, image_bytes) in enumerate(insertions):
+        if label:
+            replacement_elements.append(_build_label_run_element(paragraph, template_run_element, label))
+            replacement_elements.append(_build_break_run_element(paragraph, template_run_element))
+        replacement_elements.append(_build_picture_run_element(paragraph, template_run_element, image_bytes, add_picture_kwargs))
+        if index < len(insertions) - 1:
+            replacement_elements.append(_build_break_run_element(paragraph, template_run_element))
+            replacement_elements.append(_build_break_run_element(paragraph, template_run_element))
+    return replacement_elements
+
+
+def _build_text_run_element(paragraph, template_run_element, text: str):
+    run_element = OxmlElement("w:r")
+    _copy_run_properties(template_run_element, run_element)
+    Run(run_element, paragraph).text = text.replace("<br/>", "\n")
+    return run_element
+
+
+def _build_label_run_element(paragraph, template_run_element, label: str):
+    run_element = _build_text_run_element(paragraph, template_run_element, label)
+    Run(run_element, paragraph).bold = True
+    return run_element
+
+
+def _build_break_run_element(paragraph, template_run_element):
+    run_element = OxmlElement("w:r")
+    _copy_run_properties(template_run_element, run_element)
+    Run(run_element, paragraph).add_break()
+    return run_element
+
+
+def _build_picture_run_element(paragraph, template_run_element, image_bytes: bytes, add_picture_kwargs: dict[str, Emu]):
+    run_element = OxmlElement("w:r")
+    _copy_run_properties(template_run_element, run_element)
+    Run(run_element, paragraph).add_picture(BytesIO(image_bytes), **add_picture_kwargs)
+    return run_element
+
+
+def _copy_run_properties(template_run_element, target_run_element) -> None:
+    run_properties = _find_child_element(template_run_element, "rPr")
+    if run_properties is not None:
+        target_run_element.append(deepcopy(run_properties))
+
+
+def _replace_xml_element_with_sequence(element, replacements) -> None:
+    parent = element.getparent()
+    if parent is None:
+        return
+
+    anchor = element
+    for replacement in replacements:
+        anchor.addnext(replacement)
+        anchor = replacement
+    parent.remove(element)
 
 def resolve_final_image_bytes(asset: ImageAsset) -> bytes:
     if asset.selected_compare_variant:

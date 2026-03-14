@@ -2,6 +2,7 @@ import os
 import tomllib
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
@@ -19,6 +20,7 @@ from image_shared import clamp_score
 from models import IMAGE_MODE_VALUES, ImageMode
 
 OpenAI = None
+_CLIENT = None
 
 if TYPE_CHECKING:
     from openai import OpenAI as OpenAIClient
@@ -385,6 +387,7 @@ def load_app_config() -> AppConfig:
     )
 
 
+@lru_cache(maxsize=1)
 def load_system_prompt() -> str:
     try:
         prompt_text = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
@@ -398,6 +401,10 @@ def load_system_prompt() -> str:
 
 
 def get_client() -> "OpenAIClient":
+    global _CLIENT
+    if _CLIENT is not None:
+        return _CLIENT
+
     load_project_dotenv()
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
@@ -409,4 +416,5 @@ def get_client() -> "OpenAIClient":
 
         client_cls = imported_openai
         OpenAI = imported_openai
-    return client_cls(api_key=api_key)
+    _CLIENT = client_cls(api_key=api_key)
+    return _CLIENT

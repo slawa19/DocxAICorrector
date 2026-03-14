@@ -1,8 +1,9 @@
 ﻿. $PSScriptRoot\_shared.ps1
 
 try {
+    $runtimeMode = Get-PreferredRuntimeMode
     Write-Step 'Проверяю структуру проекта'
-    if (-not (Test-Path $wslControlScript)) { throw "Не найден WSL helper script: $wslControlScript" }
+    if ($runtimeMode -eq 'wsl' -and -not (Test-Path $wslControlScript)) { throw "Не найден WSL helper script: $wslControlScript" }
     if (-not (Test-Path $appPath)) { throw "Не найден app.py: $appPath" }
     Write-Ok 'Файлы проекта на месте'
 
@@ -13,11 +14,8 @@ try {
     $appPageOk = ConvertTo-BoolFlag $status['app_page_ok']
     $managedPidRunning = ConvertTo-BoolFlag $status['managed_pid_running']
     $portOpen = ConvertTo-BoolFlag $status['port_open']
-    $venvOk = ConvertTo-BoolFlag $status['venv_ok']
-    $depsOk = ConvertTo-BoolFlag $status['deps_ok']
-    $pandocOk = ConvertTo-BoolFlag $status['pandoc_ok']
-    $apiKeyOk = ConvertTo-BoolFlag $status['api_key_ok']
     $managedPid = $status['managed_pid']
+    $managedRuntimeMode = [string]$status['runtime_mode']
 
     if ($managedPidRunning) {
         if ($healthOk -and $appPageOk) {
@@ -26,9 +24,9 @@ try {
             exit 0
         }
 
-        Write-Warn "Найден управляемый WSL-процесс приложения (PID=$managedPid), но приложение ещё не отвечает по основному URL. Жду готовности."
+        Write-Warn "Найден управляемый процесс приложения ($managedRuntimeMode, PID=$managedPid), но приложение ещё не отвечает по основному URL. Жду готовности."
         if (-not (Wait-ProjectReady -Port $port -TimeoutSeconds 30)) {
-            throw "Найден управляемый WSL-процесс приложения (PID=$managedPid), но приложение так и не стало доступно по основному URL. Проверьте .run/streamlit.log или выполните Stop Project перед повторным запуском."
+            throw "Найден управляемый процесс приложения ($managedRuntimeMode, PID=$managedPid), но приложение так и не стало доступно по основному URL. Проверьте .run/streamlit.log или выполните Stop Project перед повторным запуском."
         }
 
         Write-Ok "Проект уже запущен. PID=$managedPid"
@@ -42,16 +40,17 @@ try {
 
     Write-Warn 'Пропускаю тяжёлый preflight окружения для быстрого старта. Для полной диагностики используйте Project Status.'
 
-    Write-Step 'Запускаю Streamlit в WSL'
-    $runOutput = Invoke-WslInProject 'run-streamlit' @($serverHost, "$port") 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    Write-Step "Запускаю Streamlit ($runtimeMode)"
+    $runOutput = Start-ManagedProject -ServerHost $serverHost -Port $port 2>&1
+    $runExitCode = if ($runtimeMode -eq 'wsl') { $LASTEXITCODE } else { 0 }
+    if ($runExitCode -ne 0) {
         $detail = ($runOutput | Out-String).Trim()
-        throw "Не удалось запустить Streamlit в WSL.`n$detail"
+        throw "Не удалось запустить Streamlit ($runtimeMode).`n$detail"
     }
 
     Write-Step 'Ожидаю полной готовности приложения'
     if (-not (Wait-ProjectReady -Port $port -TimeoutSeconds 180)) {
-        $tailOutput = Invoke-WslInProject 'tail-log' @('80') 2>&1
+        $tailOutput = Get-ProjectLogTail -Lines 80
         $tailText = ($tailOutput | Out-String).Trim()
         if ($tailText) {
             Write-Warn "Последние строки streamlit.log:`n$tailText"

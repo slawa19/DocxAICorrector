@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from PIL import Image
 
 import image_generation
+import real_image_manifest
 from config import get_client
 from constants import ENV_PATH
 from image_analysis import analyze_image
@@ -103,8 +104,11 @@ def _artifact_basename(filename: str) -> str:
 
 def _write_pipeline_artifact(case: dict[str, object], candidate: bytes, metadata: dict[str, object]) -> Path:
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = ARTIFACTS_DIR / f"{_artifact_basename(str(case['filename']))}_candidate{_detect_output_extension(candidate)}"
-    for stale_path in ARTIFACTS_DIR.glob(f"{_artifact_basename(str(case['filename']))}_candidate.*"):
+    output_path = ARTIFACTS_DIR / real_image_manifest.build_output_artifact_name(
+        str(case["filename"]),
+        _detect_output_extension(candidate),
+    )
+    for stale_path in ARTIFACTS_DIR.glob(f"{_artifact_basename(str(case['filename']))}_output.*"):
         if stale_path != output_path:
             stale_path.unlink(missing_ok=True)
     output_path.write_bytes(candidate)
@@ -113,6 +117,9 @@ def _write_pipeline_artifact(case: dict[str, object], candidate: bytes, metadata
     manifest_data: list[dict[str, object]] = []
     if manifest_path.exists():
         manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    metadata = dict(metadata)
+    metadata["output_artifact"] = output_path.name
 
     updated = False
     for index, item in enumerate(manifest_data):
@@ -123,7 +130,12 @@ def _write_pipeline_artifact(case: dict[str, object], candidate: bytes, metadata
     if not updated:
         manifest_data.append(metadata)
 
-    manifest_path.write_text(json.dumps(manifest_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    manifest_path.write_text(
+        real_image_manifest.render_manifest(
+            real_image_manifest.build_manifest_entries(manifest_data, tests_dir=TESTS_DIR, artifacts_dir=ARTIFACTS_DIR)
+        ),
+        encoding="utf-8",
+    )
     return output_path
 
 

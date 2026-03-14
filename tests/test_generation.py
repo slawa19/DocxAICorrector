@@ -1,10 +1,15 @@
 from types import SimpleNamespace
+from typing import Any, cast
 
 from PIL import Image
 
 import generation
 import image_shared
 from image_generation import _normalize_generated_document_background
+
+
+def _as_openai_client(client: object) -> Any:
+    return cast(Any, client)
 
 
 class RetryableError(Exception):
@@ -25,12 +30,12 @@ def test_generate_markdown_block_retries_once_then_returns(monkeypatch):
     monkeypatch.setattr(generation.time, "sleep", sleep_calls.append)
 
     result = generation.generate_markdown_block(
-        client=client,
+        client=_as_openai_client(client),
         model="gpt-5.4",
         system_prompt="system",
         target_text="target",
-        context_before="",
-        context_after="",
+        context_before="   ",
+        context_after="\n\t",
         max_retries=2,
     )
 
@@ -50,7 +55,7 @@ def test_generate_markdown_block_raises_on_empty_model_output():
 
     try:
         generation.generate_markdown_block(
-            client=client,
+            client=_as_openai_client(client),
             model="gpt-5.4",
             system_prompt="system",
             target_text="target",
@@ -64,10 +69,95 @@ def test_generate_markdown_block_raises_on_empty_model_output():
         raise AssertionError("Expected RuntimeError for an empty model response")
 
 
+def test_generate_markdown_block_raises_on_missing_output_text():
+    client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **_: SimpleNamespace())
+    )
+
+    try:
+        generation.generate_markdown_block(
+            client=_as_openai_client(client),
+            model="gpt-5.4",
+            system_prompt="system",
+            target_text="target",
+            context_before="before",
+            context_after="after",
+            max_retries=1,
+        )
+    except RuntimeError as exc:
+        assert "пустой ответ" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError when output_text is missing")
+
+
+def test_generate_markdown_block_raises_on_non_string_output_text():
+    client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **_: SimpleNamespace(output_text=["invalid"]))
+    )
+
+    try:
+        generation.generate_markdown_block(
+            client=_as_openai_client(client),
+            model="gpt-5.4",
+            system_prompt="system",
+            target_text="target",
+            context_before="before",
+            context_after="after",
+            max_retries=1,
+        )
+    except RuntimeError as exc:
+        assert "неподдерживаемом формате" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError when output_text is not a string")
+
+
+def test_generate_markdown_block_rejects_max_retries_less_than_one():
+    client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **_: SimpleNamespace(output_text="unused"))
+    )
+
+    try:
+        generation.generate_markdown_block(
+            client=_as_openai_client(client),
+            model="gpt-5.4",
+            system_prompt="system",
+            target_text="target",
+            context_before="before",
+            context_after="after",
+            max_retries=0,
+        )
+    except ValueError as exc:
+        assert "max_retries" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError when max_retries is less than 1")
+
+
+def test_generate_markdown_block_rejects_non_integer_max_retries():
+    client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **_: SimpleNamespace(output_text="unused"))
+    )
+
+    try:
+        generation.generate_markdown_block(
+            client=_as_openai_client(client),
+            model="gpt-5.4",
+            system_prompt="system",
+            target_text="target",
+            context_before="before",
+            context_after="after",
+            max_retries=1.5,
+        )
+    except TypeError as exc:
+        assert "max_retries" in str(exc)
+    else:
+        raise AssertionError("Expected TypeError when max_retries is not an integer")
+
+
 def test_ensure_pandoc_available_converts_os_error(monkeypatch):
     def raise_os_error():
         raise OSError("pandoc missing")
 
+    generation.ensure_pandoc_available.cache_clear()
     monkeypatch.setattr(generation.pypandoc, "get_pandoc_version", raise_os_error)
 
     try:
@@ -76,6 +166,8 @@ def test_ensure_pandoc_available_converts_os_error(monkeypatch):
         assert "Pandoc не найден" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError when pandoc is unavailable")
+    finally:
+        generation.ensure_pandoc_available.cache_clear()
 
 
 def test_convert_markdown_to_docx_bytes_calls_pandoc_and_reads_output(monkeypatch, tmp_path):

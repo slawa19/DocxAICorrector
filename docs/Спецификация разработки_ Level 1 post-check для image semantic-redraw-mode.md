@@ -1,5 +1,7 @@
 # Спецификация разработки: Level 1 post-check для `image semantic-redraw-mode`
 
+> Статус: archived implementation spec. Документ сохранён как исторический контекст по внедрению Level 1 post-check и не является текущим source of truth по image modes. Для актуального контракта используйте `docs/WORKFLOW_AND_IMAGE_MODES.md`; для общей архивной навигации используйте `docs/ARCHIVE_INDEX.md`.
+
 ## 0. Назначение документа
 
 Этот документ переводит продуктовую спецификацию image v1/v2 в **реализуемую разработческую
@@ -9,9 +11,11 @@
 
 - текущую архитектуру проекта (`app.py`, `document.py`, `generation.py`, `config.py`, `ui.py`);
 - текущую image-спецификацию:
-  `/home/runner/work/DocxAICorrector/DocxAICorrector/docs/Спецификация v1_ сохранение и улучшение изображений в DOCX.md`;
+  `docs/Спецификация v1_ сохранение и улучшение изображений в DOCX.md`;
 - практику проекта: минимальные расширения поверх существующего pipeline, явные fallback-ветки,
   JSON-логирование и pytest-регрессии на ключевые контракты.
+
+> Статус: документ сохранён как development-spec первой волны. Актуальный runtime-config позже был упрощён до policy-level surface из `README.md` (`image_mode_default`, `semantic_validation_policy`, `validation_model`, `keep_all_image_variants`); исторический `prefer_structured_redraw` больше не актуален.
 
 Главная цель Level 1 — добавить **обязательный, но легковесный validator** для результата
 `semantic_redraw_*`, не вводя на первом этапе тяжелый OCR / graph-extraction pipeline.
@@ -247,51 +251,34 @@ class ImageValidationResult:
 
 ## 5. Изменения конфигурации
 
-## 5.1. Конфигурация в `config.toml`
+## 5.1. Текущий runtime contract в `config.toml`
 
-В `config.toml` должны появиться новые поля:
+В актуальном репозитории image-validation surface сведён к policy-level настройкам:
 
 ```toml
 image_mode_default = "safe"
-enable_post_redraw_validation = true
+semantic_validation_policy = "advisory"
+keep_all_image_variants = false
 validation_model = "gpt-4.1"
-min_semantic_match_score = 0.75
-min_text_match_score = 0.80
-min_structure_match_score = 0.70
-validator_confidence_threshold = 0.75
-allow_accept_with_partial_text_loss = false
-prefer_structured_redraw = true
 ```
-
-Значения приведены как стартовые и могут быть скорректированы.
 
 ## 5.2. Env overrides
 
-По аналогии с текущими настройками, `config.py` должен поддержать:
+По аналогии с текущими настройками, `config.py` должен поддерживать и синхронизировать:
 
 - `DOCX_AI_IMAGE_MODE_DEFAULT`
-- `DOCX_AI_ENABLE_POST_REDRAW_VALIDATION`
+- `DOCX_AI_SEMANTIC_VALIDATION_POLICY`
+- `DOCX_AI_KEEP_ALL_IMAGE_VARIANTS`
 - `DOCX_AI_VALIDATION_MODEL`
-- `DOCX_AI_MIN_SEMANTIC_MATCH_SCORE`
-- `DOCX_AI_MIN_TEXT_MATCH_SCORE`
-- `DOCX_AI_MIN_STRUCTURE_MATCH_SCORE`
-- `DOCX_AI_VALIDATOR_CONFIDENCE_THRESHOLD`
-- `DOCX_AI_ALLOW_ACCEPT_WITH_PARTIAL_TEXT_LOSS`
 
 ## 5.3. Принципы валидации конфигурации
 
 `config.py` должен:
 
-1. валидировать типы;
-2. clamp-ить score thresholds в диапазон `0.0 .. 1.0`;
-3. fallback-ить к безопасным default values;
-4. выбрасывать `RuntimeError` только при реально некорректной конфигурации.
-
-Для bool-полей рекомендуется добавить helper вида:
-
-```python
-def parse_bool_env(name: str, default: bool) -> bool: ...
-```
+1. валидировать типы и допустимые enum-значения;
+2. fallback-ить к безопасным default values;
+3. выбрасывать `RuntimeError` только при реально некорректной конфигурации;
+4. не возвращать в runtime устаревшие флаги, уже удалённые из config surface.
 
 ---
 

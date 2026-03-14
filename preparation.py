@@ -123,6 +123,7 @@ def _clone_prepared_image_asset(asset):
         analysis_result=deepcopy(asset.analysis_result),
         metadata=replace(asset.metadata) if isinstance(asset.metadata, ImagePipelineMetadata) else deepcopy(asset.metadata),
         validation_result=deepcopy(asset.validation_result),
+        attempt_variants=[_clone_prepared_image_variant(variant) for variant in asset.attempt_variants],
         comparison_variants={
             variant_key: _clone_prepared_image_variant(variant)
             for variant_key, variant in asset.comparison_variants.items()

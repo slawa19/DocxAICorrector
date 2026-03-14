@@ -10,12 +10,7 @@ try {
     }
 
     Write-Step "Showing last $Lines lines from streamlit.log"
-    Invoke-WslInProject 'tail-log' @("$Lines")
-    $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0) {
-        Write-Fail "Failed to read streamlit.log. Exit code: $exitCode"
-        exit $exitCode
-    }
+    Get-ProjectLogTail -Lines $Lines
 
     exit 0
 }

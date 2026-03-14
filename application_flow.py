@@ -2,7 +2,7 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from preparation import emit_preparation_progress, prepare_document_for_processing
 from processing_runtime import (
@@ -12,11 +12,11 @@ from processing_runtime import (
     resolve_uploaded_filename,
 )
 from restart_store import clear_restart_source, load_restart_source_bytes
-from workflow_state import derive_idle_view_state, has_restartable_outcome
+from workflow_state import IdleViewState, derive_idle_view_state, has_restartable_outcome
 
 
 class SessionStateLike(Protocol):
-    def get(self, key: str, default=None): ...
+    def get(self, key: str, default: object | None = None) -> Any: ...
 
     def __getitem__(self, key: str): ...
 
@@ -59,13 +59,15 @@ def get_cached_restart_file(
     if build_in_memory_uploaded_file_fn is None:
         build_in_memory_uploaded_file_fn = build_in_memory_uploaded_file
     restart_source = session_state.get("restart_source")
+    if not isinstance(restart_source, dict):
+        return None
     if not restart_source:
         return None
     source_name = str(restart_source.get("filename", ""))
     source_bytes = load_restart_source_bytes_fn(restart_source)
-    if not source_name or source_bytes is None:
+    if not source_name or not isinstance(source_bytes, (bytes, bytearray)) or not source_bytes:
         return None
-    return build_in_memory_uploaded_file_fn(source_name=source_name, source_bytes=source_bytes)
+    return build_in_memory_uploaded_file_fn(source_name=source_name, source_bytes=bytes(source_bytes))
 
 
 def get_cached_completed_file(
@@ -79,6 +81,8 @@ def get_cached_completed_file(
     if load_completed_source_bytes_fn is None:
         load_completed_source_bytes_fn = load_restart_source_bytes
     completed_source = session_state.get("completed_source")
+    if not isinstance(completed_source, dict):
+        return None
     if not completed_source:
         return None
     source_name = str(completed_source.get("filename", ""))
@@ -208,7 +212,7 @@ def has_restartable_source(
     session_state: SessionStateLike,
 ) -> bool:
     restart_source = session_state.get("restart_source")
-    if not restart_source:
+    if not isinstance(restart_source, dict) or not restart_source:
         return False
     if not has_restartable_outcome(session_state.get("processing_outcome")):
         return False
@@ -261,7 +265,7 @@ def derive_app_idle_view_state(
     current_result,
     uploaded_file,
     session_state,
-) -> str:
+) -> IdleViewState:
     return derive_idle_view_state(
         current_result=current_result,
         uploaded_file=uploaded_file,

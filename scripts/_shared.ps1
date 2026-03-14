@@ -18,6 +18,7 @@ $appPath = Join-Path $projectRoot 'app.py'
 $runDir = Join-Path $projectRoot '.run'
 $projectLogPath = Join-Path $runDir 'project.log'
 $serverHost = '0.0.0.0'   # used in stop-project.ps1 (Test-TcpPort) and start-project.ps1 (Invoke-WslInProject)
+$loopbackHost = '127.0.0.1'
 $port = 8501
 $appUrl = "http://localhost:$port"
 $healthUrl = "$appUrl/_stcore/health"   # used in start-project.ps1 (Wait-HttpHealth)
@@ -137,85 +138,145 @@ function Invoke-WslInProject {
     )
 
     $wslScriptPath = Convert-ToWslPath $wslControlScript
-    & wsl.exe -d $wslDistro bash $wslScriptPath $Action @Arguments
+    $maxAttempts = 3
+    $lastOutput = @()
+    $lastExitCode = 0
+
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        $lastOutput = & wsl.exe -d $wslDistro bash $wslScriptPath $Action @Arguments 2>&1
+        $lastExitCode = $LASTEXITCODE
+
+        if ($lastExitCode -eq 0) {
+            $global:LASTEXITCODE = 0
+            return $lastOutput
+        }
+
+        $details = (@($lastOutput) | ForEach-Object { $_ | Out-String }).Trim()
+        $isTransientWslFailure = (
+            $lastExitCode -eq -1 -or
+            $details.Contains('Wsl/Service/') -or
+            $details.Contains('0x8007274c')
+        )
+
+        if (-not $isTransientWslFailure -or $attempt -eq $maxAttempts) {
+            $global:LASTEXITCODE = $lastExitCode
+            return $lastOutput
+        }
+
+        Write-Warn "Transient WSL transport failure during '$Action' (attempt $attempt/$maxAttempts). Retrying..."
+        Start-Sleep -Seconds $attempt
+    }
+
+    $global:LASTEXITCODE = $lastExitCode
+    return $lastOutput
+}
+
+function Get-PreferredRuntimeMode {
+    $preference = ''
+    if ($null -ne $env:DOCX_AI_RUNTIME_MODE) {
+        $preference = [string]$env:DOCX_AI_RUNTIME_MODE
+    }
+    $normalizedPreference = $preference.Trim().ToLowerInvariant()
+
+    if ($normalizedPreference -and $normalizedPreference -ne 'wsl') {
+        throw 'This repository uses a WSL-first workflow. DOCX_AI_RUNTIME_MODE may only be empty or set to wsl.'
+    }
+
+    return 'wsl'
+}
+
+function Merge-StatusTables {
+    param(
+        [hashtable]$Left,
+        [hashtable]$Right
+    )
+
+    $merged = @{}
+    foreach ($key in $Left.Keys) {
+        $merged[$key] = $Left[$key]
+    }
+    foreach ($key in $Right.Keys) {
+        $merged[$key] = $Right[$key]
+    }
+    return $merged
+}
+
+function Parse-KeyValueOutput {
+    param([object[]]$RawOutput)
+
+    $status = @{}
+    foreach ($line in @($RawOutput)) {
+        $text = ($line | Out-String).Trim()
+        if (-not $text) { continue }
+        $delimiterIndex = $text.IndexOf('=')
+        if ($delimiterIndex -lt 1) { continue }
+        $key = $text.Substring(0, $delimiterIndex)
+        $value = $text.Substring($delimiterIndex + 1)
+        $status[$key] = $value
+    }
+    return $status
+}
+
+function Get-WslStatusMap {
+    param(
+        [string]$Action,
+        [string[]]$Arguments = @()
+    )
+
+    $rawOutput = Invoke-WslInProject $Action $Arguments 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $details = ($rawOutput | Out-String).Trim()
+        if ($details) {
+            throw "Failed to get WSL project status: $details"
+        }
+        throw 'Failed to get WSL project status.'
+    }
+
+    $status = Parse-KeyValueOutput -RawOutput $rawOutput
+    $status['runtime_mode'] = 'wsl'
+    return $status
+}
+
+function Start-ManagedProject {
+    param(
+        [string]$ServerHost,
+        [int]$Port
+    )
+
+    return (Invoke-WslInProject 'run-streamlit' @($ServerHost, "$Port") 2>&1)
+}
+
+function Stop-ManagedProject {
+    Invoke-WslInProject 'stop-streamlit' 2>$null | Out-Null
+}
+
+function Get-ProjectLogTail {
+    param([int]$Lines = 80)
+
+    return (Invoke-WslInProject 'tail-log' @("$Lines") 2>&1)
 }
 
 function ConvertTo-BoolFlag {
     param([string]$Value)
 
-    return ($Value.Trim().ToLowerInvariant() -eq 'true')
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $false
+    }
+
+    return $Value.Trim().Equals('true', [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 function Get-ProjectStatus {
-    $rawOutput = Invoke-WslInProject 'status' @("$port") 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        $details = ($rawOutput | Out-String).Trim()
-        if ($details) {
-            throw "Failed to get project status: $details"
-        }
-        throw 'Failed to get project status.'
-    }
-
-    $status = @{}
-    foreach ($line in @($rawOutput)) {
-        $text = ($line | Out-String).Trim()
-        if (-not $text) { continue }
-        $delimiterIndex = $text.IndexOf('=')
-        if ($delimiterIndex -lt 1) { continue }
-        $key = $text.Substring(0, $delimiterIndex)
-        $value = $text.Substring($delimiterIndex + 1)
-        $status[$key] = $value
-    }
-
-    return $status
+    $runtimeStatus = Get-ProjectRuntimeStatus
+    return (Merge-StatusTables -Left $runtimeStatus -Right (Get-WslStatusMap -Action 'env-status'))
 }
 
 function Get-ProjectRuntimeStatus {
-    $rawOutput = Invoke-WslInProject 'runtime-status' @("$port") 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        $details = ($rawOutput | Out-String).Trim()
-        if ($details) {
-            throw "Failed to get project runtime status: $details"
-        }
-        throw 'Failed to get project runtime status.'
-    }
-
-    $status = @{}
-    foreach ($line in @($rawOutput)) {
-        $text = ($line | Out-String).Trim()
-        if (-not $text) { continue }
-        $delimiterIndex = $text.IndexOf('=')
-        if ($delimiterIndex -lt 1) { continue }
-        $key = $text.Substring(0, $delimiterIndex)
-        $value = $text.Substring($delimiterIndex + 1)
-        $status[$key] = $value
-    }
-
-    return $status
+    return (Get-WslStatusMap -Action 'runtime-status' -Arguments @("$port"))
 }
 
 function Get-ProjectEnvironmentStatus {
-    $rawOutput = Invoke-WslInProject 'env-status' 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        $details = ($rawOutput | Out-String).Trim()
-        if ($details) {
-            throw "Failed to get project environment status: $details"
-        }
-        throw 'Failed to get project environment status.'
-    }
-
-    $status = @{}
-    foreach ($line in @($rawOutput)) {
-        $text = ($line | Out-String).Trim()
-        if (-not $text) { continue }
-        $delimiterIndex = $text.IndexOf('=')
-        if ($delimiterIndex -lt 1) { continue }
-        $key = $text.Substring(0, $delimiterIndex)
-        $value = $text.Substring($delimiterIndex + 1)
-        $status[$key] = $value
-    }
-
-    return $status
+    return (Get-WslStatusMap -Action 'env-status')
 }
 
 function Write-LogLine {
@@ -336,7 +397,7 @@ function Wait-ProjectHealth {
         return $false
     }
 
-    return ((($rawOutput | Out-String).Trim()) -eq 'ok')
+    return (((($rawOutput | Out-String).Trim()) -eq 'ok'))
 }
 
 function Wait-ProjectReady {
@@ -350,5 +411,5 @@ function Wait-ProjectReady {
         return $false
     }
 
-    return ((($rawOutput | Out-String).Trim()) -eq 'ok')
+    return (((($rawOutput | Out-String).Trim()) -eq 'ok'))
 }

@@ -6,7 +6,7 @@ import document
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.opc.constants import RELATIONSHIP_TYPE
-from docx.oxml import OxmlElement
+from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import qn
 from docx.shared import Inches
 
@@ -62,6 +62,42 @@ def _set_outline_level(paragraph, value: int) -> None:
         outline_level = OxmlElement("w:outlineLvl")
         paragraph_properties.append(outline_level)
     outline_level.set(qn("w:val"), str(value))
+
+
+def _append_textbox_with_text(paragraph, text: str) -> None:
+        paragraph._p.append(
+                parse_xml(
+                        f"""
+                        <w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+                                 xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+                                 xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+                                 xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+                            <w:drawing>
+                                <wp:inline>
+                                    <wp:extent cx="914400" cy="914400"/>
+                                    <wp:docPr id="1" name="TextBox 1"/>
+                                    <a:graphic>
+                                        <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+                                            <wps:wsp>
+                                                <wps:txbx>
+                                                    <w:txbxContent>
+                                                        <w:p>
+                                                            <w:r>
+                                                                <w:t>{text}</w:t>
+                                                            </w:r>
+                                                        </w:p>
+                                                    </w:txbxContent>
+                                                </wps:txbx>
+                                                <wps:bodyPr/>
+                                            </wps:wsp>
+                                        </a:graphicData>
+                                    </a:graphic>
+                                </wp:inline>
+                            </w:drawing>
+                        </w:r>
+                        """
+                )
+        )
 
 
 def test_build_semantic_blocks_keeps_heading_with_following_body():
@@ -199,13 +235,12 @@ def test_extract_document_content_from_docx_keeps_tables_in_document_order():
     assert build_document_text(paragraphs).startswith("Перед таблицей\n\n<table>")
 
 
-def test_extract_document_content_from_docx_marks_caption_after_image():
-    image_path = BytesIO(PNG_BYTES)
-    with open("/tmp/docx_caption_image.png", "wb") as file_handle:
-        file_handle.write(PNG_BYTES)
+def test_extract_document_content_from_docx_marks_caption_after_image(tmp_path):
+    image_path = tmp_path / "docx_caption_image.png"
+    image_path.write_bytes(PNG_BYTES)
 
     doc = Document()
-    doc.add_paragraph().add_run().add_picture("/tmp/docx_caption_image.png")
+    doc.add_paragraph().add_run().add_picture(str(image_path))
     doc.add_paragraph("Рис. 1. Подпись к изображению")
     buffer = BytesIO()
     doc.save(buffer)
@@ -305,7 +340,7 @@ def test_resolve_image_insertions_keeps_safe_and_candidates_for_manual_review():
     ]
 
 
-def test_reinsert_inline_images_labels_manual_review_variants(tmp_path):
+def test_reinsert_inline_images_labels_manual_review_variants():
     doc = Document()
     doc.add_paragraph("[[DOCX_IMAGE_img_001]]")
     buffer = BytesIO()
@@ -396,6 +431,231 @@ def test_reinsert_inline_images_replaces_placeholder_with_picture():
     assert len(updated_doc.inline_shapes) == 1
     assert updated_doc.inline_shapes[0].width == 914400
     assert updated_doc.inline_shapes[0].height == 914400
+
+
+def test_reinsert_inline_images_preserves_formatted_text_around_placeholder_in_same_paragraph():
+    doc = Document()
+    paragraph = doc.add_paragraph()
+    before_run = paragraph.add_run("До ")
+    before_run.bold = True
+    paragraph.add_run("[[DOCX_IMAGE_img_001]]")
+    after_run = paragraph.add_run(" после")
+    after_run.italic = True
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    updated_bytes = reinsert_inline_images(
+        buffer.getvalue(),
+        [
+            ImageAsset(
+                image_id="img_001",
+                placeholder="[[DOCX_IMAGE_img_001]]",
+                original_bytes=PNG_BYTES,
+                mime_type="image/png",
+                position_index=0,
+                width_emu=914400,
+                height_emu=914400,
+                final_variant="original",
+            )
+        ],
+    )
+    updated_doc = Document(BytesIO(updated_bytes))
+    updated_paragraph = updated_doc.paragraphs[0]
+
+    assert updated_paragraph.text == "До  после"
+    assert updated_paragraph.runs[0].text == "До "
+    assert updated_paragraph.runs[0].bold is True
+    assert updated_paragraph.runs[-1].text == " после"
+    assert updated_paragraph.runs[-1].italic is True
+    assert len(updated_doc.inline_shapes) == 1
+
+
+def test_reinsert_inline_images_keeps_placeholder_text_when_no_image_bytes_resolved():
+    doc = Document()
+    doc.add_paragraph("[[DOCX_IMAGE_img_001]]")
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    updated_bytes = reinsert_inline_images(
+        buffer.getvalue(),
+        [
+            ImageAsset(
+                image_id="img_001",
+                placeholder="[[DOCX_IMAGE_img_001]]",
+                original_bytes=b"",
+                mime_type="image/png",
+                position_index=0,
+                final_variant="original",
+            )
+        ],
+    )
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    assert updated_doc.paragraphs[0].text == "[[DOCX_IMAGE_img_001]]"
+    assert len(updated_doc.inline_shapes) == 0
+
+
+def test_reinsert_inline_images_replaces_placeholder_with_picture_inside_table_cell():
+    doc = Document()
+    table = doc.add_table(rows=1, cols=1)
+    table.cell(0, 0).paragraphs[0].add_run("[[DOCX_IMAGE_img_001]]")
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    updated_bytes = reinsert_inline_images(
+        buffer.getvalue(),
+        [
+            ImageAsset(
+                image_id="img_001",
+                placeholder="[[DOCX_IMAGE_img_001]]",
+                original_bytes=PNG_BYTES,
+                mime_type="image/png",
+                position_index=0,
+                width_emu=914400,
+                height_emu=914400,
+                final_variant="original",
+            )
+        ],
+    )
+    updated_doc = Document(BytesIO(updated_bytes))
+    cell_paragraph = updated_doc.tables[0].cell(0, 0).paragraphs[0]
+
+    assert cell_paragraph.text == ""
+    assert len(updated_doc.inline_shapes) == 1
+    assert updated_doc.inline_shapes[0].width == 914400
+    assert updated_doc.inline_shapes[0].height == 914400
+
+
+def test_reinsert_inline_images_replaces_placeholder_with_picture_inside_nested_table_cell():
+    doc = Document()
+    outer_table = doc.add_table(rows=1, cols=1)
+    nested_table = outer_table.cell(0, 0).add_table(rows=1, cols=1)
+    nested_table.cell(0, 0).paragraphs[0].add_run("[[DOCX_IMAGE_img_001]]")
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    updated_bytes = reinsert_inline_images(
+        buffer.getvalue(),
+        [
+            ImageAsset(
+                image_id="img_001",
+                placeholder="[[DOCX_IMAGE_img_001]]",
+                original_bytes=PNG_BYTES,
+                mime_type="image/png",
+                position_index=0,
+                width_emu=914400,
+                height_emu=914400,
+                final_variant="original",
+            )
+        ],
+    )
+    updated_doc = Document(BytesIO(updated_bytes))
+    nested_cell_paragraph = updated_doc.tables[0].cell(0, 0).tables[0].cell(0, 0).paragraphs[0]
+
+    assert nested_cell_paragraph.text == ""
+    assert len(updated_doc.inline_shapes) == 1
+    assert updated_doc.inline_shapes[0].width == 914400
+    assert updated_doc.inline_shapes[0].height == 914400
+
+
+def test_reinsert_inline_images_replaces_placeholder_split_across_runs_without_plain_text_fallback():
+    doc = Document()
+    paragraph = doc.add_paragraph()
+    first_run = paragraph.add_run("До [[DOCX_")
+    first_run.bold = True
+    second_run = paragraph.add_run("IMAGE_img_001]] после")
+    second_run.italic = True
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    updated_bytes = reinsert_inline_images(
+        buffer.getvalue(),
+        [
+            ImageAsset(
+                image_id="img_001",
+                placeholder="[[DOCX_IMAGE_img_001]]",
+                original_bytes=PNG_BYTES,
+                mime_type="image/png",
+                position_index=0,
+                width_emu=914400,
+                height_emu=914400,
+                final_variant="original",
+            )
+        ],
+    )
+    updated_doc = Document(BytesIO(updated_bytes))
+    updated_paragraph = updated_doc.paragraphs[0]
+
+    assert updated_paragraph.text == "До  после"
+    assert updated_paragraph.runs[0].text == "До "
+    assert updated_paragraph.runs[0].bold is True
+    assert updated_paragraph.runs[-1].text == " после"
+    assert updated_paragraph.runs[-1].italic is True
+    assert len(updated_doc.inline_shapes) == 1
+
+
+def test_reinsert_inline_images_replaces_placeholder_in_header_and_footer():
+    doc = Document()
+    section = doc.sections[0]
+    section.header.paragraphs[0].add_run("[[DOCX_IMAGE_img_001]]")
+    section.footer.paragraphs[0].add_run("[[DOCX_IMAGE_img_001]]")
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    updated_bytes = reinsert_inline_images(
+        buffer.getvalue(),
+        [
+            ImageAsset(
+                image_id="img_001",
+                placeholder="[[DOCX_IMAGE_img_001]]",
+                original_bytes=PNG_BYTES,
+                mime_type="image/png",
+                position_index=0,
+                width_emu=914400,
+                height_emu=914400,
+                final_variant="original",
+            )
+        ],
+    )
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    header_xml = updated_doc.sections[0].header._element.xml
+    footer_xml = updated_doc.sections[0].footer._element.xml
+
+    assert "[[DOCX_IMAGE_img_001]]" not in header_xml
+    assert "[[DOCX_IMAGE_img_001]]" not in footer_xml
+    assert "a:blip" in header_xml
+    assert "a:blip" in footer_xml
+
+
+def test_reinsert_inline_images_replaces_placeholder_inside_textbox():
+    doc = Document()
+    host_paragraph = doc.add_paragraph("Перед textbox")
+    _append_textbox_with_text(host_paragraph, "[[DOCX_IMAGE_img_001]]")
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    updated_bytes = reinsert_inline_images(
+        buffer.getvalue(),
+        [
+            ImageAsset(
+                image_id="img_001",
+                placeholder="[[DOCX_IMAGE_img_001]]",
+                original_bytes=PNG_BYTES,
+                mime_type="image/png",
+                position_index=0,
+                width_emu=914400,
+                height_emu=914400,
+                final_variant="original",
+            )
+        ],
+    )
+    updated_doc = Document(BytesIO(updated_bytes))
+    document_xml = updated_doc._element.xml
+
+    assert "[[DOCX_IMAGE_img_001]]" not in document_xml
+    assert "w:txbxContent" in document_xml
+    assert "a:blip" in document_xml
 
 
 def test_reinsert_inline_images_in_compare_all_mode_inserts_all_generated_variants():

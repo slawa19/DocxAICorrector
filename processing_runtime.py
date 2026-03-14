@@ -28,6 +28,23 @@ from workflow_state import ProcessingOutcome
 MAX_COMPLETED_SOURCE_BYTES = 8 * 1024 * 1024
 
 
+def _build_default_image_processing_summary() -> dict[str, object]:
+    return {
+        "total_images": 0,
+        "processed_images": 0,
+        "images_validated": 0,
+        "validation_passed": 0,
+        "fallbacks_applied": 0,
+        "validation_errors": [],
+    }
+
+
+def _reset_image_state() -> None:
+    st.session_state.image_assets = []
+    st.session_state.image_validation_failures = []
+    st.session_state.image_processing_summary = _build_default_image_processing_summary()
+
+
 class BackgroundRuntime:
     def __init__(self, event_queue, stop_event):
         self._event_queue = event_queue
@@ -133,8 +150,7 @@ def emit_or_apply_state(runtime: BackgroundRuntime | None, **values) -> None:
 
 def emit_or_apply_image_reset(runtime: BackgroundRuntime | None) -> None:
     if runtime is None:
-        st.session_state.image_assets = []
-        st.session_state.image_validation_failures = []
+        _reset_image_state()
         return
     runtime.emit(ResetImageStateEvent())
 
@@ -197,8 +213,7 @@ def drain_processing_events(*, set_processing_status, finalize_processing_status
         if isinstance(event, SetStateEvent):
             set_session_values(**event.values)
         elif isinstance(event, ResetImageStateEvent):
-            st.session_state.image_assets = []
-            st.session_state.image_validation_failures = []
+            _reset_image_state()
         elif isinstance(event, SetProcessingStatusEvent):
             set_processing_status(**event.payload)
         elif isinstance(event, FinalizeProcessingStatusEvent):

@@ -1,4 +1,7 @@
 import logging
+import threading
+import time
+from typing import cast
 
 import streamlit as st
 
@@ -8,7 +11,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-from constants import MAX_DOCX_ARCHIVE_SIZE_BYTES
+from constants import APP_READY_PATH, MAX_DOCX_ARCHIVE_SIZE_BYTES
 from config import load_app_config
 from app_runtime import (
     build_preparation_request_marker,
@@ -35,7 +38,9 @@ from state import (
 from ui import (
     inject_ui_styles,
     render_image_validation_summary,
+    render_live_status,
     render_partial_result,
+    render_preparation_summary,
     render_result,
     render_result_bundle,
     render_run_log,
@@ -45,6 +50,8 @@ from ui import (
 from workflow_state import IdleViewState, ProcessingOutcome
 
 PERSISTED_SOURCE_TTL_SECONDS = 12 * 60 * 60
+_CLEANUP_THREAD_LOCK = threading.Lock()
+_CLEANUP_THREAD_STARTED = False
 
 
 @st.cache_resource
@@ -59,6 +66,33 @@ def _cleanup_stale_persisted_sources_once() -> None:
 
     cleanup_stale_persisted_sources(max_age_seconds=PERSISTED_SOURCE_TTL_SECONDS)
     st.session_state.persisted_source_cleanup_done = True
+
+
+def _schedule_stale_persisted_sources_cleanup() -> None:
+    global _CLEANUP_THREAD_STARTED
+    if st.session_state.get("persisted_source_cleanup_done", False):
+        return
+    with _CLEANUP_THREAD_LOCK:
+        if _CLEANUP_THREAD_STARTED:
+            return
+        _CLEANUP_THREAD_STARTED = True
+
+    def worker() -> None:
+        from restart_store import cleanup_stale_persisted_sources
+
+        try:
+            cleanup_stale_persisted_sources(max_age_seconds=PERSISTED_SOURCE_TTL_SECONDS)
+        finally:
+            global _CLEANUP_THREAD_STARTED
+            _CLEANUP_THREAD_STARTED = False
+
+    threading.Thread(target=worker, daemon=True, name="persisted-source-cleanup").start()
+    st.session_state.persisted_source_cleanup_done = True
+
+
+def _mark_app_ready() -> None:
+    APP_READY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    APP_READY_PATH.write_text(f"{time.time():.6f}\n", encoding="utf-8")
 
 
 def _is_uploaded_file_too_large(uploaded_file) -> bool:
@@ -172,7 +206,6 @@ def _render_processing_controls(*, can_start: bool, is_processing: bool) -> str 
 
 def main() -> None:
     init_session_state()
-    _cleanup_stale_persisted_sources_once()
     _drain_processing_events()
     _drain_preparation_events()
     inject_ui_styles()
@@ -205,10 +238,13 @@ def main() -> None:
         @st.fragment(run_every=1)
         def render_processing_panel() -> None:
             _drain_processing_events()
+            render_live_status()
             render_run_log()
             render_image_validation_summary()
             render_partial_result()
             render_section_gap("lg")
+            _mark_app_ready()
+            _schedule_stale_persisted_sources_cleanup()
 
             action = _render_processing_controls(can_start=False, is_processing=_processing_worker_is_active())
             if action == "stop":
@@ -227,7 +263,10 @@ def main() -> None:
     @st.fragment(run_every=1)
     def render_preparation_panel() -> None:
         _drain_preparation_events()
+        render_live_status()
         render_run_log()
+        _mark_app_ready()
+        _schedule_stale_persisted_sources_cleanup()
         if not _preparation_worker_is_active():
             st.rerun()
 
@@ -236,6 +275,8 @@ def main() -> None:
             f"Размер DOCX превышает допустимый предел {MAX_DOCX_ARCHIVE_SIZE_BYTES // (1024 * 1024)} МБ. Загрузите файл меньшего размера."
         )
         render_run_log()
+        _mark_app_ready()
+        _schedule_stale_persisted_sources_cleanup()
         return
 
     if preparation_active:
@@ -251,6 +292,8 @@ def main() -> None:
         render_run_log()
         render_image_validation_summary()
         render_partial_result()
+        _mark_app_ready()
+        _schedule_stale_persisted_sources_cleanup()
         return
 
     if uploaded_widget_file is not None:
@@ -272,20 +315,26 @@ def main() -> None:
         if preparation_failed_marker == preparation_request_marker and prepared_run_context is None:
             if st.session_state.last_error:
                 st.error(st.session_state.last_error)
+            render_live_status()
             render_run_log()
+            _mark_app_ready()
+            _schedule_stale_persisted_sources_cleanup()
             return
 
     from application_flow import (
+        SessionStateLike,
         derive_app_idle_view_state,
         has_resettable_state,
         prepare_run_context,
         resolve_effective_uploaded_file,
     )
 
+    session_state = cast(SessionStateLike, st.session_state)
+
     uploaded_file = resolve_effective_uploaded_file(
         uploaded_file=uploaded_widget_file,
         current_result=current_result,
-        session_state=st.session_state,
+        session_state=session_state,
     )
 
     prepared_run_context = None
@@ -298,25 +347,34 @@ def main() -> None:
                 "Подготовка файла еще не завершилась или состояние подготовки было сброшено. Подождите несколько секунд. "
                 "Если экран не обновляется, загрузите файл повторно."
             )
+            render_live_status()
             render_run_log()
+            _mark_app_ready()
+            _schedule_stale_persisted_sources_cleanup()
             return
 
-    if has_resettable_state(current_result=current_result, session_state=st.session_state):
+    if has_resettable_state(current_result=current_result, session_state=session_state):
         if st.button("Сбросить результаты", use_container_width=True):
             reset_run_state(keep_restart_source=False)
             st.rerun()
     idle_view_state = derive_app_idle_view_state(
         current_result=current_result,
         uploaded_file=uploaded_file,
-        session_state=st.session_state,
+        session_state=session_state,
     )
 
     if idle_view_state != IdleViewState.FILE_SELECTED:
         if idle_view_state == IdleViewState.COMPLETED:
+            if current_result is None:
+                st.error("Результат обработки недоступен в текущей сессии.")
+                _mark_app_ready()
+                _schedule_stale_persisted_sources_cleanup()
+                return
+            completed_result = cast(dict[str, object], current_result)
             render_result_bundle(
-                docx_bytes=current_result["docx_bytes"],
-                markdown_text=str(current_result["markdown_text"]),
-                original_filename=str(current_result["source_name"]),
+                docx_bytes=cast(bytes, completed_result["docx_bytes"]),
+                markdown_text=str(completed_result["markdown_text"]),
+                original_filename=str(completed_result["source_name"]),
                 title="Последний результат",
                 success_message=None,
                 preview_title="Предпросмотр Markdown",
@@ -326,6 +384,8 @@ def main() -> None:
         render_run_log()
         render_image_validation_summary()
         render_partial_result()
+        _mark_app_ready()
+        _schedule_stale_persisted_sources_cleanup()
         return
 
     if prepared_run_context is None:
@@ -392,6 +452,7 @@ def main() -> None:
     has_completed_result = bool(
         st.session_state.latest_docx_bytes and st.session_state.latest_source_token == uploaded_file_token
     )
+    render_preparation_summary(st.session_state.get("latest_preparation_summary"))
     render_partial_result()
     render_run_log()
     render_image_validation_summary()
@@ -408,6 +469,8 @@ def main() -> None:
         render_result(st.session_state.latest_docx_bytes, st.session_state.latest_markdown, uploaded_filename)
 
     render_section_gap("lg")
+    _mark_app_ready()
+    _schedule_stale_persisted_sources_cleanup()
     action = _render_processing_controls(can_start=True, is_processing=False)
     if action == "start":
         _start_background_processing(

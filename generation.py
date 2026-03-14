@@ -1,7 +1,8 @@
 import tempfile
 import time
+from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pypandoc
 from docx import Document
@@ -14,6 +15,7 @@ if TYPE_CHECKING:
     from openai import OpenAI
 
 
+@lru_cache(maxsize=1)
 def ensure_pandoc_available() -> None:
     try:
         pypandoc.get_pandoc_version()
@@ -36,6 +38,22 @@ def normalize_model_output(text: str) -> str:
         cleaned = cleaned[:-3].strip()
     return cleaned
 
+
+def _normalize_context_text(text: str | None) -> str:
+    if text is None:
+        return "[контекст отсутствует]"
+    cleaned = text.strip()
+    return cleaned or "[контекст отсутствует]"
+
+
+def _extract_response_output_text(response: object) -> str:
+    output_text = getattr(response, "output_text", None)
+    if output_text is None:
+        return ""
+    if not isinstance(output_text, str):
+        raise RuntimeError("Модель вернула ответ в неподдерживаемом формате.")
+    return output_text
+
 def generate_markdown_block(
     client: "OpenAI",
     model: str,
@@ -45,8 +63,13 @@ def generate_markdown_block(
     context_after: str,
     max_retries: int,
 ) -> str:
-    context_before_text = context_before or "[контекст отсутствует]"
-    context_after_text = context_after or "[контекст отсутствует]"
+    if isinstance(max_retries, bool) or not isinstance(max_retries, int):
+        raise TypeError("max_retries должен быть целым числом.")
+    if max_retries < 1:
+        raise ValueError("max_retries должен быть не меньше 1.")
+
+    context_before_text = _normalize_context_text(context_before)
+    context_after_text = _normalize_context_text(context_after)
     user_prompt = (
         "Ниже передан целевой блок документа и соседний контекст.\n"
         "Используй соседний контекст только для понимания смысла, терминологии и связности.\n"
@@ -55,7 +78,7 @@ def generate_markdown_block(
         f"[TARGET BLOCK]\n{target_text}\n\n"
         f"[CONTEXT AFTER]\n{context_after_text}"
     )
-    payload = [
+    payload: Any = [
         {
             "role": "system",
             "content": [{"type": "input_text", "text": system_prompt}],
@@ -69,7 +92,7 @@ def generate_markdown_block(
     for attempt in range(1, max_retries + 1):
         try:
             response = client.responses.create(model=model, input=payload)
-            markdown = normalize_model_output(response.output_text)
+            markdown = normalize_model_output(_extract_response_output_text(response))
             if not markdown:
                 raise RuntimeError("Модель вернула пустой ответ.")
             return markdown
@@ -78,6 +101,8 @@ def generate_markdown_block(
             if not should_retry:
                 raise
             time.sleep(min(2 ** (attempt - 1), 8))
+
+    raise RuntimeError("Не удалось получить ответ модели.")
 
 
 def convert_markdown_to_docx_bytes(markdown_text: str) -> bytes:
@@ -154,10 +179,11 @@ def _build_reference_docx(reference_docx_path: Path) -> None:
         _configure_paragraph_style(styles["List Paragraph"], font_name="Aptos", font_size=11, space_after=4, line_spacing=1.1)
 
     if "Table Grid" in styles:
-        styles["Table Grid"].font.name = "Aptos"
-        styles["Table Grid"].font.size = Pt(10)
+        table_grid_style = cast(Any, styles["Table Grid"])
+        table_grid_style.font.name = "Aptos"
+        table_grid_style.font.size = Pt(10)
 
-    reference_document.save(reference_docx_path)
+    reference_document.save(str(reference_docx_path))
 
 
 def _configure_paragraph_style(

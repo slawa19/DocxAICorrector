@@ -1,5 +1,7 @@
 # Спецификация: атомарная переделка WSL-first dev workflow для DocxAICorrector
 
+> Статус: cutover уже реализован. Разделы `Текущее состояние` и `План атомарного внедрения` ниже фиксируют baseline и план на момент проектирования; актуальные task names для текущего репозитория — `Project Status`, `Start Project`, `Stop Project`, `Run Full Pytest WSL`, `Run Current Test File WSL`, `Run Current Test Node WSL`, `Tail Streamlit Log`.
+
 ## 1. Цель
 
 Зафиксировать атомарную переделку локального dev workflow, которая:
@@ -112,6 +114,7 @@ Raw WSL command может оставаться только как низкоу
 - `pytest` запускается только внутри WSL
 - `streamlit run` запускается только внутри WSL
 - `pandoc` проверяется и используется только внутри WSL
+- Windows virtualenv вида `.venv-win/` может существовать только для editor-side tooling и не должен участвовать в runtime auto-selection внутри PowerShell wrappers
 
 ### 5.2 Windows как transport layer
 
@@ -121,6 +124,8 @@ Windows не исполняет бизнес-логику запуска. Его
 - нормализовать входные параметры при необходимости
 - передать управление в WSL helper
 - вывести результат пользователю
+
+Следствие: наличие `.venv-win/` или других Windows Python binaries не должно автоматически менять runtime-mode `Start Project`, `Stop Project`, `Project Status`, test wrappers или log wrappers.
 
 ### 5.3 Repo-relative contracts
 

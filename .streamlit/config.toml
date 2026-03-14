@@ -4,6 +4,8 @@ headless = true
 enableCORS = false
 enableXsrfProtection = false
 address = "0.0.0.0"
+fileWatcherType = "none"
+runOnSave = false
 folderWatchBlacklist = [".run", ".git", ".venv", "__pycache__", ".pytest_cache"]
 
 [browser]

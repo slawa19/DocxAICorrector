@@ -7,7 +7,7 @@ try {
     $portOpen = ConvertTo-BoolFlag $status['port_open']
     $managedPidRunning = ConvertTo-BoolFlag $status['managed_pid_running']
 
-    if (-not $portOpen) {
+    if (-not $portOpen -and -not $managedPidRunning) {
         Write-Ok 'Проект уже остановлен'
         Write-Host 'Status: STOPPED' -ForegroundColor Green
         exit 0
@@ -17,12 +17,12 @@ try {
         throw "Порт $port занят неуправляемым процессом. Stop Project останавливает только экземпляр, запущенный через scripts/start-project.ps1."
     }
 
-    Invoke-WslInProject 'stop-streamlit' 2>$null | Out-Null
+    Stop-ManagedProject
 
     $stopped = $false
     for ($i = 1; $i -le 20; $i++) {
         Start-Sleep -Milliseconds 500
-        if (-not (Test-TcpPort -ComputerName $serverHost -Port $port)) {
+        if (-not (Test-TcpPort -ComputerName $loopbackHost -Port $port)) {
             $stopped = $true
             break
         }

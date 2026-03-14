@@ -32,6 +32,7 @@ def test_drain_processing_events_applies_typed_runtime_events(monkeypatch):
         processing_event_queue=queue.Queue(),
         image_assets=["stale"],
         image_validation_failures=["stale"],
+        image_processing_summary={"total_images": 3, "processed_images": 2, "validation_errors": ["boom"]},
         restart_source=None,
         processing_worker=object(),
         processing_stop_event=object(),
@@ -67,6 +68,14 @@ def test_drain_processing_events_applies_typed_runtime_events(monkeypatch):
     assert session_state.last_error == "boom"
     assert session_state.image_assets == []
     assert session_state.image_validation_failures == []
+    assert session_state.image_processing_summary == {
+        "total_images": 0,
+        "processed_images": 0,
+        "images_validated": 0,
+        "validation_passed": 0,
+        "fallbacks_applied": 0,
+        "validation_errors": [],
+    }
     assert calls["status"] == [{"stage": "run", "detail": "detail"}]
     assert calls["finalize"] == [("done", "ok", 1.0)]
     assert calls["activity"] == ["hello"]

@@ -1,5 +1,7 @@
 # Спецификация v3: Quality Hardening для Image Pipeline (Архитектура 2026)
 
+> Статус: archived follow-up spec. Документ сохранён как historical spike/follow-up и не является текущим source of truth по image modes. Для актуального контракта используйте `docs/WORKFLOW_AND_IMAGE_MODES.md`.
+
 ## 0. Назначение документа
 Этот документ описывает модернизацию пайплайна перерисовки изображений с учетом перехода OpenAI на нативную мультимодальную генерацию (модель `gpt-image-1` на базе архитектуры GPT-4o). 
 
@@ -240,10 +242,10 @@ def extract_complex_diagram_to_mermaid(image_bytes: bytes, mime_type: str) -> st
 
 ### 6.1. Быстрая локальная проверка
 
-Основной быстрый контур проверки должен запускаться локально без реального API:
+Основной быстрый контур проверки должен запускаться в WSL `.venv`. Для штатных single-file и single-node сценариев приоритетны wrappers/tasks, а для такого multi-file subset допустим низкоуровневый WSL fallback:
 
-```powershell
-d:/www/Projects/2025/DocxAICorrector/.venv/Scripts/python.exe -m pytest tests/test_spec_image_followup.py tests/test_image_analysis.py tests/test_image_generation.py tests/test_real_image_pipeline.py -q
+```bash
+bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate && pytest tests/test_spec_image_followup.py tests/test_image_analysis.py tests/test_image_generation.py tests/test_real_image_pipeline.py -q'
 ```
 
 Что подтверждает этот запуск:
@@ -258,9 +260,8 @@ d:/www/Projects/2025/DocxAICorrector/.venv/Scripts/python.exe -m pytest tests/te
 
 После успешного локального контура нужно запускать короткий live smoke только на существующем real-image наборе:
 
-```powershell
-$env:DOCX_AI_RUN_LIVE_IMAGE_API_TESTS=1
-d:/www/Projects/2025/DocxAICorrector/.venv/Scripts/python.exe -m pytest tests/test_real_image_pipeline.py -q
+```bash
+bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && export DOCX_AI_RUN_LIVE_IMAGE_API_TESTS=1 && . .venv/bin/activate && pytest tests/test_real_image_pipeline.py -q'
 ```
 
 Минимально рекомендуемые кейсы:

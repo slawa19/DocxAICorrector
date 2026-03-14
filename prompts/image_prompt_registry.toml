@@ -1,3 +1,6 @@
+# `preferred_strategy` хранит внутренние routing names image-pipeline.
+# Пользовательский UI-режим `safe` соответствует внутренней стратегии `safe_mode`.
+
 default_prompt_keys = [
     "diagram_semantic_redraw",
     "table_semantic_redraw",

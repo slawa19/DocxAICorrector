@@ -1,5 +1,7 @@
 # DOCX Formatting Hardening Spec
 
+> Status: implemented on 2026-03-13. The `Current State` and `Weak areas that remain` sections below describe the pre-hardening baseline that this implementation pass was addressing.
+
 ## Goal
 
 Improve the final edited DOCX so it is cleanly structured and visually coherent without trying to preserve the full source style zoo.

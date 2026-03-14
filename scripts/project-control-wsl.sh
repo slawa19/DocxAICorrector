@@ -10,6 +10,7 @@ VENV_PYTHON="$VENV_DIR/bin/python"
 WSL_PID_PATH="$RUN_DIR/wsl_streamlit.pid"
 PANDOC_EXE="$VENV_DIR/bin/pandoc"
 STREAMLIT_LOG_PATH="$RUN_DIR/streamlit.log"
+APP_READY_PATH="$RUN_DIR/app.ready"
 DEFAULT_PORT="8501"
 
 mkdir -p "$RUN_DIR"
@@ -163,6 +164,10 @@ app_page_ok() {
     return 1
 }
 
+app_ready() {
+    [[ -f "$APP_READY_PATH" ]]
+}
+
 print_runtime_status() {
     local port="${1:-$DEFAULT_PORT}"
     local managed_pid=""
@@ -170,6 +175,7 @@ print_runtime_status() {
     local port_open="false"
     local health_status="false"
     local app_page_status="false"
+    local app_ready_status="false"
 
     managed_pid="$(read_managed_pid)"
     if [[ -n "$managed_pid" ]] && kill -0 "$managed_pid" 2>/dev/null; then
@@ -191,6 +197,10 @@ print_runtime_status() {
         app_page_status="true"
     fi
 
+    if app_ready; then
+        app_ready_status="true"
+    fi
+
     local state="stopped"
     if [[ "$managed_pid_running" == "true" && "$health_status" == "true" && "$app_page_status" == "true" ]]; then
         state="running"
@@ -205,6 +215,7 @@ print_runtime_status() {
     printf 'port_open=%s\n' "$port_open"
     printf 'health_ok=%s\n' "$health_status"
     printf 'app_page_ok=%s\n' "$app_page_status"
+    printf 'app_ready_ok=%s\n' "$app_ready_status"
     printf 'state=%s\n' "$state"
 }
 
@@ -345,6 +356,7 @@ run_streamlit() {
     fi
 
     : > "$STREAMLIT_LOG_PATH"
+    rm -f "$APP_READY_PATH"
     # nohup ignores SIGHUP; disown removes from job table so the process
     # survives after this bash script exits. $! is the real Streamlit PID.
     nohup "$VENV_PYTHON" -m streamlit run "$APP_PATH" \
@@ -415,6 +427,7 @@ stop_streamlit() {
         fi
     fi
     rm -f "$WSL_PID_PATH"
+    rm -f "$APP_READY_PATH"
 }
 
 tail_log() {
