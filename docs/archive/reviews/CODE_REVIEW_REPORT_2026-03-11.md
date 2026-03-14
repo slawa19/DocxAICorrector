@@ -1,6 +1,6 @@
 # Код-ревью рефакторинга state / preparation / runtime
 
-> Статус: archived point-in-time review snapshot на 2026-03-11. Для более полного и позднего сводного состояния проекта ориентиром служит `docs/CODE_REVIEW_REPORT_2026-03-12.md`. Этот файл не является текущим source of truth.
+> Статус: archived point-in-time review snapshot на 2026-03-11. Для более полного и позднего сводного состояния проекта ориентиром служит `docs/archive/reviews/CODE_REVIEW_REPORT_2026-03-12.md`. Этот файл не является текущим source of truth.
 
 Дата: 2026-03-11
 Тесты: 181 passed, 4 skipped

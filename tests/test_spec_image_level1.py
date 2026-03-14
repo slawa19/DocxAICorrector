@@ -4,6 +4,8 @@ from pathlib import Path
 spec_path = (
     Path(__file__).resolve().parent.parent
     / "docs"
+    / "archive"
+    / "specs"
     / "Спецификация разработки_ Level 1 post-check для image semantic-redraw-mode.md"
 )
 

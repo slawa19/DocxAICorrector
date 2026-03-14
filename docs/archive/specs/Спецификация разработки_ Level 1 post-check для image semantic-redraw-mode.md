@@ -11,7 +11,7 @@
 
 - текущую архитектуру проекта (`app.py`, `document.py`, `generation.py`, `config.py`, `ui.py`);
 - текущую image-спецификацию:
-  `docs/Спецификация v1_ сохранение и улучшение изображений в DOCX.md`;
+  `docs/archive/specs/Спецификация v1_ сохранение и улучшение изображений в DOCX.md`;
 - практику проекта: минимальные расширения поверх существующего pipeline, явные fallback-ветки,
   JSON-логирование и pytest-регрессии на ключевые контракты.
 
@@ -851,7 +851,7 @@ production-ready guardrail**, а не задачу максимального к
        точечная настройка fallback-policy.
 
 Для этих пунктов заведена отдельная follow-up спецификация:
-`docs/Спецификация follow-up - quality hardening для image pipeline.md`.
+`docs/archive/specs/Спецификация follow-up - quality hardening для image pipeline.md`.
 
 ### Как читать этот checklist
 

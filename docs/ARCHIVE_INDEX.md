@@ -17,28 +17,28 @@
 
 ## Archived Specs And Plans
 
-- `docs/decomposition.md`
-- `docs/IMAGE_UI_PIPELINE_MODES.md`
-- `docs/IMAGE_PIPELINE_V2_SPEC.md`
-- `docs/IMAGE_PIPELINE_REFACTOR_PLAN.md`
-- `docs/REFACTORING_STATE_AND_PREPARATION_SPEC.md`
-- `docs/Спецификация MVP_ AI-редактор DOCX через Markdown с веб-интерфейсом.md`
-- `docs/Спецификация v1_ сохранение и улучшение изображений в DOCX.md`
-- `docs/Спецификация разработки_ Level 1 post-check для image semantic-redraw-mode.md`
-- `docs/Спецификация follow-up - quality hardening для image pipeline.md`
+- `docs/archive/specs/decomposition.md`
+- `docs/archive/specs/IMAGE_UI_PIPELINE_MODES.md`
+- `docs/archive/specs/IMAGE_PIPELINE_V2_SPEC.md`
+- `docs/archive/specs/IMAGE_PIPELINE_REFACTOR_PLAN.md`
+- `docs/archive/specs/REFACTORING_STATE_AND_PREPARATION_SPEC.md`
+- `docs/archive/specs/Спецификация MVP_ AI-редактор DOCX через Markdown с веб-интерфейсом.md`
+- `docs/archive/specs/Спецификация v1_ сохранение и улучшение изображений в DOCX.md`
+- `docs/archive/specs/Спецификация разработки_ Level 1 post-check для image semantic-redraw-mode.md`
+- `docs/archive/specs/Спецификация follow-up - quality hardening для image pipeline.md`
 
 ## Archived Review Snapshots
 
-- `docs/CODE_REVIEW_REPORT.md`
-- `docs/CODE_REVIEW_REPORT_2026-03-11.md`
-- `docs/CODE_REVIEW_REPORT_2026-03-12.md`
+- `docs/archive/reviews/CODE_REVIEW_REPORT.md`
+- `docs/archive/reviews/CODE_REVIEW_REPORT_2026-03-11.md`
+- `docs/archive/reviews/CODE_REVIEW_REPORT_2026-03-12.md`
 
 ## Archived Drafts And Non-Canonical Product Notes
 
-- `docs/monetization.md`
-- `docs/monetization1.md`
-- `docs/monatization2.md`
+- `plans/monetization.md`
+- `docs/archive/drafts/monetization1.md`
+- `docs/archive/drafts/monatization2.md`
 
 Эти документы можно использовать для архитектурного и исторического контекста, но при конфликте приоритет всегда у текущих runtime- и user-facing документов сверху.
 
-Примечание по структуре: если archived-файл физически лежит в корне `docs/`, это не делает его активным. Каноничность определяется этим индексом и статусной пометкой в самом документе.
+Примечание по структуре: archived-материалы вынесены в `docs/archive/` и `plans/`, но каноничность всё равно определяется этим индексом и статусной пометкой в самом документе.

@@ -16,6 +16,7 @@ try {
 
     $exitCode = 0
     $finalOutput = @()
+    $details = ''
     for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
         if ($attempt -eq 1) {
             Write-Step "Running full pytest in WSL [$runMarker]"
@@ -31,23 +32,27 @@ try {
         $finalOutput = & wsl.exe -d $wslDistro bash $wslScriptPath run-tests @PytestArgs 2>&1 |
             Tee-Object -FilePath $pytestLogPath -Append
         $exitCode = $LASTEXITCODE
-        $details = (@($finalOutput) | ForEach-Object { $_ | Out-String }).Trim()
-        $isTransientWslFailure = (
-            $exitCode -eq -1 -or
-            $details.Contains('Wsl/Service/') -or
-            $details.Contains('0x8007274c')
-        )
+        $details = ConvertTo-OutputText $finalOutput
+        $isTransientWslFailure = Test-IsTransientWslFailure -ExitCode $exitCode -Details $details
 
         if (-not $isTransientWslFailure -or $attempt -eq $maxAttempts) {
             break
         }
 
         Write-Warn "Transient WSL transport failure during full pytest (attempt $attempt/$maxAttempts)."
+        Reset-WslTransport
         Start-Sleep -Seconds $attempt
     }
 
     if ($exitCode -ne 0) {
+        if ($exitCode -eq -1 -and [string]::IsNullOrWhiteSpace($details)) {
+            $details = 'WSL transport failed without emitting pytest output. Retry limit exhausted.'
+            Add-Content -LiteralPath $pytestLogPath -Value $details -Encoding UTF8
+        }
         Write-Warn "Full pytest log saved to $pytestLogPath"
+        if ($details) {
+            Write-Warn $details
+        }
         Write-Fail "Pytest exited with code $exitCode"
         exit $exitCode
     }

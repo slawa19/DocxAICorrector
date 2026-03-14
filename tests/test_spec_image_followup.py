@@ -4,6 +4,8 @@ from pathlib import Path
 followup_spec_path = (
     Path(__file__).resolve().parent.parent
     / "docs"
+    / "archive"
+    / "specs"
     / "Спецификация follow-up - quality hardening для image pipeline.md"
 )
 

@@ -1,6 +1,6 @@
 # Код-ревью проекта DocxAICorrector — актуализированный отчёт
 
-> Статус: archived historical review snapshot на 2026-03-09. Для более нового состояния проекта ориентируйтесь в первую очередь на `docs/CODE_REVIEW_REPORT_2026-03-11.md` и `docs/CODE_REVIEW_REPORT_2026-03-12.md`, а для актуальных runtime/image-mode контрактов на `docs/WORKFLOW_AND_IMAGE_MODES.md`.
+> Статус: archived historical review snapshot на 2026-03-09. Для более нового состояния проекта ориентируйтесь в первую очередь на `docs/archive/reviews/CODE_REVIEW_REPORT_2026-03-11.md` и `docs/archive/reviews/CODE_REVIEW_REPORT_2026-03-12.md`, а для актуальных runtime/image-mode контрактов на `docs/WORKFLOW_AND_IMAGE_MODES.md`.
 
 **Дата:** 2026-03-09  
 **Статус:** обновлено по результатам перепроверки кода  
@@ -461,7 +461,7 @@ flowchart TD
 
 ## Итоговая оценка актуальности отчёта
 
-Предыдущая версия `docs/CODE_REVIEW_REPORT.md` была полезным черновиком: она правильно указывала на часть проблем в image pipeline, DOCX reinsertion и архитектурной перегрузке.
+Предыдущая версия `docs/archive/reviews/CODE_REVIEW_REPORT.md` была полезным черновиком: она правильно указывала на часть проблем в image pipeline, DOCX reinsertion и архитектурной перегрузке.
 
 Однако как **точный технический снимок текущего кода** она требовала существенного обновления, потому что:
 

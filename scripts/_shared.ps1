@@ -151,12 +151,8 @@ function Invoke-WslInProject {
             return $lastOutput
         }
 
-        $details = (@($lastOutput) | ForEach-Object { $_ | Out-String }).Trim()
-        $isTransientWslFailure = (
-            $lastExitCode -eq -1 -or
-            $details.Contains('Wsl/Service/') -or
-            $details.Contains('0x8007274c')
-        )
+        $details = ConvertTo-OutputText $lastOutput
+        $isTransientWslFailure = Test-IsTransientWslFailure -ExitCode $lastExitCode -Details $details
 
         if (-not $isTransientWslFailure -or $attempt -eq $maxAttempts) {
             $global:LASTEXITCODE = $lastExitCode
@@ -164,11 +160,60 @@ function Invoke-WslInProject {
         }
 
         Write-Warn "Transient WSL transport failure during '$Action' (attempt $attempt/$maxAttempts). Retrying..."
+        Reset-WslTransport
         Start-Sleep -Seconds $attempt
     }
 
     $global:LASTEXITCODE = $lastExitCode
     return $lastOutput
+}
+
+function ConvertTo-OutputText {
+    param([object[]]$Output)
+
+    if ($null -eq $Output) {
+        return ''
+    }
+
+    return ((@($Output) | ForEach-Object { $_ | Out-String }) -join '').Trim()
+}
+
+function Test-IsTransientWslFailure {
+    param(
+        [int]$ExitCode,
+        [string]$Details
+    )
+
+    if ($ExitCode -eq -1) {
+        return $true
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Details)) {
+        return $false
+    }
+
+    return (
+        $Details.Contains('Wsl/Service/') -or
+        $Details.Contains('0x8007274c') -or
+        $Details.Contains('0xffffffff')
+    )
+}
+
+function Reset-WslTransport {
+    $shutdownOutput = & wsl.exe --shutdown 2>&1
+    $shutdownExitCode = $LASTEXITCODE
+    if ($shutdownExitCode -ne 0) {
+        $shutdownDetails = ConvertTo-OutputText $shutdownOutput
+        if ($shutdownDetails) {
+            Write-Warn "WSL shutdown during retry recovery returned exit code $shutdownExitCode: $shutdownDetails"
+        }
+        else {
+            Write-Warn "WSL shutdown during retry recovery returned exit code $shutdownExitCode."
+        }
+        return
+    }
+
+    Start-Sleep -Seconds 1
 }
 
 function Get-PreferredRuntimeMode {
