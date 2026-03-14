@@ -31,79 +31,6 @@ require_venv() {
     fi
 }
 
-validation_error() {
-    echo "$1" >&2
-    exit 2
-}
-
-is_canonical_test_file() {
-    local selector="$1"
-    [[ "$selector" == tests/*.py ]] && [[ "$selector" != *\\* ]] && [[ "$selector" != *::* ]]
-}
-
-is_canonical_test_node() {
-    local selector="$1"
-    [[ "$selector" == tests/*.py::* ]] && [[ "$selector" != *\\* ]]
-}
-
-validate_test_file_selector() {
-    local selector="$1"
-    if [[ -z "$selector" ]]; then
-        validation_error "Missing test file selector. Expected repo-relative path such as tests/test_config.py"
-    fi
-    if [[ "$selector" == *::* ]]; then
-        validation_error "Test file selector must not contain pytest node suffix: $selector"
-    fi
-    if [[ "$selector" == [A-Za-z]:* ]] || [[ "$selector" == /* ]] || [[ "$selector" == \\* ]]; then
-        validation_error "WSL dispatcher accepts only repo-relative test selectors: $selector"
-    fi
-    if ! is_canonical_test_file "$selector"; then
-        validation_error "Invalid test file selector. Expected canonical repo-relative path under tests/: $selector"
-    fi
-    if [[ ! -f "$PROJECT_ROOT/$selector" ]]; then
-        validation_error "Test file not found under repository root: $selector"
-    fi
-}
-
-validate_test_node_selector() {
-    local selector="$1"
-    local file_selector=""
-
-    if [[ -z "$selector" ]]; then
-        validation_error "Missing test node selector. Expected repo-relative node id such as tests/test_config.py::test_name"
-    fi
-    if [[ "$selector" == [A-Za-z]:* ]] || [[ "$selector" == /* ]] || [[ "$selector" == \\* ]]; then
-        validation_error "WSL dispatcher accepts only repo-relative test selectors: $selector"
-    fi
-    if ! is_canonical_test_node "$selector"; then
-        validation_error "Invalid test node selector. Expected canonical repo-relative node id under tests/: $selector"
-    fi
-
-    file_selector="${selector%%::*}"
-    validate_test_file_selector "$file_selector"
-}
-
-run_pytest() {
-    require_venv
-    (
-        cd "$PROJECT_ROOT"
-        . "$VENV_DIR/bin/activate"
-        pytest "$@"
-    )
-}
-
-has_explicit_verbosity_flag() {
-    local arg=""
-    for arg in "$@"; do
-        case "$arg" in
-            -q|-qq|-v|-vv|-vvv|--quiet|--verbose)
-                return 0
-                ;;
-        esac
-    done
-    return 1
-}
-
 is_port_open() {
     local port="${1:-$DEFAULT_PORT}"
     (echo > "/dev/tcp/127.0.0.1/$port") >/dev/null 2>&1
@@ -437,41 +364,6 @@ tail_log() {
     fi
 }
 
-run_tests() {
-    if has_explicit_verbosity_flag "$@"; then
-        run_pytest tests "$@"
-        return
-    fi
-
-    run_pytest tests -q "$@"
-}
-
-run_test_file() {
-    local selector="${1:-}"
-    shift || true
-    validate_test_file_selector "$selector"
-
-    if has_explicit_verbosity_flag "$@"; then
-        run_pytest "$selector" "$@"
-        return
-    fi
-
-    run_pytest "$selector" -vv "$@"
-}
-
-run_test_node() {
-    local selector="${1:-}"
-    shift || true
-    validate_test_node_selector "$selector"
-
-    if has_explicit_verbosity_flag "$@"; then
-        run_pytest "$selector" "$@"
-        return
-    fi
-
-    run_pytest "$selector" -vv "$@"
-}
-
 case "${1:-}" in
     check-python)
         check_python
@@ -505,18 +397,6 @@ case "${1:-}" in
         ;;
     tail-log)
         tail_log "${2:-80}"
-        ;;
-    run-tests)
-        shift
-        run_tests "$@"
-        ;;
-    run-test-file)
-        shift
-        run_test_file "$@"
-        ;;
-    run-test-node)
-        shift
-        run_test_node "$@"
         ;;
     *)
         echo "Unsupported action: ${1:-}" >&2

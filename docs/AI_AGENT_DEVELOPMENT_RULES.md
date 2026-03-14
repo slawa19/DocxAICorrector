@@ -323,21 +323,21 @@
 
 ---
 
-### 5.4. В этом репозитории полный pytest нужно запускать из PowerShell через WSL-venv
+### 5.4. В этом репозитории полный pytest нужно запускать напрямую в WSL через test.sh
 
 Для этого проекта недостаточно абстрактной команды `pytest` из любой оболочки.
 
 Обязательное правило:
 
-- если нужно прогнать весь test suite, ИИ-агент должен использовать wrapper `./scripts/run-tests.ps1` или task `Run Full Pytest WSL`; wrapper уже проксирует запуск в `WSL` с активацией `.venv/bin/activate`;
-- для штатного прогона через UI VS Code приоритетен task `Run Full Pytest WSL`, а для file-level и node-level сценариев используются `Run Current Test File WSL` и `Run Current Test Node WSL`;
+- если нужно прогнать весь test suite, ИИ-агент должен использовать `bash scripts/test.sh tests/ -q` из WSL или task `Run Full Pytest`;
+- для file-level и node-level сценариев агент должен использовать `bash scripts/test.sh <target> -vv` или соответствующие `Run Current Test File` и `Run Current Test Node` tasks;
 - нельзя полагаться на `.venv\Scripts\python.exe` как на источник истины, потому что этот репозиторий использует WSL-based virtualenv;
 - перед интерпретацией результатов нужно убедиться, что pytest видит корень проекта в `sys.path` и может импортировать `app.py`, `generation.py`, `restart_store.py` и остальные top-level модули.
 
-Канонический wrapper-driven запуск:
+Канонический запуск:
 
-```powershell
-./scripts/run-tests.ps1
+```bash
+bash scripts/test.sh tests/ -q
 ```
 
 Низкоуровневый fallback:

@@ -217,7 +217,7 @@ def test_restart_flow_restores_uploaded_file_from_run_store_and_cleans_up(tmp_pa
 
 
 def test_prepare_run_context_for_background_uses_real_cache(monkeypatch):
-    preparation.clear_preparation_cache()
+    preparation.clear_preparation_cache(clear_shared=True)
     calls = {"extract": 0}
     progress_events = []
 

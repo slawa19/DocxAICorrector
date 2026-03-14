@@ -74,6 +74,16 @@ def _build_png_stub_bytes() -> bytes:
 PNG_STUB_BYTES = _build_png_stub_bytes()
 
 
+def _build_png_stub_bytes_for_size(size: tuple[int, int]) -> bytes:
+    width, height = size
+    image = Image.new("RGBA", (width, height), (220, 220, 220, 255))
+    image.putpixel((min(width - 1, 1), min(height - 1, 1)), (40, 100, 200, 255))
+    image.putpixel((min(width - 1, 2), min(height - 1, 2)), (200, 80, 40, 255))
+    output = BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
+
+
 def _load_image_bytes(filename: str) -> bytes:
     return (TESTS_DIR / filename).read_bytes()
 
@@ -216,6 +226,9 @@ class TestRedrawRoutingRealInputs:
             return
 
         captured = {}
+        with Image.open(BytesIO(image_bytes)) as original_image:
+            original_size = original_image.size
+        sized_stub_png = _build_png_stub_bytes_for_size(original_size)
 
         class FakeResponsesClient:
             def create(self, **kwargs):
@@ -226,13 +239,13 @@ class TestRedrawRoutingRealInputs:
             def edit(self, **kwargs):
                 captured["edit"] = kwargs
                 return SimpleNamespace(
-                    data=[SimpleNamespace(b64_json=base64.b64encode(PNG_STUB_BYTES).decode("ascii"), revised_prompt=None)]
+                    data=[SimpleNamespace(b64_json=base64.b64encode(sized_stub_png).decode("ascii"), revised_prompt=None)]
                 )
 
             def generate(self, **kwargs):
                 captured["generate"] = kwargs
                 return SimpleNamespace(
-                    data=[SimpleNamespace(b64_json=base64.b64encode(PNG_STUB_BYTES).decode("ascii"), revised_prompt=None)]
+                    data=[SimpleNamespace(b64_json=base64.b64encode(sized_stub_png).decode("ascii"), revised_prompt=None)]
                 )
 
         fake_client = SimpleNamespace(images=FakeImagesClient(), responses=FakeResponsesClient())

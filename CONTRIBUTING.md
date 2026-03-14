@@ -11,7 +11,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-Не создавайте Windows virtualenv в `.venv`: это перезапишет WSL-based runtime, на который опираются приложение, wrappers и tests.
+Не создавайте Windows virtualenv в `.venv`: это перезапишет WSL-based runtime, на который опираются приложение и штатный тестовый путь.
 
 Если для вспомогательных Windows-only сценариев всё же нужен отдельный venv, используйте другое имя каталога, например `.venv-win`, и не применяйте его для штатного запуска приложения или тестов:
 
@@ -43,20 +43,20 @@ streamlit run app.py
 
 ## Видимый запуск тестов в VS Code
 
-Основной путь через wrappers и tasks:
+Основной путь через WSL tasks и `scripts/test.sh`:
 
 ```text
-Tasks: Run Task -> Run Full Pytest WSL
-Tasks: Run Task -> Run Current Test File WSL
-Tasks: Run Task -> Run Current Test Node WSL
+Tasks: Run Task -> Run Full Pytest
+Tasks: Run Task -> Run Current Test File
+Tasks: Run Task -> Run Current Test Node
 ```
 
-Из PowerShell:
+Канонический CLI-путь из WSL:
 
-```powershell
-./scripts/run-tests.ps1
-./scripts/run-test-file.ps1 tests/test_config.py
-./scripts/run-test-node.ps1 tests/test_config.py::test_name
+```bash
+bash scripts/test.sh tests/ -q
+bash scripts/test.sh tests/test_config.py -vv
+bash scripts/test.sh tests/test_config.py::test_name -vv -x
 ```
 
 Низкоуровневый fallback во встроенном WSL-терминале VS Code:
@@ -71,14 +71,14 @@ bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate &&
 bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate && pytest tests -vv'
 ```
 
-Wrapper-driven tasks открывают отдельный терминал и оставляют его видимым после завершения.
+WSL-driven tasks открывают отдельный терминал и оставляют его видимым после завершения.
 
 ## Перед pull request
 
-Перед отправкой изменений выполняйте полный прогон через штатный wrapper:
+Перед отправкой изменений выполняйте полный прогон через канонический WSL entry point:
 
-```powershell
-./scripts/run-tests.ps1
+```bash
+bash scripts/test.sh tests/ -q
 ```
 
 Низкоуровневый fallback в каноническом WSL-окружении:

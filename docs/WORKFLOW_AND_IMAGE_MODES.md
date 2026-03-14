@@ -10,11 +10,12 @@
 ## Runtime Workflow
 
 - Единственный runtime для Python, pytest, Streamlit и Pandoc: WSL `.venv`.
-- Windows PowerShell используется только как thin wrapper и transport layer для scripts/ и VS Code tasks.
+- Windows PowerShell используется только как thin wrapper и transport layer для lifecycle/diagnostic scripts и соответствующих VS Code tasks.
 - Каталог `.venv-win/` допустим только для editor tooling и статического анализа; он не должен участвовать в runtime auto-selection.
-- Официальные entry points для запуска и диагностики: `Project Status`, `Start Project`, `Stop Project`, `Run Full Pytest WSL`, `Run Current Test File WSL`, `Run Current Test Node WSL`, `Tail Streamlit Log`.
-- Официальные PowerShell wrappers: `scripts/start-project.ps1`, `scripts/stop-project.ps1`, `scripts/status-project.ps1`, `scripts/run-tests.ps1`, `scripts/run-test-file.ps1`, `scripts/run-test-node.ps1`, `scripts/tail-streamlit-log.ps1`.
-- Вся command logic живёт в `scripts/project-control-wsl.sh`; wrappers и tasks не должны дублировать raw pytest или streamlit command chains.
+- Официальные entry points для запуска и диагностики: `Project Status`, `Start Project`, `Stop Project`, `Run Full Pytest`, `Run Current Test File`, `Run Current Test Node`, `Tail Streamlit Log`.
+- Официальный тестовый entry point: `bash scripts/test.sh ...` из WSL или VS Code tasks, которые вызывают WSL/bash напрямую.
+- Официальные PowerShell wrappers: `scripts/start-project.ps1`, `scripts/stop-project.ps1`, `scripts/status-project.ps1`, `scripts/tail-streamlit-log.ps1`.
+- Вся command logic живёт в `scripts/project-control-wsl.sh` и `scripts/test.sh`; lifecycle wrappers и tasks не должны дублировать raw streamlit or pytest command chains.
 
 ## Image Modes
 
@@ -49,5 +50,6 @@
 ## Supporting References
 
 - Детали WSL-first cutover: `plans/WSL_FIRST_DEV_WORKFLOW_SPEC.md`.
+- Детали cleanup тестового контракта: `plans/TEST_WORKFLOW_CONTRACT_CLEANUP_SPEC_2026-03-14.md`.
 - Детали DOCX formatting hardening: `docs/DOCX_FORMATTING_HARDENING_SPEC_2026-03-13.md`.
 - Исторические, superseded и point-in-time документы перечислены в `docs/ARCHIVE_INDEX.md`.

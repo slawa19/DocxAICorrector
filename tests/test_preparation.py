@@ -1,4 +1,5 @@
 from io import BytesIO
+from threading import Event, Thread
 
 from docx import Document
 
@@ -7,7 +8,7 @@ import preparation
 
 
 def setup_function():
-    preparation.clear_preparation_cache()
+    preparation.clear_preparation_cache(clear_shared=True)
 
 
 def _build_docx_bytes(paragraphs: list[str]) -> bytes:
@@ -199,6 +200,103 @@ def test_prepare_document_for_processing_uses_shared_cache_without_session_state
     assert calls["count"] == 1
     assert second.cached is True
     assert progress_events[-1]["metrics"]["cached"] is True
+
+
+def test_prepare_document_for_processing_uses_single_flight_for_shared_cache(monkeypatch):
+    calls = {"count": 0}
+    extract_started = Event()
+    release_extract = Event()
+    second_finished = Event()
+    results = {}
+
+    def fake_extract(uploaded_file):
+        calls["count"] += 1
+        extract_started.set()
+        assert release_extract.wait(timeout=5)
+        return [], []
+
+    monkeypatch.setattr(preparation, "extract_document_content_from_docx", fake_extract)
+    monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "")
+    monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars: [])
+    monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [])
+
+    def worker(result_key: str, finished_event: Event):
+        results[result_key] = preparation.prepare_document_for_processing(
+            uploaded_filename="report.docx",
+            source_bytes=b"docx-bytes",
+            uploaded_file_token="report.docx:10:hash",
+            chunk_size=6000,
+            session_state=None,
+        )
+        finished_event.set()
+
+    first_finished = Event()
+    first_thread = Thread(target=worker, args=("first", first_finished))
+    second_thread = Thread(target=worker, args=("second", second_finished))
+
+    first_thread.start()
+    assert extract_started.wait(timeout=5)
+    second_thread.start()
+
+    assert not second_finished.wait(timeout=0.2)
+
+    release_extract.set()
+    first_thread.join(timeout=5)
+    second_thread.join(timeout=5)
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert calls["count"] == 1
+    assert results["first"].cached is False
+    assert results["second"].cached is True
+
+
+def test_clear_preparation_cache_requires_explicit_shared_clear(monkeypatch):
+    calls = {"count": 0}
+
+    def fake_extract(uploaded_file):
+        calls["count"] += 1
+        return [], []
+
+    monkeypatch.setattr(preparation, "extract_document_content_from_docx", fake_extract)
+    monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "")
+    monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars: [])
+    monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [])
+
+    preparation.prepare_document_for_processing(
+        uploaded_filename="report.docx",
+        source_bytes=b"docx-bytes",
+        uploaded_file_token="report.docx:10:hash",
+        chunk_size=6000,
+        session_state=None,
+    )
+
+    session_state = {"preparation_cache": {"stale": object()}}
+    preparation.clear_preparation_cache(session_state=session_state)
+
+    assert session_state["preparation_cache"] == {}
+
+    cached_again = preparation.prepare_document_for_processing(
+        uploaded_filename="report.docx",
+        source_bytes=b"docx-bytes",
+        uploaded_file_token="report.docx:10:hash",
+        chunk_size=6000,
+        session_state=None,
+    )
+
+    preparation.clear_preparation_cache(clear_shared=True)
+
+    uncached_after_explicit_clear = preparation.prepare_document_for_processing(
+        uploaded_filename="report.docx",
+        source_bytes=b"docx-bytes",
+        uploaded_file_token="report.docx:10:hash",
+        chunk_size=6000,
+        session_state=None,
+    )
+
+    assert calls["count"] == 2
+    assert cached_again.cached is True
+    assert uncached_after_explicit_clear.cached is False
 
 
 def test_prepare_document_for_processing_miss_uses_single_deepcopy_for_return(monkeypatch):

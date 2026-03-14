@@ -36,99 +36,10 @@ function Convert-ToWslPath {
     return "/mnt/$($matches[1].ToLower())/$($matches[2])"
 }
 
-function Test-IsWindowsAbsolutePath {
-    param([string]$Path)
-
-    return ($Path -match '^[A-Za-z]:[\\/]')
-}
-
 function New-ValidationException {
     param([string]$Message)
 
     return [System.ArgumentException]::new($Message)
-}
-
-function Split-TestTarget {
-    param([string]$Target)
-
-    $parts = $Target -split '::', 2
-    $filePart = $parts[0]
-    $nodeSuffix = ''
-    if ($parts.Count -eq 2) {
-        $nodeSuffix = "::$($parts[1])"
-    }
-
-    return @{
-        FilePart = $filePart
-        NodeSuffix = $nodeSuffix
-    }
-}
-
-function Test-IsUnderProjectRoot {
-    param([string]$FullPath)
-
-    $normalizedRoot = [System.IO.Path]::GetFullPath($projectRoot).TrimEnd([char[]]@('\', '/'))
-    $normalizedPath = [System.IO.Path]::GetFullPath($FullPath)
-    return $normalizedPath.Equals($normalizedRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
-        $normalizedPath.StartsWith("$normalizedRoot\", [System.StringComparison]::OrdinalIgnoreCase)
-}
-
-function Normalize-TestTarget {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Target,
-
-        [switch]$RequireNodeSuffix,
-        [switch]$DisallowNodeSuffix
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Target)) {
-        throw (New-ValidationException 'Test target is required.')
-    }
-
-    $trimmedTarget = $Target.Trim()
-    $targetParts = Split-TestTarget $trimmedTarget
-    $filePart = [string]$targetParts.FilePart
-    $nodeSuffix = [string]$targetParts.NodeSuffix
-
-    if ($RequireNodeSuffix -and -not $nodeSuffix) {
-        throw (New-ValidationException "Pytest node id is required: $trimmedTarget")
-    }
-    if ($RequireNodeSuffix -and $nodeSuffix -and [string]::IsNullOrWhiteSpace($nodeSuffix.Substring(2))) {
-        throw (New-ValidationException "Pytest node id suffix must not be empty: $trimmedTarget")
-    }
-    if ($DisallowNodeSuffix -and $nodeSuffix) {
-        throw (New-ValidationException "Expected a test file path without pytest node suffix: $trimmedTarget")
-    }
-    if ([string]::IsNullOrWhiteSpace($filePart)) {
-        throw (New-ValidationException "Test target has an empty file part: $trimmedTarget")
-    }
-    if ($filePart.StartsWith('/') -or $filePart.StartsWith('\\')) {
-        throw (New-ValidationException "Unsupported absolute path format for test target: $trimmedTarget")
-    }
-
-    $fullPath = if (Test-IsWindowsAbsolutePath $filePart) {
-        [System.IO.Path]::GetFullPath($filePart)
-    }
-    else {
-        [System.IO.Path]::GetFullPath((Join-Path $projectRoot $filePart))
-    }
-
-    if (-not (Test-IsUnderProjectRoot $fullPath)) {
-        throw (New-ValidationException "Test target is outside repository root: $trimmedTarget")
-    }
-
-    $rootPath = [System.IO.Path]::GetFullPath($projectRoot).TrimEnd([char[]]@('\', '/'))
-    $relativePath = $fullPath.Substring($rootPath.Length).TrimStart([char[]]@('\', '/')) -replace '\\', '/'
-
-    if (-not $relativePath.StartsWith('tests/', [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw (New-ValidationException "Test target must be under tests/: $trimmedTarget")
-    }
-    if (-not $relativePath.EndsWith('.py', [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw (New-ValidationException "Test target must point to a Python test file: $trimmedTarget")
-    }
-
-    return "$relativePath$nodeSuffix"
 }
 
 function Invoke-WslInProject {
@@ -200,20 +111,11 @@ function Test-IsTransientWslFailure {
 }
 
 function Reset-WslTransport {
-    $shutdownOutput = & wsl.exe --shutdown 2>&1
-    $shutdownExitCode = $LASTEXITCODE
-    if ($shutdownExitCode -ne 0) {
-        $shutdownDetails = ConvertTo-OutputText $shutdownOutput
-        if ($shutdownDetails) {
-            Write-Warn "WSL shutdown during retry recovery returned exit code $shutdownExitCode: $shutdownDetails"
-        }
-        else {
-            Write-Warn "WSL shutdown during retry recovery returned exit code $shutdownExitCode."
-        }
-        return
-    }
-
-    Start-Sleep -Seconds 1
+    # Do NOT call wsl.exe --shutdown here — it terminates ALL WSL distros and
+    # kills any running Streamlit/dev server sessions, causing cascade failures.
+    # Transient pipe errors (0x8007274c) typically resolve on their own after a
+    # short wait; hard exit-(-1) failures require a manual wsl --shutdown anyway.
+    Start-Sleep -Seconds 3
 }
 
 function Get-PreferredRuntimeMode {

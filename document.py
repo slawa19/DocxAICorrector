@@ -3,6 +3,7 @@ import html
 import re
 import zipfile
 from io import BytesIO
+from typing import cast
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -11,7 +12,7 @@ from docx.shared import Emu
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 from docx.text.run import Run
-from lxml import etree
+import lxml.etree as etree
 
 from models import DocumentBlock, ImageAsset, ParagraphUnit, get_image_variant_bytes
 from processing_runtime import read_uploaded_file_bytes
@@ -146,9 +147,9 @@ def extract_document_content_from_docx(uploaded_file) -> tuple[list[ParagraphUni
 
     for block_kind, block in _iter_document_block_items(document):
         if block_kind == "paragraph":
-            paragraph_unit = _build_paragraph_unit(block, image_assets)
+            paragraph_unit = _build_paragraph_unit(cast(Paragraph, block), image_assets)
         else:
-            paragraph_unit = _build_table_unit(block, image_assets)
+            paragraph_unit = _build_table_unit(cast(Table, block), image_assets)
         if paragraph_unit is not None:
             paragraphs.append(paragraph_unit)
 
@@ -203,7 +204,7 @@ def normalize_semantic_output_docx(docx_bytes: bytes, paragraphs: list[Paragraph
 
     if _style_exists(document, "Table Grid"):
         for table in document.tables:
-            table.style = document.styles["Table Grid"]
+            table.style = "Table Grid"
 
     output_stream = BytesIO()
     document.save(output_stream)
@@ -269,7 +270,6 @@ def _iter_reinsertion_paragraphs(document):
 
 
 def _iter_section_story_containers(document):
-    visited_story_ids: set[int] = set()
     for section in document.sections:
         for attribute_name in (
             "header",
@@ -282,11 +282,6 @@ def _iter_section_story_containers(document):
             story_container = getattr(section, attribute_name, None)
             if story_container is None:
                 continue
-
-            story_id = id(getattr(story_container, "_element", story_container))
-            if story_id in visited_story_ids:
-                continue
-            visited_story_ids.add(story_id)
             yield story_container
 
 
@@ -1235,6 +1230,8 @@ def _resolve_paragraph_num_pr(paragraph):
 def _extract_num_pr_level(num_pr) -> int:
     ilvl = _find_child_element(num_pr, "ilvl")
     level_value = _get_xml_attribute(ilvl, "val") if ilvl is not None else None
+    if level_value is None:
+        return 0
     try:
         return max(0, int(level_value))
     except (TypeError, ValueError):

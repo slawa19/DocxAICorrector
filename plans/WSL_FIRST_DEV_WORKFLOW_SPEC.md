@@ -1,6 +1,6 @@
 # Спецификация: атомарная переделка WSL-first dev workflow для DocxAICorrector
 
-> Статус: cutover уже реализован. Разделы `Текущее состояние` и `План атомарного внедрения` ниже фиксируют baseline и план на момент проектирования; актуальные task names для текущего репозитория — `Project Status`, `Start Project`, `Stop Project`, `Run Full Pytest WSL`, `Run Current Test File WSL`, `Run Current Test Node WSL`, `Tail Streamlit Log`.
+> Статус: cutover уже реализован. Разделы `Текущее состояние` и `План атомарного внедрения` ниже фиксируют baseline и план на момент проектирования; актуальные task names для текущего репозитория — `Project Status`, `Start Project`, `Stop Project`, `Run Full Pytest`, `Run Current Test File`, `Run Current Test Node`, `Tail Streamlit Log`.
 
 ## 1. Цель
 
@@ -387,14 +387,14 @@ wsl.exe -d Debian bash -lc "cd /mnt/d/www/projects/2025/DocxAICorrector && . .ve
 
 После cutover tasks должны быть только orchestration layer поверх dispatcher и wrappers.
 
-Официальный набор tasks после merge:
+Официальный набор tasks после merge на том этапе планирования:
 
 - `Project Status`
 - `Start Project`
 - `Stop Project`
-- `Run Full Pytest WSL`
-- `Run Current Test File WSL`
-- `Run Current Test Node WSL`
+- `Run Full Pytest`
+- `Run Current Test File`
+- `Run Current Test Node`
 - `Tail Streamlit Log`
 
 Требования к task layer:
@@ -569,6 +569,8 @@ wsl.exe -d Debian bash -lc "cd /mnt/d/www/projects/2025/DocxAICorrector && . .ve
 
 ### 11.6 Шаг 4. Добавить thin wrappers для тестов
 
+Historical note: this wrapper-driven test layer was later superseded as the supported contract by `plans/TEST_WORKFLOW_CONTRACT_CLEANUP_SPEC_2026-03-14.md`. The repository now treats `scripts/test.sh` plus direct WSL VS Code tasks as the canonical test path.
+
 Цель шага:
 
 - сделать стабильные PowerShell entry points для full, file-level и node-level pytest
@@ -598,11 +600,13 @@ wsl.exe -d Debian bash -lc "cd /mnt/d/www/projects/2025/DocxAICorrector && . .ve
 - запуск каждого wrapper вручную из PowerShell
 - проверка validation error на заведомо плохих входах
 
-Артефакт завершения:
+Артефакт завершения на момент этого historical шага:
 
-- Windows-side test entry points стабилизированы и не дублируют command logic
+- Windows-side test entry points были стабилизированы и не дублировали command logic
 
 ### 11.7 Шаг 5. Перевести VS Code tasks на wrappers
+
+Historical note: this step was also superseded. Current tasks invoke WSL/bash directly and no longer route test execution through PowerShell wrappers.
 
 Цель шага:
 
