@@ -50,6 +50,7 @@
 ## Supporting References
 
 - Детали WSL-first cutover: `plans/WSL_FIRST_DEV_WORKFLOW_SPEC.md`.
+- Детали startup performance contract: `docs/STARTUP_PERFORMANCE_CONTRACT.md`.
 - Детали cleanup тестового контракта: `plans/TEST_WORKFLOW_CONTRACT_CLEANUP_SPEC_2026-03-14.md`.
 - Детали DOCX formatting hardening: `docs/DOCX_FORMATTING_HARDENING_SPEC_2026-03-13.md`.
 - Исторические, superseded и point-in-time документы перечислены в `docs/ARCHIVE_INDEX.md`.

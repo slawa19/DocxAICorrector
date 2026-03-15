@@ -1,0 +1,20 @@
+# Protected workflow and startup contracts
+
+/.github/copilot-instructions.md @slawa19
+/.github/pull_request_template.md @slawa19
+/.github/workflows/ci.yml @slawa19
+/.vscode/tasks.json @slawa19
+/scripts/test.sh @slawa19
+/scripts/project-control-wsl.sh @slawa19
+/app.py @slawa19
+/config.py @slawa19
+/generation.py @slawa19
+/.streamlit/config.toml @slawa19
+/docs/WORKFLOW_AND_IMAGE_MODES.md @slawa19
+/docs/STARTUP_PERFORMANCE_CONTRACT.md @slawa19
+/docs/AI_AGENT_DEVELOPMENT_RULES.md @slawa19
+/README.md @slawa19
+/CONTRIBUTING.md @slawa19
+/tests/test_script_workflow_smoke.py @slawa19
+/tests/test_startup_performance_contract.py @slawa19
+/tests/test_app.py @slawa19

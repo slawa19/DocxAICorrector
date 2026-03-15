@@ -22,6 +22,10 @@ class PlannedJobs:
         return self._planned_len
 
 
+class ParagraphStub:
+    role = "body"
+
+
 def _build_runtime_capture():
     return {"state": {}, "finalize": [], "activity": [], "log": [], "status": []}
 
@@ -44,6 +48,18 @@ def _emit_log(runtime, **payload):
 
 def _emit_status(runtime, **payload):
     runtime.setdefault("status", []).append(payload)
+
+
+def _inspect_placeholder_integrity(markdown_text, image_assets):
+    return {}
+
+
+def _convert_markdown_to_docx_bytes(markdown_text):
+    return b"docx-bytes"
+
+
+def _reinsert_inline_images(docx_bytes, image_assets):
+    return docx_bytes
 
 
 def test_run_document_processing_happy_path_updates_runtime_state():
@@ -76,11 +92,11 @@ def test_run_document_processing_happy_path_updates_runtime_state():
         should_stop_processing=lambda runtime: False,
         generate_markdown_block=lambda **kwargs: "Обработанный блок",
         process_document_images=lambda **kwargs: image_assets,
-        inspect_placeholder_integrity=lambda markdown_text, assets: {},
-        convert_markdown_to_docx_bytes=lambda markdown: b"docx-bytes",
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
         normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
-        reinsert_inline_images=lambda docx_bytes, assets: b"final-docx",
+        reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
     )
 
     assert result == "succeeded"
@@ -98,7 +114,7 @@ def test_run_document_processing_applies_semantic_output_normalization_before_im
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
         jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
-        source_paragraphs=[object()],
+        source_paragraphs=[ParagraphStub()],
         image_assets=[],
         image_mode="safe",
         app_config={},
@@ -120,11 +136,11 @@ def test_run_document_processing_applies_semantic_output_normalization_before_im
         should_stop_processing=lambda runtime: False,
         generate_markdown_block=lambda **kwargs: "Обработанный блок",
         process_document_images=lambda **kwargs: [],
-        inspect_placeholder_integrity=lambda markdown_text, assets: {},
-        convert_markdown_to_docx_bytes=lambda markdown: call_order.append("convert") or b"docx-bytes",
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: call_order.append("convert") or b"docx-bytes",
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: call_order.append("preserve") or docx_bytes,
         normalize_semantic_output_docx=lambda docx_bytes, paragraphs: call_order.append("normalize") or docx_bytes,
-        reinsert_inline_images=lambda docx_bytes, assets: call_order.append("reinsert") or docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: call_order.append("reinsert") or docx_bytes,
     )
 
     assert result == "succeeded"
@@ -167,11 +183,11 @@ def test_run_document_processing_stops_before_second_block():
         should_stop_processing=should_stop,
         generate_markdown_block=lambda **kwargs: "ok",
         process_document_images=lambda **kwargs: [],
-        inspect_placeholder_integrity=lambda markdown_text, assets: {},
-        convert_markdown_to_docx_bytes=lambda markdown: b"docx-bytes",
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
         normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
-        reinsert_inline_images=lambda docx_bytes, assets: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
     )
 
     assert result == "stopped"
@@ -207,11 +223,11 @@ def test_run_document_processing_fails_on_empty_processed_block():
         should_stop_processing=lambda runtime: False,
         generate_markdown_block=lambda **kwargs: "   ",
         process_document_images=lambda **kwargs: [],
-        inspect_placeholder_integrity=lambda markdown_text, assets: {},
-        convert_markdown_to_docx_bytes=lambda markdown: b"docx-bytes",
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
         normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
-        reinsert_inline_images=lambda docx_bytes, assets: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
     )
 
     assert result == "failed"
@@ -248,11 +264,11 @@ def test_run_document_processing_fails_on_empty_processing_plan():
         should_stop_processing=lambda runtime: False,
         generate_markdown_block=lambda **kwargs: "ok",
         process_document_images=lambda **kwargs: [],
-        inspect_placeholder_integrity=lambda markdown_text, assets: {},
-        convert_markdown_to_docx_bytes=lambda markdown: b"docx-bytes",
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
         normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
-        reinsert_inline_images=lambda docx_bytes, assets: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
     )
 
     assert result == "failed"
@@ -307,11 +323,11 @@ def test_run_document_processing_fails_on_initialization_and_clears_stale_runtim
         should_stop_processing=lambda runtime: False,
         generate_markdown_block=lambda **kwargs: "ok",
         process_document_images=lambda **kwargs: [],
-        inspect_placeholder_integrity=lambda markdown_text, assets: {},
-        convert_markdown_to_docx_bytes=lambda markdown: b"docx-bytes",
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
         normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
-        reinsert_inline_images=lambda docx_bytes, assets: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
     )
 
     assert result == "failed"
@@ -356,11 +372,11 @@ def test_run_document_processing_fails_when_process_document_images_raises():
         should_stop_processing=lambda runtime: False,
         generate_markdown_block=lambda **kwargs: "Обработанный блок",
         process_document_images=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("image pipeline exploded")),
-        inspect_placeholder_integrity=lambda markdown_text, assets: {},
-        convert_markdown_to_docx_bytes=lambda markdown: b"docx-bytes",
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
         normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
-        reinsert_inline_images=lambda docx_bytes, assets: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
     )
 
     assert result == "failed"
@@ -405,11 +421,11 @@ def test_run_document_processing_fails_when_process_document_images_returns_none
         should_stop_processing=lambda runtime: False,
         generate_markdown_block=lambda **kwargs: "Обработанный блок",
         process_document_images=lambda **kwargs: None,
-        inspect_placeholder_integrity=lambda markdown_text, assets: {},
-        convert_markdown_to_docx_bytes=lambda markdown: b"docx-bytes",
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
         normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
-        reinsert_inline_images=lambda docx_bytes, assets: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
     )
 
     assert result == "failed"
@@ -448,11 +464,11 @@ def test_run_document_processing_fails_when_placeholder_integrity_check_raises()
         should_stop_processing=lambda runtime: False,
         generate_markdown_block=lambda **kwargs: "Обработанный блок",
         process_document_images=lambda **kwargs: [AssetStub("img_001")],
-        inspect_placeholder_integrity=lambda markdown_text, assets: (_ for _ in ()).throw(RuntimeError("placeholder integrity exploded")),
-        convert_markdown_to_docx_bytes=lambda markdown: b"docx-bytes",
+        inspect_placeholder_integrity=lambda markdown_text, image_assets: (_ for _ in ()).throw(RuntimeError("placeholder integrity exploded")),
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
         normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
-        reinsert_inline_images=lambda docx_bytes, assets: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
     )
 
     assert result == "failed"
@@ -491,11 +507,11 @@ def test_run_document_processing_fails_on_invalid_job_shape():
         should_stop_processing=lambda runtime: False,
         generate_markdown_block=lambda **kwargs: "ok",
         process_document_images=lambda **kwargs: [],
-        inspect_placeholder_integrity=lambda markdown_text, assets: {},
-        convert_markdown_to_docx_bytes=lambda markdown: b"docx-bytes",
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
         normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
-        reinsert_inline_images=lambda docx_bytes, assets: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
     )
 
     assert result == "failed"
@@ -543,11 +559,11 @@ def test_run_document_processing_detects_processed_block_count_mismatch():
         should_stop_processing=lambda runtime: False,
         generate_markdown_block=lambda **kwargs: "ok",
         process_document_images=lambda **kwargs: [],
-        inspect_placeholder_integrity=lambda markdown_text, assets: {},
-        convert_markdown_to_docx_bytes=lambda markdown: b"docx-bytes",
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
         normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
-        reinsert_inline_images=lambda docx_bytes, assets: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
     )
 
     assert result == "failed"

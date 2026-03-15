@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import application_flow
 import preparation
@@ -9,6 +10,15 @@ import state
 
 
 class SessionState(dict):
+    def get(self, key: str, default: object | None = None) -> Any:
+        return super().get(key, default)
+
+    def __getitem__(self, key: str) -> Any:
+        return super().__getitem__(key)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        super().__setitem__(key, value)
+
     def __getattr__(self, name):
         try:
             return self[name]

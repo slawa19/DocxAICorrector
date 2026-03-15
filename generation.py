@@ -21,8 +21,8 @@ def ensure_pandoc_available() -> None:
         pypandoc.get_pandoc_version()
     except OSError as exc:
         raise RuntimeError(
-            "Pandoc не найден. Для Windows PowerShell установите его командой: "
-            "winget install --id JohnMacFarlane.Pandoc -e"
+            "Pandoc не найден в текущем WSL runtime. Для штатного workflow установите его внутри WSL, "
+            "например через: sudo apt-get install -y pandoc"
         ) from exc
 
 

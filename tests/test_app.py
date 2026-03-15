@@ -1,3 +1,5 @@
+from typing import Any
+
 import app
 import application_flow
 import compare_panel
@@ -7,6 +9,15 @@ from models import ImageAsset
 
 
 class SessionState(dict):
+    def get(self, key: str, default: object | None = None) -> Any:
+        return super().get(key, default)
+
+    def __getitem__(self, key: str) -> Any:
+        return super().__getitem__(key)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        super().__setitem__(key, value)
+
     def __getattr__(self, name):
         try:
             return self[name]
@@ -48,9 +59,32 @@ class UploadedFileStub:
         self.name = name
         self.size = len(content)
         self._content = content
+        self._position = 0
 
-    def getvalue(self):
+    def read(self, size: int = -1) -> bytes:
+        if size < 0:
+            data = self._content[self._position :]
+            self._position = len(self._content)
+            return data
+        start = self._position
+        end = min(len(self._content), start + size)
+        self._position = end
+        return self._content[start:end]
+
+    def getvalue(self) -> bytes:
         return self._content
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        if whence == 0:
+            self._position = max(0, offset)
+        elif whence == 1:
+            self._position = max(0, self._position + offset)
+        elif whence == 2:
+            self._position = max(0, len(self._content) + offset)
+        else:
+            raise ValueError("Unsupported whence")
+        self._position = min(self._position, len(self._content))
+        return self._position
 
 
 class FakeColumn:
@@ -227,7 +261,6 @@ def test_main_renders_live_status_during_active_preparation(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cleanup_stale_persisted_sources_once", lambda: None)
     monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
@@ -287,7 +320,6 @@ def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app, "init_session_state", lambda: None)
-    monkeypatch.setattr(app, "_cleanup_stale_persisted_sources_once", lambda: None)
     monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
@@ -425,7 +457,6 @@ def test_main_rejects_oversized_upload_before_preparation(monkeypatch):
     monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
     monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", True))
-    monkeypatch.setattr(app, "_cleanup_stale_persisted_sources_once", lambda: None)
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
     monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)

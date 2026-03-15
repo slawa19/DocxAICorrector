@@ -308,6 +308,7 @@ def test_preserve_source_paragraph_properties_restores_raw_xml_paragraph_formatt
     updated_bytes = preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
     updated_doc = Document(BytesIO(updated_bytes))
     paragraph_properties = updated_doc.paragraphs[0]._element.pPr
+    assert paragraph_properties is not None
     alignment = paragraph_properties.find(qn("w:jc"))
     indentation = paragraph_properties.find(qn("w:ind"))
 
@@ -388,6 +389,11 @@ def test_normalize_semantic_output_docx_applies_semantic_styles():
 
     updated_bytes = normalize_semantic_output_docx(target_buffer.getvalue(), source_paragraphs)
     updated_doc = Document(BytesIO(updated_bytes))
+
+    assert updated_doc.paragraphs[0].style is not None
+    assert updated_doc.paragraphs[2].style is not None
+    assert updated_doc.paragraphs[3].style is not None
+    assert updated_doc.tables[0].style is not None
 
     assert updated_doc.paragraphs[0].style.name == "Heading 1"
     assert updated_doc.paragraphs[1].alignment == WD_ALIGN_PARAGRAPH.CENTER

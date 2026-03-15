@@ -121,7 +121,6 @@ def test_prepare_document_for_processing_clones_attempt_variants_independently(m
         session_state=session_state,
     )
 
-    first.attempt_variants = []
     first.image_assets[0].attempt_variants[0].final_reason = "mutated"
     first.image_assets[0].attempt_variants[0].validation_result["score"] = 0.1
 

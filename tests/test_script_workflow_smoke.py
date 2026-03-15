@@ -238,6 +238,7 @@ def test_core_docs_publish_single_wsl_bash_test_contract() -> None:
         "CONTRIBUTING.md",
         "docs/WORKFLOW_AND_IMAGE_MODES.md",
         "docs/AI_AGENT_DEVELOPMENT_RULES.md",
+        ".github/copilot-instructions.md",
     ]:
         text = _read_text(relative_path)
         assert "bash scripts/test.sh" in text
@@ -250,6 +251,7 @@ def test_core_docs_publish_single_wsl_bash_test_contract() -> None:
     assert "run-test-node.ps1" not in _read_text("CONTRIBUTING.md")
     assert "run-tests.ps1" not in _read_text("docs/WORKFLOW_AND_IMAGE_MODES.md")
     assert "run-tests.ps1" not in _read_text("docs/AI_AGENT_DEVELOPMENT_RULES.md")
+    assert "run-tests.ps1" not in _read_text(".github/copilot-instructions.md")
 
 
 def test_docs_reference_actual_vscode_test_task_labels() -> None:
@@ -260,6 +262,7 @@ def test_docs_reference_actual_vscode_test_task_labels() -> None:
             "CONTRIBUTING.md",
             "docs/WORKFLOW_AND_IMAGE_MODES.md",
             "docs/AI_AGENT_DEVELOPMENT_RULES.md",
+            ".github/copilot-instructions.md",
         ]
     )
     assert "Run Full Pytest" in combined
@@ -268,3 +271,51 @@ def test_docs_reference_actual_vscode_test_task_labels() -> None:
     assert "Run Full Pytest WSL" not in combined
     assert "Run Current Test File WSL" not in combined
     assert "Run Current Test Node WSL" not in combined
+
+
+def test_agent_docs_protect_test_workflow_contract_from_unrelated_changes() -> None:
+    copilot_text = _read_text(".github/copilot-instructions.md")
+    agent_rules_text = _read_text("docs/AI_AGENT_DEVELOPMENT_RULES.md")
+
+    assert "Protected Test Workflow Contract" in copilot_text
+    assert "Do not add or restore PowerShell `.ps1` wrappers for test execution." in copilot_text
+    assert "Do not change `scripts/test.sh`, `.vscode/tasks.json` test tasks, `tests/test_script_workflow_smoke.py`, or the test-workflow docs as part of unrelated work." in copilot_text
+    assert "bash scripts/test.sh tests/test_script_workflow_smoke.py -q" in copilot_text
+    assert "prefer a user-visible execution path" in copilot_text
+    assert "Run Full Pytest" in copilot_text
+
+    assert "Защищённый контракт тестового workflow" in agent_rules_text
+    assert "возвращать PowerShell-обёртки для запуска тестов" in agent_rules_text
+    assert "менять `scripts/test.sh`, `.vscode/tasks.json`, `tests/test_script_workflow_smoke.py` и документы про тестовый workflow в рамках несвязанной задачи" in agent_rules_text
+    assert "bash scripts/test.sh tests/test_script_workflow_smoke.py -q" in agent_rules_text
+    assert "видимый для пользователя путь запуска" in agent_rules_text
+
+
+def test_ci_exposes_separate_workflow_and_startup_contract_jobs() -> None:
+    ci_text = _read_text(".github/workflows/ci.yml")
+
+    assert "workflow-contract:" in ci_text
+    assert "startup-contract:" in ci_text
+    assert "needs: [workflow-contract, startup-contract]" in ci_text
+    assert "bash scripts/test.sh tests/test_startup_performance_contract.py -q" in ci_text
+
+
+def test_codeowners_protects_workflow_and_startup_contract_files() -> None:
+    codeowners_text = _read_text(".github/CODEOWNERS")
+
+    assert "/scripts/test.sh @slawa19" in codeowners_text
+    assert "/.vscode/tasks.json @slawa19" in codeowners_text
+    assert "/tests/test_script_workflow_smoke.py @slawa19" in codeowners_text
+    assert "/docs/STARTUP_PERFORMANCE_CONTRACT.md @slawa19" in codeowners_text
+    assert "/tests/test_startup_performance_contract.py @slawa19" in codeowners_text
+
+
+def test_ci_uses_canonical_bash_test_contract() -> None:
+    ci_text = _read_text(".github/workflows/ci.yml")
+
+    assert "runs-on: ubuntu-latest" in ci_text
+    assert "python -m venv .venv" in ci_text
+    assert ". .venv/bin/activate" in ci_text
+    assert "bash scripts/test.sh tests/test_script_workflow_smoke.py -q" in ci_text
+    assert "bash scripts/test.sh tests/ -q" in ci_text
+    assert "python -m pytest tests -q" not in ci_text

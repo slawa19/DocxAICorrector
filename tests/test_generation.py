@@ -145,7 +145,7 @@ def test_generate_markdown_block_rejects_non_integer_max_retries():
             target_text="target",
             context_before="before",
             context_after="after",
-            max_retries=1.5,
+            max_retries=cast(int, 1.5),
         )
     except TypeError as exc:
         assert "max_retries" in str(exc)
@@ -163,7 +163,7 @@ def test_ensure_pandoc_available_converts_os_error(monkeypatch):
     try:
         generation.ensure_pandoc_available()
     except RuntimeError as exc:
-        assert "Pandoc не найден" in str(exc)
+        assert "WSL runtime" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError when pandoc is unavailable")
     finally:

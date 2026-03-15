@@ -3,7 +3,7 @@ import logging
 import queue
 import threading
 from io import BytesIO
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 import streamlit as st
 
@@ -68,6 +68,11 @@ class UploadedFileLike(Protocol):
     def seek(self, offset: int, whence: int = 0) -> int: ...
 
 
+class InMemoryUploadedFile(BytesIO):
+    name: str
+    size: int
+
+
 def read_uploaded_file_bytes(uploaded_file: UploadedFileLike | BytesIO) -> bytes:
     if hasattr(uploaded_file, "seek"):
         uploaded_file.seek(0)
@@ -84,6 +89,8 @@ def read_uploaded_file_bytes(uploaded_file: UploadedFileLike | BytesIO) -> bytes
 
 def build_uploaded_file_token(uploaded_file: UploadedFileLike | BytesIO | None = None, *, source_name: str | None = None, source_bytes: bytes | None = None) -> str:
     if source_bytes is None:
+        if uploaded_file is None:
+            raise ValueError("Для построения токена нужен uploaded_file или source_bytes.")
         source_bytes = read_uploaded_file_bytes(uploaded_file)
     file_name = source_name if source_name is not None else getattr(uploaded_file, "name", "")
     file_size = len(source_bytes)
@@ -92,10 +99,26 @@ def build_uploaded_file_token(uploaded_file: UploadedFileLike | BytesIO | None =
 
 
 def build_in_memory_uploaded_file(*, source_name: str, source_bytes: bytes):
-    uploaded_file = BytesIO(source_bytes)
+    uploaded_file = InMemoryUploadedFile(source_bytes)
     uploaded_file.name = source_name
     uploaded_file.size = len(source_bytes)
     return uploaded_file
+
+
+def _coerce_metric_to_int(metrics: dict[str, object], key: str) -> int:
+    value = metrics.get(key, 0)
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
 
 
 def build_uploaded_file_selection_marker(uploaded_file) -> str:
@@ -456,11 +479,11 @@ def start_background_preparation(
                     "progress": progress,
                     "is_running": True,
                     "phase": "preparing",
-                    "block_count": int(metrics.get("block_count", 0) or 0),
-                    "file_size_bytes": int(metrics.get("file_size_bytes", 0) or 0),
-                    "paragraph_count": int(metrics.get("paragraph_count", 0) or 0),
-                    "image_count": int(metrics.get("image_count", 0) or 0),
-                    "source_chars": int(metrics.get("source_chars", 0) or 0),
+                    "block_count": _coerce_metric_to_int(metrics, "block_count"),
+                    "file_size_bytes": _coerce_metric_to_int(metrics, "file_size_bytes"),
+                    "paragraph_count": _coerce_metric_to_int(metrics, "paragraph_count"),
+                    "image_count": _coerce_metric_to_int(metrics, "image_count"),
+                    "source_chars": _coerce_metric_to_int(metrics, "source_chars"),
                     "cached": bool(metrics.get("cached", False)),
                 }
             )

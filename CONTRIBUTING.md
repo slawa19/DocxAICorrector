@@ -4,6 +4,8 @@
 
 Проект использует основной Python runtime в WSL. Для штатной разработки, запуска приложения и тестов используйте `.venv/bin/activate` внутри WSL.
 
+Startup performance contract считается частью канонической документации. Перед изменениями, затрагивающими старт приложения, сверяйтесь с `docs/STARTUP_PERFORMANCE_CONTRACT.md` и не меняйте startup path без явной задачи на performance или lifecycle.
+
 1. Создайте виртуальное окружение:
 
 ```bash
@@ -90,6 +92,20 @@ pytest tests -q
 
 Если правки затрагивают UI или блокировку документа, проверьте также ручной smoke-test на небольшом `.docx`.
 
+Если правки затрагивают test workflow contract, нельзя ограничиваться одной точкой изменений. В одном change-set должны быть синхронизированы:
+
+- `scripts/test.sh`;
+- `.vscode/tasks.json` test tasks;
+- `tests/test_script_workflow_smoke.py`;
+- `README.md`, `CONTRIBUTING.md`, `docs/WORKFLOW_AND_IMAGE_MODES.md`.
+
+Минимальная обязательная проверка после таких правок:
+
+```bash
+bash scripts/test.sh tests/test_script_workflow_smoke.py -q
+bash scripts/test.sh tests/ -q
+```
+
 ## Правила изменений
 
 - Держите изменения узкими и без побочных рефакторингов.
@@ -103,3 +119,6 @@ pytest tests -q
 - Тесты проходят локально.
 - Документация обновлена, если менялось поведение или структура проекта.
 - Лишние временные файлы не попали в коммит.
+- Если менялся test workflow contract, синхронно обновлены `scripts/test.sh`, `.vscode/tasks.json`, `tests/test_script_workflow_smoke.py`, `README.md`, `CONTRIBUTING.md`, `docs/WORKFLOW_AND_IMAGE_MODES.md`, а CI остаётся на `bash scripts/test.sh ...`.
+- Если менялся startup path, сверена `docs/STARTUP_PERFORMANCE_CONTRACT.md`, обновлены startup-related tests и отдельно проверен first useful render после cold start.
+- Для финальной локальной верификации в VS Code использован видимый пользовательский путь запуска тестов, а не hidden terminal capture.

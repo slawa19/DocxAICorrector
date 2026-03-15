@@ -6,6 +6,51 @@
 
 ---
 
+## 0. Защищённый контракт тестового workflow
+
+WSL/bash-путь выполнения тестов считается защищённым контрактом репозитория.
+
+ИИ-агенту запрещено:
+
+- возвращать PowerShell-обёртки для запуска тестов;
+- запускать тесты через PowerShell pipe bridge или иные промежуточные shell-chain обходы;
+- менять `.vscode/tasks.json` test tasks так, чтобы канонический путь перестал быть `bash scripts/test.sh ...` в WSL;
+- менять `scripts/test.sh`, `.vscode/tasks.json`, `tests/test_script_workflow_smoke.py` и документы про тестовый workflow в рамках несвязанной задачи.
+
+При выполнении тестов в VS Code ИИ-агент должен предпочитать видимый для пользователя путь запуска:
+
+- существующие VS Code tasks `Run Full Pytest`, `Run Current Test File`, `Run Current Test Node`;
+- либо foreground WSL terminal с канонической командой `bash scripts/test.sh ...`.
+
+Нельзя считать hidden/background terminal capture финальной верификацией, если затем не был выполнен видимый пользовательский прогон.
+
+Если пользователь явно просит изменить сам test workflow, ИИ-агент обязан в одном change-set:
+
+- обновить `scripts/test.sh`;
+- синхронизировать `.vscode/tasks.json`;
+- обновить `tests/test_script_workflow_smoke.py`;
+- синхронизировать `README.md`, `CONTRIBUTING.md` и `docs/WORKFLOW_AND_IMAGE_MODES.md`;
+- прогнать `bash scripts/test.sh tests/test_script_workflow_smoke.py -q` и затем полный `bash scripts/test.sh tests/ -q`.
+
+Смысл правила: тестовый контракт должен ломаться только намеренно, обзорно и с явным обновлением всех уровней source of truth.
+
+## 0.1. Защищённый startup performance contract
+
+Startup contract считается отдельной защищённой поверхностью репозитория.
+
+Канонический документ: `docs/STARTUP_PERFORMANCE_CONTRACT.md`.
+
+ИИ-агенту запрещено в рамках несвязанной задачи:
+
+- возвращать тяжёлый синхронный startup path в `app.py`;
+- убирать кеширование one-time ресурсов в `app.py`, `config.py` и `generation.py`;
+- возвращать Streamlit file watching или `runOnSave` в штатный runtime;
+- менять WSL-first runtime contract ради обходного локального удобства.
+
+Если пользователь явно просит изменить startup contract, ИИ-агент обязан синхронно обновить код, startup-related tests и canonical docs, включая `README.md`, `CONTRIBUTING.md`, `docs/WORKFLOW_AND_IMAGE_MODES.md` и `.github/copilot-instructions.md`.
+
+---
+
 ## 1. Базовые инженерные принципы
 
 ### 1.1. Не усиливай `app.py` как god-object

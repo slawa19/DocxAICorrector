@@ -253,19 +253,19 @@ def reinsert_inline_images(docx_bytes: bytes, image_assets: list[ImageAsset]) ->
 
 
 def _iter_reinsertion_paragraphs(document):
-    visited_paragraph_ids: set[int] = set()
+    visited_paragraph_elements: set[object] = set()
 
     yield from _iter_container_paragraphs(
         document,
-        _visited_cell_ids=set(),
-        _visited_paragraph_ids=visited_paragraph_ids,
+        _visited_cell_elements=set(),
+        _visited_paragraph_elements=visited_paragraph_elements,
     )
 
     for story_container in _iter_section_story_containers(document):
         yield from _iter_container_paragraphs(
             story_container,
-            _visited_cell_ids=set(),
-            _visited_paragraph_ids=visited_paragraph_ids,
+            _visited_cell_elements=set(),
+            _visited_paragraph_elements=visited_paragraph_elements,
         )
 
 
@@ -288,43 +288,42 @@ def _iter_section_story_containers(document):
 def _iter_container_paragraphs(
     container,
     *,
-    _visited_cell_ids: set[int] | None = None,
-    _visited_paragraph_ids: set[int] | None = None,
+    _visited_cell_elements: set[object] | None = None,
+    _visited_paragraph_elements: set[object] | None = None,
 ):
-    if _visited_cell_ids is None:
-        _visited_cell_ids = set()
-    if _visited_paragraph_ids is None:
-        _visited_paragraph_ids = set()
+    if _visited_cell_elements is None:
+        _visited_cell_elements = set()
+    if _visited_paragraph_elements is None:
+        _visited_paragraph_elements = set()
 
     for paragraph in getattr(container, "paragraphs", []):
-        paragraph_id = id(paragraph._element)
-        if paragraph_id not in _visited_paragraph_ids:
-            _visited_paragraph_ids.add(paragraph_id)
+        paragraph_element = paragraph._element
+        if paragraph_element not in _visited_paragraph_elements:
+            _visited_paragraph_elements.add(paragraph_element)
             yield paragraph
 
-        yield from _iter_textbox_paragraphs(paragraph, _visited_paragraph_ids)
+        yield from _iter_textbox_paragraphs(paragraph, _visited_paragraph_elements)
 
     for table in getattr(container, "tables", []):
         for row in table.rows:
             for cell in row.cells:
-                cell_id = id(cell._tc)
-                if cell_id in _visited_cell_ids:
+                cell_element = cell._tc
+                if cell_element in _visited_cell_elements:
                     continue
-                _visited_cell_ids.add(cell_id)
+                _visited_cell_elements.add(cell_element)
                 yield from _iter_container_paragraphs(
                     cell,
-                    _visited_cell_ids=_visited_cell_ids,
-                    _visited_paragraph_ids=_visited_paragraph_ids,
+                    _visited_cell_elements=_visited_cell_elements,
+                    _visited_paragraph_elements=_visited_paragraph_elements,
                 )
 
 
-def _iter_textbox_paragraphs(paragraph, visited_paragraph_ids: set[int]):
+def _iter_textbox_paragraphs(paragraph, visited_paragraph_elements: set[object]):
     for textbox_paragraph_element in paragraph._element.xpath(".//w:txbxContent//w:p"):
-        paragraph_id = id(textbox_paragraph_element)
-        if paragraph_id in visited_paragraph_ids:
+        if textbox_paragraph_element in visited_paragraph_elements:
             continue
 
-        visited_paragraph_ids.add(paragraph_id)
+        visited_paragraph_elements.add(textbox_paragraph_element)
         yield Paragraph(textbox_paragraph_element, paragraph._parent)
 
 

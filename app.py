@@ -59,15 +59,6 @@ def _cached_load_app_config():
     return load_app_config()
 
 
-def _cleanup_stale_persisted_sources_once() -> None:
-    if st.session_state.get("persisted_source_cleanup_done", False):
-        return
-    from restart_store import cleanup_stale_persisted_sources
-
-    cleanup_stale_persisted_sources(max_age_seconds=PERSISTED_SOURCE_TTL_SECONDS)
-    st.session_state.persisted_source_cleanup_done = True
-
-
 def _schedule_stale_persisted_sources_cleanup() -> None:
     global _CLEANUP_THREAD_STARTED
     if st.session_state.get("persisted_source_cleanup_done", False):
