@@ -110,12 +110,13 @@ def test_run_document_processing_happy_path_updates_runtime_state():
 def test_run_document_processing_applies_semantic_output_normalization_before_image_reinsertion():
     runtime = _build_runtime_capture()
     call_order = []
+    image_assets = [AssetStub("img_001")]
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
         jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
         source_paragraphs=[ParagraphStub()],
-        image_assets=[],
+        image_assets=image_assets,
         image_mode="safe",
         app_config={},
         model="gpt-5.4",
@@ -135,7 +136,7 @@ def test_run_document_processing_applies_semantic_output_normalization_before_im
         emit_status=_emit_status,
         should_stop_processing=lambda runtime: False,
         generate_markdown_block=lambda **kwargs: "Обработанный блок",
-        process_document_images=lambda **kwargs: [],
+        process_document_images=lambda **kwargs: image_assets,
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=lambda markdown_text: call_order.append("convert") or b"docx-bytes",
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: call_order.append("preserve") or docx_bytes,
@@ -144,7 +145,7 @@ def test_run_document_processing_applies_semantic_output_normalization_before_im
     )
 
     assert result == "succeeded"
-    assert call_order == ["convert", "preserve", "normalize"]
+    assert call_order == ["convert", "preserve", "normalize", "reinsert"]
 
 
 def test_run_document_processing_stops_before_second_block():

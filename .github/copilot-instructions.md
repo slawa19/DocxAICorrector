@@ -20,12 +20,20 @@ bash scripts/test.sh tests/ -q -x --tb=short
 
 Never use PowerShell `.ps1` wrappers to run tests. They pipe output through WSL→PowerShell bridge which causes hangs and lost output.
 
-When an AI agent runs tests for verification inside VS Code, prefer a user-visible execution path:
+When an AI agent runs tests for verification inside VS Code, the final user-facing verification path must be user-visible:
 
-- use the existing VS Code tasks `Run Full Pytest`, `Run Current Test File`, or `Run Current Test Node` when they fit the requested scope;
-- otherwise run the canonical WSL command in a foreground terminal, not in a hidden/background shell used only for internal capture;
-- do not rely on unstable hidden terminal capture as the final source of truth for reporting test results;
-- if a hidden or isolated rerun is needed for debugging, repeat the final verification in a visible user-facing path before claiming success.
+- use the existing VS Code tasks `Run Full Pytest`, `Run Current Test File`, or `Run Current Test Node` whenever one of them matches the requested scope;
+- do not treat agent-side shell output, even from a foreground tool terminal, as equivalent to the user's visible VS Code terminal panel;
+- do not rely on hidden/background terminal capture as the final source of truth for reporting test results;
+- if a hidden or isolated rerun is needed for debugging, repeat the final verification in a visible user-facing path before claiming success;
+- if no existing VS Code task fits the requested visible verification scope, say so explicitly instead of silently substituting agent-only terminal capture as the final proof.
+
+Clarification for AI agents:
+
+- output seen only through agent-side tool capture is not the same thing as a visible VS Code terminal run;
+- foreground agent shell output is also not the same thing as the user's visible VS Code terminal panel;
+- if the user explicitly wants to see the test run in the VS Code terminal, the final verification MUST use the existing VS Code tasks rather than agent-only shell capture or foreground tool terminals;
+- log-file recovery, hidden reruns, and foreground agent shell runs may be used for debugging, but never as the final user-facing proof when the user asked for visible terminal output.
 
 ## Project Lifecycle (app start/stop)
 

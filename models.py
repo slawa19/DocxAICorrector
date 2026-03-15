@@ -32,6 +32,7 @@ class ParagraphUnit:
     text: str
     role: str
     heading_level: int | None = None
+    heading_source: str | None = None
     list_kind: str | None = None
     list_level: int = 0
     preserved_ppr_xml: tuple[str, ...] = field(default_factory=tuple)

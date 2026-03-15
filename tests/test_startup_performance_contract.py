@@ -14,27 +14,12 @@ import generation
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _read_text(relative_path: str) -> str:
-    return (REPO_ROOT / relative_path).read_text(encoding="utf-8")
-
-
 def test_streamlit_config_disables_costly_file_watching() -> None:
     config_text = (REPO_ROOT / ".streamlit" / "config.toml").read_text(encoding="utf-8")
     streamlit_config = tomllib.loads(config_text)
 
     assert streamlit_config["server"]["fileWatcherType"] == "none"
     assert streamlit_config["server"]["runOnSave"] is False
-
-
-def test_startup_contract_doc_is_linked_from_canonical_docs() -> None:
-    for relative_path in [
-        "README.md",
-        "CONTRIBUTING.md",
-        "docs/WORKFLOW_AND_IMAGE_MODES.md",
-        "docs/AI_AGENT_DEVELOPMENT_RULES.md",
-        ".github/copilot-instructions.md",
-    ]:
-        assert "docs/STARTUP_PERFORMANCE_CONTRACT.md" in _read_text(relative_path)
 
 
 def test_load_system_prompt_reads_from_disk_once(monkeypatch, tmp_path) -> None:

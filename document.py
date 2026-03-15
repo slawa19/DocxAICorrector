@@ -8,6 +8,7 @@ from typing import cast
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement, parse_xml
+from docx.oxml.ns import qn
 from docx.shared import Emu
 from docx.table import Table
 from docx.text.paragraph import Paragraph
@@ -238,6 +239,9 @@ def reinsert_inline_images(docx_bytes: bytes, image_assets: list[ImageAsset]) ->
         if not placeholders:
             continue
 
+        if _replace_multi_variant_placeholders_with_tables(paragraph, asset_map):
+            continue
+
         if _replace_run_level_placeholders(paragraph, placeholders, asset_map):
             continue
 
@@ -456,20 +460,15 @@ def _append_image_insertions_to_paragraph(paragraph, asset: ImageAsset, *, place
         paragraph.add_run(placeholder_text)
         return
 
-    add_picture_kwargs = _build_picture_size_kwargs(asset)
-    if len(insertions) == 1 and insertions[0][0] is None:
-        paragraph.add_run().add_picture(BytesIO(insertions[0][1]), **add_picture_kwargs)
+    if len(insertions) > 1:
+        paragraph.add_run(placeholder_text)
         return
 
-    for index, (label, image_bytes) in enumerate(insertions):
-        if label:
-            label_run = paragraph.add_run(label)
-            label_run.bold = True
-            paragraph.add_run().add_break()
-        paragraph.add_run().add_picture(BytesIO(image_bytes), **add_picture_kwargs)
-        if index < len(insertions) - 1:
-            paragraph.add_run().add_break()
-            paragraph.add_run().add_break()
+    add_picture_kwargs = _build_picture_size_kwargs(asset)
+    run = paragraph.add_run()
+    run.add_picture(BytesIO(insertions[0][1]), **add_picture_kwargs)
+    if insertions[0][0]:
+        _set_picture_description(run._element, insertions[0][0])
 
 
 def _build_insertion_run_elements(paragraph, template_run_element, asset: ImageAsset, *, placeholder_text: str):
@@ -477,20 +476,19 @@ def _build_insertion_run_elements(paragraph, template_run_element, asset: ImageA
     if not insertions:
         return [_build_text_run_element(paragraph, template_run_element, placeholder_text)]
 
-    add_picture_kwargs = _build_picture_size_kwargs(asset)
-    if len(insertions) == 1 and insertions[0][0] is None:
-        return [_build_picture_run_element(paragraph, template_run_element, insertions[0][1], add_picture_kwargs)]
+    if len(insertions) > 1:
+        return [_build_text_run_element(paragraph, template_run_element, placeholder_text)]
 
-    replacement_elements = []
-    for index, (label, image_bytes) in enumerate(insertions):
-        if label:
-            replacement_elements.append(_build_label_run_element(paragraph, template_run_element, label))
-            replacement_elements.append(_build_break_run_element(paragraph, template_run_element))
-        replacement_elements.append(_build_picture_run_element(paragraph, template_run_element, image_bytes, add_picture_kwargs))
-        if index < len(insertions) - 1:
-            replacement_elements.append(_build_break_run_element(paragraph, template_run_element))
-            replacement_elements.append(_build_break_run_element(paragraph, template_run_element))
-    return replacement_elements
+    add_picture_kwargs = _build_picture_size_kwargs(asset)
+    return [
+        _build_picture_run_element(
+            paragraph,
+            template_run_element,
+            insertions[0][1],
+            add_picture_kwargs,
+            description=insertions[0][0],
+        )
+    ]
 
 
 def _build_text_run_element(paragraph, template_run_element, text: str):
@@ -500,23 +498,19 @@ def _build_text_run_element(paragraph, template_run_element, text: str):
     return run_element
 
 
-def _build_label_run_element(paragraph, template_run_element, label: str):
-    run_element = _build_text_run_element(paragraph, template_run_element, label)
-    Run(run_element, paragraph).bold = True
-    return run_element
-
-
-def _build_break_run_element(paragraph, template_run_element):
-    run_element = OxmlElement("w:r")
-    _copy_run_properties(template_run_element, run_element)
-    Run(run_element, paragraph).add_break()
-    return run_element
-
-
-def _build_picture_run_element(paragraph, template_run_element, image_bytes: bytes, add_picture_kwargs: dict[str, Emu]):
+def _build_picture_run_element(
+    paragraph,
+    template_run_element,
+    image_bytes: bytes,
+    add_picture_kwargs: dict[str, Emu],
+    *,
+    description: str | None = None,
+):
     run_element = OxmlElement("w:r")
     _copy_run_properties(template_run_element, run_element)
     Run(run_element, paragraph).add_picture(BytesIO(image_bytes), **add_picture_kwargs)
+    if description:
+        _set_picture_description(run_element, description)
     return run_element
 
 
@@ -536,6 +530,181 @@ def _replace_xml_element_with_sequence(element, replacements) -> None:
         anchor.addnext(replacement)
         anchor = replacement
     parent.remove(element)
+
+
+def _replace_multi_variant_placeholders_with_tables(paragraph, asset_map: dict[str, ImageAsset]) -> bool:
+    paragraph_children = [child for child in list(paragraph._element) if _xml_local_name(child.tag) in {"r", "hyperlink"}]
+    if not paragraph_children:
+        return False
+
+    child_texts = [_extract_paragraph_child_text(child) for child in paragraph_children]
+    full_text = "".join(child_texts)
+    placeholder_matches = [
+        match
+        for match in IMAGE_PLACEHOLDER_PATTERN.finditer(full_text)
+        if match.group(0) in asset_map
+    ]
+    if not placeholder_matches:
+        return False
+
+    if not any(len(resolve_image_insertions(asset_map[match.group(0)])) > 1 for match in placeholder_matches):
+        return False
+
+    fragments: list[etree._Element | tuple[str, ImageAsset]] = []
+    child_ranges: list[tuple[etree._Element, str, int, int]] = []
+    cursor = 0
+    for child, child_text in zip(paragraph_children, child_texts):
+        next_cursor = cursor + len(child_text)
+        child_ranges.append((child, child_text, cursor, next_cursor))
+        cursor = next_cursor
+
+    match_index = 0
+    current_match = placeholder_matches[match_index]
+
+    for child, child_text, child_start, child_end in child_ranges:
+        position = child_start
+        while position < child_end:
+            while current_match is not None and current_match.end() <= position:
+                match_index += 1
+                current_match = placeholder_matches[match_index] if match_index < len(placeholder_matches) else None
+
+            if current_match is not None and position >= current_match.start() and position < current_match.end():
+                if position == current_match.start():
+                    placeholder_text = current_match.group(0)
+                    asset = asset_map[placeholder_text]
+                    insertions = resolve_image_insertions(asset)
+                    if len(insertions) > 1:
+                        fragments.append(("table", asset))
+                    elif _xml_local_name(child.tag) == "r":
+                        fragments.extend(
+                            _build_insertion_run_elements(
+                                paragraph,
+                                child,
+                                asset,
+                                placeholder_text=placeholder_text,
+                            )
+                        )
+                position = min(child_end, current_match.end())
+                continue
+
+            segment_end = child_end
+            if current_match is not None and position < current_match.start():
+                segment_end = min(segment_end, current_match.start())
+
+            if segment_end > position:
+                if _xml_local_name(child.tag) == "hyperlink":
+                    if position != child_start or segment_end != child_end:
+                        return False
+                    fragments.append(deepcopy(child))
+                else:
+                    fragments.append(_build_text_run_element(paragraph, child, full_text[position:segment_end]))
+            position = segment_end
+
+    replacement_blocks = _build_replacement_blocks_from_fragments(paragraph, fragments)
+    if not replacement_blocks:
+        return False
+
+    anchor = cast(etree._Element, paragraph._element)
+    for block in replacement_blocks:
+        anchor.addnext(block)
+        anchor = block
+    paragraph._element.getparent().remove(paragraph._element)
+    return True
+
+
+def _build_replacement_blocks_from_fragments(
+    paragraph,
+    fragments: list[etree._Element | tuple[str, ImageAsset]],
+) -> list[etree._Element]:
+    replacement_blocks: list[etree._Element] = []
+    current_paragraph = None
+
+    def flush_current_paragraph() -> None:
+        nonlocal current_paragraph
+        if current_paragraph is not None and _paragraph_element_has_content(current_paragraph):
+            replacement_blocks.append(current_paragraph)
+        current_paragraph = None
+
+    for fragment in fragments:
+        if isinstance(fragment, tuple) and len(fragment) == 2 and fragment[0] == "table":
+            flush_current_paragraph()
+            replacement_blocks.append(_build_variant_table_element(paragraph, fragment[1]))
+            continue
+
+        if current_paragraph is None:
+            current_paragraph = _clone_paragraph_element(paragraph)
+        current_paragraph.append(fragment)
+
+    flush_current_paragraph()
+    return replacement_blocks
+
+
+def _clone_paragraph_element(paragraph):
+    paragraph_element = OxmlElement("w:p")
+    paragraph_properties = _find_child_element(paragraph._element, "pPr")
+    if paragraph_properties is not None:
+        paragraph_element.append(deepcopy(paragraph_properties))
+    return paragraph_element
+
+
+def _paragraph_element_has_content(paragraph_element) -> bool:
+    return any(_xml_local_name(child.tag) != "pPr" for child in paragraph_element)
+
+
+def _extract_paragraph_child_text(child) -> str:
+    if _xml_local_name(child.tag) == "hyperlink":
+        return "".join(_extract_run_text(run_element) for run_element in child.xpath("./w:r"))
+    return _extract_run_text(child)
+
+
+def _build_variant_table_element(paragraph, asset: ImageAsset):
+    insertions = resolve_image_insertions(asset)
+    temp_document = Document()
+    temp_table = temp_document.add_table(rows=1, cols=len(insertions))
+    table = Table(deepcopy(temp_table._element), paragraph._parent)
+
+    _configure_variant_table_layout(table)
+    add_picture_kwargs = _build_picture_size_kwargs(asset)
+    for cell, (label, image_bytes) in zip(table.rows[0].cells, insertions):
+        image_paragraph = cell.paragraphs[0]
+        image_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        image_run = image_paragraph.add_run()
+        image_run.add_picture(BytesIO(image_bytes), **add_picture_kwargs)
+        if label:
+            _set_picture_description(image_run._element, label)
+    return table._element
+
+
+def _configure_variant_table_layout(table) -> None:
+    table.autofit = True
+    table_properties = table._element.tblPr
+    if table_properties is None:
+        table_properties = OxmlElement("w:tblPr")
+        table._element.insert(0, table_properties)
+
+    borders = _find_child_element(table_properties, "tblBorders")
+    if borders is None:
+        borders = OxmlElement("w:tblBorders")
+        table_properties.append(borders)
+    else:
+        for child in list(borders):
+            borders.remove(child)
+
+    for edge_name in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        border = OxmlElement(f"w:{edge_name}")
+        border.set(qn("w:val"), "nil")
+        borders.append(border)
+
+
+def _set_picture_description(run_element, description: str) -> None:
+    if not description:
+        return
+
+    doc_properties = run_element.xpath(".//wp:docPr")
+    if not doc_properties:
+        return
+
+    doc_properties[-1].set("descr", description)
 
 def resolve_final_image_bytes(asset: ImageAsset) -> bytes:
     if asset.selected_compare_variant:
@@ -743,13 +912,21 @@ def _build_paragraph_unit(paragraph, image_assets: list[ImageAsset]) -> Paragrap
         return None
 
     style_name = paragraph.style.name if paragraph.style and paragraph.style.name else ""
-    heading_level = _extract_heading_level(paragraph, text, style_name)
+    normalized_style = style_name.strip().lower()
+    explicit_heading_level = _extract_explicit_heading_level(paragraph, style_name)
+    heading_level = explicit_heading_level
+    heading_source = "explicit" if explicit_heading_level is not None else None
+    if heading_level is None and not _is_caption_style(normalized_style):
+        if _is_probable_heading(paragraph, text, normalized_style):
+            heading_level = 2
+            heading_source = "heuristic"
     role = classify_paragraph_role(text, style_name, heading_level=heading_level)
     list_kind, list_level = _extract_paragraph_list_metadata(paragraph, text, style_name, role)
     return ParagraphUnit(
         text=text,
         role=role,
         heading_level=heading_level,
+        heading_source=heading_source,
         list_kind=list_kind,
         list_level=list_level,
         preserved_ppr_xml=_capture_preserved_paragraph_properties(paragraph),
@@ -895,10 +1072,7 @@ def _capture_preserved_paragraph_properties(paragraph) -> tuple[str, ...]:
     return tuple(preserved_children)
 
 
-def _extract_heading_level(paragraph, text: str, style_name: str) -> int | None:
-    if _is_image_only_text(text):
-        return None
-
+def _extract_explicit_heading_level(paragraph, style_name: str) -> int | None:
     normalized_style = style_name.strip().lower()
     if normalized_style == "title":
         return 1
@@ -918,9 +1092,6 @@ def _extract_heading_level(paragraph, text: str, style_name: str) -> int | None:
     outline_level = _resolve_paragraph_outline_level(paragraph)
     if outline_level is not None:
         return outline_level
-
-    if _is_probable_heading(paragraph, text, normalized_style):
-        return 2
     return None
 
 
@@ -953,26 +1124,41 @@ def _find_paragraph_property_element(paragraph, local_name: str):
 
 def _is_probable_heading(paragraph, text: str, normalized_style: str) -> bool:
     stripped_text = text.strip()
-    if not stripped_text or len(stripped_text) > 90:
+    if not stripped_text or len(stripped_text) > 140:
         return False
-    if len(stripped_text.split()) > 12:
+    word_count = len(stripped_text.split())
+    if word_count > 18:
         return False
-    if stripped_text.endswith((".", "!", "?", ";")):
+    if stripped_text.endswith(("!", "?", ";")):
         return False
-    if normalized_style in {"body text", "normal"} and not _paragraph_has_strong_heading_format(paragraph):
+    if stripped_text.endswith(".") and word_count > 10:
         return False
-    return _paragraph_has_strong_heading_format(paragraph)
+    if stripped_text.count(".") > 1:
+        return False
+    has_strong_format = _paragraph_has_strong_heading_format(paragraph)
+    if normalized_style in {"body text", "normal"} and not has_strong_format:
+        return False
+    return has_strong_format
 
 
 def _paragraph_has_strong_heading_format(paragraph) -> bool:
     paragraph_properties = _find_child_element(paragraph._element, "pPr")
     alignment = _find_child_element(paragraph_properties, "jc")
     alignment_value = _get_xml_attribute(alignment, "val") if alignment is not None else None
-    if alignment_value in {"center", "both"}:
+    if alignment_value == "center":
         return True
 
     visible_runs = [run for run in paragraph.runs if run.text and run.text.strip()]
-    return bool(visible_runs) and all(bool(run.bold) for run in visible_runs)
+    if not visible_runs:
+        return False
+
+    bold_runs = [run for run in visible_runs if bool(run.bold)]
+    if len(bold_runs) == len(visible_runs):
+        return True
+
+    visible_chars = sum(len(run.text.strip()) for run in visible_runs)
+    bold_chars = sum(len(run.text.strip()) for run in bold_runs)
+    return bool(bold_runs) and visible_chars > 0 and (bold_chars / visible_chars) >= 0.5
 
 
 def _is_image_only_text(text: str) -> bool:
@@ -992,13 +1178,17 @@ def _is_likely_caption_text(text: str) -> bool:
 
 def _reclassify_adjacent_captions(paragraphs: list[ParagraphUnit]) -> None:
     for index, paragraph in enumerate(paragraphs):
-        if index == 0 or paragraph.role != "body":
+        if index == 0:
             continue
         previous_paragraph = paragraphs[index - 1]
         if previous_paragraph.role not in {"image", "table"}:
             continue
         if _is_likely_caption_text(paragraph.text):
+            if paragraph.role == "heading" and paragraph.heading_source != "heuristic":
+                continue
             paragraph.role = "caption"
+            paragraph.heading_level = None
+            paragraph.heading_source = None
 
 
 def _normalize_output_paragraph(document, paragraph, source_paragraph: ParagraphUnit) -> None:
@@ -1152,11 +1342,11 @@ def _extract_run_image_placeholders(run_element, part, image_assets: list[ImageA
         placeholder = f"[[DOCX_IMAGE_img_{image_index:03d}]]"
         image_assets.append(
             ImageAsset(
-                image_id=f"img_{image_index:03d}",
-                placeholder=placeholder,
-                original_bytes=image_blob,
-                mime_type=mime_type,
-                position_index=image_index - 1,
+                f"img_{image_index:03d}",
+                placeholder,
+                image_blob,
+                mime_type,
+                image_index - 1,
                 width_emu=width_emu,
                 height_emu=height_emu,
             )

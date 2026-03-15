@@ -46,6 +46,8 @@
 - `semantic_redraw_structured` может законно завершиться deterministic reconstruction delivery без смены пользовательского режима.
 - `compare_all` не требует обязательной дополнительной пересборки из UI: итоговый DOCX уже может содержать доступные compare-варианты.
 - Manual-review contract (`keep_all_image_variants`) может сохранять `safe` и candidate-варианты в финальном DOCX для визуальной проверки fallback decision.
+- Для `compare_all` и manual-review multi-variant delivery варианты вставляются в общий side-by-side layout container без видимых label-абзацев в теле документа.
+- Имена compare/manual-review вариантов сохраняются как скрытое descriptive metadata изображения (`docPr/@descr`), а не как печатный текст рядом с картинкой.
 
 ## Supporting References
 

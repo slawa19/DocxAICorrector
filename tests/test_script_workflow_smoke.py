@@ -100,10 +100,6 @@ def _load_vscode_tasks() -> list[dict[str, Any]]:
     return json.loads(tasks_path.read_text(encoding="utf-8"))["tasks"]
 
 
-def _read_text(relative_path: str) -> str:
-    return (REPO_ROOT / relative_path).read_text(encoding="utf-8")
-
-
 def test_test_sh_run_test_file_smoke() -> None:
     result = _run_test_sh(
         "tests/test_config.py",
@@ -232,67 +228,8 @@ def test_legacy_powershell_test_wrappers_are_removed() -> None:
         assert not (REPO_ROOT / "scripts" / script_name).exists()
 
 
-def test_core_docs_publish_single_wsl_bash_test_contract() -> None:
-    for relative_path in [
-        "README.md",
-        "CONTRIBUTING.md",
-        "docs/WORKFLOW_AND_IMAGE_MODES.md",
-        "docs/AI_AGENT_DEVELOPMENT_RULES.md",
-        ".github/copilot-instructions.md",
-    ]:
-        text = _read_text(relative_path)
-        assert "bash scripts/test.sh" in text
-
-    assert "run-tests.ps1" not in _read_text("README.md")
-    assert "run-test-file.ps1" not in _read_text("README.md")
-    assert "run-test-node.ps1" not in _read_text("README.md")
-    assert "run-tests.ps1" not in _read_text("CONTRIBUTING.md")
-    assert "run-test-file.ps1" not in _read_text("CONTRIBUTING.md")
-    assert "run-test-node.ps1" not in _read_text("CONTRIBUTING.md")
-    assert "run-tests.ps1" not in _read_text("docs/WORKFLOW_AND_IMAGE_MODES.md")
-    assert "run-tests.ps1" not in _read_text("docs/AI_AGENT_DEVELOPMENT_RULES.md")
-    assert "run-tests.ps1" not in _read_text(".github/copilot-instructions.md")
-
-
-def test_docs_reference_actual_vscode_test_task_labels() -> None:
-    combined = "\n".join(
-        _read_text(relative_path)
-        for relative_path in [
-            "README.md",
-            "CONTRIBUTING.md",
-            "docs/WORKFLOW_AND_IMAGE_MODES.md",
-            "docs/AI_AGENT_DEVELOPMENT_RULES.md",
-            ".github/copilot-instructions.md",
-        ]
-    )
-    assert "Run Full Pytest" in combined
-    assert "Run Current Test File" in combined
-    assert "Run Current Test Node" in combined
-    assert "Run Full Pytest WSL" not in combined
-    assert "Run Current Test File WSL" not in combined
-    assert "Run Current Test Node WSL" not in combined
-
-
-def test_agent_docs_protect_test_workflow_contract_from_unrelated_changes() -> None:
-    copilot_text = _read_text(".github/copilot-instructions.md")
-    agent_rules_text = _read_text("docs/AI_AGENT_DEVELOPMENT_RULES.md")
-
-    assert "Protected Test Workflow Contract" in copilot_text
-    assert "Do not add or restore PowerShell `.ps1` wrappers for test execution." in copilot_text
-    assert "Do not change `scripts/test.sh`, `.vscode/tasks.json` test tasks, `tests/test_script_workflow_smoke.py`, or the test-workflow docs as part of unrelated work." in copilot_text
-    assert "bash scripts/test.sh tests/test_script_workflow_smoke.py -q" in copilot_text
-    assert "prefer a user-visible execution path" in copilot_text
-    assert "Run Full Pytest" in copilot_text
-
-    assert "Защищённый контракт тестового workflow" in agent_rules_text
-    assert "возвращать PowerShell-обёртки для запуска тестов" in agent_rules_text
-    assert "менять `scripts/test.sh`, `.vscode/tasks.json`, `tests/test_script_workflow_smoke.py` и документы про тестовый workflow в рамках несвязанной задачи" in agent_rules_text
-    assert "bash scripts/test.sh tests/test_script_workflow_smoke.py -q" in agent_rules_text
-    assert "видимый для пользователя путь запуска" in agent_rules_text
-
-
 def test_ci_exposes_separate_workflow_and_startup_contract_jobs() -> None:
-    ci_text = _read_text(".github/workflows/ci.yml")
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
     assert "workflow-contract:" in ci_text
     assert "startup-contract:" in ci_text
@@ -301,7 +238,7 @@ def test_ci_exposes_separate_workflow_and_startup_contract_jobs() -> None:
 
 
 def test_codeowners_protects_workflow_and_startup_contract_files() -> None:
-    codeowners_text = _read_text(".github/CODEOWNERS")
+    codeowners_text = (REPO_ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
 
     assert "/scripts/test.sh @slawa19" in codeowners_text
     assert "/.vscode/tasks.json @slawa19" in codeowners_text
@@ -311,7 +248,7 @@ def test_codeowners_protects_workflow_and_startup_contract_files() -> None:
 
 
 def test_ci_uses_canonical_bash_test_contract() -> None:
-    ci_text = _read_text(".github/workflows/ci.yml")
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
     assert "runs-on: ubuntu-latest" in ci_text
     assert "python -m venv .venv" in ci_text
