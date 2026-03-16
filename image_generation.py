@@ -171,13 +171,13 @@ def _generate_reconstructed_candidate(
     """
     model = reconstruction_model or "gpt-4.1"
     try:
-        _consume_budget(budget, "deterministic_reconstruction.responses.create")
         candidate_bytes, scene_graph = reconstruct_image(
             image_bytes,
             model=model,
             mime_type=None,
             client=client,
             render_config=reconstruction_render_config,
+            budget=budget,
         )
         log_event(
             logging.INFO,
@@ -483,13 +483,13 @@ def _call_images_edit(client, request_payload: dict[str, object], *, budget: Ima
         "size",
         "timeout",
     }
-    current_payload = dict(request_payload)
+    current_payload = _with_timeout(dict(request_payload))
     attempt = 1
     adaptation_attempts = 0
     while True:
         try:
-            _consume_budget(budget, "images.edit")
-            return client.images.edit(**_with_timeout(current_payload))
+            _ensure_budget_available(budget, "images.edit")
+            result = client.images.edit(**current_payload)
         except TypeError as exc:
             unsupported_param = _extract_unsupported_parameter_name(str(exc))
             if unsupported_param not in retryable_optional_params or unsupported_param not in current_payload:
@@ -560,18 +560,22 @@ def _call_images_edit(client, request_payload: dict[str, object], *, budget: Ima
                 time.sleep(retry_delay)
                 attempt += 1
                 continue
+            _consume_budget(budget, "images.edit")
             raise
+        else:
+            _consume_budget(budget, "images.edit")
+            return result
 
 
 def _call_images_generate(client, request_payload: dict[str, object], *, budget: ImageModelCallBudget | None = None):
     retryable_optional_params = {"background", "output_format", "quality", "response_format", "size", "timeout"}
-    current_payload = dict(request_payload)
+    current_payload = _with_timeout(dict(request_payload))
     attempt = 1
     adaptation_attempts = 0
     while True:
         try:
-            _consume_budget(budget, "images.generate")
-            return client.images.generate(**_with_timeout(current_payload))
+            _ensure_budget_available(budget, "images.generate")
+            result = client.images.generate(**current_payload)
         except TypeError as exc:
             unsupported_param = _extract_unsupported_parameter_name(str(exc))
             if unsupported_param not in retryable_optional_params or unsupported_param not in current_payload:
@@ -642,17 +646,21 @@ def _call_images_generate(client, request_payload: dict[str, object], *, budget:
                 time.sleep(retry_delay)
                 attempt += 1
                 continue
+            _consume_budget(budget, "images.generate")
             raise
+        else:
+            _consume_budget(budget, "images.generate")
+            return result
 
 
 def _call_responses_create(client, request_payload: dict[str, object], *, budget: ImageModelCallBudget | None = None):
     retryable_optional_params = {"timeout"}
-    current_payload = dict(request_payload)
+    current_payload = _with_timeout(dict(request_payload))
     attempt = 1
     while True:
         try:
-            _consume_budget(budget, "responses.create")
-            return client.responses.create(**_with_timeout(current_payload))
+            _ensure_budget_available(budget, "responses.create")
+            result = client.responses.create(**current_payload)
         except TypeError as exc:
             unsupported_param = _extract_unsupported_parameter_name(str(exc))
             if unsupported_param not in retryable_optional_params or unsupported_param not in current_payload:
@@ -691,7 +699,11 @@ def _call_responses_create(client, request_payload: dict[str, object], *, budget
                 time.sleep(retry_delay)
                 attempt += 1
                 continue
+            _consume_budget(budget, "responses.create")
             raise
+        else:
+            _consume_budget(budget, "responses.create")
+            return result
 
 
 def _with_timeout(request_payload: dict[str, object]) -> dict[str, object]:

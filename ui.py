@@ -68,35 +68,8 @@ def _strip_docx_image_placeholders(markdown_text: str) -> str:
     return _DOCX_IMAGE_PLACEHOLDER_PATTERN.sub("", markdown_text).strip()
 
 
-def _latest_meaningful_markdown_block_index(blocks: list[str]) -> int | None:
-    for index in range(len(blocks) - 1, -1, -1):
-        if _strip_docx_image_placeholders(blocks[index]):
-            return index + 1
-    return None
-
-
-def _scroll_activity_feed_to_latest(feed_id: str) -> None:
-    try:
-        from streamlit.components.v1 import html as render_component_html
-    except Exception:
-        return
-
-    render_component_html(
-        f"""
-        <script>
-        const feed = window.parent.document.getElementById({feed_id!r});
-        if (feed) {{
-            feed.scrollTop = feed.scrollHeight;
-            const lastItem = feed.querySelector('.activity-feed-item-active');
-            if (lastItem) {{
-                lastItem.scrollIntoView({{ block: 'nearest', inline: 'nearest' }});
-            }}
-        }}
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
+def _meaningful_markdown_blocks(blocks: list[str]) -> list[str]:
+    return [block for block in blocks if _strip_docx_image_placeholders(block)]
 
 
 def _render_activity_feed(*, title: str, lines: list[str], feed_id: str | None = None, auto_scroll: bool = False) -> None:
@@ -105,23 +78,20 @@ def _render_activity_feed(*, title: str, lines: list[str], feed_id: str | None =
 
     resolved_feed_id = feed_id or _build_feed_id(title)
     item_markup = []
-    last_index = len(lines) - 1
-    for index, line in enumerate(lines):
+    for index, line in enumerate(reversed(lines)):
         item_class = "activity-feed-item"
-        if index == last_index:
+        if index == 0:
             item_class += " activity-feed-item-active"
-        item_markup.append(f'<div class="{item_class}">{escape(line)}</div>')
+        item_markup.append(f'<div class="{item_class}" tabindex="-1">{escape(line)}</div>')
 
     _render_trusted_html(
         f"""
         <div class="activity-feed">
             <div class="activity-feed-title">{escape(title)}</div>
-            <div class="activity-feed-items" id="{escape(resolved_feed_id)}">{''.join(item_markup)}</div>
+            <div class="activity-feed-items" id="{escape(resolved_feed_id)}" tabindex="-1">{''.join(item_markup)}</div>
         </div>
         """
     )
-    if auto_scroll:
-        _scroll_activity_feed_to_latest(resolved_feed_id)
 
 _SIDEBAR_DD = 'section[data-testid="stSidebar"] div[data-baseweb="select"]'
 
@@ -287,12 +257,11 @@ def inject_ui_styles() -> None:
 
         .activity-feed-items {
             display: flex;
-            flex-direction: column;
+            flex-direction: column-reverse;
             gap: 0.2rem;
             max-height: 12rem;
             overflow-y: auto;
             padding-right: 0.25rem;
-            scroll-behavior: smooth;
         }
 
         .activity-feed-title {
@@ -474,18 +443,6 @@ def render_run_log(target=None) -> None:
     sink = target if target is not None else st
     with sink.container():
         with st.expander("Журнал обработки", expanded=True):
-            max_block_count = max(
-                (entry["block_count"] for entry in run_log if entry["block_count"]),
-                default=1,
-            )
-            completed_steps = sum(1 for entry in run_log if entry["status"] in {"OK", "DONE"})
-            progress_value = float(status.get("progress") or 0.0)
-            stage = str(status.get("stage") or "Ожидание")
-            detail = str(status.get("detail") or "")
-            if max_block_count:
-                progress_value = max(progress_value, min(1.0, completed_steps / max_block_count))
-            st.progress(progress_value)
-            st.caption(f"Этап: {stage} | {detail}")
             if show_processing_activity:
                 _render_activity_feed(
                     title="События",
@@ -498,7 +455,6 @@ def render_run_log(target=None) -> None:
                     f"[{entry['status']}] Блок {entry['block_index']}/{entry['block_count']} | "
                     f"цель: {entry['target_chars']} симв. | контекст: {entry['context_chars']} симв. | {entry['details']}"
                 )
-            st.caption(st.session_state.last_log_hint)
 
 
 def render_image_validation_summary(target=None) -> None:
@@ -639,40 +595,27 @@ def render_markdown_preview(
     *,
     title: str,
     focus_latest: bool = False,
-    preferred_block_index: int | None = None,
 ) -> None:
-    blocks = st.session_state.processed_block_markdowns
+    blocks = _meaningful_markdown_blocks(list(st.session_state.get("processed_block_markdowns", [])))
     if not blocks:
         return
 
     sink = target if target is not None else st
     option_count = len(blocks)
 
-    # Stable widget keys tied to the panel title so user selections survive
-    # Streamlit reruns (e.g. fragment polling every second).
-    select_key = _mdpreview_key(title, "select")
-    last_count_key = _mdpreview_key(title, "last_count")
+    selected_key = _mdpreview_key(title, "selected")
+    last_count_key = _mdpreview_key(title, "count")
 
     last_known_count = int(st.session_state.get(last_count_key, 0))
     new_block_arrived = option_count > last_known_count
+    current_selection = st.session_state.get(selected_key)
+    if not isinstance(current_selection, int) or not (1 <= current_selection <= option_count):
+        current_selection = option_count if focus_latest else 1
+    elif focus_latest and new_block_arrived and current_selection == last_known_count:
+        current_selection = option_count
+
+    st.session_state[selected_key] = current_selection
     st.session_state[last_count_key] = option_count
-
-    if select_key not in st.session_state:
-        # First display: pick initial block.
-        if focus_latest:
-            st.session_state[select_key] = option_count
-        elif preferred_block_index is not None and 1 <= preferred_block_index <= option_count:
-            st.session_state[select_key] = preferred_block_index
-        else:
-            st.session_state[select_key] = 1
-    elif focus_latest and new_block_arrived:
-        # Auto-advance only when a genuinely new block just arrived.
-        st.session_state[select_key] = option_count
-
-    # Clamp if the stored value is somehow out of range.
-    current_val = st.session_state.get(select_key)
-    if not isinstance(current_val, int) or not (1 <= current_val <= option_count):
-        st.session_state[select_key] = option_count if focus_latest else 1
 
     with sink.container():
         with st.expander(title, expanded=False):
@@ -680,7 +623,8 @@ def render_markdown_preview(
             selected_block = st.selectbox(
                 "Показать блок",
                 options=list(range(1, option_count + 1)),
-                key=select_key,
+                index=current_selection - 1,
+                key=selected_key,
             )
             # Include the block number in the text_area key so the widget
             # refreshes when the selection changes.
@@ -731,16 +675,18 @@ def render_result_bundle(
         use_container_width=True,
     )
     if preview_title:
-        render_markdown_preview(title=preview_title, focus_latest=True)
+        render_markdown_preview(title=preview_title)
 
 
 def render_partial_result() -> None:
-    preview_block_index = _latest_meaningful_markdown_block_index(st.session_state.processed_block_markdowns)
-    if preview_block_index is None or st.session_state.latest_docx_bytes is not None:
+    if st.session_state.latest_docx_bytes is not None:
+        return
+
+    if not _meaningful_markdown_blocks(list(st.session_state.get("processed_block_markdowns", []))):
         return
 
     st.warning("Доступен промежуточный Markdown-результат последнего запуска.")
     render_markdown_preview(
         title="Текущий Markdown",
-        preferred_block_index=preview_block_index,
+        focus_latest=True,
     )

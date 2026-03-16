@@ -6,6 +6,7 @@ try {
     $status = Get-ProjectRuntimeStatus
     $portOpen = ConvertTo-BoolFlag $status['port_open']
     $managedPidRunning = ConvertTo-BoolFlag $status['managed_pid_running']
+    Append-ProjectLogEntry "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') | INFO | Stop requested: managed_pid_running=$managedPidRunning; wsl_port_open=$portOpen"
 
     if (-not $portOpen -and -not $managedPidRunning) {
         Write-Ok 'Проект уже остановлен'
@@ -19,17 +20,19 @@ try {
 
     Stop-ManagedProject
 
-    $stopped = $false
-    for ($i = 1; $i -le 20; $i++) {
-        Start-Sleep -Milliseconds 500
-        if (-not (Test-TcpPort -ComputerName $loopbackHost -Port $port)) {
-            $stopped = $true
-            break
-        }
-    }
+    $stopStatus = Wait-ProjectStopped -Port $port -TimeoutSeconds 10
+    $stopped = [bool]$stopStatus['stopped']
+    $managedPidStillRunning = [bool]$stopStatus['managed_pid_running']
+    $wslPortStillOpen = [bool]$stopStatus['port_open']
+    $windowsPortOpen = [bool]$stopStatus['windows_port_open']
+    Append-ProjectLogEntry "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') | INFO | Stop diagnostics: stopped=$stopped; managed_pid_running=$managedPidStillRunning; wsl_port_open=$wslPortStillOpen; windows_port_open=$windowsPortOpen"
 
     if (-not $stopped) {
-        throw "Порт $port всё ещё занят после команды остановки."
+        throw "Порт $port всё ещё занят после команды остановки. managed_pid_running=$managedPidStillRunning; wsl_port_open=$wslPortStillOpen; windows_port_open=$windowsPortOpen"
+    }
+
+    if ($windowsPortOpen) {
+        Write-Warn "WSL runtime уже остановлен, но Windows localhost:$port ещё кратковременно виден занятым. Считаю остановку успешной."
     }
 
     Append-ProjectLogEntry "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') | INFO | Status: STOPPED"

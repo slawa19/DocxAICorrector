@@ -56,9 +56,17 @@ def parse_json_object(raw_text: str, *, empty_message: str, no_json_message: str
     if not text:
         raise RuntimeError(empty_message)
     if text.startswith("```"):
-        text = text.strip("`")
-        if text.lower().startswith("json"):
-            text = text[4:].strip()
+        first_newline = text.find("\n")
+        if first_newline != -1:
+            text = text[first_newline + 1 :]
+            last_fence = text.rfind("```")
+            if last_fence != -1:
+                text = text[:last_fence]
+            text = text.strip()
+        else:
+            text = text[3:].strip()
+            if text.endswith("```"):
+                text = text[:-3].strip()
     start = text.find("{")
     end = text.rfind("}")
     if start == -1 or end == -1 or end <= start:
@@ -100,8 +108,9 @@ def call_responses_create_with_retry(
                 continue
             raise
         except Exception as exc:
-            consume_budget()
-            if attempt >= max_retries or not retryable_error_predicate(exc):
+            should_retry = attempt < max_retries and retryable_error_predicate(exc)
+            if not should_retry:
+                consume_budget()
                 raise
             time.sleep(min(2 ** (attempt - 1), max_backoff_seconds))
         else:

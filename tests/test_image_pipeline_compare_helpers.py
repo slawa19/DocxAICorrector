@@ -169,6 +169,28 @@ def test_prepare_compare_variants_keeps_original_as_selected_default():
     }
 
 
+def test_prepare_compare_variants_falls_back_to_safe_when_compare_all_is_incomplete():
+    asset = _build_asset()
+    analysis = _build_analysis(semantic_redraw_allowed=False, render_strategy="safe_mode")
+    context = _build_context(
+        analyze_image_fn=lambda *args, **kwargs: analysis,
+        generate_image_candidate_fn=lambda image_bytes, analysis, *, mode, **kwargs: PNG_BYTES,
+    )
+
+    result = _prepare_compare_variants(
+        asset,
+        analysis,
+        context,
+        client=object(),
+    )
+
+    assert result.validation_status == "failed"
+    assert result.final_decision == "fallback_safe"
+    assert result.final_variant == "safe"
+    assert result.selected_compare_variant is None
+    assert result.final_reason == "compare_all_variants_incomplete:safe"
+
+
 def test_image_variant_candidate_to_dict_is_json_safe_summary():
     variant = ImageVariantCandidate(
         mode="safe",

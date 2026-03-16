@@ -92,13 +92,14 @@ def request_processing_stop() -> None:
     request_processing_stop_impl()
 
 
-def start_background_preparation(*, worker_target, uploaded_file, upload_marker: str, chunk_size: int, image_mode: str, keep_all_image_variants: bool) -> None:
+def start_background_preparation(*, worker_target, uploaded_payload, upload_marker: str, chunk_size: int, image_mode: str, keep_all_image_variants: bool) -> None:
     start_background_preparation_impl(
         worker_target=worker_target,
         reset_run_state=reset_run_state,
         push_activity=push_activity,
         set_processing_status=set_processing_status,
-        uploaded_file=uploaded_file,
+        uploaded_file=None,
+        uploaded_payload=uploaded_payload,
         upload_marker=upload_marker,
         chunk_size=chunk_size,
         image_mode=image_mode,

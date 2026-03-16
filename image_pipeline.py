@@ -361,6 +361,19 @@ def _build_compare_variant_candidate(
     return variant
 
 
+def _apply_compare_all_incomplete_fallback(asset, *, prepared_modes: list[str]) -> object:
+    asset.validation_status = "failed"
+    if asset.safe_bytes:
+        asset.final_decision = "fallback_safe"
+        asset.final_variant = ImageMode.SAFE.value
+    else:
+        asset.final_decision = "fallback_original"
+        asset.final_variant = "original"
+    asset.selected_compare_variant = None
+    asset.final_reason = f"compare_all_variants_incomplete:{', '.join(prepared_modes) or 'none'}"
+    return asset
+
+
 def select_best_semantic_asset(
     asset,
     analysis,
@@ -484,8 +497,12 @@ def select_best_semantic_asset(
     if best_asset is None:
         asset.attempt_variants = list(attempt_variants)
         asset.validation_status = "failed" if budget_exhausted else "error"
-        asset.final_decision = "fallback_original"
-        asset.final_variant = "original"
+        if asset.safe_bytes:
+            asset.final_decision = "fallback_safe"
+            asset.final_variant = ImageMode.SAFE.value
+        else:
+            asset.final_decision = "fallback_original"
+            asset.final_variant = "original"
         asset.final_reason = budget_exhausted_reason if budget_exhausted else "semantic_candidate_attempts_exhausted"
         return asset
     best_asset.attempt_variants = list(attempt_variants)
@@ -764,14 +781,19 @@ def _prepare_compare_variants(
     budget=None,
 ):
     variant_map: dict[str, ImageVariantCandidate] = {}
-    candidate_modes = [ImageMode.SAFE.value]
+    candidate_modes = [
+        ImageMode.SAFE.value,
+        ImageMode.SEMANTIC_REDRAW_DIRECT.value,
+        ImageMode.SEMANTIC_REDRAW_STRUCTURED.value,
+    ]
     if should_attempt_semantic_redraw(analysis, ImageMode.COMPARE_ALL.value):
-        candidate_modes.extend([
-            ImageMode.SEMANTIC_REDRAW_DIRECT.value,
-            ImageMode.SEMANTIC_REDRAW_STRUCTURED.value,
-        ])
+        expected_modes = candidate_modes
+    else:
+        expected_modes = candidate_modes
 
     for candidate_mode in candidate_modes:
+        if candidate_mode != ImageMode.SAFE.value and not should_attempt_semantic_redraw(analysis, ImageMode.COMPARE_ALL.value):
+            continue
         try:
             variant = _build_compare_variant_candidate(
                 asset,
@@ -796,19 +818,14 @@ def _prepare_compare_variants(
         variant_map[candidate_mode] = variant
 
     asset.comparison_variants = variant_map
+    prepared_modes = [mode for mode in candidate_modes if mode in variant_map]
+    if len(prepared_modes) != len(expected_modes):
+        return _apply_compare_all_incomplete_fallback(asset, prepared_modes=prepared_modes)
+
     asset.selected_compare_variant = "original"
     asset.validation_status = "compared"
     asset.final_decision = "compared"
     asset.final_variant = "original"
-    prepared_modes = [
-        mode
-        for mode in [
-            ImageMode.SAFE.value,
-            ImageMode.SEMANTIC_REDRAW_DIRECT.value,
-            ImageMode.SEMANTIC_REDRAW_STRUCTURED.value,
-        ]
-        if mode in variant_map
-    ]
     asset.final_reason = f"Подготовлены compare-all варианты: {', '.join(prepared_modes)}."
     return asset
 

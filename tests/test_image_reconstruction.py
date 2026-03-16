@@ -1,5 +1,6 @@
 """Tests for the deterministic image reconstruction pipeline."""
 
+import image_reconstruction
 import json
 import math
 from io import BytesIO
@@ -601,6 +602,28 @@ def test_extract_scene_graph_requires_explicit_client():
         assert "explicit client" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError when reconstruction client is not provided")
+
+
+def test_extract_scene_graph_uses_retry_wrapper_with_timeout_and_budget(monkeypatch):
+    captured = {}
+    budget = object()
+
+    def fake_retry(client, request_payload, **kwargs):
+        captured["payload"] = request_payload
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(
+            output_text=json.dumps({"canvas": {"width": 10, "height": 10}, "elements": []})
+        )
+
+    monkeypatch.setattr(image_reconstruction, "call_responses_create_with_retry", fake_retry)
+
+    result = extract_scene_graph(_build_test_png(), model="test-model", client=object(), budget=budget)
+
+    assert result["canvas"]["width"] == 10
+    assert captured["payload"]["model"] == "test-model"
+    assert captured["payload"]["timeout"] == 60.0
+    assert captured["kwargs"]["max_retries"] == 2
+    assert captured["kwargs"]["budget"] is budget
 
 
 def test_sample_source_background_reads_border_color():

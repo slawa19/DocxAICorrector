@@ -2,6 +2,7 @@ from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from io import BytesIO
+import logging
 from threading import Event, Lock
 
 from document import (
@@ -10,6 +11,7 @@ from document import (
     build_semantic_blocks,
     extract_document_content_from_docx,
 )
+from logger import log_event
 from models import ImageAsset, ImagePipelineMetadata, ImageValidationResult, ImageVariantCandidate
 
 
@@ -190,7 +192,7 @@ def _read_or_reserve_cached_prepared_document(*, session_state, prepared_source_
     if session_cache is not None:
         cached = _read_cache_entry(session_cache, prepared_source_key)
         if cached is not None:
-            return _clone_prepared_document(cached, prepared_source_key, cached=True), None
+            return _clone_prepared_document(cached, prepared_source_key, cached=True), None, "session"
 
     while True:
         with _shared_preparation_cache_lock:
@@ -199,13 +201,13 @@ def _read_or_reserve_cached_prepared_document(*, session_state, prepared_source_
                 if session_cache is not None:
                     _touch_cache_entry(session_cache, prepared_source_key, cached)
                     _trim_cache(session_cache)
-                return _clone_prepared_document(cached, prepared_source_key, cached=True), None
+                return _clone_prepared_document(cached, prepared_source_key, cached=True), None, "shared"
 
             in_flight = _shared_preparation_inflight.get(prepared_source_key)
             if in_flight is None:
                 in_flight = Event()
                 _shared_preparation_inflight[prepared_source_key] = in_flight
-                return None, in_flight
+                return None, in_flight, None
 
         in_flight.wait()
 
@@ -240,11 +242,18 @@ def clear_preparation_cache(*, session_state=None, clear_shared: bool = False) -
 
 def prepare_document_for_processing(*, uploaded_filename: str, source_bytes: bytes, uploaded_file_token: str, chunk_size: int, session_state=None, progress_callback=None) -> PreparedDocumentData:
     prepared_source_key = build_prepared_source_key(uploaded_file_token, chunk_size)
-    cached, in_flight = _read_or_reserve_cached_prepared_document(
+    cached, in_flight, cache_level = _read_or_reserve_cached_prepared_document(
         session_state=session_state,
         prepared_source_key=prepared_source_key,
     )
     if cached is not None:
+        log_event(
+            logging.INFO,
+            "preparation_cache_hit",
+            "Использован кэш подготовки документа.",
+            prepared_source_key=prepared_source_key,
+            cache_level=cache_level,
+        )
         emit_preparation_progress(
             progress_callback,
             stage="Подготовка документа",
@@ -259,6 +268,13 @@ def prepare_document_for_processing(*, uploaded_filename: str, source_bytes: byt
             },
         )
         return cached
+
+    log_event(
+        logging.INFO,
+        "preparation_cache_miss",
+        "Подготовка документа выполняется без готового cache-hit.",
+        prepared_source_key=prepared_source_key,
+    )
 
     try:
         prepared_document = _prepare_document_for_processing(

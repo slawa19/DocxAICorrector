@@ -15,7 +15,6 @@ from constants import APP_READY_PATH, MAX_DOCX_ARCHIVE_SIZE_BYTES
 from config import load_app_config
 from app_runtime import (
     build_preparation_request_marker,
-    build_uploaded_file_selection_marker,
     drain_preparation_events as _drain_preparation_events,
     drain_processing_events as _drain_processing_events,
     preparation_worker_is_active as _preparation_worker_is_active,
@@ -26,6 +25,7 @@ from app_runtime import (
 )
 from logger import fail_critical, log_event, present_error
 from processing_runtime import (
+    freeze_uploaded_file,
     get_current_result_bundle,
     resolve_uploaded_filename,
 )
@@ -74,8 +74,9 @@ def _schedule_stale_persisted_sources_cleanup() -> None:
         try:
             cleanup_stale_persisted_sources(max_age_seconds=PERSISTED_SOURCE_TTL_SECONDS)
         finally:
-            global _CLEANUP_THREAD_STARTED
-            _CLEANUP_THREAD_STARTED = False
+            with _CLEANUP_THREAD_LOCK:
+                global _CLEANUP_THREAD_STARTED
+                _CLEANUP_THREAD_STARTED = False
 
     threading.Thread(target=worker, daemon=True, name="persisted-source-cleanup").start()
     st.session_state.persisted_source_cleanup_done = True
@@ -136,7 +137,7 @@ def _start_background_processing(
 
 def _start_background_preparation(
     *,
-    uploaded_file,
+    uploaded_payload,
     upload_marker: str,
     chunk_size: int,
     image_mode: str,
@@ -146,7 +147,7 @@ def _start_background_preparation(
 
     start_background_preparation(
         worker_target=prepare_run_context_for_background,
-        uploaded_file=uploaded_file,
+        uploaded_payload=uploaded_payload,
         upload_marker=upload_marker,
         chunk_size=chunk_size,
         image_mode=image_mode,
@@ -226,7 +227,7 @@ def main() -> None:
     current_result = get_current_result_bundle()
 
     if processing_active:
-        @st.fragment(run_every=1)
+        @st.fragment(run_every=2)
         def render_processing_panel() -> None:
             _drain_processing_events()
             render_live_status()
@@ -287,15 +288,16 @@ def main() -> None:
         _schedule_stale_persisted_sources_cleanup()
         return
 
+    uploaded_widget_payload = None
     if uploaded_widget_file is not None:
-        upload_marker = build_uploaded_file_selection_marker(uploaded_widget_file)
-        preparation_request_marker = build_preparation_request_marker(uploaded_widget_file, chunk_size=chunk_size)
+        uploaded_widget_payload = freeze_uploaded_file(uploaded_widget_file)
+        preparation_request_marker = build_preparation_request_marker(uploaded_widget_payload, chunk_size=chunk_size)
         prepared_request_marker = str(st.session_state.get("preparation_input_marker", ""))
         preparation_failed_marker = str(st.session_state.get("preparation_failed_marker", ""))
         prepared_run_context = st.session_state.get("prepared_run_context")
         if (preparation_request_marker != prepared_request_marker or prepared_run_context is None) and preparation_failed_marker != preparation_request_marker:
             _start_background_preparation(
-                uploaded_file=uploaded_widget_file,
+                uploaded_payload=uploaded_widget_payload,
                 upload_marker=preparation_request_marker,
                 chunk_size=chunk_size,
                 image_mode=image_mode,
@@ -329,8 +331,8 @@ def main() -> None:
     )
 
     prepared_run_context = None
-    if uploaded_widget_file is not None:
-        current_preparation_request_marker = build_preparation_request_marker(uploaded_widget_file, chunk_size=chunk_size)
+    if uploaded_widget_payload is not None:
+        current_preparation_request_marker = build_preparation_request_marker(uploaded_widget_payload, chunk_size=chunk_size)
         if str(st.session_state.get("preparation_input_marker", "")) == current_preparation_request_marker:
             prepared_run_context = st.session_state.get("prepared_run_context")
         if prepared_run_context is None:

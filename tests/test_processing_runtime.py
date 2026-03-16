@@ -102,7 +102,10 @@ def test_drain_preparation_events_stores_prepared_context(monkeypatch):
     finalized = []
 
     session_state.preparation_event_queue.put(
-        PreparationCompleteEvent(prepared_run_context=prepared_run_context, upload_marker="report.docx:3")
+        PreparationCompleteEvent(
+            prepared_run_context=prepared_run_context,
+            upload_marker="report.docx:3:ba7816bf8f01cfea:6000",
+        )
     )
 
     processing_runtime.drain_preparation_events(
@@ -113,7 +116,7 @@ def test_drain_preparation_events_stores_prepared_context(monkeypatch):
     )
 
     assert session_state.prepared_run_context is prepared_run_context
-    assert session_state.preparation_input_marker == "report.docx:3"
+    assert session_state.preparation_input_marker == "report.docx:3:ba7816bf8f01cfea:6000"
     assert session_state.selected_source_token == "report.docx:3:abc"
     assert session_state.preparation_worker is None
     assert session_state.preparation_event_queue is None
@@ -131,7 +134,18 @@ def test_drain_preparation_events_marks_failure(monkeypatch):
     activities = []
 
     session_state.preparation_event_queue.put(
-        PreparationFailedEvent(upload_marker="report.docx:3", error_message="boom")
+        PreparationFailedEvent(
+            upload_marker="report.docx:3:ba7816bf8f01cfea:6000",
+            error_message="boom",
+            error_details={
+                "stage": "preparation",
+                "severity": "error",
+                "user_message": "boom",
+                "technical_message": "boom",
+                "error_type": "RuntimeError",
+                "recoverable": False,
+            },
+        )
     )
 
     processing_runtime.drain_preparation_events(
@@ -142,8 +156,9 @@ def test_drain_preparation_events_marks_failure(monkeypatch):
     )
 
     assert session_state.prepared_run_context is None
-    assert session_state.preparation_failed_marker == "report.docx:3"
+    assert session_state.preparation_failed_marker == "report.docx:3:ba7816bf8f01cfea:6000"
     assert session_state.last_error == "boom"
+    assert session_state.last_background_error["stage"] == "preparation"
     assert session_state.preparation_worker is None
     assert session_state.preparation_event_queue is None
     assert finalized == [("Ошибка подготовки", "boom", 1.0)]
@@ -155,14 +170,19 @@ def test_start_background_preparation_creates_worker_and_status(monkeypatch):
     monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
     statuses = []
     activities = []
+    payloads = []
+
+    uploaded_file = type("UploadedFileStub", (), {"name": "report.docx", "size": 3, "getvalue": lambda self: b"abc"})()
+    uploaded_payload = processing_runtime.freeze_uploaded_file(uploaded_file)
 
     processing_runtime.start_background_preparation(
-        worker_target=lambda **kwargs: None,
+        worker_target=lambda **kwargs: payloads.append(kwargs["uploaded_payload"]),
         reset_run_state=lambda **kwargs: None,
         push_activity=lambda message: activities.append(message),
         set_processing_status=lambda **payload: statuses.append(payload),
-        uploaded_file=type("UploadedFileStub", (), {"name": "report.docx", "size": 3, "getvalue": lambda self: b"abc"})(),
-        upload_marker="report.docx:3",
+        uploaded_file=None,
+        uploaded_payload=uploaded_payload,
+        upload_marker="report.docx:3:ba7816bf8f01cfea:6000",
         chunk_size=6000,
         image_mode="safe",
         keep_all_image_variants=True,
@@ -170,12 +190,13 @@ def test_start_background_preparation_creates_worker_and_status(monkeypatch):
 
     session_state.preparation_worker.join(timeout=5)
 
-    assert session_state.preparation_input_marker == "report.docx:3"
+    assert session_state.preparation_input_marker == "report.docx:3:ba7816bf8f01cfea:6000"
     assert session_state.preparation_event_queue is not None
     assert session_state.preparation_worker is not None
     assert statuses[0]["phase"] == "preparing"
     assert statuses[0]["stage"] == "Файл получен"
     assert activities == ["Файл получен сервером. Запускаю анализ DOCX."]
+    assert payloads[0] == uploaded_payload
 
 
 def test_start_background_preparation_propagates_cached_flag(monkeypatch):
@@ -183,6 +204,7 @@ def test_start_background_preparation_propagates_cached_flag(monkeypatch):
     monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
     statuses = []
     activities = []
+    uploaded_payload = processing_runtime.freeze_uploaded_file(type("UploadedFileStub", (), {"name": "report.docx", "size": 3, "getvalue": lambda self: b"abc"})())
 
     def worker_target(**kwargs):
         kwargs["progress_callback"](
@@ -197,8 +219,9 @@ def test_start_background_preparation_propagates_cached_flag(monkeypatch):
         reset_run_state=lambda **kwargs: None,
         push_activity=lambda message: activities.append(message),
         set_processing_status=lambda **payload: statuses.append(payload),
-        uploaded_file=type("UploadedFileStub", (), {"name": "report.docx", "size": 3, "getvalue": lambda self: b"abc"})(),
-        upload_marker="report.docx:3:6000",
+        uploaded_file=None,
+        uploaded_payload=uploaded_payload,
+        upload_marker="report.docx:3:ba7816bf8f01cfea:6000",
         chunk_size=6000,
         image_mode="safe",
         keep_all_image_variants=True,

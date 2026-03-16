@@ -2,6 +2,7 @@ import hashlib
 import logging
 import queue
 import threading
+from dataclasses import dataclass
 from io import BytesIO
 from typing import Protocol, cast, runtime_checkable
 
@@ -73,6 +74,15 @@ class InMemoryUploadedFile(BytesIO):
     size: int
 
 
+@dataclass(frozen=True)
+class FrozenUploadPayload:
+    filename: str
+    content_bytes: bytes
+    file_size: int
+    content_hash: str
+    file_token: str
+
+
 def read_uploaded_file_bytes(uploaded_file: UploadedFileLike | BytesIO) -> bytes:
     if hasattr(uploaded_file, "seek"):
         uploaded_file.seek(0)
@@ -87,7 +97,22 @@ def read_uploaded_file_bytes(uploaded_file: UploadedFileLike | BytesIO) -> bytes
     return bytes(source_bytes)
 
 
+def freeze_uploaded_file(uploaded_file: UploadedFileLike | BytesIO) -> FrozenUploadPayload:
+    source_bytes = read_uploaded_file_bytes(uploaded_file)
+    filename = getattr(uploaded_file, "name", str(uploaded_file))
+    content_hash = hashlib.sha256(source_bytes).hexdigest()[:16]
+    return FrozenUploadPayload(
+        filename=filename,
+        content_bytes=source_bytes,
+        file_size=len(source_bytes),
+        content_hash=content_hash,
+        file_token=f"{filename}:{len(source_bytes)}:{content_hash}",
+    )
+
+
 def build_uploaded_file_token(uploaded_file: UploadedFileLike | BytesIO | None = None, *, source_name: str | None = None, source_bytes: bytes | None = None) -> str:
+    if isinstance(uploaded_file, FrozenUploadPayload):
+        return uploaded_file.file_token
     if source_bytes is None:
         if uploaded_file is None:
             raise ValueError("Для построения токена нужен uploaded_file или source_bytes.")
@@ -122,16 +147,29 @@ def _coerce_metric_to_int(metrics: dict[str, object], key: str) -> int:
 
 
 def build_uploaded_file_selection_marker(uploaded_file) -> str:
-    source_name = getattr(uploaded_file, "name", "")
-    file_size = getattr(uploaded_file, "size", "")
-    file_id = getattr(uploaded_file, "file_id", "")
-    if file_id:
-        return f"{source_name}:{file_size}:{file_id}"
-    return f"{source_name}:{file_size}"
+    return build_uploaded_file_token(uploaded_file)
 
 
 def build_preparation_request_marker(uploaded_file, *, chunk_size: int) -> str:
     return f"{build_uploaded_file_selection_marker(uploaded_file)}:{chunk_size}"
+
+
+def normalize_background_error(
+    *,
+    stage: str,
+    exc: Exception,
+    user_message: str,
+    severity: str = "error",
+    recoverable: bool = False,
+) -> dict[str, object]:
+    return {
+        "stage": stage,
+        "severity": severity,
+        "user_message": user_message,
+        "technical_message": str(exc),
+        "error_type": exc.__class__.__name__,
+        "recoverable": recoverable,
+    }
 
 
 def build_result_bundle(*, source_name: str, source_token: str, docx_bytes: bytes, markdown_text: str) -> dict[str, object]:
@@ -220,6 +258,8 @@ def should_stop_processing(runtime: BackgroundRuntime | None) -> bool:
 
 
 def resolve_uploaded_filename(uploaded_file) -> str:
+    if isinstance(uploaded_file, FrozenUploadPayload):
+        return uploaded_file.filename
     return getattr(uploaded_file, "name", str(uploaded_file))
 
 
@@ -333,6 +373,7 @@ def drain_preparation_events(*, reset_run_state, set_processing_status, finalize
             st.session_state.preparation_failed_marker = event.upload_marker
             st.session_state.preparation_worker = None
             st.session_state.preparation_event_queue = None
+            st.session_state.last_background_error = event.error_details
             st.session_state.last_error = event.error_message
             finalize_processing_status(
                 "Ошибка подготовки",
@@ -446,6 +487,7 @@ def start_background_preparation(
     push_activity,
     set_processing_status,
     uploaded_file,
+    uploaded_payload,
     upload_marker: str,
     chunk_size: int,
     image_mode: str,
@@ -495,14 +537,25 @@ def start_background_preparation(
     def run_preparation() -> None:
         try:
             prepared_run_context = worker_target(
-                uploaded_file=uploaded_file,
+                uploaded_payload=uploaded_payload,
                 chunk_size=chunk_size,
                 image_mode=image_mode,
                 keep_all_image_variants=keep_all_image_variants,
                 progress_callback=report_progress,
             )
         except Exception as exc:
-            runtime.emit(PreparationFailedEvent(upload_marker=upload_marker, error_message=str(exc)))
+            error_details = normalize_background_error(
+                stage="preparation",
+                exc=exc,
+                user_message=str(exc),
+            )
+            runtime.emit(
+                PreparationFailedEvent(
+                    upload_marker=upload_marker,
+                    error_message=str(error_details["user_message"]),
+                    error_details=error_details,
+                )
+            )
             return
         runtime.emit(PreparationCompleteEvent(prepared_run_context=prepared_run_context, upload_marker=upload_marker))
 

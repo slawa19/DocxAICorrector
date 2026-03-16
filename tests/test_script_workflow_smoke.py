@@ -129,6 +129,25 @@ def test_status_wrapper_smoke_reports_wsl_runtime() -> None:
     assert "Runtime: wsl" in (result.stdout + result.stderr)
 
 
+def test_wait_project_stopped_prefers_wsl_runtime_state_over_stale_windows_port() -> None:
+    shared_path = _quote_for_powershell(_to_windows_path(REPO_ROOT / "scripts" / "_shared.ps1"))
+    result = _run_powershell_command(
+        (
+            f"& {{ . '{shared_path}'; "
+            "function Get-ProjectRuntimeStatus { @{ managed_pid_running = 'false'; port_open = 'false' } }; "
+            "function Test-TcpPort { param([string]$ComputerName, [int]$Port) $true }; "
+            "$status = Wait-ProjectStopped -Port 8501 -TimeoutSeconds 1; "
+            "Write-Output ('STOPPED=' + $status['stopped']); "
+            "Write-Output ('WINDOWS_PORT_OPEN=' + $status['windows_port_open']); "
+            "exit 0 }"
+        )
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "STOPPED=True" in (result.stdout + result.stderr)
+    assert "WINDOWS_PORT_OPEN=True" in (result.stdout + result.stderr)
+
+
 def test_wrapper_rejects_native_runtime_mode() -> None:
     shared_path = _quote_for_powershell(_to_windows_path(REPO_ROOT / "scripts" / "_shared.ps1"))
     result = _run_powershell_command(

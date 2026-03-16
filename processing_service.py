@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from collections.abc import Callable
 from threading import Lock
 
 from app_runtime import (
@@ -12,7 +13,26 @@ from app_runtime import (
 )
 from config import get_client, load_system_prompt
 from document import inspect_placeholder_integrity, normalize_semantic_output_docx, preserve_source_paragraph_properties, reinsert_inline_images
-from document_pipeline import run_document_processing as run_document_processing_impl
+from document_pipeline import (
+    ActivityEmitter,
+    ClientFactory,
+    ErrorPresenter,
+    EventLogger,
+    FilenameResolver,
+    FinalizeEmitter,
+    LogEmitter,
+    MarkdownGenerator,
+    MarkdownToDocxConverter,
+    ParagraphPropertiesPreserver,
+    PlaceholderInspector,
+    SemanticDocxNormalizer,
+    StateEmitter,
+    StatusEmitter,
+    StopPredicate,
+    SystemPromptLoader,
+    ImageReinserter,
+    run_document_processing as run_document_processing_impl,
+)
 from generation import convert_markdown_to_docx_bytes, ensure_pandoc_available, generate_markdown_block
 from image_analysis import analyze_image
 from image_generation import (
@@ -24,38 +44,38 @@ from image_generation import (
 from image_pipeline import ImageProcessingContext, process_document_images as process_document_images_impl
 from image_validation import validate_redraw_result
 from logger import log_event, present_error
-from processing_runtime import resolve_uploaded_filename, should_stop_processing
+from processing_runtime import normalize_background_error, resolve_uploaded_filename, should_stop_processing
 from runtime_events import AppendLogEvent, FinalizeProcessingStatusEvent, PushActivityEvent, SetStateEvent, WorkerCompleteEvent
 
 
 @dataclass
 class ProcessingService:
-    get_client_fn: object
-    load_system_prompt_fn: object
-    ensure_pandoc_available_fn: object
-    generate_markdown_block_fn: object
-    convert_markdown_to_docx_bytes_fn: object
-    process_document_images_impl_fn: object
-    analyze_image_fn: object
-    generate_image_candidate_fn: object
-    validate_redraw_result_fn: object
-    detect_image_mime_type_fn: object
-    inspect_placeholder_integrity_fn: object
-    preserve_source_paragraph_properties_fn: object
-    normalize_semantic_output_docx_fn: object
-    reinsert_inline_images_fn: object
-    run_document_processing_impl_fn: object
-    present_error_fn: object
-    log_event_fn: object
-    emit_state_fn: object
-    emit_finalize_fn: object
-    emit_activity_fn: object
-    emit_log_fn: object
-    emit_status_fn: object
-    emit_image_log_fn: object
-    emit_image_reset_fn: object
-    should_stop_processing_fn: object
-    resolve_uploaded_filename_fn: object
+    get_client_fn: ClientFactory
+    load_system_prompt_fn: SystemPromptLoader
+    ensure_pandoc_available_fn: Callable[[], None]
+    generate_markdown_block_fn: MarkdownGenerator
+    convert_markdown_to_docx_bytes_fn: MarkdownToDocxConverter
+    process_document_images_impl_fn: Callable[..., list]
+    analyze_image_fn: Callable[..., object]
+    generate_image_candidate_fn: Callable[..., object]
+    validate_redraw_result_fn: Callable[..., object]
+    detect_image_mime_type_fn: Callable[..., str | None]
+    inspect_placeholder_integrity_fn: PlaceholderInspector
+    preserve_source_paragraph_properties_fn: ParagraphPropertiesPreserver
+    normalize_semantic_output_docx_fn: SemanticDocxNormalizer
+    reinsert_inline_images_fn: ImageReinserter
+    run_document_processing_impl_fn: Callable[..., str]
+    present_error_fn: ErrorPresenter
+    log_event_fn: EventLogger
+    emit_state_fn: StateEmitter
+    emit_finalize_fn: FinalizeEmitter
+    emit_activity_fn: ActivityEmitter
+    emit_log_fn: LogEmitter
+    emit_status_fn: StatusEmitter
+    emit_image_log_fn: Callable[..., object]
+    emit_image_reset_fn: Callable[..., object]
+    should_stop_processing_fn: StopPredicate
+    resolve_uploaded_filename_fn: FilenameResolver
     image_model_call_budget_cls: type
     image_model_call_budget_exceeded_cls: type
 
@@ -177,7 +197,12 @@ class ProcessingService:
                 filename=uploaded_filename,
                 block_count=len(jobs),
             )
-            runtime.emit(SetStateEvent(values={"last_error": error_message}))
+            background_error = normalize_background_error(
+                stage="processing",
+                exc=exc,
+                user_message=error_message,
+            )
+            runtime.emit(SetStateEvent(values={"last_error": error_message, "last_background_error": background_error}))
             runtime.emit(FinalizeProcessingStatusEvent(stage="Критическая ошибка", detail=error_message, progress=1.0))
             runtime.emit(PushActivityEvent(message="Фоновый worker аварийно завершился; runtime-state принудительно очищается."))
             runtime.emit(

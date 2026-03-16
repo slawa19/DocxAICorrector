@@ -15,7 +15,7 @@ def render_compare_all_apply_panel(
     if not image_assets:
         return
 
-    if not any(getattr(asset, "comparison_variants", None) for asset in image_assets):
+    if not any(getattr(asset, "validation_status", None) == "compared" and getattr(asset, "comparison_variants", None) for asset in image_assets):
         return
 
     render_section_gap("lg")

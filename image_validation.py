@@ -24,6 +24,7 @@ DEFAULT_VALIDATION_CONFIG: dict[str, object] = {
 
 VISION_VALIDATION_TIMEOUT_SECONDS = 45.0
 VISION_VALIDATION_MAX_RETRIES = 2
+_TEXT_TOKEN_PATTERN = re.compile(r"[0-9A-Za-zА-Яа-яІіЇїЄєҐґ]+")
 
 
 def validate_redraw_result(
@@ -315,14 +316,14 @@ def _structure_match_score(original_summary: str, candidate_summary: str) -> flo
 
 
 def _summary_tokens(summary: str) -> set[str]:
-    return {token for token in re.findall(r"[a-zA-Zа-яА-Я0-9]+", summary.lower()) if len(token) > 1}
+    return {token for token in _TEXT_TOKEN_PATTERN.findall(summary.lower()) if len(token) > 1}
 
 
 def _normalize_labels(labels: list[str]) -> set[str]:
     return {
         normalized
         for normalized in (
-            " ".join(re.findall(r"[a-zA-Zа-яА-Я0-9]+", label.lower())).strip()
+            " ".join(_TEXT_TOKEN_PATTERN.findall(label.lower())).strip()
             for label in labels
         )
         if normalized
@@ -519,7 +520,7 @@ def _normalize_labels_list(labels: object) -> list[str]:
         return []
     return sorted(
         {
-            " ".join(re.findall(r"[a-zA-Zа-яА-Я0-9]+", str(item).lower())).strip()
+            " ".join(_TEXT_TOKEN_PATTERN.findall(str(item).lower())).strip()
             for item in labels
             if str(item).strip()
         }

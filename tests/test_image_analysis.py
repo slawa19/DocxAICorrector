@@ -360,3 +360,38 @@ def test_analyze_image_handles_null_or_scalar_vision_fields_without_crashing():
     assert result.image_subtype == "jpeg_diagram_like"
     assert result.structure_summary == "three boxes connected by arrows"
     assert result.extracted_labels == ["Start"]
+
+
+def test_analyze_image_logs_and_falls_back_when_vision_errors(monkeypatch):
+    logged_events = []
+
+    class FailingClient:
+        class Responses:
+            def create(self, **kwargs):
+                raise RuntimeError("vision boom")
+
+        responses = Responses()
+
+    monkeypatch.setattr(image_analysis, "log_event", lambda level, event, message, **context: logged_events.append((event, context)))
+
+    result = image_analysis.analyze_image(
+        _make_diagram_like_jpeg(),
+        model="gpt-4.1",
+        mime_type="image/jpeg",
+        client=FailingClient(),
+        enable_vision=True,
+    )
+
+    assert result.image_type == "diagram"
+    assert result.render_strategy == "deterministic_reconstruction"
+    assert logged_events == [
+        (
+            "image_analysis_vision_fallback_after_error",
+            {
+                "model": "gpt-4.1",
+                "mime_type": "image/jpeg",
+                "error_type": "RuntimeError",
+                "error_message": "vision boom",
+            },
+        )
+    ]

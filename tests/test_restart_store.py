@@ -90,6 +90,23 @@ def test_store_restart_source_uses_session_scoped_paths(tmp_path, monkeypatch):
     assert Path(second["storage_path"]).exists()
 
 
+def test_store_restart_source_sanitizes_forbidden_filename_characters(tmp_path, monkeypatch):
+    monkeypatch.setattr(restart_store, "RUN_DIR", tmp_path)
+
+    metadata = restart_store.store_restart_source(
+        session_id='session<>:"/\\|?*',
+        source_name="report.docx",
+        source_token='report<>:"/\\|?*.docx:3:abc',
+        source_bytes=b"docx-bytes",
+    )
+
+    storage_path = Path(metadata["storage_path"])
+
+    assert storage_path.exists()
+    assert storage_path.parent == tmp_path
+    assert not any(char in storage_path.name for char in '<>:"/\\|?*')
+
+
 def test_clear_restart_source_ignores_missing_file(tmp_path, monkeypatch):
     monkeypatch.setattr(restart_store, "RUN_DIR", tmp_path)
 

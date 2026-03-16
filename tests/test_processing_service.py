@@ -108,6 +108,7 @@ def test_run_processing_worker_emits_worker_complete_after_unhandled_crash():
 
     assert emitted_events[-1] == WorkerCompleteEvent(outcome="failed")
     assert any(isinstance(event, SetStateEvent) and str(event.values["last_error"]).startswith("Критическая ошибка фоновой обработки") for event in emitted_events)
+    assert any(isinstance(event, SetStateEvent) and event.values["last_background_error"]["stage"] == "processing" for event in emitted_events)
     assert any(isinstance(event, FinalizeProcessingStatusEvent) for event in emitted_events)
     assert any(isinstance(event, AppendLogEvent) for event in emitted_events)
 

@@ -39,7 +39,7 @@ def test_start_background_preparation_passes_state_callbacks(monkeypatch):
 
     app_runtime.start_background_preparation(
         worker_target="worker",
-        uploaded_file="file",
+        uploaded_payload="payload",
         upload_marker="marker",
         chunk_size=6000,
         image_mode="safe",
@@ -51,6 +51,7 @@ def test_start_background_preparation_passes_state_callbacks(monkeypatch):
     assert captured["push_activity"] is push_stub
     assert captured["set_processing_status"] is status_stub
     assert captured["upload_marker"] == "marker"
+    assert captured["uploaded_payload"] == "payload"
 
 
 def test_start_background_processing_passes_state_callbacks(monkeypatch):

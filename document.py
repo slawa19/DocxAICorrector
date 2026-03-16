@@ -15,8 +15,16 @@ from docx.text.paragraph import Paragraph
 from docx.text.run import Run
 import lxml.etree as etree
 
+from constants import (
+    MAX_DOCX_ARCHIVE_SIZE_BYTES,
+    MAX_DOCX_COMPRESSION_RATIO,
+    MAX_DOCX_ENTRY_COUNT,
+    MAX_DOCX_UNCOMPRESSED_SIZE_BYTES,
+)
+from logger import log_event
 from models import DocumentBlock, ImageAsset, ParagraphUnit, get_image_variant_bytes
 from processing_runtime import read_uploaded_file_bytes
+import logging
 
 IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_IMAGE_img_\d+\]\]")
 IMAGE_ONLY_PATTERN = re.compile(r"^(?:\s*\[\[DOCX_IMAGE_img_\d+\]\]\s*)+$")
@@ -28,10 +36,6 @@ COMPARE_ALL_VARIANT_LABELS = {
     "semantic_redraw_structured": "Вариант 3: Структурная AI-перерисовка",
 }
 MANUAL_REVIEW_SAFE_LABEL = "safe"
-MAX_DOCX_ARCHIVE_SIZE_BYTES = 25 * 1024 * 1024
-MAX_DOCX_UNCOMPRESSED_SIZE_BYTES = 100 * 1024 * 1024
-MAX_DOCX_ENTRY_COUNT = 2048
-MAX_DOCX_COMPRESSION_RATIO = 150.0
 PRESERVED_PARAGRAPH_PROPERTY_NAMES = {
     "adjustRightInd",
     "bidi",
@@ -141,7 +145,7 @@ def extract_inline_images(uploaded_file) -> list[ImageAsset]:
 
 def extract_document_content_from_docx(uploaded_file) -> tuple[list[ParagraphUnit], list[ImageAsset]]:
     source_bytes = _read_uploaded_docx_bytes(uploaded_file)
-    _validate_docx_archive(source_bytes)
+    validate_docx_source_bytes(source_bytes)
     document = Document(BytesIO(source_bytes))
     paragraphs: list[ParagraphUnit] = []
     image_assets: list[ImageAsset] = []
@@ -180,6 +184,16 @@ def preserve_source_paragraph_properties(docx_bytes: bytes, paragraphs: list[Par
         if paragraph.text.strip() or IMAGE_PLACEHOLDER_PATTERN.search(paragraph.text)
     ]
 
+    if len(source_paragraphs) != len(target_paragraphs):
+        log_event(
+            logging.WARNING,
+            "paragraph_count_mismatch_preserve",
+            "Число source/target абзацев не совпадает при переносе свойств форматирования; перенос форматирования пропущен.",
+            source_count=len(source_paragraphs),
+            target_count=len(target_paragraphs),
+        )
+        return docx_bytes
+
     for source_paragraph, target_paragraph in zip(source_paragraphs, target_paragraphs):
         _apply_preserved_paragraph_properties(target_paragraph, source_paragraph.preserved_ppr_xml)
 
@@ -200,6 +214,16 @@ def normalize_semantic_output_docx(docx_bytes: bytes, paragraphs: list[Paragraph
         if paragraph.text.strip() or IMAGE_PLACEHOLDER_PATTERN.search(paragraph.text)
     ]
 
+    if len(source_paragraphs) != len(target_paragraphs):
+        log_event(
+            logging.WARNING,
+            "paragraph_count_mismatch_normalize",
+            "Число source/target абзацев не совпадает при semantic-normalization; нормализация форматирования пропущена.",
+            source_count=len(source_paragraphs),
+            target_count=len(target_paragraphs),
+        )
+        return docx_bytes
+
     for source_paragraph, target_paragraph in zip(source_paragraphs, target_paragraphs):
         _normalize_output_paragraph(document, target_paragraph, source_paragraph)
 
@@ -214,6 +238,7 @@ def normalize_semantic_output_docx(docx_bytes: bytes, paragraphs: list[Paragraph
 
 def inspect_placeholder_integrity(markdown_text: str, image_assets: list[ImageAsset]) -> dict[str, str]:
     status_map: dict[str, str] = {}
+    expected_placeholders = {asset.placeholder for asset in image_assets}
     for asset in image_assets:
         occurrence_count = markdown_text.count(asset.placeholder)
         if occurrence_count == 1:
@@ -222,6 +247,8 @@ def inspect_placeholder_integrity(markdown_text: str, image_assets: list[ImageAs
             status_map[asset.image_id] = "lost"
         else:
             status_map[asset.image_id] = "duplicated"
+    for unexpected_placeholder in sorted(set(IMAGE_PLACEHOLDER_PATTERN.findall(markdown_text)) - expected_placeholders):
+        status_map[f"unexpected:{unexpected_placeholder}"] = "unexpected"
     return status_map
 
 
@@ -521,6 +548,8 @@ def _copy_run_properties(template_run_element, target_run_element) -> None:
 
 
 def _replace_xml_element_with_sequence(element, replacements) -> None:
+    if not replacements:
+        return
     parent = element.getparent()
     if parent is None:
         return
@@ -628,7 +657,9 @@ def _build_replacement_blocks_from_fragments(
     for fragment in fragments:
         if isinstance(fragment, tuple) and len(fragment) == 2 and fragment[0] == "table":
             flush_current_paragraph()
-            replacement_blocks.append(_build_variant_table_element(paragraph, fragment[1]))
+            table_element = _build_variant_table_element(paragraph, fragment[1])
+            if table_element is not None:
+                replacement_blocks.append(table_element)
             continue
 
         if current_paragraph is None:
@@ -659,20 +690,46 @@ def _extract_paragraph_child_text(child) -> str:
 
 def _build_variant_table_element(paragraph, asset: ImageAsset):
     insertions = resolve_image_insertions(asset)
-    temp_document = Document()
-    temp_table = temp_document.add_table(rows=1, cols=len(insertions))
-    table = Table(deepcopy(temp_table._element), paragraph._parent)
+    if not insertions:
+        return None
+    tbl = OxmlElement("w:tbl")
+    tbl_pr = OxmlElement("w:tblPr")
+    tbl.append(tbl_pr)
 
-    _configure_variant_table_layout(table)
+    tbl_grid = OxmlElement("w:tblGrid")
+    for _ in range(len(insertions)):
+        grid_col = OxmlElement("w:gridCol")
+        tbl_grid.append(grid_col)
+    tbl.append(tbl_grid)
+
+    row = OxmlElement("w:tr")
+    tbl.append(row)
+
     add_picture_kwargs = _build_picture_size_kwargs(asset)
-    for cell, (label, image_bytes) in zip(table.rows[0].cells, insertions):
-        image_paragraph = cell.paragraphs[0]
-        image_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        image_run = image_paragraph.add_run()
-        image_run.add_picture(BytesIO(image_bytes), **add_picture_kwargs)
+    for label, image_bytes in insertions:
+        cell = OxmlElement("w:tc")
+        cell_properties = OxmlElement("w:tcPr")
+        cell.append(cell_properties)
+
+        image_paragraph = OxmlElement("w:p")
+        paragraph_properties = OxmlElement("w:pPr")
+        alignment = OxmlElement("w:jc")
+        alignment.set(qn("w:val"), "center")
+        paragraph_properties.append(alignment)
+        image_paragraph.append(paragraph_properties)
+
+        image_run = OxmlElement("w:r")
+        Run(image_run, paragraph).add_picture(BytesIO(image_bytes), **add_picture_kwargs)
         if label:
-            _set_picture_description(image_run._element, label)
-    return table._element
+            _set_picture_description(image_run, label)
+
+        image_paragraph.append(image_run)
+        cell.append(image_paragraph)
+        row.append(cell)
+
+    table = Table(tbl, paragraph._parent)
+    _configure_variant_table_layout(table)
+    return tbl
 
 
 def _configure_variant_table_layout(table) -> None:
@@ -1508,6 +1565,18 @@ def _validate_docx_archive(source_bytes: bytes) -> None:
     if total_compressed_size > 0 and (total_uncompressed_size / total_compressed_size) > MAX_DOCX_COMPRESSION_RATIO:
         raise RuntimeError("DOCX-архив имеет подозрительно высокий коэффициент сжатия и отклонен из соображений безопасности.")
 
+    for entry in entries:
+        entry_name = entry.filename
+        parts = entry_name.replace("\\", "/").split("/")
+        if any(part == ".." for part in parts):
+            raise RuntimeError("DOCX-архив содержит подозрительные пути и отклонён из соображений безопасности.")
+        if entry_name.startswith("/"):
+            raise RuntimeError("DOCX-архив содержит абсолютные пути и отклонён из соображений безопасности.")
+
     filenames = {entry.filename for entry in entries}
     if "[Content_Types].xml" not in filenames:
         raise RuntimeError("Передан невалидный DOCX-архив: отсутствует [Content_Types].xml.")
+
+
+def validate_docx_source_bytes(source_bytes: bytes) -> None:
+    _validate_docx_archive(source_bytes)

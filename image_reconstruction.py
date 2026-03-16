@@ -21,7 +21,7 @@ from typing import Any
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from constants import PROMPTS_DIR
-from image_shared import detect_image_mime_type
+from image_shared import call_responses_create_with_retry, detect_image_mime_type, is_retryable_error
 from logger import log_event
 
 SCENE_GRAPH_PROMPT_PATH = PROMPTS_DIR / "scene_graph_extraction.txt"
@@ -85,13 +85,14 @@ def reconstruct_image(
     mime_type: str | None = None,
     client=None,
     render_config: dict[str, object] | None = None,
+    budget=None,
 ) -> tuple[bytes, dict[str, Any]]:
     """End-to-end deterministic reconstruction.
 
     Returns ``(png_bytes, scene_graph_dict)``.  Raises on unrecoverable
     errors so that callers can fall back to safe mode.
     """
-    scene_graph = extract_scene_graph(image_bytes, model=model, mime_type=mime_type, client=client)
+    scene_graph = extract_scene_graph(image_bytes, model=model, mime_type=mime_type, client=client, budget=budget)
     original_size = _get_image_size(image_bytes)
     rendered_bytes = render_scene_graph(
         scene_graph,
@@ -120,6 +121,7 @@ def extract_scene_graph(
     model: str = DEFAULT_RECONSTRUCTION_MODEL,
     mime_type: str | None = None,
     client=None,
+    budget=None,
 ) -> dict[str, Any]:
     """Call a multimodal VLM to extract a structured JSON scene graph."""
     if client is None:
@@ -128,18 +130,25 @@ def extract_scene_graph(
     prompt_text = _load_scene_graph_prompt()
     data_uri = _image_bytes_to_data_uri(image_bytes, mime_type)
 
-    response = client.responses.create(
-        model=model,
-        input=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": prompt_text},
-                    {"type": "input_image", "image_url": data_uri},
-                ],
-            }
-        ],
-        temperature=0.0,
+    response = call_responses_create_with_retry(
+        client,
+        {
+            "model": model,
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": prompt_text},
+                        {"type": "input_image", "image_url": data_uri},
+                    ],
+                }
+            ],
+            "temperature": 0.0,
+            "timeout": 60.0,
+        },
+        max_retries=2,
+        retryable_error_predicate=is_retryable_error,
+        budget=budget,
     )
 
     raw_text: str = _extract_response_text(response)

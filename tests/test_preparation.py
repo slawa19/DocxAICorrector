@@ -355,3 +355,40 @@ def test_prepare_document_for_processing_reports_stage_metrics(monkeypatch):
     assert events[1]["metrics"]["image_count"] == 1
     assert events[2]["metrics"]["source_chars"] == len("text-value")
     assert events[3]["metrics"]["block_count"] == 2
+
+
+def test_prepare_document_for_processing_logs_cache_miss_and_hit(monkeypatch):
+    session_state = {"preparation_cache": {}}
+    logged_events = []
+
+    monkeypatch.setattr(preparation, "extract_document_content_from_docx", lambda uploaded_file: ([], []))
+    monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "")
+    monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars: [])
+    monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [])
+    monkeypatch.setattr(preparation, "log_event", lambda level, event, message, **context: logged_events.append((event, context)))
+
+    preparation.prepare_document_for_processing(
+        uploaded_filename="report.docx",
+        source_bytes=b"docx-bytes",
+        uploaded_file_token="report.docx:10:hash",
+        chunk_size=6000,
+        session_state=session_state,
+    )
+    preparation.prepare_document_for_processing(
+        uploaded_filename="report.docx",
+        source_bytes=b"docx-bytes",
+        uploaded_file_token="report.docx:10:hash",
+        chunk_size=6000,
+        session_state=session_state,
+    )
+
+    assert logged_events == [
+        (
+            "preparation_cache_miss",
+            {"prepared_source_key": "report.docx:10:hash:6000"},
+        ),
+        (
+            "preparation_cache_hit",
+            {"prepared_source_key": "report.docx:10:hash:6000", "cache_level": "session"},
+        ),
+    ]

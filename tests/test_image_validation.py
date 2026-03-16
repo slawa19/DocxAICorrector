@@ -186,6 +186,30 @@ def test_validate_redraw_result_detects_added_entities():
     assert any(reason.startswith("added_entities:") for reason in result.suspicious_reasons)
 
 
+def test_validate_redraw_result_handles_ukrainian_labels_and_text_without_false_loss():
+    analysis_before = build_analysis_result(
+        structure_summary="схема обліку заявок",
+        extracted_labels=["Облік", "Підтвердження", "Звіт"],
+        extracted_text="Облік -> Підтвердження -> Звіт",
+    )
+    candidate_analysis = build_analysis_result(
+        structure_summary="схема обліку заявок",
+        extracted_labels=["Облік", "Підтвердження", "Звіт"],
+        extracted_text="Облік -> Підтвердження -> Звіт",
+    )
+
+    result = image_validation.validate_redraw_result(
+        PNG_BYTES,
+        PNG_BYTES,
+        analysis_before,
+        candidate_analysis=candidate_analysis,
+    )
+
+    assert result.validation_passed is True
+    assert result.missing_labels == []
+    assert "text_missing_in_candidate" not in result.suspicious_reasons
+
+
 def test_validate_redraw_result_falls_back_on_low_validator_confidence():
     analysis_before = build_analysis_result()
     candidate_analysis = build_analysis_result(

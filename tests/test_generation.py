@@ -20,8 +20,8 @@ def test_generate_markdown_block_retries_once_then_returns(monkeypatch):
     attempts = []
     sleep_calls = []
 
-    def create_response(*, model, input):
-        attempts.append((model, input))
+    def create_response(**kwargs):
+        attempts.append(dict(kwargs))
         if len(attempts) == 1:
             raise RetryableError("rate limited")
         return SimpleNamespace(output_text="```markdown\nИсправленный текст\n```")
@@ -42,10 +42,11 @@ def test_generate_markdown_block_retries_once_then_returns(monkeypatch):
     assert result == "Исправленный текст"
     assert len(attempts) == 2
     assert sleep_calls == [1]
-    user_payload = attempts[0][1][1]["content"][0]["text"]
+    user_payload = attempts[0]["input"][1]["content"][0]["text"]
     assert "[CONTEXT BEFORE]\n[контекст отсутствует]" in user_payload
     assert "[TARGET BLOCK]\ntarget" in user_payload
     assert "[CONTEXT AFTER]\n[контекст отсутствует]" in user_payload
+    assert attempts[0]["max_output_tokens"] >= 512
 
 
 def test_generate_markdown_block_raises_on_empty_model_output():
@@ -69,6 +70,32 @@ def test_generate_markdown_block_raises_on_empty_model_output():
         raise AssertionError("Expected RuntimeError for an empty model response")
 
 
+def test_generate_markdown_block_retries_without_max_output_tokens_when_sdk_rejects_it():
+    calls = []
+
+    def create_response(**kwargs):
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            raise TypeError("unexpected keyword argument 'max_output_tokens'")
+        return SimpleNamespace(output_text="ok")
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="target",
+        context_before="before",
+        context_after="after",
+        max_retries=1,
+    )
+
+    assert result == "ok"
+    assert "max_output_tokens" in calls[0]
+    assert "max_output_tokens" not in calls[1]
+
+
 def test_generate_markdown_block_raises_on_missing_output_text():
     client = SimpleNamespace(
         responses=SimpleNamespace(create=lambda **_: SimpleNamespace())
@@ -88,6 +115,18 @@ def test_generate_markdown_block_raises_on_missing_output_text():
         assert "пустой ответ" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError when output_text is missing")
+
+
+def test_extract_response_output_text_returns_empty_without_output_text_even_when_output_items_exist():
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                content=[SimpleNamespace(type="output_text", text="Структурированный ответ")]
+            )
+        ]
+    )
+
+    assert generation._extract_response_output_text(response) == ""
 
 
 def test_generate_markdown_block_raises_on_non_string_output_text():
@@ -192,6 +231,30 @@ def test_normalize_model_output_strips_any_code_fence_language_tag():
     assert generation.normalize_model_output("```python\nprint(1)\n```") == "print(1)"
 
 
+def test_normalize_model_output_returns_empty_for_whitespace_only_fenced_block():
+    assert generation.normalize_model_output("```markdown\n   \n\t\n```") == ""
+
+
+def test_parse_json_object_with_backtick_in_content():
+    result = image_shared.parse_json_object(
+        '```json\n{"key": "val`ue"}\n```',
+        empty_message="empty",
+        no_json_message="nojson",
+    )
+
+    assert result == {"key": "val`ue"}
+
+
+def test_parse_json_object_fence_without_newline():
+    result = image_shared.parse_json_object(
+        '```{"key": 1}```',
+        empty_message="empty",
+        no_json_message="nojson",
+    )
+
+    assert result == {"key": 1}
+
+
 def test_call_responses_create_with_retry_retries_without_timeout_on_final_attempt():
     calls = []
 
@@ -259,6 +322,43 @@ def test_call_responses_create_with_retry_does_not_double_consume_budget_after_t
         {"model": "gpt-5.4", "input": [], "timeout": 1},
         {"model": "gpt-5.4", "input": []},
     ]
+
+
+def test_call_responses_create_with_retry_consumes_budget_only_after_retryable_success():
+    class Budget:
+        def __init__(self):
+            self.used_calls = 0
+
+        def ensure_available(self, operation_name):
+            return None
+
+        def consume(self, operation_name):
+            self.used_calls += 1
+
+    calls = []
+    budget = Budget()
+
+    class Client:
+        class Responses:
+            def create(self, **kwargs):
+                calls.append(dict(kwargs))
+                if len(calls) == 1:
+                    raise RetryableError("rate limited")
+                return SimpleNamespace(output_text="ok")
+
+        responses = Responses()
+
+    result = image_shared.call_responses_create_with_retry(
+        Client(),
+        {"model": "gpt-5.4", "input": []},
+        max_retries=2,
+        retryable_error_predicate=lambda exc: isinstance(exc, RetryableError),
+        budget=budget,
+    )
+
+    assert result.output_text == "ok"
+    assert len(calls) == 2
+    assert budget.used_calls == 1
 
 
 def test_normalize_generated_document_background_whitens_dark_border_only():

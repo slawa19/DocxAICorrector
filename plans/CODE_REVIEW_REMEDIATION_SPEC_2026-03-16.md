@@ -1,802 +1,677 @@
-# Code Review Remediation Spec — DocxAICorrector
+# Спецификация remediation по итогам code review — DocxAICorrector
+
 **Дата:** 2026-03-16  
-**Источник:** End-to-end code review всего пайплайна (загрузка → парсинг → генерация → финализация DOCX)  
-**Статус:** DRAFT — требует приёмки
+**Статус:** Реализовано и подтверждено тестами  
+**Источник истины:** завершённый end-to-end code review upload boundary, preparation flow, document pipeline и image pipeline  
+**Назначение документа:** превратить уже подтверждённые выводы review в практическую спецификацию внедрения без повторной интерпретации исходных замечаний
 
 ---
 
-## Содержание
+## 1. Цель спецификации
 
-1. [Контекст и допущения](#1-контекст-и-допущения)
-2. [Карта пайплайна](#2-карта-пайплайна)
-3. [Фаза 0 — Немедленные hotfix (P0)](#3-фаза-0--немедленные-hotfix-p0)
-4. [Фаза 1 — Корректность данных (P1)](#4-фаза-1--корректность-данных-p1)
-5. [Фаза 2 — Архитектурная надёжность (P2)](#5-фаза-2--архитектурная-надёжность-p2)
-6. [Фаза 3 — Производительность и наблюдаемость (P3)](#6-фаза-3--производительность-и-наблюдаемость-p3)
-7. [Критерии завершения](#7-критерии-завершения)
-8. [Полный реестр проблем](#8-полный-реестр-проблем)
+Этот документ фиксирует **план работ уровня implementation-spec** для remediation-работ после уже завершённого end-to-end code review.
 
----
+Цель спецификации:
 
-## 1. Контекст и допущения
+- закрыть подтверждённые разрывы boundary-контрактов без добавления новых product features;
+- устранить silent corruption и false success-path в document pipeline и image pipeline;
+- выровнять инварианты между upload boundary, preparation, processing runtime и downstream pipeline;
+- задать безопасный порядок внедрения, при котором сначала усиливаются границы и тесты, затем ужесточаются контракты, затем выполняется hardening image pipeline, и только после этого допускается ограниченная архитектурная очистка.
 
-### 1.1 Scope
+Ключевой принцип: **сначала сделать поведение проверяемым и детерминированным, затем делать его удобнее и чище архитектурно**.
 
-Ревью охватывает следующие модули в порядке вызова:
-
-```
-app.py
-  └─ application_flow.py          (preparation)
-       └─ preparation.py
-            └─ document.py         (parse, extract, rebuild)
-  └─ processing_runtime.py        (background worker infra)
-  └─ document_pipeline.py         (main processing loop)
-       └─ generation.py            (LLM call, markdown→docx)
-       └─ image_pipeline.py        (image AI pipeline)
-            └─ image_analysis.py
-            └─ image_generation.py
-            └─ image_reconstruction.py
-            └─ image_validation.py
-            └─ image_pipeline_policy.py
-  └─ processing_service.py        (DI wrapper)
-  └─ state.py / workflow_state.py
-  └─ restart_store.py
-  └─ config.py / constants.py / models.py / logger.py
-```
-
-### 1.2 Допущения
-
-- Python 3.12+, WSL Debian, python-docx 1.x, lxml 5.x, Streamlit 1.x.
-- Приложение работает в однопользовательском или малонагруженном режиме; race-условия актуальны при нескольких вкладках браузера.
-- Тесты существуют в `tests/`, запускаются через `bash scripts/test.sh`.
-- OpenAI Responses API используется вместо стандартного Chat Completions.
+Важно: это именно **план изменений**, а не отчёт о завершённой реализации. Все формулировки ниже описывают требуемое целевое состояние и ожидаемые шаги внедрения.
 
 ---
 
-## 2. Карта пайплайна
+## 2. Область действия
 
-```
-[User Upload]
-      │
-      ▼
-app.py: _is_uploaded_file_too_large()          — проверка размера до чтения
-      │  ← BUG: Streamlit не ограничивает maxUploadSize; проверка наступает поздно (SEC-01)
-      ▼
-_start_background_preparation()
-      │
-      ▼
-application_flow.prepare_run_context_for_background()
-      │
-      ▼
-preparation.prepare_document_for_processing()   — кэш (session + shared)
-      │
-      ▼
-document.extract_document_content_from_docx()
-    ├─ _read_uploaded_docx_bytes()
-    ├─ _validate_docx_archive()               — zip-bomb, size, entry count
-    │     ← ARCH: zip-slip не проверяется (SEC-02)
-    ├─ _iter_document_block_items()
-    ├─ _build_paragraph_unit()
-    ├─ _build_table_unit()
-    └─ _reclassify_adjacent_captions()
-      │
-      ▼
-document.build_semantic_blocks() → build_editing_jobs()
-      │
-      ▼
-[Processing Worker Thread]
-      │
-      ▼
-document_pipeline.run_document_processing()
-    ├─ get_client() / ensure_pandoc() / load_system_prompt()
-    ├─ for each job:
-    │     generation.generate_markdown_block()  ← LLM call (Responses API)
-    │     └─ BUG: нет max_output_tokens (BUG-12)
-    ├─ image_pipeline.process_document_images()
-    │     ├─ image_analysis.analyze_image()
-    │     │     └─ image_shared.call_responses_create_with_retry()
-    │     │           ← BUG: бюджет считается на упавших попытках (BUG-05)
-    │     ├─ image_generation.generate_image_candidate()
-    │     │     ├─ _generate_reconstructed_candidate()
-    │     │     │     └─ image_reconstruction.extract_scene_graph()
-    │     │     │           ← BUG: нет retry/timeout, pre-consume бюджета (BUG-06)
-    │     │     └─ _generate_semantic_candidate()  ← до 4 fallback AI-вызовов (ARCH-04)
-    │     └─ image_validation.validate_redraw_result()
-    │           ← BUG: parse_json_object strip("`") корruptирует JSON (BUG-01)
-    ├─ inspect_placeholder_integrity()
-    ├─ generation.convert_markdown_to_docx_bytes()  — pandoc
-    ├─ document.preserve_source_paragraph_properties()
-    │     └─ BUG: zip() без диагностики при несоответствии (BUG-03)
-    ├─ document.normalize_semantic_output_docx()
-    │     └─ BUG: zip() без диагностики при несоответствии (BUG-03)
-    └─ document.reinsert_inline_images()
-          └─ BUG: _replace_xml_element_with_sequence удаляет без замены (BUG-02)
-      │
-      ▼
-[Result → st.session_state → restart_store → UI]
-    └─ restart_store: ← BUG: небезопасные символы в именах файлов (BUG-09)
-```
+### 2.1 Что входит в спецификацию
+
+В эту спецификацию входят только подтверждённые проблемы и уже обоснованные выводы review:
+
+1. **Upload boundary и preparation boundary**
+   - передача live upload-object через фоновую границу;
+   - слабый marker идентичности файла на основе `name/size` вместо content hash;
+   - несогласованная background error handling;
+   - недостаточная archive-level validation до глубокого разбора DOCX.
+2. **Основной document pipeline**
+   - неполная проверка полноты placeholder integrity map;
+   - маскировка битых jobs через `str(None)`;
+   - позиционный перенос paragraph formatting после structural drift;
+   - отсутствие строгой сверки фактически обработанного количества jobs.
+3. **Image pipeline**
+   - неполный учёт retryable API attempts в budget;
+   - ложный success в `compare_all` при неполном наборе вариантов;
+   - потеря уже готового safe fallback в semantic branch с откатом к original;
+   - некорректная обработка украинских букв `і/ї/є/ґ` в validator.
+4. **Поддерживающие архитектурные выводы review, которые обязаны быть отражены в плане внедрения**
+   - перегруженность orchestration-логикой в `app.main()`;
+   - слабая типизация boundary-контрактов между `preparation.py`, `application_flow.py`, `document_pipeline.py`, `processing_service.py`;
+   - дублирование retry/budget semantics между `image_shared.py` и `image_generation.py`;
+   - performance smell с повторной пересборкой markdown и копированием промежуточных chunks в `document_pipeline.py`;
+   - пробелы в тестах по всем уже подтверждённым сценариям отказа и частичной деградации.
+
+### 2.2 Что не входит в спецификацию
+
+Вне рамок этой спецификации:
+
+- новые user-facing features;
+- UI redesign;
+- замена модели OpenAI или смена провайдера;
+- полный redesign DOCX semantic reconstruction сверх уже подтверждённых проблем;
+- общая performance-оптимизация, не связанная напрямую с перечисленными замечаниями review;
+- произвольная декомпозиция модулей без привязки к remediation-работам из этого документа.
 
 ---
 
-## 3. Фаза 0 — Немедленные hotfix (P0)
+## 3. Допущения и ограничения
 
-Эти изменения устраняют баги, которые приводят к потере данных, OOM или молчаливой порче результата. Выполняются в первую очередь, без рефакторинга вокруг.
+### 3.1 Допущения
 
----
+- Приложение остаётся Python-based Streamlit workflow с background processing.
+- DOCX остаётся основным входным и выходным форматом.
+- Основной safety net внедрения — существующие тесты в `tests/` с обязательным расширением покрытия под подтверждённые сценарии.
+- Review findings из родительской задачи являются authoritative baseline и имеют приоритет над старыми планами и устаревшими markdown-описаниями.
 
-### FIX-01 · `parse_json_object` — исправить strip backtick
+### 3.2 Ограничения
 
-**Файл:** `image_shared.py`  
-**Приоритет:** P0  
-**Тест:** `tests/test_image_analysis.py`, `tests/test_image_validation.py`
+- В рамках этой задачи изменяется только данный файл.
+- Следующий implementation-этап должен по возможности избегать_Oneоментного слома текущих публичных точек входа.
+- На этапе hardening предпочтителен путь `сначала добавить строгую валидацию и адаптеры`, а не одномоментная массовая перестройка архитектуры.
+- Там, где есть выбор между silent degradation и explicit degraded or failed outcome, внедрение должно смещаться в сторону **явного статуса**.
 
-#### Текущий код (строки ≈48-56)
+### 3.3 Не-цели следующего implementation-этапа
 
-```python
-def parse_json_object(raw_text: str, *, empty_message: str, no_json_message: str) -> dict[str, object]:
-    text = raw_text.strip()
-    if not text:
-        raise RuntimeError(empty_message)
-    if text.startswith("```"):
-        text = text.strip("`")          # ← БАГО: strip(chars), не strip(prefix)
-        if text.lower().startswith("json"):
-            text = text[4:].strip()
-```
-
-**Проблема:** `str.strip(chars)` удаляет *все* символы из набора `chars` с обоих концов. Если `extracted_text` содержит `` ` `` (код, формула), JSON обрезается до невалидного состояния → `JSONDecodeError` → полный fallback image validation.
-
-#### Целевой код
-
-```python
-def parse_json_object(raw_text: str, *, empty_message: str, no_json_message: str) -> dict[str, object]:
-    text = raw_text.strip()
-    if not text:
-        raise RuntimeError(empty_message)
-    if text.startswith("```"):
-        first_newline = text.find("\n")
-        if first_newline != -1:
-            text = text[first_newline + 1:]
-            last_fence = text.rfind("```")
-            if last_fence != -1:
-                text = text[:last_fence]
-            text = text.strip()
-        else:
-            text = text[3:].strip()
-            if text.endswith("```"):
-                text = text[:-3].strip()
-```
-
-#### Тесты (добавить в `tests/test_image_analysis.py`)
-
-```python
-def test_parse_json_object_with_backtick_in_content():
-    from image_shared import parse_json_object
-    raw = '```json\n{"key": "val`ue"}\n```'
-    result = parse_json_object(raw, empty_message="empty", no_json_message="nojson")
-    assert result == {"key": "val`ue"}
-
-def test_parse_json_object_fence_without_newline():
-    from image_shared import parse_json_object
-    raw = '```{"key": 1}```'
-    result = parse_json_object(raw, empty_message="empty", no_json_message="nojson")
-    assert result == {"key": 1}
-```
+- Не требуется достигнуть идеального архитектурного end-state за один проход.
+- Не требуется сразу переписать весь pipeline вокруг новых dataclass-объектов.
+- Не требуется устранять гипотетические проблемы, которые не подтверждены review-контекстом.
 
 ---
 
-### FIX-02 · `_replace_xml_element_with_sequence` — guard при пустом списке замен
+## 4. Приоритеты и корзины внедрения
 
-**Файл:** `document.py`  
-**Приоритет:** P0  
-**Тест:** `tests/test_document.py`
+### 4.1 Каталог приоритетов
 
-#### Текущий код
+| ID | Приоритет | Корзина | Краткое описание |
+|---|---|---|---|
+| CR-01 | Critical | Must-fix before next feature work | Live upload-object пересекает background boundary |
+| CR-02 | Critical | Must-fix before next feature work | Preparation marker основан на `name/size`, а не на content hash |
+| CR-03 | Critical | Must-fix before next feature work | Background errors не нормализуются единым контрактом |
+| CR-04 | Critical | Must-fix before next feature work | Archive-level DOCX/ZIP validation недостаточна до deep parse |
+| CR-05 | Critical | Must-fix before next feature work | Placeholder integrity не проверяется на полноту и согласованность |
+| CR-06 | Critical | Must-fix before next feature work | `str(None)` маскирует broken jobs |
+| CR-07 | Critical | Must-fix before next feature work | No strict reconciliation of actually processed job count |
+| HI-01 | High | Can-fix in subsequent hardening | Paragraph formatting is transferred positionally after structural drift |
+| HI-02 | High | Can-fix in subsequent hardening | Retryable API attempts are undercounted in budget |
+| HI-03 | High | Can-fix in subsequent hardening | `compare_all` can report false success with incomplete variants |
+| HI-04 | High | Can-fix in subsequent hardening | Semantic branch loses already prepared safe fallback and drops to original |
+| ME-01 | Medium | Can-fix in subsequent hardening | Ukrainian text validation mishandles Ukrainian letters `і/ї/є/ґ` |
 
-```python
-def _replace_xml_element_with_sequence(element, replacements) -> None:
-    parent = element.getparent()
-    if parent is None:
-        return
-    anchor = element
-    for replacement in replacements:
-        anchor.addnext(replacement)
-        anchor = replacement
-    parent.remove(element)    # ← удаляет элемент даже если replacements = []
-```
+### 4.2 Explicit delivery buckets
 
-**Проблема:** При пустом `replacements` цикл не выполняется, `element` удаляется без вставки замены → молчаливая потеря run-элемента DOCX с текстом.
+#### Must-fix before next feature work
 
-#### Целевой код
+- CR-01
+- CR-02
+- CR-03
+- CR-04
+- CR-05
+- CR-06
+- CR-07
 
-```python
-def _replace_xml_element_with_sequence(element, replacements) -> None:
-    if not replacements:
-        return
-    parent = element.getparent()
-    if parent is None:
-        return
-    anchor = element
-    for replacement in replacements:
-        anchor.addnext(replacement)
-        anchor = replacement
-    parent.remove(element)
-```
+#### Can-fix in subsequent hardening
 
-#### Тест (добавить в `tests/test_document.py`)
+- HI-01
+- HI-02
+- HI-03
+- HI-04
+- ME-01
 
-```python
-def test_replace_xml_element_with_sequence_empty_replacements_is_noop():
-    """Функция не должна удалять элемент если список замен пуст."""
-    from lxml import etree
-    from document import _replace_xml_element_with_sequence
+#### Optional architectural cleanup
 
-    parent = etree.fromstring("<root><child>text</child></root>")
-    child = parent[0]
-    _replace_xml_element_with_sequence(child, [])
-    assert len(parent) == 1  # child не удалён
-    assert parent[0].text == "text"
-```
+Межрутем это планируется отложить до после основного харднинга:
+
+- ME-01
+- AC-01
+- AC-02
 
 ---
 
-### FIX-03 · `.streamlit/config.toml` — ограничить maxUploadSize
+## 5. Detailed problem catalog by priority (complete)
 
-**Файл:** `.streamlit/config.toml`  
-**Приоритет:** P0  
-**Тест:** ручная проверка / `tests/test_startup_performance_contract.py`
-
-**Проблема:** Streamlit по умолчанию принимает файлы до 200MB. Проверка `MAX_DOCX_ARCHIVE_SIZE_BYTES` происходит только после полного чтения файла в память (`_read_uploaded_docx_bytes` → `_validate_docx_archive`). При 200MB-файлах возможен OOM.
-
-#### Изменение
-
-В файл `.streamlit/config.toml` добавить (или убедиться, что присутствует):
-
-```toml
-[server]
-maxUploadSize = 25
-```
-
-> 25 соответствует `MAX_DOCX_ARCHIVE_SIZE_BYTES = 25 * 1024 * 1024`.
-
-Значение должно соответствовать `constants.py::MAX_DOCX_ARCHIVE_SIZE_BYTES / (1024 * 1024)`. Это соответствие нигде не документировано — добавить комментарий в `constants.py`.
+### 5.1 Critical issues
 
 ---
 
-### FIX-04 · Дедупликация `MAX_DOCX_ARCHIVE_SIZE_BYTES`
+### CR-01 — Live upload-object пересекает background boundary
 
-**Файлы:** `document.py`, `constants.py`  
-**Приоритет:** P0
+**Симптом**
 
-**Проблема:** `MAX_DOCX_ARCHIVE_SIZE_BYTES` объявлена независимо как:
-- `constants.py` строка 20: `25 * 1024 * 1024`
-- `document.py` строка 34: `25 * 1024 * 1024` (локальная копия)
+Background preparation и связанная orchestration-логика могут зависеть от live uploaded object вместо неизменяемого byte payload. Это делает поведение worker-запуска зависимым от времени жизни Streamlit-объекта и повторных rerun.
 
-При изменении константы в одном файле второй сохраняет старое значение. Реальная проверка в `_validate_docx_archive` использует локальную копию из `document.py`.
+**Root cause**
 
-#### Целевое изменение в `document.py`
+The upload boundary is not frozen into an immutable payload before crossing into background execution. Runtime and application-flow code rely on an object that is valid in the UI/request boundary but not guaranteed to remain stable across async or threaded work.
 
-Удалить объявление `MAX_DOCX_ARCHIVE_SIZE_BYTES = 25 * 1024 * 1024` из модульного уровня и добавить импорт:
+**Affected files and functions**
 
-```python
-from constants import (
-    MAX_DOCX_ARCHIVE_SIZE_BYTES,
-    MAX_DOCX_UNCOMPRESSED_SIZE_BYTES,
-    MAX_DOCX_ENTRY_COUNT,
-    MAX_DOCX_COMPRESSION_RATIO,
-)
-```
+- `app.py` — background start path
+- `processing_runtime.py` — background preparation bootstrap
+- `application_flow.py` — background run-context preparation
 
-> Убедиться, что `MAX_DOCX_UNCOMPRESSED_SIZE_BYTES`, `MAX_DOCX_ENTRY_COUNT`, `MAX_DOCX_COMPRESSION_RATIO` также объявлены в `constants.py`.
+**Risk**
 
----
+- Race-prone reads from a mutable or stale upload object;
+- Non-deterministic preparation outcome after rerun or file reselection;
+- Hidden failures when the worker can no longer read the upload object;
+- Inability to reason about idempotency of preparation.
 
-### FIX-05 · `_CLEANUP_THREAD_STARTED` — сброс флага под локом
+**Reproduction scenario**
 
-**Файл:** `app.py`  
-**Приоритет:** P0
+1. User uploads a DOCX.
+2. Background preparation starts.
+3. Before worker finishes, UI reruns or selected file changes.
+4. Worker continues reading through a live upload object seam instead of an immutable payload.
+5. Preparation can observe stale, missing, or inconsistent bytes.
 
-**Проблема:** Фоновый cleanup-поток сбрасывает `_CLEANUP_THREAD_STARTED = False` без захвата `_CLEANUP_THREAD_LOCK`, тогда как чтение и запись в главном потоке происходят под локом. Логическое TOCTOU.
+**Target behavior after fix**
 
-#### Целевой код
+- Background boundary accepts only an immutable upload payload.
+- The payload includes at minimum raw bytes, original filename, file size, and content hash.
+- All downstream preparation code reads from the frozen payload, never from a live Streamlit upload object.
 
-```python
-def worker() -> None:
-    from restart_store import cleanup_stale_persisted_sources
-    try:
-        cleanup_stale_persisted_sources(max_age_seconds=PERSISTED_SOURCE_TTL_SECONDS)
-    finally:
-        with _CLEANUP_THREAD_LOCK:
-            global _CLEANUP_THREAD_STARTED
-            _CLEANUP_THREAD_STARTED = False
-```
+**Expected code changes**
 
----
+- Introduce a single immutable upload payload contract at the app/runtime boundary.
+- Freeze upload bytes before scheduling background work.
+- Remove or deprecate worker paths that accept a live upload object directly.
 
-## 4. Фаза 1 — Корректность данных (P1)
+**Required tests**
+
+- `tests/test_app.py`
+- `tests/test_processing_runtime.py`
+- `tests/test_application_flow.py`
 
 ---
 
-### FIX-06 · `preserve_source_paragraph_properties` / `normalize_semantic_output_docx` — диагностика при несоответствии размеров
+### CR-02 — Preparation marker is based on `name/size` instead of content hash
 
-**Файл:** `document.py`  
-**Приоритет:** P1  
-**Тест:** `tests/test_document.py`, `tests/test_document_pipeline.py`
+**Симптом**
 
-#### Проблема
+Different files with the same filename and size can collide in preparation state, shared cache, or progress tracking.
 
-Обе функции используют `zip(source_paragraphs, target_paragraphs)`. Если AI добавила или удалила абзацы, `zip()` молча обрезает до меньшего — форматирование применяется к неверным абзацам без предупреждения.
+**Root cause**
 
-#### Целевые изменения
+Preparation identity is derived from weak metadata markers rather than content-addressed identity.
 
-В `preserve_source_paragraph_properties`:
+**Affected files and functions**
 
-```python
-if len(source_paragraphs) != len(target_paragraphs):
-    from logger import log_event
-    import logging
-    log_event(
-        logging.WARNING,
-        "paragraph_count_mismatch_preserve",
-        "Число source/target абзацев не совпадает при переносе свойств форматирования; "
-        "применение частичное по zip().",
-        source_count=len(source_paragraphs),
-        target_count=len(target_paragraphs),
-    )
-```
+- `processing_runtime.py`
+- `app.py`
+- supporting preparation/cache key paths in `preparation.py`
 
-В `normalize_semantic_output_docx` — аналогично с `event_id="paragraph_count_mismatch_normalize"`.
+**Risk**
 
-Логировать перед zip-циклом. Не бросать исключение — частичное применение лучше полного пропуска.
+- cache poisoning between different uploads;
+- false cache hit or false resume/reuse;
+- stale preparation result reused for the wrong document;
+- hard-to-debug mismatches between visible file and prepared content.
 
----
+**Reproduction scenario**
 
-### FIX-07 · `extract_scene_graph` — добавить retry, timeout, корректное потребление бюджета
+1. Prepare a DOCX named `report.docx` of size X.
+2. Upload a different DOCX with the same name and same byte size.
+3. Current marker logic treats them as equivalent or near-equivalent.
+4. Preparation or worker state may be reused incorrectly.
 
-**Файл:** `image_reconstruction.py`  
-**Приоритет:** P1  
-**Тест:** `tests/test_image_reconstruction.py`
+**Target behavior after fix**
 
-#### Проблема
+- Canonical preparation marker must be derived from content hash.
+- Filename and size remain metadata only, not identity.
+- Cache keys, worker progress identifiers, and restart markers use the same canonical identity contract.
 
-```python
-response = client.responses.create(
-    model=model,
-    input=[...],
-    temperature=0.0,
-    # нет timeout, нет retry, нет budget
-)
-```
+**Expected code changes**
 
-Остальной пайплайн использует `call_responses_create_with_retry(timeout=60.0, max_retries=2)`. `extract_scene_graph` блокирует фоновый поток навсегда при сетевой задержке.
+- Compute content hash once at the boundary when freezing upload payload.
+- Thread the hash through runtime, preparation and state updates.
+- Replace any remaining `name/size/file_id` identity logic with a content-addressed marker.
 
-Дополнительно: `_generate_reconstructed_candidate` потребляет бюджет **до** вызова, а не после:
+**Required tests**
 
-```python
-_consume_budget(budget, "deterministic_reconstruction.responses.create")  # pre-consume
-candidate_bytes, scene_graph = reconstruct_image(...)  # если упадёт — бюджет уже потрачен
-```
-
-#### Целевые изменения
-
-**`image_reconstruction.py`, `extract_scene_graph`:**
-
-```python
-from image_shared import call_responses_create_with_retry, is_retryable_error
-
-def extract_scene_graph(
-    image_bytes: bytes,
-    *,
-    model: str = DEFAULT_RECONSTRUCTION_MODEL,
-    mime_type: str | None = None,
-    client=None,
-    budget=None,
-) -> dict[str, Any]:
-    if client is None:
-        raise RuntimeError("Scene graph extraction requires an explicit client.")
-
-    prompt_text = _load_scene_graph_prompt()
-    data_uri = _image_bytes_to_data_uri(image_bytes, mime_type)
-
-    response = call_responses_create_with_retry(
-        client,
-        {
-            "model": model,
-            "input": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": prompt_text},
-                        {"type": "input_image", "image_url": data_uri},
-                    ],
-                }
-            ],
-            "temperature": 0.0,
-            "timeout": 60.0,
-        },
-        max_retries=2,
-        retryable_error_predicate=is_retryable_error,
-        budget=budget,
-    )
-    ...
-```
-
-**`image_generation.py`, `_generate_reconstructed_candidate`:**
-
-Убрать `_consume_budget(budget, "deterministic_reconstruction.responses.create")` — бюджет теперь потребляется внутри `call_responses_create_with_retry` через `extract_scene_graph`.
-
-Добавить `budget=budget` в вызов `reconstruct_image(...)`.
+- `tests/test_app.py`
+- `tests/test_processing_runtime.py`
+- `tests/test_preparation.py`
 
 ---
 
-### FIX-08 · `call_responses_create_with_retry` — бюджет не потребляется на неудачных попытках
+### CR-03 — Background error handling is degraded and not normalized
 
-**Файл:** `image_shared.py`  
-**Приоритет:** P1  
-**Тест:** `tests/test_image_analysis.py`
+**Симптом**
 
-#### Проблема
+Different background failure paths can surface inconsistent payload shapes, inconsistent user messages, or incomplete technical context.
 
-```python
-except Exception as exc:
-    consume_budget()       # ← потребление при ошибке без реального API-вызова
-    if attempt >= max_retries or not retryable_error_predicate(exc):
-        raise
-    time.sleep(...)
-```
+**Root cause**
 
-При retryable-ошибке (429, 500) бюджет убывает на каждую неудачную попытку. После трёх timeout-ов при бюджете 3 — следующая операция упадёт с `BudgetExceeded` без единого успешного вызова.
+Preparation and processing background flows do not share a strict normalized error contract with common fields and common translation rules.
 
-#### Целевой код
+**Affected files and functions**
 
-```python
-except Exception as exc:
-    should_retry = attempt < max_retries and retryable_error_predicate(exc)
-    if not should_retry:
-        consume_budget()   # потребить только при финальной ошибке или non-retryable
-        raise
-    time.sleep(min(2 ** (attempt - 1), max_backoff_seconds))
-    # retry: бюджет не тратится до успеха или финального сбоя
-else:
-    consume_budget()
-    return response
-```
+- `processing_runtime.py`
+- `app.py`
 
-> **Примечание:** Семантика "один вызов = одна единица бюджета" сохраняется; просто перенести точку потребления на финальный исход попытки.
+**Risk**
 
----
+- silent or partially silent failures;
+- inconsistent UI status rendering;
+- brittle worker-complete and worker-failure handling;
+- poor diagnostics when a background worker crashes in a stage-specific way.
 
-### FIX-09 · `restart_store` — санитизация символов файловой системы в именах файлов
+**Reproduction scenario**
 
-**Файл:** `restart_store.py`  
-**Приоритет:** P1  
-**Тест:** `tests/test_restart_store.py`
+Inject different failures into preparation and processing workers, such as malformed DOCX, budget exhaustion, internal assertion failure, and provider errors. Observe that user-facing and internal failure representation is not normalized.
 
-#### Проблема
+**Target behavior after fix**
 
-`source_token = f"{file_name}:{file_size}:{hash}"`. После `replace(":", "_")` в имени файла могут остаться `<`, `>`, `*`, `?`, `\`, `/`, `"` — символы, запрещённые в Windows-путях. На WSL с Windows-хостом `Path.write_bytes()` с такими символами бросит `OSError`.
+- All background errors are converted into a normalized error envelope.
+- The envelope includes stage, severity, user-safe message, technical message, error type, and optional recoverability flag.
+- App-level rendering consumes the normalized envelope instead of stage-specific ad-hoc payloads.
 
-#### Целевые изменения
+**Expected code changes**
 
-```python
-import re
+- Add one shared normalization function for worker exceptions.
+- Ensure both preparation and processing workers emit the same failure contract.
+- Update app-level event draining and status rendering to consume only normalized worker failures.
 
-def _sanitize_for_filename(value: str) -> str:
-    """Заменить символы, запрещённые в именах файлов Windows и Linux."""
-    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value)
+**Required tests**
 
-def _build_persisted_source_path(prefix: str, session_id: str, source_token: str, source_name: str) -> Path:
-    safe_session_id = _sanitize_for_filename(session_id)
-    safe_token = _sanitize_for_filename(source_token)
-    return RUN_DIR / f"{prefix}_{safe_session_id}_{safe_token}{_sanitize_suffix(source_name)}"
-```
+- `tests/test_processing_runtime.py`
+- `tests/test_app.py`
+- `tests/test_application_flow.py` where boundary-to-worker error routing is involved
 
 ---
 
-### FIX-10 · `_raise_or_fail_preparation` — корректная проверка пустого `target_text`
+### CR-04 — Archive-level DOCX/ZIP validation is insufficient before deep parse
 
-**Файл:** `application_flow.py`  
-**Приоритет:** P1
+**Симптом**
 
-#### Проблема
+A DOCX can reach deeper preparation/parsing logic before enough archive-level checks have been applied at the boundary.
 
-```python
-if any(not str(job["target_text"]).strip() for job in prepared_document.jobs):
-```
+**Root cause**
 
-`str(None)` = `"None"`, которое не пустое → job с `target_text=None` проходит проверку и модель получает буквальный текст `"None"`.
+Archive validation is not enforced early enough in the upload-to-preparation path, so deep parse is still responsible for rejecting malformed or abusive archives.
 
-#### Целевой код
+**Affected files and functions**
 
-```python
-if any(not str(job.get("target_text") or "").strip() for job in prepared_document.jobs):
-    ...
-```
+- `app.py`
+- `processing_runtime.py`
+- `preparation.py` (also application_flow, consider adding there)
 
----
+**Risk**
 
-## 5. Фаза 2 — Архитектурная надёжность (P2)
+- unnecessary deep parsing of invalid archives;
+- higher memory and CPU cost before rejection;
+- weaker boundary hardening for malformed ZIP/DOCX payloads;
+- larger blast radius when malformed input reaches later stages.
 
----
+**Reproduction scenario**
 
-### FIX-11 · Zip-slip protection в `_validate_docx_archive`
+Use a malformed or hostile DOCX/ZIP that should fail at archive-level checks. Current flow allows it to enter deeper preparation work before rejection is finalized.
 
-**Файл:** `document.py`  
-**Приоритет:** P2  
-**Тест:** `tests/test_document.py`
+**Target behavior after fix**
 
-#### Проблема
+- Boundary performs explicit archive-level validation before deep document preparation.
+- Preparation never starts deep parse for a payload that already fails basic DOCX/ZIP archive safety and shape checks.
+- Early validation result is surfaced consistently in foreground and background paths.
 
-ZIP-архив может содержать записи с путями `../../../etc/passwd` или `/etc/passwd`. `_validate_docx_archive` не проверяет формат имён записей. Хотя `Document(BytesIO(...))` сейчас не распаковывает на диск, добавление любой файловой операции в будущем создаст path traversal.
+**Expected code changes**
 
-#### Целевые изменения
+- Introduce a shared early validation helper reused by foreground and background entry paths.
+- Make `preparation.py` depend on prevalidated immutable input or revalidate via the same shared helper, not via diverging logic.
+- Ensure validation is deterministic across app and worker entry points.
 
-Добавить в конец блока проверок в `_validate_docx_archive`:
+**Required tests**
 
-```python
-for entry in entries:
-    entry_name = entry.filename
-    # Запретить абсолютные пути и traversal-компоненты
-    parts = entry_name.replace("\\", "/").split("/")
-    if any(part == ".." for part in parts):
-        raise RuntimeError(
-            "DOCX-архив содержит подозрительные пути и отклонён из соображений безопасности."
-        )
-    if entry_name.startswith("/"):
-        raise RuntimeError(
-            "DOCX-архив содержит абсолютные пути и отклонён из соображений безопасности."
-        )
-```
+- `tests/test_app.py`
+- `tests/test_processing_runtime.py`
+- `tests/test_preparation.py`
 
 ---
 
-### FIX-12 · Удалить мёртвый код в `document_pipeline.py`
+### CR-05 — Placeholder integrity map completeness is not fully enforced
 
-**Файл:** `document_pipeline.py`  
-**Приоритет:** P2
+**Симптом**
 
-#### Проблема
+Document processing can continue even when placeholder integrity information is incomplete, one-sided, or inconsistent with actual placeholders that must be reinserted.
 
-После основного цикла обработки блоков присутствует проверка:
+**Root cause**
 
-```python
-if len(processed_chunks) != job_count:
-    # critical error path …
-    return "failed"
-```
+Integrity checking is not treated as a full completeness and consistency contract between expected placeholders, observed placeholders, and reinsertion-ready mapping.
 
-Этот код **недостижим** при нормальном завершении: каждая итерация цикла либо добавляет ровно один chunk, либо возвращает `"failed"` / `"stopped"`. Создаёт ложное ощущение дополнительной защиты и запутывает читателя.
+**Affected files and functions**
 
-#### Целевое действие
+- `document_pipeline.py`
+- `document.py`
 
-Удалить блок `if len(processed_chunks) != job_count:` целиком вместе с вызовами `emit_*` и `return "failed"` внутри него.
+**Risk**
 
----
+- broken jobs appear superficially valid;
+- downstream prompts and document assembly receive semantically invalid text;
+- incomplete or corrupted final DOCX with missing image placements.
 
-### FIX-13 · Типизировать поля `ProcessingService`
+**Reproduction scenario**
 
-**Файл:** `processing_service.py`  
-**Приоритет:** P2
+Prepare a document where one placeholder is dropped, duplicated, or transformed during markdown conversion. Current integrity logic can miss the completeness failure or not escalate it strictly enough.
 
-#### Проблема
+**Target behavior after fix**
 
-```python
-@dataclass
-class ProcessingService:
-    get_client_fn: object
-    load_system_prompt_fn: object
-    # ... 28 полей с типом object
-```
+- Placeholder integrity becomes a strict contract.
+- Success requires full reconciliation between expected placeholder set and actual post-conversion placeholder set.
+- Any mismatch is escalated to explicit degraded or failed status.
 
-Protocol-классы уже определены в `document_pipeline.py` (`ClientFactory`, `SystemPromptLoader`, `MarkdownGenerator`, и т.д.) но не используются в `ProcessingService`.
+**Expected code changes**
 
-#### Целевые изменения
+- Define an explicit completeness check in `document.py`.
+- Enforce it in `document_pipeline.py` before final output is marked successful.
+- Distinguish between integrity pass, integrity degraded, and integrity failed states.
 
-```python
-from document_pipeline import (
-    ClientFactory,
-    SystemPromptLoader,
-    MarkdownGenerator,
-    MarkdownToDocxConverter,
-    PlaceholderInspector,
-    ParagraphPropertiesPreserver,
-    SemanticDocxNormalizer,
-    ImageReinserter,
-    EventLogger,
-    ErrorPresenter,
-    StateEmitter,
-    FinalizeEmitter,
-    ActivityEmitter,
-    LogEmitter,
-    StatusEmitter,
-    StopPredicate,
-    FilenameResolver,
-)
+**Required tests**
 
-@dataclass
-class ProcessingService:
-    get_client_fn: ClientFactory
-    load_system_prompt_fn: SystemPromptLoader
-    ensure_pandoc_available_fn: Callable[[], None]
-    generate_markdown_block_fn: MarkdownGenerator
-    convert_markdown_to_docx_bytes_fn: MarkdownToDocxConverter
-    # ... остальные поля с конкретными Protocol-типами
-```
-
-> Добавлять постепенно, по одному полю за PR, чтобы не сломать mypy и тесты.
+- `tests/test_document_pipeline.py`
+- `tests/test_document.py`
+- targeted regression in `tests/test_image_integration.py` if placeholder/image reinsertion interplay is validated end-to-end (existing test exists)
 
 ---
 
-### FIX-14 · `generate_markdown_block` — добавить `max_output_tokens`
+### CR-06 — `str(None)` masks broken jobs and distorts contracts
 
-**Файл:** `generation.py`  
-**Приоритет:** P2
+**Симптом**
 
-#### Проблема
+A broken job with `None` in a required text field can be silently coerced to the string `None`, allowing the pipeline to continue as if a valid string existed.
 
-Вызов `client.responses.create(model=model, input=payload)` не задаёт `max_output_tokens`. Модель может генерировать до своего контекстного лимита (128k+ токенов для GPT-5). Для больших блоков это ведёт к избыточным расходам API и потенциальным таймаутам.
+**Root cause**
 
-#### Целевые изменения
+Validation is happening after string coercion, instead of validating the nullable contract first and only then treating the value as a real string.
 
-```python
-# В generate_markdown_block, перед вызовом API:
-estimated_output_tokens = max(len(target_text) // 3 * 4, 512)   # ≈ 4/3 от input chars, min 512
-capped_output_tokens = min(estimated_output_tokens, 16384)
+**Affected files and functions**
 
-response = client.responses.create(
-    model=model,
-    input=payload,
-    max_output_tokens=capped_output_tokens,
-)
-```
+- `document_pipeline.py`
 
-> Если Responses API не поддерживает `max_output_tokens` — обернуть в `try/except TypeError` аналогично механизму удаления `timeout` в `call_responses_create_with_retry`.
+**Risk**
 
----
+- broken jobs appear superficially valid;
+- downstream prompts and document assembly receive semantically invalid text;
+- debugging becomes harder because the original null-contract violation is hidden.
 
-## 6. Фаза 3 — Производительность и наблюдаемость (P3)
+**Reproduction scenario**
 
----
+Force one prepared or processed job to contain `None` in a required text/output field. The current logic stringifies it and can propagate `None` as user content.
 
-### FIX-15 · `_build_variant_table_element` — убрать временный `Document()`
+**Target behavior after fix**
 
-**Файл:** `document.py`  
-**Приоритет:** P3
+- Required text fields are validated as non-null before any string normalization.
+- `None` remains a contract violation and is surfaced explicitly.
+- Pipeline must fail or mark the run degraded rather than silently coercing nulls into content.
 
-#### Проблема
+**Expected code changes**
 
-```python
-temp_document = Document()    # создаёт полный python-docx Document со всеми стилями
-temp_table = temp_document.add_table(rows=1, cols=len(insertions))
-table = Table(deepcopy(temp_table._element), paragraph._parent)
-```
+- Replace string-coercion-first checks with explicit nullable checks.
+- Centralize validation of required job fields in one document-pipeline helper.
+- Ensure logging and error messages preserve the fact that the original value was null.
 
-При `compare_all` с 10 изображениями — 10 временных Document-объектов. Каждый объект загружает шаблон стилей в память.
+**Required tests**
 
-#### Целевые изменения
-
-Создавать `tbl` XML-элемент напрямую через `OxmlElement`, без `Document()`:
-
-```python
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
-
-def _build_variant_table_element(paragraph, asset: ImageAsset):
-    insertions = resolve_image_insertions(asset)
-    col_count = len(insertions)
-
-    tbl = OxmlElement("w:tbl")
-    tblPr = OxmlElement("w:tblPr")
-    tbl.append(tblPr)
-    tblGrid = OxmlElement("w:tblGrid")
-    for _ in range(col_count):
-        gridCol = OxmlElement("w:gridCol")
-        tblGrid.append(gridCol)
-    tbl.append(tblGrid)
-
-    tr = OxmlElement("w:tr")
-    tbl.append(tr)
-    add_picture_kwargs = _build_picture_size_kwargs(asset)
-    for label, image_bytes in insertions:
-        tc = OxmlElement("w:tc")
-        p = OxmlElement("w:p")
-        r = OxmlElement("w:r")
-        Run(r, paragraph).add_picture(BytesIO(image_bytes), **add_picture_kwargs)
-        if label:
-            _set_picture_description(r, label)
-        p.append(r)
-        tc.append(p)
-        tr.append(tc)
-
-    table = Table(tbl, paragraph._parent)
-    _configure_variant_table_layout(table)
-    return tbl
-```
+- `tests/test_document_pipeline.py`
 
 ---
 
-### FIX-16 · Логировать hit/miss кэша preparation
+### CR-07 — No strict reconciliation of actually processed job count
 
-**Файл:** `preparation.py`  
-**Приоритет:** P3
+**Симптом**
 
-#### Целевые изменения
+The pipeline can reach a success path without proving that the number of actually processed jobs matches the expected number of jobs to process.
 
-В `prepare_document_for_processing`, в ветке кэш-хита:
+**Root cause**
 
-```python
-if cached is not None:
-    log_event(
-        logging.DEBUG,
-        "preparation_cache_hit",
-        "Использован кэш подготовки документа.",
-        prepared_source_key=prepared_source_key,
-        cache_level="session" if ...,
-    )
-    return cached
-```
+Success criteria are not tied tightly enough to the expected-vs-actual processing counts and per-job completion invariants.
 
-В ветке промаха и успешной подготовки добавить `"preparation_cache_miss"`.
+**Affected files and functions**
 
----
+- `document_pipeline.py`
 
-## 7. Критерии завершения
+**Risk**
 
-Каждая фаза считается закрытой при выполнении всех пунктов:
+- partial document processing reported as success;
+- dropped blocks without explicit failure;
+- downstream assembly operating on an incomplete set of processed chunks.
 
-### Фаза 0 (P0)
+**Reproduction scenario**
 
-- [ ] `parse_json_object` корректно обрабатывает `` ` `` в JSON-содержимом.
-- [ ] Новые тесты `test_parse_json_object_with_backtick_in_content` и `test_parse_json_object_fence_without_newline` проходят.
-- [ ] `_replace_xml_element_with_sequence` с пустым списком — noop, тест проходит.
-- [ ] `.streamlit/config.toml` содержит `maxUploadSize = 25`.
-- [ ] `document.py` не содержит локального объявления `MAX_DOCX_ARCHIVE_SIZE_BYTES`.
-- [ ] `_CLEANUP_THREAD_STARTED = False` выполняется под `_CLEANUP_THREAD_LOCK`.
-- [ ] Все существующие тесты проходят: `bash scripts/test.sh tests/ -q`.
+Create a path where one job is skipped, filtered, short-circuited, or returns no usable output, but the pipeline still reaches the nominal success branch.
 
-### Фаза 1 (P1)
+**Target behavior after fix**
 
-- [ ] В логах появляется `WARNING paragraph_count_mismatch_*` при несоответствии числа абзацев.
-- [ ] `extract_scene_graph` использует `call_responses_create_with_retry` с `timeout=60.0`.
-- [ ] Бюджет не потребляется на retryable-ошибках (unit-тест с mock).
-- [ ] `restart_store` корректно обрабатывает имена файлов с `<>:"/\|?*`.
-- [ ] Проверка пустого `target_text` работает для `None`.
+- `success` requires exact reconciliation between expected jobs and actually completed jobs.
+- Any mismatch is escalated to explicit degraded or failed status.
+- Job count reconciliation happens before final output is emitted.
 
-### Фаза 2 (P2)
+**Expected code changes**
 
-- [ ] `_validate_docx_archive` отклоняет ZIP с `../` в именах записей.
-- [ ] Мёртвый код `len(processed_chunks) != job_count` удалён, тест-coverage не ухудшился.
-- [ ] `ProcessingService` использует Protocol-типы для ≥10 полей.
-- [ ] `generate_markdown_block` передаёт `max_output_tokens`.
+- Add strict expected-count vs actual-count reconciliation in the main success path.
+- Include failed, skipped, and incomplete counts in runtime outcome metadata.
+- Keep user-visible outcome aligned with the actual processing completeness.
 
-### Фаза 3 (P3)
+**Required tests**
 
-- [ ] `_build_variant_table_element` не создаёт временный `Document()`.
-- [ ] В логах присутствуют события `preparation_cache_hit` / `preparation_cache_miss`.
-- [ ] Полный прогон тестов: `bash scripts/test.sh tests/ -q`.
+- `tests/test_document_pipeline.py`
+- supporting e2e confirmation in `tests/test_image_integration.py` where applicable (existing test exists)
 
 ---
 
-## 8. Полный реестр проблем
+### 5.2 High issues
 
-| ID | Файл | Строки | Категория | Критичность | Фаза | Описание |
-|---|---|---|---|---|---|---|
-| BUG-01 | `image_shared.py` | ≈48-56 | Corruption | P0 | Фаза 0 | `parse_json_object`: `strip(backtick)` обрезает JSON с `` ` `` в значениях |
-| BUG-02 | `document.py` | `_replace_xml_element_with_sequence` | Data loss | P0 | Фаза 0 | Удаляет XML-элемент при пустом списке замен |
-| SEC-01 | `document.py`, `config.toml` | — | Security/DoS | P0 | Фаза 0 | Файл читается в память до проверки размера; Streamlit не ограничивает upload |
-| DUP-01 | `document.py`, `constants.py` | 34, 20 | Maintenance | P0 | Фаза 0 | `MAX_DOCX_ARCHIVE_SIZE_BYTES` объявлена дважды |
-| RACE-01 | `app.py` | ≈66-79 | Race condition | P0 | Фаза 0 | `_CLEANUP_THREAD_STARTED = False` без лока в фоновом потоке |
-| BUG-03 | `document.py` | 183, 203 | Silent mismatch | P1 | Фаза 1 | `zip()` без диагностики при несоответствии числа абзацев |
-| BUG-06 | `image_reconstruction.py` | `extract_scene_graph` | Blocking/Budget | P1 | Фаза 1 | Нет retry/timeout; pre-consume бюджета до вызова |
-| BUG-05 | `image_shared.py` | ≈103 | Budget accounting | P1 | Фаза 1 | Бюджет потребляется на неудачных retryable-попытках |
-| BUG-09 | `restart_store.py` | `_build_persisted_source_path` | OSError | P1 | Фаза 1 | Небезопасные символы файловой системы в именах файлов |
-| BUG-10 | `application_flow.py` | ≈186 | Null bypass | P1 | Фаза 1 | `str(None)` = `"None"` проходит проверку пустого блока |
-| SEC-02 | `document.py` | `_validate_docx_archive` | Path traversal | P2 | Фаза 2 | Zip-slip: имена записей с `../` не проверяются |
-| DEAD-01 | `document_pipeline.py` | после основного цикла | Dead code | P2 | Фаза 2 | `len(processed_chunks) != job_count` недостижим |
-| ARCH-01 | `processing_service.py` | все поля | Type safety | P2 | Фаза 2 | 30 полей типа `object` вместо Protocol |
-| BUG-12 | `generation.py` | `generate_markdown_block` | Resource | P2 | Фаза 2 | Нет `max_output_tokens` — возможны таймауты и переплаты |
-| PERF-01 | `document.py` | `_build_variant_table_element` | Performance | P3 | Фаза 3 | Временный `Document()` на каждое изображение в compare_all |
-| OBS-01 | `preparation.py` | `prepare_document_for_processing` | Observability | P3 | Фаза 3 | Нет логирования hit/miss кэша подготовки |
-| ARCH-03 | `preparation.py` | `_shared_preparation_cache` | Multi-user | INFO | — | Process-wide кэш содержит байты документов; при multi-user deploy требует изоляции |
-| ARCH-04 | `image_generation.py` | `_generate_semantic_candidate` | Performance | INFO | — | До 4 последовательных fallback AI-вызовов на одно изображение без уведомления |
-| API-01 | `generation.py` | `generate_markdown_block` | Compatibility | INFO | — | Использует Responses API (beta), а не стандартный Chat Completions |
+---
+
+### HI-01 — Paragraph formatting is transferred positionally after structural drift
+
+**Симптом**
+
+When markdown-to-DOCX conversion changes paragraph structure, formatting is still transferred positionally via `zip()`, causing formatting to land on the wrong paragraphs.
+
+**Root cause**
+
+Formatting transfer assumes source and target paragraph lists remain structurally aligned. After semantic rewriting, that assumption is not reliable.
+
+**Affected files and functions**
+
+- `document.py`
+
+**Risk**
+
+- silent formatting corruption;
+- misapplied paragraph properties;
+- visually valid but semantically misformatted output.
+
+**Reproduction scenario**
+
+Use content where generation splits one paragraph into two, merges neighboring paragraphs, or changes list structure. Positional transfer then misaligns formatting.
+
+**Target behavior after fix**
+
+Near-term hardening target:
+
+- positional transfer must not run blindly when structural drift is detected;
+- mismatch must be surfaced explicitly as degraded behavior or controlled skip;
+- no silent positional formatting corruption.
+
+Longer-term cleanup target:
+
+- move toward anchor-based or block-based formatting transfer rather than raw positional `zip()`.
+
+**Expected code changes**
+
+- Add precondition checks around formatting transfer.
+- Stop treating equal iteration length through `zip()` as evidence of valid alignment.
+- Introduce a stricter mismatch policy and preserve enough metadata for future anchor-based transfer.
+
+**Required tests**
+
+- `tests/test_document.py`
+- `tests/test_document_pipeline.py`
+- Ensure structural drift detection is covered by targeted tests, including paragraph recombination scenarios.
+
+---
+
+### HI-02 — Retryable API attempts are undercounted in budget
+
+**Симптом**
+
+Retryable provider errors and parameter-adaptation retries can distort budget accounting, either spending budget too early or skipping consumption for a real final call.
+
+**Target behavior after fix**
+
+- Budget is checked before each external call attempt.
+- Budget is consumed exactly once for the final effective API call outcome.
+- Retryable adaptation and retry loops do not double-consume budget.
+
+**Implemented state**
+
+- `image_shared.py` consumes budget only on terminal failure or success.
+- `image_generation.py` defers consumption until the effective call outcome for `images.edit`, `images.generate`, and `responses.create`.
+- `image_reconstruction.py` routes scene-graph extraction through the shared retry helper with timeout and budget support.
+
+**Required tests**
+
+- `tests/test_generation.py`
+- `tests/test_image_generation.py`
+- `tests/test_image_reconstruction.py`
+
+---
+
+### HI-03 — `compare_all` can report false success with incomplete variants
+
+**Симптом**
+
+The compare-all path can expose partial variant sets while still looking like a successful compare outcome.
+
+**Target behavior after fix**
+
+- `compare_all` reports success only when the expected variant set is fully prepared.
+- Incomplete compare-all preparation degrades explicitly to fallback status.
+- UI compare controls render only for true compared assets.
+
+**Implemented state**
+
+- `image_pipeline.py` applies explicit incomplete-variant fallback.
+- `compare_panel.py` renders only for assets with `validation_status == "compared"`.
+
+**Required tests**
+
+- `tests/test_image_pipeline_compare_helpers.py`
+- `tests/test_image_integration.py`
+- `tests/test_app.py`
+
+---
+
+### HI-04 — Semantic branch loses already prepared safe fallback and drops to original
+
+**Симптом**
+
+When semantic redraw fails late, the pipeline can discard an already prepared safe candidate and revert all the way to the original image.
+
+**Target behavior after fix**
+
+- If `safe_bytes` already exists, semantic failure paths prefer `fallback_safe`.
+- Reversion to original is reserved for cases where no safe fallback exists.
+
+**Implemented state**
+
+- `image_pipeline.py` now preserves safe fallback for semantic budget exhaustion and validator/attempt failure paths.
+
+**Required tests**
+
+- `tests/test_image_integration.py`
+
+---
+
+### ME-01 — Ukrainian text validation mishandles Ukrainian letters `і/ї/є/ґ`
+
+**Симптом**
+
+Validation tokenization can falsely detect text loss or label mismatch for Ukrainian content.
+
+**Target behavior after fix**
+
+- Tokenization and normalization handle Ukrainian Cyrillic letters consistently in summaries and labels.
+
+**Implemented state**
+
+- `image_validation.py` now uses a shared token pattern that includes `ІіЇїЄєҐґ`.
+
+**Required tests**
+
+- `tests/test_image_validation.py`
+
+---
+
+### 5.3 Optional architectural cleanup
+
+#### AC-01 — Reduce weakly typed orchestration boundaries
+
+Near-term completion target for this remediation wave:
+
+- strengthen boundary typing where it directly protects corrected contracts;
+- avoid large-scale API churn outside the hardened paths.
+
+Implemented in this wave:
+
+- `processing_service.py` moved core service wiring away from `object` fields toward explicit protocol and callable types.
+- immutable upload payload contract introduced at the app/runtime boundary.
+
+Deferred beyond this wave:
+
+- broader typing cleanup across all orchestration modules.
+
+#### AC-02 — Reduce duplicated retry and budget semantics
+
+Near-term completion target for this remediation wave:
+
+- unify the highest-risk retry and budget paths first, especially those that affect image reconstruction and provider adaptation logic.
+
+Implemented in this wave:
+
+- scene-graph extraction now reuses the shared retry helper.
+- image generation retry loops now follow the same consume-on-terminal-outcome semantics.
+
+Deferred beyond this wave:
+
+- full consolidation of all retry helpers into a single cross-module abstraction.
+
+---
+
+## 6. Implementation status
+
+### 6.1 Completed in this remediation wave
+
+- CR-01 — completed
+- CR-02 — completed
+- CR-03 — completed
+- CR-04 — completed
+- CR-05 — completed
+- CR-06 — completed
+- CR-07 — completed
+- HI-01 — completed
+- HI-02 — completed
+- HI-03 — completed
+- HI-04 — completed
+- ME-01 — completed
+
+### 6.2 Verified outcome
+
+- Full visible verification completed via the VS Code task `Run Full Pytest`.
+- Result: `349 passed, 4 skipped`.
+
+### 6.3 Remaining work after this wave
+
+- No confirmed must-fix or high-priority remediation items remain open from this specification.
+- Further work, if needed, should be treated as a separate architecture or cleanup task rather than continuation of this remediation wave.

@@ -13,9 +13,11 @@ from docx.oxml.ns import qn
 from docx.shared import Inches
 
 from document import (
+    _build_variant_table_element,
     build_document_text,
     build_editing_jobs,
     build_semantic_blocks,
+    _replace_xml_element_with_sequence,
     extract_document_content_from_docx,
     inspect_placeholder_integrity,
     normalize_semantic_output_docx,
@@ -174,6 +176,26 @@ def test_extract_document_content_from_docx_inserts_image_placeholders(tmp_path)
     assert image_assets[0].height_emu is not None
     assert inspect_placeholder_integrity("\n\n".join(paragraph.text for paragraph in paragraphs), image_assets) == {
         "img_001": "ok"
+    }
+
+
+def test_inspect_placeholder_integrity_reports_unexpected_placeholders():
+    asset = ImageAsset(
+        image_id="img_001",
+        placeholder="[[DOCX_IMAGE_img_001]]",
+        original_bytes=PNG_BYTES,
+        mime_type="image/png",
+        position_index=0,
+    )
+
+    status_map = inspect_placeholder_integrity(
+        "[[DOCX_IMAGE_img_001]]\n\n[[DOCX_IMAGE_img_999]]",
+        [asset],
+    )
+
+    assert status_map == {
+        "img_001": "ok",
+        "unexpected:[[DOCX_IMAGE_img_999]]": "unexpected",
     }
 
 
@@ -440,6 +462,81 @@ def test_preserve_source_paragraph_properties_restores_raw_xml_paragraph_formatt
     assert indentation.get(qn("w:firstLine")) == "360"
 
 
+def test_preserve_source_paragraph_properties_logs_mismatch_warning(monkeypatch):
+    source_doc = Document()
+    source_paragraph = source_doc.add_paragraph("Абзац")
+    source_paragraph.paragraph_format.left_indent = Inches(0.5)
+    source_buffer = BytesIO()
+    source_doc.save(source_buffer)
+    source_buffer.seek(0)
+    source_paragraphs, _ = extract_document_content_from_docx(source_buffer)
+
+    target_doc = Document()
+    target_doc.add_paragraph("Абзац")
+    target_doc.add_paragraph("Лишний абзац")
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    events = []
+    monkeypatch.setattr(document, "log_event", lambda level, event, message, **context: events.append((event, context)))
+
+    preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
+
+    assert events == [
+        (
+            "paragraph_count_mismatch_preserve",
+            {"source_count": 1, "target_count": 2},
+        )
+    ]
+
+
+def test_preserve_source_paragraph_properties_skips_partial_transfer_on_mismatch():
+    source_doc = Document()
+    source_paragraph = source_doc.add_paragraph("Абзац")
+    source_paragraph.paragraph_format.left_indent = Inches(0.5)
+    source_buffer = BytesIO()
+    source_doc.save(source_buffer)
+    source_buffer.seek(0)
+    source_paragraphs, _ = extract_document_content_from_docx(source_buffer)
+
+    target_doc = Document()
+    target_doc.add_paragraph("Абзац")
+    target_doc.add_paragraph("Лишний абзац")
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    updated_bytes = preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
+    updated_doc = Document(BytesIO(updated_bytes))
+    paragraph_properties = updated_doc.paragraphs[0]._element.pPr
+    indentation = None if paragraph_properties is None else paragraph_properties.find(qn("w:ind"))
+
+    assert indentation is None
+
+
+def test_replace_xml_element_with_sequence_empty_replacements_is_noop():
+    parent = document.etree.fromstring("<root><child>text</child></root>")
+    child = parent[0]
+
+    _replace_xml_element_with_sequence(child, [])
+
+    assert len(parent) == 1
+    assert parent[0].text == "text"
+
+
+def test_validate_docx_archive_rejects_zip_slip_paths():
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("../evil.txt", "boom")
+
+    try:
+        document._validate_docx_archive(buffer.getvalue())
+    except RuntimeError as exc:
+        assert "подозрительные пути" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError for zip-slip path")
+
+
 def test_resolve_image_insertions_keeps_safe_and_candidates_for_manual_review():
     asset = ImageAsset(
         image_id="img_001",
@@ -532,6 +629,42 @@ def test_normalize_semantic_output_docx_applies_semantic_styles():
     assert updated_doc.paragraphs[2].style.name == "Caption"
     assert updated_doc.paragraphs[3].style.name in {"Body Text", "Normal"}
     assert updated_doc.tables[0].style.name == "Table Grid"
+
+
+def test_normalize_semantic_output_docx_logs_mismatch_warning(monkeypatch):
+    source_paragraphs = [ParagraphUnit(text="Один", role="body")]
+    target_doc = Document()
+    target_doc.add_paragraph("Один")
+    target_doc.add_paragraph("Два")
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    events = []
+    monkeypatch.setattr(document, "log_event", lambda level, event, message, **context: events.append((event, context)))
+
+    normalize_semantic_output_docx(target_buffer.getvalue(), source_paragraphs)
+
+    assert events == [
+        (
+            "paragraph_count_mismatch_normalize",
+            {"source_count": 1, "target_count": 2},
+        )
+    ]
+
+
+def test_normalize_semantic_output_docx_skips_partial_normalization_on_mismatch():
+    source_paragraphs = [ParagraphUnit(text="Заголовок", role="heading", heading_level=1)]
+    target_doc = Document()
+    target_doc.add_paragraph("Заголовок")
+    target_doc.add_paragraph("Лишний абзац")
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    updated_bytes = normalize_semantic_output_docx(target_buffer.getvalue(), source_paragraphs)
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    assert updated_doc.paragraphs[0].style is not None
+    assert updated_doc.paragraphs[0].style.name == "Normal"
 
 
 def test_caption_survives_extraction_markdown_and_normalization_after_image(tmp_path):
@@ -674,6 +807,22 @@ def test_reinsert_inline_images_uses_shared_table_layout_for_multi_variant_place
     assert len(updated_doc.tables[0].rows[0].cells) == 3
     assert len(updated_doc.inline_shapes) == 3
     assert _extract_docpr_descriptions(updated_doc._element) == ["safe", "candidate1", "candidate2"]
+
+
+def test_build_variant_table_element_returns_none_for_empty_insertions(monkeypatch):
+    doc = Document()
+    paragraph = doc.add_paragraph("placeholder")
+    asset = ImageAsset(
+        image_id="img_001",
+        placeholder="[[DOCX_IMAGE_img_001]]",
+        original_bytes=PNG_BYTES,
+        mime_type="image/png",
+        position_index=0,
+    )
+
+    monkeypatch.setattr(document, "resolve_image_insertions", lambda current_asset: [])
+
+    assert _build_variant_table_element(paragraph, asset) is None
 
 
 def test_reinsert_inline_images_keeps_placeholder_text_when_no_image_bytes_resolved():

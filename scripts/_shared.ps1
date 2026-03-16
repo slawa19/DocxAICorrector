@@ -360,3 +360,40 @@ function Wait-ProjectReady {
 
     return (((($rawOutput | Out-String).Trim()) -eq 'ok'))
 }
+
+function Wait-ProjectStopped {
+    param(
+        [int]$Port,
+        [int]$TimeoutSeconds = 10
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $runtimeStatus = Get-ProjectRuntimeStatus
+        $managedPidRunning = ConvertTo-BoolFlag $runtimeStatus['managed_pid_running']
+        $portOpen = ConvertTo-BoolFlag $runtimeStatus['port_open']
+        $windowsPortOpen = Test-TcpPort -ComputerName $loopbackHost -Port $Port
+
+        if (-not $managedPidRunning -and -not $portOpen) {
+            return @{
+                stopped = $true
+                managed_pid_running = $managedPidRunning
+                port_open = $portOpen
+                windows_port_open = $windowsPortOpen
+            }
+        }
+
+        Start-Sleep -Milliseconds 500
+    }
+
+    $runtimeStatus = Get-ProjectRuntimeStatus
+    $managedPidRunning = ConvertTo-BoolFlag $runtimeStatus['managed_pid_running']
+    $portOpen = ConvertTo-BoolFlag $runtimeStatus['port_open']
+    $windowsPortOpen = Test-TcpPort -ComputerName $loopbackHost -Port $Port
+    return @{
+        stopped = (-not $managedPidRunning -and -not $portOpen)
+        managed_pid_running = $managedPidRunning
+        port_open = $portOpen
+        windows_port_open = $windowsPortOpen
+    }
+}

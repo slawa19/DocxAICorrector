@@ -53,6 +53,7 @@ class PreparationCompleteEvent:
 class PreparationFailedEvent:
     upload_marker: str
     error_message: str
+    error_details: dict[str, object]
 
 
 ProcessingEvent = (

@@ -202,8 +202,8 @@ def test_process_document_images_keeps_document_flow_when_validator_raises(monke
     )
 
     assert len(result) == 1
-    assert result[0].final_decision == "fallback_original"
-    assert result[0].final_variant == "original"
+    assert result[0].final_decision == "fallback_safe"
+    assert result[0].final_variant == "safe"
     assert result[0].validation_status == "error"
 
 
@@ -491,9 +491,49 @@ def test_process_document_images_falls_back_when_model_call_budget_is_exhausted(
         client=object(),
     )
 
-    assert result[0].final_decision == "fallback_original"
+    assert result[0].final_decision == "fallback_safe"
+    assert result[0].final_variant == "safe"
     assert result[0].validation_status == "failed"
     assert result[0].final_reason == "semantic_model_call_budget_exhausted"
+
+
+def test_process_document_images_compare_all_falls_back_when_variants_are_incomplete(monkeypatch):
+    _, service = _prepare_state(monkeypatch)
+    generated_modes = []
+
+    def fake_generate_image_candidate(
+        image_bytes,
+        analysis,
+        *,
+        mode,
+        prefer_deterministic_reconstruction=True,
+        reconstruction_model=None,
+        reconstruction_render_config=None,
+        client=None,
+        budget=None,
+    ):
+        generated_modes.append(mode)
+        if mode == "safe":
+            return PNG_BYTES
+        raise processing_service.ImageModelCallBudgetExceeded("budget exhausted")
+
+    monkeypatch.setattr(processing_service, "generate_image_candidate", fake_generate_image_candidate)
+    service = processing_service.build_processing_service()
+
+    result = service.process_document_images(
+        image_assets=[build_asset()],
+        image_mode="compare_all",
+        config={"keep_all_image_variants": True, "validation_model": "gpt-4.1"},
+        on_progress=lambda **kwargs: None,
+        client=object(),
+    )
+
+    assert generated_modes == ["safe", "semantic_redraw_direct", "semantic_redraw_structured"]
+    assert result[0].validation_status == "failed"
+    assert result[0].final_decision == "fallback_safe"
+    assert result[0].final_variant == "safe"
+    assert result[0].selected_compare_variant is None
+    assert result[0].final_reason == "compare_all_variants_incomplete:safe"
 
 
 def test_process_document_images_uses_safe_variant_when_semantic_candidate_collapses_to_safe(monkeypatch):

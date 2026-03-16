@@ -106,7 +106,14 @@ def test_build_uploaded_file_token_uses_name_size_and_content_hash():
 def test_build_preparation_request_marker_includes_chunk_size():
     marker = processing_runtime.build_preparation_request_marker(UploadedFileStub("report.docx", b"abc"), chunk_size=6000)
 
-    assert marker == "report.docx:3:6000"
+    assert marker == "report.docx:3:ba7816bf8f01cfea:6000"
+
+
+def test_build_preparation_request_marker_uses_content_hash_for_same_name_same_size_files():
+    marker_one = processing_runtime.build_preparation_request_marker(UploadedFileStub("report.docx", b"abc"), chunk_size=6000)
+    marker_two = processing_runtime.build_preparation_request_marker(UploadedFileStub("report.docx", b"xyz"), chunk_size=6000)
+
+    assert marker_one != marker_two
 
 
 def test_store_preparation_summary_uses_preparation_context_not_processing_status(monkeypatch):
@@ -146,6 +153,42 @@ def test_store_preparation_summary_uses_preparation_context_not_processing_statu
         "elapsed": "1.2 c",
         "progress": 1.0,
     }
+
+
+def test_schedule_stale_persisted_sources_cleanup_resets_flag_under_lock(monkeypatch):
+    session_state = SessionState(persisted_source_cleanup_done=False)
+    lock_events = []
+
+    class TrackingLock:
+        def __enter__(self):
+            lock_events.append("enter")
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            lock_events.append("exit")
+
+    class ImmediateThread:
+        def __init__(self, *, target, daemon, name):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app, "_CLEANUP_THREAD_LOCK", TrackingLock())
+    monkeypatch.setattr(app, "_CLEANUP_THREAD_STARTED", False)
+    monkeypatch.setattr(app.threading, "Thread", ImmediateThread)
+
+    import restart_store
+
+    cleanup_calls = []
+    monkeypatch.setattr(restart_store, "cleanup_stale_persisted_sources", lambda **kwargs: cleanup_calls.append(kwargs))
+
+    app._schedule_stale_persisted_sources_cleanup()
+
+    assert cleanup_calls == [{"max_age_seconds": app.PERSISTED_SOURCE_TTL_SECONDS}]
+    assert app._CLEANUP_THREAD_STARTED is False
+    assert lock_events == ["enter", "exit", "enter", "exit"]
 
 
 def test_render_processing_controls_keeps_start_visible_while_processing(monkeypatch):
@@ -204,7 +247,7 @@ def test_render_processing_controls_enables_start_and_disables_stop_when_idle(mo
 def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatch):
     session_state = SessionState(
         app_start_logged=True,
-        preparation_input_marker="report.docx:3:6000",
+        preparation_input_marker="report.docx:3:ba7816bf8f01cfea:6000",
         preparation_failed_marker="",
         prepared_run_context=object(),
         processing_status={},
@@ -246,13 +289,14 @@ def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatc
     else:
         raise AssertionError("Expected rerun after starting background preparation")
 
-    assert start_calls == [{
-        "uploaded_file": uploaded_file,
-        "upload_marker": "report.docx:3:7000",
-        "chunk_size": 7000,
-        "image_mode": "safe",
-        "keep_all_image_variants": True,
-    }]
+    assert len(start_calls) == 1
+    assert start_calls[0]["upload_marker"] == "report.docx:3:ba7816bf8f01cfea:7000"
+    assert start_calls[0]["chunk_size"] == 7000
+    assert start_calls[0]["image_mode"] == "safe"
+    assert start_calls[0]["keep_all_image_variants"] is True
+    assert start_calls[0]["uploaded_payload"].filename == "report.docx"
+    assert start_calls[0]["uploaded_payload"].content_bytes == b"abc"
+    assert start_calls[0]["uploaded_payload"].file_token == "report.docx:3:ba7816bf8f01cfea"
 
 
 def test_main_renders_live_status_during_active_preparation(monkeypatch):
@@ -305,7 +349,7 @@ def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):
         processing_status={},
         activity_feed=[],
         image_assets=[],
-        preparation_input_marker="report.docx:3:6000",
+        preparation_input_marker="report.docx:3:ba7816bf8f01cfea:6000",
         preparation_failed_marker="",
         prepared_run_context=prepared_run_context,
         latest_docx_bytes=None,
@@ -499,7 +543,7 @@ def test_compare_panel_applies_selected_variants_and_shows_success(monkeypatch):
 
     compare_panel.render_compare_all_apply_panel(
         latest_image_mode="compare_all",
-        image_assets=[ImageAsset(image_id="img_001", placeholder="[[DOCX_IMAGE_img_001]]", original_bytes=b"x", mime_type="image/png", position_index=0, comparison_variants={"safe": {"bytes": b"safe"}}, final_decision="compared")],
+        image_assets=[ImageAsset(image_id="img_001", placeholder="[[DOCX_IMAGE_img_001]]", original_bytes=b"x", mime_type="image/png", position_index=0, comparison_variants={"safe": {"bytes": b"safe"}}, validation_status="compared", final_decision="compared")],
         render_section_gap=lambda gap: calls.append(("gap", gap)),
     )
 
@@ -515,9 +559,24 @@ def test_compare_panel_reports_apply_errors(monkeypatch):
 
     compare_panel.render_compare_all_apply_panel(
         latest_image_mode="compare_all",
-        image_assets=[ImageAsset(image_id="img_001", placeholder="[[DOCX_IMAGE_img_001]]", original_bytes=b"x", mime_type="image/png", position_index=0, comparison_variants={"safe": {"bytes": b"safe"}}, final_decision="compared")],
+        image_assets=[ImageAsset(image_id="img_001", placeholder="[[DOCX_IMAGE_img_001]]", original_bytes=b"x", mime_type="image/png", position_index=0, comparison_variants={"safe": {"bytes": b"safe"}}, validation_status="compared", final_decision="compared")],
         render_section_gap=lambda gap: calls.append(("gap", gap)),
     )
 
     assert not any(kind == "apply" for kind, _ in calls)
     assert not any(kind == "selector" for kind, _ in calls)
+
+
+def test_compare_panel_hides_incomplete_compare_assets(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(compare_panel.st, "info", lambda message: calls.append(("info", message)))
+    monkeypatch.setattr(compare_panel.st, "caption", lambda message: calls.append(("caption", message)))
+
+    compare_panel.render_compare_all_apply_panel(
+        latest_image_mode="compare_all",
+        image_assets=[ImageAsset(image_id="img_001", placeholder="[[DOCX_IMAGE_img_001]]", original_bytes=b"x", mime_type="image/png", position_index=0, comparison_variants={"safe": {"bytes": b"safe"}}, validation_status="failed", final_decision="fallback_safe")],
+        render_section_gap=lambda gap: calls.append(("gap", gap)),
+    )
+
+    assert calls == []

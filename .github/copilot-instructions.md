@@ -33,6 +33,8 @@ Clarification for AI agents:
 - output seen only through agent-side tool capture is not the same thing as a visible VS Code terminal run;
 - foreground agent shell output is also not the same thing as the user's visible VS Code terminal panel;
 - if the user explicitly wants to see the test run in the VS Code terminal, the final verification MUST use the existing VS Code tasks rather than agent-only shell capture or foreground tool terminals;
+- if an agent uses shell test runs for debugging, run exactly one selector per command and wait for its full output; do not chain multiple pytest invocations with `&&` or other collapsed command patterns that make the result partial or ambiguous;
+- do not use background terminals for pytest verification, because that hides the live result stream from both the agent and the user;
 - log-file recovery, hidden reruns, and foreground agent shell runs may be used for debugging, but never as the final user-facing proof when the user asked for visible terminal output.
 
 ## Project Lifecycle (app start/stop)

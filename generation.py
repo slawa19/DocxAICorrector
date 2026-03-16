@@ -54,6 +54,11 @@ def _extract_response_output_text(response: object) -> str:
         raise RuntimeError("Модель вернула ответ в неподдерживаемом формате.")
     return output_text
 
+
+def _estimate_max_output_tokens(target_text: str) -> int:
+    estimated_output_tokens = max((len(target_text) // 3) * 4, 512)
+    return min(estimated_output_tokens, 16384)
+
 def generate_markdown_block(
     client: "OpenAI",
     model: str,
@@ -88,19 +93,38 @@ def generate_markdown_block(
             "content": [{"type": "input_text", "text": user_prompt}],
         },
     ]
+    request_kwargs: dict[str, object] = {
+        "model": model,
+        "input": payload,
+        "max_output_tokens": _estimate_max_output_tokens(target_text),
+    }
+    max_output_tokens_removed = False
 
     for attempt in range(1, max_retries + 1):
         try:
-            response = client.responses.create(model=model, input=payload)
+            response = client.responses.create(**request_kwargs)
             markdown = normalize_model_output(_extract_response_output_text(response))
             if not markdown:
                 raise RuntimeError("Модель вернула пустой ответ.")
             return markdown
+        except TypeError as exc:
+            if "max_output_tokens" in str(exc) and "max_output_tokens" in request_kwargs:
+                request_kwargs.pop("max_output_tokens", None)
+                max_output_tokens_removed = True
+                continue
+            raise
         except Exception as exc:
             should_retry = attempt < max_retries and is_retryable_error(exc)
             if not should_retry:
                 raise
             time.sleep(min(2 ** (attempt - 1), 8))
+
+    if max_output_tokens_removed:
+        response = client.responses.create(**request_kwargs)
+        markdown = normalize_model_output(_extract_response_output_text(response))
+        if not markdown:
+            raise RuntimeError("Модель вернула пустой ответ.")
+        return markdown
 
     raise RuntimeError("Не удалось получить ответ модели.")
 

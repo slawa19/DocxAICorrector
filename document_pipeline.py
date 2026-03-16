@@ -118,6 +118,32 @@ class ProcessingJobs(Sized, Protocol):
     def __iter__(self) -> Iterator[ProcessingJob]: ...
 
 
+def _coerce_required_text_field(job: ProcessingJob, field_name: str, *, allow_blank: bool = True) -> str:
+    value = job[field_name]
+    if value is None:
+        raise ValueError(f"{field_name} is None")
+    text = str(value)
+    if not allow_blank and not text.strip():
+        raise ValueError(f"{field_name} is empty")
+    return text
+
+
+def _reconcile_placeholder_integrity(
+    placeholder_integrity: Mapping[str, str],
+    image_assets: Sequence[ImageAssetLike],
+) -> dict[str, str]:
+    expected_ids = {asset.image_id for asset in image_assets}
+    observed_ids = {image_id for image_id in placeholder_integrity if image_id in expected_ids}
+    mismatches = {
+        image_id: placeholder_status
+        for image_id, placeholder_status in placeholder_integrity.items()
+        if placeholder_status != "ok"
+    }
+    for missing_image_id in sorted(expected_ids - observed_ids):
+        mismatches[missing_image_id] = "missing_status"
+    return mismatches
+
+
 def run_document_processing(
     *,
     uploaded_file: object,
@@ -194,6 +220,24 @@ def run_document_processing(
             max_retries=max_retries,
             image_count=len(image_assets),
         )
+        block_map = []
+        for block_idx, block_job in enumerate(jobs, start=1):
+            try:
+                chars = int(block_job["target_chars"])
+            except (KeyError, TypeError, ValueError):
+                chars = -1
+            block_map.append({
+                "block": block_idx,
+                "target_chars": chars,
+                "preview": str(block_job.get("target_text", ""))[:120],
+            })
+        log_event(
+            logging.INFO,
+            "block_map",
+            "Карта блоков документа",
+            filename=uploaded_filename,
+            blocks=block_map,
+        )
         emit_activity(runtime, f"Инициализация завершена. Модель: {model}.")
     except Exception as exc:
         error_message = present_error(
@@ -262,9 +306,9 @@ def run_document_processing(
         try:
             target_chars = int(job["target_chars"])
             context_chars = int(job["context_chars"])
-            target_text = str(job["target_text"])
-            context_before = str(job["context_before"])
-            context_after = str(job["context_after"])
+            target_text = _coerce_required_text_field(job, "target_text", allow_blank=False)
+            context_before = _coerce_required_text_field(job, "context_before")
+            context_after = _coerce_required_text_field(job, "context_after")
         except (KeyError, TypeError, ValueError) as exc:
             emit_state(runtime, latest_markdown="\n\n".join(processed_chunks).strip(), latest_docx_bytes=None)
             error_message = present_error(
@@ -415,6 +459,8 @@ def run_document_processing(
             is_running=True,
         )
         emit_activity(runtime, f"Блок {index} обработан успешно.")
+        output_chars = len(processed_chunk)
+        output_ratio = round(output_chars / max(target_chars, 1), 2)
         log_event(
             logging.INFO,
             "block_completed",
@@ -422,9 +468,12 @@ def run_document_processing(
             filename=uploaded_filename,
             block_index=index,
             block_count=job_count,
-            target_chars=int(job["target_chars"]),
-            context_chars=int(job["context_chars"]),
-            output_chars=len(processed_chunk),
+            target_chars=target_chars,
+            context_chars=context_chars,
+            output_chars=output_chars,
+            output_ratio=output_ratio,
+            input_preview=target_text[:300],
+            output_preview=processed_chunk[:300],
         )
         on_progress(preview_title="Текущий Markdown")
 
@@ -436,9 +485,10 @@ def run_document_processing(
             filename=uploaded_filename,
             processed_count=len(processed_chunks),
             planned_count=job_count,
+            incomplete_count=max(job_count - len(processed_chunks), 0),
         )
         emit_state(runtime, last_error=critical_message, latest_docx_bytes=None)
-        emit_finalize(runtime, "Критическая ошибка", critical_message, len(processed_chunks) / job_count)
+        emit_finalize(runtime, "Критическая ошибка", critical_message, len(processed_chunks) / max(job_count, 1))
         emit_activity(runtime, "Обнаружено несоответствие количества обработанных блоков.")
         emit_log(
             runtime,
@@ -500,11 +550,8 @@ def run_document_processing(
         emit_activity(runtime, "Обработка документа остановлена пользователем.")
         return "stopped"
 
-    placeholder_mismatches: dict[str, str] = {}
-    for image_id, placeholder_status in placeholder_integrity.items():
-        if placeholder_status == "ok":
-            continue
-        placeholder_mismatches[image_id] = placeholder_status
+    placeholder_mismatches = _reconcile_placeholder_integrity(placeholder_integrity, processed_image_assets)
+    for image_id, placeholder_status in placeholder_mismatches.items():
         log_event(
             logging.WARNING,
             "image_placeholder_mismatch",

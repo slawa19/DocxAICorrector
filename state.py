@@ -60,6 +60,7 @@ def init_session_state() -> None:
     st.session_state.setdefault("latest_source_token", "")
     st.session_state.setdefault("selected_source_token", "")
     st.session_state.setdefault("last_error", "")
+    st.session_state.setdefault("last_background_error", None)
     st.session_state.setdefault("last_log_hint", f"Подробный лог приложения: {APP_LOG_PATH}")
     st.session_state.setdefault("processing_status", _default_processing_status())
     st.session_state.setdefault("image_assets", [])
@@ -99,6 +100,7 @@ def reset_run_state(*, keep_restart_source: bool = True) -> None:
     st.session_state.latest_source_name = ""
     st.session_state.latest_source_token = ""
     st.session_state.last_error = ""
+    st.session_state.last_background_error = None
     st.session_state.image_assets = []
     st.session_state.image_validation_failures = []
     st.session_state.image_processing_summary = _default_image_processing_summary()

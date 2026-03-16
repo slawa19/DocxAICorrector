@@ -571,6 +571,108 @@ def test_generate_image_candidate_direct_stops_when_model_call_budget_is_exhaust
     assert sleep_calls == []
 
 
+def test_call_images_edit_consumes_budget_once_after_adaptation_retry():
+    calls = []
+
+    class Budget:
+        def __init__(self):
+            self.used_calls = 0
+
+        def ensure_available(self, operation_name):
+            return None
+
+        def consume(self, operation_name):
+            self.used_calls += 1
+
+    class FakeImagesClient:
+        def edit(self, **kwargs):
+            calls.append(dict(kwargs))
+            if len(calls) == 1:
+                raise TypeError("Images.edit() got an unexpected keyword argument 'input_fidelity'")
+            return SimpleNamespace(data=[])
+
+    budget = Budget()
+    result = image_generation._call_images_edit(
+        SimpleNamespace(images=FakeImagesClient()),
+        {"model": "gpt-image-1", "image": [b"x"], "prompt": "p", "input_fidelity": "high"},
+        budget=budget,
+    )
+
+    assert isinstance(result, SimpleNamespace)
+    assert len(calls) == 2
+    assert "input_fidelity" in calls[0]
+    assert "input_fidelity" not in calls[1]
+    assert budget.used_calls == 1
+
+
+def test_call_images_generate_consumes_budget_once_after_adaptation_retry():
+    calls = []
+
+    class Budget:
+        def __init__(self):
+            self.used_calls = 0
+
+        def ensure_available(self, operation_name):
+            return None
+
+        def consume(self, operation_name):
+            self.used_calls += 1
+
+    class FakeImagesClient:
+        def generate(self, **kwargs):
+            calls.append(dict(kwargs))
+            if len(calls) == 1:
+                raise TypeError("Images.generate() got an unexpected keyword argument 'quality'")
+            return SimpleNamespace(data=[])
+
+    budget = Budget()
+    result = image_generation._call_images_generate(
+        SimpleNamespace(images=FakeImagesClient()),
+        {"model": "gpt-image-1", "prompt": "p", "quality": "high"},
+        budget=budget,
+    )
+
+    assert isinstance(result, SimpleNamespace)
+    assert len(calls) == 2
+    assert "quality" in calls[0]
+    assert "quality" not in calls[1]
+    assert budget.used_calls == 1
+
+
+def test_call_responses_create_consumes_budget_once_after_timeout_adaptation():
+    calls = []
+
+    class Budget:
+        def __init__(self):
+            self.used_calls = 0
+
+        def ensure_available(self, operation_name):
+            return None
+
+        def consume(self, operation_name):
+            self.used_calls += 1
+
+    class FakeResponsesClient:
+        def create(self, **kwargs):
+            calls.append(dict(kwargs))
+            if len(calls) == 1:
+                raise TypeError("unexpected keyword argument 'timeout'")
+            return SimpleNamespace(output_text="ok")
+
+    budget = Budget()
+    result = image_generation._call_responses_create(
+        SimpleNamespace(responses=FakeResponsesClient()),
+        {"model": "gpt-4.1", "input": []},
+        budget=budget,
+    )
+
+    assert result.output_text == "ok"
+    assert len(calls) == 2
+    assert "timeout" in calls[0]
+    assert "timeout" not in calls[1]
+    assert budget.used_calls == 1
+
+
 
 def test_generate_image_candidate_direct_retries_with_shorter_prompt(monkeypatch):
     captured_calls = []

@@ -4,8 +4,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from document import validate_docx_source_bytes
 from preparation import emit_preparation_progress, prepare_document_for_processing
 from processing_runtime import (
+    FrozenUploadPayload,
     build_in_memory_uploaded_file,
     build_uploaded_file_token,
     read_uploaded_file_bytes,
@@ -123,7 +125,8 @@ def _resolve_preparation_dependencies(
 
 def _prepare_run_context_core(
     *,
-    uploaded_file,
+    uploaded_file=None,
+    uploaded_payload: FrozenUploadPayload | None = None,
     chunk_size: int,
     session_state,
     progress_callback,
@@ -145,15 +148,20 @@ def _prepare_run_context_core(
         read_uploaded_file_bytes_fn=read_uploaded_file_bytes_fn,
         build_uploaded_file_token_fn=build_uploaded_file_token_fn,
     )
-    uploaded_filename = resolve_uploaded_filename_fn(uploaded_file)
-    emit_preparation_progress(
-        progress_callback,
-        stage="Чтение файла",
-        detail=f"Читаю содержимое {uploaded_filename}",
-        progress=0.05,
-    )
-    uploaded_file_bytes = read_uploaded_file_bytes_fn(uploaded_file)
-    uploaded_file_token = build_uploaded_file_token_fn(source_name=uploaded_filename, source_bytes=uploaded_file_bytes)
+    if uploaded_payload is not None:
+        uploaded_filename = uploaded_payload.filename
+        uploaded_file_bytes = uploaded_payload.content_bytes
+        uploaded_file_token = uploaded_payload.file_token
+    else:
+        uploaded_filename = resolve_uploaded_filename_fn(uploaded_file)
+        emit_preparation_progress(
+            progress_callback,
+            stage="Чтение файла",
+            detail=f"Читаю содержимое {uploaded_filename}",
+            progress=0.05,
+        )
+        uploaded_file_bytes = read_uploaded_file_bytes_fn(uploaded_file)
+        uploaded_file_token = build_uploaded_file_token_fn(source_name=uploaded_filename, source_bytes=uploaded_file_bytes)
     emit_preparation_progress(
         progress_callback,
         stage="Файл прочитан",
@@ -161,6 +169,7 @@ def _prepare_run_context_core(
         progress=0.15,
         metrics={"file_size_bytes": len(uploaded_file_bytes)},
     )
+    validate_docx_source_bytes(uploaded_file_bytes)
     if session_state is not None and reset_run_state_fn is not None:
         sync_selected_file_context(
             session_state=session_state,
@@ -184,7 +193,7 @@ def _raise_or_fail_preparation(*, prepared_document, uploaded_filename: str, fai
         if fail_critical_fn is not None:
             fail_critical_fn("no_jobs_built", "Не удалось собрать ни одного блока для обработки.", filename=uploaded_filename)
         raise ValueError("Не удалось собрать ни одного блока для обработки.")
-    if any(not str(job["target_text"]).strip() for job in prepared_document.jobs):
+    if any(not str(job.get("target_text") or "").strip() for job in prepared_document.jobs):
         if fail_critical_fn is not None:
             fail_critical_fn("empty_target_block", "Обнаружен пустой целевой блок перед отправкой в модель.", filename=uploaded_filename)
         raise ValueError("Обнаружен пустой целевой блок перед отправкой в модель.")
@@ -342,7 +351,7 @@ def prepare_run_context(
 
 def prepare_run_context_for_background(
     *,
-    uploaded_file,
+    uploaded_payload: FrozenUploadPayload,
     chunk_size: int,
     image_mode: str,
     keep_all_image_variants: bool,
@@ -353,7 +362,7 @@ def prepare_run_context_for_background(
     progress_callback=None,
 ) -> PreparedRunContext:
     uploaded_filename, uploaded_file_bytes, uploaded_file_token, prepared_document, elapsed_seconds = _prepare_run_context_core(
-        uploaded_file=uploaded_file,
+        uploaded_payload=uploaded_payload,
         chunk_size=chunk_size,
         session_state=None,
         progress_callback=progress_callback,

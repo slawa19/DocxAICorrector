@@ -1,3 +1,4 @@
+import re
 import time
 from pathlib import Path
 
@@ -9,9 +10,13 @@ def _sanitize_suffix(source_name: str) -> str:
     return suffix if suffix else ".docx"
 
 
+def _sanitize_for_filename(value: str) -> str:
+    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value)
+
+
 def _build_persisted_source_path(prefix: str, session_id: str, source_token: str, source_name: str) -> Path:
-    safe_session_id = session_id.replace(":", "_")
-    safe_token = source_token.replace(":", "_")
+    safe_session_id = _sanitize_for_filename(session_id)
+    safe_token = _sanitize_for_filename(source_token)
     return RUN_DIR / f"{prefix}_{safe_session_id}_{safe_token}{_sanitize_suffix(source_name)}"
 
 

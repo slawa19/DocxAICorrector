@@ -1,10 +1,12 @@
 import base64
 from dataclasses import replace
 from io import BytesIO
+import logging
 
 from PIL import Image, ImageFilter, ImageOps
 
 from image_shared import clamp_score, detect_image_mime_type, is_retryable_error, parse_json_object, call_responses_create_with_retry
+from logger import log_event
 from models import ImageAnalysisResult
 
 
@@ -57,7 +59,16 @@ def analyze_image(
             heuristic_result=heuristic_result,
             budget=budget,
         )
-    except Exception:
+    except Exception as exc:
+        log_event(
+            logging.WARNING,
+            "image_analysis_vision_fallback_after_error",
+            "Vision-анализ изображения завершился ошибкой; использую heuristic fallback.",
+            model=model,
+            mime_type=detected_mime_type,
+            error_type=exc.__class__.__name__,
+            error_message=str(exc),
+        )
         return heuristic_result
 
     return _merge_analysis_results(
