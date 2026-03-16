@@ -35,60 +35,81 @@ class FakeProgressBar:
         self.values.append(value)
 
 
-def test_render_markdown_preview_uses_unique_widget_keys_on_repeat(monkeypatch):
+def test_render_markdown_preview_uses_stable_key_per_title(monkeypatch):
+    import hashlib
     session_state = SessionState(
         processed_block_markdowns=["one", "two"],
-        markdown_preview_block_index=1,
-        markdown_preview_render_nonce=0,
     )
     select_keys = []
-    text_keys = []
+
+    def fake_selectbox(label, options, key=None):
+        select_keys.append(key)
+        return session_state.get(key, options[0])
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        ui.st,
-        "selectbox",
-        lambda label, options, index, key: select_keys.append(key) or options[index],
-    )
-    monkeypatch.setattr(
-        ui.st,
-        "text_area",
-        lambda label, value, height, key: text_keys.append(key),
-    )
+    monkeypatch.setattr(ui.st, "selectbox", fake_selectbox)
+    monkeypatch.setattr(ui.st, "text_area", lambda *args, **kwargs: None)
 
     target = FakeTarget()
-    ui.render_markdown_preview(target, title="Текущий Markdown")
-    ui.render_markdown_preview(target, title="Текущий Markdown")
+    ui.render_markdown_preview(target, title="Preview A")
+    ui.render_markdown_preview(target, title="Preview B")
 
-    assert select_keys == ["markdown_preview_1_select", "markdown_preview_2_select"]
-    assert text_keys == ["markdown_preview_1_text", "markdown_preview_2_text"]
-    assert session_state.markdown_preview_render_nonce == 2
+    # Different titles produce different stable keys.
+    assert len(select_keys) == 2
+    assert select_keys[0] != select_keys[1]
+
+    first_key = select_keys[0]
+    select_keys.clear()
+    ui.render_markdown_preview(target, title="Preview A")
+    # Same title → same key on every re-render (no per-render nonce).
+    assert select_keys == [first_key]
 
 
 def test_render_markdown_preview_focuses_latest_block_when_requested(monkeypatch):
     session_state = SessionState(
         processed_block_markdowns=["one", "two", "three"],
-        markdown_preview_block_index=1,
-        markdown_preview_render_nonce=0,
     )
-    select_calls = []
+
+    def fake_selectbox(label, options, key=None):
+        return session_state.get(key, options[0])
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        ui.st,
-        "selectbox",
-        lambda label, options, index, key: select_calls.append((tuple(options), index, key)) or options[index],
+    monkeypatch.setattr(ui.st, "selectbox", fake_selectbox)
+    monkeypatch.setattr(ui.st, "text_area", lambda *args, **kwargs: None)
+
+    select_key = ui._mdpreview_key("Текущий Markdown", "select")
+    ui.render_markdown_preview(FakeTarget(), title="Текущий Markdown", focus_latest=True)
+
+    # Key was not in session_state, focus_latest=True → default to last block.
+    assert session_state[select_key] == 3
+
+
+def test_render_markdown_preview_keeps_user_selection_when_focus_latest_requested(monkeypatch):
+    select_key = ui._mdpreview_key("Текущий Markdown", "select")
+    last_count_key = ui._mdpreview_key("Текущий Markdown", "last_count")
+    session_state = SessionState(
+        processed_block_markdowns=["one", "two", "three"],
+        # Simulate: user previously selected block 1; last known count = 3 (no new blocks).
+        **{select_key: 1, last_count_key: 3},
     )
+
+    def fake_selectbox(label, options, key=None):
+        return session_state.get(key, options[0])
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.st, "selectbox", fake_selectbox)
     monkeypatch.setattr(ui.st, "text_area", lambda *args, **kwargs: None)
 
     ui.render_markdown_preview(FakeTarget(), title="Текущий Markdown", focus_latest=True)
 
-    assert session_state.markdown_preview_block_index == 3
-    assert select_calls == [((1, 2, 3), 2, "markdown_preview_1_select")]
+    # User previously selected block 1 and no new block arrived → stays at 1.
+    assert session_state[select_key] == 1
 
 
 def test_render_sidebar_returns_image_settings(monkeypatch):
@@ -306,6 +327,7 @@ def test_render_live_status_shows_cache_source_for_preparation(monkeypatch):
 def test_render_partial_result_shows_preview_instead_of_download(monkeypatch):
     session_state = SessionState(
         latest_markdown="chunk-1",
+        processed_block_markdowns=["chunk-1"],
         latest_docx_bytes=None,
     )
     warnings = []
@@ -319,6 +341,77 @@ def test_render_partial_result_shows_preview_instead_of_download(monkeypatch):
 
     assert warnings == ["Доступен промежуточный Markdown-результат последнего запуска."]
     assert previews == ["Текущий Markdown"]
+
+
+def test_render_partial_result_hides_placeholder_only_preview(monkeypatch):
+    session_state = SessionState(
+        latest_markdown="[[DOCX_IMAGE_img_001]]",
+        processed_block_markdowns=["[[DOCX_IMAGE_img_001]]"],
+        latest_docx_bytes=None,
+    )
+    warnings = []
+    previews = []
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "warning", lambda text: warnings.append(text))
+    monkeypatch.setattr(ui, "render_markdown_preview", lambda *args, **kwargs: previews.append(kwargs.get("title")))
+
+    ui.render_partial_result()
+
+    assert warnings == []
+    assert previews == []
+
+
+def test_render_partial_result_uses_last_meaningful_block_as_default(monkeypatch):
+    session_state = SessionState(
+        latest_markdown="chunk-1\n\nchunk-2\n\n[[DOCX_IMAGE_img_001]]",
+        processed_block_markdowns=["chunk-1", "chunk-2", "[[DOCX_IMAGE_img_001]]"],
+        latest_docx_bytes=None,
+    )
+    warnings = []
+    preview_calls = []
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "warning", lambda text: warnings.append(text))
+    monkeypatch.setattr(
+        ui,
+        "render_markdown_preview",
+        lambda *args, **kwargs: preview_calls.append((kwargs.get("title"), kwargs.get("preferred_block_index"))),
+    )
+
+    ui.render_partial_result()
+
+    assert warnings == ["Доступен промежуточный Markdown-результат последнего запуска."]
+    assert preview_calls == [("Текущий Markdown", 2)]
+
+
+def test_render_partial_result_does_not_override_user_selected_block(monkeypatch):
+    select_key = ui._mdpreview_key("Текущий Markdown", "select")
+    last_count_key = ui._mdpreview_key("Текущий Markdown", "last_count")
+    session_state = SessionState(
+        latest_markdown="chunk-1\n\nchunk-2\n\n[[DOCX_IMAGE_img_001]]",
+        processed_block_markdowns=["chunk-1", "chunk-2", "[[DOCX_IMAGE_img_001]]"],
+        latest_docx_bytes=None,
+        # Simulate user previously selected block 1.
+        **{select_key: 1, last_count_key: 3},
+    )
+    warnings = []
+    preview_calls = []
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "warning", lambda text: warnings.append(text))
+    monkeypatch.setattr(
+        ui,
+        "render_markdown_preview",
+        lambda *args, **kwargs: preview_calls.append((kwargs.get("title"), kwargs.get("preferred_block_index"))),
+    )
+
+    ui.render_partial_result()
+
+    assert warnings == ["Доступен промежуточный Markdown-результат последнего запуска."]
+    assert preview_calls == [("Текущий Markdown", 2)]
+    # User's block selection in session_state is NOT touched by render_partial_result.
+    assert session_state[select_key] == 1
 
 
 def test_render_run_log_shows_entries_in_chronological_order(monkeypatch):

@@ -165,7 +165,6 @@ def run_document_processing(
             last_error=error_message,
             latest_markdown="",
             processed_block_markdowns=[],
-            markdown_preview_block_index=0,
             latest_docx_bytes=None,
         )
         emit_finalize(runtime, "Ошибка подготовки обработки", error_message, 0.0)
@@ -209,7 +208,6 @@ def run_document_processing(
             last_error=error_message,
             latest_markdown="",
             processed_block_markdowns=[],
-            markdown_preview_block_index=0,
             latest_docx_bytes=None,
         )
         emit_finalize(runtime, "Ошибка инициализации", error_message, 0.0)
@@ -227,7 +225,6 @@ def run_document_processing(
             last_error=error_message,
             latest_markdown='',
             processed_block_markdowns=[],
-            markdown_preview_block_index=0,
             latest_docx_bytes=None,
         )
         emit_finalize(runtime, 'Ошибка подготовки обработки', error_message, 0.0)
@@ -395,7 +392,6 @@ def run_document_processing(
         emit_state(
             runtime,
             processed_block_markdowns=processed_chunks.copy(),
-            markdown_preview_block_index=len(processed_chunks),
             latest_markdown="\n\n".join(processed_chunks).strip(),
         )
         emit_log(

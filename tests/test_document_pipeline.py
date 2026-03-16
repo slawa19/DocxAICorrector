@@ -275,7 +275,6 @@ def test_run_document_processing_fails_on_empty_processing_plan():
     assert result == "failed"
     assert runtime["state"]["latest_markdown"] == ""
     assert runtime["state"]["processed_block_markdowns"] == []
-    assert runtime["state"]["markdown_preview_block_index"] == 0
     assert runtime["state"]["latest_docx_bytes"] is None
     assert runtime["state"]["last_error"] == "Ошибка подготовки обработки: План обработки документа пуст."
     assert runtime["finalize"][-1] == (
@@ -295,7 +294,6 @@ def test_run_document_processing_fails_on_initialization_and_clears_stale_runtim
             "latest_docx_bytes": b"stale-docx",
             "latest_markdown": "stale-markdown",
             "processed_block_markdowns": ["stale-block"],
-            "markdown_preview_block_index": 99,
         }
     )
 
@@ -334,7 +332,6 @@ def test_run_document_processing_fails_on_initialization_and_clears_stale_runtim
     assert result == "failed"
     assert runtime["state"]["latest_markdown"] == ""
     assert runtime["state"]["processed_block_markdowns"] == []
-    assert runtime["state"]["markdown_preview_block_index"] == 0
     assert runtime["state"]["latest_docx_bytes"] is None
     assert runtime["state"]["last_error"] == "Ошибка инициализации обработки: pandoc is unavailable"
     assert runtime["finalize"][-1] == (

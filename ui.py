@@ -2,6 +2,7 @@ import time
 from collections.abc import Mapping
 from html import escape
 from pathlib import Path
+import hashlib
 import re
 from typing import Any
 
@@ -34,6 +35,13 @@ IMAGE_COMPARE_LABELS = {
 
 IMAGE_MODE_VALUES_BY_LABEL = {label: value for value, label in IMAGE_MODE_LABELS.items()}
 _FEED_ID_SANITIZER = re.compile(r"[^a-zA-Z0-9_-]+")
+_DOCX_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_IMAGE_img_\d+\]\]")
+
+
+def _mdpreview_key(title: str, suffix: str) -> str:
+    """Stable widget key for a markdown preview component, derived from the panel title."""
+    digest = hashlib.sha1(title.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
+    return f"mdpreview_{digest}_{suffix}"
 
 
 def _build_output_filename(filename: str) -> str:
@@ -54,6 +62,17 @@ def _build_feed_id(prefix: str) -> str:
     nonce = int(time.time() * 1000)
     safe_prefix = _FEED_ID_SANITIZER.sub("-", prefix).strip("-") or "feed"
     return f"{safe_prefix}-{nonce}"
+
+
+def _strip_docx_image_placeholders(markdown_text: str) -> str:
+    return _DOCX_IMAGE_PLACEHOLDER_PATTERN.sub("", markdown_text).strip()
+
+
+def _latest_meaningful_markdown_block_index(blocks: list[str]) -> int | None:
+    for index in range(len(blocks) - 1, -1, -1):
+        if _strip_docx_image_placeholders(blocks[index]):
+            return index + 1
+    return None
 
 
 def _scroll_activity_feed_to_latest(feed_id: str) -> None:
@@ -363,15 +382,6 @@ def render_live_status(target=None) -> None:
                 """
             )
             st.progress(progress_value)
-            preparing_lines = [f"{entry['time']}  {entry['message']}" for entry in activity_feed]
-            if not preparing_lines:
-                preparing_lines = [f"{stage}: {detail}"]
-            _render_activity_feed(
-                title="Ход анализа",
-                lines=preparing_lines,
-                feed_id="preparation-activity-feed",
-                auto_scroll=True,
-            )
         else:
             title = "Идет обработка" if status.get("is_running") else "Состояние"
             stage = escape(str(status.get("stage") or "Ожидание"))
@@ -408,6 +418,10 @@ def render_preparation_summary(summary: dict[str, object] | None, target=None) -
         source_label = "cache" if bool(summary.get("cached", False)) else "DOCX"
         stage = str(summary.get("stage") or "Документ подготовлен")
         elapsed = str(summary.get("elapsed") or "")
+        paragraph_count = _to_int(summary.get("paragraph_count"), default=0)
+        image_count = _to_int(summary.get("image_count"), default=0)
+        source_chars = _to_int(summary.get("source_chars"), default=0)
+        block_count = _to_int(summary.get("block_count"), default=0)
         _render_trusted_html(
             f"""
             <div class="live-status-card">
@@ -415,21 +429,11 @@ def render_preparation_summary(summary: dict[str, object] | None, target=None) -
                 <div class="live-status-stage">{escape(stage)}</div>
                 <div class="live-status-meta">{escape(str(summary.get('detail') or 'Анализ завершён.'))}</div>
                 <div class="live-status-meta">Прогресс: {progress_percent}% | Источник: {escape(source_label)}{f' | Подготовка заняла: {escape(elapsed)}' if elapsed else ''}</div>
+                <div class="live-status-meta">Размер: {file_size_bytes / 1024 / 1024:.2f} MB | Абзацы: {paragraph_count} | Изображения: {image_count} | Символы: {source_chars} | Блоки: {block_count}</div>
             </div>
             """
         )
         st.progress(progress_value)
-        summary_lines = [
-            str(summary.get("detail") or "Анализ завершён."),
-            f"Размер: {file_size_bytes / 1024 / 1024:.2f} MB" if file_size_bytes else "Размер: -",
-            f"Абзацы: {_to_int(summary.get('paragraph_count'), default=0)}",
-            f"Изображения: {_to_int(summary.get('image_count'), default=0)}",
-            f"Символы: {_to_int(summary.get('source_chars'), default=0)}",
-            f"Блоки: {_to_int(summary.get('block_count'), default=0)}",
-            f"Источник: {source_label}",
-            f"Этап: {stage} | Подготовка заняла: {elapsed}" if elapsed else f"Этап: {stage}",
-        ]
-        _render_activity_feed(title="Последний анализ файла", lines=summary_lines)
 
 
 def _to_int(value: Any, *, default: int) -> int:
@@ -630,19 +634,45 @@ def render_sidebar(config: Mapping[str, object]) -> tuple[str, int, int, str, bo
     return model, chunk_size, max_retries, image_mode, keep_all_image_variants
 
 
-def render_markdown_preview(target=None, *, title: str, focus_latest: bool = False) -> None:
+def render_markdown_preview(
+    target=None,
+    *,
+    title: str,
+    focus_latest: bool = False,
+    preferred_block_index: int | None = None,
+) -> None:
     blocks = st.session_state.processed_block_markdowns
     if not blocks:
         return
 
     sink = target if target is not None else st
     option_count = len(blocks)
-    st.session_state.markdown_preview_render_nonce += 1
-    widget_key_base = f"markdown_preview_{st.session_state.markdown_preview_render_nonce}"
-    if focus_latest and option_count:
-        st.session_state.markdown_preview_block_index = option_count
-    if st.session_state.markdown_preview_block_index > option_count:
-        st.session_state.markdown_preview_block_index = option_count
+
+    # Stable widget keys tied to the panel title so user selections survive
+    # Streamlit reruns (e.g. fragment polling every second).
+    select_key = _mdpreview_key(title, "select")
+    last_count_key = _mdpreview_key(title, "last_count")
+
+    last_known_count = int(st.session_state.get(last_count_key, 0))
+    new_block_arrived = option_count > last_known_count
+    st.session_state[last_count_key] = option_count
+
+    if select_key not in st.session_state:
+        # First display: pick initial block.
+        if focus_latest:
+            st.session_state[select_key] = option_count
+        elif preferred_block_index is not None and 1 <= preferred_block_index <= option_count:
+            st.session_state[select_key] = preferred_block_index
+        else:
+            st.session_state[select_key] = 1
+    elif focus_latest and new_block_arrived:
+        # Auto-advance only when a genuinely new block just arrived.
+        st.session_state[select_key] = option_count
+
+    # Clamp if the stored value is somehow out of range.
+    current_val = st.session_state.get(select_key)
+    if not isinstance(current_val, int) or not (1 <= current_val <= option_count):
+        st.session_state[select_key] = option_count if focus_latest else 1
 
     with sink.container():
         with st.expander(title, expanded=False):
@@ -650,15 +680,15 @@ def render_markdown_preview(target=None, *, title: str, focus_latest: bool = Fal
             selected_block = st.selectbox(
                 "Показать блок",
                 options=list(range(1, option_count + 1)),
-                index=max(0, st.session_state.markdown_preview_block_index - 1),
-                key=f"{widget_key_base}_select",
+                key=select_key,
             )
-            st.session_state.markdown_preview_block_index = selected_block
+            # Include the block number in the text_area key so the widget
+            # refreshes when the selection changes.
             st.text_area(
                 "Markdown блока",
                 value=blocks[selected_block - 1],
                 height=320,
-                key=f"{widget_key_base}_text",
+                key=_mdpreview_key(title, f"text_{selected_block}"),
             )
 
 
@@ -705,9 +735,12 @@ def render_result_bundle(
 
 
 def render_partial_result() -> None:
-    markdown_text = st.session_state.latest_markdown
-    if not markdown_text or st.session_state.latest_docx_bytes is not None:
+    preview_block_index = _latest_meaningful_markdown_block_index(st.session_state.processed_block_markdowns)
+    if preview_block_index is None or st.session_state.latest_docx_bytes is not None:
         return
 
     st.warning("Доступен промежуточный Markdown-результат последнего запуска.")
-    render_markdown_preview(title="Текущий Markdown", focus_latest=True)
+    render_markdown_preview(
+        title="Текущий Markdown",
+        preferred_block_index=preview_block_index,
+    )

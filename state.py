@@ -55,7 +55,6 @@ def init_session_state() -> None:
     st.session_state.setdefault("activity_feed", [])
     st.session_state.setdefault("latest_markdown", "")
     st.session_state.setdefault("processed_block_markdowns", [])
-    st.session_state.setdefault("markdown_preview_render_nonce", 0)
     st.session_state.setdefault("latest_docx_bytes", None)
     st.session_state.setdefault("latest_source_name", "")
     st.session_state.setdefault("latest_source_token", "")
@@ -63,7 +62,6 @@ def init_session_state() -> None:
     st.session_state.setdefault("last_error", "")
     st.session_state.setdefault("last_log_hint", f"Подробный лог приложения: {APP_LOG_PATH}")
     st.session_state.setdefault("processing_status", _default_processing_status())
-    st.session_state.setdefault("markdown_preview_block_index", 1)
     st.session_state.setdefault("image_assets", [])
     st.session_state.setdefault("image_validation_failures", [])
     st.session_state.setdefault("image_processing_summary", _default_image_processing_summary())
@@ -94,12 +92,13 @@ def reset_run_state(*, keep_restart_source: bool = True) -> None:
     st.session_state.activity_feed = []
     st.session_state.latest_markdown = ""
     st.session_state.processed_block_markdowns = []
-    st.session_state.markdown_preview_render_nonce = 0
+    for _key in list(st.session_state.keys()):
+        if _key.startswith("mdpreview_"):
+            del st.session_state[_key]
     st.session_state.latest_docx_bytes = None
     st.session_state.latest_source_name = ""
     st.session_state.latest_source_token = ""
     st.session_state.last_error = ""
-    st.session_state.markdown_preview_block_index = 1
     st.session_state.image_assets = []
     st.session_state.image_validation_failures = []
     st.session_state.image_processing_summary = _default_image_processing_summary()
