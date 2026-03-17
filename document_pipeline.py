@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Sized
 from typing import Literal, Protocol, TypeAlias
@@ -7,6 +8,7 @@ from typing import Literal, Protocol, TypeAlias
 JobValue: TypeAlias = str | int
 ProcessingJob: TypeAlias = Mapping[str, JobValue]
 PipelineResult: TypeAlias = Literal["succeeded", "failed", "stopped"]
+ProcessedBlockStatus: TypeAlias = Literal["valid", "empty", "heading_only_output"]
 
 
 class ParagraphLike(Protocol):
@@ -126,6 +128,42 @@ def _coerce_required_text_field(job: ProcessingJob, field_name: str, *, allow_bl
     if not allow_blank and not text.strip():
         raise ValueError(f"{field_name} is empty")
     return text
+
+
+def _iter_nonempty_markdown_lines(text: str) -> list[str]:
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _is_markdown_heading_line(line: str) -> bool:
+    return bool(re.match(r"#{1,6}\s+\S", line))
+
+
+def _is_heading_only_markdown(text: str) -> bool:
+    nonempty_lines = _iter_nonempty_markdown_lines(text)
+    return bool(nonempty_lines) and all(_is_markdown_heading_line(line) for line in nonempty_lines)
+
+
+def _input_has_body_text_signal(text: str) -> bool:
+    nonempty_lines = _iter_nonempty_markdown_lines(text)
+    body_lines = [line for line in nonempty_lines if not _is_markdown_heading_line(line)]
+    if not body_lines:
+        return False
+    if len(body_lines) >= 2:
+        return True
+    body_line = body_lines[0]
+    if len(body_line) >= 40:
+        return True
+    if len(body_line.split()) >= 5 and any(symbol in body_line for symbol in ".,;:!?"):
+        return True
+    return False
+
+
+def _classify_processed_block(target_text: str, processed_chunk: str) -> ProcessedBlockStatus:
+    if not processed_chunk.strip():
+        return "empty"
+    if _is_heading_only_markdown(processed_chunk) and _input_has_body_text_signal(target_text):
+        return "heading_only_output"
+    return "valid"
 
 
 def _reconcile_placeholder_integrity(
@@ -409,13 +447,15 @@ def run_document_processing(
             )
             return "failed"
 
-        if not processed_chunk.strip():
+        processed_block_status = _classify_processed_block(target_text, processed_chunk)
+        if processed_block_status == "empty":
             critical_message = present_error(
                 "empty_processed_block",
-                RuntimeError("Модель вернула пустой Markdown-блок после успешного вызова."),
+                RuntimeError("Модель вернула пустой Markdown-блок после успешного вызова (empty_processed_block)."),
                 "Критическая ошибка обработки блока",
                 filename=uploaded_filename,
                 block_index=index,
+                output_classification="empty_processed_block",
             )
             formatted_error = f"Ошибка на блоке {index}: {critical_message}"
             emit_state(runtime, last_error=formatted_error, latest_docx_bytes=None)
@@ -429,6 +469,44 @@ def run_document_processing(
                 target_chars=target_chars,
                 context_chars=context_chars,
                 details=critical_message,
+            )
+            return "failed"
+        if processed_block_status == "heading_only_output":
+            critical_message = present_error(
+                "structurally_insufficient_processed_block",
+                RuntimeError(
+                    "Модель вернула только заголовок при наличии основного текста во входном блоке (heading_only_output)."
+                ),
+                "Критическая ошибка обработки блока",
+                filename=uploaded_filename,
+                block_index=index,
+                output_classification="heading_only_output",
+            )
+            formatted_error = f"Ошибка на блоке {index}: {critical_message}"
+            emit_state(runtime, last_error=formatted_error, latest_docx_bytes=None)
+            emit_finalize(runtime, "Критическая ошибка", formatted_error, (index - 1) / job_count)
+            emit_activity(runtime, f"Блок {index}: отклонён структурно недостаточный Markdown.")
+            emit_log(
+                runtime,
+                status="ERROR",
+                block_index=index,
+                block_count=job_count,
+                target_chars=target_chars,
+                context_chars=context_chars,
+                details=critical_message,
+            )
+            log_event(
+                logging.WARNING,
+                "block_rejected",
+                "Блок отклонён по acceptance-контракту",
+                filename=uploaded_filename,
+                block_index=index,
+                block_count=job_count,
+                target_chars=target_chars,
+                context_chars=context_chars,
+                output_classification="heading_only_output",
+                input_preview=target_text[:300],
+                output_preview=processed_chunk[:300],
             )
             return "failed"
 

@@ -9,7 +9,7 @@ from typing import Any
 import streamlit as st
 
 from logger import format_elapsed
-from models import DOCX_COMPARE_VARIANT_MODE_VALUES, ImageMode, get_image_variant_bytes
+from models import ImageMode
 
 
 IMAGE_MODE_LABELS = {
@@ -24,13 +24,6 @@ IMAGE_MODE_DESCRIPTIONS = {
     ImageMode.SEMANTIC_REDRAW_DIRECT.value: "Делает creative redraw через vision + generate. Лучше для инфографики, композиции, цвета и сложного оформления.",
     ImageMode.SEMANTIC_REDRAW_STRUCTURED.value: "Делает content-conservative redraw в стиле office presentation. Лучше для схем, таблиц и структурных изображений.",
     ImageMode.COMPARE_ALL.value: "Строит safe, креативный и структурный варианты сразу, чтобы выбрать лучший перед итоговым DOCX.",
-}
-
-IMAGE_COMPARE_LABELS = {
-    "original": "Оригинал",
-    ImageMode.SAFE.value: "Просто улучшить",
-    ImageMode.SEMANTIC_REDRAW_DIRECT.value: "Креативная AI-перерисовка",
-    ImageMode.SEMANTIC_REDRAW_STRUCTURED.value: "Структурная AI-перерисовка",
 }
 
 IMAGE_MODE_VALUES_BY_LABEL = {label: value for value, label in IMAGE_MODE_LABELS.items()}
@@ -500,49 +493,6 @@ def _asset_value(asset, field_name: str, default=None):
     if isinstance(asset, dict):
         return asset.get(field_name, default)
     return getattr(asset, field_name, default)
-
-
-def render_image_compare_selector(target=None) -> dict[str, str]:
-    image_assets = list(st.session_state.get("image_assets", []))
-    comparable_assets = [asset for asset in image_assets if _asset_value(asset, "comparison_variants", {})]
-    if not comparable_assets:
-        return {}
-
-    sink = target if target is not None else st
-    selections: dict[str, str] = {}
-    with sink.container():
-        with st.expander("Сравнение вариантов изображений", expanded=True):
-            st.caption("Здесь можно сравнить три сгенерированных режима и выбрать, какой вариант попадет в итоговый DOCX.")
-            for asset in comparable_assets:
-                image_id = str(_asset_value(asset, "image_id", "unknown"))
-                st.markdown(f"**{image_id}**")
-                columns = st.columns(4)
-
-                original_bytes = _asset_value(asset, "original_bytes")
-                if original_bytes:
-                    columns[0].image(original_bytes, caption=IMAGE_COMPARE_LABELS["original"], use_container_width=True)
-
-                variant_map = dict(_asset_value(asset, "comparison_variants", {}))
-                ordered_modes = list(DOCX_COMPARE_VARIANT_MODE_VALUES)
-                for index, mode in enumerate(ordered_modes, start=1):
-                    variant = variant_map.get(mode)
-                    variant_bytes = get_image_variant_bytes(variant)
-                    if variant_bytes:
-                        columns[index].image(variant_bytes, caption=IMAGE_COMPARE_LABELS[mode], use_container_width=True)
-                    else:
-                        columns[index].caption(f"{IMAGE_COMPARE_LABELS[mode]}: недоступно")
-
-                default_choice = _asset_value(asset, "selected_compare_variant") or "original"
-                option_values = ["original", *ordered_modes]
-                selections[image_id] = st.radio(
-                    f"Выбрать вариант для {image_id}",
-                    options=option_values,
-                    index=option_values.index(default_choice) if default_choice in option_values else 0,
-                    format_func=lambda option: IMAGE_COMPARE_LABELS.get(option, option),
-                    key=f"compare_choice_{image_id}",
-                    horizontal=True,
-                )
-    return selections
 
 
 def render_sidebar(config: Mapping[str, object]) -> tuple[str, int, int, str, bool]:

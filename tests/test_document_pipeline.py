@@ -1,4 +1,13 @@
+import base64
+from io import BytesIO
+
 import document_pipeline
+from docx import Document
+
+from document import extract_document_content_from_docx
+
+
+PNG_BYTES = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK3cAAAAASUVORK5CYII=")
 
 
 class AssetStub:
@@ -60,6 +69,42 @@ def _convert_markdown_to_docx_bytes(markdown_text):
 
 def _reinsert_inline_images(docx_bytes, image_assets):
     return docx_bytes
+
+
+def _run_processing(runtime, **overrides):
+    params = {
+        "uploaded_file": "report.docx",
+        "jobs": [{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
+        "source_paragraphs": [],
+        "image_assets": [],
+        "image_mode": "safe",
+        "app_config": {},
+        "model": "gpt-5.4",
+        "max_retries": 1,
+        "on_progress": lambda **kwargs: None,
+        "runtime": runtime,
+        "resolve_uploaded_filename": lambda uploaded_file: str(uploaded_file),
+        "get_client": lambda: object(),
+        "ensure_pandoc_available": lambda: None,
+        "load_system_prompt": lambda: "system",
+        "log_event": lambda *args, **kwargs: None,
+        "present_error": lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        "emit_state": _emit_state,
+        "emit_finalize": _emit_finalize,
+        "emit_activity": _emit_activity,
+        "emit_log": _emit_log,
+        "emit_status": _emit_status,
+        "should_stop_processing": lambda runtime: False,
+        "generate_markdown_block": lambda **kwargs: "Обработанный блок",
+        "process_document_images": lambda **kwargs: [],
+        "inspect_placeholder_integrity": _inspect_placeholder_integrity,
+        "convert_markdown_to_docx_bytes": _convert_markdown_to_docx_bytes,
+        "preserve_source_paragraph_properties": lambda docx_bytes, paragraphs: docx_bytes,
+        "normalize_semantic_output_docx": lambda docx_bytes, paragraphs: docx_bytes,
+        "reinsert_inline_images": _reinsert_inline_images,
+    }
+    params.update(overrides)
+    return document_pipeline.run_document_processing(**params)
 
 
 def test_run_document_processing_happy_path_updates_runtime_state():
@@ -232,16 +277,66 @@ def test_run_document_processing_fails_on_empty_processed_block():
     )
 
     assert result == "failed"
+    assert runtime["state"]["last_error"].endswith("empty_processed_block).")
     assert runtime["finalize"][-1][0] == "Критическая ошибка"
     assert runtime["log"][-1]["status"] == "ERROR"
 
 
-def test_run_document_processing_accepts_heading_only_output_as_success():
+def test_run_document_processing_rejects_heading_only_output_for_body_heavy_input():
     runtime = _build_runtime_capture()
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
-        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
+        jobs=[{
+            "target_text": "# Заголовок\n\nЭто полноценный абзац с несколькими словами и знаками препинания.",
+            "context_before": "",
+            "context_after": "",
+            "target_chars": 71,
+            "context_chars": 0,
+        }],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "# Heading only",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
+    )
+
+    assert result == "failed"
+    assert "heading_only_output" in runtime["state"]["last_error"]
+    assert runtime["state"].get("latest_docx_bytes") is None
+    assert runtime["finalize"][-1][0] == "Критическая ошибка"
+    assert runtime["activity"][-1] == "Блок 1: отклонён структурно недостаточный Markdown."
+    assert runtime["log"][-1]["status"] == "ERROR"
+
+
+def test_run_document_processing_accepts_heading_only_output_for_legitimate_heading_only_input():
+    runtime = _build_runtime_capture()
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "# Heading only", "context_before": "", "context_after": "", "target_chars": 14, "context_chars": 0}],
         source_paragraphs=[],
         image_assets=[],
         image_mode="safe",
@@ -689,3 +784,131 @@ def test_run_document_processing_detects_processed_block_count_mismatch():
     assert runtime["finalize"][-1][0] == "Критическая ошибка"
     assert runtime["activity"][-1] == "Обнаружено несоответствие количества обработанных блоков."
 
+
+def test_run_document_processing_fails_when_convert_markdown_to_docx_bytes_raises():
+    runtime = _build_runtime_capture()
+
+    result = _run_processing(
+        runtime,
+        convert_markdown_to_docx_bytes=lambda markdown_text: (_ for _ in ()).throw(RuntimeError("convert exploded")),
+    )
+
+    assert result == "failed"
+    assert runtime["state"]["latest_markdown"] == "Обработанный блок"
+    assert runtime["state"]["latest_docx_bytes"] is None
+    assert runtime["state"]["last_error"] == "Ошибка сборки DOCX: convert exploded"
+    assert runtime["finalize"][-1] == ("Ошибка сборки DOCX", "Ошибка сборки DOCX: convert exploded", 1.0)
+    assert runtime["activity"][-1] == "Ошибка на этапе сборки DOCX."
+    assert runtime["log"][-1]["status"] == "ERROR"
+
+
+def test_run_document_processing_fails_when_preserve_source_paragraph_properties_raises():
+    runtime = _build_runtime_capture()
+
+    result = _run_processing(
+        runtime,
+        source_paragraphs=[ParagraphStub()],
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: (_ for _ in ()).throw(RuntimeError("preserve exploded")),
+    )
+
+    assert result == "failed"
+    assert runtime["state"]["latest_markdown"] == "Обработанный блок"
+    assert runtime["state"]["latest_docx_bytes"] is None
+    assert runtime["state"]["last_error"] == "Ошибка сборки DOCX: preserve exploded"
+    assert runtime["finalize"][-1][0] == "Ошибка сборки DOCX"
+    assert runtime["activity"][-1] == "Ошибка на этапе сборки DOCX."
+    assert runtime["log"][-1]["status"] == "ERROR"
+
+
+def test_run_document_processing_fails_when_normalize_semantic_output_docx_raises():
+    runtime = _build_runtime_capture()
+
+    result = _run_processing(
+        runtime,
+        source_paragraphs=[ParagraphStub()],
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: (_ for _ in ()).throw(RuntimeError("normalize exploded")),
+    )
+
+    assert result == "failed"
+    assert runtime["state"]["latest_markdown"] == "Обработанный блок"
+    assert runtime["state"]["latest_docx_bytes"] is None
+    assert runtime["state"]["last_error"] == "Ошибка сборки DOCX: normalize exploded"
+    assert runtime["finalize"][-1][0] == "Ошибка сборки DOCX"
+    assert runtime["activity"][-1] == "Ошибка на этапе сборки DOCX."
+    assert runtime["log"][-1]["status"] == "ERROR"
+
+
+def test_run_document_processing_fails_when_reinsert_inline_images_raises():
+    runtime = _build_runtime_capture()
+    image_assets = [AssetStub("img_001")]
+
+    result = _run_processing(
+        runtime,
+        image_assets=image_assets,
+        process_document_images=lambda **kwargs: image_assets,
+        reinsert_inline_images=lambda docx_bytes, processed_assets: (_ for _ in ()).throw(RuntimeError("reinsert exploded")),
+    )
+
+    assert result == "failed"
+    assert runtime["state"]["latest_markdown"] == "Обработанный блок"
+    assert runtime["state"]["latest_docx_bytes"] is None
+    assert runtime["state"]["last_error"] == "Ошибка сборки DOCX: reinsert exploded"
+    assert runtime["finalize"][-1][0] == "Ошибка сборки DOCX"
+    assert runtime["activity"][-1] == "Ошибка на этапе сборки DOCX."
+    assert runtime["log"][-1]["status"] == "ERROR"
+
+
+def test_run_document_processing_end_to_end_produces_openable_docx_artifact(tmp_path):
+    image_path = tmp_path / "pipeline-image.png"
+    image_path.write_bytes(PNG_BYTES)
+
+    source_doc = Document()
+    source_doc.add_heading("Глава", level=1)
+    source_doc.add_paragraph().add_run().add_picture(str(image_path))
+    source_doc.add_paragraph("Рисунок 1. Подпись")
+    source_doc.add_paragraph("Исходный абзац")
+    source_buffer = BytesIO()
+    source_doc.save(source_buffer)
+    source_buffer.seek(0)
+
+    source_paragraphs, image_assets = extract_document_content_from_docx(source_buffer)
+    runtime = _build_runtime_capture()
+    final_markdown = "Глава\n\n[[DOCX_IMAGE_img_001]]\n\nРисунок 1. Подпись\n\nОбновленный абзац"
+
+    def build_docx_from_markdown(markdown_text):
+        doc = Document()
+        for block in markdown_text.split("\n\n"):
+            doc.add_paragraph(block)
+        buffer = BytesIO()
+        doc.save(buffer)
+        return buffer.getvalue()
+
+    result = _run_processing(
+        runtime,
+        jobs=[{"target_text": "Исходный блок", "context_before": "", "context_after": "", "target_chars": 13, "context_chars": 0}],
+        source_paragraphs=source_paragraphs,
+        image_assets=image_assets,
+        generate_markdown_block=lambda **kwargs: final_markdown,
+        process_document_images=lambda **kwargs: image_assets,
+        convert_markdown_to_docx_bytes=build_docx_from_markdown,
+        preserve_source_paragraph_properties=__import__("document").preserve_source_paragraph_properties,
+        normalize_semantic_output_docx=__import__("document").normalize_semantic_output_docx,
+        reinsert_inline_images=__import__("document").reinsert_inline_images,
+    )
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_markdown"] == final_markdown
+    assert runtime["state"]["latest_docx_bytes"]
+
+    output_doc = Document(BytesIO(runtime["state"]["latest_docx_bytes"]))
+    visible_text = "\n".join(paragraph.text for paragraph in output_doc.paragraphs)
+
+    assert output_doc.paragraphs[0].style is not None
+    assert output_doc.paragraphs[0].style.name == "Heading 1"
+    assert output_doc.paragraphs[2].style is not None
+    assert output_doc.paragraphs[2].style.name == "Caption"
+    assert "Обновленный абзац" in visible_text
+    assert "[[DOCX_IMAGE_img_001]]" not in output_doc._element.xml
+    assert len(output_doc.inline_shapes) == 1
+    assert runtime["finalize"][-1][0] == "Обработка завершена"
+    assert runtime["log"][-1]["status"] == "DONE"

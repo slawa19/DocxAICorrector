@@ -1,17 +1,13 @@
 from contextlib import nullcontext
 
+import pytest
+
 import ui
 
 
-class SessionState(dict):
-    def __getattr__(self, name):
-        try:
-            return self[name]
-        except KeyError as exc:
-            raise AttributeError(name) from exc
-
-    def __setattr__(self, name, value):
-        self[name] = value
+@pytest.fixture(autouse=True)
+def _session_state_factory(make_session_state):
+    globals()["SessionState"] = make_session_state
 
 
 class FakeTarget:
@@ -323,52 +319,6 @@ class FakeImageColumn:
 
     def caption(self, text):
         self.captions.append(text)
-
-
-def test_render_image_compare_selector_returns_current_selections(monkeypatch):
-    session_state = SessionState(
-        image_assets=[
-            {
-                "image_id": "img_001",
-                "original_bytes": b"orig",
-                "selected_compare_variant": "semantic_redraw_direct",
-                "comparison_variants": {
-                    "safe": {"bytes": b"safe"},
-                    "semantic_redraw_direct": {"bytes": b"direct"},
-                    "semantic_redraw_structured": {"bytes": b"structured"},
-                },
-            }
-        ]
-    )
-    markdowns = []
-    columns = [FakeImageColumn(), FakeImageColumn(), FakeImageColumn(), FakeImageColumn()]
-    radio_calls = []
-
-    monkeypatch.setattr(ui.st, "session_state", session_state)
-    monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
-    monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
-    monkeypatch.setattr(ui.st, "markdown", lambda text: markdowns.append(text))
-    monkeypatch.setattr(ui.st, "columns", lambda n: columns)
-    monkeypatch.setattr(
-        ui.st,
-        "radio",
-        lambda label, options, index, format_func, key, horizontal: radio_calls.append((label, tuple(options), index, key)) or options[index],
-    )
-
-    selections = ui.render_image_compare_selector(FakeTarget())
-
-    assert markdowns == ["**img_001**"]
-    assert columns[0].images[0][1] == ui.IMAGE_COMPARE_LABELS["original"]
-    assert columns[1].images[0][1] == ui.IMAGE_COMPARE_LABELS["safe"]
-    assert columns[2].images[0][1] == ui.IMAGE_COMPARE_LABELS["semantic_redraw_direct"]
-    assert columns[3].images[0][1] == ui.IMAGE_COMPARE_LABELS["semantic_redraw_structured"]
-    assert radio_calls == [(
-        "Выбрать вариант для img_001",
-        ("original", "safe", "semantic_redraw_direct", "semantic_redraw_structured"),
-        2,
-        "compare_choice_img_001",
-    )]
-    assert selections == {"img_001": "semantic_redraw_direct"}
 
 
 def test_render_image_validation_summary_shows_metrics(monkeypatch):

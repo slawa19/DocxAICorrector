@@ -7,6 +7,13 @@ customModes:
       - read
       - browser
     customInstructions: |
+      Project runtime contract for this repository:
+      - For development, checks, tests, diagnostics, and live validation, use the WSL-first project runtime rooted at `/mnt/d/www/projects/2025/DocxAICorrector`.
+      - Run Python commands against the project `.venv` inside WSL.
+      - Do not infer dependency state or environment health from random `python`, `py`, Windows virtualenvs, or unrelated WSL interpreters before checking the project runtime.
+      - If system interpreter output disagrees with the project runtime, treat the project runtime as the source of truth.
+      - Prefer existing project wrappers such as `bash scripts/test.sh ...`, `scripts/start-project.ps1`, and `scripts/project-control-wsl.sh`.
+
       Provide constructive feedback on code patterns, potential bugs, security issues, and improvement opportunities. Be specific and actionable in suggestions.
     source: project
   - slug: code-simplifier
@@ -20,6 +27,13 @@ customModes:
       - command
       - mcp
     customInstructions: |
+      Project runtime contract for this repository:
+      - For development, checks, tests, diagnostics, and live validation, use the WSL-first project runtime rooted at `/mnt/d/www/projects/2025/DocxAICorrector`.
+      - Run Python commands against the project `.venv` inside WSL.
+      - Do not infer dependency state or environment health from random `python`, `py`, Windows virtualenvs, or unrelated WSL interpreters before checking the project runtime.
+      - If system interpreter output disagrees with the project runtime, treat the project runtime as the source of truth.
+      - Prefer existing project wrappers such as `bash scripts/test.sh ...`, `scripts/start-project.ps1`, and `scripts/project-control-wsl.sh`.
+
       **Your Refactoring Methodology:**
 
       1. **Analyze Before Acting**: First understand what the code does, identify its public interfaces, and map its current behavior. Never assume-verify your understanding.

@@ -1,32 +1,21 @@
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 import application_flow
 import preparation
 import processing_runtime
 import restart_store
 import state
+from docx import Document
 
 
-class SessionState(dict):
-    def get(self, key: str, default: object | None = None) -> Any:
-        return super().get(key, default)
-
-    def __getitem__(self, key: str) -> Any:
-        return super().__getitem__(key)
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        super().__setitem__(key, value)
-
-    def __getattr__(self, name):
-        try:
-            return self[name]
-        except KeyError as exc:
-            raise AttributeError(name) from exc
-
-    def __setattr__(self, name, value):
-        self[name] = value
+@pytest.fixture(autouse=True)
+def _session_state_factory(make_session_state):
+    globals()["SessionState"] = make_session_state
 
 
 class UploadedFileStub:
@@ -356,3 +345,33 @@ def test_prepare_run_context_for_background_uses_real_cache(monkeypatch):
     assert second.preparation_stage == "Документ подготовлен"
     assert progress_events[-1]["stage"] == "Документ подготовлен"
     assert progress_events[-1]["metrics"]["cached"] is True
+
+
+def test_prepare_run_context_for_background_processes_real_docx_without_mocks():
+    preparation.clear_preparation_cache(clear_shared=True)
+    source_doc = Document()
+    source_doc.add_heading("Глава 1", level=1)
+    source_doc.add_paragraph("Первый абзац документа.")
+    source_doc.add_paragraph("Второй абзац документа.")
+    source_buffer = BytesIO()
+    source_doc.save(source_buffer)
+
+    payload = _freeze_uploaded_file("report.docx", source_buffer.getvalue())
+    progress_events = []
+
+    result = application_flow.prepare_run_context_for_background(
+        uploaded_payload=payload,
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=True,
+        progress_callback=lambda **payload: progress_events.append(payload),
+    )
+
+    assert result.uploaded_filename == "report.docx"
+    assert result.uploaded_file_bytes == source_buffer.getvalue()
+    assert result.source_text
+    assert len(result.paragraphs) == 3
+    assert len(result.jobs) >= 1
+    assert any("Глава 1" in str(job.get("target_text", "")) for job in result.jobs)
+    assert any(event["stage"] == "Разбор DOCX" for event in progress_events)
+    assert progress_events[-1]["stage"] == "Документ подготовлен"

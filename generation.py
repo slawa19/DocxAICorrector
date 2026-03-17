@@ -1,5 +1,6 @@
 import tempfile
 import time
+from collections.abc import Iterable, Mapping
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -13,6 +14,9 @@ from image_shared import is_retryable_error
 
 if TYPE_CHECKING:
     from openai import OpenAI
+
+
+_SUPPORTED_RESPONSE_TEXT_TYPES = {"output_text", "text"}
 
 
 @lru_cache(maxsize=1)
@@ -46,13 +50,102 @@ def _normalize_context_text(text: str | None) -> str:
     return cleaned or "[контекст отсутствует]"
 
 
+def _read_response_field(value: object, field_name: str) -> object:
+    if isinstance(value, Mapping):
+        return value.get(field_name)
+    return getattr(value, field_name, None)
+
+
+def _coerce_response_text_value(value: object) -> str | None:
+    if isinstance(value, str):
+        return value
+    nested_value = _read_response_field(value, "value")
+    if isinstance(nested_value, str):
+        return nested_value
+    return None
+
+
+def _extract_text_from_content_item(content_item: object) -> tuple[str | None, bool]:
+    item_type = _read_response_field(content_item, "type")
+    if item_type not in _SUPPORTED_RESPONSE_TEXT_TYPES:
+        return None, False
+    text_value = _coerce_response_text_value(_read_response_field(content_item, "text"))
+    if text_value is None:
+        raise RuntimeError("Модель вернула ответ в неподдерживаемом формате (unsupported_response_shape).")
+    return text_value, True
+
+
 def _extract_response_output_text(response: object) -> str:
     output_text = getattr(response, "output_text", None)
-    if output_text is None:
+    raw_output_text: str | None = None
+    if output_text is not None:
+        if not isinstance(output_text, str):
+            raise RuntimeError("Модель вернула ответ в неподдерживаемом формате (unsupported_response_shape).")
+        if output_text.strip():
+            return output_text
+        raw_output_text = output_text
+
+    output_items = _read_response_field(response, "output")
+    if output_items is None:
+        return raw_output_text or ""
+    if isinstance(output_items, (str, bytes)) or not isinstance(output_items, Iterable):
+        raise RuntimeError("Модель вернула ответ в неподдерживаемом формате (unsupported_response_shape).")
+
+    collected_texts: list[str] = []
+    saw_output_items = False
+    saw_supported_text_shape = False
+    saw_empty_content_container = False
+
+    for output_item in output_items:
+        saw_output_items = True
+
+        direct_text, direct_supported = _extract_text_from_content_item(output_item)
+        if direct_supported:
+            saw_supported_text_shape = True
+            if direct_text:
+                collected_texts.append(direct_text)
+            continue
+
+        content_items = _read_response_field(output_item, "content")
+        if content_items is None:
+            continue
+        if isinstance(content_items, (str, bytes)) or not isinstance(content_items, Iterable):
+            raise RuntimeError("Модель вернула ответ в неподдерживаемом формате (unsupported_response_shape).")
+
+        content_list = list(content_items)
+        if not content_list:
+            saw_empty_content_container = True
+            continue
+
+        for content_item in content_list:
+            extracted_text, supported = _extract_text_from_content_item(content_item)
+            if not supported:
+                continue
+            saw_supported_text_shape = True
+            if extracted_text:
+                collected_texts.append(extracted_text)
+
+    if collected_texts:
+        return "\n".join(collected_texts)
+    if raw_output_text is not None:
+        return raw_output_text
+    if not saw_output_items or saw_supported_text_shape or saw_empty_content_container:
         return ""
-    if not isinstance(output_text, str):
-        raise RuntimeError("Модель вернула ответ в неподдерживаемом формате.")
-    return output_text
+    raise RuntimeError("Модель вернула ответ в неподдерживаемом формате (unsupported_response_shape).")
+
+
+def _extract_normalized_markdown(response: object) -> str:
+    raw_output_text = _extract_response_output_text(response)
+    markdown = normalize_model_output(raw_output_text)
+    if markdown:
+        return markdown
+    if raw_output_text:
+        raise RuntimeError("Модель вернула ответ, который схлопнулся после нормализации (collapsed_output).")
+    raise RuntimeError("Модель вернула пустой ответ (empty_response).")
+
+
+def _call_responses_create(client: "OpenAI", request_kwargs: dict[str, Any]) -> object:
+    return cast(Any, client.responses).create(**request_kwargs)
 
 
 def _estimate_max_output_tokens(target_text: str) -> int:
@@ -102,11 +195,8 @@ def generate_markdown_block(
 
     for attempt in range(1, max_retries + 1):
         try:
-            response = client.responses.create(**request_kwargs)
-            markdown = normalize_model_output(_extract_response_output_text(response))
-            if not markdown:
-                raise RuntimeError("Модель вернула пустой ответ.")
-            return markdown
+            response = _call_responses_create(client, cast(dict[str, Any], request_kwargs))
+            return _extract_normalized_markdown(response)
         except TypeError as exc:
             if "max_output_tokens" in str(exc) and "max_output_tokens" in request_kwargs:
                 request_kwargs.pop("max_output_tokens", None)
@@ -120,11 +210,8 @@ def generate_markdown_block(
             time.sleep(min(2 ** (attempt - 1), 8))
 
     if max_output_tokens_removed:
-        response = client.responses.create(**request_kwargs)
-        markdown = normalize_model_output(_extract_response_output_text(response))
-        if not markdown:
-            raise RuntimeError("Модель вернула пустой ответ.")
-        return markdown
+        response = _call_responses_create(client, cast(dict[str, Any], request_kwargs))
+        return _extract_normalized_markdown(response)
 
     raise RuntimeError("Не удалось получить ответ модели.")
 

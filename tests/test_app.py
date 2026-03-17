@@ -1,5 +1,7 @@
 from typing import Any
 
+import pytest
+
 import app
 import application_flow
 import compare_panel
@@ -8,24 +10,9 @@ from constants import MAX_DOCX_ARCHIVE_SIZE_BYTES
 from models import ImageAsset
 
 
-class SessionState(dict):
-    def get(self, key: str, default: object | None = None) -> Any:
-        return super().get(key, default)
-
-    def __getitem__(self, key: str) -> Any:
-        return super().__getitem__(key)
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        super().__setitem__(key, value)
-
-    def __getattr__(self, name):
-        try:
-            return self[name]
-        except KeyError as exc:
-            raise AttributeError(name) from exc
-
-    def __setattr__(self, name, value):
-        self[name] = value
+@pytest.fixture(autouse=True)
+def _session_state_factory(make_session_state):
+    globals()["SessionState"] = make_session_state
 
 
 def test_main_logs_app_start_only_once(monkeypatch):
@@ -535,7 +522,7 @@ def test_has_restartable_source_returns_false_when_restart_file_was_removed(tmp_
     restart_path.unlink()
 
     assert application_flow.has_restartable_source(session_state=session_state) is False
-def test_compare_panel_applies_selected_variants_and_shows_success(monkeypatch):
+def test_compare_panel_renders_notice_for_completed_compare_assets(monkeypatch):
     calls = []
 
     monkeypatch.setattr(compare_panel.st, "info", lambda message: calls.append(("info", message)))
@@ -551,7 +538,7 @@ def test_compare_panel_applies_selected_variants_and_shows_success(monkeypatch):
     assert any(kind == "info" for kind, _ in calls)
 
 
-def test_compare_panel_reports_apply_errors(monkeypatch):
+def test_compare_panel_does_not_render_apply_controls(monkeypatch):
     calls = []
 
     monkeypatch.setattr(compare_panel.st, "info", lambda message: calls.append(("info", message)))

@@ -65,9 +65,9 @@ def test_generate_markdown_block_raises_on_empty_model_output():
             max_retries=1,
         )
     except RuntimeError as exc:
-        assert "пустой ответ" in str(exc)
+        assert "collapsed_output" in str(exc)
     else:
-        raise AssertionError("Expected RuntimeError for an empty model response")
+        raise AssertionError("Expected RuntimeError for a collapsed model response")
 
 
 def test_generate_markdown_block_retries_without_max_output_tokens_when_sdk_rejects_it():
@@ -112,12 +112,12 @@ def test_generate_markdown_block_raises_on_missing_output_text():
             max_retries=1,
         )
     except RuntimeError as exc:
-        assert "пустой ответ" in str(exc)
+        assert "empty_response" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError when output_text is missing")
 
 
-def test_extract_response_output_text_returns_empty_without_output_text_even_when_output_items_exist():
+def test_extract_response_output_text_falls_back_to_supported_response_output_items():
     response = SimpleNamespace(
         output=[
             SimpleNamespace(
@@ -126,7 +126,74 @@ def test_extract_response_output_text_returns_empty_without_output_text_even_whe
         ]
     )
 
-    assert generation._extract_response_output_text(response) == ""
+    assert generation._extract_response_output_text(response) == "Структурированный ответ"
+
+
+def test_extract_response_output_text_reads_supported_nested_text_value_from_response_output():
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                content=[
+                    SimpleNamespace(
+                        type="output_text",
+                        text=SimpleNamespace(value="Ответ из value-поля"),
+                    )
+                ]
+            )
+        ]
+    )
+
+    assert generation._extract_response_output_text(response) == "Ответ из value-поля"
+
+
+def test_generate_markdown_block_raises_on_unsupported_response_shape_in_output_items():
+    client = SimpleNamespace(
+        responses=SimpleNamespace(
+            create=lambda **_: SimpleNamespace(
+                output=[SimpleNamespace(content=[SimpleNamespace(type="refusal", text="not supported")])]
+            )
+        )
+    )
+
+    try:
+        generation.generate_markdown_block(
+            client=_as_openai_client(client),
+            model="gpt-5.4",
+            system_prompt="system",
+            target_text="target",
+            context_before="before",
+            context_after="after",
+            max_retries=1,
+        )
+    except RuntimeError as exc:
+        assert "unsupported_response_shape" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError for unsupported response output shape")
+
+
+def test_generate_markdown_block_raises_when_supported_response_output_collapses_after_normalization():
+    client = SimpleNamespace(
+        responses=SimpleNamespace(
+            create=lambda **_: SimpleNamespace(
+                output=[SimpleNamespace(content=[SimpleNamespace(type="output_text", text="```markdown\n   \n```")])]
+            )
+        )
+    )
+
+    try:
+        generation.generate_markdown_block(
+            client=_as_openai_client(client),
+            model="gpt-5.4",
+            system_prompt="system",
+            target_text="target",
+            context_before="before",
+            context_after="after",
+            max_retries=1,
+        )
+    except RuntimeError as exc:
+        assert "collapsed_output" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError when normalized fallback output collapses")
 
 
 def test_generate_markdown_block_raises_on_non_string_output_text():

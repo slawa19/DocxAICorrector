@@ -1,15 +1,11 @@
+import pytest
+
 import state
 
 
-class SessionState(dict):
-    def __getattr__(self, name):
-        try:
-            return self[name]
-        except KeyError as exc:
-            raise AttributeError(name) from exc
-
-    def __setattr__(self, name, value):
-        self[name] = value
+@pytest.fixture(autouse=True)
+def _session_state_factory(make_session_state):
+    globals()["SessionState"] = make_session_state
 
 
 def test_set_processing_status_preserves_started_at_while_running(monkeypatch):

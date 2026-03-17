@@ -71,6 +71,14 @@ If the user explicitly asks to change the startup contract, update the code, tes
 - Fixtures: `tests/conftest.py`
 - Test artifacts: `tests/artifacts/`
 
+## Protected Test Quality Contract
+
+AI agents must not add or restore low-value tests that weaken the signal of the main regression suite.
+
+- Do not create or restore spec-like tests that assert headings, wording, or section presence inside archived markdown/spec documents as part of the main `tests/` regression suite unless the user explicitly asks for documentation-guard coverage.
+- Do not create or restore thin-wiring tests that only verify wrapper delegation or argument pass-through to mocked implementations, especially for façade modules such as `app_runtime.py`, unless the user explicitly asks for that wiring layer to be tested.
+- Prefer tests that protect user-visible behavior, runtime outcomes, emitted events, failure contracts, and real output artifacts.
+
 ## Protected Test Workflow Contract
 
 The WSL/bash test workflow is a protected repository contract.

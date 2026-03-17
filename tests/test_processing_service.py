@@ -113,6 +113,45 @@ def test_run_processing_worker_emits_worker_complete_after_unhandled_crash():
     assert any(isinstance(event, AppendLogEvent) for event in emitted_events)
 
 
+def test_run_processing_worker_emits_success_outcome_and_runtime_events():
+    emitted_events = []
+
+    class RuntimeStub:
+        def emit(self, event):
+            emitted_events.append(event)
+
+    def run_document_processing_impl(**kwargs):
+        kwargs["emit_state"](kwargs["runtime"], latest_markdown="Готово", latest_docx_bytes=b"docx")
+        kwargs["emit_finalize"](kwargs["runtime"], "Обработка завершена", "DOCX собран", 1.0)
+        kwargs["emit_log"](kwargs["runtime"], status="DONE", block_index=1, block_count=1, target_chars=6, context_chars=0, details="ok")
+        return "succeeded"
+
+    service = _build_service(
+        run_document_processing_impl_fn=run_document_processing_impl,
+        emit_state_fn=lambda runtime, **values: runtime.emit(SetStateEvent(values=values)),
+        emit_finalize_fn=lambda runtime, stage, detail, progress: runtime.emit(
+            FinalizeProcessingStatusEvent(stage=stage, detail=detail, progress=progress)
+        ),
+        emit_log_fn=lambda runtime, **payload: runtime.emit(AppendLogEvent(payload=payload)),
+    )
+
+    service.run_processing_worker(
+        runtime=RuntimeStub(),
+        uploaded_filename="report.docx",
+        jobs=[{"target_text": "x", "context_before": "", "context_after": "", "target_chars": 1, "context_chars": 0}],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+    )
+
+    assert any(isinstance(event, SetStateEvent) and event.values["latest_markdown"] == "Готово" for event in emitted_events)
+    assert any(isinstance(event, FinalizeProcessingStatusEvent) and event.stage == "Обработка завершена" for event in emitted_events)
+    assert any(isinstance(event, AppendLogEvent) and event.payload["status"] == "DONE" for event in emitted_events)
+    assert emitted_events[-1] == WorkerCompleteEvent(outcome="succeeded")
+
+
 def test_get_processing_service_returns_singleton_until_reset(monkeypatch):
     processing_service.reset_processing_service()
 

@@ -1,5 +1,7 @@
 import queue
 
+import pytest
+
 import processing_runtime
 import state
 from runtime_events import (
@@ -16,15 +18,9 @@ from runtime_events import (
 )
 
 
-class SessionState(dict):
-    def __getattr__(self, name):
-        try:
-            return self[name]
-        except KeyError as exc:
-            raise AttributeError(name) from exc
-
-    def __setattr__(self, name, value):
-        self[name] = value
+@pytest.fixture(autouse=True)
+def _session_state_factory(make_session_state):
+    globals()["SessionState"] = make_session_state
 
 
 def test_drain_processing_events_applies_typed_runtime_events(monkeypatch):

@@ -12,6 +12,8 @@ def load_image_prompt_registry() -> dict[str, object]:
         registry = tomllib.loads(registry_path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise RuntimeError(f"Не найден registry image prompt-профилей: {registry_path}") from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise RuntimeError(f"Некорректный TOML registry image prompt-профилей: {registry_path}") from exc
 
     prompts = registry.get("prompts")
     if not isinstance(prompts, dict) or not prompts:

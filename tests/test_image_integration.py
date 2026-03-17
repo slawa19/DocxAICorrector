@@ -1,20 +1,15 @@
 from io import BytesIO
 
+import pytest
 from PIL import Image, ImageDraw
 from models import ImageAnalysisResult, ImageAsset, ImageValidationResult
 import processing_service
 import state
 
 
-class SessionState(dict):
-    def __getattr__(self, name):
-        try:
-            return self[name]
-        except KeyError as exc:
-            raise AttributeError(name) from exc
-
-    def __setattr__(self, name, value):
-        self[name] = value
+@pytest.fixture(autouse=True)
+def _session_state_factory(make_session_state):
+    globals()["SessionState"] = make_session_state
 
 
 def _make_diagram_like_png() -> bytes:
