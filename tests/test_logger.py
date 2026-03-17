@@ -1,7 +1,9 @@
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import logger
+from logger import _WSLSafeRotatingFileHandler
 
 
 def test_log_event_initializes_logger_lazily(monkeypatch):
@@ -55,3 +57,26 @@ def test_sanitize_log_context_serializes_nested_values(tmp_path):
         "path": str(tmp_path / "file.txt"),
         "nested": {"items": [1, "demo.txt", {"flag": True}]},
     }
+
+
+def test_wsl_safe_rotating_handler_falls_back_to_copy_truncate_on_rename_failure(tmp_path):
+    """When os.rename fails (WSL/Windows NTFS lock), rotate() falls back to copy+truncate."""
+    source = tmp_path / "app.log"
+    dest = tmp_path / "app.log.1"
+
+    content = "old log content\n" * 100
+    source.write_text(content, encoding="utf-8")
+    assert source.stat().st_size > 0
+
+    handler = _WSLSafeRotatingFileHandler(str(source), maxBytes=1, backupCount=1, encoding="utf-8")
+
+    # Simulate rename failing (mimics Windows NTFS via WSL behaviour).
+    with patch("logging.handlers.RotatingFileHandler.rotate", side_effect=OSError("Permission denied")):
+        handler.rotate(str(source), str(dest))
+
+    # dest should now contain the original content (copy succeeded).
+    assert dest.exists()
+    assert dest.read_text(encoding="utf-8") == content
+
+    # source should be truncated (empty) so the handler can resume writing.
+    assert source.stat().st_size == 0

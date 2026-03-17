@@ -1,4 +1,5 @@
 import logging
+import re
 import tempfile
 import time
 from collections.abc import Iterable, Mapping, Sized
@@ -50,6 +51,41 @@ def _normalize_context_text(text: str | None) -> str:
         return "[контекст отсутствует]"
     cleaned = text.strip()
     return cleaned or "[контекст отсутствует]"
+
+
+_CONTEXT_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_IMAGE_img_\d+\]\]")
+
+
+def _strip_image_placeholders(text: str) -> str:
+    """Remove DOCX image placeholder tokens from context strings.
+
+    Image placeholders must not appear in context_before / context_after because
+    the model consistently returns empty responses when it encounters them in the
+    surrounding context (as opposed to the target block, where they must be
+    preserved for later image reinsertion).
+    """
+    return _CONTEXT_IMAGE_PLACEHOLDER_PATTERN.sub("", text).strip()
+
+
+def _build_standard_user_prompt(*, target_text: str, context_before: str, context_after: str) -> str:
+    return (
+        "Ниже передан целевой блок документа и соседний контекст.\n"
+        "Используй соседний контекст только для понимания смысла, терминологии и связности.\n"
+        "Редактируй только целевой блок и верни только его итоговый текст.\n\n"
+        f"[CONTEXT BEFORE]\n{context_before}\n\n"
+        f"[TARGET BLOCK]\n{target_text}\n\n"
+        f"[CONTEXT AFTER]\n{context_after}"
+    )
+
+
+def _build_empty_response_recovery_user_prompt(*, target_text: str) -> str:
+    return (
+        "Предыдущая попытка вернула пустой ответ.\n"
+        "Повтори обработку, но игнорируй любой внешний контекст и работай только с целевым блоком ниже.\n"
+        "Сохрани весь смысл, структуру и факты блока.\n"
+        "Верни только итоговый отредактированный текст блока без пояснений, без Markdown-обрамления и без пустого ответа.\n\n"
+        f"[TARGET BLOCK ONLY]\n{target_text}"
+    )
 
 
 def _read_response_field(value: object, field_name: str) -> object:
@@ -139,6 +175,28 @@ def _extract_response_output_text(response: object) -> str:
 def _log_empty_response_shape(response: object, raw_output_text: str, *, error_code: str) -> None:
     output_items = _read_response_field(response, "output")
     output_items_len = len(output_items) if isinstance(output_items, Sized) else None
+
+    first_item_summary: dict[str, object] | None = None
+    if isinstance(output_items, Iterable) and not isinstance(output_items, (str, bytes)):
+        for item in output_items:
+            item_type = _read_response_field(item, "type")
+            refusal = _read_response_field(item, "refusal")
+            status = _read_response_field(item, "status")
+            content_items = _read_response_field(item, "content")
+            content_types: list[str] = []
+            if isinstance(content_items, Iterable) and not isinstance(content_items, (str, bytes)):
+                content_types = [
+                    str(_read_response_field(c, "type") or type(c).__name__)
+                    for c in content_items
+                ]
+            first_item_summary = {
+                "type": item_type,
+                "refusal": refusal,
+                "status": status,
+                "content_types": content_types,
+            }
+            break
+
     log_event(
         logging.WARNING,
         "model_empty_response_shape",
@@ -148,6 +206,8 @@ def _log_empty_response_shape(response: object, raw_output_text: str, *, error_c
         raw_output_len=len(raw_output_text),
         output_items_type=type(output_items).__name__ if output_items is not None else "None",
         output_items_len=output_items_len,
+        response_status=_read_response_field(response, "status"),
+        first_output_item=first_item_summary,
     )
 
 
@@ -172,6 +232,62 @@ def _estimate_max_output_tokens(target_text: str) -> int:
     return min(estimated_output_tokens, 16384)
 
 
+def _build_request_kwargs(*, model: str, system_prompt: str, user_prompt: str, target_text: str) -> dict[str, object]:
+    payload: Any = [
+        {
+            "role": "system",
+            "content": [{"type": "input_text", "text": system_prompt}],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "input_text", "text": user_prompt}],
+        },
+    ]
+    return {
+        "model": model,
+        "input": payload,
+        "max_output_tokens": _estimate_max_output_tokens(target_text),
+    }
+
+
+def _call_markdown_request_with_sdk_fallback(client: "OpenAI", request_kwargs: dict[str, object]) -> tuple[str, bool]:
+    max_output_tokens_removed = False
+    try:
+        response = _call_responses_create(client, cast(dict[str, Any], request_kwargs))
+        return _extract_normalized_markdown(response), max_output_tokens_removed
+    except TypeError as exc:
+        if "max_output_tokens" not in str(exc) or "max_output_tokens" not in request_kwargs:
+            raise
+        request_kwargs = dict(request_kwargs)
+        request_kwargs.pop("max_output_tokens", None)
+        max_output_tokens_removed = True
+        response = _call_responses_create(client, cast(dict[str, Any], request_kwargs))
+        return _extract_normalized_markdown(response), max_output_tokens_removed
+
+
+def _recover_from_persistent_empty_response(
+    *,
+    client: "OpenAI",
+    model: str,
+    system_prompt: str,
+    target_text: str,
+) -> str:
+    log_event(
+        logging.WARNING,
+        "markdown_empty_response_recovery_started",
+        "Обычные retry исчерпаны; запускаю recovery-вызов без соседнего контекста.",
+        model=model,
+        target_chars=len(target_text),
+    )
+    request_kwargs = _build_request_kwargs(
+        model=model,
+        system_prompt=system_prompt,
+        user_prompt=_build_empty_response_recovery_user_prompt(target_text=target_text),
+        target_text=target_text,
+    )
+    return _call_markdown_request_with_sdk_fallback(client, request_kwargs)[0]
+
+
 def _is_retryable_empty_generation_error(exc: Exception) -> bool:
     return isinstance(exc, RuntimeError) and (
         "empty_response" in str(exc) or "collapsed_output" in str(exc)
@@ -192,54 +308,47 @@ def generate_markdown_block(
     if max_retries < 1:
         raise ValueError("max_retries должен быть не меньше 1.")
 
-    context_before_text = _normalize_context_text(context_before)
-    context_after_text = _normalize_context_text(context_after)
-    user_prompt = (
-        "Ниже передан целевой блок документа и соседний контекст.\n"
-        "Используй соседний контекст только для понимания смысла, терминологии и связности.\n"
-        "Редактируй только целевой блок и верни только его итоговый текст.\n\n"
-        f"[CONTEXT BEFORE]\n{context_before_text}\n\n"
-        f"[TARGET BLOCK]\n{target_text}\n\n"
-        f"[CONTEXT AFTER]\n{context_after_text}"
+    context_before_text = _normalize_context_text(_strip_image_placeholders(context_before))
+    context_after_text = _normalize_context_text(_strip_image_placeholders(context_after))
+    request_kwargs = _build_request_kwargs(
+        model=model,
+        system_prompt=system_prompt,
+        user_prompt=_build_standard_user_prompt(
+            target_text=target_text,
+            context_before=context_before_text,
+            context_after=context_after_text,
+        ),
+        target_text=target_text,
     )
-    payload: Any = [
-        {
-            "role": "system",
-            "content": [{"type": "input_text", "text": system_prompt}],
-        },
-        {
-            "role": "user",
-            "content": [{"type": "input_text", "text": user_prompt}],
-        },
-    ]
-    request_kwargs: dict[str, object] = {
-        "model": model,
-        "input": payload,
-        "max_output_tokens": _estimate_max_output_tokens(target_text),
-    }
-    max_output_tokens_removed = False
+    last_exception: Exception | None = None
 
     for attempt in range(1, max_retries + 1):
         try:
-            response = _call_responses_create(client, cast(dict[str, Any], request_kwargs))
-            return _extract_normalized_markdown(response)
-        except TypeError as exc:
-            if "max_output_tokens" in str(exc) and "max_output_tokens" in request_kwargs:
-                request_kwargs.pop("max_output_tokens", None)
-                max_output_tokens_removed = True
-                continue
-            raise
+            return _call_markdown_request_with_sdk_fallback(client, request_kwargs)[0]
         except Exception as exc:
+            last_exception = exc
             should_retry = attempt < max_retries and (
                 is_retryable_error(exc) or _is_retryable_empty_generation_error(exc)
             )
             if not should_retry:
-                raise
+                break
             time.sleep(min(2 ** (attempt - 1), 8))
 
-    if max_output_tokens_removed:
-        response = _call_responses_create(client, cast(dict[str, Any], request_kwargs))
-        return _extract_normalized_markdown(response)
+    if last_exception is not None and _is_retryable_empty_generation_error(last_exception):
+        try:
+            return _recover_from_persistent_empty_response(
+                client=client,
+                model=model,
+                system_prompt=system_prompt,
+                target_text=target_text,
+            )
+        except Exception as recovery_exc:
+            if _is_retryable_empty_generation_error(recovery_exc):
+                raise recovery_exc
+            raise recovery_exc
+
+    if last_exception is not None:
+        raise last_exception
 
     raise RuntimeError("Не удалось получить ответ модели.")
 

@@ -1,5 +1,6 @@
 import json
 import logging
+import shutil
 import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -10,6 +11,31 @@ from constants import APP_LOG_PATH, RUN_DIR
 _LOGGER: logging.Logger | None = None
 
 
+class _WSLSafeRotatingFileHandler(RotatingFileHandler):
+    """RotatingFileHandler that works reliably on Windows filesystems mounted in WSL.
+
+    On DrvFs (Windows NTFS via /mnt/...), ``os.rename`` can fail with
+    ``PermissionError`` if any other process (e.g. VS Code) has the log file
+    open for reading.  The default implementation leaves ``self.stream = None``
+    after the failed rename, silently dropping all subsequent log records.
+
+    This subclass catches the ``OSError`` in ``rotate()`` and falls back to
+    ``shutil.copy2`` + truncation, which does not require an exclusive lock on
+    the source file.
+    """
+
+    def rotate(self, source: str, dest: str) -> None:
+        try:
+            super().rotate(source, dest)
+        except OSError:
+            try:
+                shutil.copy2(source, dest)
+                with open(source, "w", encoding="utf-8"):
+                    pass  # truncate source in place, preserving the open inode
+            except OSError:
+                pass  # last resort: skip rotation, handler stays alive
+
+
 def setup_logger() -> logging.Logger:
     RUN_DIR.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("docxaicorrector")
@@ -17,7 +43,7 @@ def setup_logger() -> logging.Logger:
         return logger
 
     logger.setLevel(logging.INFO)
-    handler = RotatingFileHandler(APP_LOG_PATH, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+    handler = _WSLSafeRotatingFileHandler(APP_LOG_PATH, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
     formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
     handler.setFormatter(formatter)
     logger.addHandler(handler)
