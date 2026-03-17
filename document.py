@@ -852,15 +852,18 @@ def build_semantic_blocks(paragraphs: list[ParagraphUnit], max_chars: int = 6000
             continue
 
         projected_size = current_size + 2 + len(paragraph.rendered_text)
-        current_only_heading = len(current) == 1 and current[0].role == "heading"
+        current_all_headings = all(item.role == "heading" for item in current)
         current_is_list = all(item.role == "list" for item in current)
 
         if paragraph.role == "heading":
+            if current_all_headings:
+                append_paragraph(paragraph)
+                continue
             flush_current()
             append_paragraph(paragraph)
             continue
 
-        if current_only_heading:
+        if current_all_headings:
             append_paragraph(paragraph)
             continue
 
@@ -938,8 +941,10 @@ def build_editing_jobs(blocks: list[DocumentBlock], max_chars: int) -> list[dict
     for index, block in enumerate(blocks):
         context_before = build_context_excerpt(blocks, index, context_before_chars, reverse=True)
         context_after = build_context_excerpt(blocks, index, context_after_chars, reverse=False)
+        job_kind = "passthrough" if block.paragraphs and all(paragraph.role == "image" for paragraph in block.paragraphs) else "llm"
         jobs.append(
             {
+                "job_kind": job_kind,
                 "target_text": block.text,
                 "context_before": context_before,
                 "context_after": context_after,

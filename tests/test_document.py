@@ -134,6 +134,25 @@ def test_build_semantic_blocks_keeps_heading_with_following_body():
     assert blocks[1].text == "Следующий абзац, который уже должен перейти в отдельный блок."
 
 
+def test_build_semantic_blocks_keeps_consecutive_headings_with_following_body():
+    paragraphs = [
+        ParagraphUnit(text="Глава 1", role="heading", heading_level=1),
+        ParagraphUnit(text="Раздел 1.1", role="heading", heading_level=2),
+        ParagraphUnit(text="Первый содержательный абзац после цепочки заголовков.", role="body"),
+        ParagraphUnit(text="Следующий абзац уже должен перейти в отдельный блок из-за лимита.", role="body"),
+    ]
+
+    blocks = build_semantic_blocks(paragraphs, max_chars=90)
+
+    assert len(blocks) == 2
+    assert [paragraph.text for paragraph in blocks[0].paragraphs] == [
+        "Глава 1",
+        "Раздел 1.1",
+        "Первый содержательный абзац после цепочки заголовков.",
+    ]
+    assert blocks[1].text == "Следующий абзац уже должен перейти в отдельный блок из-за лимита."
+
+
 def test_build_editing_jobs_uses_neighbor_blocks_for_context():
     paragraphs = [
         ParagraphUnit(text="Первый блок.", role="body"),
@@ -149,6 +168,20 @@ def test_build_editing_jobs_uses_neighbor_blocks_for_context():
     assert jobs[1]["context_before"] == "Первый блок."
     assert jobs[1]["context_after"] == "Третий блок."
     assert all(str(job["target_text"]).strip() for job in jobs)
+
+
+def test_build_editing_jobs_marks_image_only_blocks_as_passthrough():
+    paragraphs = [
+        ParagraphUnit(text="Вступление", role="body"),
+        ParagraphUnit(text="[[DOCX_IMAGE_img_001]]", role="image"),
+        ParagraphUnit(text="Основной текст", role="body"),
+    ]
+
+    blocks = build_semantic_blocks(paragraphs, max_chars=20)
+    jobs = build_editing_jobs(blocks, max_chars=3000)
+
+    assert [job["target_text"] for job in jobs] == ["Вступление", "[[DOCX_IMAGE_img_001]]", "Основной текст"]
+    assert [job["job_kind"] for job in jobs] == ["llm", "passthrough", "llm"]
 
 
 def test_extract_document_content_from_docx_inserts_image_placeholders(tmp_path):

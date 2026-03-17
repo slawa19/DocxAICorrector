@@ -130,6 +130,16 @@ def _coerce_required_text_field(job: ProcessingJob, field_name: str, *, allow_bl
     return text
 
 
+def _coerce_job_kind(job: ProcessingJob) -> str:
+    value = job.get("job_kind", "llm")
+    if not isinstance(value, str):
+        raise TypeError("job_kind must be a string")
+    normalized = value.strip() or "llm"
+    if normalized not in {"llm", "passthrough"}:
+        raise ValueError(f"Unsupported job_kind: {normalized}")
+    return normalized
+
+
 def _iter_nonempty_markdown_lines(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
 
@@ -247,7 +257,6 @@ def run_document_processing(
     try:
         client = get_client()
         ensure_pandoc_available()
-        system_prompt = load_system_prompt()
         log_event(
             logging.INFO,
             "processing_started",
@@ -294,6 +303,8 @@ def run_document_processing(
         )
         emit_finalize(runtime, "Ошибка инициализации", error_message, 0.0)
         return "failed"
+
+    system_prompt: str | None = None
 
     if job_count == 0:
         error_message = present_error(
@@ -342,6 +353,7 @@ def run_document_processing(
             return "stopped"
 
         try:
+            job_kind = _coerce_job_kind(job)
             target_chars = int(job["target_chars"])
             context_chars = int(job["context_chars"])
             target_text = _coerce_required_text_field(job, "target_text", allow_blank=False)
@@ -376,7 +388,11 @@ def run_document_processing(
         emit_status(
             runtime,
             stage="Подготовка блока",
-            detail=f"Готовлю блок {index} из {job_count} к отправке в OpenAI.",
+            detail=(
+                f"Готовлю блок {index} из {job_count} к отправке в OpenAI."
+                if job_kind == "llm"
+                else f"Готовлю passthrough-блок {index} из {job_count} без вызова OpenAI."
+            ),
             current_block=index,
             block_count=job_count,
             target_chars=target_chars,
@@ -395,30 +411,49 @@ def run_document_processing(
             target_chars=target_chars,
             context_chars=context_chars,
             model=model,
+            job_kind=job_kind,
         )
         try:
-            emit_status(
-                runtime,
-                stage="Ожидание ответа OpenAI",
-                detail=f"Блок {index} отправлен в модель. Приложение работает, ожидаю ответ.",
-                current_block=index,
-                block_count=job_count,
-                target_chars=target_chars,
-                context_chars=context_chars,
-                progress=(index - 1) / job_count,
-                is_running=True,
-            )
-            emit_activity(runtime, f"Блок {index} отправлен в OpenAI.")
-            on_progress(preview_title="Текущий Markdown")
-            processed_chunk = generate_markdown_block(
-                client=client,
-                model=model,
-                system_prompt=system_prompt,
-                target_text=target_text,
-                context_before=context_before,
-                context_after=context_after,
-                max_retries=max_retries,
-            )
+            if job_kind == "passthrough":
+                emit_status(
+                    runtime,
+                    stage="Passthrough блока",
+                    detail=f"Блок {index} не требует LLM-обработки и будет перенесён в Markdown как есть.",
+                    current_block=index,
+                    block_count=job_count,
+                    target_chars=target_chars,
+                    context_chars=context_chars,
+                    progress=(index - 1) / job_count,
+                    is_running=True,
+                )
+                emit_activity(runtime, f"Блок {index} пропущен через passthrough без OpenAI.")
+                on_progress(preview_title="Текущий Markdown")
+                processed_chunk = target_text
+            else:
+                if system_prompt is None:
+                    system_prompt = load_system_prompt()
+                emit_status(
+                    runtime,
+                    stage="Ожидание ответа OpenAI",
+                    detail=f"Блок {index} отправлен в модель. Приложение работает, ожидаю ответ.",
+                    current_block=index,
+                    block_count=job_count,
+                    target_chars=target_chars,
+                    context_chars=context_chars,
+                    progress=(index - 1) / job_count,
+                    is_running=True,
+                )
+                emit_activity(runtime, f"Блок {index} отправлен в OpenAI.")
+                on_progress(preview_title="Текущий Markdown")
+                processed_chunk = generate_markdown_block(
+                    client=client,
+                    model=model,
+                    system_prompt=system_prompt,
+                    target_text=target_text,
+                    context_before=context_before,
+                    context_after=context_after,
+                    max_retries=max_retries,
+                )
         except Exception as exc:
             emit_state(runtime, latest_markdown="\n\n".join(processed_chunks).strip(), latest_docx_bytes=None)
             error_message = present_error(
@@ -552,6 +587,7 @@ def run_document_processing(
             output_ratio=output_ratio,
             input_preview=target_text[:300],
             output_preview=processed_chunk[:300],
+            job_kind=job_kind,
         )
         on_progress(preview_title="Текущий Markdown")
 

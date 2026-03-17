@@ -49,9 +49,52 @@ def test_generate_markdown_block_retries_once_then_returns(monkeypatch):
     assert attempts[0]["max_output_tokens"] >= 512
 
 
-def test_generate_markdown_block_raises_on_empty_model_output():
+def test_generate_markdown_block_retries_on_empty_response(monkeypatch):
+    attempts = []
+    sleep_calls = []
+    logged_events = []
+
+    def create_response(**kwargs):
+        attempts.append(dict(kwargs))
+        if len(attempts) == 1:
+            return SimpleNamespace(output_text="")
+        return SimpleNamespace(output_text="Исправленный текст")
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+    monkeypatch.setattr(generation.time, "sleep", sleep_calls.append)
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-empty",
+    )
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="target",
+        context_before="before",
+        context_after="after",
+        max_retries=2,
+    )
+
+    assert result == "Исправленный текст"
+    assert len(attempts) == 2
+    assert sleep_calls == [1]
+    assert len(logged_events) == 1
+    assert logged_events[0][0][1] == "model_empty_response_shape"
+    assert logged_events[0][1]["error_code"] == "empty_response"
+
+
+def test_generate_markdown_block_raises_on_empty_model_output(monkeypatch):
+    logged_events = []
     client = SimpleNamespace(
         responses=SimpleNamespace(create=lambda **_: SimpleNamespace(output_text="```\n\n```"))
+    )
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-collapsed",
     )
 
     try:
@@ -66,8 +109,45 @@ def test_generate_markdown_block_raises_on_empty_model_output():
         )
     except RuntimeError as exc:
         assert "collapsed_output" in str(exc)
+        assert logged_events[0][1]["error_code"] == "collapsed_output"
     else:
         raise AssertionError("Expected RuntimeError for a collapsed model response")
+
+
+def test_generate_markdown_block_retries_on_collapsed_output(monkeypatch):
+    attempts = []
+    sleep_calls = []
+    logged_events = []
+
+    def create_response(**kwargs):
+        attempts.append(dict(kwargs))
+        if len(attempts) == 1:
+            return SimpleNamespace(output_text="```markdown\n   \n```")
+        return SimpleNamespace(output_text="Итоговый текст")
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+    monkeypatch.setattr(generation.time, "sleep", sleep_calls.append)
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-collapsed-retry",
+    )
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="target",
+        context_before="before",
+        context_after="after",
+        max_retries=2,
+    )
+
+    assert result == "Итоговый текст"
+    assert len(attempts) == 2
+    assert sleep_calls == [1]
+    assert len(logged_events) == 1
+    assert logged_events[0][1]["error_code"] == "collapsed_output"
 
 
 def test_generate_markdown_block_retries_without_max_output_tokens_when_sdk_rejects_it():
@@ -96,9 +176,52 @@ def test_generate_markdown_block_retries_without_max_output_tokens_when_sdk_reje
     assert "max_output_tokens" not in calls[1]
 
 
-def test_generate_markdown_block_raises_on_missing_output_text():
+def test_generate_markdown_block_raises_after_persistent_empty_response(monkeypatch):
+    attempts = []
+    sleep_calls = []
+    logged_events = []
+
+    def create_response(**kwargs):
+        attempts.append(dict(kwargs))
+        return SimpleNamespace(output_text="")
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+    monkeypatch.setattr(generation.time, "sleep", sleep_calls.append)
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-persistent-empty",
+    )
+
+    try:
+        generation.generate_markdown_block(
+            client=_as_openai_client(client),
+            model="gpt-5.4",
+            system_prompt="system",
+            target_text="target",
+            context_before="before",
+            context_after="after",
+            max_retries=3,
+        )
+    except RuntimeError as exc:
+        assert "empty_response" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError when all attempts return an empty response")
+
+    assert len(attempts) == 3
+    assert sleep_calls == [1, 2]
+    assert len(logged_events) == 3
+
+
+def test_generate_markdown_block_raises_on_missing_output_text(monkeypatch):
+    logged_events = []
     client = SimpleNamespace(
         responses=SimpleNamespace(create=lambda **_: SimpleNamespace())
+    )
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-missing-output",
     )
 
     try:
@@ -113,6 +236,7 @@ def test_generate_markdown_block_raises_on_missing_output_text():
         )
     except RuntimeError as exc:
         assert "empty_response" in str(exc)
+        assert logged_events[0][1]["error_code"] == "empty_response"
     else:
         raise AssertionError("Expected RuntimeError when output_text is missing")
 
@@ -146,14 +270,20 @@ def test_extract_response_output_text_reads_supported_nested_text_value_from_res
     assert generation._extract_response_output_text(response) == "Ответ из value-поля"
 
 
-def test_generate_markdown_block_raises_on_unsupported_response_shape_in_output_items():
-    client = SimpleNamespace(
-        responses=SimpleNamespace(
-            create=lambda **_: SimpleNamespace(
-                output=[SimpleNamespace(content=[SimpleNamespace(type="refusal", text="not supported")])]
-            )
+def test_generate_markdown_block_raises_on_unsupported_response_shape_in_output_items(monkeypatch):
+    sleep_calls = []
+    attempts = []
+
+    def create_response(**_):
+        attempts.append("call")
+        return SimpleNamespace(
+            output=[SimpleNamespace(content=[SimpleNamespace(type="refusal", text="not supported")])]
         )
+
+    client = SimpleNamespace(
+        responses=SimpleNamespace(create=create_response)
     )
+    monkeypatch.setattr(generation.time, "sleep", sleep_calls.append)
 
     try:
         generation.generate_markdown_block(
@@ -170,14 +300,23 @@ def test_generate_markdown_block_raises_on_unsupported_response_shape_in_output_
     else:
         raise AssertionError("Expected RuntimeError for unsupported response output shape")
 
+    assert attempts == ["call"]
+    assert sleep_calls == []
 
-def test_generate_markdown_block_raises_when_supported_response_output_collapses_after_normalization():
+
+def test_generate_markdown_block_raises_when_supported_response_output_collapses_after_normalization(monkeypatch):
+    logged_events = []
     client = SimpleNamespace(
         responses=SimpleNamespace(
             create=lambda **_: SimpleNamespace(
                 output=[SimpleNamespace(content=[SimpleNamespace(type="output_text", text="```markdown\n   \n```")])]
             )
         )
+    )
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-supported-collapse",
     )
 
     try:
@@ -192,6 +331,7 @@ def test_generate_markdown_block_raises_when_supported_response_output_collapses
         )
     except RuntimeError as exc:
         assert "collapsed_output" in str(exc)
+        assert logged_events[0][1]["error_code"] == "collapsed_output"
     else:
         raise AssertionError("Expected RuntimeError when normalized fallback output collapses")
 
@@ -257,6 +397,50 @@ def test_generate_markdown_block_rejects_non_integer_max_retries():
         assert "max_retries" in str(exc)
     else:
         raise AssertionError("Expected TypeError when max_retries is not an integer")
+
+
+def test_extract_normalized_markdown_logs_empty_response_shape(monkeypatch):
+    logged_events = []
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-empty-shape",
+    )
+
+    try:
+        generation._extract_normalized_markdown(SimpleNamespace())
+    except RuntimeError as exc:
+        assert "empty_response" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError for empty response shape")
+
+    assert len(logged_events) == 1
+    args, kwargs = logged_events[0]
+    assert args[1] == "model_empty_response_shape"
+    assert kwargs["error_code"] == "empty_response"
+    assert kwargs["raw_output_len"] == 0
+
+
+def test_extract_normalized_markdown_logs_collapsed_output_shape(monkeypatch):
+    logged_events = []
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-collapsed-shape",
+    )
+
+    try:
+        generation._extract_normalized_markdown(SimpleNamespace(output_text="```markdown\n\n```") )
+    except RuntimeError as exc:
+        assert "collapsed_output" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError for collapsed response shape")
+
+    assert len(logged_events) == 1
+    args, kwargs = logged_events[0]
+    assert args[1] == "model_empty_response_shape"
+    assert kwargs["error_code"] == "collapsed_output"
+    assert kwargs["raw_output_len"] > 0
 
 
 def test_ensure_pandoc_available_converts_os_error(monkeypatch):

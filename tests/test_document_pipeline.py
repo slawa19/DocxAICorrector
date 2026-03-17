@@ -741,6 +741,98 @@ def test_run_document_processing_fails_on_missing_placeholder_status_entries():
     assert runtime["state"]["last_error"].startswith("Критическая ошибка подготовки изображений")
 
 
+def test_run_document_processing_preserves_passthrough_image_block_without_openai_call():
+    runtime = _build_runtime_capture()
+    image_assets = [AssetStub("img_001")]
+    generate_calls = []
+    inspected_markdowns = []
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[
+            {"job_kind": "llm", "target_text": "Вступление", "context_before": "", "context_after": "", "target_chars": 10, "context_chars": 0},
+            {"job_kind": "passthrough", "target_text": "[[DOCX_IMAGE_img_001]]", "context_before": "", "context_after": "", "target_chars": 21, "context_chars": 0},
+            {"job_kind": "llm", "target_text": "Основной текст", "context_before": "", "context_after": "", "target_chars": 14, "context_chars": 0},
+        ],
+        source_paragraphs=[],
+        image_assets=image_assets,
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: generate_calls.append(kwargs["target_text"]) or f"ok:{kwargs['target_text']}",
+        process_document_images=lambda **kwargs: image_assets,
+        inspect_placeholder_integrity=lambda markdown_text, image_assets: inspected_markdowns.append(markdown_text) or {asset.image_id: "ok" for asset in image_assets},
+        convert_markdown_to_docx_bytes=lambda markdown_text: b"docx-bytes",
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
+    )
+
+    assert result == "succeeded"
+    assert generate_calls == ["Вступление", "Основной текст"]
+    assert inspected_markdowns == ["ok:Вступление\n\n[[DOCX_IMAGE_img_001]]\n\nok:Основной текст"]
+    assert runtime["state"]["latest_markdown"] == "ok:Вступление\n\n[[DOCX_IMAGE_img_001]]\n\nok:Основной текст"
+
+
+def test_run_document_processing_passthrough_only_does_not_require_system_prompt():
+    runtime = _build_runtime_capture()
+    image_assets = [AssetStub("img_001")]
+    generate_calls = []
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[
+            {"job_kind": "passthrough", "target_text": "[[DOCX_IMAGE_img_001]]", "context_before": "", "context_after": "", "target_chars": 21, "context_chars": 0},
+        ],
+        source_paragraphs=[],
+        image_assets=image_assets,
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda: (_ for _ in ()).throw(RuntimeError("prompt exploded")),
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: generate_calls.append(kwargs["target_text"]) or "unexpected",
+        process_document_images=lambda **kwargs: image_assets,
+        inspect_placeholder_integrity=lambda markdown_text, image_assets: {asset.image_id: "ok" for asset in image_assets},
+        convert_markdown_to_docx_bytes=lambda markdown_text: b"docx-bytes",
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
+    )
+
+    assert result == "succeeded"
+    assert generate_calls == []
+    assert runtime["state"]["latest_markdown"] == "[[DOCX_IMAGE_img_001]]"
+
+
 def test_run_document_processing_detects_processed_block_count_mismatch():
     runtime = _build_runtime_capture()
     jobs = PlannedJobs(

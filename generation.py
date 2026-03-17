@@ -1,6 +1,7 @@
+import logging
 import tempfile
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sized
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -11,6 +12,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Pt
 
 from image_shared import is_retryable_error
+from logger import log_event
 
 if TYPE_CHECKING:
     from openai import OpenAI
@@ -134,11 +136,28 @@ def _extract_response_output_text(response: object) -> str:
     raise RuntimeError("Модель вернула ответ в неподдерживаемом формате (unsupported_response_shape).")
 
 
+def _log_empty_response_shape(response: object, raw_output_text: str, *, error_code: str) -> None:
+    output_items = _read_response_field(response, "output")
+    output_items_len = len(output_items) if isinstance(output_items, Sized) else None
+    log_event(
+        logging.WARNING,
+        "model_empty_response_shape",
+        "Модель вернула пустой или схлопнувшийся текстовый ответ",
+        error_code=error_code,
+        has_output_text_attr=getattr(response, "output_text", None) is not None,
+        raw_output_len=len(raw_output_text),
+        output_items_type=type(output_items).__name__ if output_items is not None else "None",
+        output_items_len=output_items_len,
+    )
+
+
 def _extract_normalized_markdown(response: object) -> str:
     raw_output_text = _extract_response_output_text(response)
     markdown = normalize_model_output(raw_output_text)
     if markdown:
         return markdown
+    error_code = "collapsed_output" if raw_output_text else "empty_response"
+    _log_empty_response_shape(response, raw_output_text, error_code=error_code)
     if raw_output_text:
         raise RuntimeError("Модель вернула ответ, который схлопнулся после нормализации (collapsed_output).")
     raise RuntimeError("Модель вернула пустой ответ (empty_response).")
@@ -151,6 +170,13 @@ def _call_responses_create(client: "OpenAI", request_kwargs: dict[str, Any]) -> 
 def _estimate_max_output_tokens(target_text: str) -> int:
     estimated_output_tokens = max((len(target_text) // 3) * 4, 512)
     return min(estimated_output_tokens, 16384)
+
+
+def _is_retryable_empty_generation_error(exc: Exception) -> bool:
+    return isinstance(exc, RuntimeError) and (
+        "empty_response" in str(exc) or "collapsed_output" in str(exc)
+    )
+
 
 def generate_markdown_block(
     client: "OpenAI",
@@ -204,7 +230,9 @@ def generate_markdown_block(
                 continue
             raise
         except Exception as exc:
-            should_retry = attempt < max_retries and is_retryable_error(exc)
+            should_retry = attempt < max_retries and (
+                is_retryable_error(exc) or _is_retryable_empty_generation_error(exc)
+            )
             if not should_retry:
                 raise
             time.sleep(min(2 ** (attempt - 1), 8))
