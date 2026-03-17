@@ -18,9 +18,15 @@ from runtime_events import (
 )
 
 
-@pytest.fixture(autouse=True)
-def _session_state_factory(make_session_state):
-    globals()["SessionState"] = make_session_state
+class SessionState(dict):
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+    def __setattr__(self, name, value):
+        self[name] = value
 
 
 def test_drain_processing_events_applies_typed_runtime_events(monkeypatch):
@@ -168,7 +174,7 @@ def test_start_background_preparation_creates_worker_and_status(monkeypatch):
     activities = []
     payloads = []
 
-    uploaded_file = type("UploadedFileStub", (), {"name": "report.docx", "size": 3, "getvalue": lambda self: b"abc"})()
+    uploaded_file = processing_runtime.build_in_memory_uploaded_file(source_name="report.docx", source_bytes=b"abc")
     uploaded_payload = processing_runtime.freeze_uploaded_file(uploaded_file)
 
     processing_runtime.start_background_preparation(
@@ -176,7 +182,6 @@ def test_start_background_preparation_creates_worker_and_status(monkeypatch):
         reset_run_state=lambda **kwargs: None,
         push_activity=lambda message: activities.append(message),
         set_processing_status=lambda **payload: statuses.append(payload),
-        uploaded_file=None,
         uploaded_payload=uploaded_payload,
         upload_marker="report.docx:3:ba7816bf8f01cfea:6000",
         chunk_size=6000,
@@ -200,7 +205,8 @@ def test_start_background_preparation_propagates_cached_flag(monkeypatch):
     monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
     statuses = []
     activities = []
-    uploaded_payload = processing_runtime.freeze_uploaded_file(type("UploadedFileStub", (), {"name": "report.docx", "size": 3, "getvalue": lambda self: b"abc"})())
+    uploaded_file = processing_runtime.build_in_memory_uploaded_file(source_name="report.docx", source_bytes=b"abc")
+    uploaded_payload = processing_runtime.freeze_uploaded_file(uploaded_file)
 
     def worker_target(**kwargs):
         kwargs["progress_callback"](
@@ -215,7 +221,6 @@ def test_start_background_preparation_propagates_cached_flag(monkeypatch):
         reset_run_state=lambda **kwargs: None,
         push_activity=lambda message: activities.append(message),
         set_processing_status=lambda **payload: statuses.append(payload),
-        uploaded_file=None,
         uploaded_payload=uploaded_payload,
         upload_marker="report.docx:3:ba7816bf8f01cfea:6000",
         chunk_size=6000,

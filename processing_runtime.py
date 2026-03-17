@@ -486,7 +486,6 @@ def start_background_preparation(
     reset_run_state,
     push_activity,
     set_processing_status,
-    uploaded_file,
     uploaded_payload,
     upload_marker: str,
     chunk_size: int,
