@@ -54,7 +54,6 @@ def _normalize_context_text(text: str | None) -> str:
 
 
 _CONTEXT_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_IMAGE_img_\d+\]\]")
-_TARGET_IMAGE_ONLY_PATTERN = re.compile(r"^(?:\s*\[\[DOCX_IMAGE_img_\d+\]\]\s*)+$")
 
 
 def _strip_image_placeholders(text: str) -> str:
@@ -66,14 +65,6 @@ def _strip_image_placeholders(text: str) -> str:
     preserved for later image reinsertion).
     """
     return _CONTEXT_IMAGE_PLACEHOLDER_PATTERN.sub("", text).strip()
-
-
-def _is_image_only_target(target_text: str) -> bool:
-    return bool(_TARGET_IMAGE_ONLY_PATTERN.fullmatch(target_text))
-
-
-def _should_passthrough_target(target_text: str) -> bool:
-    return not _CONTEXT_IMAGE_PLACEHOLDER_PATTERN.sub("", target_text).strip()
 
 
 def _build_standard_user_prompt(*, target_text: str, context_before: str, context_after: str) -> str:
@@ -221,16 +212,6 @@ def _log_empty_response_shape(response: object, raw_output_text: str, *, error_c
 
 
 def _extract_normalized_markdown(response: object) -> str:
-    response_status = _read_response_field(response, "status")
-    if response_status == "incomplete":
-        _log_empty_response_shape(response, "", error_code="incomplete_response")
-        raise RuntimeError("Модель не завершила генерацию (incomplete_response).")
-    if isinstance(response_status, str) and response_status != "completed":
-        _log_empty_response_shape(response, "", error_code="non_completed_response")
-        raise RuntimeError(
-            f"Модель вернула неожиданный статус ответа: {response_status} (non_completed_response)."
-        )
-
     raw_output_text = _extract_response_output_text(response)
     markdown = normalize_model_output(raw_output_text)
     if markdown:
@@ -309,32 +290,8 @@ def _recover_from_persistent_empty_response(
 
 def _is_retryable_empty_generation_error(exc: Exception) -> bool:
     return isinstance(exc, RuntimeError) and (
-        "empty_response" in str(exc)
-        or "collapsed_output" in str(exc)
-        or "incomplete_response" in str(exc)
+        "empty_response" in str(exc) or "collapsed_output" in str(exc)
     )
-
-
-def _validate_prompt_inputs(target_text: str, context_before: str, context_after: str) -> list[str]:
-    warning_codes: list[str] = []
-
-    if not target_text.strip():
-        warning_codes.append("empty_target_text")
-    elif _is_image_only_target(target_text):
-        warning_codes.append("image_only_target")
-
-    for warning_code in warning_codes:
-        log_event(
-            logging.WARNING,
-            "prompt_quality_warning",
-            "Обнаружен потенциально проблемный input для markdown generation.",
-            warning_code=warning_code,
-            target_chars=len(target_text),
-            context_before_chars=len(context_before),
-            context_after_chars=len(context_after),
-        )
-
-    return warning_codes
 
 
 def generate_markdown_block(
@@ -350,17 +307,6 @@ def generate_markdown_block(
         raise TypeError("max_retries должен быть целым числом.")
     if max_retries < 1:
         raise ValueError("max_retries должен быть не меньше 1.")
-
-    _validate_prompt_inputs(target_text, context_before, context_after)
-    if _should_passthrough_target(target_text):
-        if _is_image_only_target(target_text):
-            log_event(
-                logging.WARNING,
-                "image_only_target_passthrough",
-                "Целевой блок состоит только из image placeholder токенов; LLM-вызов пропущен.",
-                target_chars=len(target_text),
-            )
-        return target_text
 
     context_before_text = _normalize_context_text(_strip_image_placeholders(context_before))
     context_after_text = _normalize_context_text(_strip_image_placeholders(context_after))
