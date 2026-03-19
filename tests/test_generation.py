@@ -694,6 +694,73 @@ def test_generate_markdown_block_strips_image_placeholders_from_context(monkeypa
     assert "[[DOCX_IMAGE_img_" not in all_prompt_text
 
 
+def test_generate_markdown_block_marker_mode_preserves_markers_and_returns_clean_markdown(monkeypatch):
+    captured_inputs = []
+
+    def create_response(**kwargs):
+        captured_inputs.append(kwargs.get("input", []))
+        return SimpleNamespace(
+            output_text="[[DOCX_PARA_p0001]]\nИсправленный заголовок\n\n[[DOCX_PARA_p0002]]\nИсправленный абзац"
+        )
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="[[DOCX_PARA_p0001]]\n# Заголовок\n\n[[DOCX_PARA_p0002]]\nАбзац",
+        context_before="before",
+        context_after="after",
+        max_retries=1,
+        expected_paragraph_ids=["p0001", "p0002"],
+        marker_mode=True,
+    )
+
+    assert result == "Исправленный заголовок\n\nИсправленный абзац"
+    prompt_text = captured_inputs[0][1]["content"][0]["text"]
+    assert "[TARGET BLOCK WITH MARKERS]" in prompt_text
+    assert "Сохрани каждый marker" in prompt_text
+
+
+def test_generate_markdown_block_marker_mode_retries_and_recovers_when_markers_are_lost(monkeypatch):
+    attempts = []
+    sleep_calls = []
+    logged_events = []
+
+    def create_response(**kwargs):
+        attempts.append(dict(kwargs))
+        if len(attempts) <= 2:
+            return SimpleNamespace(output_text="Маркеры потеряны")
+        return SimpleNamespace(output_text="[[DOCX_PARA_p0001]]\nВосстановленный абзац")
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+    monkeypatch.setattr(generation.time, "sleep", sleep_calls.append)
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-marker-recovery",
+    )
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="[[DOCX_PARA_p0001]]\nАбзац",
+        context_before="before",
+        context_after="after",
+        max_retries=2,
+        expected_paragraph_ids=["p0001"],
+        marker_mode=True,
+    )
+
+    assert result == "Восстановленный абзац"
+    assert len(attempts) == 3
+    assert sleep_calls == [1]
+    assert logged_events[-1][0][1] == "markdown_empty_response_recovery_started"
+    assert "[TARGET BLOCK WITH MARKERS ONLY]" in attempts[-1]["input"][1]["content"][0]["text"]
+
+
 def test_strip_image_placeholders_removes_only_placeholder_tokens():
     result = generation._strip_image_placeholders(
         "Текст перед\n\n[[DOCX_IMAGE_img_001]]\n\nТекст после"

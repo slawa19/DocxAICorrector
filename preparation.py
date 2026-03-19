@@ -20,7 +20,7 @@ class PreparedDocumentData:
     source_text: str
     paragraphs: list
     image_assets: list
-    jobs: list[dict[str, str | int]]
+    jobs: list[dict[str, object]]
     prepared_source_key: str
     cached: bool = False
 

@@ -1,4 +1,5 @@
 import base64
+import json
 import zipfile
 from io import BytesIO
 from typing import Any, cast
@@ -14,6 +15,7 @@ from docx.shared import Inches
 
 from document import (
     _build_variant_table_element,
+    build_marker_wrapped_block_text,
     build_document_text,
     build_editing_jobs,
     build_semantic_blocks,
@@ -117,6 +119,36 @@ def _extract_docpr_descriptions(element) -> list[str]:
     return [doc_pr.get("descr") for doc_pr in element.xpath(".//wp:docPr") if doc_pr.get("descr")]
 
 
+def _extract_numbering_ids(paragraph) -> tuple[str | None, str | None]:
+    paragraph_properties = paragraph._element.pPr
+    if paragraph_properties is None:
+        return None, None
+    num_pr = paragraph_properties.find(qn("w:numPr"))
+    if num_pr is None:
+        return None, None
+    ilvl = num_pr.find(qn("w:ilvl"))
+    num_id = num_pr.find(qn("w:numId"))
+    return (
+        None if ilvl is None else ilvl.get(qn("w:val")),
+        None if num_id is None else num_id.get(qn("w:val")),
+    )
+
+
+def _numbering_root_contains_num_id(document: Document, num_id: str) -> bool:
+    numbering_root = document.part.numbering_part.element
+    for child in numbering_root:
+        if child.tag == qn("w:num") and child.get(qn("w:numId")) == num_id:
+            abstract_num = child.find(qn("w:abstractNumId"))
+            if abstract_num is None:
+                return False
+            abstract_num_id = abstract_num.get(qn("w:val"))
+            return any(
+                candidate.tag == qn("w:abstractNum") and candidate.get(qn("w:abstractNumId")) == abstract_num_id
+                for candidate in numbering_root
+            )
+    return False
+
+
 def test_build_semantic_blocks_keeps_heading_with_following_body():
     paragraphs = [
         ParagraphUnit(text="Глава 1", role="heading"),
@@ -182,6 +214,19 @@ def test_build_editing_jobs_marks_image_only_blocks_as_passthrough():
 
     assert [job["target_text"] for job in jobs] == ["Вступление", "[[DOCX_IMAGE_img_001]]", "Основной текст"]
     assert [job["job_kind"] for job in jobs] == ["llm", "passthrough", "llm"]
+    assert jobs[0]["paragraph_ids"] == ["p0000"]
+    assert str(jobs[1]["target_text_with_markers"]).startswith("[[DOCX_PARA_p0001]]")
+
+
+def test_build_marker_wrapped_block_text_preserves_paragraph_ids_and_boundaries():
+    paragraphs = [
+        ParagraphUnit(text="Глава", role="heading", paragraph_id="p0001", heading_level=1),
+        ParagraphUnit(text="Основной текст", role="body", paragraph_id="p0002"),
+    ]
+
+    result = build_marker_wrapped_block_text(paragraphs)
+
+    assert result == "[[DOCX_PARA_p0001]]\n# Глава\n\n[[DOCX_PARA_p0002]]\nОсновной текст"
 
 
 def test_extract_document_content_from_docx_inserts_image_placeholders(tmp_path):
@@ -207,6 +252,10 @@ def test_extract_document_content_from_docx_inserts_image_placeholders(tmp_path)
     assert image_assets[0].placeholder == "[[DOCX_IMAGE_img_001]]"
     assert image_assets[0].width_emu is not None
     assert image_assets[0].height_emu is not None
+    assert paragraphs[1].asset_id == "img_001"
+    assert [paragraph.paragraph_id for paragraph in paragraphs] == ["p0000", "p0001", "p0002"]
+    assert [paragraph.source_index for paragraph in paragraphs] == [0, 1, 2]
+    assert [paragraph.structural_role for paragraph in paragraphs] == ["body", "image", "body"]
     assert inspect_placeholder_integrity("\n\n".join(paragraph.text for paragraph in paragraphs), image_assets) == {
         "img_001": "ok"
     }
@@ -249,6 +298,11 @@ def test_build_document_text_renders_word_numbered_and_bulleted_lists_as_markdow
     assert paragraphs[2].list_kind == "ordered"
     assert paragraphs[3].list_kind == "unordered"
     assert paragraphs[3].list_level == 1
+    assert paragraphs[1].list_numbering_format is not None
+    assert paragraphs[1].list_num_id is not None
+    assert paragraphs[1].list_abstract_num_id is not None
+    assert paragraphs[1].list_num_xml is not None
+    assert paragraphs[1].list_abstract_num_xml is not None
     assert build_document_text(paragraphs) == (
         "Вступление\n\n"
         "1. Первый пункт\n\n"
@@ -354,6 +408,9 @@ def test_extract_document_content_from_docx_marks_caption_after_image(tmp_path):
     paragraphs, _ = extract_document_content_from_docx(buffer)
 
     assert [paragraph.role for paragraph in paragraphs] == ["image", "caption"]
+    assert [paragraph.role_confidence for paragraph in paragraphs] == ["explicit", "adjacent"]
+    assert paragraphs[0].asset_id == "img_001"
+    assert paragraphs[1].attached_to_asset_id == "img_001"
 
 
 def test_extract_document_content_from_docx_keeps_caption_style_after_image_even_when_format_looks_like_heading(tmp_path):
@@ -372,6 +429,8 @@ def test_extract_document_content_from_docx_keeps_caption_style_after_image_even
     paragraphs, _ = extract_document_content_from_docx(buffer)
 
     assert [paragraph.role for paragraph in paragraphs] == ["image", "caption"]
+    assert paragraphs[1].role_confidence == "explicit"
+    assert paragraphs[1].attached_to_asset_id == "img_001"
     assert paragraphs[1].heading_level is None
     assert build_document_text(paragraphs) == "[[DOCX_IMAGE_img_001]]\n\n**Рисунок 1 Образец подписи**"
 
@@ -388,6 +447,8 @@ def test_extract_document_content_from_docx_marks_caption_after_table():
     paragraphs, _ = extract_document_content_from_docx(buffer)
 
     assert [paragraph.role for paragraph in paragraphs] == ["table", "caption"]
+    assert paragraphs[0].asset_id == "table_001"
+    assert paragraphs[1].attached_to_asset_id == "table_001"
 
 
 def test_extract_document_content_from_docx_reclassifies_heading_like_caption_after_table():
@@ -403,6 +464,7 @@ def test_extract_document_content_from_docx_reclassifies_heading_like_caption_af
     paragraphs, _ = extract_document_content_from_docx(buffer)
 
     assert [paragraph.role for paragraph in paragraphs] == ["table", "caption"]
+    assert paragraphs[1].attached_to_asset_id == "table_001"
     assert paragraphs[1].heading_level is None
 
 
@@ -439,6 +501,24 @@ def test_extract_document_content_from_docx_recovers_mixed_format_heading_in_nor
     assert paragraphs[0].role == "heading"
     assert paragraphs[0].heading_level == 2
     assert build_document_text(paragraphs) == "## **Раздел 1:** Основные результаты** исследования**"
+
+
+def test_extract_document_content_from_docx_does_not_promote_centered_bold_body_without_text_signal():
+    doc = Document()
+    paragraph = doc.add_paragraph()
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = paragraph.add_run("Краткое описание установки")
+    run.bold = True
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert len(paragraphs) == 1
+    assert paragraphs[0].role == "body"
+    assert paragraphs[0].heading_level is None
+    assert paragraphs[0].role_confidence == "heuristic"
 
 
 def test_extract_document_content_from_docx_preserves_hyperlinks_tabs_and_inline_emphasis():
@@ -515,15 +595,18 @@ def test_preserve_source_paragraph_properties_logs_mismatch_warning(monkeypatch)
 
     preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
 
-    assert events == [
-        (
-            "paragraph_count_mismatch_preserve",
-            {"source_count": 1, "target_count": 2},
-        )
-    ]
+    assert len(events) == 1
+    event_name, context = events[0]
+    assert event_name == "paragraph_count_mismatch_preserve"
+    assert context["source_count"] == 1
+    assert context["target_count"] == 2
+    assert context["mapped_count"] == 1
+    assert context["unmapped_source_count"] == 0
+    assert context["unmapped_target_count"] == 1
+    assert isinstance(context["artifact_path"], str)
 
 
-def test_preserve_source_paragraph_properties_skips_partial_transfer_on_mismatch():
+def test_preserve_source_paragraph_properties_applies_partial_transfer_on_mismatch():
     source_doc = Document()
     source_paragraph = source_doc.add_paragraph("Абзац")
     source_paragraph.paragraph_format.left_indent = Inches(0.5)
@@ -540,10 +623,73 @@ def test_preserve_source_paragraph_properties_skips_partial_transfer_on_mismatch
 
     updated_bytes = preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
     updated_doc = Document(BytesIO(updated_bytes))
-    paragraph_properties = updated_doc.paragraphs[0]._element.pPr
-    indentation = None if paragraph_properties is None else paragraph_properties.find(qn("w:ind"))
+    first_paragraph_properties = updated_doc.paragraphs[0]._element.pPr
+    first_indentation = None if first_paragraph_properties is None else first_paragraph_properties.find(qn("w:ind"))
+    second_paragraph_properties = updated_doc.paragraphs[1]._element.pPr
+    second_indentation = None if second_paragraph_properties is None else second_paragraph_properties.find(qn("w:ind"))
 
-    assert indentation is None
+    assert first_indentation is not None
+    assert second_indentation is None
+
+
+def test_preserve_source_paragraph_properties_artifact_records_caption_heading_conflict(tmp_path, monkeypatch):
+    image_path = tmp_path / "artifact_caption_image.png"
+    image_path.write_bytes(PNG_BYTES)
+
+    source_doc = Document()
+    source_doc.add_paragraph().add_run().add_picture(str(image_path))
+    source_caption = source_doc.add_paragraph("Рис. 1. Подпись к изображению")
+    source_caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    source_buffer = BytesIO()
+    source_doc.save(source_buffer)
+    source_buffer.seek(0)
+    source_paragraphs, _ = extract_document_content_from_docx(source_buffer)
+
+    target_doc = Document()
+    target_doc.add_paragraph("[[DOCX_IMAGE_img_001]]")
+    target_doc.add_paragraph("Рис. 1. Подпись к изображению", style="Heading 1")
+    target_doc.add_paragraph("Лишний абзац")
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    diagnostics_dir = tmp_path / "formatting_diagnostics"
+    monkeypatch.setattr(document, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
+
+    preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
+
+    artifacts = sorted(diagnostics_dir.glob("*.json"))
+    assert len(artifacts) == 1
+    payload = json.loads(artifacts[0].read_text(encoding="utf-8"))
+    assert len(payload["caption_heading_conflicts"]) == 1
+    assert payload["caption_heading_conflicts"][0]["target_style_name"] == "Heading 1"
+    assert payload["caption_heading_conflicts"][0]["target_heading_level"] == 1
+
+
+def test_normalize_semantic_output_docx_artifact_records_list_restoration_decisions(tmp_path, monkeypatch):
+    source_doc = Document()
+    source_doc.add_paragraph("Первый пункт", style="List Number")
+    source_buffer = BytesIO()
+    source_doc.save(source_buffer)
+    source_buffer.seek(0)
+    source_paragraphs, _ = extract_document_content_from_docx(source_buffer)
+
+    target_doc = Document()
+    target_doc.add_paragraph("Первый пункт")
+    target_doc.add_paragraph("Лишний абзац")
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    diagnostics_dir = tmp_path / "formatting_diagnostics"
+    monkeypatch.setattr(document, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
+
+    updated_bytes = normalize_semantic_output_docx(target_buffer.getvalue(), source_paragraphs)
+
+    updated_doc = Document(BytesIO(updated_bytes))
+    assert _extract_numbering_ids(updated_doc.paragraphs[0])[1] is not None
+    artifacts = sorted(diagnostics_dir.glob("*.json"))
+    assert len(artifacts) == 1
+    payload = json.loads(artifacts[0].read_text(encoding="utf-8"))
+    assert payload["list_restoration_decisions"][0]["action"] == "restored"
 
 
 def test_replace_xml_element_with_sequence_empty_replacements_is_noop():
@@ -767,15 +913,18 @@ def test_normalize_semantic_output_docx_logs_mismatch_warning(monkeypatch):
 
     normalize_semantic_output_docx(target_buffer.getvalue(), source_paragraphs)
 
-    assert events == [
-        (
-            "paragraph_count_mismatch_normalize",
-            {"source_count": 1, "target_count": 2},
-        )
-    ]
+    assert len(events) == 1
+    event_name, context = events[0]
+    assert event_name == "paragraph_count_mismatch_normalize"
+    assert context["source_count"] == 1
+    assert context["target_count"] == 2
+    assert context["mapped_count"] == 1
+    assert context["unmapped_source_count"] == 0
+    assert context["unmapped_target_count"] == 1
+    assert isinstance(context["artifact_path"], str)
 
 
-def test_normalize_semantic_output_docx_skips_partial_normalization_on_mismatch():
+def test_normalize_semantic_output_docx_applies_partial_normalization_on_mismatch():
     source_paragraphs = [ParagraphUnit(text="Заголовок", role="heading", heading_level=1)]
     target_doc = Document()
     target_doc.add_paragraph("Заголовок")
@@ -787,7 +936,106 @@ def test_normalize_semantic_output_docx_skips_partial_normalization_on_mismatch(
     updated_doc = Document(BytesIO(updated_bytes))
 
     assert updated_doc.paragraphs[0].style is not None
-    assert updated_doc.paragraphs[0].style.name == "Normal"
+    assert updated_doc.paragraphs[0].style.name == "Heading 1"
+    assert updated_doc.paragraphs[1].style is not None
+    assert updated_doc.paragraphs[1].style.name == "Normal"
+
+
+def test_normalize_semantic_output_docx_similarity_mapping_restores_caption_when_text_changes_slightly():
+    source_paragraphs = [ParagraphUnit(text="Рис. 1. Подпись к изображению", role="caption")]
+    target_doc = Document()
+    target_doc.add_paragraph("Рисунок 1 Подпись к изображению")
+    target_doc.add_paragraph("Посторонний абзац")
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    updated_bytes = normalize_semantic_output_docx(target_buffer.getvalue(), source_paragraphs)
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    assert updated_doc.paragraphs[0].style is not None
+    assert updated_doc.paragraphs[0].style.name == "Caption"
+    assert updated_doc.paragraphs[0].alignment == WD_ALIGN_PARAGRAPH.CENTER
+
+
+def test_normalize_semantic_output_docx_uses_generated_paragraph_registry_for_marker_anchored_mapping():
+    source_paragraphs = [
+        ParagraphUnit(text="Старый заголовок", role="heading", heading_level=1, paragraph_id="p0000"),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("Совершенно новый заголовок")
+    target_doc.add_paragraph("Лишний абзац")
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    updated_bytes = normalize_semantic_output_docx(
+        target_buffer.getvalue(),
+        source_paragraphs,
+        generated_paragraph_registry=[{"paragraph_id": "p0000", "text": "Совершенно новый заголовок"}],
+    )
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    assert updated_doc.paragraphs[0].style is not None
+    assert updated_doc.paragraphs[0].style.name == "Heading 1"
+    assert updated_doc.paragraphs[1].style is not None
+    assert updated_doc.paragraphs[1].style.name == "Normal"
+
+
+def test_normalize_semantic_output_docx_restores_real_word_numbering_for_mapped_lists():
+    source_doc = Document()
+    source_doc.add_paragraph("Первый пункт", style="List Number")
+    source_doc.add_paragraph("Второй пункт", style="List Number")
+    source_buffer = BytesIO()
+    source_doc.save(source_buffer)
+    source_buffer.seek(0)
+
+    source_paragraphs, _ = extract_document_content_from_docx(source_buffer)
+
+    target_doc = Document()
+    target_doc.add_paragraph("Первый пункт")
+    target_doc.add_paragraph("Второй пункт")
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    updated_bytes = normalize_semantic_output_docx(target_buffer.getvalue(), source_paragraphs)
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    first_ilvl, first_num_id = _extract_numbering_ids(updated_doc.paragraphs[0])
+    second_ilvl, second_num_id = _extract_numbering_ids(updated_doc.paragraphs[1])
+
+    assert updated_doc.paragraphs[0].style.name == "List Paragraph"
+    assert updated_doc.paragraphs[1].style.name == "List Paragraph"
+    assert first_ilvl == "0"
+    assert second_ilvl == "0"
+    assert first_num_id is not None
+    assert second_num_id == first_num_id
+    assert _numbering_root_contains_num_id(updated_doc, first_num_id)
+
+
+def test_normalize_semantic_output_docx_restores_real_word_numbering_on_partial_mapping_mismatch():
+    source_doc = Document()
+    source_doc.add_paragraph("Первый пункт", style="List Number")
+    source_buffer = BytesIO()
+    source_doc.save(source_buffer)
+    source_buffer.seek(0)
+
+    source_paragraphs, _ = extract_document_content_from_docx(source_buffer)
+
+    target_doc = Document()
+    target_doc.add_paragraph("Первый пункт")
+    target_doc.add_paragraph("Лишний абзац")
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    updated_bytes = normalize_semantic_output_docx(target_buffer.getvalue(), source_paragraphs)
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    ilvl, num_id = _extract_numbering_ids(updated_doc.paragraphs[0])
+
+    assert updated_doc.paragraphs[0].style.name == "List Paragraph"
+    assert ilvl == "0"
+    assert num_id is not None
+    assert _numbering_root_contains_num_id(updated_doc, num_id)
+    assert _extract_numbering_ids(updated_doc.paragraphs[1]) == (None, None)
 
 
 def test_caption_survives_extraction_markdown_and_normalization_after_image(tmp_path):

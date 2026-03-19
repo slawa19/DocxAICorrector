@@ -1,5 +1,7 @@
 import base64
+import json
 from io import BytesIO
+from pathlib import Path
 
 import document_pipeline
 from docx import Document
@@ -191,6 +193,269 @@ def test_run_document_processing_applies_semantic_output_normalization_before_im
 
     assert result == "succeeded"
     assert call_order == ["convert", "preserve", "normalize", "reinsert"]
+
+
+def test_run_document_processing_surfaces_formatting_diagnostics_artifacts(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    diagnostics_dir = tmp_path / "formatting_diagnostics"
+    monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
+
+    def preserve_with_artifact(docx_bytes, paragraphs):
+        diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        (diagnostics_dir / "preserve_001.json").write_text('{"stage":"preserve"}', encoding="utf-8")
+        return docx_bytes
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
+        source_paragraphs=[ParagraphStub()],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "Обработанный блок",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: b"docx-bytes",
+        preserve_source_paragraph_properties=preserve_with_artifact,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+    )
+
+    assert result == "succeeded"
+    assert runtime["activity"][-2] == "Сборка DOCX завершилась с частичной деградацией форматирования; сохранены diagnostics artifacts."
+    assert runtime["log"][-2]["status"] == "WARN"
+    assert "preserve_001.json" in runtime["log"][-2]["details"]
+
+
+def test_run_document_processing_passes_marker_wrapped_text_only_when_marker_mode_enabled():
+    runtime = _build_runtime_capture()
+    generate_calls = []
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{
+            "target_text": "Исходный блок",
+            "target_text_with_markers": "[[DOCX_PARA_p0001]]\nИсходный блок",
+            "paragraph_ids": ["p0001"],
+            "context_before": "",
+            "context_after": "",
+            "target_chars": 13,
+            "context_chars": 0,
+        }],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={"enable_paragraph_markers": True},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: generate_calls.append(kwargs) or "Очищенный блок",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
+    )
+
+    assert result == "succeeded"
+    assert generate_calls[0]["target_text"] == "[[DOCX_PARA_p0001]]\nИсходный блок"
+    assert generate_calls[0]["expected_paragraph_ids"] == ["p0001"]
+    assert generate_calls[0]["marker_mode"] is True
+    assert runtime["state"]["latest_markdown"] == "Очищенный блок"
+    assert runtime["state"]["processed_paragraph_registry"] == [
+        {"block_index": 1, "paragraph_id": "p0001", "text": "Очищенный блок"}
+    ]
+
+
+def test_run_document_processing_passes_generated_paragraph_registry_into_docx_restoration():
+    runtime = _build_runtime_capture()
+    preserve_calls = []
+    normalize_calls = []
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{
+            "target_text": "Исходный блок",
+            "target_text_with_markers": "[[DOCX_PARA_p0001]]\nИсходный блок",
+            "paragraph_ids": ["p0001"],
+            "context_before": "",
+            "context_after": "",
+            "target_chars": 13,
+            "context_chars": 0,
+        }],
+        source_paragraphs=[ParagraphStub()],
+        image_assets=[],
+        image_mode="safe",
+        app_config={"enable_paragraph_markers": True},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "Очищенный блок",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: preserve_calls.append(generated_paragraph_registry) or docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: normalize_calls.append(generated_paragraph_registry) or docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
+    )
+
+    assert result == "succeeded"
+    expected_registry = [{"block_index": 1, "paragraph_id": "p0001", "text": "Очищенный блок"}]
+    assert preserve_calls == [expected_registry]
+    assert normalize_calls == [expected_registry]
+
+
+def test_run_document_processing_writes_marker_generation_diagnostics_artifact_on_marker_validation_failure(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    diagnostics_dir = tmp_path / "formatting_diagnostics"
+    monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{
+            "target_text": "Исходный блок",
+            "target_text_with_markers": "[[DOCX_PARA_p0001]]\nИсходный блок",
+            "paragraph_ids": ["p0001"],
+            "context_before": "prev",
+            "context_after": "next",
+            "target_chars": 13,
+            "context_chars": 8,
+        }],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={"enable_paragraph_markers": True},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("paragraph_marker_validation_failed:markers_missing")),
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
+    )
+
+    assert result == "failed"
+    artifact_path = Path(runtime["state"]["latest_marker_diagnostics_artifact"])
+    assert artifact_path.exists()
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert payload["stage"] == "generation"
+    assert payload["error_code"] == "markers_missing"
+    assert payload["paragraph_ids"] == ["p0001"]
+    assert "marker diagnostics:" in runtime["log"][-1]["details"]
+
+
+def test_run_document_processing_writes_marker_registry_diagnostics_artifact_on_registry_mismatch(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    diagnostics_dir = tmp_path / "formatting_diagnostics"
+    monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{
+            "target_text": "Исходный блок",
+            "target_text_with_markers": "[[DOCX_PARA_p0001]]\nИсходный блок",
+            "paragraph_ids": ["p0001", "p0002"],
+            "context_before": "prev",
+            "context_after": "next",
+            "target_chars": 13,
+            "context_chars": 8,
+        }],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={"enable_paragraph_markers": True},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "Только один абзац",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
+    )
+
+    assert result == "failed"
+    artifact_path = Path(runtime["state"]["latest_marker_diagnostics_artifact"])
+    assert artifact_path.exists()
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert payload["stage"] == "registry"
+    assert payload["error_code"].startswith("block=1:expected=2:actual=1")
+    assert payload["processed_chunk_preview"] == "Только один абзац"
+    assert "marker diagnostics:" in runtime["log"][-1]["details"]
 
 
 def test_run_document_processing_stops_before_second_block():

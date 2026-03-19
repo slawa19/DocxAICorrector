@@ -1,14 +1,17 @@
 import logging
+import json
 import re
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Sized
+from pathlib import Path
 from typing import Literal, Protocol, TypeAlias
 
 
-JobValue: TypeAlias = str | int
+JobValue: TypeAlias = object
 ProcessingJob: TypeAlias = Mapping[str, JobValue]
 PipelineResult: TypeAlias = Literal["succeeded", "failed", "stopped"]
 ProcessedBlockStatus: TypeAlias = Literal["valid", "empty", "heading_only_output"]
+FORMATTING_DIAGNOSTICS_DIR = Path(".run") / "formatting_diagnostics"
 
 
 class ParagraphLike(Protocol):
@@ -80,6 +83,8 @@ class MarkdownGenerator(Protocol):
         context_before: str,
         context_after: str,
         max_retries: int,
+        expected_paragraph_ids: Sequence[str] | None = None,
+        marker_mode: bool = False,
     ) -> str: ...
 
 
@@ -105,11 +110,21 @@ class MarkdownToDocxConverter(Protocol):
 
 
 class ParagraphPropertiesPreserver(Protocol):
-    def __call__(self, docx_bytes: bytes, paragraphs: Sequence[ParagraphLike]) -> bytes: ...
+    def __call__(
+        self,
+        docx_bytes: bytes,
+        paragraphs: Sequence[ParagraphLike],
+        generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
+    ) -> bytes: ...
 
 
 class SemanticDocxNormalizer(Protocol):
-    def __call__(self, docx_bytes: bytes, paragraphs: Sequence[ParagraphLike]) -> bytes: ...
+    def __call__(
+        self,
+        docx_bytes: bytes,
+        paragraphs: Sequence[ParagraphLike],
+        generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
+    ) -> bytes: ...
 
 
 class ImageReinserter(Protocol):
@@ -128,6 +143,24 @@ def _coerce_required_text_field(job: ProcessingJob, field_name: str, *, allow_bl
     if not allow_blank and not text.strip():
         raise ValueError(f"{field_name} is empty")
     return text
+
+
+def _coerce_optional_string_list(job: ProcessingJob, field_name: str) -> list[str] | None:
+    value = job.get(field_name)
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise TypeError(f"{field_name} must be a non-empty string list")
+    return list(value)
+
+
+def _coerce_optional_text_field(job: ProcessingJob, field_name: str) -> str | None:
+    value = job.get(field_name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} must be a string")
+    return value
 
 
 def _coerce_job_kind(job: ProcessingJob) -> str:
@@ -190,6 +223,95 @@ def _reconcile_placeholder_integrity(
     for missing_image_id in sorted(expected_ids - observed_ids):
         mismatches[missing_image_id] = "missing_status"
     return mismatches
+
+
+def _collect_recent_formatting_diagnostics(*, since_epoch_seconds: float) -> list[str]:
+    if not FORMATTING_DIAGNOSTICS_DIR.exists():
+        return []
+
+    recent_artifacts: list[str] = []
+    threshold = max(0.0, since_epoch_seconds - 1.0)
+    for artifact_path in sorted(FORMATTING_DIAGNOSTICS_DIR.glob("*.json")):
+        try:
+            if artifact_path.stat().st_mtime >= threshold:
+                recent_artifacts.append(str(artifact_path))
+        except OSError:
+            continue
+    return recent_artifacts
+
+
+def _extract_marker_diagnostics_code(exc: Exception) -> str | None:
+    message = str(exc)
+    marker_prefix = "paragraph_marker_validation_failed:"
+    registry_prefix = "paragraph_marker_registry_mismatch:"
+    if marker_prefix in message:
+        return message.split(marker_prefix, 1)[1].strip() or "unknown_marker_validation_failure"
+    if registry_prefix in message:
+        return message.split(registry_prefix, 1)[1].strip() or "unknown_marker_registry_failure"
+    return None
+
+
+def _write_marker_diagnostics_artifact(
+    *,
+    stage: str,
+    uploaded_filename: str,
+    block_index: int,
+    block_count: int,
+    error_code: str,
+    target_text: str,
+    context_before: str,
+    context_after: str,
+    paragraph_ids: Sequence[str] | None,
+    processed_chunk: str | None = None,
+) -> str | None:
+    try:
+        FORMATTING_DIAGNOSTICS_DIR.mkdir(parents=True, exist_ok=True)
+        artifact_path = FORMATTING_DIAGNOSTICS_DIR / f"marker_block_{stage}_{block_index:03d}_{int(time.time() * 1000)}.json"
+        payload = {
+            "stage": stage,
+            "uploaded_filename": uploaded_filename,
+            "block_index": block_index,
+            "block_count": block_count,
+            "error_code": error_code,
+            "paragraph_ids": list(paragraph_ids or []),
+            "target_text_preview": target_text[:1000],
+            "context_before_preview": context_before[:600],
+            "context_after_preview": context_after[:600],
+            "processed_chunk_preview": (processed_chunk or "")[:1000],
+        }
+        artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return str(artifact_path)
+    except Exception:
+        return None
+
+
+def _build_processed_paragraph_registry_entries(*, block_index: int, paragraph_ids: Sequence[str], processed_chunk: str) -> list[dict[str, object]]:
+    paragraph_chunks = [chunk.strip() for chunk in processed_chunk.split("\n\n") if chunk.strip()]
+    if len(paragraph_chunks) != len(paragraph_ids):
+        raise RuntimeError(
+            f"paragraph_marker_registry_mismatch:block={block_index}:expected={len(paragraph_ids)}:actual={len(paragraph_chunks)}"
+        )
+    return [
+        {
+            "block_index": block_index,
+            "paragraph_id": paragraph_id,
+            "text": paragraph_chunk,
+        }
+        for paragraph_id, paragraph_chunk in zip(paragraph_ids, paragraph_chunks)
+    ]
+
+
+def _call_docx_restorer_with_optional_registry(restorer, docx_bytes: bytes, paragraphs, generated_paragraph_registry):
+    try:
+        return restorer(
+            docx_bytes,
+            paragraphs,
+            generated_paragraph_registry=generated_paragraph_registry,
+        )
+    except TypeError as exc:
+        if "generated_paragraph_registry" not in str(exc):
+            raise
+        return restorer(docx_bytes, paragraphs)
 
 
 def run_document_processing(
@@ -334,6 +456,7 @@ def run_document_processing(
         return 'failed'
 
     processed_chunks: list[str] = []
+    generated_paragraph_registry: list[dict[str, object]] = []
     started_at = time.perf_counter()
 
     for index, job in enumerate(jobs, start=1):
@@ -357,6 +480,8 @@ def run_document_processing(
             target_chars = int(job["target_chars"])
             context_chars = int(job["context_chars"])
             target_text = _coerce_required_text_field(job, "target_text", allow_blank=False)
+            target_text_with_markers = _coerce_optional_text_field(job, "target_text_with_markers") or target_text
+            paragraph_ids = _coerce_optional_string_list(job, "paragraph_ids")
             context_before = _coerce_required_text_field(job, "context_before")
             context_after = _coerce_required_text_field(job, "context_after")
         except (KeyError, TypeError, ValueError) as exc:
@@ -413,6 +538,7 @@ def run_document_processing(
             model=model,
             job_kind=job_kind,
         )
+        marker_mode_enabled = False
         try:
             if job_kind == "passthrough":
                 emit_status(
@@ -430,6 +556,7 @@ def run_document_processing(
                 on_progress(preview_title="Текущий Markdown")
                 processed_chunk = target_text
             else:
+                marker_mode_enabled = bool(app_config.get("enable_paragraph_markers", False)) and bool(paragraph_ids)
                 if system_prompt is None:
                     system_prompt = load_system_prompt()
                 emit_status(
@@ -449,12 +576,28 @@ def run_document_processing(
                     client=client,
                     model=model,
                     system_prompt=system_prompt,
-                    target_text=target_text,
+                    target_text=target_text_with_markers if marker_mode_enabled else target_text,
                     context_before=context_before,
                     context_after=context_after,
                     max_retries=max_retries,
+                    expected_paragraph_ids=paragraph_ids if marker_mode_enabled else None,
+                    marker_mode=marker_mode_enabled,
                 )
         except Exception as exc:
+            marker_diagnostics_artifact = None
+            marker_error_code = _extract_marker_diagnostics_code(exc) if marker_mode_enabled else None
+            if marker_error_code is not None:
+                marker_diagnostics_artifact = _write_marker_diagnostics_artifact(
+                    stage="generation",
+                    uploaded_filename=uploaded_filename,
+                    block_index=index,
+                    block_count=job_count,
+                    error_code=marker_error_code,
+                    target_text=target_text_with_markers,
+                    context_before=context_before,
+                    context_after=context_after,
+                    paragraph_ids=paragraph_ids,
+                )
             emit_state(runtime, latest_markdown="\n\n".join(processed_chunks).strip(), latest_docx_bytes=None)
             error_message = present_error(
                 "block_failed",
@@ -468,7 +611,12 @@ def run_document_processing(
                 model=model,
             )
             formatted_error = f"Ошибка на блоке {index}: {error_message}"
-            emit_state(runtime, last_error=formatted_error, latest_docx_bytes=None)
+            emit_state(
+                runtime,
+                last_error=formatted_error,
+                latest_docx_bytes=None,
+                latest_marker_diagnostics_artifact=marker_diagnostics_artifact,
+            )
             emit_finalize(runtime, "Ошибка обработки", formatted_error, (index - 1) / job_count)
             emit_activity(runtime, f"Блок {index}: ошибка обработки.")
             emit_log(
@@ -478,8 +626,23 @@ def run_document_processing(
                 block_count=job_count,
                 target_chars=target_chars,
                 context_chars=context_chars,
-                details=error_message,
+                details=(
+                    f"{error_message}; marker diagnostics: {marker_diagnostics_artifact}"
+                    if marker_diagnostics_artifact
+                    else error_message
+                ),
             )
+            if marker_diagnostics_artifact is not None:
+                log_event(
+                    logging.WARNING,
+                    "marker_diagnostics_artifact_created",
+                    "Сохранён marker diagnostics artifact для блока с ошибкой generation.",
+                    filename=uploaded_filename,
+                    block_index=index,
+                    block_count=job_count,
+                    artifact_path=marker_diagnostics_artifact,
+                    error_code=marker_error_code,
+                )
             return "failed"
 
         processed_block_status = _classify_processed_block(target_text, processed_chunk)
@@ -546,10 +709,84 @@ def run_document_processing(
             return "failed"
 
         processed_chunks.append(processed_chunk)
+        if job_kind == "llm" and marker_mode_enabled and paragraph_ids:
+            try:
+                generated_paragraph_registry.extend(
+                    _build_processed_paragraph_registry_entries(
+                        block_index=index,
+                        paragraph_ids=paragraph_ids,
+                        processed_chunk=processed_chunk,
+                    )
+                )
+                log_event(
+                    logging.INFO,
+                    "block_marker_registry_built",
+                    "Для блока собран marker-aware paragraph registry.",
+                    filename=uploaded_filename,
+                    block_index=index,
+                    block_count=job_count,
+                    paragraph_count=len(paragraph_ids),
+                )
+            except Exception as exc:
+                marker_diagnostics_artifact = _write_marker_diagnostics_artifact(
+                    stage="registry",
+                    uploaded_filename=uploaded_filename,
+                    block_index=index,
+                    block_count=job_count,
+                    error_code=_extract_marker_diagnostics_code(exc) or "marker_registry_build_failed",
+                    target_text=target_text_with_markers,
+                    context_before=context_before,
+                    context_after=context_after,
+                    paragraph_ids=paragraph_ids,
+                    processed_chunk=processed_chunk,
+                )
+                emit_state(runtime, latest_markdown="\n\n".join(processed_chunks).strip(), latest_docx_bytes=None)
+                error_message = present_error(
+                    "block_marker_registry_failed",
+                    exc,
+                    "Ошибка marker-реестра блока",
+                    filename=uploaded_filename,
+                    block_index=index,
+                    block_count=job_count,
+                )
+                formatted_error = f"Ошибка на блоке {index}: {error_message}"
+                emit_state(
+                    runtime,
+                    last_error=formatted_error,
+                    latest_docx_bytes=None,
+                    latest_marker_diagnostics_artifact=marker_diagnostics_artifact,
+                )
+                emit_finalize(runtime, "Ошибка marker-реестра", formatted_error, index / job_count)
+                emit_activity(runtime, f"Блок {index}: не удалось собрать marker-aware paragraph registry.")
+                emit_log(
+                    runtime,
+                    status="ERROR",
+                    block_index=index,
+                    block_count=job_count,
+                    target_chars=target_chars,
+                    context_chars=context_chars,
+                    details=(
+                        f"{error_message}; marker diagnostics: {marker_diagnostics_artifact}"
+                        if marker_diagnostics_artifact
+                        else error_message
+                    ),
+                )
+                if marker_diagnostics_artifact is not None:
+                    log_event(
+                        logging.WARNING,
+                        "marker_diagnostics_artifact_created",
+                        "Сохранён marker diagnostics artifact для блока с ошибкой registry build.",
+                        filename=uploaded_filename,
+                        block_index=index,
+                        block_count=job_count,
+                        artifact_path=marker_diagnostics_artifact,
+                    )
+                return "failed"
         emit_state(
             runtime,
             processed_block_markdowns=processed_chunks.copy(),
             latest_markdown="\n\n".join(processed_chunks).strip(),
+            processed_paragraph_registry=generated_paragraph_registry.copy(),
         )
         emit_log(
             runtime,
@@ -712,12 +949,23 @@ def run_document_processing(
     )
     emit_activity(runtime, "Все блоки готовы. Начата сборка итогового DOCX.")
     on_progress(preview_title="Текущий Markdown")
+    build_started_at_epoch = time.time()
 
     try:
         docx_bytes = convert_markdown_to_docx_bytes(final_markdown)
         if source_paragraphs:
-            docx_bytes = preserve_source_paragraph_properties(docx_bytes, source_paragraphs)
-            docx_bytes = normalize_semantic_output_docx(docx_bytes, source_paragraphs)
+            docx_bytes = _call_docx_restorer_with_optional_registry(
+                preserve_source_paragraph_properties,
+                docx_bytes,
+                source_paragraphs,
+                generated_paragraph_registry or None,
+            )
+            docx_bytes = _call_docx_restorer_with_optional_registry(
+                normalize_semantic_output_docx,
+                docx_bytes,
+                source_paragraphs,
+                generated_paragraph_registry or None,
+            )
         if processed_image_assets:
             docx_bytes = reinsert_inline_images(docx_bytes, processed_image_assets)
     except Exception as exc:
@@ -741,6 +989,29 @@ def run_document_processing(
             details=error_message,
         )
         return "failed"
+
+    formatting_diagnostics_artifacts = _collect_recent_formatting_diagnostics(
+        since_epoch_seconds=build_started_at_epoch
+    )
+    if formatting_diagnostics_artifacts:
+        diagnostics_summary = "; ".join(formatting_diagnostics_artifacts)
+        emit_activity(runtime, "Сборка DOCX завершилась с частичной деградацией форматирования; сохранены diagnostics artifacts.")
+        emit_log(
+            runtime,
+            status="WARN",
+            block_index=job_count,
+            block_count=job_count,
+            target_chars=len(final_markdown),
+            context_chars=0,
+            details=f"formatting diagnostics: {diagnostics_summary}",
+        )
+        log_event(
+            logging.WARNING,
+            "formatting_diagnostics_artifacts_detected",
+            "Во время сборки DOCX сохранены formatting diagnostics artifacts.",
+            filename=uploaded_filename,
+            artifact_paths=formatting_diagnostics_artifacts,
+        )
 
     if not docx_bytes:
         critical_message = present_error(

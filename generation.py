@@ -2,7 +2,7 @@ import logging
 import re
 import tempfile
 import time
-from collections.abc import Iterable, Mapping, Sized
+from collections.abc import Iterable, Mapping, Sequence, Sized
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 
 _SUPPORTED_RESPONSE_TEXT_TYPES = {"output_text", "text"}
+_PARAGRAPH_MARKER_PATTERN = re.compile(r"\[\[DOCX_PARA_([A-Za-z0-9_]+)\]\]")
 
 
 @lru_cache(maxsize=1)
@@ -78,6 +79,20 @@ def _build_standard_user_prompt(*, target_text: str, context_before: str, contex
     )
 
 
+def _build_marker_preserving_user_prompt(*, target_text: str, context_before: str, context_after: str) -> str:
+    return (
+        "Ниже передан целевой блок документа с обязательными маркерами абзацев вида [[DOCX_PARA_...]].\n"
+        "Сохрани каждый marker в точности, в том же количестве и порядке.\n"
+        "Не удаляй, не дублируй и не переименовывай markers.\n"
+        "Не объединяй абзацы между markers и не дели один marker на несколько абзацев.\n"
+        "Редактируй только текст после каждого marker и верни весь блок целиком вместе с markers.\n"
+        "Используй соседний контекст только для смысла и терминологии.\n\n"
+        f"[CONTEXT BEFORE]\n{context_before}\n\n"
+        f"[TARGET BLOCK WITH MARKERS]\n{target_text}\n\n"
+        f"[CONTEXT AFTER]\n{context_after}"
+    )
+
+
 def _build_empty_response_recovery_user_prompt(*, target_text: str) -> str:
     return (
         "Предыдущая попытка вернула пустой ответ.\n"
@@ -86,6 +101,52 @@ def _build_empty_response_recovery_user_prompt(*, target_text: str) -> str:
         "Верни только итоговый отредактированный текст блока без пояснений, без Markdown-обрамления и без пустого ответа.\n\n"
         f"[TARGET BLOCK ONLY]\n{target_text}"
     )
+
+
+def _build_marker_recovery_user_prompt(*, target_text: str) -> str:
+    return (
+        "Предыдущая попытка нарушила контракт paragraph markers.\n"
+        "Повтори обработку строго по правилам ниже.\n"
+        "Сохрани каждый marker [[DOCX_PARA_...]] в исходном виде и порядке.\n"
+        "Не удаляй markers, не добавляй новые, не меняй их местами.\n"
+        "Каждому marker должен соответствовать ровно один абзац текста после него.\n"
+        "Верни только итоговый блок целиком вместе с markers, без пояснений.\n\n"
+        f"[TARGET BLOCK WITH MARKERS ONLY]\n{target_text}"
+    )
+
+
+def _split_marker_preserved_markdown(markdown: str, expected_paragraph_ids: Sequence[str]) -> list[str]:
+    matches = list(_PARAGRAPH_MARKER_PATTERN.finditer(markdown))
+    if not matches:
+        raise RuntimeError("paragraph_marker_validation_failed:markers_missing")
+
+    found_ids = [match.group(1) for match in matches]
+    expected_ids = list(expected_paragraph_ids)
+    if found_ids != expected_ids:
+        raise RuntimeError("paragraph_marker_validation_failed:marker_order_or_identity")
+
+    leading_text = markdown[: matches[0].start()].strip()
+    if leading_text:
+        raise RuntimeError("paragraph_marker_validation_failed:unexpected_prefix")
+
+    paragraph_chunks: list[str] = []
+    for index, match in enumerate(matches):
+        content_end = matches[index + 1].start() if index + 1 < len(matches) else len(markdown)
+        chunk = markdown[match.end() : content_end].strip()
+        if not chunk:
+            raise RuntimeError("paragraph_marker_validation_failed:empty_marker_chunk")
+        if "\n\n" in chunk:
+            raise RuntimeError("paragraph_marker_validation_failed:paragraph_split_detected")
+        paragraph_chunks.append(chunk)
+    return paragraph_chunks
+
+
+def _strip_and_validate_paragraph_markers(markdown: str, expected_paragraph_ids: Sequence[str] | None, *, marker_mode: bool) -> str:
+    if not marker_mode:
+        return markdown
+    if not expected_paragraph_ids:
+        raise RuntimeError("paragraph_marker_validation_failed:missing_expected_ids")
+    return "\n\n".join(_split_marker_preserved_markdown(markdown, expected_paragraph_ids))
 
 
 def _read_response_field(value: object, field_name: str) -> object:
@@ -271,6 +332,8 @@ def _recover_from_persistent_empty_response(
     model: str,
     system_prompt: str,
     target_text: str,
+    expected_paragraph_ids: Sequence[str] | None = None,
+    marker_mode: bool = False,
 ) -> str:
     log_event(
         logging.WARNING,
@@ -282,16 +345,29 @@ def _recover_from_persistent_empty_response(
     request_kwargs = _build_request_kwargs(
         model=model,
         system_prompt=system_prompt,
-        user_prompt=_build_empty_response_recovery_user_prompt(target_text=target_text),
+        user_prompt=(
+            _build_marker_recovery_user_prompt(target_text=target_text)
+            if marker_mode
+            else _build_empty_response_recovery_user_prompt(target_text=target_text)
+        ),
         target_text=target_text,
     )
-    return _call_markdown_request_with_sdk_fallback(client, request_kwargs)[0]
+    markdown = _call_markdown_request_with_sdk_fallback(client, request_kwargs)[0]
+    return _strip_and_validate_paragraph_markers(
+        markdown,
+        expected_paragraph_ids,
+        marker_mode=marker_mode,
+    )
 
 
 def _is_retryable_empty_generation_error(exc: Exception) -> bool:
     return isinstance(exc, RuntimeError) and (
         "empty_response" in str(exc) or "collapsed_output" in str(exc)
     )
+
+
+def _is_retryable_marker_validation_error(exc: Exception) -> bool:
+    return isinstance(exc, RuntimeError) and "paragraph_marker_validation_failed" in str(exc)
 
 
 def generate_markdown_block(
@@ -302,6 +378,8 @@ def generate_markdown_block(
     context_before: str,
     context_after: str,
     max_retries: int,
+    expected_paragraph_ids: Sequence[str] | None = None,
+    marker_mode: bool = False,
 ) -> str:
     if isinstance(max_retries, bool) or not isinstance(max_retries, int):
         raise TypeError("max_retries должен быть целым числом.")
@@ -313,10 +391,18 @@ def generate_markdown_block(
     request_kwargs = _build_request_kwargs(
         model=model,
         system_prompt=system_prompt,
-        user_prompt=_build_standard_user_prompt(
-            target_text=target_text,
-            context_before=context_before_text,
-            context_after=context_after_text,
+        user_prompt=(
+            _build_marker_preserving_user_prompt(
+                target_text=target_text,
+                context_before=context_before_text,
+                context_after=context_after_text,
+            )
+            if marker_mode
+            else _build_standard_user_prompt(
+                target_text=target_text,
+                context_before=context_before_text,
+                context_after=context_after_text,
+            )
         ),
         target_text=target_text,
     )
@@ -324,26 +410,38 @@ def generate_markdown_block(
 
     for attempt in range(1, max_retries + 1):
         try:
-            return _call_markdown_request_with_sdk_fallback(client, request_kwargs)[0]
+            markdown = _call_markdown_request_with_sdk_fallback(client, request_kwargs)[0]
+            return _strip_and_validate_paragraph_markers(
+                markdown,
+                expected_paragraph_ids,
+                marker_mode=marker_mode,
+            )
         except Exception as exc:
             last_exception = exc
             should_retry = attempt < max_retries and (
-                is_retryable_error(exc) or _is_retryable_empty_generation_error(exc)
+                is_retryable_error(exc)
+                or _is_retryable_empty_generation_error(exc)
+                or _is_retryable_marker_validation_error(exc)
             )
             if not should_retry:
                 break
             time.sleep(min(2 ** (attempt - 1), 8))
 
-    if last_exception is not None and _is_retryable_empty_generation_error(last_exception):
+    if last_exception is not None and (
+        _is_retryable_empty_generation_error(last_exception)
+        or _is_retryable_marker_validation_error(last_exception)
+    ):
         try:
             return _recover_from_persistent_empty_response(
                 client=client,
                 model=model,
                 system_prompt=system_prompt,
                 target_text=target_text,
+                expected_paragraph_ids=expected_paragraph_ids,
+                marker_mode=marker_mode,
             )
         except Exception as recovery_exc:
-            if _is_retryable_empty_generation_error(recovery_exc):
+            if _is_retryable_empty_generation_error(recovery_exc) or _is_retryable_marker_validation_error(recovery_exc):
                 raise recovery_exc
             raise recovery_exc
 

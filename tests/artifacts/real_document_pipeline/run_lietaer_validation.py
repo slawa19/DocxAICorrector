@@ -7,9 +7,12 @@ from collections.abc import Mapping, Sequence
 import json
 from io import BytesIO
 from pathlib import Path
+import re
+import time
 from typing import Any, cast
 
 from docx import Document
+from docx.oxml.ns import qn
 
 import app_runtime
 import application_flow
@@ -19,6 +22,8 @@ import processing_runtime
 import processing_service
 from config import get_client, load_app_config, load_system_prompt
 from document import (
+    ORDERED_LIST_FORMATS,
+    extract_document_content_from_docx,
     inspect_placeholder_integrity,
     normalize_semantic_output_docx,
     preserve_source_paragraph_properties,
@@ -112,6 +117,8 @@ def generate_markdown_block_adapter(
     context_before: str,
     context_after: str,
     max_retries: int,
+    expected_paragraph_ids=None,
+    marker_mode: bool = False,
 ) -> str:
     return generate_markdown_block(
         client=cast(Any, client),
@@ -121,6 +128,8 @@ def generate_markdown_block_adapter(
         context_before=context_before,
         context_after=context_after,
         max_retries=max_retries,
+        expected_paragraph_ids=expected_paragraph_ids,
+        marker_mode=marker_mode,
     )
 
 
@@ -147,12 +156,28 @@ def inspect_placeholder_integrity_adapter(markdown_text: str, image_assets: Sequ
     return inspect_placeholder_integrity(markdown_text, cast(Any, list(image_assets)))
 
 
-def preserve_source_paragraph_properties_adapter(docx_bytes: bytes, paragraphs: Sequence[object]) -> bytes:
-    return preserve_source_paragraph_properties(docx_bytes, cast(Any, list(paragraphs)))
+def preserve_source_paragraph_properties_adapter(
+    docx_bytes: bytes,
+    paragraphs: Sequence[object],
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
+) -> bytes:
+    return preserve_source_paragraph_properties(
+        docx_bytes,
+        cast(Any, list(paragraphs)),
+        generated_paragraph_registry=generated_paragraph_registry,
+    )
 
 
-def normalize_semantic_output_docx_adapter(docx_bytes: bytes, paragraphs: Sequence[object]) -> bytes:
-    return normalize_semantic_output_docx(docx_bytes, cast(Any, list(paragraphs)))
+def normalize_semantic_output_docx_adapter(
+    docx_bytes: bytes,
+    paragraphs: Sequence[object],
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
+) -> bytes:
+    return normalize_semantic_output_docx(
+        docx_bytes,
+        cast(Any, list(paragraphs)),
+        generated_paragraph_registry=generated_paragraph_registry,
+    )
 
 
 def reinsert_inline_images_adapter(docx_bytes: bytes, image_assets: Sequence[object]) -> bytes:
@@ -236,6 +261,239 @@ def is_heading_only_markdown(text: str) -> bool:
     return bool(lines) and all(line.startswith("#") and len(line.split()) >= 2 for line in lines)
 
 
+def _normalize_structural_text(text: str) -> str:
+    normalized = re.sub(r"\s+", " ", text).strip().lower()
+    normalized = re.sub(r"^#{1,6}\s+", "", normalized)
+    return normalized
+
+
+def _find_child_by_local_name(element, local_name: str):
+    if element is None:
+        return None
+    for child in element:
+        if child.tag == qn(f"w:{local_name}"):
+            return child
+    return None
+
+
+def _paragraph_has_word_numbering(paragraph) -> bool:
+    paragraph_properties = getattr(paragraph._element, "pPr", None)
+    num_pr = _find_child_by_local_name(paragraph_properties, "numPr")
+    if num_pr is not None:
+        return True
+
+    style = getattr(paragraph, "style", None)
+    while style is not None:
+        style_properties = _find_child_by_local_name(getattr(style, "_element", None), "pPr")
+        num_pr = _find_child_by_local_name(style_properties, "numPr")
+        if num_pr is not None:
+            return True
+        style = getattr(style, "base_style", None)
+    return False
+
+
+def _count_word_numbered_paragraphs(document: Document) -> int:
+    return sum(1 for paragraph in document.paragraphs if _paragraph_has_word_numbering(paragraph))
+
+
+def _resolve_paragraph_num_id(paragraph) -> str | None:
+    paragraph_properties = getattr(paragraph._element, "pPr", None)
+    num_pr = _find_child_by_local_name(paragraph_properties, "numPr")
+    if num_pr is not None:
+        num_id_element = _find_child_by_local_name(num_pr, "numId")
+        if num_id_element is not None:
+            return num_id_element.get(qn("w:val"))
+
+    style = getattr(paragraph, "style", None)
+    while style is not None:
+        style_properties = _find_child_by_local_name(getattr(style, "_element", None), "pPr")
+        num_pr = _find_child_by_local_name(style_properties, "numPr")
+        if num_pr is not None:
+            num_id_element = _find_child_by_local_name(num_pr, "numId")
+            if num_id_element is not None:
+                return num_id_element.get(qn("w:val"))
+        style = getattr(style, "base_style", None)
+    return None
+
+
+def _resolve_numbering_format_by_num_id(document: Document) -> dict[str, str]:
+    numbering_part = getattr(document.part, "numbering_part", None)
+    numbering_root = getattr(numbering_part, "element", None)
+    if numbering_root is None:
+        return {}
+
+    abstract_num_formats: dict[str, str] = {}
+    for child in numbering_root:
+        if child.tag != qn("w:abstractNum"):
+            continue
+        abstract_num_id = child.get(qn("w:abstractNumId"))
+        if not abstract_num_id:
+            continue
+        level = None
+        for candidate in child:
+            if candidate.tag == qn("w:lvl"):
+                level = candidate
+                break
+        if level is None:
+            continue
+        num_fmt = _find_child_by_local_name(level, "numFmt")
+        format_value = None if num_fmt is None else num_fmt.get(qn("w:val"))
+        if format_value:
+            abstract_num_formats[abstract_num_id] = format_value
+
+    formats_by_num_id: dict[str, str] = {}
+    for child in numbering_root:
+        if child.tag != qn("w:num"):
+            continue
+        num_id = child.get(qn("w:numId"))
+        if not num_id:
+            continue
+        abstract_num_id_element = _find_child_by_local_name(child, "abstractNumId")
+        abstract_num_id = None if abstract_num_id_element is None else abstract_num_id_element.get(qn("w:val"))
+        if abstract_num_id and abstract_num_id in abstract_num_formats:
+            formats_by_num_id[num_id] = abstract_num_formats[abstract_num_id]
+    return formats_by_num_id
+
+
+def _count_ordered_word_numbered_paragraphs(document: Document) -> int:
+    formats_by_num_id = _resolve_numbering_format_by_num_id(document)
+    count = 0
+    for paragraph in document.paragraphs:
+        num_id = _resolve_paragraph_num_id(paragraph)
+        if num_id and formats_by_num_id.get(num_id) in ORDERED_LIST_FORMATS:
+            count += 1
+    return count
+
+
+def _load_recent_formatting_diagnostics(since_epoch_seconds: float) -> tuple[list[str], list[dict[str, object]]]:
+    artifact_paths = document_pipeline._collect_recent_formatting_diagnostics(
+        since_epoch_seconds=since_epoch_seconds
+    )
+    payloads: list[dict[str, object]] = []
+    for artifact_path in artifact_paths:
+        try:
+            payload = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            payloads.append(payload)
+    return artifact_paths, payloads
+
+
+def evaluate_lietaer_acceptance(
+    report: Mapping[str, object],
+    *,
+    source_docx_bytes: bytes | None = None,
+    output_docx_bytes: bytes | None = None,
+    mismatch_threshold: int = 0,
+) -> dict[str, object]:
+    checks: list[dict[str, object]] = []
+
+    def add_check(name: str, passed: bool, **details: object) -> None:
+        checks.append({"name": name, "passed": passed, **details})
+
+    result = str(report.get("result") or "")
+    output_artifacts = cast(Mapping[str, object], report.get("output_artifacts") or {})
+    formatting_diagnostics = cast(Sequence[Mapping[str, object]], report.get("formatting_diagnostics") or [])
+
+    add_check("pipeline_succeeded", result == "succeeded", result=result)
+    add_check(
+        "output_docx_openable",
+        bool(output_artifacts.get("output_docx_openable")),
+        output_docx_openable=output_artifacts.get("output_docx_openable"),
+    )
+    add_check(
+        "no_placeholder_markup",
+        not bool(output_artifacts.get("output_contains_placeholder_markup")),
+        output_contains_placeholder_markup=output_artifacts.get("output_contains_placeholder_markup"),
+    )
+
+    worst_unmapped_source_count = 0
+    total_caption_heading_conflicts = 0
+    for payload in formatting_diagnostics:
+        worst_unmapped_source_count = max(
+            worst_unmapped_source_count,
+            len(cast(Sequence[object], payload.get("unmapped_source_ids") or [])),
+        )
+        total_caption_heading_conflicts += len(
+            cast(Sequence[object], payload.get("caption_heading_conflicts") or [])
+        )
+    add_check(
+        "formatting_diagnostics_threshold",
+        worst_unmapped_source_count <= mismatch_threshold and total_caption_heading_conflicts == 0,
+        worst_unmapped_source_count=worst_unmapped_source_count,
+        mismatch_threshold=mismatch_threshold,
+        caption_heading_conflicts=total_caption_heading_conflicts,
+        artifact_count=len(formatting_diagnostics),
+    )
+
+    if source_docx_bytes and output_docx_bytes:
+        source_paragraphs, _ = extract_document_content_from_docx(BytesIO(source_docx_bytes))
+        output_paragraphs, _ = extract_document_content_from_docx(BytesIO(output_docx_bytes))
+        source_document = Document(BytesIO(source_docx_bytes))
+        output_document = Document(BytesIO(output_docx_bytes))
+
+        source_caption_texts = {
+            _normalize_structural_text(paragraph.text)
+            for paragraph in source_paragraphs
+            if paragraph.role == "caption" and _normalize_structural_text(paragraph.text)
+        }
+        output_heading_texts = {
+            _normalize_structural_text(paragraph.text)
+            for paragraph in output_paragraphs
+            if paragraph.role == "heading" and _normalize_structural_text(paragraph.text)
+        }
+        caption_heading_regressions = sorted(source_caption_texts & output_heading_texts)
+        add_check(
+            "captions_not_promoted_to_headings",
+            not caption_heading_regressions,
+            regressions=caption_heading_regressions,
+        )
+
+        source_heading_texts = {
+            _normalize_structural_text(paragraph.text)
+            for paragraph in source_paragraphs
+            if paragraph.role == "heading"
+            and _normalize_structural_text(paragraph.text)
+            and len(_normalize_structural_text(paragraph.text).split()) <= 10
+        }
+        output_heading_texts = {
+            _normalize_structural_text(paragraph.text)
+            for paragraph in output_paragraphs
+            if paragraph.role == "heading" and _normalize_structural_text(paragraph.text)
+        }
+        missing_key_headings = sorted(source_heading_texts - output_heading_texts)
+        add_check(
+            "key_headings_preserved",
+            not missing_key_headings,
+            missing=missing_key_headings,
+            source_heading_count=len(source_heading_texts),
+            output_heading_count=len(output_heading_texts),
+        )
+
+        source_numbered_count = sum(1 for paragraph in source_paragraphs if paragraph.role == "list" and paragraph.list_kind == "ordered")
+        output_numbered_count = _count_ordered_word_numbered_paragraphs(output_document)
+        add_check(
+            "word_numbering_preserved",
+            source_numbered_count == 0 or output_numbered_count >= source_numbered_count,
+            source_numbered_count=source_numbered_count,
+            output_numbered_count=output_numbered_count,
+        )
+    else:
+        add_check(
+            "structural_comparison_available",
+            False,
+            reason="source_or_output_docx_missing",
+        )
+
+    failed_checks = [check["name"] for check in checks if not bool(check["passed"])]
+    return {
+        "passed": not failed_checks,
+        "failed_checks": failed_checks,
+        "checks": checks,
+    }
+
+
 def main() -> None:
     source_path = Path("tests/sources/Лиетар глава1.docx")
     artifact_dir = Path("tests/artifacts/real_document_pipeline")
@@ -253,6 +511,7 @@ def main() -> None:
     progress_events = []
     event_log = []
     event_queue: queue.Queue = queue.Queue()
+    run_started_at_epoch_seconds = time.time()
     runtime = processing_runtime.BackgroundRuntime(event_queue, threading.Event())
     runtime_snapshot = {
         "state": {},
@@ -269,6 +528,8 @@ def main() -> None:
         UploadedFileStub(source_path.name, source_bytes)
     )
     app_config = load_app_config()
+    app_config_dict = app_config.to_dict()
+    app_config_dict["enable_paragraph_markers"] = True
 
     prepared = application_flow.prepare_run_context_for_background(
         uploaded_payload=uploaded_payload,
@@ -300,7 +561,7 @@ def main() -> None:
             source_paragraphs=prepared.paragraphs,
             image_assets=prepared.image_assets,
             image_mode=app_config.image_mode_default,
-            app_config=app_config.to_dict(),
+            app_config=app_config_dict,
             model=app_config.default_model,
             max_retries=app_config.max_retries,
             on_progress=lambda **payload: progress_events.append(
@@ -382,6 +643,10 @@ def main() -> None:
         except Exception:
             openable_output = False
 
+    formatting_diagnostics_paths, formatting_diagnostics_payloads = _load_recent_formatting_diagnostics(
+        run_started_at_epoch_seconds
+    )
+
     report = {
         "source_file": str(source_path),
         "artifact_dir": str(artifact_dir),
@@ -390,6 +655,7 @@ def main() -> None:
         "chunk_size": app_config.chunk_size,
         "max_retries": app_config.max_retries,
         "image_mode": app_config.image_mode_default,
+        "enable_paragraph_markers": bool(app_config_dict.get("enable_paragraph_markers")),
         "preparation": {
             "uploaded_filename": prepared.uploaded_filename,
             "uploaded_file_token": prepared.uploaded_file_token,
@@ -426,11 +692,19 @@ def main() -> None:
             "report_json": str(report_path),
             "summary_txt": str(summary_path),
         },
+        "formatting_diagnostics_paths": formatting_diagnostics_paths,
+        "formatting_diagnostics": formatting_diagnostics_payloads,
         "progress_events_tail": progress_events[-12:],
         "event_log": event_log[-25:],
         "image_log_tail": runtime_snapshot.get("image_log", [])[-25:],
     }
     report["failure_classification"] = classify_failure(report)
+    report["acceptance"] = evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=source_bytes,
+        output_docx_bytes=bytes(latest_docx_bytes) if isinstance(latest_docx_bytes, (bytes, bytearray)) else None,
+        mismatch_threshold=0,
+    )
     sanitized_report = sanitize_for_json(report)
 
     summary_lines = [
@@ -441,6 +715,7 @@ def main() -> None:
         f"chunk_size={report['chunk_size']}",
         f"max_retries={report['max_retries']}",
         f"image_mode={report['image_mode']}",
+        f"enable_paragraph_markers={report['enable_paragraph_markers']}",
         f"paragraph_count={report['preparation']['paragraph_count']}",
         f"image_count={report['preparation']['image_count']}",
         f"job_count={report['preparation']['job_count']}",
@@ -455,6 +730,9 @@ def main() -> None:
         f"output_docx_openable={report['output_artifacts']['output_docx_openable']}",
         f"output_inline_shapes={report['output_artifacts']['output_inline_shapes']}",
         f"output_contains_placeholder_markup={report['output_artifacts']['output_contains_placeholder_markup']}",
+        f"formatting_diagnostics_count={len(formatting_diagnostics_payloads)}",
+        f"acceptance_passed={report['acceptance']['passed']}",
+        f"acceptance_failed_checks={','.join(report['acceptance']['failed_checks'])}",
         f"last_error={last_error}",
         f"markdown_path={report['output_artifacts']['markdown_path']}",
         f"docx_path={report['output_artifacts']['docx_path']}",
@@ -464,6 +742,8 @@ def main() -> None:
         json.dumps(sanitized_report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     print(json.dumps(sanitized_report, ensure_ascii=False, indent=2))
+    if not bool(report["acceptance"]["passed"]):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

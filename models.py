@@ -31,11 +31,22 @@ DOCX_COMPARE_VARIANT_MODE_VALUES = (
 class ParagraphUnit:
     text: str
     role: str
+    asset_id: str | None = None
+    attached_to_asset_id: str | None = None
     heading_level: int | None = None
     heading_source: str | None = None
     list_kind: str | None = None
     list_level: int = 0
+    list_numbering_format: str | None = None
+    list_num_id: str | None = None
+    list_abstract_num_id: str | None = None
+    list_num_xml: str | None = None
+    list_abstract_num_xml: str | None = None
     preserved_ppr_xml: tuple[str, ...] = field(default_factory=tuple)
+    paragraph_id: str = ""
+    source_index: int = -1
+    structural_role: str = "body"
+    role_confidence: str = "heuristic"
 
     @property
     def rendered_text(self) -> str:

@@ -33,7 +33,7 @@ class PreparedRunContext:
     source_text: str
     paragraphs: list
     image_assets: list
-    jobs: list[dict[str, str | int]]
+    jobs: list[dict[str, object]]
     prepared_source_key: str
     preparation_stage: str
     preparation_detail: str

@@ -14,6 +14,7 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     assert app_config["model_options"] == ["gpt-5.1", "gpt-5.4", "custom-model"]
     assert app_config["chunk_size"] == 12000
     assert app_config["max_retries"] == 1
+    assert app_config["enable_paragraph_markers"] is False
 
 
 def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
@@ -21,6 +22,7 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
 
     app_config = config.load_app_config()
 
+    assert app_config["enable_paragraph_markers"] is False
     assert app_config["image_mode_default"] == "safe"
     assert app_config["semantic_validation_policy"] == "advisory"
     assert app_config["keep_all_image_variants"] is False
@@ -55,6 +57,7 @@ def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
     monkeypatch.setenv("DOCX_AI_VALIDATOR_CONFIDENCE_THRESHOLD", "2")
     monkeypatch.setenv("DOCX_AI_ALLOW_ACCEPT_WITH_PARTIAL_TEXT_LOSS", "yes")
     monkeypatch.setenv("DOCX_AI_PREFER_DETERMINISTIC_RECONSTRUCTION", "false")
+    monkeypatch.setenv("DOCX_AI_ENABLE_PARAGRAPH_MARKERS", "true")
     monkeypatch.setenv("DOCX_AI_RECONSTRUCTION_MODEL", "gpt-4.1-mini")
     monkeypatch.setenv("DOCX_AI_ENABLE_VISION_IMAGE_ANALYSIS", "false")
     monkeypatch.setenv("DOCX_AI_ENABLE_VISION_IMAGE_VALIDATION", "false")
@@ -78,6 +81,7 @@ def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
     assert app_config["validator_confidence_threshold"] == 1.0
     assert app_config["allow_accept_with_partial_text_loss"] is True
     assert app_config["prefer_deterministic_reconstruction"] is False
+    assert app_config["enable_paragraph_markers"] is True
     assert app_config["reconstruction_model"] == "gpt-4.1-mini"
     assert app_config["enable_vision_image_analysis"] is False
     assert app_config["enable_vision_image_validation"] is False

@@ -32,6 +32,7 @@ class AppConfig(Mapping[str, object]):
     model_options: list[str]
     chunk_size: int
     max_retries: int
+    enable_paragraph_markers: bool
     image_mode_default: str
     semantic_validation_policy: str
     keep_all_image_variants: bool
@@ -202,6 +203,7 @@ def load_app_config() -> AppConfig:
     max_retries = config_data.get("max_retries", DEFAULT_MAX_RETRIES)
     if not isinstance(max_retries, int):
         raise RuntimeError(f"Некорректное поле max_retries в {CONFIG_PATH}")
+    enable_paragraph_markers = parse_config_bool(config_data, "enable_paragraph_markers", False)
 
     image_mode_default = _parse_image_mode(
         parse_config_str(config_data, "image_mode_default", ImageMode.SAFE.value),
@@ -268,6 +270,10 @@ def load_app_config() -> AppConfig:
     default_model = os.getenv("DOCX_AI_DEFAULT_MODEL", default_model).strip() or default_model
     chunk_size = parse_int_env("DOCX_AI_CHUNK_SIZE", chunk_size)
     max_retries = parse_int_env("DOCX_AI_MAX_RETRIES", max_retries)
+    enable_paragraph_markers = parse_bool_env(
+        "DOCX_AI_ENABLE_PARAGRAPH_MARKERS",
+        enable_paragraph_markers,
+    )
     image_mode_default = _parse_image_mode(
         os.getenv("DOCX_AI_IMAGE_MODE_DEFAULT", image_mode_default).strip() or image_mode_default,
         source_name="DOCX_AI_IMAGE_MODE_DEFAULT",
@@ -361,6 +367,7 @@ def load_app_config() -> AppConfig:
         model_options=model_options,
         chunk_size=max(3000, min(chunk_size, 12000)),
         max_retries=max(1, min(max_retries, 5)),
+        enable_paragraph_markers=enable_paragraph_markers,
         image_mode_default=image_mode_default,
         semantic_validation_policy=semantic_validation_policy,
         keep_all_image_variants=keep_all_image_variants,
