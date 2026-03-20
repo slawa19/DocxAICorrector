@@ -1,4 +1,5 @@
 from io import BytesIO
+from types import SimpleNamespace
 
 from PIL import Image, ImageDraw
 
@@ -392,6 +393,70 @@ def test_analyze_image_logs_and_falls_back_when_vision_errors(monkeypatch):
                 "mime_type": "image/jpeg",
                 "error_type": "RuntimeError",
                 "error_message": "vision boom",
+                "error_code": None,
+                "response_stage": "vision_analysis",
             },
         )
     ]
+
+
+def test_analyze_image_reads_nested_response_output_for_json_payload():
+    class NestedOutputClient:
+        class Responses:
+            def create(self, **kwargs):
+                return SimpleNamespace(
+                    output=[
+                        SimpleNamespace(
+                            content=[
+                                SimpleNamespace(
+                                    type="output_text",
+                                    text='{"image_type":"diagram","image_subtype":null,"contains_text":true,'
+                                    '"semantic_redraw_allowed":true,"confidence":0.9,'
+                                    '"structured_parse_confidence":0.8,"prompt_key":"diagram_semantic_redraw",'
+                                    '"render_strategy":"deterministic_reconstruction","structure_summary":"nested output",'
+                                    '"extracted_labels":["A"],"text_node_count":1,"extracted_text":"A","fallback_reason":null}'
+                                )
+                            ]
+                        )
+                    ]
+                )
+
+        responses = Responses()
+
+    result = image_analysis.analyze_image(
+        _make_diagram_like_jpeg(),
+        model="gpt-4.1",
+        mime_type="image/jpeg",
+        client=NestedOutputClient(),
+        enable_vision=True,
+    )
+
+    assert result.structure_summary == "nested output"
+    assert result.extracted_labels == ["A"]
+
+
+def test_analyze_image_logs_and_falls_back_when_vision_returns_incomplete_response(monkeypatch):
+    logged_events = []
+
+    class IncompleteClient:
+        class Responses:
+            def create(self, **kwargs):
+                return SimpleNamespace(status="incomplete", output=[SimpleNamespace(type="reasoning", status="incomplete")])
+
+        responses = Responses()
+
+    monkeypatch.setattr(image_analysis, "log_event", lambda level, event, message, **context: logged_events.append((event, context)))
+
+    result = image_analysis.analyze_image(
+        _make_diagram_like_jpeg(),
+        model="gpt-4.1",
+        mime_type="image/jpeg",
+        client=IncompleteClient(),
+        enable_vision=True,
+    )
+
+    assert result.image_type == "diagram"
+    assert logged_events[0][0] == "image_analysis_vision_fallback_after_error"
+    assert logged_events[0][1]["error_message"] == "Vision analysis returned incomplete output."
+    assert logged_events[0][1]["error_code"] == "incomplete_response"
+    assert logged_events[0][1]["response_stage"] == "vision_analysis"

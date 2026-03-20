@@ -86,6 +86,44 @@ def test_generate_markdown_block_retries_on_empty_response(monkeypatch):
     assert logged_events[0][1]["error_code"] == "empty_response"
 
 
+def test_generate_markdown_block_retries_on_incomplete_response(monkeypatch):
+    attempts = []
+    sleep_calls = []
+    logged_events = []
+
+    def create_response(**kwargs):
+        attempts.append(dict(kwargs))
+        if len(attempts) == 1:
+            return SimpleNamespace(status="incomplete", output=[SimpleNamespace(type="reasoning", status="incomplete")])
+        return SimpleNamespace(status="completed", output_text="Исправленный текст")
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+    monkeypatch.setattr(generation.time, "sleep", sleep_calls.append)
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-incomplete",
+    )
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="target",
+        context_before="before",
+        context_after="after",
+        max_retries=2,
+    )
+
+    assert result == "Исправленный текст"
+    assert len(attempts) == 2
+    assert sleep_calls == [1]
+    assert attempts[0]["max_output_tokens"] == 512
+    assert attempts[1]["max_output_tokens"] == 1024
+    assert logged_events[0][0][1] == "model_empty_response_shape"
+    assert logged_events[0][1]["error_code"] == "incomplete_response"
+
+
 def test_generate_markdown_block_uses_degraded_prompt_after_persistent_empty_response(monkeypatch):
     attempts = []
     sleep_calls = []
@@ -249,6 +287,125 @@ def test_generate_markdown_block_raises_after_persistent_empty_response(monkeypa
     assert sleep_calls == [1, 2]
     assert len(logged_events) == 5
     assert any(args[1] == "markdown_empty_response_recovery_started" for args, _ in logged_events)
+
+
+def test_generate_markdown_block_falls_back_to_source_after_persistent_incomplete_response(monkeypatch):
+    attempts = []
+    sleep_calls = []
+    logged_events = []
+
+    def create_response(**kwargs):
+        attempts.append(dict(kwargs))
+        return SimpleNamespace(status="incomplete", output=[SimpleNamespace(type="reasoning", status="incomplete")])
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+    monkeypatch.setattr(generation.time, "sleep", sleep_calls.append)
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-persistent-incomplete",
+    )
+
+    target_text = "Короткий исходный абзац, который должен сохраниться без падения пайплайна."
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=target_text,
+        context_before="before",
+        context_after="after",
+        max_retries=2,
+    )
+
+    assert result == target_text
+    assert len(attempts) == 3
+    assert sleep_calls == [1]
+    assert attempts[0]["max_output_tokens"] == 512
+    assert attempts[1]["max_output_tokens"] == 1024
+    assert attempts[2]["max_output_tokens"] == 1536
+    assert any(args[1] == "markdown_empty_response_recovery_started" for args, _ in logged_events)
+    assert logged_events[-1][0][1] == "markdown_incomplete_response_source_fallback"
+
+
+def test_generate_markdown_block_falls_back_to_source_after_persistent_incomplete_response_for_long_block(monkeypatch):
+    attempts = []
+    logged_events = []
+
+    def create_response(**kwargs):
+        attempts.append(dict(kwargs))
+        return SimpleNamespace(status="incomplete", output=[SimpleNamespace(type="reasoning", status="incomplete")])
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+    monkeypatch.setattr(generation.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-persistent-incomplete-long",
+    )
+
+    target_text = "Длинный блок. " * 150
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=target_text,
+        context_before="before",
+        context_after="after",
+        max_retries=2,
+    )
+
+    assert result == target_text
+    assert len(attempts) == 3
+    assert logged_events[-1][0][1] == "markdown_incomplete_response_source_fallback"
+
+
+def test_generate_markdown_block_passthrough_for_image_only_target(monkeypatch):
+    logged_events = []
+    client = SimpleNamespace(responses=SimpleNamespace(create=lambda **_: (_ for _ in ()).throw(AssertionError("must not call API"))))
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-image-only",
+    )
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="[[DOCX_IMAGE_img_001]]",
+        context_before="before",
+        context_after="after",
+        max_retries=1,
+    )
+
+    assert result == "[[DOCX_IMAGE_img_001]]"
+    assert logged_events[0][0][1] == "image_only_target_passthrough"
+
+
+def test_generate_markdown_block_passthrough_for_placeholder_only_marker_target(monkeypatch):
+    logged_events = []
+    client = SimpleNamespace(responses=SimpleNamespace(create=lambda **_: (_ for _ in ()).throw(AssertionError("must not call API"))))
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-placeholder-only",
+    )
+
+    target_text = "[[DOCX_PARA_p0001]]\n[[DOCX_IMAGE_img_001]]"
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=target_text,
+        context_before="before",
+        context_after="after",
+        max_retries=1,
+        expected_paragraph_ids=["p0001"],
+        marker_mode=True,
+    )
+
+    assert result == target_text
+    assert logged_events[0][0][1] == "image_only_target_passthrough"
 
 
 def test_generate_markdown_block_raises_on_missing_output_text(monkeypatch):
@@ -457,6 +614,58 @@ def test_extract_normalized_markdown_logs_empty_response_shape(monkeypatch):
     assert args[1] == "model_empty_response_shape"
     assert kwargs["error_code"] == "empty_response"
     assert kwargs["raw_output_len"] == 0
+
+
+def test_extract_normalized_markdown_raises_on_incomplete_response(monkeypatch):
+    logged_events = []
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-incomplete-shape",
+    )
+
+    try:
+        generation._extract_normalized_markdown(
+            SimpleNamespace(status="incomplete", output=[SimpleNamespace(type="reasoning", status="incomplete")])
+        )
+    except RuntimeError as exc:
+        assert "incomplete_response" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError for incomplete response")
+
+    assert len(logged_events) == 1
+    args, kwargs = logged_events[0]
+    assert args[1] == "model_empty_response_shape"
+    assert kwargs["error_code"] == "incomplete_response"
+
+
+def test_extract_normalized_markdown_raises_hard_on_non_completed_response(monkeypatch):
+    logged_events = []
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-non-completed-shape",
+    )
+
+    try:
+        generation._extract_normalized_markdown(SimpleNamespace(status="failed"))
+    except RuntimeError as exc:
+        assert "non_completed_response" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError for non-completed response")
+
+    assert len(logged_events) == 1
+    args, kwargs = logged_events[0]
+    assert args[1] == "model_empty_response_shape"
+    assert kwargs["error_code"] == "non_completed_response"
+
+
+def test_incomplete_response_is_retryable():
+    assert generation._is_retryable_empty_generation_error(RuntimeError("incomplete_response")) is True
+
+
+def test_non_completed_response_is_not_retryable():
+    assert generation._is_retryable_empty_generation_error(RuntimeError("non_completed_response")) is False
 
 
 def test_extract_normalized_markdown_logs_collapsed_output_shape(monkeypatch):

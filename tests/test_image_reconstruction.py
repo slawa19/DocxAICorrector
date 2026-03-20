@@ -626,6 +626,28 @@ def test_extract_scene_graph_uses_retry_wrapper_with_timeout_and_budget(monkeypa
     assert captured["kwargs"]["budget"] is budget
 
 
+def test_extract_scene_graph_reads_nested_output_text(monkeypatch):
+    def fake_retry(client, request_payload, **kwargs):
+        return SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    content=[
+                        SimpleNamespace(
+                            type="output_text",
+                            text=json.dumps({"canvas": {"width": 10, "height": 10}, "elements": []}),
+                        )
+                    ]
+                )
+            ]
+        )
+
+    monkeypatch.setattr(image_reconstruction, "call_responses_create_with_retry", fake_retry)
+
+    result = extract_scene_graph(_build_test_png(), model="test-model", client=object())
+
+    assert result["canvas"]["height"] == 10
+
+
 def test_sample_source_background_reads_border_color():
     image = Image.new("RGB", (40, 30), (255, 255, 255))
     for x_coord in range(40):

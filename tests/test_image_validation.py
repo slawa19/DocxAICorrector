@@ -434,6 +434,43 @@ def test_maybe_build_vision_validation_assessment_logs_failures(monkeypatch):
     assert result is None
     assert logged_events
     assert logged_events[0][0][1] == "image_vision_validation_skipped_after_failure"
+    assert logged_events[0][1]["error_code"] is None
+    assert logged_events[0][1]["response_stage"] == "vision_validation"
+
+
+def test_maybe_build_vision_validation_assessment_logs_incomplete_response(monkeypatch):
+    logged_events = []
+
+    class IncompleteClient:
+        responses = None
+
+        def __init__(self):
+            self.responses = self
+
+        def create(self, **kwargs):
+            return type(
+                "Response",
+                (),
+                {"status": "incomplete", "output": [type("Reasoning", (), {"type": "reasoning", "status": "incomplete"})()]},
+            )()
+
+    monkeypatch.setattr(image_validation, "log_event", lambda *args, **kwargs: logged_events.append((args, kwargs)))
+
+    result = image_validation._maybe_build_vision_validation_assessment(
+        original_image=PNG_BYTES,
+        candidate_image=PNG_BYTES,
+        analysis_before=build_analysis_result(),
+        candidate_analysis=build_analysis_result(),
+        client=IncompleteClient(),
+        model="gpt-4.1",
+        enable_vision_validation=True,
+    )
+
+    assert result is None
+    assert logged_events[0][0][1] == "image_vision_validation_skipped_after_failure"
+    assert logged_events[0][1]["error_message"] == "Vision validation returned incomplete output."
+    assert logged_events[0][1]["error_code"] == "incomplete_response"
+    assert logged_events[0][1]["response_stage"] == "vision_validation"
 
 
 def test_resolve_validation_delivery_outcome_promotes_missing_safe_fallback_to_original():

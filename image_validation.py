@@ -7,6 +7,8 @@ from image_shared import (
     call_responses_create_with_retry,
     clamp_score,
     detect_image_mime_type,
+    extract_model_response_error_code,
+    extract_response_text,
     is_retryable_error,
     is_supported_image_bytes as shared_is_supported_image_bytes,
     parse_json_object,
@@ -408,7 +410,12 @@ def _build_vision_validation_assessment(
         budget=budget,
     )
     return parse_json_object(
-        getattr(response, "output_text", ""),
+        extract_response_text(
+            response,
+            empty_message="Vision validation returned empty output.",
+            incomplete_message="Vision validation returned incomplete output.",
+            non_completed_message="Vision validation returned non-completed output.",
+        ),
         empty_message="Vision validation returned empty output.",
         no_json_message="Vision validation did not return JSON.",
     )
@@ -444,6 +451,8 @@ def _maybe_build_vision_validation_assessment(
             "Vision validation недоступен; продолжаю heuristic-only validation.",
             error_type=exc.__class__.__name__,
             error_message=str(exc),
+            error_code=extract_model_response_error_code(exc),
+            response_stage="vision_validation",
             image_type=analysis_before.image_type,
             validation_model=model,
         )

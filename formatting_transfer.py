@@ -36,6 +36,7 @@ from logger import log_event
 from models import ParagraphUnit
 
 FORMATTING_DIAGNOSTICS_DIR = Path(".run") / "formatting_diagnostics"
+MARKDOWN_HEADING_LINE_PATTERN = re.compile(r"^#{1,6}\s+\S")
 
 
 def _paragraph_preview(text: str, *, limit: int = 120) -> str:
@@ -54,6 +55,32 @@ def _normalize_text_for_mapping(text: str) -> str:
     normalized = normalized.replace("<br/>", " ")
     normalized = re.sub(r"\s+", " ", normalized)
     return normalized.strip().lower()
+
+
+def _build_generated_registry_candidates(source_paragraph: ParagraphUnit, generated_text: str) -> list[str]:
+    candidates: list[str] = []
+
+    def add_candidate(text: str) -> None:
+        normalized = _normalize_text_for_mapping(text)
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+
+    add_candidate(generated_text)
+
+    lines = [line.strip() for line in generated_text.splitlines() if line.strip()]
+    if not lines:
+        return candidates
+
+    non_heading_lines = [line for line in lines if not MARKDOWN_HEADING_LINE_PATTERN.match(line)]
+    if source_paragraph.role == "body" and non_heading_lines:
+        add_candidate(" ".join(non_heading_lines))
+        for line in non_heading_lines:
+            add_candidate(line)
+        return candidates
+
+    for line in lines:
+        add_candidate(line)
+    return candidates
 
 
 def _collect_target_paragraphs(document) -> list[Paragraph]:
@@ -234,23 +261,63 @@ def _map_source_target_paragraphs(
         generated_text = generated_registry_by_id.get(paragraph_id)
         if not generated_text:
             continue
-        normalized_generated_text = _normalize_text_for_mapping(generated_text)
-        if not normalized_generated_text:
-            continue
-        candidates = [
-            target_index
-            for target_index in target_indexes_by_normalized_text.get(normalized_generated_text, [])
-            if target_index in available_target_indexes
-        ]
-        if len(candidates) == 1:
+        matching_target_indexes: set[int] = set()
+        for normalized_generated_text in _build_generated_registry_candidates(source_paragraph, generated_text):
+            matching_target_indexes.update(
+                target_index
+                for target_index in target_indexes_by_normalized_text.get(normalized_generated_text, [])
+                if target_index in available_target_indexes
+            )
+        if len(matching_target_indexes) == 1:
             _register_mapping(
                 source_index,
-                candidates[0],
+                next(iter(matching_target_indexes)),
                 "paragraph_id_registry",
                 mapped_target_by_source=mapped_target_by_source,
                 strategy_by_source=strategy_by_source,
                 available_target_indexes=available_target_indexes,
             )
+
+    for source_index, source_paragraph in enumerate(source_paragraphs):
+        paragraph_id = source_paragraph.paragraph_id
+        if not paragraph_id or source_index in mapped_target_by_source or source_paragraph.role == "image":
+            continue
+        generated_text = generated_registry_by_id.get(paragraph_id)
+        if not generated_text:
+            continue
+
+        scored_candidates: list[tuple[float, int]] = []
+        registry_candidates = _build_generated_registry_candidates(source_paragraph, generated_text)
+        if not registry_candidates:
+            continue
+
+        for target_index in sorted(available_target_indexes):
+            if abs(target_index - source_index) > 3:
+                continue
+            score = max(
+                SequenceMatcher(None, candidate_text, _normalize_text_for_mapping(target_paragraphs[target_index].text)).ratio()
+                for candidate_text in registry_candidates
+            )
+            if score >= 0.75:
+                scored_candidates.append((score, target_index))
+
+        if not scored_candidates:
+            continue
+
+        scored_candidates.sort(reverse=True)
+        best_score, best_target_index = scored_candidates[0]
+        next_best_score = scored_candidates[1][0] if len(scored_candidates) > 1 else 0.0
+        if best_score - next_best_score < 0.05:
+            continue
+
+        _register_mapping(
+            source_index,
+            best_target_index,
+            "paragraph_id_registry_similarity",
+            mapped_target_by_source=mapped_target_by_source,
+            strategy_by_source=strategy_by_source,
+            available_target_indexes=available_target_indexes,
+        )
 
     for source_index, source_paragraph in enumerate(source_paragraphs):
         if source_index in mapped_target_by_source or source_paragraph.role != "image":

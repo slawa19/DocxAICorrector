@@ -21,6 +21,9 @@ if TYPE_CHECKING:
 
 _SUPPORTED_RESPONSE_TEXT_TYPES = {"output_text", "text"}
 _PARAGRAPH_MARKER_PATTERN = re.compile(r"\[\[DOCX_PARA_([A-Za-z0-9_]+)\]\]")
+_IMAGE_ONLY_TARGET_PATTERN = re.compile(r"^(?:\s*\[\[DOCX_IMAGE_img_\d+\]\]\s*)+$")
+_INCOMPLETE_RESPONSE_RETRY_MIN_OUTPUT_TOKENS = 1024
+_INCOMPLETE_RESPONSE_RECOVERY_MIN_OUTPUT_TOKENS = 1536
 
 
 @lru_cache(maxsize=1)
@@ -66,6 +69,37 @@ def _strip_image_placeholders(text: str) -> str:
     preserved for later image reinsertion).
     """
     return _CONTEXT_IMAGE_PLACEHOLDER_PATTERN.sub("", text).strip()
+
+
+def _strip_prompt_internal_tokens(text: str) -> str:
+    without_images = _CONTEXT_IMAGE_PLACEHOLDER_PATTERN.sub("", text)
+    without_markers = _PARAGRAPH_MARKER_PATTERN.sub("", without_images)
+    return without_markers.strip()
+
+
+def _should_passthrough_target(target_text: str) -> bool:
+    stripped_target = target_text.strip()
+    if not stripped_target:
+        return True
+    if _IMAGE_ONLY_TARGET_PATTERN.fullmatch(stripped_target):
+        return True
+    return not _strip_prompt_internal_tokens(target_text)
+
+
+def _validate_prompt_inputs(target_text: str, context_before: str, context_after: str) -> list[str]:
+    warnings: list[str] = []
+    if not target_text.strip():
+        warnings.append("empty_target_text")
+    elif _IMAGE_ONLY_TARGET_PATTERN.fullmatch(target_text.strip()):
+        warnings.append("image_only_target_text")
+    elif not _strip_prompt_internal_tokens(target_text):
+        warnings.append("placeholder_only_target_text")
+
+    if not context_before.strip():
+        warnings.append("empty_context_before")
+    if not context_after.strip():
+        warnings.append("empty_context_after")
+    return warnings
 
 
 def _build_standard_user_prompt(*, target_text: str, context_before: str, context_after: str) -> str:
@@ -273,6 +307,14 @@ def _log_empty_response_shape(response: object, raw_output_text: str, *, error_c
 
 
 def _extract_normalized_markdown(response: object) -> str:
+    response_status = _read_response_field(response, "status")
+    if response_status == "incomplete":
+        _log_empty_response_shape(response, "", error_code="incomplete_response")
+        raise RuntimeError("Модель не завершила генерацию (incomplete_response).")
+    if isinstance(response_status, str) and response_status != "completed":
+        _log_empty_response_shape(response, "", error_code="non_completed_response")
+        raise RuntimeError(f"Модель вернула неожиданный статус ответа: {response_status} (non_completed_response).")
+
     raw_output_text = _extract_response_output_text(response)
     markdown = normalize_model_output(raw_output_text)
     if markdown:
@@ -311,6 +353,20 @@ def _build_request_kwargs(*, model: str, system_prompt: str, user_prompt: str, t
     }
 
 
+def _boost_request_output_budget(
+    request_kwargs: dict[str, object],
+    *,
+    minimum_tokens: int,
+) -> dict[str, object]:
+    boosted_request = dict(request_kwargs)
+    current_value = boosted_request.get("max_output_tokens")
+    if isinstance(current_value, int) and not isinstance(current_value, bool):
+        boosted_request["max_output_tokens"] = min(max(current_value * 2, minimum_tokens), 16384)
+        return boosted_request
+    boosted_request["max_output_tokens"] = min(max(minimum_tokens, 512), 16384)
+    return boosted_request
+
+
 def _call_markdown_request_with_sdk_fallback(client: "OpenAI", request_kwargs: dict[str, object]) -> tuple[str, bool]:
     max_output_tokens_removed = False
     try:
@@ -334,6 +390,7 @@ def _recover_from_persistent_empty_response(
     target_text: str,
     expected_paragraph_ids: Sequence[str] | None = None,
     marker_mode: bool = False,
+    minimum_output_tokens: int | None = None,
 ) -> str:
     log_event(
         logging.WARNING,
@@ -352,6 +409,11 @@ def _recover_from_persistent_empty_response(
         ),
         target_text=target_text,
     )
+    if minimum_output_tokens is not None:
+        request_kwargs = _boost_request_output_budget(
+            request_kwargs,
+            minimum_tokens=minimum_output_tokens,
+        )
     markdown = _call_markdown_request_with_sdk_fallback(client, request_kwargs)[0]
     return _strip_and_validate_paragraph_markers(
         markdown,
@@ -360,9 +422,17 @@ def _recover_from_persistent_empty_response(
     )
 
 
+def _is_incomplete_response_error(exc: Exception) -> bool:
+    return isinstance(exc, RuntimeError) and "incomplete_response" in str(exc)
+
+
+def _can_fallback_to_source_text_after_incomplete_response(target_text: str) -> bool:
+    return bool(target_text.strip())
+
+
 def _is_retryable_empty_generation_error(exc: Exception) -> bool:
     return isinstance(exc, RuntimeError) and (
-        "empty_response" in str(exc) or "collapsed_output" in str(exc)
+        "empty_response" in str(exc) or "collapsed_output" in str(exc) or "incomplete_response" in str(exc)
     )
 
 
@@ -386,8 +456,31 @@ def generate_markdown_block(
     if max_retries < 1:
         raise ValueError("max_retries должен быть не меньше 1.")
 
+    if _should_passthrough_target(target_text):
+        log_event(
+            logging.WARNING,
+            "image_only_target_passthrough",
+            "Целевой блок не содержит редактируемого текста; возвращаю его без вызова модели.",
+            target_chars=len(target_text),
+            marker_mode=marker_mode,
+        )
+        return target_text
+
     context_before_text = _normalize_context_text(_strip_image_placeholders(context_before))
     context_after_text = _normalize_context_text(_strip_image_placeholders(context_after))
+    prompt_warnings = _validate_prompt_inputs(target_text, context_before_text, context_after_text)
+    if prompt_warnings:
+        log_event(
+            logging.WARNING,
+            "prompt_quality_warning",
+            "Входные данные prompt содержат потенциально проблемный shape.",
+            warnings=prompt_warnings,
+            target_chars=len(target_text),
+            context_before_chars=len(context_before_text),
+            context_after_chars=len(context_after_text),
+            marker_mode=marker_mode,
+        )
+
     request_kwargs = _build_request_kwargs(
         model=model,
         system_prompt=system_prompt,
@@ -425,6 +518,11 @@ def generate_markdown_block(
             )
             if not should_retry:
                 break
+            if _is_incomplete_response_error(exc):
+                request_kwargs = _boost_request_output_budget(
+                    request_kwargs,
+                    minimum_tokens=_INCOMPLETE_RESPONSE_RETRY_MIN_OUTPUT_TOKENS,
+                )
             time.sleep(min(2 ** (attempt - 1), 8))
 
     if last_exception is not None and (
@@ -439,8 +537,23 @@ def generate_markdown_block(
                 target_text=target_text,
                 expected_paragraph_ids=expected_paragraph_ids,
                 marker_mode=marker_mode,
+                minimum_output_tokens=(
+                    _INCOMPLETE_RESPONSE_RECOVERY_MIN_OUTPUT_TOKENS
+                    if _is_incomplete_response_error(last_exception)
+                    else None
+                ),
             )
         except Exception as recovery_exc:
+            if _is_incomplete_response_error(recovery_exc) and _can_fallback_to_source_text_after_incomplete_response(target_text):
+                log_event(
+                    logging.WARNING,
+                    "markdown_incomplete_response_source_fallback",
+                    "Recovery для блока снова завершился incomplete_response; сохраняю исходный текст блока как controlled fallback.",
+                    model=model,
+                    target_chars=len(target_text),
+                    marker_mode=marker_mode,
+                )
+                return target_text
             if _is_retryable_empty_generation_error(recovery_exc) or _is_retryable_marker_validation_error(recovery_exc):
                 raise recovery_exc
             raise recovery_exc

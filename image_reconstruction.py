@@ -21,7 +21,7 @@ from typing import Any
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from constants import PROMPTS_DIR
-from image_shared import call_responses_create_with_retry, detect_image_mime_type, is_retryable_error
+from image_shared import call_responses_create_with_retry, detect_image_mime_type, extract_response_text, is_retryable_error
 from logger import log_event
 
 SCENE_GRAPH_PROMPT_PATH = PROMPTS_DIR / "scene_graph_extraction.txt"
@@ -151,7 +151,12 @@ def extract_scene_graph(
         budget=budget,
     )
 
-    raw_text: str = _extract_response_text(response)
+    raw_text = extract_response_text(
+        response,
+        empty_message="VLM did not return text for scene graph extraction.",
+        incomplete_message="VLM returned incomplete output for scene graph extraction.",
+        non_completed_message="VLM returned non-completed output for scene graph extraction.",
+    )
     scene_graph = _parse_scene_graph_json(raw_text)
     _validate_scene_graph(scene_graph)
 
@@ -1034,29 +1039,6 @@ def _validate_scene_graph(scene_graph: dict[str, Any]) -> None:
     elements = scene_graph.get("elements")
     if not isinstance(elements, list):
         raise RuntimeError("Scene graph должен содержать массив 'elements'.")
-
-
-# ---------------------------------------------------------------------------
-# VLM response helpers
-# ---------------------------------------------------------------------------
-
-
-def _extract_response_text(response: object) -> str:
-    output = getattr(response, "output", None)
-    if isinstance(output, list):
-        for item in output:
-            if getattr(item, "type", None) == "message":
-                content = getattr(item, "content", None)
-                if isinstance(content, list):
-                    for part in content:
-                        if getattr(part, "type", None) == "output_text":
-                            text = getattr(part, "text", "")
-                            if text:
-                                return text
-    output_text = getattr(response, "output_text", None)
-    if isinstance(output_text, str) and output_text.strip():
-        return output_text
-    raise RuntimeError("VLM не вернул текстовый ответ для scene graph extraction.")
 
 
 def _load_scene_graph_prompt() -> str:

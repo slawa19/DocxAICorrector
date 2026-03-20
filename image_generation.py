@@ -7,7 +7,13 @@ from types import SimpleNamespace
 from PIL import Image, ImageDraw, ImageEnhance, ImageOps
 from PIL import ImageChops
 
-from image_shared import detect_image_mime_type as shared_detect_image_mime_type, is_retryable_error, is_supported_image_bytes
+from image_shared import (
+    detect_image_mime_type as shared_detect_image_mime_type,
+    extract_model_response_error_code,
+    extract_response_text,
+    is_retryable_error,
+    is_supported_image_bytes,
+)
 from image_prompts import get_image_prompt_profile, load_image_prompt_text
 from image_reconstruction import reconstruct_image
 from logger import log_event
@@ -195,6 +201,8 @@ def _generate_reconstructed_candidate(
             image_type=analysis.image_type,
             error_type=exc.__class__.__name__,
             error_message=str(exc),
+            error_code=extract_model_response_error_code(exc),
+            response_stage="scene_graph_extraction",
         )
         return _generate_safe_candidate(image_bytes)
 
@@ -267,6 +275,8 @@ def _generate_semantic_candidate(
                     "Structured edit/generate path не удался, перехожу на deterministic reconstruction fallback.",
                     error_type=exc.__class__.__name__,
                     error_message=str(exc),
+                    error_code=extract_model_response_error_code(exc),
+                    response_stage="structured_layout_description",
                     image_type=analysis.image_type,
                     prompt_key=analysis.prompt_key,
                 )
@@ -297,6 +307,8 @@ def _generate_semantic_candidate(
             "Creative semantic generate не удался, пробую direct image edit как fallback.",
             error_type=exc.__class__.__name__,
             error_message=str(exc),
+            error_code=extract_model_response_error_code(exc),
+            response_stage="creative_redraw_brief",
             image_type=analysis.image_type,
             prompt_key=analysis.prompt_key,
         )
@@ -315,6 +327,7 @@ def _generate_semantic_candidate(
                 "Direct semantic edit тоже не удался, перехожу на structured Vision + Generate pipeline.",
                 error_type=fallback_exc.__class__.__name__,
                 error_message=str(fallback_exc),
+                error_code=extract_model_response_error_code(fallback_exc),
                 image_type=analysis.image_type,
                 prompt_key=analysis.prompt_key,
             )
@@ -1070,7 +1083,12 @@ def _extract_structured_layout_description(
         },
         budget=budget,
     )
-    layout_description = getattr(response, "output_text", "").strip()
+    layout_description = extract_response_text(
+        response,
+        empty_message="Vision-модель не вернула описание структуры для structured redraw.",
+        incomplete_message="Vision-модель вернула incomplete output для structured redraw.",
+        non_completed_message="Vision-модель вернула non-completed output для structured redraw.",
+    ).strip()
     if not layout_description:
         raise RuntimeError("Vision-модель не вернула описание структуры для structured redraw.")
     return layout_description
@@ -1124,7 +1142,12 @@ def _extract_creative_redraw_brief(
         },
         budget=budget,
     )
-    creative_brief = getattr(response, "output_text", "").strip()
+    creative_brief = extract_response_text(
+        response,
+        empty_message="Vision-модель не вернула creative brief для semantic redraw.",
+        incomplete_message="Vision-модель вернула incomplete output для semantic redraw.",
+        non_completed_message="Vision-модель вернула non-completed output для semantic redraw.",
+    ).strip()
     if not creative_brief:
         raise RuntimeError("Vision-модель не вернула creative brief для semantic redraw.")
     return creative_brief

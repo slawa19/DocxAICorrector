@@ -986,6 +986,56 @@ def test_normalize_semantic_output_docx_uses_generated_paragraph_registry_for_ma
     assert updated_doc.paragraphs[1].style.name == "Normal"
 
 
+def test_normalize_semantic_output_docx_uses_generated_registry_similarity_for_near_position_body_mapping():
+    source_paragraphs = [
+        ParagraphUnit(text="Исходный абзац сильно отличается", role="body", paragraph_id="p0010"),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("Лишний абзац перед целью")
+    target_doc.add_paragraph("Итоговый литературно отредактированный абзац")
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    updated_bytes = normalize_semantic_output_docx(
+        target_buffer.getvalue(),
+        source_paragraphs,
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0010", "text": "Итоговый литературно отредактированный абзац"}
+        ],
+    )
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    assert updated_doc.paragraphs[0].style is not None
+    assert updated_doc.paragraphs[0].style.name == "Normal"
+    assert updated_doc.paragraphs[1].style is not None
+    assert updated_doc.paragraphs[1].style.name == "Body Text"
+
+
+def test_normalize_semantic_output_docx_maps_body_to_generated_non_heading_lines():
+    source_paragraphs = [
+        ParagraphUnit(text="Старый слитый абзац", role="body", paragraph_id="p0056"),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("Новый заголовок", style="Heading 3")
+    target_doc.add_paragraph("Текст после нового заголовка")
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    updated_bytes = normalize_semantic_output_docx(
+        target_buffer.getvalue(),
+        source_paragraphs,
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0056", "text": "### Новый заголовок\nТекст после нового заголовка"}
+        ],
+    )
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    assert updated_doc.paragraphs[0].style is not None
+    assert updated_doc.paragraphs[0].style.name == "Heading 3"
+    assert updated_doc.paragraphs[1].style is not None
+    assert updated_doc.paragraphs[1].style.name == "Body Text"
+
+
 def test_normalize_semantic_output_docx_does_not_apply_positional_mapping_on_equal_count_reorder():
     source_paragraphs = [
         ParagraphUnit(text="Заголовок", role="heading", heading_level=1),

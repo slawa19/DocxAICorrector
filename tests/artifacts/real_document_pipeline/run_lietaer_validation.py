@@ -318,32 +318,52 @@ def _resolve_paragraph_num_id(paragraph) -> str | None:
     return None
 
 
-def _resolve_numbering_format_by_num_id(document: Document) -> dict[str, str]:
+def _resolve_paragraph_ilvl(paragraph) -> str | None:
+    paragraph_properties = getattr(paragraph._element, "pPr", None)
+    num_pr = _find_child_by_local_name(paragraph_properties, "numPr")
+    if num_pr is not None:
+        ilvl_element = _find_child_by_local_name(num_pr, "ilvl")
+        if ilvl_element is not None:
+            return ilvl_element.get(qn("w:val"))
+
+    style = getattr(paragraph, "style", None)
+    while style is not None:
+        style_properties = _find_child_by_local_name(getattr(style, "_element", None), "pPr")
+        num_pr = _find_child_by_local_name(style_properties, "numPr")
+        if num_pr is not None:
+            ilvl_element = _find_child_by_local_name(num_pr, "ilvl")
+            if ilvl_element is not None:
+                return ilvl_element.get(qn("w:val"))
+        style = getattr(style, "base_style", None)
+    return None
+
+
+def _resolve_numbering_format_by_num_id(document: Document) -> dict[tuple[str, str], str]:
     numbering_part = getattr(document.part, "numbering_part", None)
     numbering_root = getattr(numbering_part, "element", None)
     if numbering_root is None:
         return {}
 
-    abstract_num_formats: dict[str, str] = {}
+    abstract_num_formats: dict[str, dict[str, str]] = {}
     for child in numbering_root:
         if child.tag != qn("w:abstractNum"):
             continue
         abstract_num_id = child.get(qn("w:abstractNumId"))
         if not abstract_num_id:
             continue
-        level = None
+        level_formats: dict[str, str] = {}
         for candidate in child:
-            if candidate.tag == qn("w:lvl"):
-                level = candidate
-                break
-        if level is None:
-            continue
-        num_fmt = _find_child_by_local_name(level, "numFmt")
-        format_value = None if num_fmt is None else num_fmt.get(qn("w:val"))
-        if format_value:
-            abstract_num_formats[abstract_num_id] = format_value
+            if candidate.tag != qn("w:lvl"):
+                continue
+            ilvl = candidate.get(qn("w:ilvl")) or "0"
+            num_fmt = _find_child_by_local_name(candidate, "numFmt")
+            format_value = None if num_fmt is None else num_fmt.get(qn("w:val"))
+            if format_value:
+                level_formats[ilvl] = format_value
+        if level_formats:
+            abstract_num_formats[abstract_num_id] = level_formats
 
-    formats_by_num_id: dict[str, str] = {}
+    formats_by_num_id: dict[tuple[str, str], str] = {}
     for child in numbering_root:
         if child.tag != qn("w:num"):
             continue
@@ -352,8 +372,10 @@ def _resolve_numbering_format_by_num_id(document: Document) -> dict[str, str]:
             continue
         abstract_num_id_element = _find_child_by_local_name(child, "abstractNumId")
         abstract_num_id = None if abstract_num_id_element is None else abstract_num_id_element.get(qn("w:val"))
-        if abstract_num_id and abstract_num_id in abstract_num_formats:
-            formats_by_num_id[num_id] = abstract_num_formats[abstract_num_id]
+        if not abstract_num_id or abstract_num_id not in abstract_num_formats:
+            continue
+        for ilvl, format_value in abstract_num_formats[abstract_num_id].items():
+            formats_by_num_id[(num_id, ilvl)] = format_value
     return formats_by_num_id
 
 
@@ -362,7 +384,8 @@ def _count_ordered_word_numbered_paragraphs(document: Document) -> int:
     count = 0
     for paragraph in document.paragraphs:
         num_id = _resolve_paragraph_num_id(paragraph)
-        if num_id and formats_by_num_id.get(num_id) in ORDERED_LIST_FORMATS:
+        ilvl = _resolve_paragraph_ilvl(paragraph) or "0"
+        if num_id and formats_by_num_id.get((num_id, ilvl)) in ORDERED_LIST_FORMATS:
             count += 1
     return count
 
@@ -371,6 +394,10 @@ def _load_recent_formatting_diagnostics(since_epoch_seconds: float) -> tuple[lis
     artifact_paths = document_pipeline._collect_recent_formatting_diagnostics(
         since_epoch_seconds=since_epoch_seconds
     )
+    return artifact_paths, _load_formatting_diagnostics_payloads(artifact_paths)
+
+
+def _load_formatting_diagnostics_payloads(artifact_paths: Sequence[str]) -> list[dict[str, object]]:
     payloads: list[dict[str, object]] = []
     for artifact_path in artifact_paths:
         try:
@@ -379,7 +406,21 @@ def _load_recent_formatting_diagnostics(since_epoch_seconds: float) -> tuple[lis
             continue
         if isinstance(payload, dict):
             payloads.append(payload)
-    return artifact_paths, payloads
+    return payloads
+
+
+def _extract_run_formatting_diagnostics_paths(event_log: Sequence[Mapping[str, object]]) -> list[str]:
+    for event in reversed(event_log):
+        if str(event.get("event_id") or "") != "formatting_diagnostics_artifacts_detected":
+            continue
+        context = event.get("context") or {}
+        if not isinstance(context, Mapping):
+            continue
+        artifact_paths = context.get("artifact_paths") or []
+        if not isinstance(artifact_paths, Sequence) or isinstance(artifact_paths, (str, bytes, bytearray)):
+            continue
+        return [str(path) for path in artifact_paths if isinstance(path, str) and path]
+    return []
 
 
 def evaluate_lietaer_acceptance(
@@ -645,9 +686,15 @@ def main() -> None:
         except Exception:
             openable_output = False
 
-    formatting_diagnostics_paths, formatting_diagnostics_payloads = _load_recent_formatting_diagnostics(
-        run_started_at_epoch_seconds
-    )
+    formatting_diagnostics_paths = _extract_run_formatting_diagnostics_paths(event_log)
+    if formatting_diagnostics_paths:
+        formatting_diagnostics_payloads = _load_formatting_diagnostics_payloads(
+            formatting_diagnostics_paths
+        )
+    else:
+        formatting_diagnostics_paths, formatting_diagnostics_payloads = _load_recent_formatting_diagnostics(
+            run_started_at_epoch_seconds
+        )
 
     report = {
         "source_file": str(source_path),

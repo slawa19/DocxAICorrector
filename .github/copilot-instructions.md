@@ -36,6 +36,9 @@ Clarification for AI agents:
 - if an agent uses shell test runs for debugging, run exactly one selector per command and wait for its full output; do not chain multiple pytest invocations with `&&` or other collapsed command patterns that make the result partial or ambiguous;
 - do not use background terminals for pytest verification, because that hides the live result stream from both the agent and the user;
 - log-file recovery, hidden reruns, and foreground agent shell runs may be used for debugging, but never as the final user-facing proof when the user asked for visible terminal output.
+- when using ad-hoc shell commands in WSL for debugging, verify the command exists first if availability is uncertain; avoid assuming helper utilities like `unzip` are installed.
+- do not invoke Windows Python executables from WSL bash using mixed `d:/...` paths; prefer VS Code Python tools or a verified environment-native command path.
+- if a Python snippet or file inspection can be done with workspace Python tools, prefer that over cross-environment shell invocation.
 
 ## Project Lifecycle (app start/stop)
 

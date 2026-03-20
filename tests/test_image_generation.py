@@ -826,6 +826,71 @@ def test_generate_image_candidate_structured_retries_vision_request_after_retrya
     assert vision_calls[0]["timeout"] == image_generation.IMAGE_API_TIMEOUT_SECONDS
 
 
+def test_generate_image_candidate_structured_reads_nested_vision_output(monkeypatch):
+    class FakeResponsesClient:
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                output=[
+                    SimpleNamespace(
+                        content=[SimpleNamespace(type="output_text", text="layout description from nested output")]
+                    )
+                ]
+            )
+
+    class FakeImagesClient:
+        def generate(self, **kwargs):
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(
+                        b64_json=base64.b64encode(build_square_semantic_output_bytes()).decode("ascii"),
+                        revised_prompt=None,
+                    )
+                ]
+            )
+
+    client = build_semantic_client(images=FakeImagesClient(), responses=FakeResponsesClient())
+    monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
+
+    candidate = image_generation.generate_image_candidate(
+        build_detailed_png_bytes(),
+        build_analysis_result(),
+        mode="semantic_redraw_structured",
+        client=client,
+    )
+
+    assert candidate
+
+
+def test_generate_image_candidate_structured_falls_back_to_reconstruction_after_incomplete_vision_response(monkeypatch):
+    class IncompleteResponsesClient:
+        def create(self, **kwargs):
+            return SimpleNamespace(status="incomplete", output=[SimpleNamespace(type="reasoning", status="incomplete")])
+
+    reconstruction_calls = []
+
+    def fake_reconstruct_image(*args, **kwargs):
+        reconstruction_calls.append((args, kwargs))
+        return build_square_semantic_output_bytes(), {"elements": []}
+
+    client = build_semantic_client(images=SimpleNamespace(), responses=IncompleteResponsesClient())
+    monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(image_generation, "reconstruct_image", fake_reconstruct_image)
+
+    candidate = image_generation.generate_image_candidate(
+        build_detailed_png_bytes(),
+        build_analysis_result(
+            image_type="table",
+            prompt_key="table_semantic_redraw",
+            render_strategy="deterministic_reconstruction",
+        ),
+        mode="semantic_redraw_structured",
+        client=client,
+    )
+
+    assert candidate == build_square_semantic_output_bytes()
+    assert len(reconstruction_calls) == 1
+
+
 def test_generate_image_candidate_structured_uses_fixed_generate_size_without_auto_retry(monkeypatch):
     captured_calls = []
 

@@ -5,7 +5,15 @@ import logging
 
 from PIL import Image, ImageFilter, ImageOps
 
-from image_shared import clamp_score, detect_image_mime_type, is_retryable_error, parse_json_object, call_responses_create_with_retry
+from image_shared import (
+    call_responses_create_with_retry,
+    clamp_score,
+    detect_image_mime_type,
+    extract_model_response_error_code,
+    extract_response_text,
+    is_retryable_error,
+    parse_json_object,
+)
 from logger import log_event
 from models import ImageAnalysisResult
 
@@ -68,6 +76,8 @@ def analyze_image(
             mime_type=detected_mime_type,
             error_type=exc.__class__.__name__,
             error_message=str(exc),
+            error_code=extract_model_response_error_code(exc),
+            response_stage="vision_analysis",
         )
         return heuristic_result
 
@@ -249,7 +259,12 @@ def _extract_vision_analysis(
         budget=budget,
     )
     payload = parse_json_object(
-        getattr(response, "output_text", ""),
+        extract_response_text(
+            response,
+            empty_message="Vision analysis returned empty output.",
+            incomplete_message="Vision analysis returned incomplete output.",
+            non_completed_message="Vision analysis returned non-completed output.",
+        ),
         empty_message="Vision analysis returned empty output.",
         no_json_message="Vision analysis did not return JSON.",
     )
