@@ -79,6 +79,20 @@ AI agents must not add or restore low-value tests that weaken the signal of the 
 - Do not create or restore thin-wiring tests that only verify wrapper delegation or argument pass-through to mocked implementations, especially for façade modules such as `app_runtime.py`, unless the user explicitly asks for that wiring layer to be tested.
 - Prefer tests that protect user-visible behavior, runtime outcomes, emitted events, failure contracts, and real output artifacts.
 
+## Protected Refactoring Contract
+
+AI agents must not begin large-scale refactoring without a written specification and explicit user approval.
+
+Rules:
+
+- Before starting any refactoring that moves, renames, splits, or merges modules, functions across files, or changes public API boundaries, write a specification document first.
+- The specification must describe: the problem being solved, current state of affected code, proposed changes with module boundaries and dependency direction, consumer update plan, what does not change, and verification criteria.
+- Place the specification in `docs/archive/specs/` following the naming convention `DESCRIPTIVE_NAME_SPEC_YYYY-MM-DD.md`.
+- Present the specification to the user and wait for explicit approval before making any code changes.
+- Do not treat a user's exploratory question about possible refactoring as permission to start implementing it.
+- Small, localized changes (renaming a variable, extracting a single helper within the same file, fixing a bug) do not require a specification.
+- The threshold is: if the change touches more than one module's public API or moves code between files, it requires a spec.
+
 ## Protected Test Workflow Contract
 
 The WSL/bash test workflow is a protected repository contract.

@@ -12,7 +12,9 @@ from app_runtime import (
     emit_status as emit_status_impl,
 )
 from config import get_client, load_system_prompt
-from document import inspect_placeholder_integrity, normalize_semantic_output_docx, preserve_source_paragraph_properties, reinsert_inline_images
+from document import inspect_placeholder_integrity
+from formatting_transfer import normalize_semantic_output_docx, preserve_source_paragraph_properties
+from image_reinsertion import reinsert_inline_images
 from document_pipeline import (
     ActivityEmitter,
     ClientFactory,

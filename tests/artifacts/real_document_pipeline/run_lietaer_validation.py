@@ -25,10 +25,12 @@ from document import (
     ORDERED_LIST_FORMATS,
     extract_document_content_from_docx,
     inspect_placeholder_integrity,
+)
+from formatting_transfer import (
     normalize_semantic_output_docx,
     preserve_source_paragraph_properties,
-    reinsert_inline_images,
 )
+from image_reinsertion import reinsert_inline_images
 from generation import (
     convert_markdown_to_docx_bytes,
     ensure_pandoc_available,

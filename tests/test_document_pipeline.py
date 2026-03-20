@@ -1248,9 +1248,9 @@ def test_run_document_processing_end_to_end_produces_openable_docx_artifact(tmp_
         generate_markdown_block=lambda **kwargs: final_markdown,
         process_document_images=lambda **kwargs: image_assets,
         convert_markdown_to_docx_bytes=build_docx_from_markdown,
-        preserve_source_paragraph_properties=__import__("document").preserve_source_paragraph_properties,
-        normalize_semantic_output_docx=__import__("document").normalize_semantic_output_docx,
-        reinsert_inline_images=__import__("document").reinsert_inline_images,
+        preserve_source_paragraph_properties=__import__("formatting_transfer").preserve_source_paragraph_properties,
+        normalize_semantic_output_docx=__import__("formatting_transfer").normalize_semantic_output_docx,
+        reinsert_inline_images=__import__("image_reinsertion").reinsert_inline_images,
     )
 
     assert result == "succeeded"

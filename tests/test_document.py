@@ -5,6 +5,8 @@ from io import BytesIO
 from typing import Any, cast
 
 import document
+import formatting_transfer
+import image_reinsertion
 from docx import Document
 from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -14,16 +16,20 @@ from docx.oxml.ns import qn
 from docx.shared import Inches
 
 from document import (
-    _build_variant_table_element,
     build_marker_wrapped_block_text,
     build_document_text,
     build_editing_jobs,
     build_semantic_blocks,
-    _replace_xml_element_with_sequence,
     extract_document_content_from_docx,
     inspect_placeholder_integrity,
+)
+from formatting_transfer import (
     normalize_semantic_output_docx,
     preserve_source_paragraph_properties,
+)
+from image_reinsertion import (
+    _build_variant_table_element,
+    _replace_xml_element_with_sequence,
     resolve_image_insertions,
     resolve_final_image_bytes,
     reinsert_inline_images,
@@ -591,7 +597,7 @@ def test_preserve_source_paragraph_properties_logs_mismatch_warning(monkeypatch)
     target_doc.save(target_buffer)
 
     events = []
-    monkeypatch.setattr(document, "log_event", lambda level, event, message, **context: events.append((event, context)))
+    monkeypatch.setattr(formatting_transfer, "log_event", lambda level, event, message, **context: events.append((event, context)))
 
     preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
 
@@ -653,7 +659,7 @@ def test_preserve_source_paragraph_properties_artifact_records_caption_heading_c
     target_doc.save(target_buffer)
 
     diagnostics_dir = tmp_path / "formatting_diagnostics"
-    monkeypatch.setattr(document, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
+    monkeypatch.setattr(formatting_transfer, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
 
     preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
 
@@ -680,7 +686,7 @@ def test_normalize_semantic_output_docx_artifact_records_list_restoration_decisi
     target_doc.save(target_buffer)
 
     diagnostics_dir = tmp_path / "formatting_diagnostics"
-    monkeypatch.setattr(document, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
+    monkeypatch.setattr(formatting_transfer, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
 
     updated_bytes = normalize_semantic_output_docx(target_buffer.getvalue(), source_paragraphs)
 
@@ -909,7 +915,7 @@ def test_normalize_semantic_output_docx_logs_mismatch_warning(monkeypatch):
     target_doc.save(target_buffer)
 
     events = []
-    monkeypatch.setattr(document, "log_event", lambda level, event, message, **context: events.append((event, context)))
+    monkeypatch.setattr(formatting_transfer, "log_event", lambda level, event, message, **context: events.append((event, context)))
 
     normalize_semantic_output_docx(target_buffer.getvalue(), source_paragraphs)
 
@@ -978,6 +984,26 @@ def test_normalize_semantic_output_docx_uses_generated_paragraph_registry_for_ma
     assert updated_doc.paragraphs[0].style.name == "Heading 1"
     assert updated_doc.paragraphs[1].style is not None
     assert updated_doc.paragraphs[1].style.name == "Normal"
+
+
+def test_normalize_semantic_output_docx_does_not_apply_positional_mapping_on_equal_count_reorder():
+    source_paragraphs = [
+        ParagraphUnit(text="Заголовок", role="heading", heading_level=1),
+        ParagraphUnit(text="Обычный текст", role="body"),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("Обычный текст")
+    target_doc.add_paragraph("Заголовок")
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    updated_bytes = normalize_semantic_output_docx(target_buffer.getvalue(), source_paragraphs)
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    assert updated_doc.paragraphs[0].style is not None
+    assert updated_doc.paragraphs[0].style.name in {"Body Text", "Normal"}
+    assert updated_doc.paragraphs[1].style is not None
+    assert updated_doc.paragraphs[1].style.name == "Heading 1"
 
 
 def test_normalize_semantic_output_docx_restores_real_word_numbering_for_mapped_lists():
@@ -1143,6 +1169,41 @@ def test_reinsert_inline_images_preserves_formatted_text_around_placeholder_in_s
     assert len(updated_doc.inline_shapes) == 1
 
 
+def test_reinsert_inline_images_preserves_hyperlink_xml_when_placeholder_is_in_same_paragraph():
+    doc = Document()
+    paragraph = doc.add_paragraph()
+    paragraph.add_run("До ")
+    _add_hyperlink(paragraph, "ссылка", "https://example.com")
+    paragraph.add_run(" [[DOCX_")
+    paragraph.add_run("IMAGE_img_001]] после")
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    updated_bytes = reinsert_inline_images(
+        buffer.getvalue(),
+        [
+            ImageAsset(
+                image_id="img_001",
+                placeholder="[[DOCX_IMAGE_img_001]]",
+                original_bytes=PNG_BYTES,
+                mime_type="image/png",
+                position_index=0,
+                width_emu=914400,
+                height_emu=914400,
+                final_variant="original",
+            )
+        ],
+    )
+    updated_doc = Document(BytesIO(updated_bytes))
+    updated_paragraph = updated_doc.paragraphs[0]
+
+    assert "[[DOCX_IMAGE_img_001]]" not in updated_paragraph.text
+    assert "ссылка" in updated_paragraph.text
+    assert "после" in updated_paragraph.text
+    assert len(updated_doc.inline_shapes) == 1
+    assert len(updated_paragraph._element.xpath("./w:hyperlink")) == 1
+
+
 def test_reinsert_inline_images_uses_shared_table_layout_for_multi_variant_placeholder_inside_paragraph():
     doc = Document()
     paragraph = doc.add_paragraph()
@@ -1180,6 +1241,79 @@ def test_reinsert_inline_images_uses_shared_table_layout_for_multi_variant_place
     assert _extract_docpr_descriptions(updated_doc._element) == ["safe", "candidate1", "candidate2"]
 
 
+def test_reinsert_inline_images_preserves_hyperlink_when_multi_variant_table_is_inserted_nearby():
+    doc = Document()
+    paragraph = doc.add_paragraph()
+    paragraph.add_run("До ")
+    _add_hyperlink(paragraph, "ссылка", "https://example.com")
+    paragraph.add_run(" [[DOCX_IMAGE_img_001]] после")
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    asset = ImageAsset(
+        image_id="img_001",
+        placeholder="[[DOCX_IMAGE_img_001]]",
+        original_bytes=PNG_BYTES,
+        mime_type="image/png",
+        position_index=0,
+        safe_bytes=PNG_BYTES,
+        attempt_variants=[
+            ImageVariantCandidate(mode="candidate1", bytes=PNG_BYTES, mime_type="image/png"),
+            ImageVariantCandidate(mode="candidate2", bytes=PNG_BYTES, mime_type="image/png"),
+        ],
+    )
+    asset.update_pipeline_metadata(preserve_all_variants_in_docx=True)
+
+    updated_bytes = reinsert_inline_images(buffer.getvalue(), [asset])
+    updated_doc = Document(BytesIO(updated_bytes))
+    visible_text = "\n".join(paragraph.text for paragraph in updated_doc.paragraphs)
+
+    assert "ссылка" in visible_text
+    assert "после" in visible_text
+    assert len(updated_doc.tables) == 1
+    assert len(updated_doc.tables[0].rows[0].cells) == 3
+    assert len(updated_doc.inline_shapes) == 3
+    assert len(updated_doc._element.xpath(".//w:hyperlink")) == 1
+    assert _extract_docpr_descriptions(updated_doc._element) == ["safe", "candidate1", "candidate2"]
+
+
+def test_reinsert_inline_images_logs_warning_when_all_replacement_strategies_fail(monkeypatch):
+    doc = Document()
+    doc.add_paragraph("[[DOCX_IMAGE_img_001]]")
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    asset = ImageAsset(
+        image_id="img_001",
+        placeholder="[[DOCX_IMAGE_img_001]]",
+        original_bytes=PNG_BYTES,
+        mime_type="image/png",
+        position_index=0,
+    )
+
+    events = []
+    monkeypatch.setattr(image_reinsertion, "_replace_multi_variant_placeholders_with_tables", lambda paragraph, asset_map: False)
+    monkeypatch.setattr(image_reinsertion, "_replace_run_level_placeholders", lambda paragraph, placeholders, asset_map: False)
+    monkeypatch.setattr(image_reinsertion, "_replace_multi_run_placeholders", lambda paragraph, asset_map: False)
+    monkeypatch.setattr(image_reinsertion, "_replace_paragraph_placeholders_fallback", lambda paragraph, paragraph_text, asset_map: False)
+    monkeypatch.setattr(image_reinsertion, "log_event", lambda level, event, message, **context: events.append((event, context)))
+
+    updated_bytes = reinsert_inline_images(buffer.getvalue(), [asset])
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    assert updated_doc.paragraphs[0].text == "[[DOCX_IMAGE_img_001]]"
+    assert events == [
+        (
+            "image_reinsertion_placeholder_unhandled",
+            {
+                "placeholder_count": 1,
+                "placeholders": ["[[DOCX_IMAGE_img_001]]"],
+                "paragraph_text_preview": "[[DOCX_IMAGE_img_001]]",
+            },
+        )
+    ]
+
+
 def test_build_variant_table_element_returns_none_for_empty_insertions(monkeypatch):
     doc = Document()
     paragraph = doc.add_paragraph("placeholder")
@@ -1191,7 +1325,7 @@ def test_build_variant_table_element_returns_none_for_empty_insertions(monkeypat
         position_index=0,
     )
 
-    monkeypatch.setattr(document, "resolve_image_insertions", lambda current_asset: [])
+    monkeypatch.setattr(image_reinsertion, "resolve_image_insertions", lambda current_asset: [])
 
     assert _build_variant_table_element(paragraph, asset) is None
 
