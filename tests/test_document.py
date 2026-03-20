@@ -1011,6 +1011,34 @@ def test_normalize_semantic_output_docx_uses_generated_registry_similarity_for_n
     assert updated_doc.paragraphs[1].style.name == "Body Text"
 
 
+def test_normalize_semantic_output_docx_skips_registry_similarity_when_gap_is_too_small():
+    source_paragraphs = [
+        ParagraphUnit(text="Исходный абзац сильно отличается", role="body", paragraph_id="p0011"),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("Отредактированный абзац с важной мыслью о богатстве и сообществе сегодня")
+    target_doc.add_paragraph("Отредактированный абзац с важной мыслью о богатстве и сообществе завтра")
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    updated_bytes = normalize_semantic_output_docx(
+        target_buffer.getvalue(),
+        source_paragraphs,
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0011",
+                "text": "Отредактированный абзац с важной мыслью о богатстве и сообществе",
+            }
+        ],
+    )
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    assert updated_doc.paragraphs[0].style is not None
+    assert updated_doc.paragraphs[0].style.name == "Normal"
+    assert updated_doc.paragraphs[1].style is not None
+    assert updated_doc.paragraphs[1].style.name == "Normal"
+
+
 def test_normalize_semantic_output_docx_maps_body_to_generated_non_heading_lines():
     source_paragraphs = [
         ParagraphUnit(text="Старый слитый абзац", role="body", paragraph_id="p0056"),
