@@ -26,6 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from docx import Document
+from docx.document import Document as DocxDocument
 from docx.oxml.ns import qn
 
 import app_runtime
@@ -208,10 +209,28 @@ def _normalize_terminal_detail(detail: str) -> str:
     return normalized
 
 
+def _as_string_list(value: object) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return [str(item) for item in value]
+
+
+def _as_object_list(value: object) -> list[object]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return list(value)
+
+
+def _as_float_or_none(value: object) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
 def _print_terminal_completion_summary(*, report: Mapping[str, object], final_status: str) -> None:
     output_artifacts = cast(Mapping[str, object], report.get("output_artifacts") or {})
     acceptance = cast(Mapping[str, object], report.get("acceptance") or {})
-    failed_checks = list(acceptance.get("failed_checks") or [])
+    failed_checks = _as_string_list(acceptance.get("failed_checks"))
     print(
         "[summary] "
         f"status={final_status} "
@@ -340,7 +359,7 @@ class ValidationProgressTracker:
             self.state["elapsed_seconds"] = round(elapsed_seconds, 3)
             if metrics:
                 self.state["metrics"] = sanitize_for_json(dict(metrics))
-            recent_events = list(self.state.get("recent_events") or [])
+            recent_events = _as_object_list(self.state.get("recent_events"))
             recent_events.append(
                 {
                     "timestamp_utc": now.isoformat(),
@@ -360,7 +379,7 @@ class ValidationProgressTracker:
                     phase=phase,
                     stage=stage,
                     detail=detail,
-                    progress=float(self.state.get("progress") or 0.0),
+                    progress=_as_float_or_none(self.state.get("progress")) or 0.0,
                     elapsed_seconds=elapsed_seconds,
                     metrics=metrics,
                 )
@@ -437,6 +456,10 @@ class ValidationProgressTracker:
             "last_error": self.state.get("last_error"),
             "runtime_config": self.state.get("runtime_config"),
             "runtime_overrides": self.state.get("runtime_overrides"),
+            "latest_report": self.state.get("latest_report_json"),
+            "latest_summary": self.state.get("latest_summary_txt"),
+            "latest_markdown": self.state.get("latest_markdown_path"),
+            "latest_docx": self.state.get("latest_docx_path"),
         }
 
     def _write_locked(self) -> None:
@@ -478,6 +501,7 @@ def _write_latest_alias_artifacts(
     latest_manifest_path: Path,
     run_id: str,
     run_dir: Path,
+    manifest_payload: Mapping[str, object],
 ) -> None:
     latest_report_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(report_path, latest_report_path)
@@ -487,14 +511,17 @@ def _write_latest_alias_artifacts(
     if docx_artifact is not None and latest_docx_path is not None:
         shutil.copy2(docx_artifact, latest_docx_path)
 
-    latest_manifest = {
-        "run_id": run_id,
-        "run_dir": _path_for_report(run_dir),
-        "latest_report": _path_for_report(latest_report_path),
-        "latest_summary": _path_for_report(latest_summary_path),
-        "latest_markdown": _path_for_report(latest_markdown_path) if latest_markdown_path is not None else None,
-        "latest_docx": _path_for_report(latest_docx_path) if latest_docx_path is not None else None,
-    }
+    latest_manifest = dict(manifest_payload)
+    latest_manifest.update(
+        {
+            "run_id": run_id,
+            "run_dir": _path_for_report(run_dir),
+            "latest_report": _path_for_report(latest_report_path),
+            "latest_summary": _path_for_report(latest_summary_path),
+            "latest_markdown": _path_for_report(latest_markdown_path) if latest_markdown_path is not None else None,
+            "latest_docx": _path_for_report(latest_docx_path) if latest_docx_path is not None else None,
+        }
+    )
     _write_json_atomic(latest_manifest_path, latest_manifest)
 
 
@@ -591,6 +618,34 @@ def _summarize_repeat_runs(repeat_runs: Sequence[Mapping[str, object]]) -> tuple
         "failure_classification_counts": failure_classification_counts,
     }
     return summary, acceptance, failure_classification
+
+
+def _select_repeat_artifact_references(repeat_runs: Sequence[Mapping[str, object]]) -> dict[str, object | None]:
+    first_failing_run = next((run for run in repeat_runs if not bool(run.get("acceptance_passed"))), None)
+    representative_success_run = next((run for run in reversed(list(repeat_runs)) if bool(run.get("acceptance_passed"))), None)
+
+    def extract_paths(run: Mapping[str, object] | None, prefix: str) -> dict[str, object | None]:
+        if run is None:
+            return {
+                f"{prefix}_run_id": None,
+                f"{prefix}_report_json": None,
+                f"{prefix}_summary_txt": None,
+                f"{prefix}_markdown_path": None,
+                f"{prefix}_docx_path": None,
+            }
+        output_artifacts = cast(Mapping[str, object], run.get("output_artifacts") or {})
+        return {
+            f"{prefix}_run_id": run.get("run_id"),
+            f"{prefix}_report_json": run.get("report_path"),
+            f"{prefix}_summary_txt": run.get("summary_path"),
+            f"{prefix}_markdown_path": output_artifacts.get("markdown_path"),
+            f"{prefix}_docx_path": output_artifacts.get("docx_path"),
+        }
+
+    artifact_references = {}
+    artifact_references.update(extract_paths(first_failing_run, "first_failing"))
+    artifact_references.update(extract_paths(representative_success_run, "representative_success"))
+    return artifact_references
 
 
 def _run_repeat_validation(
@@ -719,7 +774,7 @@ def _run_repeat_validation(
                 "status": "completed" if completed.returncode == 0 else "failed",
                 "result": repeat_report.get("result") if repeat_report else "failed",
                 "acceptance_passed": bool(cast(Mapping[str, object], repeat_report.get("acceptance") or {}).get("passed")),
-                "failed_checks": list(cast(Mapping[str, object], repeat_report.get("acceptance") or {}).get("failed_checks") or []),
+                "failed_checks": _as_string_list(cast(Mapping[str, object], repeat_report.get("acceptance") or {}).get("failed_checks")),
                 "failure_classification": repeat_report.get("failure_classification"),
                 "duration_seconds": cast(Mapping[str, object], repeat_report.get("run") or {}).get("duration_seconds"),
                 "report_path": _path_for_report(repeat_report_path) if repeat_report_path.exists() else None,
@@ -752,6 +807,8 @@ def _run_repeat_validation(
         run_duration_seconds = round(run_finished_at_epoch_seconds - run_started_at_epoch_seconds, 3)
         result = "succeeded" if acceptance["passed"] else "failed"
 
+        repeat_artifact_references = _select_repeat_artifact_references(repeat_runs)
+
         report = {
             "run": {
                 "run_id": parent_run_id,
@@ -774,11 +831,11 @@ def _run_repeat_validation(
             "artifact_dir": _path_for_report(artifact_dir),
             "progress_path": _path_for_report(progress_path),
             "result": result,
-            "model": runtime_resolution.effective.model,
-            "chunk_size": runtime_resolution.effective.chunk_size,
-            "max_retries": runtime_resolution.effective.max_retries,
-            "image_mode": runtime_resolution.effective.image_mode,
-            "enable_paragraph_markers": runtime_resolution.effective.enable_paragraph_markers,
+            "runtime_config": {
+                "effective": runtime_resolution.effective.to_dict(),
+                "ui_defaults": runtime_resolution.ui_defaults.to_dict(),
+                "overrides": runtime_resolution.overrides,
+            },
             "runtime_configuration": {
                 "effective": runtime_resolution.effective.to_dict(),
                 "ui_defaults": runtime_resolution.ui_defaults.to_dict(),
@@ -789,6 +846,8 @@ def _run_repeat_validation(
                 "intermittent_failure_detected": repeat_summary["intermittent_failure_detected"],
                 "heading_only_output_detected_count": repeat_summary["heading_only_output_detected_count"],
             },
+            "preparation": None,
+            "formatting_diagnostics": [],
             "repeat_summary": repeat_summary,
             "repeat_runs": repeat_runs,
             "acceptance": acceptance,
@@ -802,6 +861,7 @@ def _run_repeat_validation(
                 "latest_markdown_path": _path_for_report(latest_markdown_path) if last_markdown_artifact is not None else None,
                 "latest_docx_path": _path_for_report(latest_docx_path) if last_docx_artifact is not None else None,
                 "latest_manifest_json": _path_for_report(latest_manifest_path),
+                **repeat_artifact_references,
             },
         }
         sanitized_report = sanitize_for_json(report)
@@ -823,15 +883,16 @@ def _run_repeat_validation(
             f"result={result}",
             f"failure_classification={failure_classification}",
             f"repeat_count={run_profile.repeat_count}",
+            f"runtime_overrides={json.dumps(cast(Mapping[str, object], report['runtime_config']).get('overrides') or {}, ensure_ascii=False, sort_keys=True)}",
             f"pipeline_succeeded_count={repeat_summary['pipeline_succeeded_count']}",
             f"acceptance_passed_count={repeat_summary['acceptance_passed_count']}",
             f"intermittent_failure_detected={repeat_summary['intermittent_failure_detected']}",
-            f"failed_repeat_indexes={','.join(str(index) for index in repeat_summary['failed_repeat_indexes'])}",
-            f"failed_repeat_run_ids={','.join(str(item) for item in repeat_summary['failed_repeat_run_ids'])}",
+            f"failed_repeat_indexes={','.join(str(index) for index in _as_object_list(repeat_summary['failed_repeat_indexes']))}",
+            f"failed_repeat_run_ids={','.join(str(item) for item in _as_object_list(repeat_summary['failed_repeat_run_ids']))}",
             f"result_counts={json.dumps(repeat_summary['result_counts'], ensure_ascii=False, sort_keys=True)}",
             f"failure_classification_counts={json.dumps(repeat_summary['failure_classification_counts'], ensure_ascii=False, sort_keys=True)}",
             f"acceptance_passed={acceptance['passed']}",
-            f"acceptance_failed_checks={','.join(acceptance['failed_checks'])}",
+            f"acceptance_failed_checks={','.join(_as_string_list(acceptance['failed_checks']))}",
             f"markdown_path={report['output_artifacts']['markdown_path']}",
             f"docx_path={report['output_artifacts']['docx_path']}",
             f"latest_manifest_json={report['output_artifacts']['latest_manifest_json']}",
@@ -851,6 +912,7 @@ def _run_repeat_validation(
             latest_manifest_path=latest_manifest_path,
             run_id=parent_run_id,
             run_dir=artifact_dir,
+            manifest_payload=cast(Mapping[str, object], tracker._build_manifest_payload_locked()),
         )
         tracker.finalize(
             status=final_status,
@@ -1086,7 +1148,7 @@ def _paragraph_has_word_numbering(paragraph) -> bool:
     return False
 
 
-def _count_word_numbered_paragraphs(document: Document) -> int:
+def _count_word_numbered_paragraphs(document: DocxDocument) -> int:
     return sum(1 for paragraph in document.paragraphs if _paragraph_has_word_numbering(paragraph))
 
 
@@ -1130,7 +1192,7 @@ def _resolve_paragraph_ilvl(paragraph) -> str | None:
     return None
 
 
-def _resolve_numbering_format_by_num_id(document: Document) -> dict[tuple[str, str], str]:
+def _resolve_numbering_format_by_num_id(document: DocxDocument) -> dict[tuple[str, str], str]:
     numbering_part = getattr(document.part, "numbering_part", None)
     numbering_root = getattr(numbering_part, "element", None)
     if numbering_root is None:
@@ -1171,7 +1233,7 @@ def _resolve_numbering_format_by_num_id(document: Document) -> dict[tuple[str, s
     return formats_by_num_id
 
 
-def _count_ordered_word_numbered_paragraphs(document: Document) -> int:
+def _count_ordered_word_numbered_paragraphs(document: DocxDocument) -> int:
     formats_by_num_id = _resolve_numbering_format_by_num_id(document)
     count = 0
     for paragraph in document.paragraphs:
@@ -1189,7 +1251,7 @@ def _resolve_direct_paragraph_alignment(paragraph) -> str | None:
 
 
 def _extract_short_centered_paragraph_texts(
-    document: Document,
+    document: DocxDocument,
     *,
     max_words: int = 18,
     max_chars: int = 160,
@@ -1446,6 +1508,28 @@ def evaluate_lietaer_acceptance(
     }
 
 
+def _apply_repeat_count_override(run_profile, repeat_count_override: str):
+    if not repeat_count_override:
+        return run_profile
+    try:
+        repeat_count = max(1, int(repeat_count_override))
+    except ValueError:
+        print(
+            f"[warning] invalid DOCXAI_REAL_DOCUMENT_REPEAT_COUNT_OVERRIDE={repeat_count_override!r}; using profile default {run_profile.repeat_count}",
+            flush=True,
+        )
+        return run_profile
+    return replace(run_profile, repeat_count=repeat_count)
+
+
+def _build_report_runtime_config(runtime_resolution) -> dict[str, object]:
+    return {
+        "effective": runtime_resolution.effective.to_dict() if runtime_resolution is not None else None,
+        "ui_defaults": runtime_resolution.ui_defaults.to_dict() if runtime_resolution is not None else None,
+        "overrides": runtime_resolution.overrides if runtime_resolution is not None else {},
+    }
+
+
 def main() -> None:
     registry = load_validation_registry()
     document_profile_id = os.environ.get("DOCXAI_REAL_DOCUMENT_PROFILE", "lietaer-core").strip() or "lietaer-core"
@@ -1453,8 +1537,7 @@ def main() -> None:
     document_profile = registry.get_document_profile(document_profile_id)
     run_profile = registry.resolve_run_profile(document_profile, requested_run_profile_id)
     repeat_count_override = os.environ.get("DOCXAI_REAL_DOCUMENT_REPEAT_COUNT_OVERRIDE", "").strip()
-    if repeat_count_override:
-        run_profile = replace(run_profile, repeat_count=max(1, int(repeat_count_override)))
+    run_profile = _apply_repeat_count_override(run_profile, repeat_count_override)
     source_path = document_profile.resolved_source_path(PROJECT_ROOT)
     artifact_root = REAL_DOCUMENT_ARTIFACT_ROOT
     if run_profile.repeat_count > 1 and not repeat_count_override:
@@ -1544,7 +1627,7 @@ def main() -> None:
             phase="prepare",
             stage=str(payload.get("stage") or "Подготовка"),
             detail=str(payload.get("detail") or ""),
-            progress=float(payload["progress"]) if isinstance(payload.get("progress"), (int, float)) else None,
+            progress=_as_float_or_none(payload.get("progress")),
             metrics=cast(Mapping[str, object], payload.get("metrics") or {}),
         )
 
@@ -1556,7 +1639,7 @@ def main() -> None:
                 phase="process",
                 stage=str(payload.get("stage") or "Обработка"),
                 detail=str(payload.get("detail") or ""),
-                progress=float(payload["progress"]) if isinstance(payload.get("progress"), (int, float)) else None,
+                progress=_as_float_or_none(payload.get("progress")),
                 metrics={
                     key: payload.get(key)
                     for key in ("current_block", "block_count", "target_chars", "context_chars")
@@ -1881,16 +1964,8 @@ def main() -> None:
         "artifact_dir": _path_for_report(artifact_dir),
         "progress_path": _path_for_report(progress_path),
         "result": result,
-        "model": runtime_resolution.effective.model if runtime_resolution is not None else None,
-        "chunk_size": runtime_resolution.effective.chunk_size if runtime_resolution is not None else None,
-        "max_retries": runtime_resolution.effective.max_retries if runtime_resolution is not None else None,
-        "image_mode": runtime_resolution.effective.image_mode if runtime_resolution is not None else None,
-        "enable_paragraph_markers": bool(app_config_dict.get("enable_paragraph_markers")),
-        "runtime_configuration": {
-            "effective": runtime_resolution.effective.to_dict() if runtime_resolution is not None else None,
-            "ui_defaults": runtime_resolution.ui_defaults.to_dict() if runtime_resolution is not None else None,
-            "overrides": runtime_resolution.overrides if runtime_resolution is not None else {},
-        },
+        "runtime_config": _build_report_runtime_config(runtime_resolution),
+        "runtime_configuration": _build_report_runtime_config(runtime_resolution),
         "preparation": preparation_payload,
         "runtime": runtime_snapshot,
         "last_error": last_error,
@@ -1958,12 +2033,7 @@ def main() -> None:
         f"progress_json={_path_for_report(progress_path)}",
         f"result={report['result']}",
         f"failure_classification={report['failure_classification']}",
-        f"model={report['model']}",
-        f"chunk_size={report['chunk_size']}",
-        f"max_retries={report['max_retries']}",
-        f"image_mode={report['image_mode']}",
-        f"enable_paragraph_markers={report['enable_paragraph_markers']}",
-        f"runtime_overrides={json.dumps(report['runtime_configuration']['overrides'], ensure_ascii=False, sort_keys=True)}",
+        f"runtime_overrides={json.dumps(cast(Mapping[str, object], report['runtime_config']).get('overrides') or {}, ensure_ascii=False, sort_keys=True)}",
         f"paragraph_count={report['preparation']['paragraph_count']}",
         f"image_count={report['preparation']['image_count']}",
         f"job_count={report['preparation']['job_count']}",
@@ -1981,7 +2051,7 @@ def main() -> None:
         f"formatting_diagnostics_count={len(formatting_diagnostics_payloads)}",
         f"formatting_diagnostics_discovery_source={formatting_diagnostics_discovery_source}",
         f"acceptance_passed={report['acceptance']['passed']}",
-        f"acceptance_failed_checks={','.join(report['acceptance']['failed_checks'])}",
+        f"acceptance_failed_checks={','.join(_as_string_list(cast(Mapping[str, object], report['acceptance']).get('failed_checks')))}",
         f"last_error={last_error}",
         f"markdown_path={report['output_artifacts']['markdown_path']}",
         f"docx_path={report['output_artifacts']['docx_path']}",
@@ -2011,6 +2081,7 @@ def main() -> None:
         latest_manifest_path=latest_manifest_path,
         run_id=run_id,
         run_dir=artifact_dir,
+        manifest_payload=cast(Mapping[str, object], tracker._build_manifest_payload_locked()),
     )
     tracker.finalize(
         status=final_status,

@@ -230,6 +230,7 @@ def _build_validation_result(
         "metrics": metrics,
         "checks": checks,
         "runtime_config": runtime_config,
+        "runtime_configuration": runtime_config,
         "output_artifacts": output_artifacts,
         "formatting_diagnostics": formatting_diagnostics,
         "event_log": event_log or [],

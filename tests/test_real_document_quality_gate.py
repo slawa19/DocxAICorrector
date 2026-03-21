@@ -74,3 +74,6 @@ def test_real_document_quality_gate_passes_and_updates_latest_manifest() -> None
     assert latest_manifest["acceptance_passed"] is True
     assert latest_manifest["run_id"] == report["run"]["run_id"]
     assert report["output_artifacts"]["report_json"] == latest_manifest["report_json"]
+    assert latest_manifest["latest_report"] == report["output_artifacts"]["latest_report_json"]
+    assert latest_manifest["latest_summary"] == report["output_artifacts"]["latest_summary_txt"]
+    assert latest_manifest["latest_progress_json"] == progress["latest_progress_json"]

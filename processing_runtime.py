@@ -33,6 +33,8 @@ from workflow_state import ProcessingOutcome
 MAX_COMPLETED_SOURCE_BYTES = 8 * 1024 * 1024
 _DOCX_ZIP_MAGIC = b"PK\x03\x04"
 _LEGACY_DOC_MAGIC = bytes.fromhex("D0CF11E0A1B11AE1")
+_DEFAULT_UPLOADED_FILENAME = "document.docx"
+_DOC_CONVERSION_TIMEOUT_SECONDS = 120
 
 
 def _build_default_image_processing_summary() -> dict[str, object]:
@@ -117,7 +119,7 @@ def _detect_uploaded_document_format(*, filename: str, source_bytes: bytes) -> s
     if source_bytes.startswith(_DOCX_ZIP_MAGIC):
         return "docx"
     if source_bytes.startswith(_LEGACY_DOC_MAGIC):
-        return "doc"
+        return "doc" if suffix == ".doc" else "unknown"
     if suffix == ".docx":
         return "docx"
     if suffix == ".doc":
@@ -136,16 +138,27 @@ def _build_normalized_docx_filename(filename: str) -> str:
     return "document.docx"
 
 
-def _run_completed_process(command: list[str], *, error_message: str, text: bool = True):
+def _run_completed_process(
+    command: list[str],
+    *,
+    error_message: str,
+    text: bool = True,
+    timeout_seconds: int = _DOC_CONVERSION_TIMEOUT_SECONDS,
+):
     try:
         result = subprocess.run(
             command,
             capture_output=True,
             check=False,
             text=text,
+            timeout=timeout_seconds,
             encoding="utf-8" if text else None,
             errors="replace" if text else None,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"{error_message} Превышено время ожидания {timeout_seconds} сек."
+        ) from exc
     except OSError as exc:
         raise RuntimeError(error_message) from exc
 
@@ -215,11 +228,27 @@ def _convert_legacy_doc_with_antiword(*, antiword_path: str, filename: str, sour
 def _convert_legacy_doc_to_docx(*, filename: str, source_bytes: bytes) -> tuple[bytes, str]:
     soffice_path = shutil.which("soffice") or shutil.which("libreoffice")
     if soffice_path:
-        return _convert_legacy_doc_with_soffice(
-            soffice_path=soffice_path,
-            filename=filename,
-            source_bytes=source_bytes,
-        ), "libreoffice"
+        try:
+            return _convert_legacy_doc_with_soffice(
+                soffice_path=soffice_path,
+                filename=filename,
+                source_bytes=source_bytes,
+            ), "libreoffice"
+        except RuntimeError as soffice_exc:
+            antiword_path = shutil.which("antiword")
+            if antiword_path:
+                try:
+                    return _convert_legacy_doc_with_antiword(
+                        antiword_path=antiword_path,
+                        filename=filename,
+                        source_bytes=source_bytes,
+                    ), "antiword+pandoc"
+                except RuntimeError as antiword_exc:
+                    raise RuntimeError(
+                        "Не удалось конвертировать legacy DOC ни через LibreOffice, ни через antiword+pandoc. "
+                        f"LibreOffice: {soffice_exc} antiword+pandoc: {antiword_exc}"
+                    ) from antiword_exc
+            raise soffice_exc
 
     antiword_path = shutil.which("antiword")
     if antiword_path:
@@ -261,17 +290,27 @@ def normalize_uploaded_document(*, filename: str, source_bytes: bytes) -> Normal
     )
 
 
+def _build_uploaded_file_token_components(*, normalized_document: NormalizedUploadedDocument, source_bytes: bytes) -> tuple[int, str]:
+    identity_bytes = source_bytes if normalized_document.source_format == "doc" else normalized_document.content_bytes
+    identity_hash = hashlib.sha256(identity_bytes).hexdigest()[:16]
+    return len(identity_bytes), identity_hash
+
+
 def freeze_uploaded_file(uploaded_file: UploadedFileLike | BytesIO) -> FrozenUploadPayload:
     source_bytes = read_uploaded_file_bytes(uploaded_file)
-    filename = getattr(uploaded_file, "name", str(uploaded_file))
+    filename = getattr(uploaded_file, "name", "") or _DEFAULT_UPLOADED_FILENAME
     normalized_document = normalize_uploaded_document(filename=filename, source_bytes=source_bytes)
+    token_size, token_hash = _build_uploaded_file_token_components(
+        normalized_document=normalized_document,
+        source_bytes=source_bytes,
+    )
     content_hash = hashlib.sha256(normalized_document.content_bytes).hexdigest()[:16]
     return FrozenUploadPayload(
         filename=normalized_document.filename,
         content_bytes=normalized_document.content_bytes,
         file_size=len(normalized_document.content_bytes),
         content_hash=content_hash,
-        file_token=f"{normalized_document.filename}:{len(normalized_document.content_bytes)}:{content_hash}",
+        file_token=f"{normalized_document.filename}:{token_size}:{token_hash}",
     )
 
 
@@ -282,10 +321,12 @@ def build_uploaded_file_token(uploaded_file: UploadedFileLike | BytesIO | None =
         if uploaded_file is None:
             raise ValueError("Для построения токена нужен uploaded_file или source_bytes.")
         source_bytes = read_uploaded_file_bytes(uploaded_file)
-    file_name = source_name if source_name is not None else getattr(uploaded_file, "name", "")
+    file_name = source_name if source_name is not None else (getattr(uploaded_file, "name", "") or _DEFAULT_UPLOADED_FILENAME)
     normalized_document = normalize_uploaded_document(filename=file_name, source_bytes=bytes(source_bytes))
-    file_size = len(normalized_document.content_bytes)
-    content_hash = hashlib.sha256(normalized_document.content_bytes).hexdigest()[:16]
+    file_size, content_hash = _build_uploaded_file_token_components(
+        normalized_document=normalized_document,
+        source_bytes=bytes(source_bytes),
+    )
     return f"{normalized_document.filename}:{file_size}:{content_hash}"
 
 

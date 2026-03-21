@@ -52,6 +52,7 @@ Canonical real-document validation target: `tests/sources/Лиетар глав�
 AI agents must follow these rules for the Lietaer real-document harness:
 
 - Preferred visible verification path in VS Code: task `Run Lietaer Real Validation`.
+- Preferred visible registry-driven verification path in VS Code: task `Run Real Document Validation Profile`.
 - Preferred exceptional automated quality-gate path in VS Code: task `Run Real Document Quality Gate`.
 - Canonical shell entry point in WSL: `bash scripts/run-real-document-validation.sh`.
 - Canonical exceptional quality-gate shell entry point in WSL: `bash scripts/run-real-document-quality-gate.sh`.

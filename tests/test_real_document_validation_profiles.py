@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from config import load_app_config
 from real_document_validation_profiles import PROJECT_ROOT, load_validation_registry, resolve_runtime_resolution
 
@@ -53,3 +55,29 @@ def test_load_validation_registry_reads_second_corpus_profile_and_soak_run_profi
     assert run_profile.mode == "soak"
     assert run_profile.repeat_count == 3
     assert run_profile.tier == "full"
+
+
+def test_load_validation_registry_rejects_unsupported_acceptance_policy(tmp_path) -> None:
+    registry_path = tmp_path / "corpus_registry.toml"
+    registry_path.write_text(
+        """
+[[documents]]
+id = "doc-1"
+source_path = "tests/sources/Лиетар глава1.docx"
+expected_acceptance_policy = "tolerant"
+provenance = "test"
+
+[[run_profiles]]
+id = "run-1"
+tier = "full"
+expected_acceptance_policy = "strict"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    load_validation_registry.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match="Unsupported expected_acceptance_policy"):
+            load_validation_registry(registry_path)
+    finally:
+        load_validation_registry.cache_clear()

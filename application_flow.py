@@ -136,6 +136,7 @@ def _prepare_run_context_core(
     read_uploaded_file_bytes_fn,
     build_uploaded_file_token_fn,
     reset_run_state_fn=None,
+    fail_critical_fn=None,
 ):
     started_at = time.perf_counter()
     (
@@ -163,10 +164,14 @@ def _prepare_run_context_core(
         )
         uploaded_file_bytes = read_uploaded_file_bytes_fn(uploaded_file)
         uploaded_file_token = build_uploaded_file_token_fn(source_name=uploaded_filename, source_bytes=uploaded_file_bytes)
-    normalized_document = normalize_uploaded_document(filename=uploaded_filename, source_bytes=uploaded_file_bytes)
-    uploaded_filename = normalized_document.filename
-    uploaded_file_bytes = normalized_document.content_bytes
-    uploaded_file_token = build_uploaded_file_token_fn(source_name=uploaded_filename, source_bytes=uploaded_file_bytes)
+        try:
+            normalized_document = normalize_uploaded_document(filename=uploaded_filename, source_bytes=uploaded_file_bytes)
+        except RuntimeError as exc:
+            if fail_critical_fn is not None:
+                fail_critical_fn("doc_conversion_failed", str(exc), filename=uploaded_filename)
+            raise
+        uploaded_filename = normalized_document.filename
+        uploaded_file_bytes = normalized_document.content_bytes
     emit_preparation_progress(
         progress_callback,
         stage="Файл прочитан",
@@ -313,6 +318,7 @@ def prepare_run_context(
         read_uploaded_file_bytes_fn=read_uploaded_file_bytes_fn,
         build_uploaded_file_token_fn=build_uploaded_file_token_fn,
         reset_run_state_fn=reset_run_state_fn,
+        fail_critical_fn=fail_critical_fn,
     )
     consume_completed_source_if_used(session_state=session_state, uploaded_file_token=uploaded_file_token)
     _raise_or_fail_preparation(prepared_document=prepared_document, uploaded_filename=uploaded_filename, fail_critical_fn=fail_critical_fn)
@@ -375,6 +381,7 @@ def prepare_run_context_for_background(
         resolve_uploaded_filename_fn=resolve_uploaded_filename_fn,
         read_uploaded_file_bytes_fn=read_uploaded_file_bytes_fn,
         build_uploaded_file_token_fn=build_uploaded_file_token_fn,
+        fail_critical_fn=None,
     )
     _raise_or_fail_preparation(prepared_document=prepared_document, uploaded_filename=uploaded_filename)
     emit_preparation_progress(

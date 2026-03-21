@@ -23,6 +23,7 @@ Visible VS Code path:
 
 ```text
 Tasks: Run Task -> Run Lietaer Real Validation
+Tasks: Run Task -> Run Real Document Validation Profile
 ```
 
 Exceptional automated quality-gate path:
@@ -91,7 +92,7 @@ Latest aliases are still updated in:
 tests/artifacts/real_document_pipeline/
 ```
 
-Use `tests/artifacts/real_document_pipeline/lietaer_validation_latest.json` as the source of truth for the latest run.
+Use `tests/artifacts/real_document_pipeline/lietaer_validation_latest.json` as the source of truth for the latest run. Its schema is now stable during the full run lifecycle and includes both run-scoped artifact paths and latest alias paths.
 
 Use `tests/artifacts/real_document_pipeline/lietaer_validation_progress.json` to inspect the current run while it is still executing.
 

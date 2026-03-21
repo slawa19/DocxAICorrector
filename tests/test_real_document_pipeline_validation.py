@@ -291,6 +291,118 @@ def test_summarize_repeat_runs_detects_intermittent_failures() -> None:
     assert failure_classification == "intermittent_failure"
 
 
+def test_apply_repeat_count_override_ignores_invalid_value() -> None:
+    validation = _load_validation_module()
+    run_profile = validation.load_validation_registry().get_run_profile("ui-parity-default")
+    buffer = io.StringIO()
+
+    with redirect_stdout(buffer):
+        updated = validation._apply_repeat_count_override(run_profile, "abc")
+
+    assert updated.repeat_count == run_profile.repeat_count
+    assert "invalid DOCXAI_REAL_DOCUMENT_REPEAT_COUNT_OVERRIDE" in buffer.getvalue()
+
+
+def test_select_repeat_artifact_references_exposes_failing_and_successful_runs() -> None:
+    validation = _load_validation_module()
+
+    references = validation._select_repeat_artifact_references(
+        [
+            {
+                "run_id": "run-1",
+                "acceptance_passed": False,
+                "report_path": "runs/run-1/report.json",
+                "summary_path": "runs/run-1/summary.txt",
+                "output_artifacts": {
+                    "markdown_path": "runs/run-1/output.md",
+                    "docx_path": "runs/run-1/output.docx",
+                },
+            },
+            {
+                "run_id": "run-2",
+                "acceptance_passed": True,
+                "report_path": "runs/run-2/report.json",
+                "summary_path": "runs/run-2/summary.txt",
+                "output_artifacts": {
+                    "markdown_path": "runs/run-2/output.md",
+                    "docx_path": "runs/run-2/output.docx",
+                },
+            },
+        ]
+    )
+
+    assert references["first_failing_run_id"] == "run-1"
+    assert references["first_failing_docx_path"] == "runs/run-1/output.docx"
+    assert references["representative_success_run_id"] == "run-2"
+    assert references["representative_success_markdown_path"] == "runs/run-2/output.md"
+
+
+def test_write_latest_alias_artifacts_preserves_stable_manifest_schema(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    report_path = tmp_path / "run_report.json"
+    summary_path = tmp_path / "run_summary.txt"
+    progress_path = tmp_path / "run_progress.json"
+    markdown_path = tmp_path / "run_output.md"
+    docx_path = tmp_path / "run_output.docx"
+    latest_report_path = tmp_path / "latest_report.json"
+    latest_summary_path = tmp_path / "latest_summary.txt"
+    latest_markdown_path = tmp_path / "latest_output.md"
+    latest_docx_path = tmp_path / "latest_output.docx"
+    latest_manifest_path = tmp_path / "latest.json"
+
+    report_path.write_text("{}", encoding="utf-8")
+    summary_path.write_text("summary", encoding="utf-8")
+    progress_path.write_text("{}", encoding="utf-8")
+    markdown_path.write_text("markdown", encoding="utf-8")
+    docx_path.write_bytes(b"PK")
+
+    manifest_payload = {
+        "run_id": "run-123",
+        "document_profile_id": "lietaer-core",
+        "run_profile_id": "ui-parity-default",
+        "validation_tier": "full",
+        "status": "completed",
+        "report_json": validation._path_for_report(report_path),
+        "summary_txt": validation._path_for_report(summary_path),
+        "progress_json": validation._path_for_report(progress_path),
+        "latest_progress_json": validation._path_for_report(progress_path),
+        "acceptance_passed": True,
+    }
+
+    validation._write_latest_alias_artifacts(
+        report_path=report_path,
+        summary_path=summary_path,
+        markdown_artifact=markdown_path,
+        docx_artifact=docx_path,
+        latest_report_path=latest_report_path,
+        latest_summary_path=latest_summary_path,
+        latest_markdown_path=latest_markdown_path,
+        latest_docx_path=latest_docx_path,
+        latest_manifest_path=latest_manifest_path,
+        run_id="run-123",
+        run_dir=tmp_path,
+        manifest_payload=manifest_payload,
+    )
+
+    latest_manifest = json.loads(latest_manifest_path.read_text(encoding="utf-8"))
+
+    assert latest_manifest["status"] == "completed"
+    assert latest_manifest["report_json"] == manifest_payload["report_json"]
+    assert latest_manifest["summary_txt"] == manifest_payload["summary_txt"]
+    assert latest_manifest["progress_json"] == manifest_payload["progress_json"]
+    assert latest_manifest["latest_report"] == validation._path_for_report(latest_report_path)
+    assert latest_manifest["latest_summary"] == validation._path_for_report(latest_summary_path)
+
+
+def test_full_tier_runtime_contract_is_nested_only() -> None:
+    validation = _load_validation_module()
+
+    runtime_config = validation._build_report_runtime_config(None)
+
+    assert set(runtime_config.keys()) == {"effective", "ui_defaults", "overrides"}
+
+
 def test_classify_failure_detects_heading_only_output_from_block_rejection_event() -> None:
     validation = _load_validation_module()
 

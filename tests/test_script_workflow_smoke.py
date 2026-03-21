@@ -169,6 +169,7 @@ def test_vscode_test_tasks_normalize_windows_relative_paths() -> None:
     full_task = tasks_by_label["Run Full Pytest"]
     file_task = tasks_by_label["Run Current Test File"]
     node_task = tasks_by_label["Run Current Test Node"]
+    real_document_task = tasks_by_label["Run Real Document Validation Profile"]
 
     assert full_task["command"] == "bash scripts/test.sh"
 
@@ -188,6 +189,16 @@ def test_vscode_test_tasks_normalize_windows_relative_paths() -> None:
     assert '${path//' in node_args[1]
     assert 'bash scripts/test.sh "${path}::${node_suffix}"' in node_args[1]
     assert node_args[2:] == ["_", "${relativeFile}", "${input:pytestNodeSuffix}"]
+
+    assert real_document_task["command"] == "bash"
+    real_document_args = real_document_task["args"]
+    assert real_document_args[0] == "-lc"
+    assert 'profile="$1"' in real_document_args[1]
+    assert 'run_profile="$2"' in real_document_args[1]
+    assert 'export DOCXAI_REAL_DOCUMENT_PROFILE="$profile"' in real_document_args[1]
+    assert 'export DOCXAI_REAL_DOCUMENT_RUN_PROFILE="$run_profile"' in real_document_args[1]
+    assert 'bash scripts/run-real-document-validation.sh' in real_document_args[1]
+    assert real_document_args[2:] == ["_", "${input:realDocumentProfileId}", "${input:realDocumentRunProfileId}"]
 
 
 def test_test_sh_rejects_non_test_file_selector() -> None:

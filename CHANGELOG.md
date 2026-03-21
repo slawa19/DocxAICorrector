@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-03-21
+
+- Реализована universal real-document validation architecture: registry-driven document profiles, независимые run profiles, deterministic `extraction`/`structural` tiers и profile-driven full validator.
+- Добавлен repeat/soak orchestration для full-tier real-document validation с агрегированием intermittent failures и per-repeat acceptance outcome.
+- Введён project-level legacy `.doc` normalization layer в `processing_runtime.py` с auto-detection по magic bytes и backends `soffice` или `antiword + pandoc`.
+- Preparation, extraction, structural validation и full real-document validator переведены на единый путь normalizer -> DOCX bytes вместо DOCX-only contract.
+- Второй corpus document `religion-wealth-core` переведён на исходный legacy `.doc`, чтобы multi-document architecture проверялась на реальном mixed corpus.
+- Усилено regression coverage для `heading_only_output`: добавлены тесты на real-document failure-classification path и на legacy DOC normalization в runtime/application-flow/document path.
+- Полный pytest suite в WSL проходит: `450 passed, 5 skipped`.
+
 ## 2026-03-13
 
 - Усилена DOCX-semantic extraction: добавлены heading levels через style-name и `outlineLvl`, а также более консервативная классификация заголовков.

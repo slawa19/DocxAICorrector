@@ -4,9 +4,11 @@
 
 Жёсткое правило размещения документов:
 
-1. новые spec-документы, планы и активные design notes должны создаваться в `docs/`, а не в `docs/archive/`;
-2. `docs/archive/` предназначен только для исторических, superseded и уже реализованных материалов, которые сохраняются для контекста;
-3. перенос документа в archive означает, что он больше не является местом для активной разработки и не должен использоваться как default location для новых workstream-ов.
+1. новые активные документы должны создаваться внутри канонической структуры `docs/`, а не в `docs/archive/`;
+2. корень `docs/` зарезервирован под верхнеуровневую каноническую документацию репозитория;
+3. тематические активные документы нужно складывать в релевантные подпапки вроде `docs/testing/` и `docs/reviews/`, а не разбрасывать в корне;
+4. `docs/archive/` предназначен только для исторических, superseded и уже реализованных материалов, которые сохраняются для контекста;
+5. перенос документа в archive означает, что он больше не является местом для активной разработки и не должен использоваться как default location для новых workstream-ов.
 
 Правило приоритета:
 
@@ -17,10 +19,21 @@
 ## Current Sources Of Truth
 
 - `README.md`
+- `docs/ARCHIVE_INDEX.md`
 - `docs/WORKFLOW_AND_IMAGE_MODES.md`
+- `docs/STARTUP_PERFORMANCE_CONTRACT.md`
 - `docs/DOCX_FORMATTING_HARDENING_SPEC_2026-03-13.md`
 - `docs/UNIVERSAL_REAL_DOCUMENT_VALIDATION_SPEC_2026-03-21.md`
 - `docs/AI_AGENT_DEVELOPMENT_RULES.md`
+- `docs/testing/REAL_DOCUMENT_VALIDATION_WORKFLOW.md`
+- `docs/testing/UNIVERSAL_TEST_SYSTEM_MAINTENANCE_GUIDE_2026-03-21.md`
+
+## Current Folder Layout
+
+- `docs/` — only top-level canonical repository docs
+- `docs/testing/` — active testing and validation maintenance docs
+- `docs/reviews/` — review handoffs, review reports, and review specs
+- `docs/archive/` — historical, superseded, or realized materials
 
 ## Archived Specs And Plans
 

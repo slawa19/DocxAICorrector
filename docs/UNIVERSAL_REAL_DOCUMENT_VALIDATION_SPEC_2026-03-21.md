@@ -1,8 +1,53 @@
 # Universal Real Document Validation Spec
 
 **Date:** 2026-03-21  
-**Status:** proposed  
+**Status:** implemented in current branch, with one known tolerant legacy-DOC structural profile remaining  
 **Trigger:** UI runs still surface model-output and formatting-transfer failures that routine automated validation either does not exercise or does not preserve in a reusable, document-agnostic form.
+
+---
+
+## 0a. Implementation Status Snapshot
+
+Implemented in the current branch:
+
+1. generic registry-driven document and run profiles via `corpus_registry.toml`;
+2. deterministic corpus-backed `extraction` tier;
+3. deterministic corpus-backed `structural` passthrough tier;
+4. explicit runtime-resolution and override reporting for full-tier runs;
+5. repeat/soak execution with aggregated intermittent-failure reporting;
+6. second corpus document proving real multi-document architecture;
+7. regression coverage for `heading_only_output` in both pipeline and real-document failure-classification paths;
+8. project-level legacy `.doc` auto-detection and auto-conversion so corpus and UI share the same normalized input contract.
+
+Still intentionally not fully closed:
+
+1. `religion-wealth-core` remains `tolerant` in deterministic structural mode because one page-separator-like artifact still produces a bounded formatting diagnostic;
+2. corpus promotion remains an ongoing workflow, not a one-time completed milestone.
+
+## 0b. Review-Validated Status And Follow-Ups
+
+Code review of the implemented branch confirms that the architecture is materially in place, but also confirms several important boundaries where the implementation is only partially generalized.
+
+Confirmed as implemented:
+
+1. normalization of `.docx` and legacy `.doc` now happens through a shared runtime boundary before downstream preparation and validation;
+2. document profiles and run profiles are registry-driven rather than hard-coded to one source file;
+3. deterministic `extraction` and `structural` corpus tiers exist and consume profile thresholds declaratively;
+4. full-tier validation emits run-scoped artifacts, runtime resolution, and repeat or soak aggregation;
+5. `heading_only_output` now has both pipeline-level and real-document report-level regression coverage;
+6. the legacy `.doc` conversion path now has bounded subprocess execution, preferred-backend fallback, and stricter format detection than the first implementation pass;
+7. repeat-parent reports now expose explicit failing-run and representative-success artifact references;
+8. the registry now enforces the currently supported strict-only `expected_acceptance_policy` contract instead of silently accepting broader undeployed policy values.
+
+Confirmed as only partially closed:
+
+1. full-tier orchestration is profile-driven, but full-tier acceptance is still effectively strict and largely hard-coded rather than fully derived from the generalized profile surface;
+2. repeat or soak parent reports aggregate child runs correctly and now expose explicit child-run references, but the legacy latest markdown and DOCX aliases still remain compatibility-oriented rather than being a fully redesigned aggregate-artifact contract;
+3. legacy conversion provenance is discovered at normalization time, but not yet persisted into the manifest or report contract;
+4. legacy `.doc` unit coverage is materially stronger than before, but converter-unavailable and corrupt-input failure paths still deserve broader dedicated tests;
+5. full single-run, repeat-parent, and structural reports are closer than before, but report schemas still are not fully normalized to one canonical shape across all tiers.
+
+These are not reasons to roll back the current architecture. They are the main follow-up points needed to make the implementation match the full ambition of this specification.
 
 ---
 
@@ -401,6 +446,12 @@ This is the mechanism for catching rare `heading_only_output` or `collapsed_outp
 
 Every universal validation run should emit a consistent manifest schema.
 
+Implementation note from review:
+
+1. the current branch already emits aggregate repeat metadata and per-run artifacts;
+2. however, the top-level repeat or soak artifact policy is still implicit because latest markdown and DOCX aliases track the last repeat artifact rather than an explicitly designated failing or representative child run;
+3. the intended end state for this section is: parent manifest is the canonical aggregate truth, while child-run links are explicit for the first failing repeat and, when useful, a representative successful repeat.
+
 Minimum top-level fields:
 
 1. `run_id`;
@@ -425,6 +476,19 @@ Minimum summarized validator signals:
 7. marker integrity result;
 8. document-level acceptance outcome;
 9. tier name, so extraction, structural, and full results are comparable in one reporting model.
+
+Additional manifest fields now justified by review:
+
+1. normalization provenance for mixed-format inputs: original filename, normalized filename, detected source format, whether conversion occurred, and conversion backend;
+2. explicit aggregate-artifact links for repeat or soak runs so intermittent failures do not get masked by the final repeat artifact;
+3. explicit declaration when a parsed policy field such as `expected_acceptance_policy` is deferred and not yet active beyond schema validation;
+4. schema consistency between deterministic and full-tier reports for runtime-configuration fields and optional artifact keys, so downstream consumers do not need tier-specific key translation for the same conceptual data.
+
+Current implementation note:
+
+1. item 2 is now partially implemented via explicit failing-run and representative-success links in repeat-parent reports;
+2. item 3 is now enforced as strict-only schema contract rather than remaining silently open-ended;
+3. items 1 and 4 remain the main manifest-level follow-ups.
 
 ### 5.12. Add a promotion workflow from UI failure to reusable corpus case
 
@@ -574,7 +638,10 @@ Add unit coverage for:
 3. event summarization;
 4. acceptance computation from synthetic validator signals;
 5. explicit detection of runtime override drift;
-6. structural-tier helper behavior for passthrough markdown and diagnostics interpretation.
+6. structural-tier helper behavior for passthrough markdown and diagnostics interpretation;
+7. malformed and unsupported legacy-input detection, including non-Word OLE2 containers and converter-unavailable paths;
+8. conversion-runner hardening paths, including subprocess timeout handling and `soffice` to `antiword` fallback behavior when the preferred backend is present but unusable;
+9. repeat override parsing and error handling for malformed environment values.
 
 ### 8.3. Corpus-backed deterministic integration tests
 
@@ -593,7 +660,9 @@ Add integration coverage for:
 1. generic runner can execute a registered profile;
 2. Lietaer compatibility path still works after generalization;
 3. run profile configuration is written into the manifest;
-4. repeat mode aggregates results correctly.
+4. repeat mode aggregates results correctly;
+5. parent repeat reports expose explicit failing-run and representative-success links instead of relying on implicit last-run artifact selection when intermittent failures occur;
+6. legacy `.doc` normalization failures surface as structured user-facing failures rather than raw conversion exceptions.
 
 ### 8.5. Migration map for current tests
 
@@ -706,6 +775,15 @@ Required updates:
 5. if repeat mode is treated as mandatory for every run, validation cost will become unacceptable;
 6. if acceptance signals are not standardized, reports will remain hard to compare across runs.
 
+Additional risks confirmed by review of the implemented branch:
+
+1. if full-tier acceptance remains only partially profile-driven, the registry schema can look more generalized than the actual behavior of the main validator;
+2. if repeat-parent latest artifacts keep tracking the last repeat implicitly for compatibility, intermittent failures will still be harder to triage than a fully aggregate-first artifact policy would allow;
+3. if normalization provenance is not persisted, mixed-format regressions will be harder to explain across environments and reruns;
+4. if already-normalized frozen payloads continue to be normalized again defensively in downstream preparation, the contract boundary stays harder to reason about and easier to drift later;
+5. if normalization provenance is not persisted, mixed-format runs will still be less explainable than the runtime now allows them to be;
+6. if report schemas continue to diverge between structural, single-run full-tier, and repeat-parent outputs, report consumers will remain more fragile than the architecture intends.
+
 ---
 
 ## 11. What Does Not Change
@@ -731,3 +809,21 @@ This spec is considered implemented when:
 8. the validator can run in a UI-parity mode without hidden implicit overrides;
 9. the validator supports repeated execution for intermittent failure detection;
 10. repository docs explain the profile workflow, three-tier model, and state clearly that new active specs live in `docs/`, while `docs/archive/` is only for historical materials.
+
+## 12a. Current Branch Assessment
+
+Based on review of the current branch, the acceptance criteria above are best understood as follows.
+
+Implemented:
+
+1. criteria 1 through 10 are materially implemented in the repository and are sufficient to treat this specification as implemented in its main architectural direction;
+2. the strongest implemented pieces are the shared normalization boundary, registry-driven corpus shape, deterministic extraction and structural tiers, explicit runtime-resolution reporting, and repeat or soak aggregation.
+
+Still requiring follow-up for architectural completeness:
+
+1. criterion 7 is implemented at the manifest-shape level, but should be extended with normalization provenance for mixed-format runs;
+2. criteria 7 through 9 are implemented operationally, and repeat-parent reports now expose explicit child-run references, but the top-level alias policy still should move further from implicit last-repeat semantics;
+3. criteria 2, 3, and 8 are implemented at the runner and configuration level, but the full-tier acceptance layer should still be brought into tighter alignment with the generalized profile contract;
+4. the parsed field `expected_acceptance_policy` is now constrained to the supported strict-only mode, but still should either become active runtime behavior or remain explicitly documented as strict-only deferred surface until broader policy variants are introduced;
+5. deterministic and full-tier report schemas should converge further so runtime configuration and artifact keys are easier to consume uniformly across tiers;
+6. the current test strategy should still be extended with explicit coverage for converter-unavailable paths, corrupt legacy inputs, and broader multi-block or partial `heading_only_output` scenarios.

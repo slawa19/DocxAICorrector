@@ -1,4 +1,5 @@
 import queue
+import subprocess
 
 import pytest
 
@@ -376,10 +377,78 @@ def test_freeze_uploaded_file_normalizes_legacy_doc_payload(monkeypatch):
     assert payload.file_token.startswith("legacy.docx:")
 
 
-def test_build_uploaded_file_token_renames_zip_payloads_to_docx_extension():
+def test_build_uploaded_file_token_renames_zip_payloads_with_docx_magic_to_docx_extension():
     token = processing_runtime.build_uploaded_file_token(
         source_name="misnamed.doc",
         source_bytes=b"PK\x03\x04not-really-a-full-docx",
     )
 
     assert token.startswith("misnamed.docx:")
+
+
+def test_detect_uploaded_document_format_rejects_non_doc_ole2_suffix() -> None:
+    detected = processing_runtime._detect_uploaded_document_format(
+        filename="worksheet.xls",
+        source_bytes=bytes.fromhex("D0CF11E0A1B11AE1") + b"ole2-payload",
+    )
+
+    assert detected == "unknown"
+
+
+def test_run_completed_process_raises_timeout_error(monkeypatch):
+    def run_stub(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(processing_runtime.subprocess, "run", run_stub)
+
+    with pytest.raises(RuntimeError, match="Превышено время ожидания"):
+        processing_runtime._run_completed_process(["soffice"], error_message="boom")
+
+
+def test_convert_legacy_doc_to_docx_falls_back_to_antiword_when_soffice_fails(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        processing_runtime.shutil,
+        "which",
+        lambda name: {
+            "soffice": "/usr/bin/soffice",
+            "libreoffice": None,
+            "antiword": "/usr/bin/antiword",
+        }.get(name),
+    )
+
+    def soffice_stub(**kwargs):
+        calls.append("soffice")
+        raise RuntimeError("soffice failed")
+
+    def antiword_stub(**kwargs):
+        calls.append("antiword")
+        return b"converted-docx"
+
+    monkeypatch.setattr(processing_runtime, "_convert_legacy_doc_with_soffice", soffice_stub)
+    monkeypatch.setattr(processing_runtime, "_convert_legacy_doc_with_antiword", antiword_stub)
+
+    converted_bytes, backend = processing_runtime._convert_legacy_doc_to_docx(
+        filename="legacy.doc",
+        source_bytes=bytes.fromhex("D0CF11E0A1B11AE1") + b"legacy",
+    )
+
+    assert converted_bytes == b"converted-docx"
+    assert backend == "antiword+pandoc"
+    assert calls == ["soffice", "antiword"]
+
+
+def test_build_uploaded_file_token_for_legacy_doc_is_stable_across_converter_outputs(monkeypatch):
+    converted_outputs = [b"converted-docx-a", b"converted-docx-b"]
+
+    def convert_stub(**kwargs):
+        return converted_outputs.pop(0), "libreoffice"
+
+    monkeypatch.setattr(processing_runtime, "_convert_legacy_doc_to_docx", convert_stub)
+
+    source_bytes = bytes.fromhex("D0CF11E0A1B11AE1") + b"same-legacy-doc"
+    first = processing_runtime.build_uploaded_file_token(source_name="legacy.doc", source_bytes=source_bytes)
+    second = processing_runtime.build_uploaded_file_token(source_name="legacy.doc", source_bytes=source_bytes)
+
+    assert first == second

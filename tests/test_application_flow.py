@@ -284,6 +284,37 @@ def test_prepare_run_context_normalizes_legacy_doc_before_validation(monkeypatch
     assert result.uploaded_file_bytes == b"converted-docx"
 
 
+def test_prepare_run_context_reports_doc_conversion_failure_via_fail_critical(monkeypatch):
+    session_state = SessionState(selected_source_token="", prepared_source_key="")
+    failures = []
+
+    monkeypatch.setattr(
+        application_flow,
+        "normalize_uploaded_document",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("converter missing")),
+    )
+
+    def fail_critical_stub(event, message, **context):
+        failures.append((event, message, context))
+        raise RuntimeError(message)
+
+    with pytest.raises(RuntimeError, match="converter missing"):
+        application_flow.prepare_run_context(
+            uploaded_file=UploadedFileStub("legacy.doc", b"legacy"),
+            chunk_size=6000,
+            image_mode="safe",
+            keep_all_image_variants=True,
+            session_state=session_state,
+            reset_run_state_fn=lambda **kwargs: None,
+            fail_critical_fn=fail_critical_stub,
+            log_event_fn=lambda *args, **kwargs: None,
+            prepare_document_for_processing_fn=lambda **kwargs: (_ for _ in ()).throw(AssertionError("unexpected")),
+            build_uploaded_file_token_fn=lambda **kwargs: "legacy.docx:token",
+        )
+
+    assert failures == [("doc_conversion_failed", "converter missing", {"filename": "legacy.doc"})]
+
+
 def test_restart_flow_restores_uploaded_file_from_run_store_and_cleans_up(tmp_path, monkeypatch):
     session_state = SessionState()
     monkeypatch.setattr(state.st, "session_state", session_state)
@@ -420,3 +451,33 @@ def test_prepare_run_context_for_background_processes_real_docx_without_mocks():
     assert any("Глава 1" in str(job.get("target_text", "")) for job in result.jobs)
     assert any(event["stage"] == "Разбор DOCX" for event in progress_events)
     assert progress_events[-1]["stage"] == "Документ подготовлен"
+
+
+def test_prepare_run_context_for_background_skips_renormalization_for_frozen_payload(monkeypatch):
+    monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: None)
+    monkeypatch.setattr(
+        application_flow,
+        "normalize_uploaded_document",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("unexpected renormalization")),
+    )
+    prepared_document = SimpleNamespace(
+        source_text="text",
+        paragraphs=["p1"],
+        image_assets=[],
+        jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
+        prepared_source_key="prepared-key",
+        cached=False,
+    )
+    payload = _freeze_uploaded_file("report.docx", b"abc")
+
+    result = application_flow.prepare_run_context_for_background(
+        uploaded_payload=payload,
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=True,
+        prepare_document_for_processing_fn=lambda **kwargs: prepared_document,
+    )
+
+    assert result.uploaded_filename == payload.filename
+    assert result.uploaded_file_bytes == payload.content_bytes
+    assert result.uploaded_file_token == payload.file_token
