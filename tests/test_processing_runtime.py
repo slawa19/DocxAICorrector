@@ -355,3 +355,31 @@ def test_start_background_processing_degrades_gracefully_when_restart_store_fail
     assert session_state.processing_worker is not None
     assert any("restart" in message.lower() for message in activity_messages)
     assert len(log_events) == 1
+
+
+def test_freeze_uploaded_file_normalizes_legacy_doc_payload(monkeypatch):
+    uploaded_file = processing_runtime.build_in_memory_uploaded_file(
+        source_name="legacy.doc",
+        source_bytes=bytes.fromhex("D0CF11E0A1B11AE1") + b"legacy-binary",
+    )
+    monkeypatch.setattr(
+        processing_runtime,
+        "_convert_legacy_doc_to_docx",
+        lambda **kwargs: (b"converted-docx", "antiword+pandoc"),
+    )
+
+    payload = processing_runtime.freeze_uploaded_file(uploaded_file)
+
+    assert payload.filename == "legacy.docx"
+    assert payload.content_bytes == b"converted-docx"
+    assert payload.file_size == len(b"converted-docx")
+    assert payload.file_token.startswith("legacy.docx:")
+
+
+def test_build_uploaded_file_token_renames_zip_payloads_to_docx_extension():
+    token = processing_runtime.build_uploaded_file_token(
+        source_name="misnamed.doc",
+        source_bytes=b"PK\x03\x04not-really-a-full-docx",
+    )
+
+    assert token.startswith("misnamed.docx:")

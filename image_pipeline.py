@@ -519,6 +519,16 @@ def process_document_images(
         context.emit_state(context.runtime, image_assets=[])
         return []
 
+    if image_mode == ImageMode.NO_CHANGE.value:
+        for asset in image_assets:
+            asset.mode_requested = image_mode
+            asset.validation_status = "skipped"
+            asset.final_decision = "accept"
+            asset.final_variant = "original"
+            asset.final_reason = "Режим «Без изменения» — изображения оставлены как есть."
+        context.emit_state(context.runtime, image_assets=image_assets)
+        return list(image_assets)
+
     processed_assets = []
     image_client = context.client
     document_call_budget = context.build_document_call_budget(total_images=len(image_assets), image_mode=image_mode)

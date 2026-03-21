@@ -205,10 +205,10 @@ def main() -> None:
         log_event(logging.INFO, "app_start", "Приложение инициализировано")
         st.session_state.app_start_logged = True
 
-    st.title("AI-редактор DOCX через Markdown")
+    st.title("AI-редактор DOCX/DOC через Markdown")
     st.write(
-        "Загрузите DOCX, приложение соберет смысловые блоки из нескольких абзацев, "
-        "добавит соседний контекст для модели и соберет новый DOCX."
+        "Загрузите DOCX или legacy DOC, приложение при необходимости автоконвертирует его в DOCX, "
+        "соберет смысловые блоки из нескольких абзацев, добавит соседний контекст для модели и соберет новый DOCX."
     )
 
     try:
@@ -250,7 +250,7 @@ def main() -> None:
         render_processing_panel()
         return
 
-    uploaded_widget_file = st.file_uploader("Загрузите DOCX-файл", type=["docx"])
+    uploaded_widget_file = st.file_uploader("Загрузите DOCX/DOC-файл", type=["docx", "doc"])
 
     @st.fragment(run_every=1)
     def render_preparation_panel() -> None:
@@ -264,7 +264,7 @@ def main() -> None:
 
     if uploaded_widget_file is not None and _is_uploaded_file_too_large(uploaded_widget_file):
         st.error(
-            f"Размер DOCX превышает допустимый предел {MAX_DOCX_ARCHIVE_SIZE_BYTES // (1024 * 1024)} МБ. Загрузите файл меньшего размера."
+            f"Размер DOCX/DOC превышает допустимый предел {MAX_DOCX_ARCHIVE_SIZE_BYTES // (1024 * 1024)} МБ. Загрузите файл меньшего размера."
         )
         render_run_log()
         _mark_app_ready()

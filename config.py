@@ -206,7 +206,7 @@ def load_app_config() -> AppConfig:
     enable_paragraph_markers = parse_config_bool(config_data, "enable_paragraph_markers", False)
 
     image_mode_default = _parse_image_mode(
-        parse_config_str(config_data, "image_mode_default", ImageMode.SAFE.value),
+        parse_config_str(config_data, "image_mode_default", ImageMode.NO_CHANGE.value),
         source_name=str(CONFIG_PATH),
     )
     semantic_validation_policy = parse_choice_str(

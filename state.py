@@ -83,7 +83,7 @@ def init_session_state() -> None:
     st.session_state.setdefault("completed_source", None)
     st.session_state.setdefault("persisted_source_cleanup_done", False)
     st.session_state.setdefault("restart_session_id", uuid4().hex)
-    st.session_state.setdefault("latest_image_mode", "safe")
+    st.session_state.setdefault("latest_image_mode", "no_change")
 
 
 def reset_run_state(*, keep_restart_source: bool = True) -> None:
@@ -118,7 +118,7 @@ def reset_run_state(*, keep_restart_source: bool = True) -> None:
     st.session_state.processing_outcome = ProcessingOutcome.IDLE.value
     st.session_state.prepared_source_key = ""
     st.session_state.preparation_cache = {}
-    st.session_state.latest_image_mode = "safe"
+    st.session_state.latest_image_mode = "no_change"
     clear_restart_source(completed_source)
     st.session_state.completed_source = None
     if not keep_restart_source:

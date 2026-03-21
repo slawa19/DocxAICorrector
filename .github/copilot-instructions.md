@@ -45,6 +45,22 @@ Clarification for AI agents:
 App lifecycle uses PowerShell tasks — those are fine:
 - **Start Project** / **Stop Project** / **Project Status** — VS Code tasks
 
+## Real Document Validation
+
+Canonical real-document validation target: `tests/sources/Лиетар глава1.docx`.
+
+AI agents must follow these rules for the Lietaer real-document harness:
+
+- Preferred visible verification path in VS Code: task `Run Lietaer Real Validation`.
+- Preferred exceptional automated quality-gate path in VS Code: task `Run Real Document Quality Gate`.
+- Canonical shell entry point in WSL: `bash scripts/run-real-document-validation.sh`.
+- Canonical exceptional quality-gate shell entry point in WSL: `bash scripts/run-real-document-quality-gate.sh`.
+- Do not invoke `tests/artifacts/real_document_pipeline/run_lietaer_validation.py` through a Windows Python path from WSL.
+- Do not spend time rediscovering the environment contract: the canonical runtime for this validator is WSL `.venv`, with `PYTHONPATH=.` rooted at the repository.
+- The validator script is self-bootstrapping for imports and now records run metadata plus run-scoped artifact paths; prefer reading the latest manifest, progress snapshot, and run-specific report over guessing from overwritten root artifacts.
+- Current-run artifacts live under `tests/artifacts/real_document_pipeline/runs/<run_id>/` and the latest aliases are updated in `tests/artifacts/real_document_pipeline/`.
+- When reporting real-document results, include the `run_id`, latest manifest `status`, acceptance outcome, and the exact report/summary paths from the latest manifest.
+
 ## Startup Performance Contract
 
 Startup performance is a protected repository contract.
@@ -90,7 +106,8 @@ Rules:
 
 - Before starting any refactoring that moves, renames, splits, or merges modules, functions across files, or changes public API boundaries, write a specification document first.
 - The specification must describe: the problem being solved, current state of affected code, proposed changes with module boundaries and dependency direction, consumer update plan, what does not change, and verification criteria.
-- Place the specification in `docs/archive/specs/` following the naming convention `DESCRIPTIVE_NAME_SPEC_YYYY-MM-DD.md`.
+- Place new and active specifications in `docs/` following the naming convention `DESCRIPTIVE_NAME_SPEC_YYYY-MM-DD.md`.
+- Use `docs/archive/` only for historical, superseded, or already-realized materials; do not place new plans or active specs there.
 - Present the specification to the user and wait for explicit approval before making any code changes.
 - Do not treat a user's exploratory question about possible refactoring as permission to start implementing it.
 - Small, localized changes (renaming a variable, extracting a single helper within the same file, fixing a bug) do not require a specification.

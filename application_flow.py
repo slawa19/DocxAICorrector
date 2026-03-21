@@ -10,6 +10,7 @@ from processing_runtime import (
     FrozenUploadPayload,
     build_in_memory_uploaded_file,
     build_uploaded_file_token,
+    normalize_uploaded_document,
     read_uploaded_file_bytes,
     resolve_uploaded_filename,
 )
@@ -162,6 +163,10 @@ def _prepare_run_context_core(
         )
         uploaded_file_bytes = read_uploaded_file_bytes_fn(uploaded_file)
         uploaded_file_token = build_uploaded_file_token_fn(source_name=uploaded_filename, source_bytes=uploaded_file_bytes)
+    normalized_document = normalize_uploaded_document(filename=uploaded_filename, source_bytes=uploaded_file_bytes)
+    uploaded_filename = normalized_document.filename
+    uploaded_file_bytes = normalized_document.content_bytes
+    uploaded_file_token = build_uploaded_file_token_fn(source_name=uploaded_filename, source_bytes=uploaded_file_bytes)
     emit_preparation_progress(
         progress_callback,
         stage="Файл прочитан",

@@ -75,6 +75,30 @@ bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate &&
 
 WSL-driven tasks открывают отдельный терминал и оставляют его видимым после завершения.
 
+## Real Document Validation
+
+Канонический пользовательский путь:
+
+```text
+Tasks: Run Task -> Run Lietaer Real Validation
+Tasks: Run Task -> Run Real Document Quality Gate
+```
+
+Канонический WSL CLI-путь:
+
+```bash
+bash scripts/run-real-document-validation.sh
+bash scripts/run-real-document-quality-gate.sh
+```
+
+Не вызывайте `run_lietaer_validation.py` через Windows Python из WSL и не надейтесь на случайный shell cwd. Используйте только WSL `.venv` и репозиторный root.
+
+Каждый прогон пишет уникальные артефакты в `tests/artifacts/real_document_pipeline/runs/<run_id>/`, обновляет latest manifest в `tests/artifacts/real_document_pipeline/lietaer_validation_latest.json` и live progress snapshot в `tests/artifacts/real_document_pipeline/lietaer_validation_progress.json`.
+
+Exceptional quality gate не входит в обычный полный прогон и должен запускаться только через выделенную task/script. Этот путь сам проверяет latest manifest/report и не требует ручных скриншотов терминала.
+
+Если вы ссылаетесь на real-document прогон в PR или review, указывайте `run_id` и путь к run-specific report.
+
 ## Перед pull request
 
 Перед отправкой изменений выполняйте полный прогон через канонический WSL entry point:

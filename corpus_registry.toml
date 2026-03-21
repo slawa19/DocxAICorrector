@@ -1,0 +1,81 @@
+[[documents]]
+id = "lietaer-core"
+source_path = "tests/sources/Лиетар глава1.docx"
+artifact_prefix = "lietaer_validation"
+output_basename = "Лиетар глава1_validated"
+structural_mode = "strict"
+min_paragraphs = 60
+has_headings = true
+min_headings = 3
+has_numbered_lists = true
+min_numbered_items = 3
+has_images = true
+min_images = 1
+has_tables = false
+min_tables = 0
+max_formatting_diagnostics = 1
+max_unmapped_source_paragraphs = 3
+max_unmapped_target_paragraphs = 1
+max_heading_level_drift = 1
+min_text_similarity = 0.98
+require_numbered_lists_preserved = true
+require_nonempty_output = true
+forbid_heading_only_collapse = true
+default_run_profile = "ui-parity-default"
+expected_acceptance_policy = "strict"
+tags = ["headings", "formatting", "manual-regression"]
+provenance = "Canonical real document regression sample"
+
+[[documents]]
+id = "religion-wealth-core"
+source_path = "tests/sources/Собственность и богатство в религиях.doc"
+artifact_prefix = "religion_wealth_validation"
+output_basename = "Собственность и богатство в религиях_validated"
+structural_mode = "tolerant"
+min_paragraphs = 35
+has_headings = true
+min_headings = 3
+has_numbered_lists = false
+min_numbered_items = 0
+has_images = false
+min_images = 0
+has_tables = false
+min_tables = 0
+max_formatting_diagnostics = 1
+max_unmapped_source_paragraphs = 1
+max_unmapped_target_paragraphs = 1
+max_heading_level_drift = 0
+min_text_similarity = 0.98
+require_numbered_lists_preserved = false
+require_nonempty_output = true
+forbid_heading_only_collapse = true
+default_run_profile = "ui-parity-default"
+expected_acceptance_policy = "strict"
+tags = ["legacy-doc", "headings", "manual-regression"]
+provenance = "Canonical legacy DOC corpus sample processed through project-level auto-conversion during validation runs."
+tolerance_reason = "Current normalized legacy-DOC sample preserves structure and text but retains one page-separator artifact that maps to a single formatting diagnostics entry during deterministic passthrough."
+
+[[run_profiles]]
+id = "ui-parity-default"
+tier = "full"
+mode = "regression"
+enable_paragraph_markers = true
+repeat_count = 1
+expected_acceptance_policy = "strict"
+
+[[run_profiles]]
+id = "structural-passthrough-default"
+tier = "structural"
+mode = "regression"
+image_mode = "safe"
+enable_paragraph_markers = false
+repeat_count = 1
+expected_acceptance_policy = "strict"
+
+[[run_profiles]]
+id = "ui-parity-soak-3x"
+tier = "full"
+mode = "soak"
+enable_paragraph_markers = true
+repeat_count = 3
+expected_acceptance_policy = "strict"

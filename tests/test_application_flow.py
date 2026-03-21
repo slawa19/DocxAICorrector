@@ -239,6 +239,51 @@ def test_prepare_run_context_validates_archive_before_preparation(monkeypatch):
     assert validated == [b"abc"]
 
 
+def test_prepare_run_context_normalizes_legacy_doc_before_validation(monkeypatch):
+    session_state = SessionState(selected_source_token="", prepared_source_key="")
+    validated = []
+    received = {}
+
+    monkeypatch.setattr(
+        application_flow,
+        "normalize_uploaded_document",
+        lambda **kwargs: SimpleNamespace(filename="legacy.docx", content_bytes=b"converted-docx"),
+    )
+    monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: validated.append(source_bytes) or None)
+
+    prepared_document = SimpleNamespace(
+        source_text="text",
+        paragraphs=["p1"],
+        image_assets=[],
+        jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
+        prepared_source_key="legacy.docx:hash:6000",
+        cached=False,
+    )
+
+    def prepare_document_for_processing_stub(**kwargs):
+        received.update(kwargs)
+        return prepared_document
+
+    result = application_flow.prepare_run_context(
+        uploaded_file=UploadedFileStub("legacy.doc", b"legacy"),
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=True,
+        session_state=session_state,
+        reset_run_state_fn=lambda **kwargs: None,
+        fail_critical_fn=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected critical error")),
+        log_event_fn=lambda *args, **kwargs: None,
+        prepare_document_for_processing_fn=prepare_document_for_processing_stub,
+        build_uploaded_file_token_fn=lambda **kwargs: f"{kwargs['source_name']}:{len(kwargs['source_bytes'])}:mocked",
+    )
+
+    assert validated == [b"converted-docx"]
+    assert received["uploaded_filename"] == "legacy.docx"
+    assert received["source_bytes"] == b"converted-docx"
+    assert result.uploaded_filename == "legacy.docx"
+    assert result.uploaded_file_bytes == b"converted-docx"
+
+
 def test_restart_flow_restores_uploaded_file_from_run_store_and_cleans_up(tmp_path, monkeypatch):
     session_state = SessionState()
     monkeypatch.setattr(state.st, "session_state", session_state)

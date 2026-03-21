@@ -1,15 +1,29 @@
 from __future__ import annotations
 
+import os
 import queue
+import shutil
+import socket
+import subprocess
+import sys
 import threading
 import traceback
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
+from datetime import UTC, datetime
+from difflib import SequenceMatcher
 import json
 from io import BytesIO
 from pathlib import Path
+import platform
 import re
 import time
 from typing import Any, cast
+
+SCRIPT_PATH = Path(__file__).resolve()
+PROJECT_ROOT = SCRIPT_PATH.parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from docx import Document
 from docx.oxml.ns import qn
@@ -37,6 +51,11 @@ from generation import (
     generate_markdown_block,
 )
 from logger import present_error
+from real_document_validation_profiles import (
+    apply_runtime_resolution_to_app_config,
+    load_validation_registry,
+    resolve_runtime_resolution,
+)
 from runtime_events import (
     AppendImageLogEvent,
     AppendLogEvent,
@@ -49,6 +68,9 @@ from runtime_events import (
 
 
 service = processing_service.get_processing_service()
+REAL_DOCUMENT_ARTIFACT_ROOT = PROJECT_ROOT / "tests" / "artifacts" / "real_document_pipeline"
+FORMATTING_DIAGNOSTICS_DIR = PROJECT_ROOT / ".run" / "formatting_diagnostics"
+HEARTBEAT_INTERVAL_SECONDS = 15.0
 
 
 class UploadedFileStub:
@@ -80,6 +102,771 @@ class UploadedFileStub:
         else:
             raise ValueError(f"Unsupported whence: {whence}")
         return self._position
+
+
+def _path_for_report(path: Path | None) -> str | None:
+    if path is None:
+        return None
+    try:
+        return str(path.relative_to(PROJECT_ROOT)).replace("\\", "/")
+    except ValueError:
+        return str(path).replace("\\", "/")
+
+
+def _build_run_id(source_path: Path) -> str:
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    sanitized_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", source_path.stem).strip("_") or "real_doc"
+    return f"{timestamp}_{os.getpid()}_{sanitized_stem}"
+
+
+def _snapshot_formatting_diagnostics_paths() -> set[str]:
+    if not FORMATTING_DIAGNOSTICS_DIR.exists():
+        return set()
+    return {str(path.resolve()) for path in FORMATTING_DIAGNOSTICS_DIR.glob("*.json") if path.is_file()}
+
+
+def _collect_new_formatting_diagnostics_paths(before: set[str], after: set[str]) -> list[str]:
+    new_paths = [Path(path) for path in after - before]
+    return [
+        str(path)
+        for path in sorted(new_paths, key=lambda candidate: (candidate.stat().st_mtime, str(candidate)))
+    ]
+
+
+def _safe_git_head() -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            check=True,
+            text=True,
+        )
+    except Exception:
+        return None
+    return result.stdout.strip() or None
+
+
+def _detect_wsl_runtime() -> bool:
+    release = platform.release().lower()
+    return "microsoft" in release or bool(os.environ.get("WSL_DISTRO_NAME"))
+
+
+def _build_environment_snapshot() -> dict[str, object]:
+    return {
+        "script_path": _path_for_report(SCRIPT_PATH),
+        "project_root": _path_for_report(PROJECT_ROOT),
+        "cwd": _path_for_report(Path.cwd()),
+        "python_executable": sys.executable,
+        "python_version": sys.version.split()[0],
+        "pythonpath": os.environ.get("PYTHONPATH"),
+        "virtual_env": os.environ.get("VIRTUAL_ENV"),
+        "workspace_venv_exists": (PROJECT_ROOT / ".venv" / "bin" / "activate").exists(),
+        "workspace_venv_win_exists": (PROJECT_ROOT / ".venv-win" / "Scripts" / "python.exe").exists(),
+        "platform": platform.platform(),
+        "release": platform.release(),
+        "hostname": socket.gethostname(),
+        "is_wsl": _detect_wsl_runtime(),
+        "git_head": _safe_git_head(),
+    }
+
+
+def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(f"{path.suffix}.tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(path)
+
+
+def _format_terminal_progress_line(
+    *,
+    event_type: str,
+    phase: str,
+    stage: str,
+    detail: str,
+    progress: float | None,
+    elapsed_seconds: float,
+    metrics: Mapping[str, object] | None,
+) -> str:
+    progress_text = "-"
+    if isinstance(progress, (int, float)):
+        progress_text = f"{max(0.0, min(1.0, float(progress))) * 100:.1f}%"
+    metrics_parts: list[str] = []
+    if metrics:
+        for key in ("current_block", "block_count", "job_count", "output_ratio", "target_chars", "context_chars"):
+            value = metrics.get(key)
+            if value is not None:
+                metrics_parts.append(f"{key}={value}")
+    suffix = f" | {' '.join(metrics_parts)}" if metrics_parts else ""
+    return f"[{event_type}] +{elapsed_seconds:.1f}s [{phase}] {stage} | {progress_text} | {detail}{suffix}"
+
+
+def _normalize_terminal_detail(detail: str) -> str:
+    normalized = detail.strip()
+    while normalized.startswith("Heartbeat: "):
+        normalized = normalized.removeprefix("Heartbeat: ").strip()
+    return normalized
+
+
+def _print_terminal_completion_summary(*, report: Mapping[str, object], final_status: str) -> None:
+    output_artifacts = cast(Mapping[str, object], report.get("output_artifacts") or {})
+    acceptance = cast(Mapping[str, object], report.get("acceptance") or {})
+    failed_checks = list(acceptance.get("failed_checks") or [])
+    print(
+        "[summary] "
+        f"status={final_status} "
+        f"result={report.get('result')} "
+        f"acceptance_passed={acceptance.get('passed')} "
+        f"run_id={cast(Mapping[str, object], report.get('run') or {}).get('run_id')}",
+        flush=True,
+    )
+    print(
+        "[artifacts] "
+        f"report={output_artifacts.get('report_json')} "
+        f"summary={output_artifacts.get('summary_txt')} "
+        f"progress={report.get('progress_path')}",
+        flush=True,
+    )
+    if failed_checks:
+        print(f"[acceptance] failed_checks={','.join(str(item) for item in failed_checks)}", flush=True)
+
+
+class ValidationProgressTracker:
+    def __init__(
+        self,
+        *,
+        run_id: str,
+        document_profile_id: str | None = None,
+        run_profile_id: str | None = None,
+        validation_tier: str | None = None,
+        source_path: Path,
+        run_dir: Path,
+        artifact_root: Path,
+        progress_path: Path,
+        latest_progress_path: Path,
+        latest_manifest_path: Path,
+        report_path: Path,
+        summary_path: Path,
+        markdown_path: Path,
+        docx_path: Path,
+        latest_report_path: Path,
+        latest_summary_path: Path,
+        latest_markdown_path: Path,
+        latest_docx_path: Path,
+        started_at_utc: datetime,
+    ) -> None:
+        self.run_id = run_id
+        self.progress_path = progress_path
+        self.latest_progress_path = latest_progress_path
+        self.latest_manifest_path = latest_manifest_path
+        self.started_at_monotonic = time.perf_counter()
+        self.lock = threading.Lock()
+        self.stop_event = threading.Event()
+        self.heartbeat_thread: threading.Thread | None = None
+        self.state: dict[str, object] = {
+            "run_id": run_id,
+            "document_profile_id": document_profile_id,
+            "run_profile_id": run_profile_id,
+            "validation_tier": validation_tier,
+            "status": "in_progress",
+            "source_file": _path_for_report(source_path),
+            "run_dir": _path_for_report(run_dir),
+            "artifact_root": _path_for_report(artifact_root),
+            "progress_json": _path_for_report(progress_path),
+            "latest_progress_json": _path_for_report(latest_progress_path),
+            "report_json": _path_for_report(report_path),
+            "summary_txt": _path_for_report(summary_path),
+            "markdown_path": _path_for_report(markdown_path),
+            "docx_path": _path_for_report(docx_path),
+            "latest_report_json": _path_for_report(latest_report_path),
+            "latest_summary_txt": _path_for_report(latest_summary_path),
+            "latest_markdown_path": _path_for_report(latest_markdown_path),
+            "latest_docx_path": _path_for_report(latest_docx_path),
+            "started_at_utc": started_at_utc.isoformat(),
+            "finished_at_utc": None,
+            "last_update_at_utc": started_at_utc.isoformat(),
+            "phase": "startup",
+            "stage": "Инициализация",
+            "detail": "Создаю run-scoped артефакты и latest manifest.",
+            "progress": 0.0,
+            "last_error": "",
+            "result": "not_started",
+            "acceptance_passed": None,
+            "failure_classification": None,
+            "runtime_config": None,
+            "runtime_overrides": {},
+            "metrics": {},
+            "recent_events": [],
+        }
+        self._write_locked()
+
+    def set_manifest_context(self, **values: object) -> None:
+        with self.lock:
+            self.state.update(cast(dict[str, object], sanitize_for_json(values)))
+            self._write_locked()
+
+    def start(self) -> None:
+        if self.heartbeat_thread is not None:
+            return
+        self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, name="lietaer-validation-heartbeat", daemon=True)
+        self.heartbeat_thread.start()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        if self.heartbeat_thread is not None:
+            self.heartbeat_thread.join(timeout=HEARTBEAT_INTERVAL_SECONDS + 2.0)
+
+    def emit(
+        self,
+        *,
+        event_type: str,
+        phase: str,
+        stage: str,
+        detail: str,
+        progress: float | None = None,
+        metrics: Mapping[str, object] | None = None,
+        print_line: bool = True,
+    ) -> None:
+        line = ""
+        with self.lock:
+            now = datetime.now(UTC)
+            elapsed_seconds = max(0.0, time.perf_counter() - self.started_at_monotonic)
+            if progress is not None:
+                self.state["progress"] = max(0.0, min(1.0, float(progress)))
+            self.state["phase"] = phase
+            self.state["stage"] = stage
+            self.state["detail"] = detail
+            self.state["last_update_at_utc"] = now.isoformat()
+            self.state["elapsed_seconds"] = round(elapsed_seconds, 3)
+            if metrics:
+                self.state["metrics"] = sanitize_for_json(dict(metrics))
+            recent_events = list(self.state.get("recent_events") or [])
+            recent_events.append(
+                {
+                    "timestamp_utc": now.isoformat(),
+                    "event_type": event_type,
+                    "phase": phase,
+                    "stage": stage,
+                    "detail": detail,
+                    "progress": self.state.get("progress"),
+                    "metrics": sanitize_for_json(dict(metrics or {})),
+                }
+            )
+            self.state["recent_events"] = recent_events[-25:]
+            self._write_locked()
+            if print_line:
+                line = _format_terminal_progress_line(
+                    event_type=event_type,
+                    phase=phase,
+                    stage=stage,
+                    detail=detail,
+                    progress=float(self.state.get("progress") or 0.0),
+                    elapsed_seconds=elapsed_seconds,
+                    metrics=metrics,
+                )
+        if line:
+            print(line, flush=True)
+
+    def finalize(
+        self,
+        *,
+        status: str,
+        result: str,
+        acceptance_passed: bool,
+        failure_classification: str | None,
+        last_error: str,
+        detail: str,
+    ) -> None:
+        line = ""
+        with self.lock:
+            finished_at_utc = datetime.now(UTC)
+            elapsed_seconds = max(0.0, time.perf_counter() - self.started_at_monotonic)
+            self.state["status"] = status
+            self.state["result"] = result
+            self.state["acceptance_passed"] = acceptance_passed
+            self.state["failure_classification"] = failure_classification
+            self.state["last_error"] = last_error
+            self.state["phase"] = "completed" if status == "completed" else "failed"
+            self.state["stage"] = "Завершено" if status == "completed" else "Завершено с ошибкой"
+            self.state["detail"] = detail
+            self.state["progress"] = 1.0
+            self.state["finished_at_utc"] = finished_at_utc.isoformat()
+            self.state["last_update_at_utc"] = finished_at_utc.isoformat()
+            self.state["elapsed_seconds"] = round(elapsed_seconds, 3)
+            self._write_locked()
+            line = _format_terminal_progress_line(
+                event_type=status,
+                phase=str(self.state["phase"]),
+                stage=str(self.state["stage"]),
+                detail=detail,
+                progress=1.0,
+                elapsed_seconds=elapsed_seconds,
+                metrics={"result": result, "acceptance_passed": acceptance_passed},
+            )
+        print(line, flush=True)
+
+    def _build_manifest_payload_locked(self) -> dict[str, object]:
+        return {
+            "run_id": self.state.get("run_id"),
+            "document_profile_id": self.state.get("document_profile_id"),
+            "run_profile_id": self.state.get("run_profile_id"),
+            "validation_tier": self.state.get("validation_tier"),
+            "status": self.state.get("status"),
+            "source_file": self.state.get("source_file"),
+            "run_dir": self.state.get("run_dir"),
+            "progress_json": self.state.get("progress_json"),
+            "latest_progress_json": self.state.get("latest_progress_json"),
+            "report_json": self.state.get("report_json"),
+            "summary_txt": self.state.get("summary_txt"),
+            "markdown_path": self.state.get("markdown_path"),
+            "docx_path": self.state.get("docx_path"),
+            "latest_report_json": self.state.get("latest_report_json"),
+            "latest_summary_txt": self.state.get("latest_summary_txt"),
+            "latest_markdown_path": self.state.get("latest_markdown_path"),
+            "latest_docx_path": self.state.get("latest_docx_path"),
+            "started_at_utc": self.state.get("started_at_utc"),
+            "finished_at_utc": self.state.get("finished_at_utc"),
+            "last_update_at_utc": self.state.get("last_update_at_utc"),
+            "phase": self.state.get("phase"),
+            "stage": self.state.get("stage"),
+            "detail": self.state.get("detail"),
+            "progress": self.state.get("progress"),
+            "result": self.state.get("result"),
+            "acceptance_passed": self.state.get("acceptance_passed"),
+            "failure_classification": self.state.get("failure_classification"),
+            "last_error": self.state.get("last_error"),
+            "runtime_config": self.state.get("runtime_config"),
+            "runtime_overrides": self.state.get("runtime_overrides"),
+        }
+
+    def _write_locked(self) -> None:
+        progress_payload = cast(Mapping[str, object], sanitize_for_json(dict(self.state)))
+        _write_json_atomic(self.progress_path, progress_payload)
+        _write_json_atomic(self.latest_progress_path, progress_payload)
+        _write_json_atomic(self.latest_manifest_path, self._build_manifest_payload_locked())
+
+    def _heartbeat_loop(self) -> None:
+        while not self.stop_event.wait(HEARTBEAT_INTERVAL_SECONDS):
+            with self.lock:
+                if str(self.state.get("status") or "") != "in_progress":
+                    return
+                phase = str(self.state.get("phase") or "processing")
+                stage = str(self.state.get("stage") or "Ожидание")
+                detail = str(self.state.get("detail") or "Процесс продолжается.")
+                progress_value = self.state.get("progress")
+                metrics = cast(Mapping[str, object], self.state.get("metrics") or {})
+            self.emit(
+                event_type="heartbeat",
+                phase=phase,
+                stage=stage,
+                detail=f"Heartbeat: {_normalize_terminal_detail(detail)}",
+                progress=float(progress_value) if isinstance(progress_value, (int, float)) else None,
+                metrics=metrics,
+            )
+
+
+def _write_latest_alias_artifacts(
+    *,
+    report_path: Path,
+    summary_path: Path,
+    markdown_artifact: Path | None,
+    docx_artifact: Path | None,
+    latest_report_path: Path,
+    latest_summary_path: Path,
+    latest_markdown_path: Path | None,
+    latest_docx_path: Path | None,
+    latest_manifest_path: Path,
+    run_id: str,
+    run_dir: Path,
+) -> None:
+    latest_report_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(report_path, latest_report_path)
+    shutil.copy2(summary_path, latest_summary_path)
+    if markdown_artifact is not None and latest_markdown_path is not None:
+        shutil.copy2(markdown_artifact, latest_markdown_path)
+    if docx_artifact is not None and latest_docx_path is not None:
+        shutil.copy2(docx_artifact, latest_docx_path)
+
+    latest_manifest = {
+        "run_id": run_id,
+        "run_dir": _path_for_report(run_dir),
+        "latest_report": _path_for_report(latest_report_path),
+        "latest_summary": _path_for_report(latest_summary_path),
+        "latest_markdown": _path_for_report(latest_markdown_path) if latest_markdown_path is not None else None,
+        "latest_docx": _path_for_report(latest_docx_path) if latest_docx_path is not None else None,
+    }
+    _write_json_atomic(latest_manifest_path, latest_manifest)
+
+
+def _load_json_file(path: Path) -> dict[str, object]:
+    return cast(dict[str, object], json.loads(path.read_text(encoding="utf-8")))
+
+
+def _build_repeat_run_id(parent_run_id: str, repeat_index: int, repeat_count: int) -> str:
+    width = max(2, len(str(max(1, repeat_count))))
+    return f"{parent_run_id}_r{repeat_index:0{width}d}of{repeat_count:0{width}d}"
+
+
+def _summarize_repeat_runs(repeat_runs: Sequence[Mapping[str, object]]) -> tuple[dict[str, object], dict[str, object], str | None]:
+    total_runs = len(repeat_runs)
+    pipeline_succeeded_count = 0
+    acceptance_passed_count = 0
+    heading_only_output_detected_count = 0
+    result_counts: dict[str, int] = {}
+    failure_classification_counts: dict[str, int] = {}
+    failed_repeat_indexes: list[int] = []
+    failed_repeat_run_ids: list[str] = []
+
+    for repeat_run in repeat_runs:
+        result = str(repeat_run.get("result") or "unknown")
+        result_counts[result] = result_counts.get(result, 0) + 1
+        if result == "succeeded":
+            pipeline_succeeded_count += 1
+
+        acceptance_passed = bool(repeat_run.get("acceptance_passed"))
+        if acceptance_passed:
+            acceptance_passed_count += 1
+        else:
+            repeat_index = repeat_run.get("repeat_index")
+            if isinstance(repeat_index, int):
+                failed_repeat_indexes.append(repeat_index)
+            repeat_run_id = str(repeat_run.get("run_id") or "")
+            if repeat_run_id:
+                failed_repeat_run_ids.append(repeat_run_id)
+
+        failure_classification = str(repeat_run.get("failure_classification") or "").strip()
+        if failure_classification:
+            failure_classification_counts[failure_classification] = (
+                failure_classification_counts.get(failure_classification, 0) + 1
+            )
+
+        signals = cast(Mapping[str, object], repeat_run.get("signals") or {})
+        if bool(signals.get("heading_only_output_detected")):
+            heading_only_output_detected_count += 1
+
+    all_pipeline_succeeded = total_runs > 0 and pipeline_succeeded_count == total_runs
+    all_acceptance_passed = total_runs > 0 and acceptance_passed_count == total_runs
+    intermittent_failure_detected = 0 < acceptance_passed_count < total_runs
+
+    checks = [
+        {
+            "name": "all_repeat_runs_succeeded",
+            "passed": all_pipeline_succeeded,
+            "actual": pipeline_succeeded_count,
+            "expected": total_runs,
+        },
+        {
+            "name": "all_repeat_runs_acceptance_passed",
+            "passed": all_acceptance_passed,
+            "actual": acceptance_passed_count,
+            "expected": total_runs,
+        },
+    ]
+    failed_checks = [check["name"] for check in checks if not bool(check["passed"])]
+
+    acceptance = {
+        "passed": all_pipeline_succeeded and all_acceptance_passed,
+        "failed_checks": failed_checks,
+        "checks": checks,
+    }
+
+    failure_classification: str | None = None
+    if not acceptance["passed"]:
+        if intermittent_failure_detected:
+            failure_classification = "intermittent_failure"
+        elif len(failure_classification_counts) == 1:
+            failure_classification = next(iter(failure_classification_counts))
+        else:
+            failure_classification = "repeat_failures"
+
+    summary = {
+        "repeat_count": total_runs,
+        "pipeline_succeeded_count": pipeline_succeeded_count,
+        "acceptance_passed_count": acceptance_passed_count,
+        "failed_repeat_indexes": failed_repeat_indexes,
+        "failed_repeat_run_ids": failed_repeat_run_ids,
+        "intermittent_failure_detected": intermittent_failure_detected,
+        "heading_only_output_detected_count": heading_only_output_detected_count,
+        "result_counts": result_counts,
+        "failure_classification_counts": failure_classification_counts,
+    }
+    return summary, acceptance, failure_classification
+
+
+def _run_repeat_validation(
+    *,
+    document_profile,
+    run_profile,
+    source_path: Path,
+    artifact_root: Path,
+    requested_run_profile_id: str | None,
+) -> None:
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    parent_run_id = _build_run_id(source_path)
+    artifact_dir = artifact_root / "runs" / parent_run_id
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    artifact_prefix = document_profile.artifact_prefix
+    output_basename = document_profile.output_basename or f"{source_path.stem}_validated"
+    report_path = artifact_dir / f"{artifact_prefix}_report.json"
+    summary_path = artifact_dir / f"{artifact_prefix}_summary.txt"
+    progress_path = artifact_dir / f"{artifact_prefix}_progress.json"
+    markdown_artifact = artifact_dir / f"{output_basename}.md"
+    docx_artifact = artifact_dir / f"{output_basename}.docx"
+    latest_report_path = artifact_root / f"{artifact_prefix}_report.json"
+    latest_summary_path = artifact_root / f"{artifact_prefix}_summary.txt"
+    latest_progress_path = artifact_root / f"{artifact_prefix}_progress.json"
+    latest_markdown_path = artifact_root / f"{output_basename}.md"
+    latest_docx_path = artifact_root / f"{output_basename}.docx"
+    latest_manifest_path = artifact_root / f"{artifact_prefix}_latest.json"
+
+    run_started_at_utc = datetime.now(UTC)
+    run_started_at_epoch_seconds = time.time()
+    tracker = ValidationProgressTracker(
+        run_id=parent_run_id,
+        document_profile_id=document_profile.id,
+        run_profile_id=run_profile.id,
+        validation_tier=run_profile.tier,
+        source_path=source_path,
+        run_dir=artifact_dir,
+        artifact_root=artifact_root,
+        progress_path=progress_path,
+        latest_progress_path=latest_progress_path,
+        latest_manifest_path=latest_manifest_path,
+        report_path=report_path,
+        summary_path=summary_path,
+        markdown_path=markdown_artifact,
+        docx_path=docx_artifact,
+        latest_report_path=latest_report_path,
+        latest_summary_path=latest_summary_path,
+        latest_markdown_path=latest_markdown_path,
+        latest_docx_path=latest_docx_path,
+        started_at_utc=run_started_at_utc,
+    )
+    tracker.start()
+    tracker.emit(
+        event_type="start",
+        phase="startup",
+        stage="Repeat orchestration",
+        detail=f"Запуск repeat/soak профиля {run_profile.id} на {run_profile.repeat_count} повторов.",
+        progress=0.0,
+        metrics={"repeat_count": run_profile.repeat_count},
+    )
+
+    app_config = load_app_config()
+    runtime_resolution = resolve_runtime_resolution(app_config, run_profile)
+    tracker.set_manifest_context(
+        runtime_config=runtime_resolution.effective.to_dict(),
+        runtime_overrides=runtime_resolution.overrides,
+    )
+
+    repeat_runs: list[dict[str, object]] = []
+    last_markdown_artifact: Path | None = None
+    last_docx_artifact: Path | None = None
+
+    try:
+        for repeat_index in range(1, run_profile.repeat_count + 1):
+            repeat_run_id = _build_repeat_run_id(parent_run_id, repeat_index, run_profile.repeat_count)
+            tracker.emit(
+                event_type="repeat_start",
+                phase="repeat",
+                stage=f"Repeat {repeat_index}/{run_profile.repeat_count}",
+                detail=f"Запускаю повтор {repeat_index} из {run_profile.repeat_count}.",
+                progress=(repeat_index - 1) / run_profile.repeat_count,
+                metrics={"current_repeat": repeat_index, "repeat_count": run_profile.repeat_count},
+            )
+
+            child_env = os.environ.copy()
+            child_env["DOCXAI_REAL_DOCUMENT_REPEAT_COUNT_OVERRIDE"] = "1"
+            child_env["DOCXAI_REAL_DOCUMENT_FORCED_RUN_ID"] = repeat_run_id
+            child_env["DOCXAI_REAL_DOCUMENT_PARENT_RUN_ID"] = parent_run_id
+            child_env["DOCXAI_REAL_DOCUMENT_REPEAT_INDEX"] = str(repeat_index)
+            child_env["DOCXAI_REAL_DOCUMENT_REPEAT_TOTAL"] = str(run_profile.repeat_count)
+            child_env["DOCXAI_REAL_DOCUMENT_PROFILE"] = document_profile.id
+            if requested_run_profile_id:
+                child_env["DOCXAI_REAL_DOCUMENT_RUN_PROFILE"] = requested_run_profile_id
+
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPT_PATH)],
+                cwd=PROJECT_ROOT,
+                env=child_env,
+                check=False,
+            )
+
+            repeat_dir = artifact_root / "runs" / repeat_run_id
+            repeat_report_path = repeat_dir / f"{artifact_prefix}_report.json"
+            repeat_summary_path = repeat_dir / f"{artifact_prefix}_summary.txt"
+            repeat_progress_path = repeat_dir / f"{artifact_prefix}_progress.json"
+
+            repeat_report = _load_json_file(repeat_report_path) if repeat_report_path.exists() else {}
+            repeat_output_artifacts = cast(Mapping[str, object], repeat_report.get("output_artifacts") or {})
+            repeat_markdown_path = repeat_output_artifacts.get("markdown_path")
+            repeat_docx_path = repeat_output_artifacts.get("docx_path")
+            if isinstance(repeat_markdown_path, str) and repeat_markdown_path:
+                candidate = PROJECT_ROOT / repeat_markdown_path
+                if candidate.exists():
+                    last_markdown_artifact = candidate
+            if isinstance(repeat_docx_path, str) and repeat_docx_path:
+                candidate = PROJECT_ROOT / repeat_docx_path
+                if candidate.exists():
+                    last_docx_artifact = candidate
+
+            repeat_run_payload = {
+                "repeat_index": repeat_index,
+                "repeat_count": run_profile.repeat_count,
+                "run_id": repeat_run_id,
+                "returncode": completed.returncode,
+                "status": "completed" if completed.returncode == 0 else "failed",
+                "result": repeat_report.get("result") if repeat_report else "failed",
+                "acceptance_passed": bool(cast(Mapping[str, object], repeat_report.get("acceptance") or {}).get("passed")),
+                "failed_checks": list(cast(Mapping[str, object], repeat_report.get("acceptance") or {}).get("failed_checks") or []),
+                "failure_classification": repeat_report.get("failure_classification"),
+                "duration_seconds": cast(Mapping[str, object], repeat_report.get("run") or {}).get("duration_seconds"),
+                "report_path": _path_for_report(repeat_report_path) if repeat_report_path.exists() else None,
+                "summary_path": _path_for_report(repeat_summary_path) if repeat_summary_path.exists() else None,
+                "progress_path": _path_for_report(repeat_progress_path) if repeat_progress_path.exists() else None,
+                "signals": repeat_report.get("signals") or {},
+                "output_artifacts": repeat_output_artifacts,
+            }
+            repeat_runs.append(repeat_run_payload)
+
+            tracker.emit(
+                event_type="repeat_complete",
+                phase="repeat",
+                stage=f"Repeat {repeat_index}/{run_profile.repeat_count}",
+                detail=(
+                    f"Повтор {repeat_index} завершён: result={repeat_run_payload['result']} "
+                    f"acceptance={repeat_run_payload['acceptance_passed']}."
+                ),
+                progress=repeat_index / run_profile.repeat_count,
+                metrics={
+                    "current_repeat": repeat_index,
+                    "repeat_count": run_profile.repeat_count,
+                    "returncode": completed.returncode,
+                },
+            )
+
+        repeat_summary, acceptance, failure_classification = _summarize_repeat_runs(repeat_runs)
+        run_finished_at_epoch_seconds = time.time()
+        run_finished_at_utc = datetime.now(UTC)
+        run_duration_seconds = round(run_finished_at_epoch_seconds - run_started_at_epoch_seconds, 3)
+        result = "succeeded" if acceptance["passed"] else "failed"
+
+        report = {
+            "run": {
+                "run_id": parent_run_id,
+                "started_at_utc": run_started_at_utc.isoformat(),
+                "finished_at_utc": run_finished_at_utc.isoformat(),
+                "duration_seconds": run_duration_seconds,
+                "document_profile_id": document_profile.id,
+                "run_profile_id": run_profile.id,
+                "validation_tier": run_profile.tier,
+                "repeat_count": run_profile.repeat_count,
+                "artifact_root": _path_for_report(artifact_root),
+                "artifact_dir": _path_for_report(artifact_dir),
+                "environment": _build_environment_snapshot(),
+            },
+            "document_profile_id": document_profile.id,
+            "run_profile_id": run_profile.id,
+            "validation_tier": run_profile.tier,
+            "source_document_path": _path_for_report(source_path),
+            "source_file": _path_for_report(source_path),
+            "artifact_dir": _path_for_report(artifact_dir),
+            "progress_path": _path_for_report(progress_path),
+            "result": result,
+            "model": runtime_resolution.effective.model,
+            "chunk_size": runtime_resolution.effective.chunk_size,
+            "max_retries": runtime_resolution.effective.max_retries,
+            "image_mode": runtime_resolution.effective.image_mode,
+            "enable_paragraph_markers": runtime_resolution.effective.enable_paragraph_markers,
+            "runtime_configuration": {
+                "effective": runtime_resolution.effective.to_dict(),
+                "ui_defaults": runtime_resolution.ui_defaults.to_dict(),
+                "overrides": runtime_resolution.overrides,
+            },
+            "failure_classification": failure_classification,
+            "signals": {
+                "intermittent_failure_detected": repeat_summary["intermittent_failure_detected"],
+                "heading_only_output_detected_count": repeat_summary["heading_only_output_detected_count"],
+            },
+            "repeat_summary": repeat_summary,
+            "repeat_runs": repeat_runs,
+            "acceptance": acceptance,
+            "output_artifacts": {
+                "markdown_path": _path_for_report(last_markdown_artifact),
+                "docx_path": _path_for_report(last_docx_artifact),
+                "report_json": _path_for_report(report_path),
+                "summary_txt": _path_for_report(summary_path),
+                "latest_report_json": _path_for_report(latest_report_path),
+                "latest_summary_txt": _path_for_report(latest_summary_path),
+                "latest_markdown_path": _path_for_report(latest_markdown_path) if last_markdown_artifact is not None else None,
+                "latest_docx_path": _path_for_report(latest_docx_path) if last_docx_artifact is not None else None,
+                "latest_manifest_json": _path_for_report(latest_manifest_path),
+            },
+        }
+        sanitized_report = sanitize_for_json(report)
+        final_status = "completed" if acceptance["passed"] else "failed"
+
+        summary_lines = [
+            f"run_id={parent_run_id}",
+            f"document_profile_id={document_profile.id}",
+            f"run_profile_id={run_profile.id}",
+            f"validation_tier={run_profile.tier}",
+            f"status={final_status}",
+            f"run_started_at_utc={run_started_at_utc.isoformat()}",
+            f"run_finished_at_utc={run_finished_at_utc.isoformat()}",
+            f"run_duration_seconds={run_duration_seconds}",
+            f"source={_path_for_report(source_path)}",
+            f"artifact_dir={_path_for_report(artifact_dir)}",
+            f"artifact_root={_path_for_report(artifact_root)}",
+            f"progress_json={_path_for_report(progress_path)}",
+            f"result={result}",
+            f"failure_classification={failure_classification}",
+            f"repeat_count={run_profile.repeat_count}",
+            f"pipeline_succeeded_count={repeat_summary['pipeline_succeeded_count']}",
+            f"acceptance_passed_count={repeat_summary['acceptance_passed_count']}",
+            f"intermittent_failure_detected={repeat_summary['intermittent_failure_detected']}",
+            f"failed_repeat_indexes={','.join(str(index) for index in repeat_summary['failed_repeat_indexes'])}",
+            f"failed_repeat_run_ids={','.join(str(item) for item in repeat_summary['failed_repeat_run_ids'])}",
+            f"result_counts={json.dumps(repeat_summary['result_counts'], ensure_ascii=False, sort_keys=True)}",
+            f"failure_classification_counts={json.dumps(repeat_summary['failure_classification_counts'], ensure_ascii=False, sort_keys=True)}",
+            f"acceptance_passed={acceptance['passed']}",
+            f"acceptance_failed_checks={','.join(acceptance['failed_checks'])}",
+            f"markdown_path={report['output_artifacts']['markdown_path']}",
+            f"docx_path={report['output_artifacts']['docx_path']}",
+            f"latest_manifest_json={report['output_artifacts']['latest_manifest_json']}",
+        ]
+
+        summary_path.write_text("\n".join(summary_lines), encoding="utf-8")
+        report_path.write_text(json.dumps(sanitized_report, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_latest_alias_artifacts(
+            report_path=report_path,
+            summary_path=summary_path,
+            markdown_artifact=last_markdown_artifact,
+            docx_artifact=last_docx_artifact,
+            latest_report_path=latest_report_path,
+            latest_summary_path=latest_summary_path,
+            latest_markdown_path=latest_markdown_path if last_markdown_artifact is not None else None,
+            latest_docx_path=latest_docx_path if last_docx_artifact is not None else None,
+            latest_manifest_path=latest_manifest_path,
+            run_id=parent_run_id,
+            run_dir=artifact_dir,
+        )
+        tracker.finalize(
+            status=final_status,
+            result=result,
+            acceptance_passed=bool(acceptance["passed"]),
+            failure_classification=failure_classification,
+            last_error="",
+            detail=(
+                f"Acceptance={'passed' if acceptance['passed'] else 'failed'}; report={_path_for_report(report_path)}"
+            ),
+        )
+        _print_terminal_completion_summary(report=cast(Mapping[str, object], report), final_status=final_status)
+        if not bool(acceptance["passed"]):
+            raise SystemExit(1)
+    finally:
+        tracker.stop()
 
 
 def present_error_adapter(code: str, exc: Exception, title: str, **context: object) -> str:
@@ -186,35 +973,40 @@ def reinsert_inline_images_adapter(docx_bytes: bytes, image_assets: Sequence[obj
     return reinsert_inline_images(docx_bytes, cast(Any, list(image_assets)))
 
 
-def drain_runtime_events(event_queue: queue.Queue, runtime_snapshot: dict) -> None:
+def _apply_runtime_event(event: object, runtime_snapshot: dict) -> None:
+    if isinstance(event, SetStateEvent):
+        runtime_snapshot.setdefault("state", {}).update(event.values)
+    elif isinstance(event, ResetImageStateEvent):
+        runtime_snapshot["image_reset_count"] = int(
+            runtime_snapshot.get("image_reset_count", 0)
+        ) + 1
+    elif isinstance(event, SetProcessingStatusEvent):
+        runtime_snapshot.setdefault("status", []).append(event.payload)
+    elif isinstance(event, FinalizeProcessingStatusEvent):
+        runtime_snapshot.setdefault("finalize", []).append(
+            {
+                "stage": event.stage,
+                "detail": event.detail,
+                "progress": event.progress,
+            }
+        )
+    elif isinstance(event, PushActivityEvent):
+        runtime_snapshot.setdefault("activity", []).append(event.message)
+    elif isinstance(event, AppendLogEvent):
+        runtime_snapshot.setdefault("log", []).append(event.payload)
+    elif isinstance(event, AppendImageLogEvent):
+        runtime_snapshot.setdefault("image_log", []).append(event.payload)
+
+
+def drain_runtime_events(event_queue: queue.Queue, runtime_snapshot: dict, on_event=None) -> None:
     while True:
         try:
             event = event_queue.get_nowait()
         except queue.Empty:
             break
-
-        if isinstance(event, SetStateEvent):
-            runtime_snapshot.setdefault("state", {}).update(event.values)
-        elif isinstance(event, ResetImageStateEvent):
-            runtime_snapshot["image_reset_count"] = int(
-                runtime_snapshot.get("image_reset_count", 0)
-            ) + 1
-        elif isinstance(event, SetProcessingStatusEvent):
-            runtime_snapshot.setdefault("status", []).append(event.payload)
-        elif isinstance(event, FinalizeProcessingStatusEvent):
-            runtime_snapshot.setdefault("finalize", []).append(
-                {
-                    "stage": event.stage,
-                    "detail": event.detail,
-                    "progress": event.progress,
-                }
-            )
-        elif isinstance(event, PushActivityEvent):
-            runtime_snapshot.setdefault("activity", []).append(event.message)
-        elif isinstance(event, AppendLogEvent):
-            runtime_snapshot.setdefault("log", []).append(event.payload)
-        elif isinstance(event, AppendImageLogEvent):
-            runtime_snapshot.setdefault("image_log", []).append(event.payload)
+        _apply_runtime_event(event, runtime_snapshot)
+        if on_event is not None:
+            on_event(event)
 
 
 def sanitize_for_json(value: object) -> object:
@@ -390,6 +1182,108 @@ def _count_ordered_word_numbered_paragraphs(document: Document) -> int:
     return count
 
 
+def _resolve_direct_paragraph_alignment(paragraph) -> str | None:
+    paragraph_properties = getattr(paragraph._element, "pPr", None)
+    alignment = _find_child_by_local_name(paragraph_properties, "jc")
+    return None if alignment is None else alignment.get(qn("w:val"))
+
+
+def _extract_short_centered_paragraph_texts(
+    document: Document,
+    *,
+    max_words: int = 18,
+    max_chars: int = 160,
+) -> set[str]:
+    centered_texts: set[str] = set()
+    for paragraph in document.paragraphs:
+        if _resolve_direct_paragraph_alignment(paragraph) != "center":
+            continue
+        normalized_text = _normalize_structural_text(paragraph.text)
+        if not normalized_text:
+            continue
+        if len(normalized_text) > max_chars or len(normalized_text.split()) > max_words:
+            continue
+        centered_texts.add(normalized_text)
+    return centered_texts
+
+
+def _centered_text_similarity(left: str, right: str) -> float:
+    if left == right:
+        return 1.0
+
+    score = SequenceMatcher(None, left, right).ratio()
+    left_tokens = set(left.split())
+    right_tokens = set(right.split())
+    if left_tokens and right_tokens:
+        overlap_score = len(left_tokens & right_tokens) / max(len(left_tokens | right_tokens), 1)
+        score = max(score, overlap_score)
+
+    if left.startswith("рисунок ") and right.startswith("рисунок "):
+        left_label = left.split(" ", 2)[:2]
+        right_label = right.split(" ", 2)[:2]
+        if left_label == right_label:
+            score = max(score, 0.85)
+    return score
+
+
+def _extract_centered_caption_label(text: str) -> str | None:
+    match = re.match(r"^(рисунок|рис\.?|figure|fig\.?)\s+([0-9]+(?:\.[0-9]+)*)", text, re.IGNORECASE)
+    if match is None:
+        return None
+    return f"{match.group(1).lower()} {match.group(2)}"
+
+
+def _classify_centered_fragment(text: str) -> dict[str, str | None]:
+    label = _extract_centered_caption_label(text)
+    if label is not None:
+        return {"kind": "caption", "label": label}
+    return {"kind": "general", "label": None}
+
+
+def _match_centered_structural_texts(
+    source_centered_texts: Sequence[str],
+    output_centered_texts: Sequence[str],
+    *,
+    min_similarity: float = 0.55,
+) -> tuple[list[str], list[dict[str, object]]]:
+    unmatched_output = list(output_centered_texts)
+    missing_source: list[str] = []
+    matches: list[dict[str, object]] = []
+
+    for source_text in source_centered_texts:
+        source_fragment = _classify_centered_fragment(source_text)
+        best_index = -1
+        best_score = 0.0
+        for candidate_index, candidate_text in enumerate(unmatched_output):
+            candidate_fragment = _classify_centered_fragment(candidate_text)
+            if source_fragment["kind"] != candidate_fragment["kind"]:
+                continue
+
+            score = _centered_text_similarity(source_text, candidate_text)
+            if source_fragment["kind"] == "caption":
+                if source_fragment["label"] and source_fragment["label"] == candidate_fragment["label"]:
+                    score = max(score, 0.95)
+            else:
+                score = max(score, 0.7)
+
+            if score > best_score:
+                best_score = score
+                best_index = candidate_index
+        if best_index >= 0 and best_score >= min_similarity:
+            matched_output = unmatched_output.pop(best_index)
+            matches.append(
+                {
+                    "source": source_text,
+                    "output": matched_output,
+                    "similarity": round(best_score, 3),
+                }
+            )
+            continue
+        missing_source.append(source_text)
+
+    return missing_source, matches
+
+
 def _load_recent_formatting_diagnostics(since_epoch_seconds: float) -> tuple[list[str], list[dict[str, object]]]:
     artifact_paths = document_pipeline._collect_recent_formatting_diagnostics(
         since_epoch_seconds=since_epoch_seconds
@@ -514,6 +1408,21 @@ def evaluate_lietaer_acceptance(
             output_heading_count=len(output_heading_texts),
         )
 
+        source_centered_texts = sorted(_extract_short_centered_paragraph_texts(source_document))
+        output_centered_texts = sorted(_extract_short_centered_paragraph_texts(output_document))
+        missing_centered_texts, centered_matches = _match_centered_structural_texts(
+            source_centered_texts,
+            output_centered_texts,
+        )
+        add_check(
+            "centered_short_paragraphs_preserved",
+            not missing_centered_texts,
+            missing=missing_centered_texts,
+            source_centered_count=len(source_centered_texts),
+            output_centered_count=len(output_centered_texts),
+            matches=centered_matches,
+        )
+
         source_numbered_count = sum(1 for paragraph in source_paragraphs if paragraph.role == "list" and paragraph.list_kind == "ordered")
         output_numbered_count = _count_ordered_word_numbered_paragraphs(output_document)
         add_check(
@@ -538,23 +1447,85 @@ def evaluate_lietaer_acceptance(
 
 
 def main() -> None:
-    source_path = Path("tests/sources/Лиетар глава1.docx")
-    artifact_dir = Path("tests/artifacts/real_document_pipeline")
+    registry = load_validation_registry()
+    document_profile_id = os.environ.get("DOCXAI_REAL_DOCUMENT_PROFILE", "lietaer-core").strip() or "lietaer-core"
+    requested_run_profile_id = os.environ.get("DOCXAI_REAL_DOCUMENT_RUN_PROFILE", "").strip() or None
+    document_profile = registry.get_document_profile(document_profile_id)
+    run_profile = registry.resolve_run_profile(document_profile, requested_run_profile_id)
+    repeat_count_override = os.environ.get("DOCXAI_REAL_DOCUMENT_REPEAT_COUNT_OVERRIDE", "").strip()
+    if repeat_count_override:
+        run_profile = replace(run_profile, repeat_count=max(1, int(repeat_count_override)))
+    source_path = document_profile.resolved_source_path(PROJECT_ROOT)
+    artifact_root = REAL_DOCUMENT_ARTIFACT_ROOT
+    if run_profile.repeat_count > 1 and not repeat_count_override:
+        _run_repeat_validation(
+            document_profile=document_profile,
+            run_profile=run_profile,
+            source_path=source_path,
+            artifact_root=artifact_root,
+            requested_run_profile_id=requested_run_profile_id,
+        )
+        return
+
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    run_id = os.environ.get("DOCXAI_REAL_DOCUMENT_FORCED_RUN_ID", "").strip() or _build_run_id(source_path)
+    artifact_dir = artifact_root / "runs" / run_id
     artifact_dir.mkdir(parents=True, exist_ok=True)
+    artifact_prefix = document_profile.artifact_prefix
+    output_basename = document_profile.output_basename or f"{source_path.stem}_validated"
 
     for handler in app_logger.get_logger().handlers:
         if hasattr(handler, "maxBytes"):
             setattr(handler, "maxBytes", 1_000_000_000)
 
-    report_path = artifact_dir / "lietaer_validation_report.json"
-    summary_path = artifact_dir / "lietaer_validation_summary.txt"
-    markdown_artifact = artifact_dir / "Лиетар глава1_validated.md"
-    docx_artifact = artifact_dir / "Лиетर глава1_validated.docx"
+    report_path = artifact_dir / f"{artifact_prefix}_report.json"
+    summary_path = artifact_dir / f"{artifact_prefix}_summary.txt"
+    progress_path = artifact_dir / f"{artifact_prefix}_progress.json"
+    markdown_artifact = artifact_dir / f"{output_basename}.md"
+    docx_artifact = artifact_dir / f"{output_basename}.docx"
+    latest_report_path = artifact_root / f"{artifact_prefix}_report.json"
+    latest_summary_path = artifact_root / f"{artifact_prefix}_summary.txt"
+    latest_progress_path = artifact_root / f"{artifact_prefix}_progress.json"
+    latest_markdown_path = artifact_root / f"{output_basename}.md"
+    latest_docx_path = artifact_root / f"{output_basename}.docx"
+    latest_manifest_path = artifact_root / f"{artifact_prefix}_latest.json"
 
     progress_events = []
     event_log = []
     event_queue: queue.Queue = queue.Queue()
     run_started_at_epoch_seconds = time.time()
+    run_started_at_utc = datetime.now(UTC)
+    tracker = ValidationProgressTracker(
+        run_id=run_id,
+        document_profile_id=document_profile.id,
+        run_profile_id=run_profile.id,
+        validation_tier=run_profile.tier,
+        source_path=source_path,
+        run_dir=artifact_dir,
+        artifact_root=artifact_root,
+        progress_path=progress_path,
+        latest_progress_path=latest_progress_path,
+        latest_manifest_path=latest_manifest_path,
+        report_path=report_path,
+        summary_path=summary_path,
+        markdown_path=markdown_artifact,
+        docx_path=docx_artifact,
+        latest_report_path=latest_report_path,
+        latest_summary_path=latest_summary_path,
+        latest_markdown_path=latest_markdown_path,
+        latest_docx_path=latest_docx_path,
+        started_at_utc=run_started_at_utc,
+    )
+    tracker.start()
+    tracker.emit(
+        event_type="start",
+        phase="startup",
+        stage="Инициализация",
+        detail=f"Запуск real-document валидации для профиля {document_profile.id}.",
+        progress=0.0,
+        metrics={"run_id": run_id},
+    )
+    formatting_diagnostics_before = _snapshot_formatting_diagnostics_paths()
     runtime = processing_runtime.BackgroundRuntime(event_queue, threading.Event())
     runtime_snapshot = {
         "state": {},
@@ -566,24 +1537,81 @@ def main() -> None:
         "image_reset_count": 0,
     }
 
-    source_bytes = source_path.read_bytes()
-    uploaded_payload = processing_runtime.freeze_uploaded_file(
-        UploadedFileStub(source_path.name, source_bytes)
-    )
-    app_config = load_app_config()
-    app_config_dict = app_config.to_dict()
-    app_config_dict["enable_paragraph_markers"] = True
+    def emit_prepare_progress(**payload: object) -> None:
+        progress_events.append({"phase": "prepare", **payload})
+        tracker.emit(
+            event_type="prepare",
+            phase="prepare",
+            stage=str(payload.get("stage") or "Подготовка"),
+            detail=str(payload.get("detail") or ""),
+            progress=float(payload["progress"]) if isinstance(payload.get("progress"), (int, float)) else None,
+            metrics=cast(Mapping[str, object], payload.get("metrics") or {}),
+        )
 
-    prepared = application_flow.prepare_run_context_for_background(
-        uploaded_payload=uploaded_payload,
-        chunk_size=app_config.chunk_size,
-        image_mode=app_config.image_mode_default,
-        keep_all_image_variants=app_config.keep_all_image_variants,
-        progress_callback=lambda **payload: progress_events.append(
-            {"phase": "prepare", **payload}
-        ),
-    )
+    def emit_runtime_event(event: object) -> None:
+        if isinstance(event, SetProcessingStatusEvent):
+            payload = event.payload
+            tracker.emit(
+                event_type="status",
+                phase="process",
+                stage=str(payload.get("stage") or "Обработка"),
+                detail=str(payload.get("detail") or ""),
+                progress=float(payload["progress"]) if isinstance(payload.get("progress"), (int, float)) else None,
+                metrics={
+                    key: payload.get(key)
+                    for key in ("current_block", "block_count", "target_chars", "context_chars")
+                    if payload.get(key) is not None
+                },
+            )
+        elif isinstance(event, FinalizeProcessingStatusEvent):
+            tracker.emit(
+                event_type="finalize",
+                phase="process",
+                stage=event.stage,
+                detail=event.detail,
+                progress=event.progress,
+            )
+        elif isinstance(event, AppendLogEvent):
+            status = str(event.payload.get("status") or "")
+            if status in {"WARN", "ERROR", "DONE"}:
+                tracker.emit(
+                    event_type="log",
+                    phase="process",
+                    stage=status,
+                    detail=str(event.payload.get("details") or status),
+                    metrics={
+                        key: event.payload.get(key)
+                        for key in ("block_index", "block_count", "target_chars", "context_chars")
+                        if event.payload.get(key) is not None
+                    },
+                )
 
+    runtime_monitor_stop = threading.Event()
+
+    def runtime_monitor_worker() -> None:
+        while True:
+            if runtime_monitor_stop.is_set() and event_queue.empty():
+                return
+            try:
+                event = event_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            _apply_runtime_event(event, runtime_snapshot)
+            emit_runtime_event(event)
+
+    runtime_monitor_thread = threading.Thread(
+        target=runtime_monitor_worker,
+        name="lietaer-validation-runtime-monitor",
+        daemon=True,
+    )
+    runtime_monitor_thread.start()
+
+    source_bytes = b""
+    source_docx_bytes = b""
+    app_config = None
+    app_config_dict: dict[str, object] = {}
+    runtime_resolution = None
+    prepared = None
     result = "not_started"
     exception_payload = None
 
@@ -596,17 +1624,104 @@ def main() -> None:
                 "context": context,
             }
         )
+        if event_id == "block_completed":
+            block_index = context.get("block_index")
+            block_count = context.get("block_count")
+            progress_value = None
+            if isinstance(block_index, int) and isinstance(block_count, int) and block_count > 0:
+                progress_value = block_index / block_count
+            tracker.emit(
+                event_type="milestone",
+                phase="process",
+                stage="Блок завершён",
+                detail=f"Блок {block_index} из {block_count} завершён успешно.",
+                progress=progress_value,
+                metrics={
+                    "current_block": block_index,
+                    "block_count": block_count,
+                    "output_ratio": context.get("output_ratio"),
+                },
+            )
+        elif event_id == "block_rejected":
+            tracker.emit(
+                event_type="warning",
+                phase="process",
+                stage="Блок отклонён",
+                detail=str(context.get("output_classification") or message),
+                metrics={
+                    "current_block": context.get("block_index"),
+                    "block_count": context.get("block_count"),
+                },
+            )
+        elif event_id == "formatting_diagnostics_artifacts_detected":
+            tracker.emit(
+                event_type="warning",
+                phase="assemble",
+                stage="Formatting diagnostics",
+                detail="Сохранены formatting diagnostics artifacts для текущего прогона.",
+                metrics={"job_count": len(list(context.get("artifact_paths") or []))},
+            )
 
     try:
+        source_bytes = source_path.read_bytes()
+        normalized_source = processing_runtime.normalize_uploaded_document(filename=source_path.name, source_bytes=source_bytes)
+        source_docx_bytes = normalized_source.content_bytes
+        tracker.emit(
+            event_type="source",
+            phase="startup",
+            stage="Исходный документ загружен",
+            detail=f"Прочитан {source_path.name}.",
+            progress=0.02,
+            metrics={"target_chars": len(source_docx_bytes)},
+        )
+        uploaded_payload = processing_runtime.freeze_uploaded_file(
+            UploadedFileStub(normalized_source.filename, source_docx_bytes)
+        )
+        app_config = load_app_config()
+        runtime_resolution = resolve_runtime_resolution(app_config, run_profile)
+        app_config_dict = apply_runtime_resolution_to_app_config(app_config, runtime_resolution)
+        tracker.set_manifest_context(
+            runtime_config=runtime_resolution.effective.to_dict(),
+            runtime_overrides=runtime_resolution.overrides,
+        )
+        tracker.emit(
+            event_type="config",
+            phase="startup",
+            stage="Конфигурация загружена",
+            detail=(
+                f"Модель {runtime_resolution.effective.model}, "
+                f"chunk_size={runtime_resolution.effective.chunk_size}, tier={run_profile.tier}."
+            ),
+            progress=0.05,
+            metrics={"job_count": 0},
+        )
+        prepared = application_flow.prepare_run_context_for_background(
+            uploaded_payload=uploaded_payload,
+            chunk_size=runtime_resolution.effective.chunk_size,
+            image_mode=runtime_resolution.effective.image_mode,
+            keep_all_image_variants=runtime_resolution.effective.keep_all_image_variants,
+            progress_callback=emit_prepare_progress,
+        )
+        tracker.emit(
+            event_type="prepared",
+            phase="prepare",
+            stage="Подготовка завершена",
+            detail="План обработки собран, запускаю pipeline.",
+            progress=0.2,
+            metrics={
+                "job_count": len(prepared.jobs),
+                "target_chars": len(prepared.source_text),
+            },
+        )
         result = document_pipeline.run_document_processing(
             uploaded_file=prepared.uploaded_filename,
             jobs=prepared.jobs,
             source_paragraphs=prepared.paragraphs,
             image_assets=prepared.image_assets,
-            image_mode=app_config.image_mode_default,
+            image_mode=runtime_resolution.effective.image_mode,
             app_config=app_config_dict,
-            model=app_config.default_model,
-            max_retries=app_config.max_retries,
+            model=runtime_resolution.effective.model,
+            max_retries=runtime_resolution.effective.max_retries,
             on_progress=lambda **payload: progress_events.append(
                 {"phase": "process", **payload}
             ),
@@ -637,14 +1752,24 @@ def main() -> None:
             "message": str(exc),
             "traceback": traceback.format_exc(),
         }
+        result = "failed"
+        tracker.emit(
+            event_type="exception",
+            phase="failed",
+            stage="Исключение в валидаторе",
+            detail=str(exc),
+        )
+    finally:
+        runtime_monitor_stop.set()
+        runtime_monitor_thread.join(timeout=3.0)
 
-    drain_runtime_events(event_queue, runtime_snapshot)
+    drain_runtime_events(event_queue, runtime_snapshot, on_event=emit_runtime_event)
 
     state = runtime_snapshot.get("state", {})
     final_markdown = str(state.get("latest_markdown") or "")
     latest_docx_bytes = state.get("latest_docx_bytes")
-    last_error = str(state.get("last_error") or "")
-    source_chars = len(prepared.source_text)
+    last_error = str(state.get("last_error") or "") or str((exception_payload or {}).get("message") or "")
+    source_chars = len(prepared.source_text) if prepared is not None else 0
     final_markdown_chars = len(final_markdown)
     output_ratio = round(final_markdown_chars / max(source_chars, 1), 3)
 
@@ -666,12 +1791,17 @@ def main() -> None:
     output_visible_text_chars = 0
     output_contains_placeholder_markup = False
 
+    markdown_artifact_path: Path | None = None
+    docx_artifact_path: Path | None = None
+
     if final_markdown:
         markdown_artifact.write_text(final_markdown, encoding="utf-8")
+        markdown_artifact_path = markdown_artifact
 
     if isinstance(latest_docx_bytes, (bytes, bytearray)) and latest_docx_bytes:
         latest_docx_bytes = bytes(latest_docx_bytes)
         docx_artifact.write_bytes(latest_docx_bytes)
+        docx_artifact_path = docx_artifact
         try:
             output_doc = Document(BytesIO(latest_docx_bytes))
             openable_output = True
@@ -686,35 +1816,82 @@ def main() -> None:
         except Exception:
             openable_output = False
 
+    formatting_diagnostics_after = _snapshot_formatting_diagnostics_paths()
+    snapshot_discovered_paths = _collect_new_formatting_diagnostics_paths(
+        formatting_diagnostics_before,
+        formatting_diagnostics_after,
+    )
     formatting_diagnostics_paths = _extract_run_formatting_diagnostics_paths(event_log)
-    if formatting_diagnostics_paths:
+    formatting_diagnostics_discovery_source = None
+    if snapshot_discovered_paths:
+        formatting_diagnostics_paths = snapshot_discovered_paths
         formatting_diagnostics_payloads = _load_formatting_diagnostics_payloads(
             formatting_diagnostics_paths
         )
+        formatting_diagnostics_discovery_source = "snapshot_diff"
+    elif formatting_diagnostics_paths:
+        formatting_diagnostics_payloads = _load_formatting_diagnostics_payloads(
+            formatting_diagnostics_paths
+        )
+        formatting_diagnostics_discovery_source = "event_log"
     else:
         formatting_diagnostics_paths, formatting_diagnostics_payloads = _load_recent_formatting_diagnostics(
             run_started_at_epoch_seconds
         )
+        formatting_diagnostics_discovery_source = "recent_scan"
+
+    if not snapshot_discovered_paths and formatting_diagnostics_discovery_source != "event_log":
+        formatting_diagnostics_payloads = _load_formatting_diagnostics_payloads(formatting_diagnostics_paths)
+
+    run_finished_at_epoch_seconds = time.time()
+    run_finished_at_utc = datetime.now(UTC)
+    run_duration_seconds = round(run_finished_at_epoch_seconds - run_started_at_epoch_seconds, 3)
+    result = "failed" if exception_payload is not None else result
+
+    preparation_payload = {
+        "uploaded_filename": prepared.uploaded_filename if prepared is not None else source_path.name,
+        "uploaded_file_token": prepared.uploaded_file_token if prepared is not None else None,
+        "paragraph_count": len(prepared.paragraphs) if prepared is not None else None,
+        "image_count": len(prepared.image_assets) if prepared is not None else None,
+        "job_count": len(prepared.jobs) if prepared is not None else None,
+        "source_chars": source_chars,
+        "cached": prepared.preparation_cached if prepared is not None else None,
+        "elapsed_seconds": round(prepared.preparation_elapsed_seconds, 3) if prepared is not None else None,
+    }
 
     report = {
-        "source_file": str(source_path),
-        "artifact_dir": str(artifact_dir),
-        "result": result,
-        "model": app_config.default_model,
-        "chunk_size": app_config.chunk_size,
-        "max_retries": app_config.max_retries,
-        "image_mode": app_config.image_mode_default,
-        "enable_paragraph_markers": bool(app_config_dict.get("enable_paragraph_markers")),
-        "preparation": {
-            "uploaded_filename": prepared.uploaded_filename,
-            "uploaded_file_token": prepared.uploaded_file_token,
-            "paragraph_count": len(prepared.paragraphs),
-            "image_count": len(prepared.image_assets),
-            "job_count": len(prepared.jobs),
-            "source_chars": source_chars,
-            "cached": prepared.preparation_cached,
-            "elapsed_seconds": round(prepared.preparation_elapsed_seconds, 3),
+        "run": {
+            "run_id": run_id,
+            "started_at_utc": run_started_at_utc.isoformat(),
+            "finished_at_utc": run_finished_at_utc.isoformat(),
+            "duration_seconds": run_duration_seconds,
+            "document_profile_id": document_profile.id,
+            "run_profile_id": run_profile.id,
+            "validation_tier": run_profile.tier,
+            "repeat_count": run_profile.repeat_count,
+            "artifact_root": _path_for_report(artifact_root),
+            "artifact_dir": _path_for_report(artifact_dir),
+            "environment": _build_environment_snapshot(),
         },
+        "document_profile_id": document_profile.id,
+        "run_profile_id": run_profile.id,
+        "validation_tier": run_profile.tier,
+        "source_document_path": _path_for_report(source_path),
+        "source_file": _path_for_report(source_path),
+        "artifact_dir": _path_for_report(artifact_dir),
+        "progress_path": _path_for_report(progress_path),
+        "result": result,
+        "model": runtime_resolution.effective.model if runtime_resolution is not None else None,
+        "chunk_size": runtime_resolution.effective.chunk_size if runtime_resolution is not None else None,
+        "max_retries": runtime_resolution.effective.max_retries if runtime_resolution is not None else None,
+        "image_mode": runtime_resolution.effective.image_mode if runtime_resolution is not None else None,
+        "enable_paragraph_markers": bool(app_config_dict.get("enable_paragraph_markers")),
+        "runtime_configuration": {
+            "effective": runtime_resolution.effective.to_dict() if runtime_resolution is not None else None,
+            "ui_defaults": runtime_resolution.ui_defaults.to_dict() if runtime_resolution is not None else None,
+            "overrides": runtime_resolution.overrides if runtime_resolution is not None else {},
+        },
+        "preparation": preparation_payload,
         "runtime": runtime_snapshot,
         "last_error": last_error,
         "exception": exception_payload,
@@ -729,19 +1906,28 @@ def main() -> None:
             "image_reset_emitted": runtime_snapshot.get("image_reset_count", 0),
         },
         "output_artifacts": {
-            "markdown_path": str(markdown_artifact) if final_markdown else None,
-            "docx_path": str(docx_artifact)
-            if isinstance(latest_docx_bytes, (bytes, bytearray)) and latest_docx_bytes
-            else None,
+            "markdown_path": _path_for_report(markdown_artifact_path),
+            "docx_path": _path_for_report(docx_artifact_path),
             "output_docx_openable": openable_output,
             "output_paragraphs": output_paragraphs,
             "output_inline_shapes": output_inline_shapes,
             "output_visible_text_chars": output_visible_text_chars,
             "output_contains_placeholder_markup": output_contains_placeholder_markup,
-            "report_json": str(report_path),
-            "summary_txt": str(summary_path),
+            "report_json": _path_for_report(report_path),
+            "summary_txt": _path_for_report(summary_path),
+            "latest_report_json": _path_for_report(latest_report_path),
+            "latest_summary_txt": _path_for_report(latest_summary_path),
+            "latest_markdown_path": _path_for_report(latest_markdown_path) if markdown_artifact_path is not None else None,
+            "latest_docx_path": _path_for_report(latest_docx_path) if docx_artifact_path is not None else None,
+            "latest_manifest_json": _path_for_report(latest_manifest_path),
         },
-        "formatting_diagnostics_paths": formatting_diagnostics_paths,
+        "formatting_diagnostics_paths": [_path_for_report(Path(path)) for path in formatting_diagnostics_paths],
+        "formatting_diagnostics_discovery": {
+            "source": formatting_diagnostics_discovery_source,
+            "baseline_count": len(formatting_diagnostics_before),
+            "after_count": len(formatting_diagnostics_after),
+            "new_count": len(snapshot_discovered_paths),
+        },
         "formatting_diagnostics": formatting_diagnostics_payloads,
         "progress_events_tail": progress_events[-12:],
         "event_log": event_log[-25:],
@@ -750,14 +1936,26 @@ def main() -> None:
     report["failure_classification"] = classify_failure(report)
     report["acceptance"] = evaluate_lietaer_acceptance(
         report,
-        source_docx_bytes=source_bytes,
+        source_docx_bytes=source_docx_bytes,
         output_docx_bytes=bytes(latest_docx_bytes) if isinstance(latest_docx_bytes, (bytes, bytearray)) else None,
-        mismatch_threshold=0,
+        mismatch_threshold=document_profile.max_unmapped_source_paragraphs,
     )
     sanitized_report = sanitize_for_json(report)
+    final_status = "completed" if bool(report["acceptance"]["passed"]) and result == "succeeded" else "failed"
 
     summary_lines = [
-        f"source={source_path}",
+        f"run_id={run_id}",
+        f"document_profile_id={document_profile.id}",
+        f"run_profile_id={run_profile.id}",
+        f"validation_tier={run_profile.tier}",
+        f"status={final_status}",
+        f"run_started_at_utc={run_started_at_utc.isoformat()}",
+        f"run_finished_at_utc={run_finished_at_utc.isoformat()}",
+        f"run_duration_seconds={run_duration_seconds}",
+        f"source={_path_for_report(source_path)}",
+        f"artifact_dir={_path_for_report(artifact_dir)}",
+        f"artifact_root={_path_for_report(artifact_root)}",
+        f"progress_json={_path_for_report(progress_path)}",
         f"result={report['result']}",
         f"failure_classification={report['failure_classification']}",
         f"model={report['model']}",
@@ -765,6 +1963,7 @@ def main() -> None:
         f"max_retries={report['max_retries']}",
         f"image_mode={report['image_mode']}",
         f"enable_paragraph_markers={report['enable_paragraph_markers']}",
+        f"runtime_overrides={json.dumps(report['runtime_configuration']['overrides'], ensure_ascii=False, sort_keys=True)}",
         f"paragraph_count={report['preparation']['paragraph_count']}",
         f"image_count={report['preparation']['image_count']}",
         f"job_count={report['preparation']['job_count']}",
@@ -780,17 +1979,51 @@ def main() -> None:
         f"output_inline_shapes={report['output_artifacts']['output_inline_shapes']}",
         f"output_contains_placeholder_markup={report['output_artifacts']['output_contains_placeholder_markup']}",
         f"formatting_diagnostics_count={len(formatting_diagnostics_payloads)}",
+        f"formatting_diagnostics_discovery_source={formatting_diagnostics_discovery_source}",
         f"acceptance_passed={report['acceptance']['passed']}",
         f"acceptance_failed_checks={','.join(report['acceptance']['failed_checks'])}",
         f"last_error={last_error}",
         f"markdown_path={report['output_artifacts']['markdown_path']}",
         f"docx_path={report['output_artifacts']['docx_path']}",
+        f"latest_manifest_json={report['output_artifacts']['latest_manifest_json']}",
+        f"python_executable={report['run']['environment']['python_executable']}",
+        f"python_version={report['run']['environment']['python_version']}",
+        f"pythonpath={report['run']['environment']['pythonpath']}",
+        f"virtual_env={report['run']['environment']['virtual_env']}",
+        f"workspace_venv_exists={report['run']['environment']['workspace_venv_exists']}",
+        f"workspace_venv_win_exists={report['run']['environment']['workspace_venv_win_exists']}",
+        f"is_wsl={report['run']['environment']['is_wsl']}",
+        f"git_head={report['run']['environment']['git_head']}",
     ]
     summary_path.write_text("\n".join(summary_lines), encoding="utf-8")
     report_path.write_text(
         json.dumps(sanitized_report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    print(json.dumps(sanitized_report, ensure_ascii=False, indent=2))
+    _write_latest_alias_artifacts(
+        report_path=report_path,
+        summary_path=summary_path,
+        markdown_artifact=markdown_artifact_path,
+        docx_artifact=docx_artifact_path,
+        latest_report_path=latest_report_path,
+        latest_summary_path=latest_summary_path,
+        latest_markdown_path=latest_markdown_path if markdown_artifact_path is not None else None,
+        latest_docx_path=latest_docx_path if docx_artifact_path is not None else None,
+        latest_manifest_path=latest_manifest_path,
+        run_id=run_id,
+        run_dir=artifact_dir,
+    )
+    tracker.finalize(
+        status=final_status,
+        result=str(report["result"]),
+        acceptance_passed=bool(report["acceptance"]["passed"]),
+        failure_classification=cast(str | None, report["failure_classification"]),
+        last_error=last_error,
+        detail=(
+            f"Acceptance={'passed' if report['acceptance']['passed'] else 'failed'}; report={_path_for_report(report_path)}"
+        ),
+    )
+    tracker.stop()
+    _print_terminal_completion_summary(report=cast(Mapping[str, object], report), final_status=final_status)
     if not bool(report["acceptance"]["passed"]):
         raise SystemExit(1)
 

@@ -16,7 +16,7 @@ from constants import (
     MAX_DOCX_UNCOMPRESSED_SIZE_BYTES,
 )
 from models import DocumentBlock, ImageAsset, ParagraphUnit
-from processing_runtime import read_uploaded_file_bytes
+from processing_runtime import normalize_uploaded_document, read_uploaded_file_bytes, resolve_uploaded_filename
 
 IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_IMAGE_img_\d+\]\]")
 PARAGRAPH_MARKER_PATTERN = re.compile(r"\[\[DOCX_PARA_([A-Za-z0-9_]+)\]\]")
@@ -548,7 +548,11 @@ def _read_uploaded_docx_bytes(uploaded_file) -> bytes:
         source_bytes = read_uploaded_file_bytes(uploaded_file)
     except ValueError as exc:
         raise ValueError("Не удалось прочитать содержимое DOCX-файла.") from exc
-    return source_bytes
+    normalized_document = normalize_uploaded_document(
+        filename=resolve_uploaded_filename(uploaded_file),
+        source_bytes=source_bytes,
+    )
+    return normalized_document.content_bytes
 
 
 def _capture_preserved_paragraph_properties(paragraph) -> tuple[str, ...]:
@@ -621,9 +625,7 @@ def _is_probable_heading(paragraph, text: str, normalized_style: str) -> bool:
     word_count = len(stripped_text.split())
     if word_count > 18:
         return False
-    if stripped_text.endswith(("!", "?", ";")):
-        return False
-    if stripped_text.endswith(".") and word_count > 10:
+    if stripped_text.endswith(".") and word_count > 4:
         return False
     if stripped_text.count(".") > 1:
         return False
@@ -632,7 +634,20 @@ def _is_probable_heading(paragraph, text: str, normalized_style: str) -> bool:
         return False
     if not has_strong_format:
         return False
+    if _is_caption_style(normalized_style):
+        return False
+    direct_alignment = _resolve_direct_paragraph_alignment(paragraph)
+    if word_count <= 8 and len(stripped_text) <= 100:
+        if direct_alignment == "center" and word_count > 2 and not _has_heading_text_signal(stripped_text):
+            return False
+        return True
     return _has_heading_text_signal(stripped_text)
+
+
+def _resolve_direct_paragraph_alignment(paragraph) -> str | None:
+    paragraph_properties = _find_child_element(paragraph._element, "pPr")
+    alignment = _find_child_element(paragraph_properties, "jc")
+    return _get_xml_attribute(alignment, "val") if alignment is not None else None
 
 
 def _has_heading_text_signal(text: str) -> bool:
@@ -646,7 +661,7 @@ def _has_heading_text_signal(text: str) -> bool:
         return True
     if ":" in stripped_text and word_count <= 12 and not stripped_text.endswith("."):
         return True
-    if word_count <= 4 and stripped_text[-1:] not in ".!?;:" and stripped_text[:1].isupper():
+    if word_count <= 8 and stripped_text[-1:] not in ".!;:" and stripped_text[:1].isupper():
         return True
     return False
 

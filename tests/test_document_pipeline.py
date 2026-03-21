@@ -192,6 +192,7 @@ def test_run_document_processing_applies_semantic_output_normalization_before_im
     )
 
     assert result == "succeeded"
+    # Pipeline order is unchanged; after the unified restore in preserve, normalize is expected to be a safe no-op.
     assert call_order == ["convert", "preserve", "normalize", "reinsert"]
 
 
@@ -344,6 +345,7 @@ def test_run_document_processing_passes_generated_paragraph_registry_into_docx_r
 
     assert result == "succeeded"
     expected_registry = [{"block_index": 1, "paragraph_id": "p0001", "text": "Очищенный блок"}]
+    # Registry is still threaded into both callbacks even though the effective restore work now happens in preserve.
     assert preserve_calls == [expected_registry]
     assert normalize_calls == [expected_registry]
 

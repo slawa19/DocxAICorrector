@@ -22,8 +22,17 @@ if TYPE_CHECKING:
 _SUPPORTED_RESPONSE_TEXT_TYPES = {"output_text", "text"}
 _PARAGRAPH_MARKER_PATTERN = re.compile(r"\[\[DOCX_PARA_([A-Za-z0-9_]+)\]\]")
 _IMAGE_ONLY_TARGET_PATTERN = re.compile(r"^(?:\s*\[\[DOCX_IMAGE_img_\d+\]\]\s*)+$")
+_WORD_TOKEN_PATTERN = re.compile(r"\w+(?:[-']\w+)*", re.UNICODE)
 _INCOMPLETE_RESPONSE_RETRY_MIN_OUTPUT_TOKENS = 1024
 _INCOMPLETE_RESPONSE_RECOVERY_MIN_OUTPUT_TOKENS = 1536
+_CONTEXT_LEAKAGE_RETRY_WARNING = (
+    "ВАЖНО: Ваш предыдущий ответ содержал текст из контекста. "
+    "Используйте ТОЛЬКО текст из [TARGET BLOCK]."
+)
+
+
+class ContextLeakageError(RuntimeError):
+    pass
 
 
 @lru_cache(maxsize=1)
@@ -181,6 +190,141 @@ def _strip_and_validate_paragraph_markers(markdown: str, expected_paragraph_ids:
     if not expected_paragraph_ids:
         raise RuntimeError("paragraph_marker_validation_failed:missing_expected_ids")
     return "\n\n".join(_split_marker_preserved_markdown(markdown, expected_paragraph_ids))
+
+
+def _normalize_leakage_comparison_text(text: str) -> str:
+    return " ".join(match.group(0).lower() for match in _WORD_TOKEN_PATTERN.finditer(text))
+
+
+def _detect_context_leakage(
+    response_text: str,
+    target_text: str,
+    context_before: str,
+    context_after: str,
+    *,
+    min_word_sequence: int = 6,
+) -> str | None:
+    response_tokens = list(_WORD_TOKEN_PATTERN.finditer(response_text))
+    if len(response_tokens) < min_word_sequence:
+        return None
+
+    normalized_target = _normalize_leakage_comparison_text(target_text)
+    normalized_contexts = [
+        normalized_context
+        for normalized_context in (
+            _normalize_leakage_comparison_text(context_before),
+            _normalize_leakage_comparison_text(context_after),
+        )
+        if normalized_context
+    ]
+    if not normalized_contexts:
+        return None
+
+    for start_index in range(0, len(response_tokens) - min_word_sequence + 1):
+        end_index = start_index + min_word_sequence
+        fragment = response_text[
+            response_tokens[start_index].start() : response_tokens[end_index - 1].end()
+        ]
+        normalized_fragment = _normalize_leakage_comparison_text(fragment)
+        if not normalized_fragment or normalized_fragment in normalized_target:
+            continue
+        if any(normalized_fragment in normalized_context for normalized_context in normalized_contexts):
+            return fragment
+    return None
+
+
+def _trim_boundary_context_leakage(response_text: str, leaked_fragment: str) -> tuple[str, bool]:
+    trimmed_response = response_text.strip()
+    if not trimmed_response or leaked_fragment not in trimmed_response:
+        return response_text, False
+
+    matches = list(re.finditer(re.escape(leaked_fragment), trimmed_response))
+    if not matches:
+        return response_text, False
+    if any(match.start() != 0 and match.end() != len(trimmed_response) for match in matches):
+        return response_text, False
+
+    updated_text = trimmed_response
+    changed = False
+    while updated_text.startswith(leaked_fragment):
+        updated_text = updated_text[len(leaked_fragment) :].lstrip(" \t\r\n-–—,:;.!?")
+        changed = True
+    while updated_text.endswith(leaked_fragment):
+        updated_text = updated_text[: -len(leaked_fragment)].rstrip(" \t\r\n-–—,:;.!?")
+        changed = True
+
+    if not changed or not updated_text:
+        return response_text, False
+    return updated_text, True
+
+
+def _inject_context_leakage_retry_warning(request_kwargs: dict[str, object]) -> dict[str, object]:
+    updated_request = dict(request_kwargs)
+    payload = updated_request.get("input")
+    if not isinstance(payload, list):
+        return updated_request
+
+    updated_payload: list[object] = []
+    for index, message in enumerate(payload):
+        if index != 1 or not isinstance(message, dict):
+            updated_payload.append(message)
+            continue
+
+        updated_message = dict(message)
+        content_items = list(updated_message.get("content", []))
+        if content_items and isinstance(content_items[0], dict):
+            updated_content = dict(content_items[0])
+            text = updated_content.get("text")
+            if isinstance(text, str) and _CONTEXT_LEAKAGE_RETRY_WARNING not in text:
+                updated_content["text"] = f"{_CONTEXT_LEAKAGE_RETRY_WARNING}\n\n{text}"
+                content_items[0] = updated_content
+        updated_message["content"] = content_items
+        updated_payload.append(updated_message)
+
+    updated_request["input"] = updated_payload
+    return updated_request
+
+
+def _finalize_generated_markdown(
+    markdown: str,
+    *,
+    target_text: str,
+    context_before: str,
+    context_after: str,
+    expected_paragraph_ids: Sequence[str] | None,
+    marker_mode: bool,
+    allow_persistent_context_leakage: bool,
+) -> str:
+    cleaned_markdown = _strip_and_validate_paragraph_markers(
+        markdown,
+        expected_paragraph_ids,
+        marker_mode=marker_mode,
+    )
+    leaked_fragment = _detect_context_leakage(
+        cleaned_markdown,
+        target_text,
+        context_before,
+        context_after,
+    )
+    if leaked_fragment is None:
+        return cleaned_markdown
+
+    trimmed_markdown, was_trimmed = _trim_boundary_context_leakage(cleaned_markdown, leaked_fragment)
+    if was_trimmed:
+        return trimmed_markdown
+
+    if allow_persistent_context_leakage:
+        log_event(
+            logging.WARNING,
+            "context_leakage_persisted",
+            "После последней попытки генерации сохранилась verbatim-протечка текста из соседнего контекста; возвращаю fail-open результат.",
+            leaked_fragment=leaked_fragment,
+            target_chars=len(target_text),
+            marker_mode=marker_mode,
+        )
+        return cleaned_markdown
+
+    raise ContextLeakageError(f"context_leakage_detected:{leaked_fragment}")
 
 
 def _read_response_field(value: object, field_name: str) -> object:
@@ -440,6 +584,10 @@ def _is_retryable_marker_validation_error(exc: Exception) -> bool:
     return isinstance(exc, RuntimeError) and "paragraph_marker_validation_failed" in str(exc)
 
 
+def _is_retryable_context_leakage_error(exc: Exception) -> bool:
+    return isinstance(exc, ContextLeakageError)
+
+
 def generate_markdown_block(
     client: "OpenAI",
     model: str,
@@ -499,15 +647,24 @@ def generate_markdown_block(
         ),
         target_text=target_text,
     )
+    target_text_for_leakage = _strip_and_validate_paragraph_markers(
+        target_text,
+        expected_paragraph_ids,
+        marker_mode=marker_mode,
+    )
     last_exception: Exception | None = None
 
     for attempt in range(1, max_retries + 1):
         try:
             markdown = _call_markdown_request_with_sdk_fallback(client, request_kwargs)[0]
-            return _strip_and_validate_paragraph_markers(
+            return _finalize_generated_markdown(
                 markdown,
-                expected_paragraph_ids,
+                target_text=target_text_for_leakage,
+                context_before=context_before_text,
+                context_after=context_after_text,
+                expected_paragraph_ids=expected_paragraph_ids,
                 marker_mode=marker_mode,
+                allow_persistent_context_leakage=attempt >= max_retries,
             )
         except Exception as exc:
             last_exception = exc
@@ -515,6 +672,7 @@ def generate_markdown_block(
                 is_retryable_error(exc)
                 or _is_retryable_empty_generation_error(exc)
                 or _is_retryable_marker_validation_error(exc)
+                or _is_retryable_context_leakage_error(exc)
             )
             if not should_retry:
                 break
@@ -523,6 +681,8 @@ def generate_markdown_block(
                     request_kwargs,
                     minimum_tokens=_INCOMPLETE_RESPONSE_RETRY_MIN_OUTPUT_TOKENS,
                 )
+            if _is_retryable_context_leakage_error(exc):
+                request_kwargs = _inject_context_leakage_retry_warning(request_kwargs)
             time.sleep(min(2 ** (attempt - 1), 8))
 
     if last_exception is not None and (

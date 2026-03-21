@@ -140,7 +140,7 @@ def _extract_numbering_ids(paragraph) -> tuple[str | None, str | None]:
     )
 
 
-def _numbering_root_contains_num_id(document: Document, num_id: str) -> bool:
+def _numbering_root_contains_num_id(document, num_id: str) -> bool:
     numbering_root = document.part.numbering_part.element
     for child in numbering_root:
         if child.tag == qn("w:num") and child.get(qn("w:numId")) == num_id:
@@ -313,8 +313,16 @@ def test_build_document_text_renders_word_numbered_and_bulleted_lists_as_markdow
         "Вступление\n\n"
         "1. Первый пункт\n\n"
         "1. Второй пункт\n\n"
-        "    - Подпункт"
+        "  - Подпункт"
     )
+
+
+def test_build_document_text_renders_nested_ordered_lists_with_markdown_safe_indent():
+    nested_ordered = ParagraphUnit(text="Вложенный пункт", role="list", list_kind="ordered", list_level=1)
+    deeper_unordered = ParagraphUnit(text="Глубже", role="list", list_kind="unordered", list_level=2)
+
+    assert nested_ordered.rendered_text == "  1. Вложенный пункт"
+    assert deeper_unordered.rendered_text == "    - Глубже"
 
 
 def test_build_document_text_does_not_duplicate_existing_list_markers():
@@ -671,7 +679,7 @@ def test_preserve_source_paragraph_properties_artifact_records_caption_heading_c
     assert payload["caption_heading_conflicts"][0]["target_heading_level"] == 1
 
 
-def test_normalize_semantic_output_docx_artifact_records_list_restoration_decisions(tmp_path, monkeypatch):
+def test_preserve_source_paragraph_properties_artifact_records_list_restoration_decisions(tmp_path, monkeypatch):
     source_doc = Document()
     source_doc.add_paragraph("Первый пункт", style="List Number")
     source_buffer = BytesIO()
@@ -688,7 +696,7 @@ def test_normalize_semantic_output_docx_artifact_records_list_restoration_decisi
     diagnostics_dir = tmp_path / "formatting_diagnostics"
     monkeypatch.setattr(formatting_transfer, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
 
-    updated_bytes = normalize_semantic_output_docx(target_buffer.getvalue(), source_paragraphs)
+    updated_bytes = preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
 
     updated_doc = Document(BytesIO(updated_bytes))
     assert _extract_numbering_ids(updated_doc.paragraphs[0])[1] is not None
@@ -874,7 +882,7 @@ def test_reinsert_inline_images_labels_manual_review_variants():
     assert _extract_docpr_descriptions(updated_doc._element) == ["safe", "candidate1", "candidate2"]
 
 
-def test_normalize_semantic_output_docx_applies_semantic_styles():
+def test_preserve_source_paragraph_properties_applies_semantic_styles():
     source_paragraphs = [
         ParagraphUnit(text="Глава", role="heading", heading_level=1),
         ParagraphUnit(text="[[DOCX_IMAGE_img_001]]", role="image"),
@@ -891,7 +899,7 @@ def test_normalize_semantic_output_docx_applies_semantic_styles():
     target_buffer = BytesIO()
     target_doc.save(target_buffer)
 
-    updated_bytes = normalize_semantic_output_docx(target_buffer.getvalue(), source_paragraphs)
+    updated_bytes = preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
     updated_doc = Document(BytesIO(updated_bytes))
 
     assert updated_doc.paragraphs[0].style is not None
@@ -904,33 +912,7 @@ def test_normalize_semantic_output_docx_applies_semantic_styles():
     assert updated_doc.paragraphs[2].style.name == "Caption"
     assert updated_doc.paragraphs[3].style.name in {"Body Text", "Normal"}
     assert updated_doc.tables[0].style.name == "Table Grid"
-
-
-def test_normalize_semantic_output_docx_logs_mismatch_warning(monkeypatch):
-    source_paragraphs = [ParagraphUnit(text="Один", role="body")]
-    target_doc = Document()
-    target_doc.add_paragraph("Один")
-    target_doc.add_paragraph("Два")
-    target_buffer = BytesIO()
-    target_doc.save(target_buffer)
-
-    events = []
-    monkeypatch.setattr(formatting_transfer, "log_event", lambda level, event, message, **context: events.append((event, context)))
-
-    normalize_semantic_output_docx(target_buffer.getvalue(), source_paragraphs)
-
-    assert len(events) == 1
-    event_name, context = events[0]
-    assert event_name == "paragraph_count_mismatch_normalize"
-    assert context["source_count"] == 1
-    assert context["target_count"] == 2
-    assert context["mapped_count"] == 1
-    assert context["unmapped_source_count"] == 0
-    assert context["unmapped_target_count"] == 1
-    assert isinstance(context["artifact_path"], str)
-
-
-def test_normalize_semantic_output_docx_applies_partial_normalization_on_mismatch():
+def test_preserve_source_paragraph_properties_applies_partial_transfer_on_semantic_mismatch():
     source_paragraphs = [ParagraphUnit(text="Заголовок", role="heading", heading_level=1)]
     target_doc = Document()
     target_doc.add_paragraph("Заголовок")
@@ -938,7 +920,7 @@ def test_normalize_semantic_output_docx_applies_partial_normalization_on_mismatc
     target_buffer = BytesIO()
     target_doc.save(target_buffer)
 
-    updated_bytes = normalize_semantic_output_docx(target_buffer.getvalue(), source_paragraphs)
+    updated_bytes = preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
     updated_doc = Document(BytesIO(updated_bytes))
 
     assert updated_doc.paragraphs[0].style is not None
@@ -947,7 +929,7 @@ def test_normalize_semantic_output_docx_applies_partial_normalization_on_mismatc
     assert updated_doc.paragraphs[1].style.name == "Normal"
 
 
-def test_normalize_semantic_output_docx_similarity_mapping_restores_caption_when_text_changes_slightly():
+def test_preserve_source_paragraph_properties_similarity_mapping_restores_caption_when_text_changes_slightly():
     source_paragraphs = [ParagraphUnit(text="Рис. 1. Подпись к изображению", role="caption")]
     target_doc = Document()
     target_doc.add_paragraph("Рисунок 1 Подпись к изображению")
@@ -955,7 +937,7 @@ def test_normalize_semantic_output_docx_similarity_mapping_restores_caption_when
     target_buffer = BytesIO()
     target_doc.save(target_buffer)
 
-    updated_bytes = normalize_semantic_output_docx(target_buffer.getvalue(), source_paragraphs)
+    updated_bytes = preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
     updated_doc = Document(BytesIO(updated_bytes))
 
     assert updated_doc.paragraphs[0].style is not None
@@ -963,7 +945,7 @@ def test_normalize_semantic_output_docx_similarity_mapping_restores_caption_when
     assert updated_doc.paragraphs[0].alignment == WD_ALIGN_PARAGRAPH.CENTER
 
 
-def test_normalize_semantic_output_docx_uses_generated_paragraph_registry_for_marker_anchored_mapping():
+def test_preserve_source_paragraph_properties_uses_generated_paragraph_registry_for_marker_anchored_mapping():
     source_paragraphs = [
         ParagraphUnit(text="Старый заголовок", role="heading", heading_level=1, paragraph_id="p0000"),
     ]
@@ -973,7 +955,7 @@ def test_normalize_semantic_output_docx_uses_generated_paragraph_registry_for_ma
     target_buffer = BytesIO()
     target_doc.save(target_buffer)
 
-    updated_bytes = normalize_semantic_output_docx(
+    updated_bytes = preserve_source_paragraph_properties(
         target_buffer.getvalue(),
         source_paragraphs,
         generated_paragraph_registry=[{"paragraph_id": "p0000", "text": "Совершенно новый заголовок"}],
@@ -986,7 +968,7 @@ def test_normalize_semantic_output_docx_uses_generated_paragraph_registry_for_ma
     assert updated_doc.paragraphs[1].style.name == "Normal"
 
 
-def test_normalize_semantic_output_docx_uses_generated_registry_similarity_for_near_position_body_mapping():
+def test_preserve_source_paragraph_properties_uses_generated_registry_similarity_for_near_position_body_mapping():
     source_paragraphs = [
         ParagraphUnit(text="Исходный абзац сильно отличается", role="body", paragraph_id="p0010"),
     ]
@@ -996,7 +978,7 @@ def test_normalize_semantic_output_docx_uses_generated_registry_similarity_for_n
     target_buffer = BytesIO()
     target_doc.save(target_buffer)
 
-    updated_bytes = normalize_semantic_output_docx(
+    updated_bytes = preserve_source_paragraph_properties(
         target_buffer.getvalue(),
         source_paragraphs,
         generated_paragraph_registry=[
@@ -1011,7 +993,7 @@ def test_normalize_semantic_output_docx_uses_generated_registry_similarity_for_n
     assert updated_doc.paragraphs[1].style.name == "Body Text"
 
 
-def test_normalize_semantic_output_docx_skips_registry_similarity_when_gap_is_too_small():
+def test_preserve_source_paragraph_properties_skips_registry_similarity_when_gap_is_too_small():
     source_paragraphs = [
         ParagraphUnit(text="Исходный абзац сильно отличается", role="body", paragraph_id="p0011"),
     ]
@@ -1021,7 +1003,7 @@ def test_normalize_semantic_output_docx_skips_registry_similarity_when_gap_is_to
     target_buffer = BytesIO()
     target_doc.save(target_buffer)
 
-    updated_bytes = normalize_semantic_output_docx(
+    updated_bytes = preserve_source_paragraph_properties(
         target_buffer.getvalue(),
         source_paragraphs,
         generated_paragraph_registry=[
@@ -1039,7 +1021,7 @@ def test_normalize_semantic_output_docx_skips_registry_similarity_when_gap_is_to
     assert updated_doc.paragraphs[1].style.name == "Normal"
 
 
-def test_normalize_semantic_output_docx_maps_body_to_generated_non_heading_lines():
+def test_preserve_source_paragraph_properties_maps_body_to_generated_non_heading_lines():
     source_paragraphs = [
         ParagraphUnit(text="Старый слитый абзац", role="body", paragraph_id="p0056"),
     ]
@@ -1049,7 +1031,7 @@ def test_normalize_semantic_output_docx_maps_body_to_generated_non_heading_lines
     target_buffer = BytesIO()
     target_doc.save(target_buffer)
 
-    updated_bytes = normalize_semantic_output_docx(
+    updated_bytes = preserve_source_paragraph_properties(
         target_buffer.getvalue(),
         source_paragraphs,
         generated_paragraph_registry=[
@@ -1064,7 +1046,7 @@ def test_normalize_semantic_output_docx_maps_body_to_generated_non_heading_lines
     assert updated_doc.paragraphs[1].style.name == "Body Text"
 
 
-def test_normalize_semantic_output_docx_does_not_apply_positional_mapping_on_equal_count_reorder():
+def test_preserve_source_paragraph_properties_does_not_apply_positional_mapping_on_equal_count_reorder():
     source_paragraphs = [
         ParagraphUnit(text="Заголовок", role="heading", heading_level=1),
         ParagraphUnit(text="Обычный текст", role="body"),
@@ -1075,7 +1057,7 @@ def test_normalize_semantic_output_docx_does_not_apply_positional_mapping_on_equ
     target_buffer = BytesIO()
     target_doc.save(target_buffer)
 
-    updated_bytes = normalize_semantic_output_docx(target_buffer.getvalue(), source_paragraphs)
+    updated_bytes = preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
     updated_doc = Document(BytesIO(updated_bytes))
 
     assert updated_doc.paragraphs[0].style is not None
@@ -1084,7 +1066,7 @@ def test_normalize_semantic_output_docx_does_not_apply_positional_mapping_on_equ
     assert updated_doc.paragraphs[1].style.name == "Heading 1"
 
 
-def test_normalize_semantic_output_docx_restores_real_word_numbering_for_mapped_lists():
+def test_preserve_source_paragraph_properties_restores_real_word_numbering_for_mapped_lists_against_pandoc_like_docx():
     source_doc = Document()
     source_doc.add_paragraph("Первый пункт", style="List Number")
     source_doc.add_paragraph("Второй пункт", style="List Number")
@@ -1100,12 +1082,14 @@ def test_normalize_semantic_output_docx_restores_real_word_numbering_for_mapped_
     target_buffer = BytesIO()
     target_doc.save(target_buffer)
 
-    updated_bytes = normalize_semantic_output_docx(target_buffer.getvalue(), source_paragraphs)
+    updated_bytes = preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
     updated_doc = Document(BytesIO(updated_bytes))
 
     first_ilvl, first_num_id = _extract_numbering_ids(updated_doc.paragraphs[0])
     second_ilvl, second_num_id = _extract_numbering_ids(updated_doc.paragraphs[1])
 
+    assert updated_doc.paragraphs[0].style is not None
+    assert updated_doc.paragraphs[1].style is not None
     assert updated_doc.paragraphs[0].style.name == "List Paragraph"
     assert updated_doc.paragraphs[1].style.name == "List Paragraph"
     assert first_ilvl == "0"
@@ -1115,7 +1099,7 @@ def test_normalize_semantic_output_docx_restores_real_word_numbering_for_mapped_
     assert _numbering_root_contains_num_id(updated_doc, first_num_id)
 
 
-def test_normalize_semantic_output_docx_restores_real_word_numbering_on_partial_mapping_mismatch():
+def test_preserve_source_paragraph_properties_restores_real_word_numbering_on_partial_mapping_mismatch_against_pandoc_like_docx():
     source_doc = Document()
     source_doc.add_paragraph("Первый пункт", style="List Number")
     source_buffer = BytesIO()
@@ -1130,11 +1114,12 @@ def test_normalize_semantic_output_docx_restores_real_word_numbering_on_partial_
     target_buffer = BytesIO()
     target_doc.save(target_buffer)
 
-    updated_bytes = normalize_semantic_output_docx(target_buffer.getvalue(), source_paragraphs)
+    updated_bytes = preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
     updated_doc = Document(BytesIO(updated_bytes))
 
     ilvl, num_id = _extract_numbering_ids(updated_doc.paragraphs[0])
 
+    assert updated_doc.paragraphs[0].style is not None
     assert updated_doc.paragraphs[0].style.name == "List Paragraph"
     assert ilvl == "0"
     assert num_id is not None
@@ -1142,7 +1127,7 @@ def test_normalize_semantic_output_docx_restores_real_word_numbering_on_partial_
     assert _extract_numbering_ids(updated_doc.paragraphs[1]) == (None, None)
 
 
-def test_caption_survives_extraction_markdown_and_normalization_after_image(tmp_path):
+def test_caption_survives_extraction_markdown_and_preserve_after_image(tmp_path):
     image_path = tmp_path / "docx_caption_pipeline_image.png"
     image_path.write_bytes(PNG_BYTES)
 
@@ -1163,7 +1148,7 @@ def test_caption_survives_extraction_markdown_and_normalization_after_image(tmp_
     target_buffer = BytesIO()
     target_doc.save(target_buffer)
 
-    updated_bytes = normalize_semantic_output_docx(target_buffer.getvalue(), source_paragraphs)
+    updated_bytes = preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
     updated_doc = Document(BytesIO(updated_bytes))
 
     assert [paragraph.role for paragraph in source_paragraphs] == ["image", "caption"]
@@ -1779,3 +1764,15 @@ def test_read_uploaded_docx_bytes_preserves_original_cause(monkeypatch):
         assert exc.__cause__ is failing_error
     else:
         raise AssertionError("Expected ValueError when uploaded DOCX bytes cannot be read")
+
+
+def test_read_uploaded_docx_bytes_normalizes_legacy_doc_upload(monkeypatch):
+    monkeypatch.setattr(document, "read_uploaded_file_bytes", lambda uploaded_file: b"legacy-binary")
+    monkeypatch.setattr(document, "resolve_uploaded_filename", lambda uploaded_file: "legacy.doc")
+    monkeypatch.setattr(
+        document,
+        "normalize_uploaded_document",
+        lambda **kwargs: type("NormalizedDocument", (), {"content_bytes": b"converted-docx"})(),
+    )
+
+    assert document._read_uploaded_docx_bytes(object()) == b"converted-docx"

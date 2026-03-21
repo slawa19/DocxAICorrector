@@ -128,6 +128,35 @@ def test_process_document_images_accepts_semantic_redraw(monkeypatch):
     assert result[0].validation_status == "passed"
 
 
+def test_process_document_images_no_change_skips_all_image_processing(monkeypatch):
+    _, service = _prepare_state(monkeypatch)
+    analyze_calls = []
+    generate_calls = []
+
+    monkeypatch.setattr(processing_service, "analyze_image", lambda *args, **kwargs: analyze_calls.append((args, kwargs)))
+    monkeypatch.setattr(
+        processing_service,
+        "generate_image_candidate",
+        lambda *args, **kwargs: generate_calls.append((args, kwargs)),
+    )
+    service = processing_service.build_processing_service()
+
+    result = service.process_document_images(
+        image_assets=[build_asset()],
+        image_mode="no_change",
+        config={"keep_all_image_variants": True, "validation_model": "gpt-4.1"},
+        on_progress=lambda **kwargs: None,
+    )
+
+    assert len(result) == 1
+    assert result[0].mode_requested == "no_change"
+    assert result[0].final_decision == "accept"
+    assert result[0].final_variant == "original"
+    assert result[0].validation_status == "skipped"
+    assert analyze_calls == []
+    assert generate_calls == []
+
+
 def test_process_document_images_soft_accepts_advisory_type_drift(monkeypatch):
     _, service = _prepare_state(monkeypatch)
     analyses = iter(

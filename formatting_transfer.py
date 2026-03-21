@@ -233,6 +233,74 @@ def _build_generated_registry_by_paragraph_id(
     return registry_by_id
 
 
+def _collect_accepted_split_targets(
+    source_paragraphs: list[ParagraphUnit],
+    target_paragraphs: list[Paragraph],
+    mapped_target_by_source: Mapping[int, int],
+    generated_registry_by_id: Mapping[str, str],
+) -> list[dict[str, object]]:
+    accepted_targets: list[dict[str, object]] = []
+    accepted_target_indexes: set[int] = set()
+
+    for source_index, target_index in sorted(mapped_target_by_source.items()):
+        if target_index <= 0:
+            continue
+
+        source_paragraph = source_paragraphs[source_index]
+        paragraph_id = source_paragraph.paragraph_id
+        if not paragraph_id:
+            continue
+
+        generated_text = generated_registry_by_id.get(paragraph_id)
+        if not generated_text:
+            continue
+
+        generated_lines = [line.strip() for line in generated_text.splitlines() if line.strip()]
+        if len(generated_lines) < 2:
+            continue
+
+        heading_line = generated_lines[0]
+        if not MARKDOWN_HEADING_LINE_PATTERN.match(heading_line):
+            continue
+
+        body_lines = [line for line in generated_lines[1:] if not MARKDOWN_HEADING_LINE_PATTERN.match(line)]
+        if not body_lines:
+            continue
+
+        candidate_target_index = target_index - 1
+        if candidate_target_index in accepted_target_indexes:
+            continue
+
+        heading_target = target_paragraphs[candidate_target_index]
+        if _extract_target_heading_level(heading_target) is None:
+            continue
+
+        body_target = target_paragraphs[target_index]
+        normalized_heading_line = _normalize_text_for_mapping(heading_line)
+        normalized_heading_target = _normalize_text_for_mapping(heading_target.text)
+        normalized_body_text = _normalize_text_for_mapping(" ".join(body_lines))
+        normalized_body_target = _normalize_text_for_mapping(body_target.text)
+
+        if not normalized_heading_line or normalized_heading_line != normalized_heading_target:
+            continue
+        if not normalized_body_text or normalized_body_text != normalized_body_target:
+            continue
+
+        accepted_target_indexes.add(candidate_target_index)
+        accepted_targets.append(
+            {
+                "target_index": candidate_target_index,
+                "derived_from_source_index": source_index,
+                "kind": "split_heading_prefix",
+                "heading_level": _extract_target_heading_level(heading_target),
+                "target_text_preview": _paragraph_preview(heading_target.text),
+                "source_text_preview": _paragraph_preview(source_paragraph.text),
+            }
+        )
+
+    return accepted_targets
+
+
 def _map_source_target_paragraphs(
     source_paragraphs: list[ParagraphUnit],
     target_paragraphs: list[Paragraph],
@@ -438,6 +506,14 @@ def _map_source_target_paragraphs(
         for source_index, target_index in sorted(mapped_target_by_source.items())
     ]
 
+    accepted_split_targets = _collect_accepted_split_targets(
+        source_paragraphs,
+        target_paragraphs,
+        mapped_target_by_source,
+        generated_registry_by_id,
+    )
+    accepted_split_target_indexes = {entry["target_index"] for entry in accepted_split_targets}
+
     diagnostics = {
         "source_count": len(source_paragraphs),
         "target_count": len(target_paragraphs),
@@ -450,7 +526,7 @@ def _map_source_target_paragraphs(
         "unmapped_target_indexes": [
             target_index
             for target_index in range(len(target_paragraphs))
-            if target_index not in mapped_target_by_source.values()
+            if target_index not in mapped_target_by_source.values() and target_index not in accepted_split_target_indexes
         ],
         "source_registry": [
             _build_source_registry_entry(
@@ -465,10 +541,11 @@ def _map_source_target_paragraphs(
             _build_target_registry_entry(
                 paragraph,
                 index,
-                mapped=index in mapped_target_by_source.values(),
+                mapped=index in mapped_target_by_source.values() or index in accepted_split_target_indexes,
             )
             for index, paragraph in enumerate(target_paragraphs)
         ],
+        "accepted_split_targets": accepted_split_targets,
         "caption_heading_conflicts": _build_caption_heading_conflicts(
             source_paragraphs,
             target_paragraphs,
@@ -500,49 +577,38 @@ def _write_formatting_diagnostics_artifact(stage: str, diagnostics: dict[str, ob
 # ---------------------------------------------------------------------------
 
 
+def restore_source_formatting(
+    docx_bytes: bytes,
+    paragraphs: list[ParagraphUnit],
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
+) -> bytes:
+    return _restore_source_formatting_impl(
+        docx_bytes,
+        paragraphs,
+        generated_paragraph_registry=generated_paragraph_registry,
+        mismatch_event_name="paragraph_count_mismatch_restore",
+        mismatch_log_message=(
+            "Число source/target абзацев не совпадает при unified formatting restore; "
+            "применяю только консервативно сопоставленные абзацы."
+        ),
+    )
+
+
 def preserve_source_paragraph_properties(
     docx_bytes: bytes,
     paragraphs: list[ParagraphUnit],
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
 ) -> bytes:
-    if not docx_bytes or not paragraphs:
-        return docx_bytes
-
-    source_paragraphs = [paragraph for paragraph in paragraphs if paragraph.role != "table"]
-    if not any(paragraph.preserved_ppr_xml for paragraph in source_paragraphs):
-        return docx_bytes
-
-    document = Document(BytesIO(docx_bytes))
-    target_paragraphs = _collect_target_paragraphs(document)
-    mapping_pairs, diagnostics = _map_source_target_paragraphs(
-        source_paragraphs,
-        target_paragraphs,
+    return _restore_source_formatting_impl(
+        docx_bytes,
+        paragraphs,
         generated_paragraph_registry=generated_paragraph_registry,
+        mismatch_event_name="paragraph_count_mismatch_preserve",
+        mismatch_log_message=(
+            "Число source/target абзацев не совпадает при переносе свойств форматирования; "
+            "применяю только консервативно сопоставленные абзацы."
+        ),
     )
-
-    if len(source_paragraphs) != len(target_paragraphs) or diagnostics["mapped_count"] != len(source_paragraphs):
-        artifact_path = _write_formatting_diagnostics_artifact("preserve", diagnostics)
-        log_event(
-            logging.WARNING,
-            "paragraph_count_mismatch_preserve",
-            "Число source/target абзацев не совпадает при переносе свойств форматирования; применяю только консервативно сопоставленные абзацы.",
-            source_count=len(source_paragraphs),
-            target_count=len(target_paragraphs),
-            mapped_count=diagnostics["mapped_count"],
-            unmapped_source_count=len(diagnostics["unmapped_source_ids"]),
-            unmapped_target_count=len(diagnostics["unmapped_target_indexes"]),
-            artifact_path=artifact_path,
-        )
-
-    if not mapping_pairs:
-        return docx_bytes
-
-    for source_paragraph, target_paragraph in mapping_pairs:
-        _apply_preserved_paragraph_properties(target_paragraph, source_paragraph.preserved_ppr_xml)
-
-    output_stream = BytesIO()
-    document.save(output_stream)
-    return output_stream.getvalue()
 
 
 def normalize_semantic_output_docx(
@@ -550,10 +616,25 @@ def normalize_semantic_output_docx(
     paragraphs: list[ParagraphUnit],
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
 ) -> bytes:
+    # Compat wrapper — no-op after unified restore in preserve_source_paragraph_properties.
+    return docx_bytes
+
+
+def _restore_source_formatting_impl(
+    docx_bytes: bytes,
+    paragraphs: list[ParagraphUnit],
+    *,
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
+    mismatch_event_name: str,
+    mismatch_log_message: str,
+) -> bytes:
     if not docx_bytes or not paragraphs:
         return docx_bytes
 
     source_paragraphs = [paragraph for paragraph in paragraphs if paragraph.role != "table"]
+    if not source_paragraphs:
+        return docx_bytes
+
     document = Document(BytesIO(docx_bytes))
     target_paragraphs = _collect_target_paragraphs(document)
     mapping_pairs, diagnostics = _map_source_target_paragraphs(
@@ -569,11 +650,11 @@ def normalize_semantic_output_docx(
 
     if not mapping_pairs:
         if mismatch_detected:
-            artifact_path = _write_formatting_diagnostics_artifact("normalize", diagnostics)
+            artifact_path = _write_formatting_diagnostics_artifact("restore", diagnostics)
             log_event(
                 logging.WARNING,
-                "paragraph_count_mismatch_normalize",
-                "Число source/target абзацев не совпадает при semantic-normalization; нормализую только консервативно сопоставленные абзацы.",
+                mismatch_event_name,
+                mismatch_log_message,
                 source_count=len(source_paragraphs),
                 target_count=len(target_paragraphs),
                 mapped_count=diagnostics["mapped_count"],
@@ -584,16 +665,21 @@ def normalize_semantic_output_docx(
         return docx_bytes
 
     for source_paragraph, target_paragraph in mapping_pairs:
-        _normalize_output_paragraph(document, target_paragraph, source_paragraph)
+        _apply_semantic_style(document, target_paragraph, source_paragraph)
+        _apply_preserved_paragraph_properties(
+            target_paragraph,
+            source_paragraph.preserved_ppr_xml,
+            exclude_names=frozenset({"pStyle", "numPr"}),
+        )
 
     diagnostics["list_restoration_decisions"] = _restore_list_numbering_for_mapped_paragraphs(document, mapping_pairs)
 
     if mismatch_detected:
-        artifact_path = _write_formatting_diagnostics_artifact("normalize", diagnostics)
+        artifact_path = _write_formatting_diagnostics_artifact("restore", diagnostics)
         log_event(
             logging.WARNING,
-            "paragraph_count_mismatch_normalize",
-            "Число source/target абзацев не совпадает при semantic-normalization; нормализую только консервативно сопоставленные абзацы.",
+            mismatch_event_name,
+            mismatch_log_message,
             source_count=len(source_paragraphs),
             target_count=len(target_paragraphs),
             mapped_count=diagnostics["mapped_count"],
@@ -616,7 +702,7 @@ def normalize_semantic_output_docx(
 # ---------------------------------------------------------------------------
 
 
-def _normalize_output_paragraph(document, paragraph, source_paragraph: ParagraphUnit) -> None:
+def _apply_semantic_style(document, paragraph, source_paragraph: ParagraphUnit) -> None:
     if source_paragraph.role == "heading":
         level = min(max(source_paragraph.heading_level or 1, 1), 6)
         heading_style = f"Heading {level}"
@@ -645,6 +731,13 @@ def _normalize_output_paragraph(document, paragraph, source_paragraph: Paragraph
         paragraph.style = document.styles["Body Text"]
     elif _style_exists(document, "Normal"):
         paragraph.style = document.styles["Normal"]
+
+
+def _extract_paragraph_num_id(paragraph) -> str | None:
+    paragraph_properties = _find_child_element(paragraph._element, "pPr")
+    num_pr = _find_child_element(paragraph_properties, "numPr")
+    num_id = _find_child_element(num_pr, "numId")
+    return _get_xml_attribute(num_id, "val") if num_id is not None else None
 
 
 def _restore_list_numbering_for_mapped_paragraphs(document, mapping_pairs: list[tuple[ParagraphUnit, Paragraph]]) -> list[dict[str, object]]:
@@ -787,20 +880,36 @@ def _style_exists(document, style_name: str) -> bool:
     return True
 
 
-def _apply_preserved_paragraph_properties(paragraph, preserved_ppr_xml: tuple[str, ...]) -> None:
+def _apply_preserved_paragraph_properties(
+    paragraph,
+    preserved_ppr_xml: tuple[str, ...],
+    *,
+    exclude_names: frozenset[str] = frozenset(),
+) -> None:
     if not preserved_ppr_xml:
         return
 
     paragraph_properties = _ensure_paragraph_properties(paragraph)
-    for child in list(paragraph_properties):
-        if _xml_local_name(child.tag) in PRESERVED_PARAGRAPH_PROPERTY_NAMES:
-            paragraph_properties.remove(child)
-
+    parsed_fragments = []
+    applied_names: set[str] = set()
     for xml_fragment in preserved_ppr_xml:
         try:
-            paragraph_properties.append(parse_xml(xml_fragment))
+            parsed_fragment = parse_xml(xml_fragment)
         except Exception:
             continue
+        local_name = _xml_local_name(parsed_fragment.tag)
+        if local_name in exclude_names:
+            continue
+        parsed_fragments.append(parsed_fragment)
+        applied_names.add(local_name)
+
+    for child in list(paragraph_properties):
+        local_name = _xml_local_name(child.tag)
+        if local_name in PRESERVED_PARAGRAPH_PROPERTY_NAMES and local_name in applied_names:
+            paragraph_properties.remove(child)
+
+    for parsed_fragment in parsed_fragments:
+        paragraph_properties.append(parsed_fragment)
 
 
 def _ensure_paragraph_properties(paragraph):

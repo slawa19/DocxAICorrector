@@ -13,6 +13,7 @@ from models import ImageMode
 
 
 IMAGE_MODE_LABELS = {
+    ImageMode.NO_CHANGE.value: "Без изменения",
     ImageMode.SAFE.value: "Просто улучшить",
     ImageMode.SEMANTIC_REDRAW_DIRECT.value: "Креативная AI-перерисовка",
     ImageMode.SEMANTIC_REDRAW_STRUCTURED.value: "Структурная AI-перерисовка",
@@ -20,6 +21,7 @@ IMAGE_MODE_LABELS = {
 }
 
 IMAGE_MODE_DESCRIPTIONS = {
+    ImageMode.NO_CHANGE.value: "Оставляет все изображения как есть, без какой-либо обработки.",
     ImageMode.SAFE.value: "Слегка улучшает исходную картинку без смысловой перерисовки.",
     ImageMode.SEMANTIC_REDRAW_DIRECT.value: "Делает creative redraw через vision + generate. Лучше для инфографики, композиции, цвета и сложного оформления.",
     ImageMode.SEMANTIC_REDRAW_STRUCTURED.value: "Делает content-conservative redraw в стиле office presentation. Лучше для схем, таблиц и структурных изображений.",
@@ -519,9 +521,9 @@ def render_sidebar(config: Mapping[str, object]) -> tuple[str, int, int, str, bo
         max_value=5,
         value=_to_int(config["max_retries"], default=3),
     )
-    image_mode_default = str(config.get("image_mode_default", ImageMode.SAFE.value))
+    image_mode_default = str(config.get("image_mode_default", ImageMode.NO_CHANGE.value))
     image_mode_options = list(IMAGE_MODE_LABELS.values())
-    image_mode_default_label = IMAGE_MODE_LABELS.get(image_mode_default, IMAGE_MODE_LABELS[ImageMode.SAFE.value])
+    image_mode_default_label = IMAGE_MODE_LABELS.get(image_mode_default, IMAGE_MODE_LABELS[ImageMode.NO_CHANGE.value])
     image_mode_index = image_mode_options.index(image_mode_default_label) if image_mode_default_label in image_mode_options else 0
     selected_image_mode_label = render_sidebar_selectbox(
         "Режим обработки изображений",
@@ -529,7 +531,7 @@ def render_sidebar(config: Mapping[str, object]) -> tuple[str, int, int, str, bo
         index=image_mode_index,
         key="sidebar_image_mode",
     )
-    image_mode = IMAGE_MODE_VALUES_BY_LABEL.get(selected_image_mode_label, ImageMode.SAFE.value)
+    image_mode = IMAGE_MODE_VALUES_BY_LABEL.get(selected_image_mode_label, ImageMode.NO_CHANGE.value)
     st.sidebar.caption(IMAGE_MODE_DESCRIPTIONS.get(image_mode, ""))
     keep_all_image_variants = st.sidebar.checkbox(
         "Сохранять все варианты изображений",

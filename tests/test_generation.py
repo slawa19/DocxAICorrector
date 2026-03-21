@@ -970,6 +970,54 @@ def test_generate_markdown_block_marker_mode_retries_and_recovers_when_markers_a
     assert "[TARGET BLOCK WITH MARKERS ONLY]" in attempts[-1]["input"][1]["content"][0]["text"]
 
 
+def test_detect_context_leakage_finds_verbatim_fragment_absent_from_target():
+    leaked_fragment = generation._detect_context_leakage(
+        response_text=(
+            "Исправленный блок. Возможно, вы взяли эту книгу, думая, что она подскажет, как увеличить личное состояние."
+        ),
+        target_text="Исправленный блок.",
+        context_before=(
+            "Возможно, вы взяли эту книгу, думая, что она подскажет, как увеличить личное состояние."
+        ),
+        context_after="Следующий абзац без совпадений.",
+    )
+
+    assert leaked_fragment == "Возможно, вы взяли эту книгу, думая"
+
+
+def test_generate_markdown_block_retries_on_context_leakage_and_reinforces_prompt(monkeypatch):
+    attempts = []
+    sleep_calls = []
+
+    def create_response(**kwargs):
+        attempts.append(dict(kwargs))
+        if len(attempts) == 1:
+            return SimpleNamespace(
+                output_text=(
+                    "Исправленный блок. Возможно, вы взяли эту книгу, думая, что она подскажет, как увеличить личное состояние."
+                )
+            )
+        return SimpleNamespace(output_text="Исправленный блок.")
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+    monkeypatch.setattr(generation.time, "sleep", sleep_calls.append)
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="Исправленный блок.",
+        context_before="Возможно, вы взяли эту книгу, думая, что она подскажет, как увеличить личное состояние.",
+        context_after="Следующий абзац без совпадений.",
+        max_retries=2,
+    )
+
+    assert result == "Исправленный блок."
+    assert len(attempts) == 2
+    assert sleep_calls == [1]
+    assert generation._CONTEXT_LEAKAGE_RETRY_WARNING in attempts[1]["input"][1]["content"][0]["text"]
+
+
 def test_strip_image_placeholders_removes_only_placeholder_tokens():
     result = generation._strip_image_placeholders(
         "Текст перед\n\n[[DOCX_IMAGE_img_001]]\n\nТекст после"

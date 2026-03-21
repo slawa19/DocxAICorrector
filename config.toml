@@ -8,7 +8,7 @@ model_options = [
 ]
 chunk_size = 6000
 max_retries = 3
-image_mode_default = "safe"
+image_mode_default = "no_change"
 semantic_validation_policy = "advisory"
 keep_all_image_variants = false
 validation_model = "gpt-4.1"

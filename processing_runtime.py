@@ -1,9 +1,13 @@
 import hashlib
 import logging
 import queue
+import shutil
+import subprocess
+import tempfile
 import threading
 from dataclasses import dataclass
 from io import BytesIO
+from pathlib import Path
 from typing import Protocol, cast, runtime_checkable
 
 import streamlit as st
@@ -27,6 +31,8 @@ from workflow_state import ProcessingOutcome
 
 
 MAX_COMPLETED_SOURCE_BYTES = 8 * 1024 * 1024
+_DOCX_ZIP_MAGIC = b"PK\x03\x04"
+_LEGACY_DOC_MAGIC = bytes.fromhex("D0CF11E0A1B11AE1")
 
 
 def _build_default_image_processing_summary() -> dict[str, object]:
@@ -83,6 +89,15 @@ class FrozenUploadPayload:
     file_token: str
 
 
+@dataclass(frozen=True)
+class NormalizedUploadedDocument:
+    original_filename: str
+    filename: str
+    content_bytes: bytes
+    source_format: str
+    conversion_backend: str | None
+
+
 def read_uploaded_file_bytes(uploaded_file: UploadedFileLike | BytesIO) -> bytes:
     if hasattr(uploaded_file, "seek"):
         uploaded_file.seek(0)
@@ -97,16 +112,166 @@ def read_uploaded_file_bytes(uploaded_file: UploadedFileLike | BytesIO) -> bytes
     return bytes(source_bytes)
 
 
+def _detect_uploaded_document_format(*, filename: str, source_bytes: bytes) -> str:
+    suffix = Path(filename).suffix.lower()
+    if source_bytes.startswith(_DOCX_ZIP_MAGIC):
+        return "docx"
+    if source_bytes.startswith(_LEGACY_DOC_MAGIC):
+        return "doc"
+    if suffix == ".docx":
+        return "docx"
+    if suffix == ".doc":
+        return "doc"
+    return "unknown"
+
+
+def _build_normalized_docx_filename(filename: str) -> str:
+    path = Path(filename or "document")
+    if path.suffix.lower() == ".docx":
+        return path.name or "document.docx"
+    if path.suffix:
+        return str(path.with_suffix(".docx"))
+    if path.name:
+        return f"{path.name}.docx"
+    return "document.docx"
+
+
+def _run_completed_process(command: list[str], *, error_message: str, text: bool = True):
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            check=False,
+            text=text,
+            encoding="utf-8" if text else None,
+            errors="replace" if text else None,
+        )
+    except OSError as exc:
+        raise RuntimeError(error_message) from exc
+
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        stdout = (result.stdout or "").strip() if text else ""
+        detail = stderr or stdout or f"exit_code={result.returncode}"
+        raise RuntimeError(f"{error_message} {detail}")
+    return result
+
+
+def _convert_legacy_doc_with_soffice(*, soffice_path: str, filename: str, source_bytes: bytes) -> bytes:
+    normalized_filename = _build_normalized_docx_filename(filename)
+    with tempfile.TemporaryDirectory(prefix="docxaicorrector_doc_") as temp_dir_name:
+        temp_dir = Path(temp_dir_name)
+        input_path = temp_dir / (Path(filename).name or "document.doc")
+        output_path = temp_dir / Path(normalized_filename).name
+        input_path.write_bytes(source_bytes)
+        _run_completed_process(
+            [
+                soffice_path,
+                "--headless",
+                "--convert-to",
+                "docx",
+                "--outdir",
+                str(temp_dir),
+                str(input_path),
+            ],
+            error_message="Не удалось конвертировать legacy DOC через LibreOffice.",
+        )
+        if not output_path.exists():
+            raise RuntimeError("Не удалось конвертировать legacy DOC через LibreOffice: выходной DOCX не создан.")
+        output_bytes = output_path.read_bytes()
+        if not output_bytes:
+            raise RuntimeError("Не удалось конвертировать legacy DOC через LibreOffice: выходной DOCX пуст.")
+        return output_bytes
+
+
+def _convert_legacy_doc_with_antiword(*, antiword_path: str, filename: str, source_bytes: bytes) -> bytes:
+    from generation import ensure_pandoc_available
+    import pypandoc
+
+    ensure_pandoc_available()
+    normalized_filename = _build_normalized_docx_filename(filename)
+    with tempfile.TemporaryDirectory(prefix="docxaicorrector_doc_") as temp_dir_name:
+        temp_dir = Path(temp_dir_name)
+        input_path = temp_dir / (Path(filename).name or "document.doc")
+        output_path = temp_dir / Path(normalized_filename).name
+        input_path.write_bytes(source_bytes)
+        antiword_result = _run_completed_process(
+            [antiword_path, "-x", "db", str(input_path)],
+            error_message="Не удалось извлечь legacy DOC через antiword.",
+        )
+        docbook_xml = (antiword_result.stdout or "").strip()
+        if not docbook_xml:
+            raise RuntimeError("Не удалось извлечь legacy DOC через antiword: получен пустой DocBook XML.")
+        try:
+            pypandoc.convert_text(docbook_xml, to="docx", format="docbook", outputfile=str(output_path))
+        except (OSError, RuntimeError) as exc:
+            raise RuntimeError("Не удалось собрать DOCX из legacy DOC через Pandoc.") from exc
+        output_bytes = output_path.read_bytes() if output_path.exists() else b""
+        if not output_bytes:
+            raise RuntimeError("Не удалось собрать DOCX из legacy DOC через Pandoc: выходной DOCX пуст.")
+        return output_bytes
+
+
+def _convert_legacy_doc_to_docx(*, filename: str, source_bytes: bytes) -> tuple[bytes, str]:
+    soffice_path = shutil.which("soffice") or shutil.which("libreoffice")
+    if soffice_path:
+        return _convert_legacy_doc_with_soffice(
+            soffice_path=soffice_path,
+            filename=filename,
+            source_bytes=source_bytes,
+        ), "libreoffice"
+
+    antiword_path = shutil.which("antiword")
+    if antiword_path:
+        return _convert_legacy_doc_with_antiword(
+            antiword_path=antiword_path,
+            filename=filename,
+            source_bytes=source_bytes,
+        ), "antiword+pandoc"
+
+    raise RuntimeError(
+        "Загружен legacy DOC-файл, но автоконвертация недоступна. "
+        "Установите в WSL LibreOffice (`soffice`) или связку `antiword` + `pandoc`."
+    )
+
+
+def normalize_uploaded_document(*, filename: str, source_bytes: bytes) -> NormalizedUploadedDocument:
+    source_format = _detect_uploaded_document_format(filename=filename, source_bytes=source_bytes)
+    normalized_filename = _build_normalized_docx_filename(filename) if source_format in {"doc", "docx"} else filename
+
+    if source_format == "doc":
+        converted_bytes, conversion_backend = _convert_legacy_doc_to_docx(
+            filename=filename,
+            source_bytes=source_bytes,
+        )
+        return NormalizedUploadedDocument(
+            original_filename=filename,
+            filename=normalized_filename,
+            content_bytes=converted_bytes,
+            source_format=source_format,
+            conversion_backend=conversion_backend,
+        )
+
+    return NormalizedUploadedDocument(
+        original_filename=filename,
+        filename=normalized_filename if source_format == "docx" else filename,
+        content_bytes=bytes(source_bytes),
+        source_format=source_format,
+        conversion_backend=None,
+    )
+
+
 def freeze_uploaded_file(uploaded_file: UploadedFileLike | BytesIO) -> FrozenUploadPayload:
     source_bytes = read_uploaded_file_bytes(uploaded_file)
     filename = getattr(uploaded_file, "name", str(uploaded_file))
-    content_hash = hashlib.sha256(source_bytes).hexdigest()[:16]
+    normalized_document = normalize_uploaded_document(filename=filename, source_bytes=source_bytes)
+    content_hash = hashlib.sha256(normalized_document.content_bytes).hexdigest()[:16]
     return FrozenUploadPayload(
-        filename=filename,
-        content_bytes=source_bytes,
-        file_size=len(source_bytes),
+        filename=normalized_document.filename,
+        content_bytes=normalized_document.content_bytes,
+        file_size=len(normalized_document.content_bytes),
         content_hash=content_hash,
-        file_token=f"{filename}:{len(source_bytes)}:{content_hash}",
+        file_token=f"{normalized_document.filename}:{len(normalized_document.content_bytes)}:{content_hash}",
     )
 
 
@@ -118,9 +283,10 @@ def build_uploaded_file_token(uploaded_file: UploadedFileLike | BytesIO | None =
             raise ValueError("Для построения токена нужен uploaded_file или source_bytes.")
         source_bytes = read_uploaded_file_bytes(uploaded_file)
     file_name = source_name if source_name is not None else getattr(uploaded_file, "name", "")
-    file_size = len(source_bytes)
-    content_hash = hashlib.sha256(source_bytes).hexdigest()[:16]
-    return f"{file_name}:{file_size}:{content_hash}"
+    normalized_document = normalize_uploaded_document(filename=file_name, source_bytes=bytes(source_bytes))
+    file_size = len(normalized_document.content_bytes)
+    content_hash = hashlib.sha256(normalized_document.content_bytes).hexdigest()[:16]
+    return f"{normalized_document.filename}:{file_size}:{content_hash}"
 
 
 def build_in_memory_uploaded_file(*, source_name: str, source_bytes: bytes):

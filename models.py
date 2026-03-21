@@ -9,6 +9,7 @@ EXPLICIT_HEADING_PATTERN = re.compile(r"^#{1,6}\s+")
 
 
 class ImageMode(StrEnum):
+    NO_CHANGE = "no_change"
     SAFE = "safe"
     SEMANTIC_REDRAW_DIRECT = "semantic_redraw_direct"
     SEMANTIC_REDRAW_STRUCTURED = "semantic_redraw_structured"
@@ -57,7 +58,7 @@ class ParagraphUnit:
         if self.role != "list" or EXPLICIT_LIST_MARKER_PATTERN.match(self.text):
             return self.text
 
-        indent = "    " * max(0, self.list_level)
+        indent = "  " * max(0, self.list_level)
         marker = "1." if self.list_kind == "ordered" else "-"
         return f"{indent}{marker} {self.text}"
 
