@@ -85,6 +85,15 @@ def _set_style_outline_level(style, value: int) -> None:
     outline_level.set(qn("w:val"), str(value))
 
 
+def _set_style_alignment(style, value: str) -> None:
+    style_properties = style._element.get_or_add_pPr()
+    alignment = style_properties.find(qn("w:jc"))
+    if alignment is None:
+        alignment = OxmlElement("w:jc")
+        style_properties.append(alignment)
+    alignment.set(qn("w:val"), value)
+
+
 def _append_textbox_with_text(paragraph, text: str) -> None:
         paragraph._p.append(
                 parse_xml(
@@ -153,6 +162,56 @@ def _numbering_root_contains_num_id(document, num_id: str) -> bool:
                 for candidate in numbering_root
             )
     return False
+
+
+def _append_decimal_numbering_definition(document, *, num_id: str, abstract_num_id: str) -> None:
+    numbering_root = document.part.numbering_part.element
+
+    abstract_num = OxmlElement("w:abstractNum")
+    abstract_num.set(qn("w:abstractNumId"), abstract_num_id)
+    lvl = OxmlElement("w:lvl")
+    lvl.set(qn("w:ilvl"), "0")
+
+    start = OxmlElement("w:start")
+    start.set(qn("w:val"), "1")
+    lvl.append(start)
+
+    num_fmt = OxmlElement("w:numFmt")
+    num_fmt.set(qn("w:val"), "decimal")
+    lvl.append(num_fmt)
+
+    lvl_text = OxmlElement("w:lvlText")
+    lvl_text.set(qn("w:val"), "%1.")
+    lvl.append(lvl_text)
+    abstract_num.append(lvl)
+    numbering_root.append(abstract_num)
+
+    num = OxmlElement("w:num")
+    num.set(qn("w:numId"), num_id)
+    abstract_num_ref = OxmlElement("w:abstractNumId")
+    abstract_num_ref.set(qn("w:val"), abstract_num_id)
+    num.append(abstract_num_ref)
+    numbering_root.append(num)
+
+
+def _attach_numbering(paragraph, *, num_id: str, ilvl: str) -> None:
+    paragraph_properties = paragraph._element.get_or_add_pPr()
+    num_pr = paragraph_properties.find(qn("w:numPr"))
+    if num_pr is None:
+        num_pr = OxmlElement("w:numPr")
+        paragraph_properties.append(num_pr)
+
+    ilvl_element = num_pr.find(qn("w:ilvl"))
+    if ilvl_element is None:
+        ilvl_element = OxmlElement("w:ilvl")
+        num_pr.append(ilvl_element)
+    ilvl_element.set(qn("w:val"), ilvl)
+
+    num_id_element = num_pr.find(qn("w:numId"))
+    if num_id_element is None:
+        num_id_element = OxmlElement("w:numId")
+        num_pr.append(num_id_element)
+    num_id_element.set(qn("w:val"), num_id)
 
 
 def test_build_semantic_blocks_keeps_heading_with_following_body():
@@ -265,6 +324,28 @@ def test_extract_document_content_from_docx_inserts_image_placeholders(tmp_path)
     assert inspect_placeholder_integrity("\n\n".join(paragraph.text for paragraph in paragraphs), image_assets) == {
         "img_001": "ok"
     }
+
+
+def test_extract_document_content_from_docx_populates_image_asset_payload_fields(tmp_path):
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(PNG_BYTES)
+    doc = Document()
+    doc.add_paragraph().add_run().add_picture(str(image_path), width=Inches(1.25))
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, image_assets = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.text for paragraph in paragraphs] == ["[[DOCX_IMAGE_img_001]]"]
+    assert len(image_assets) == 1
+    asset = image_assets[0]
+    assert asset.original_bytes == PNG_BYTES
+    assert asset.position_index == 0
+    assert asset.placeholder == "[[DOCX_IMAGE_img_001]]"
+    assert asset.image_id == "img_001"
+    assert asset.width_emu is not None
+    assert asset.height_emu is not None
 
 
 def test_inspect_placeholder_integrity_reports_unexpected_placeholders():
@@ -517,6 +598,68 @@ def test_extract_document_content_from_docx_recovers_mixed_format_heading_in_nor
     assert build_document_text(paragraphs) == "## **Раздел 1:** Основные результаты** исследования**"
 
 
+def test_extract_document_content_from_docx_detects_heading_from_inherited_style_alignment_with_text_signal():
+    doc = Document()
+    centered_style = doc.styles.add_style("Centered Heading Candidate", WD_STYLE_TYPE.PARAGRAPH)
+    _set_style_alignment(centered_style, "center")
+    paragraph = doc.add_paragraph("Раздел 3 Основные результаты", style="Centered Heading Candidate")
+    run = paragraph.runs[0]
+    run.bold = True
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert len(paragraphs) == 1
+    assert paragraphs[0].role == "heading"
+    assert paragraphs[0].heading_source == "heuristic"
+    assert paragraphs[0].heading_level == 2
+
+
+def test_extract_document_content_from_docx_detects_heading_from_base_style_chain_alignment_with_text_signal():
+    doc = Document()
+    base_style = doc.styles.add_style("Centered Heading Base", WD_STYLE_TYPE.PARAGRAPH)
+    _set_style_alignment(base_style, "center")
+    derived_style = cast(Any, doc.styles.add_style("Centered Heading Derived", WD_STYLE_TYPE.PARAGRAPH))
+    derived_style.base_style = base_style
+    paragraph = doc.add_paragraph("Глава 2 Методика", style="Centered Heading Derived")
+    run = paragraph.runs[0]
+    run.bold = True
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert len(paragraphs) == 1
+    assert paragraphs[0].role == "heading"
+    assert paragraphs[0].heading_source == "heuristic"
+    assert paragraphs[0].heading_level == 1
+
+
+def test_extract_document_content_from_docx_paragraph_alignment_override_beats_inherited_center_for_heading_detection():
+    doc = Document()
+    base_style = doc.styles.add_style("Centered Heading Base Override", WD_STYLE_TYPE.PARAGRAPH)
+    _set_style_alignment(base_style, "center")
+    derived_style = cast(Any, doc.styles.add_style("Centered Heading Derived Override", WD_STYLE_TYPE.PARAGRAPH))
+    derived_style.base_style = base_style
+    paragraph = doc.add_paragraph("Краткое описание установки", style="Centered Heading Derived Override")
+    _set_raw_paragraph_alignment(paragraph, "left")
+    run = paragraph.runs[0]
+    run.bold = True
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert len(paragraphs) == 1
+    assert paragraphs[0].role == "body"
+    assert paragraphs[0].heading_level is None
+    assert paragraphs[0].role_confidence == "heuristic"
+
+
 def test_extract_document_content_from_docx_does_not_promote_centered_bold_body_without_text_signal():
     doc = Document()
     paragraph = doc.add_paragraph()
@@ -533,6 +676,45 @@ def test_extract_document_content_from_docx_does_not_promote_centered_bold_body_
     assert paragraphs[0].role == "body"
     assert paragraphs[0].heading_level is None
     assert paragraphs[0].role_confidence == "heuristic"
+
+
+def test_extract_document_content_from_docx_does_not_promote_inherited_centered_body_without_text_signal():
+    doc = Document()
+    centered_style = doc.styles.add_style("Centered Body Candidate", WD_STYLE_TYPE.PARAGRAPH)
+    _set_style_alignment(centered_style, "center")
+    paragraph = doc.add_paragraph("Краткое описание установки", style="Centered Body Candidate")
+    run = paragraph.runs[0]
+    run.bold = True
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert len(paragraphs) == 1
+    assert paragraphs[0].role == "body"
+    assert paragraphs[0].heading_level is None
+    assert paragraphs[0].role_confidence == "heuristic"
+
+
+def test_extract_document_content_from_docx_keeps_inherited_centered_caption_after_table():
+    doc = Document()
+    centered_style = doc.styles.add_style("Centered Caption Candidate", WD_STYLE_TYPE.PARAGRAPH)
+    _set_style_alignment(centered_style, "center")
+    table = doc.add_table(rows=1, cols=1)
+    table.cell(0, 0).text = "Ячейка"
+    paragraph = doc.add_paragraph("Таблица 1 Итоговые показатели", style="Centered Caption Candidate")
+    run = paragraph.runs[0]
+    run.bold = True
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.role for paragraph in paragraphs] == ["table", "caption"]
+    assert paragraphs[1].attached_to_asset_id == "table_001"
+    assert paragraphs[1].heading_level is None
 
 
 def test_extract_document_content_from_docx_preserves_hyperlinks_tabs_and_inline_emphasis():
@@ -558,35 +740,19 @@ def test_extract_document_content_from_docx_preserves_hyperlinks_tabs_and_inline
     assert paragraphs[0].text == "До **важно** и *курсив*\t[ссылка](https://example.com)"
 
 
-def test_preserve_source_paragraph_properties_restores_raw_xml_paragraph_formatting():
-    source_doc = Document()
-    source_paragraph = source_doc.add_paragraph("Абзац")
-    source_paragraph.paragraph_format.left_indent = Inches(0.5)
-    source_paragraph.paragraph_format.first_line_indent = Inches(0.25)
-    _set_raw_paragraph_alignment(source_paragraph, "start")
-
-    source_buffer = BytesIO()
-    source_doc.save(source_buffer)
-    source_buffer.seek(0)
-    source_paragraphs, _ = extract_document_content_from_docx(source_buffer)
+def test_preserve_source_paragraph_properties_keeps_existing_heading_semantics_in_target_docx():
+    source_paragraphs = [ParagraphUnit(text="Заголовок", role="heading", heading_level=1)]
 
     target_doc = Document()
-    target_doc.add_paragraph("Абзац")
+    target_doc.add_paragraph("Заголовок", style="Heading 2")
     target_buffer = BytesIO()
     target_doc.save(target_buffer)
 
     updated_bytes = preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
     updated_doc = Document(BytesIO(updated_bytes))
-    paragraph_properties = updated_doc.paragraphs[0]._element.pPr
-    assert paragraph_properties is not None
-    alignment = paragraph_properties.find(qn("w:jc"))
-    indentation = paragraph_properties.find(qn("w:ind"))
 
-    assert alignment is not None
-    assert alignment.get(qn("w:val")) == "start"
-    assert indentation is not None
-    assert indentation.get(qn("w:start")) == "720" or indentation.get(qn("w:left")) == "720"
-    assert indentation.get(qn("w:firstLine")) == "360"
+    assert updated_doc.paragraphs[0].style is not None
+    assert updated_doc.paragraphs[0].style.name == "Heading 2"
 
 
 def test_preserve_source_paragraph_properties_logs_mismatch_warning(monkeypatch):
@@ -620,7 +786,7 @@ def test_preserve_source_paragraph_properties_logs_mismatch_warning(monkeypatch)
     assert isinstance(context["artifact_path"], str)
 
 
-def test_preserve_source_paragraph_properties_applies_partial_transfer_on_mismatch():
+def test_preserve_source_paragraph_properties_does_not_replay_raw_xml_on_mismatch():
     source_doc = Document()
     source_paragraph = source_doc.add_paragraph("Абзац")
     source_paragraph.paragraph_format.left_indent = Inches(0.5)
@@ -639,11 +805,8 @@ def test_preserve_source_paragraph_properties_applies_partial_transfer_on_mismat
     updated_doc = Document(BytesIO(updated_bytes))
     first_paragraph_properties = updated_doc.paragraphs[0]._element.pPr
     first_indentation = None if first_paragraph_properties is None else first_paragraph_properties.find(qn("w:ind"))
-    second_paragraph_properties = updated_doc.paragraphs[1]._element.pPr
-    second_indentation = None if second_paragraph_properties is None else second_paragraph_properties.find(qn("w:ind"))
 
-    assert first_indentation is not None
-    assert second_indentation is None
+    assert first_indentation is None
 
 
 def test_preserve_source_paragraph_properties_artifact_records_caption_heading_conflict(tmp_path, monkeypatch):
@@ -679,7 +842,7 @@ def test_preserve_source_paragraph_properties_artifact_records_caption_heading_c
     assert payload["caption_heading_conflicts"][0]["target_heading_level"] == 1
 
 
-def test_preserve_source_paragraph_properties_artifact_records_list_restoration_decisions(tmp_path, monkeypatch):
+def test_preserve_source_paragraph_properties_artifact_leaves_list_restoration_decisions_empty(tmp_path, monkeypatch):
     source_doc = Document()
     source_doc.add_paragraph("Первый пункт", style="List Number")
     source_buffer = BytesIO()
@@ -698,12 +861,10 @@ def test_preserve_source_paragraph_properties_artifact_records_list_restoration_
 
     updated_bytes = preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
 
-    updated_doc = Document(BytesIO(updated_bytes))
-    assert _extract_numbering_ids(updated_doc.paragraphs[0])[1] is not None
     artifacts = sorted(diagnostics_dir.glob("*.json"))
     assert len(artifacts) == 1
     payload = json.loads(artifacts[0].read_text(encoding="utf-8"))
-    assert payload["list_restoration_decisions"][0]["action"] == "restored"
+    assert payload["list_restoration_decisions"] == []
 
 
 def test_replace_xml_element_with_sequence_empty_replacements_is_noop():
@@ -882,7 +1043,7 @@ def test_reinsert_inline_images_labels_manual_review_variants():
     assert _extract_docpr_descriptions(updated_doc._element) == ["safe", "candidate1", "candidate2"]
 
 
-def test_preserve_source_paragraph_properties_applies_semantic_styles():
+def test_preserve_source_paragraph_properties_applies_minimal_output_formatting():
     source_paragraphs = [
         ParagraphUnit(text="Глава", role="heading", heading_level=1),
         ParagraphUnit(text="[[DOCX_IMAGE_img_001]]", role="image"),
@@ -907,11 +1068,13 @@ def test_preserve_source_paragraph_properties_applies_semantic_styles():
     assert updated_doc.paragraphs[3].style is not None
     assert updated_doc.tables[0].style is not None
 
-    assert updated_doc.paragraphs[0].style.name == "Heading 1"
+    assert updated_doc.paragraphs[0].style.name == "Normal"
     assert updated_doc.paragraphs[1].alignment == WD_ALIGN_PARAGRAPH.CENTER
     assert updated_doc.paragraphs[2].style.name == "Caption"
     assert updated_doc.paragraphs[3].style.name in {"Body Text", "Normal"}
     assert updated_doc.tables[0].style.name == "Table Grid"
+
+
 def test_preserve_source_paragraph_properties_applies_partial_transfer_on_semantic_mismatch():
     source_paragraphs = [ParagraphUnit(text="Заголовок", role="heading", heading_level=1)]
     target_doc = Document()
@@ -924,14 +1087,15 @@ def test_preserve_source_paragraph_properties_applies_partial_transfer_on_semant
     updated_doc = Document(BytesIO(updated_bytes))
 
     assert updated_doc.paragraphs[0].style is not None
-    assert updated_doc.paragraphs[0].style.name == "Heading 1"
+    assert updated_doc.paragraphs[0].style.name == "Normal"
     assert updated_doc.paragraphs[1].style is not None
     assert updated_doc.paragraphs[1].style.name == "Normal"
 
 
-def test_preserve_source_paragraph_properties_similarity_mapping_restores_caption_when_text_changes_slightly():
+def test_preserve_source_paragraph_properties_uses_content_heuristics_for_captions_without_mapping():
     source_paragraphs = [ParagraphUnit(text="Рис. 1. Подпись к изображению", role="caption")]
     target_doc = Document()
+    target_doc.add_paragraph("[[DOCX_IMAGE_img_001]]")
     target_doc.add_paragraph("Рисунок 1 Подпись к изображению")
     target_doc.add_paragraph("Посторонний абзац")
     target_buffer = BytesIO()
@@ -940,15 +1104,13 @@ def test_preserve_source_paragraph_properties_similarity_mapping_restores_captio
     updated_bytes = preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
     updated_doc = Document(BytesIO(updated_bytes))
 
-    assert updated_doc.paragraphs[0].style is not None
-    assert updated_doc.paragraphs[0].style.name == "Caption"
-    assert updated_doc.paragraphs[0].alignment == WD_ALIGN_PARAGRAPH.CENTER
+    assert updated_doc.paragraphs[1].style is not None
+    assert updated_doc.paragraphs[1].style.name == "Caption"
+    assert updated_doc.paragraphs[1].alignment == WD_ALIGN_PARAGRAPH.CENTER
 
 
-def test_preserve_source_paragraph_properties_uses_generated_paragraph_registry_for_marker_anchored_mapping():
-    source_paragraphs = [
-        ParagraphUnit(text="Старый заголовок", role="heading", heading_level=1, paragraph_id="p0000"),
-    ]
+def test_preserve_source_paragraph_properties_does_not_promote_generated_registry_text_to_heading():
+    source_paragraphs = [ParagraphUnit(text="Старый заголовок", role="heading", heading_level=1, paragraph_id="p0000")]
     target_doc = Document()
     target_doc.add_paragraph("Совершенно новый заголовок")
     target_doc.add_paragraph("Лишний абзац")
@@ -963,15 +1125,13 @@ def test_preserve_source_paragraph_properties_uses_generated_paragraph_registry_
     updated_doc = Document(BytesIO(updated_bytes))
 
     assert updated_doc.paragraphs[0].style is not None
-    assert updated_doc.paragraphs[0].style.name == "Heading 1"
+    assert updated_doc.paragraphs[0].style.name == "Normal"
     assert updated_doc.paragraphs[1].style is not None
     assert updated_doc.paragraphs[1].style.name == "Normal"
 
 
-def test_preserve_source_paragraph_properties_uses_generated_registry_similarity_for_near_position_body_mapping():
-    source_paragraphs = [
-        ParagraphUnit(text="Исходный абзац сильно отличается", role="body", paragraph_id="p0010"),
-    ]
+def test_preserve_source_paragraph_properties_does_not_apply_body_formatting_via_generated_registry_similarity():
+    source_paragraphs = [ParagraphUnit(text="Исходный абзац сильно отличается", role="body", paragraph_id="p0010")]
     target_doc = Document()
     target_doc.add_paragraph("Лишний абзац перед целью")
     target_doc.add_paragraph("Итоговый литературно отредактированный абзац")
@@ -990,10 +1150,10 @@ def test_preserve_source_paragraph_properties_uses_generated_registry_similarity
     assert updated_doc.paragraphs[0].style is not None
     assert updated_doc.paragraphs[0].style.name == "Normal"
     assert updated_doc.paragraphs[1].style is not None
-    assert updated_doc.paragraphs[1].style.name == "Body Text"
+    assert updated_doc.paragraphs[1].style.name == "Normal"
 
 
-def test_preserve_source_paragraph_properties_skips_registry_similarity_when_gap_is_too_small():
+def test_preserve_source_paragraph_properties_leaves_ambiguous_generated_registry_targets_unchanged():
     source_paragraphs = [
         ParagraphUnit(text="Исходный абзац сильно отличается", role="body", paragraph_id="p0011"),
     ]
@@ -1021,10 +1181,8 @@ def test_preserve_source_paragraph_properties_skips_registry_similarity_when_gap
     assert updated_doc.paragraphs[1].style.name == "Normal"
 
 
-def test_preserve_source_paragraph_properties_maps_body_to_generated_non_heading_lines():
-    source_paragraphs = [
-        ParagraphUnit(text="Старый слитый абзац", role="body", paragraph_id="p0056"),
-    ]
+def test_preserve_source_paragraph_properties_does_not_use_split_generated_registry_mapping_for_body():
+    source_paragraphs = [ParagraphUnit(text="Старый слитый абзац", role="body", paragraph_id="p0056")]
     target_doc = Document()
     target_doc.add_paragraph("Новый заголовок", style="Heading 3")
     target_doc.add_paragraph("Текст после нового заголовка")
@@ -1043,10 +1201,10 @@ def test_preserve_source_paragraph_properties_maps_body_to_generated_non_heading
     assert updated_doc.paragraphs[0].style is not None
     assert updated_doc.paragraphs[0].style.name == "Heading 3"
     assert updated_doc.paragraphs[1].style is not None
-    assert updated_doc.paragraphs[1].style.name == "Body Text"
+    assert updated_doc.paragraphs[1].style.name == "Normal"
 
 
-def test_preserve_source_paragraph_properties_does_not_apply_positional_mapping_on_equal_count_reorder():
+def test_preserve_source_paragraph_properties_does_not_restyle_reordered_paragraphs():
     source_paragraphs = [
         ParagraphUnit(text="Заголовок", role="heading", heading_level=1),
         ParagraphUnit(text="Обычный текст", role="body"),
@@ -1063,10 +1221,10 @@ def test_preserve_source_paragraph_properties_does_not_apply_positional_mapping_
     assert updated_doc.paragraphs[0].style is not None
     assert updated_doc.paragraphs[0].style.name in {"Body Text", "Normal"}
     assert updated_doc.paragraphs[1].style is not None
-    assert updated_doc.paragraphs[1].style.name == "Heading 1"
+    assert updated_doc.paragraphs[1].style.name == "Normal"
 
 
-def test_preserve_source_paragraph_properties_restores_real_word_numbering_for_mapped_lists_against_pandoc_like_docx():
+def test_preserve_source_paragraph_properties_keeps_existing_numbered_list_semantics_without_injecting_source_numbering():
     source_doc = Document()
     source_doc.add_paragraph("Первый пункт", style="List Number")
     source_doc.add_paragraph("Второй пункт", style="List Number")
@@ -1077,8 +1235,13 @@ def test_preserve_source_paragraph_properties_restores_real_word_numbering_for_m
     source_paragraphs, _ = extract_document_content_from_docx(source_buffer)
 
     target_doc = Document()
-    target_doc.add_paragraph("Первый пункт")
-    target_doc.add_paragraph("Второй пункт")
+    _append_decimal_numbering_definition(target_doc, num_id="77", abstract_num_id="700")
+    first = target_doc.add_paragraph("Первый пункт")
+    second = target_doc.add_paragraph("Второй пункт")
+    _attach_numbering(first, num_id="77", ilvl="0")
+    _attach_numbering(second, num_id="77", ilvl="0")
+    original_first = _extract_numbering_ids(first)
+    original_second = _extract_numbering_ids(second)
     target_buffer = BytesIO()
     target_doc.save(target_buffer)
 
@@ -1088,18 +1251,13 @@ def test_preserve_source_paragraph_properties_restores_real_word_numbering_for_m
     first_ilvl, first_num_id = _extract_numbering_ids(updated_doc.paragraphs[0])
     second_ilvl, second_num_id = _extract_numbering_ids(updated_doc.paragraphs[1])
 
-    assert updated_doc.paragraphs[0].style is not None
-    assert updated_doc.paragraphs[1].style is not None
-    assert updated_doc.paragraphs[0].style.name == "List Paragraph"
-    assert updated_doc.paragraphs[1].style.name == "List Paragraph"
-    assert first_ilvl == "0"
-    assert second_ilvl == "0"
+    assert (first_ilvl, first_num_id) == original_first
+    assert (second_ilvl, second_num_id) == original_second
     assert first_num_id is not None
-    assert second_num_id == first_num_id
     assert _numbering_root_contains_num_id(updated_doc, first_num_id)
 
 
-def test_preserve_source_paragraph_properties_restores_real_word_numbering_on_partial_mapping_mismatch_against_pandoc_like_docx():
+def test_preserve_source_paragraph_properties_does_not_inject_numbering_for_plain_target_paragraphs():
     source_doc = Document()
     source_doc.add_paragraph("Первый пункт", style="List Number")
     source_buffer = BytesIO()
@@ -1120,11 +1278,21 @@ def test_preserve_source_paragraph_properties_restores_real_word_numbering_on_pa
     ilvl, num_id = _extract_numbering_ids(updated_doc.paragraphs[0])
 
     assert updated_doc.paragraphs[0].style is not None
-    assert updated_doc.paragraphs[0].style.name == "List Paragraph"
-    assert ilvl == "0"
-    assert num_id is not None
-    assert _numbering_root_contains_num_id(updated_doc, num_id)
+    assert updated_doc.paragraphs[0].style.name == "Normal"
+    assert ilvl is None
+    assert num_id is None
     assert _extract_numbering_ids(updated_doc.paragraphs[1]) == (None, None)
+
+
+def test_normalize_semantic_output_docx_remains_noop():
+    target_doc = Document()
+    paragraph = target_doc.add_paragraph("Обычный текст")
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    docx_bytes = target_buffer.getvalue()
+    assert normalize_semantic_output_docx(docx_bytes, [ParagraphUnit(text="Обычный текст", role="body")]) == docx_bytes
 
 
 def test_caption_survives_extraction_markdown_and_preserve_after_image(tmp_path):

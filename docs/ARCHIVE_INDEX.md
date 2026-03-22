@@ -37,6 +37,8 @@
 
 ## Archived Specs And Plans
 
+- `docs/archive/specs/DOCUMENT_ENTITY_ROUNDTRIP_REFACTOR_SPEC_2026-03-21.md`
+- `docs/archive/specs/DOCUMENT_ENTITY_ROUNDTRIP_DEVELOPMENT_PLAN_2026-03-21.md`
 - `docs/archive/specs/decomposition.md`
 - `docs/archive/specs/IMAGE_UI_PIPELINE_MODES.md`
 - `docs/archive/specs/IMAGE_PIPELINE_V2_SPEC.md`

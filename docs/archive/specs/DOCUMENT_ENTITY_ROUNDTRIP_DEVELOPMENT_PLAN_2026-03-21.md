@@ -1,8 +1,13 @@
 # Document Entity Round-Trip Development Plan
 
 **Date:** 2026-03-21  
-**Status:** active plan  
-**Source spec:** `docs/DOCUMENT_ENTITY_ROUNDTRIP_REFACTOR_SPEC_2026-03-21.md`
+**Status:** archived after Phase 1 realization  
+**Source spec:** `docs/archive/specs/DOCUMENT_ENTITY_ROUNDTRIP_REFACTOR_SPEC_2026-03-21.md`
+
+Archive note:
+
+1. the Phase 1 implementation path described here has been executed and verified through the user-visible pytest task;
+2. the document is kept as historical execution context, not as an active work plan.
 
 ## 0. Purpose
 
@@ -74,6 +79,13 @@ Remove from the default path:
 3. fuzzy source-target paragraph mapping;
 4. compatibility wrappers that only serve those behaviors.
 
+Compatibility boundary for this workstream:
+
+1. keep the existing public pipeline callback surface unchanged during Phase 1;
+2. keep `preserve_source_paragraph_properties()` as the single effective mainline formatter entry point during the transition;
+3. keep `normalize_semantic_output_docx()` as a compatibility no-op until a later API-cleanup change;
+4. if `apply_output_formatting()` is introduced, use it as an internal implementation behind the existing public entry point.
+
 Keep in the default path:
 
 1. caption formatting;
@@ -86,13 +98,20 @@ Keep in the default path:
 2. `processing_service.py`
 3. `document_pipeline.py`
 4. `tests/test_document.py`
-5. `tests/test_document_pipeline.py`
+5. `tests/test_format_restoration.py`
+6. `tests/test_document_pipeline.py`
+
+Notes:
+
+1. `processing_service.py` and `document_pipeline.py` may require only compatibility-preserving touch-ups, comments, or test updates rather than API changes;
+2. the main behavior change should be concentrated inside `formatting_transfer.py`.
 
 ### Deliverables
 
 1. minimal `apply_output_formatting()`-style mainline behavior;
 2. no numbering restoration after Pandoc list creation;
-3. no broad paragraph property replay after semantic style assignment.
+3. no broad paragraph property replay after semantic style assignment;
+4. unchanged pipeline call order with a compatibility no-op second callback.
 
 ### Acceptance
 
@@ -109,6 +128,12 @@ Keep in the default path:
 
 Improve the reference DOCX or equivalent baseline style source so the output document looks intentional without source formatting replay.
 
+Phase 1 implementation decision:
+
+1. start by extending `_build_reference_docx()` in `generation.py`;
+2. do not block this workstream on introducing a static checked-in reference DOCX asset;
+3. consider a static asset only if dynamic construction proves insufficient for stable numbering-definition control.
+
 ### Required style coverage
 
 1. `Heading 1` through `Heading 6` defined and visually coherent;
@@ -120,9 +145,12 @@ Improve the reference DOCX or equivalent baseline style source so the output doc
 
 ### Target files
 
-1. reference DOCX asset used by generation path, if present in repo workflow;
-2. `generation.py`
-3. any config or docs describing reference-document use.
+1. `generation.py`
+2. any config or docs describing reference-document use.
+
+Optional later target:
+
+1. a checked-in reference DOCX asset, if Workstream B proves that code-only style construction is insufficient.
 
 ### Acceptance
 
@@ -143,7 +171,8 @@ Improve detection only. Do not mix this with DOCX restoration logic.
 
 1. prefer resolved alignment or style-chain-aware checks over direct local XML-only checks where appropriate;
 2. keep heuristics conservative;
-3. avoid promoting generic centered body text to headings.
+3. avoid promoting generic centered body text to headings;
+4. treat `Переосмысление богатства` as an output-regression anchor first, not as assumed proof of a missed inherited-style cue in extraction.
 
 ### Target files
 
@@ -153,8 +182,9 @@ Improve detection only. Do not mix this with DOCX restoration logic.
 
 ### Acceptance
 
-1. the known subheading case is detected correctly in extraction;
-2. no broad increase in heading false positives in existing tests.
+1. verified source-signal heading cases are detected correctly in extraction;
+2. if a plain-body paragraph is promoted by a new heuristic rule, that rule is explicitly documented and tested as a new contract;
+3. no broad increase in heading false positives in existing tests.
 
 ## 3.4. Workstream D: Universal Testing Gates For Simplified Pipeline
 
@@ -165,8 +195,9 @@ Improve detection only. Do not mix this with DOCX restoration logic.
 
 Add targeted tests for:
 
-1. style-chain or inherited-alignment heading detection;
-2. specific failing heading examples, including `Переосмысление богатства` class cases.
+1. style-chain or inherited-alignment heading detection where the source DOCX actually contains those cues;
+2. specific failing heading examples backed by verified source formatting evidence;
+3. any approved plain-body heuristic promotions as separately named tests, not as assumed style-inheritance fixes.
 
 ### Tier 2: Structural
 
@@ -188,9 +219,10 @@ Add or strengthen `lietaer-core` assertions for:
 
 1. `tests/test_document.py`
 2. `tests/test_format_restoration.py`
-3. `real_document_validation_structural.py`
-4. `corpus_registry.toml`
-5. real-document validation reporting or assertion helpers.
+3. `tests/test_document_pipeline.py`
+4. `real_document_validation_structural.py`
+5. `corpus_registry.toml`
+6. real-document validation reporting or assertion helpers.
 
 ### Acceptance
 
@@ -289,23 +321,27 @@ To avoid one risky mega-change, implement as small reviewable units.
 
 1. remove list-numbering restoration from `formatting_transfer.py`;
 2. keep Pandoc numbering untouched;
-3. add deterministic regression test proving numbering survives.
+3. add deterministic regression test proving numbering survives;
+4. place main behavior coverage in `tests/test_document.py` and helper-level coverage in `tests/test_format_restoration.py`.
 
 ### Unit 2
 
 1. remove paragraph-property replay from mainline output path;
 2. keep only minimal caption or image or table formatting;
-3. add deterministic regression test proving headings remain clean.
+3. add deterministic regression test proving headings remain clean;
+4. keep `tests/test_document_pipeline.py` focused on unchanged call order and compatibility wrappers rather than formatting semantics.
 
 ### Unit 3
 
 1. improve reference DOCX styles;
-2. add structural test proving style inheritance in output.
+2. do this first in `_build_reference_docx()` rather than by introducing a static asset;
+3. add structural test proving style inheritance in output.
 
 ### Unit 4
 
 1. fix heading detection;
-2. add extraction-tier regression test.
+2. add extraction-tier regression test for verified source-signal cases;
+3. if needed, separate any new plain-body promotion heuristic into its own explicitly named test.
 
 ### Unit 5
 
@@ -323,7 +359,7 @@ To avoid one risky mega-change, implement as small reviewable units.
 
 Required before moving to real-document validation:
 
-1. extraction tests for heading detection;
+1. extraction tests for verified heading-detection rules;
 2. structural tests for Markdown -> Pandoc -> DOCX headings and lists;
 3. tests for minimal output formatting.
 

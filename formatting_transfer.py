@@ -11,7 +11,7 @@ import time
 from difflib import SequenceMatcher
 from io import BytesIO
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Mapping, Sequence, cast
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -25,6 +25,7 @@ from document import (
     INLINE_HTML_TAG_PATTERN,
     MARKDOWN_LINK_PATTERN,
     PRESERVED_PARAGRAPH_PROPERTY_NAMES,
+    _is_image_only_text,
     _detect_explicit_list_kind,
     _find_child_element,
     _get_xml_attribute,
@@ -599,7 +600,7 @@ def preserve_source_paragraph_properties(
     paragraphs: list[ParagraphUnit],
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
 ) -> bytes:
-    return _restore_source_formatting_impl(
+    return apply_output_formatting(
         docx_bytes,
         paragraphs,
         generated_paragraph_registry=generated_paragraph_registry,
@@ -620,7 +621,7 @@ def normalize_semantic_output_docx(
     return docx_bytes
 
 
-def _restore_source_formatting_impl(
+def apply_output_formatting(
     docx_bytes: bytes,
     paragraphs: list[ParagraphUnit],
     *,
@@ -631,60 +632,36 @@ def _restore_source_formatting_impl(
     if not docx_bytes or not paragraphs:
         return docx_bytes
 
-    source_paragraphs = [paragraph for paragraph in paragraphs if paragraph.role != "table"]
-    if not source_paragraphs:
-        return docx_bytes
-
     document = Document(BytesIO(docx_bytes))
     target_paragraphs = _collect_target_paragraphs(document)
-    mapping_pairs, diagnostics = _map_source_target_paragraphs(
-        source_paragraphs,
+    diagnostics = _build_output_formatting_diagnostics(
+        paragraphs,
         target_paragraphs,
+        document=document,
+        generated_paragraph_registry=generated_paragraph_registry,
+    )
+    unmapped_source_ids = cast(list[str], diagnostics["unmapped_source_ids"])
+    unmapped_target_indexes = cast(list[int], diagnostics["unmapped_target_indexes"])
+
+    _apply_minimal_image_formatting(document)
+    _apply_minimal_caption_formatting(
+        document,
+        paragraphs,
         generated_paragraph_registry=generated_paragraph_registry,
     )
 
-    mismatch_detected = (
-        len(source_paragraphs) != len(target_paragraphs)
-        or diagnostics["mapped_count"] != len(source_paragraphs)
-    )
-
-    if not mapping_pairs:
-        if mismatch_detected:
-            artifact_path = _write_formatting_diagnostics_artifact("restore", diagnostics)
-            log_event(
-                logging.WARNING,
-                mismatch_event_name,
-                mismatch_log_message,
-                source_count=len(source_paragraphs),
-                target_count=len(target_paragraphs),
-                mapped_count=diagnostics["mapped_count"],
-                unmapped_source_count=len(diagnostics["unmapped_source_ids"]),
-                unmapped_target_count=len(diagnostics["unmapped_target_indexes"]),
-                artifact_path=artifact_path,
-            )
-        return docx_bytes
-
-    for source_paragraph, target_paragraph in mapping_pairs:
-        _apply_semantic_style(document, target_paragraph, source_paragraph)
-        _apply_preserved_paragraph_properties(
-            target_paragraph,
-            source_paragraph.preserved_ppr_xml,
-            exclude_names=frozenset({"pStyle", "numPr"}),
-        )
-
-    diagnostics["list_restoration_decisions"] = _restore_list_numbering_for_mapped_paragraphs(document, mapping_pairs)
-
+    mismatch_detected = bool(unmapped_source_ids or unmapped_target_indexes)
     if mismatch_detected:
         artifact_path = _write_formatting_diagnostics_artifact("restore", diagnostics)
         log_event(
             logging.WARNING,
             mismatch_event_name,
             mismatch_log_message,
-            source_count=len(source_paragraphs),
+            source_count=diagnostics["source_count"],
             target_count=len(target_paragraphs),
             mapped_count=diagnostics["mapped_count"],
-            unmapped_source_count=len(diagnostics["unmapped_source_ids"]),
-            unmapped_target_count=len(diagnostics["unmapped_target_indexes"]),
+            unmapped_source_count=len(unmapped_source_ids),
+            unmapped_target_count=len(unmapped_target_indexes),
             artifact_path=artifact_path,
         )
 
@@ -695,6 +672,199 @@ def _restore_source_formatting_impl(
     output_stream = BytesIO()
     document.save(output_stream)
     return output_stream.getvalue()
+
+
+def _restore_source_formatting_impl(
+    docx_bytes: bytes,
+    paragraphs: list[ParagraphUnit],
+    *,
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
+    mismatch_event_name: str,
+    mismatch_log_message: str,
+) -> bytes:
+    return apply_output_formatting(
+        docx_bytes,
+        paragraphs,
+        generated_paragraph_registry=generated_paragraph_registry,
+        mismatch_event_name=mismatch_event_name,
+        mismatch_log_message=mismatch_log_message,
+    )
+
+
+def _build_output_formatting_diagnostics(
+    source_paragraphs: Sequence[ParagraphUnit],
+    target_paragraphs: Sequence[Paragraph],
+    *,
+    document=None,
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
+) -> dict[str, object]:
+    relevant_source_paragraphs = [paragraph for paragraph in source_paragraphs if paragraph.role != "table"]
+    source_count = len(relevant_source_paragraphs)
+    target_count = len(target_paragraphs)
+    mapped_count = min(source_count, target_count)
+    generated_registry_by_id = _build_generated_registry_by_paragraph_id(generated_paragraph_registry)
+    source_caption_texts = {
+        _normalize_text_for_mapping(paragraph.text)
+        for paragraph in relevant_source_paragraphs
+        if paragraph.role == "caption" and paragraph.text.strip()
+    }
+    source_caption_texts.discard("")
+    generated_caption_texts = {
+        _normalize_text_for_mapping(text)
+        for paragraph_id, text in generated_registry_by_id.items()
+        if text.strip() and any(
+            paragraph.paragraph_id == paragraph_id and paragraph.role == "caption"
+            for paragraph in relevant_source_paragraphs
+        )
+    }
+    generated_caption_texts.discard("")
+
+    matched_target_indexes = {
+        index
+        for index, paragraph in enumerate(target_paragraphs)
+        if document is not None and _is_caption_candidate(
+            document,
+            paragraph,
+            source_caption_texts=source_caption_texts,
+            generated_caption_texts=generated_caption_texts,
+        )
+    }
+    unmatched_target_indexes = list(range(mapped_count, target_count))
+    unmatched_source_ids = [
+        paragraph.paragraph_id or f"p{index:04d}"
+        for index, paragraph in enumerate(relevant_source_paragraphs[mapped_count:], start=mapped_count)
+    ]
+
+    return {
+        "source_count": source_count,
+        "target_count": target_count,
+        "mapped_count": mapped_count,
+        "unmapped_source_ids": unmatched_source_ids,
+        "unmapped_target_indexes": unmatched_target_indexes,
+        "source_registry": [
+            _build_source_registry_entry(
+                paragraph,
+                index,
+                mapped_target_index=None,
+                strategy=None,
+            )
+            for index, paragraph in enumerate(relevant_source_paragraphs)
+        ],
+        "target_registry": [
+            _build_target_registry_entry(
+                paragraph,
+                index,
+                mapped=index in matched_target_indexes,
+            )
+            for index, paragraph in enumerate(target_paragraphs)
+        ],
+        "accepted_split_targets": [],
+        "caption_heading_conflicts": [
+            {
+                "target_index": index,
+                "target_style_name": getattr(getattr(paragraph, "style", None), "name", None),
+                "target_heading_level": _extract_target_heading_level(paragraph),
+                "target_text_preview": _paragraph_preview(paragraph.text),
+            }
+            for index, paragraph in enumerate(target_paragraphs)
+            if index in matched_target_indexes and _extract_target_heading_level(paragraph) is not None
+        ],
+        "list_restoration_decisions": [],
+    }
+
+
+def _apply_minimal_image_formatting(document) -> None:
+    for paragraph in document.paragraphs:
+        if _is_image_only_text(paragraph.text):
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+
+def _apply_minimal_caption_formatting(
+    document,
+    source_paragraphs: Sequence[ParagraphUnit],
+    *,
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
+) -> None:
+    if not document.paragraphs:
+        return
+
+    generated_registry_by_id = _build_generated_registry_by_paragraph_id(generated_paragraph_registry)
+    source_caption_texts = {
+        _normalize_text_for_mapping(paragraph.text)
+        for paragraph in source_paragraphs
+        if paragraph.role == "caption" and paragraph.text.strip()
+    }
+    source_caption_texts.discard("")
+    generated_caption_texts = {
+        _normalize_text_for_mapping(generated_registry_by_id.get(paragraph.paragraph_id or "", ""))
+        for paragraph in source_paragraphs
+        if paragraph.role == "caption" and paragraph.paragraph_id
+    }
+    generated_caption_texts.discard("")
+
+    for paragraph in document.paragraphs:
+        if not _is_caption_candidate(
+            document,
+            paragraph,
+            source_caption_texts=source_caption_texts,
+            generated_caption_texts=generated_caption_texts,
+        ):
+            continue
+        if _style_exists(document, "Caption"):
+            paragraph.style = document.styles["Caption"]
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+
+def _is_caption_candidate(
+    document,
+    paragraph,
+    *,
+    source_caption_texts: set[str],
+    generated_caption_texts: set[str],
+) -> bool:
+    text = paragraph.text.strip()
+    if not text or IMAGE_PLACEHOLDER_PATTERN.search(text):
+        return False
+
+    normalized_text = _normalize_text_for_mapping(text)
+    if not normalized_text:
+        return False
+
+    has_anchor_context = _has_caption_anchor_context(document, paragraph)
+    if not has_anchor_context:
+        return False
+
+    if normalized_text in source_caption_texts or normalized_text in generated_caption_texts:
+        return True
+    return _is_likely_caption_text(text)
+
+
+def _has_caption_anchor_context(document, paragraph) -> bool:
+    body_children = list(document._element.body.iterchildren())
+    paragraph_element = paragraph._element
+
+    for index, child in enumerate(body_children):
+        if child != paragraph_element:
+            continue
+        previous_child = body_children[index - 1] if index > 0 else None
+        next_child = body_children[index + 1] if index + 1 < len(body_children) else None
+        return _is_caption_anchor_block(previous_child) or _is_caption_anchor_block(next_child)
+
+    return False
+
+
+def _is_caption_anchor_block(block_element) -> bool:
+    if block_element is None:
+        return False
+
+    local_name = _xml_local_name(block_element.tag)
+    if local_name == "tbl":
+        return True
+    if local_name != "p":
+        return False
+
+    text_content = "".join(block_element.itertext())
+    return _is_image_only_text(text_content)
 
 
 # ---------------------------------------------------------------------------

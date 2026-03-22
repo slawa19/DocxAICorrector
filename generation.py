@@ -10,12 +10,15 @@ from typing import TYPE_CHECKING, Any, cast
 import pypandoc
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from docx.shared import Pt
 
 from image_shared import is_retryable_error
 from logger import log_event
 
 if TYPE_CHECKING:
+    from docx.document import Document as DocxDocument
     from openai import OpenAI
 
 
@@ -750,38 +753,39 @@ def _build_reference_docx(reference_docx_path: Path) -> None:
     reference_document = Document()
     styles = reference_document.styles
 
-    _configure_paragraph_style(styles["Normal"], font_name="Aptos", font_size=11, space_after=8, line_spacing=1.15)
+    body_baseline = {
+        "font_name": "Aptos",
+        "font_size": 11,
+        "space_after": 8,
+        "line_spacing": 1.15,
+    }
+
+    _configure_paragraph_style(styles["Normal"], **body_baseline)
 
     if "Body Text" in styles:
-        _configure_paragraph_style(styles["Body Text"], font_name="Aptos", font_size=11, space_after=8, line_spacing=1.15)
+        _configure_paragraph_style(styles["Body Text"], **body_baseline)
 
-    _configure_paragraph_style(
-        styles["Heading 1"],
-        font_name="Aptos Display",
-        font_size=18,
-        bold=True,
-        space_before=18,
-        space_after=8,
-        keep_with_next=True,
+    heading_specs = (
+        ("Heading 1", 18, 18, 8),
+        ("Heading 2", 16, 16, 7),
+        ("Heading 3", 14, 14, 6),
+        ("Heading 4", 13, 12, 5),
+        ("Heading 5", 12, 10, 4),
+        ("Heading 6", 11, 8, 3),
     )
-    _configure_paragraph_style(
-        styles["Heading 2"],
-        font_name="Aptos Display",
-        font_size=15,
-        bold=True,
-        space_before=14,
-        space_after=6,
-        keep_with_next=True,
-    )
-    _configure_paragraph_style(
-        styles["Heading 3"],
-        font_name="Aptos Display",
-        font_size=12,
-        bold=True,
-        space_before=12,
-        space_after=4,
-        keep_with_next=True,
-    )
+    for style_name, font_size, space_before, space_after in heading_specs:
+        if style_name not in styles:
+            continue
+        _configure_paragraph_style(
+            styles[style_name],
+            font_name="Aptos Display",
+            font_size=font_size,
+            bold=True,
+            space_before=space_before,
+            space_after=space_after,
+            line_spacing=1.1,
+            keep_with_next=True,
+        )
 
     if "Caption" in styles:
         _configure_paragraph_style(
@@ -795,14 +799,224 @@ def _build_reference_docx(reference_docx_path: Path) -> None:
         )
 
     if "List Paragraph" in styles:
-        _configure_paragraph_style(styles["List Paragraph"], font_name="Aptos", font_size=11, space_after=4, line_spacing=1.1)
+        _configure_paragraph_style(
+            styles["List Paragraph"],
+            font_name="Aptos",
+            font_size=11,
+            space_before=0,
+            space_after=4,
+            line_spacing=1.1,
+        )
 
     if "Table Grid" in styles:
         table_grid_style = cast(Any, styles["Table Grid"])
         table_grid_style.font.name = "Aptos"
         table_grid_style.font.size = Pt(10)
 
+    _ensure_reference_numbering_definitions(reference_document)
+
     reference_document.save(str(reference_docx_path))
+
+
+def _ensure_reference_numbering_definitions(reference_document: "DocxDocument") -> None:
+    numbering_part = reference_document.part.numbering_part
+    numbering = numbering_part.element
+    baseline_specs = (
+        {
+            "num_fmt": "decimal",
+            "level_text_patterns": ("%1.", "%1.%2.", "%1.%2.%3."),
+        },
+        {
+            "num_fmt": "bullet",
+            "level_text_patterns": (chr(0x2022), chr(0x25E6), chr(0x25AA)),
+        },
+    )
+
+    for spec in baseline_specs:
+        baseline_abstract_num = _find_reference_baseline_abstract_num(
+            numbering,
+            num_fmt=spec["num_fmt"],
+            level_text_patterns=spec["level_text_patterns"],
+        )
+        if baseline_abstract_num is None:
+            abstract_num_id = _next_numbering_id(numbering, "w:abstractNum", "abstractNumId")
+            _append_multilevel_numbering_definition(
+                numbering,
+                abstract_num_id=abstract_num_id,
+                num_fmt=spec["num_fmt"],
+                level_text_patterns=spec["level_text_patterns"],
+            )
+            baseline_abstract_num = _find_abstract_num_by_id(numbering, abstract_num_id)
+            if baseline_abstract_num is None:
+                raise RuntimeError("Не удалось создать baseline numbering definition.")
+
+        abstract_num_id = int(baseline_abstract_num.get(qn("w:abstractNumId")))
+        if not _num_instance_exists(numbering, abstract_num_id=abstract_num_id):
+            num_id = _next_numbering_id(numbering, "w:num", "numId")
+            _append_num_instance(numbering, num_id=num_id, abstract_num_id=abstract_num_id)
+
+
+def _find_reference_baseline_abstract_num(numbering, *, num_fmt: str, level_text_patterns: tuple[str, ...]):
+    for abstract_num in numbering.xpath('./*[local-name()="abstractNum"]'):
+        if _abstract_num_matches_reference_baseline(
+            abstract_num,
+            num_fmt=num_fmt,
+            level_text_patterns=level_text_patterns,
+        ):
+            return abstract_num
+    return None
+
+
+def _find_abstract_num_by_id(numbering, abstract_num_id: int):
+    matches = numbering.xpath(
+        f'./*[local-name()="abstractNum" and @*[local-name()="abstractNumId"]="{abstract_num_id}"]'
+    )
+    return matches[0] if matches else None
+
+
+def _iter_num_instances(numbering):
+    return numbering.xpath('./*[local-name()="num"]')
+
+
+def _num_instance_abstract_num_id(num_instance) -> str | None:
+    abstract_num_id_values = num_instance.xpath(
+        './*[local-name()="abstractNumId"]/@*[local-name()="val"]'
+    )
+    if not abstract_num_id_values:
+        return None
+    return str(abstract_num_id_values[0])
+
+
+def _abstract_num_matches_reference_baseline(abstract_num, *, num_fmt: str, level_text_patterns: tuple[str, ...]) -> bool:
+    levels = abstract_num.xpath('./*[local-name()="lvl"]')
+    if len(levels) != len(level_text_patterns):
+        return False
+
+    for ilvl, level_text in enumerate(level_text_patterns):
+        level_matches = [level for level in levels if level.get(qn("w:ilvl")) == str(ilvl)]
+        if len(level_matches) != 1:
+            return False
+        if not _level_matches_reference_baseline(level_matches[0], num_fmt=num_fmt, level_text=level_text, ilvl=ilvl):
+            return False
+    return True
+
+
+def _level_matches_reference_baseline(level, *, num_fmt: str, level_text: str, ilvl: int) -> bool:
+    num_fmt_values = level.xpath('./*[local-name()="numFmt"]/@*[local-name()="val"]')
+    level_text_values = level.xpath('./*[local-name()="lvlText"]/@*[local-name()="val"]')
+    left_values = level.xpath('./*[local-name()="pPr"]/*[local-name()="ind"]/@*[local-name()="left"]')
+    hanging_values = level.xpath('./*[local-name()="pPr"]/*[local-name()="ind"]/@*[local-name()="hanging"]')
+    after_values = level.xpath('./*[local-name()="pPr"]/*[local-name()="spacing"]/@*[local-name()="after"]')
+    line_values = level.xpath('./*[local-name()="pPr"]/*[local-name()="spacing"]/@*[local-name()="line"]')
+    line_rule_values = level.xpath('./*[local-name()="pPr"]/*[local-name()="spacing"]/@*[local-name()="lineRule"]')
+    ascii_fonts = level.xpath('./*[local-name()="rPr"]/*[local-name()="rFonts"]/@*[local-name()="ascii"]')
+    hansi_fonts = level.xpath('./*[local-name()="rPr"]/*[local-name()="rFonts"]/@*[local-name()="hAnsi"]')
+    cs_fonts = level.xpath('./*[local-name()="rPr"]/*[local-name()="rFonts"]/@*[local-name()="cs"]')
+
+    return (
+        num_fmt_values == [num_fmt]
+        and level_text_values == [level_text]
+        and left_values == [str(720 + (ilvl * 360))]
+        and hanging_values == ["360"]
+        and after_values == ["80"]
+        and line_values == ["264"]
+        and line_rule_values == ["auto"]
+        and ascii_fonts == ["Aptos"]
+        and hansi_fonts == ["Aptos"]
+        and cs_fonts == ["Aptos"]
+    )
+
+
+def _num_instance_exists(numbering, *, abstract_num_id: int) -> bool:
+    expected_abstract_num_id = str(abstract_num_id)
+    return any(
+        _num_instance_abstract_num_id(num_instance) == expected_abstract_num_id
+        for num_instance in _iter_num_instances(numbering)
+    )
+
+
+def _next_numbering_id(numbering, element_name: str, attr_name: str) -> int:
+    existing_ids = []
+    local_name = element_name.split(":", 1)[1]
+    for element in numbering.xpath(f'./*[local-name()="{local_name}"]'):
+        value = element.get(qn(f"w:{attr_name}"))
+        if value is not None:
+            existing_ids.append(int(value))
+    return (max(existing_ids) + 1) if existing_ids else 0
+
+
+def _append_multilevel_numbering_definition(numbering, *, abstract_num_id: int, num_fmt: str, level_text_patterns: tuple[str, str, str]) -> None:
+    abstract_num = OxmlElement("w:abstractNum")
+    abstract_num.set(qn("w:abstractNumId"), str(abstract_num_id))
+
+    nsid = OxmlElement("w:nsid")
+    nsid.set(qn("w:val"), f"{abstract_num_id + 1:08X}")
+    abstract_num.append(nsid)
+
+    multi_level_type = OxmlElement("w:multiLevelType")
+    multi_level_type.set(qn("w:val"), "multilevel")
+    abstract_num.append(multi_level_type)
+
+    template_code = OxmlElement("w:tmpl")
+    template_code.set(qn("w:val"), f"{abstract_num_id + 257:08X}")
+    abstract_num.append(template_code)
+
+    for ilvl, level_text in enumerate(level_text_patterns):
+        abstract_num.append(_build_numbering_level(ilvl=ilvl, num_fmt=num_fmt, level_text=level_text))
+
+    numbering.append(abstract_num)
+
+
+def _build_numbering_level(*, ilvl: int, num_fmt: str, level_text: str):
+    level = OxmlElement("w:lvl")
+    level.set(qn("w:ilvl"), str(ilvl))
+
+    start = OxmlElement("w:start")
+    start.set(qn("w:val"), "1")
+    level.append(start)
+
+    num_fmt_element = OxmlElement("w:numFmt")
+    num_fmt_element.set(qn("w:val"), num_fmt)
+    level.append(num_fmt_element)
+
+    level_text_element = OxmlElement("w:lvlText")
+    level_text_element.set(qn("w:val"), level_text)
+    level.append(level_text_element)
+
+    level_jc = OxmlElement("w:lvlJc")
+    level_jc.set(qn("w:val"), "left")
+    level.append(level_jc)
+
+    paragraph_properties = OxmlElement("w:pPr")
+    ind = OxmlElement("w:ind")
+    ind.set(qn("w:left"), str(720 + (ilvl * 360)))
+    ind.set(qn("w:hanging"), "360")
+    paragraph_properties.append(ind)
+    spacing = OxmlElement("w:spacing")
+    spacing.set(qn("w:after"), "80")
+    spacing.set(qn("w:line"), "264")
+    spacing.set(qn("w:lineRule"), "auto")
+    paragraph_properties.append(spacing)
+    level.append(paragraph_properties)
+
+    run_properties = OxmlElement("w:rPr")
+    run_fonts = OxmlElement("w:rFonts")
+    run_fonts.set(qn("w:ascii"), "Aptos")
+    run_fonts.set(qn("w:hAnsi"), "Aptos")
+    run_fonts.set(qn("w:cs"), "Aptos")
+    run_properties.append(run_fonts)
+    level.append(run_properties)
+
+    return level
+
+
+def _append_num_instance(numbering, *, num_id: int, abstract_num_id: int) -> None:
+    num = OxmlElement("w:num")
+    num.set(qn("w:numId"), str(num_id))
+    abstract_num_id_element = OxmlElement("w:abstractNumId")
+    abstract_num_id_element.set(qn("w:val"), str(abstract_num_id))
+    num.append(abstract_num_id_element)
+    numbering.append(num)
 
 
 def _configure_paragraph_style(

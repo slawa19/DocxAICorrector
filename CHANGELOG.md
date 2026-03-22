@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-03-22
+
+- Завершён и зафиксирован Phase 1 document-entity round-trip hardening: mainline DOCX output теперь опирается на dynamic reference DOCX baseline и минимальный post-Pandoc formatting pass вместо broad source-XML replay.
+- Усилена extraction-semantics в `document.py`: heading heuristics теперь работают по normalized plain text, различают chapter/section cues и корректно учитывают inherited style alignment без роста ложных срабатываний.
+- Исправлен корневой real-document list regression: paragraphs с реальным Word `numPr` теперь распознаются как ordered/unordered list entities даже без видимых `1.` markers в тексте.
+- Расширено regression coverage для image assets, inherited heading detection, caption anchoring, compatibility no-op behavior и reference DOCX numbering/style baseline.
+- Переписан ordered-list generation contract test: он теперь проверяет стабильную Word-numbering semantics после Pandoc instead of overfitting to one exact numbering-definition layout.
+- Завершён user-visible full pytest verification path через VS Code task: `479 passed, 5 skipped`.
+
 ## 2026-03-21
 
 - Реализована universal real-document validation architecture: registry-driven document profiles, независимые run profiles, deterministic `extraction`/`structural` tiers и profile-driven full validator.

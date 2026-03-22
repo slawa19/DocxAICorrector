@@ -45,6 +45,48 @@ Clarification for AI agents:
 App lifecycle uses PowerShell tasks — those are fine:
 - **Start Project** / **Stop Project** / **Project Status** — VS Code tasks
 
+## Integrated Browser Debugging
+
+Use VS Code integrated browser workflows for UI-facing investigation of the local Streamlit app.
+
+- Preferred debug entrypoint: `.vscode/launch.json` configurations that use debug type `editor-browser`.
+- Default local app URL for this repo: `http://localhost:8501`.
+- Default health endpoint: `http://localhost:8501/_stcore/health`.
+- If the task is to inspect or reproduce UI behavior in the app, prefer the integrated browser inside VS Code over an external browser.
+
+Use the integrated browser when the task involves:
+
+- visual UI verification inside VS Code;
+- reproducing click, form, focus, drag, or navigation flows in the Streamlit app;
+- checking browser console errors, network behavior, cookies, storage, or auth/session behavior for the local app;
+- inspecting DOM/CSS/layout issues;
+- sharing a page with the agent or using browser tools on an already-open page.
+
+Prefer these repo configs when available:
+
+- `Start Project and Launch Streamlit in Integrated Browser` when the app may not already be running;
+- `Launch Streamlit in Integrated Browser` when the app is already running and you only need a fresh tab;
+- `Attach to Streamlit Integrated Browser Tab` when a matching integrated browser tab is already open.
+
+Do not use the integrated browser as the primary tool for:
+
+- Python backend exceptions, import failures, Pandoc issues, or OpenAI configuration problems;
+- Streamlit startup failures or health-check failures;
+- pytest verification or any other test-running workflow;
+- non-UI code investigation where reading code, logs, tasks, or Python tools is more direct.
+
+For those cases, prefer the existing repo workflows:
+
+- `Project Status`, `Start Project`, `Stop Project`, `Tail Streamlit Log` for runtime state and diagnostics;
+- VS Code pytest tasks for test verification;
+- code search, file reads, and Python-aware tools for backend investigation.
+
+Important limits for agents:
+
+- The integrated browser is for browser/UI work; it does not replace the WSL-first runtime contract.
+- If interactive breakpoint stepping in the browser is required, use the `editor-browser` launch configuration rather than improvising a different browser workflow.
+- If the task only requires reading or clicking through the page, agent browser tools or an integrated browser page are appropriate without reframing the task as a test run.
+
 ## Real Document Validation
 
 Canonical real-document validation target: `tests/sources/Лиетар глава1.docx`.

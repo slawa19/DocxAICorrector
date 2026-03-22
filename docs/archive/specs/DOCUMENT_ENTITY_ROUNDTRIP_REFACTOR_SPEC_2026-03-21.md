@@ -1,8 +1,13 @@
 # Document Entity Round-Trip Refactor Spec
 
 **Date:** 2026-03-21  
-**Status:** proposed  
+**Status:** archived after Phase 1 realization  
 **Trigger:** heading and list regressions continue to reappear because the current extraction -> markdown -> DOCX restoration pipeline does not preserve document entities through a stable end-to-end contract.
+
+Archive note:
+
+1. the Phase 1 direction from this spec was realized by moving the mainline output path to a dynamic reference DOCX baseline plus a minimal post-Pandoc formatter;
+2. the document remains useful as design history, but it is no longer the active source of truth.
 
 ## 0. Product Goal Clarification
 
@@ -551,6 +556,14 @@ Target transitional state:
 1. replace the current restoration-heavy module with a minimal `apply_output_formatting()` layer;
 2. keep only post-Pandoc operations that Pandoc does not model well enough for this product.
 
+Important Phase 1 compatibility rule:
+
+1. do not redesign the public pipeline callback surface in the same change;
+2. keep the existing `preserve_source_paragraph_properties()` and `normalize_semantic_output_docx()` entry points for compatibility with `processing_service.py`, `document_pipeline.py`, structural validators, and tests;
+3. route real work through one effective mainline path only;
+4. keep `normalize_semantic_output_docx()` as a compatibility no-op during Phase 1;
+5. if a new internal helper such as `apply_output_formatting()` is introduced, it should sit behind the existing public entry point rather than replace the pipeline API immediately.
+
 Transitional responsibilities of this layer:
 
 1. apply `Caption` style and centered alignment to detected captions;
@@ -589,6 +602,12 @@ Fields that remain useful:
 
 The spec should explicitly shift complexity from restoration code into the reference document and renderer defaults.
 
+Phase 1 implementation rule:
+
+1. the current reference DOCX is built dynamically in `generation.py` via `_build_reference_docx()` and is not a checked-in asset;
+2. Workstream B should start by extending that dynamic builder;
+3. introducing a static reference DOCX file in the repository is optional and should happen only if Python-side style construction becomes insufficient, especially for stable numbering-definition control.
+
 Recommended improvements:
 
 1. define clean numbering styles for ordered and unordered lists in the reference DOCX;
@@ -608,7 +627,9 @@ The spec should distinguish simplification from detector fixes.
 In particular:
 
 1. heading detection should use higher-level resolved properties where possible, such as style-resolved alignment behavior, instead of only direct XML checks;
-2. this work should be tested in extraction-tier coverage and should not be bundled together with output-format restoration logic.
+2. this work should be tested in extraction-tier coverage and should not be bundled together with output-format restoration logic;
+3. the known `Переосмысление богатства` regression must not be treated as proven evidence of missed style-inheritance or alignment inheritance in the source DOCX without first verifying the actual source formatting;
+4. if a corpus sample expresses a semantic heading as plain `Body Text` with no explicit heading cues, promoting it is a new heuristic contract and should be specified as such rather than described as recovery of an already encoded heading signal.
 
 ## 10. Testing Strategy With Universal Test Systems
 
@@ -682,7 +703,9 @@ Verify:
 
 Phase 1 emphasis:
 
-1. concrete failing heading-detection cases, especially style-chain or inherited-alignment cases.
+1. concrete failing heading-detection cases with verified source evidence;
+2. style-chain or inherited-alignment cases where the source document actually encodes those signals;
+3. separately specified heuristic-promotion cases if the product decides to elevate plain body paragraphs into headings.
 
 #### B. Structural Round-Trip Tests
 
@@ -720,11 +743,18 @@ Before the full IR migration is complete, Universal test systems should also val
 
 Required transitional coverage:
 
-1. extraction-tier test for heading detection through style inheritance or style-chain alignment;
+1. extraction-tier test for heading detection through style inheritance or style-chain alignment where those source cues actually exist;
 2. structural-tier test proving that Markdown headings and lists survive Pandoc round-trip without source XML restoration;
 3. structural-tier test proving that the minimal output-formatting layer correctly applies `Caption`, centered image-placeholder alignment, and table styling;
 4. structural-tier test proving that ordered lists remain numbered when post-processing does not override Pandoc numbering;
 5. real-document profile validation for `lietaer-core` under the simplified path.
+
+Concrete test placement for Phase 1:
+
+1. end-to-end DOCX byte behavior should live primarily in `tests/test_document.py`;
+2. helper-level mapping or formatting utilities should live in `tests/test_format_restoration.py` while those helpers still exist;
+3. pipeline orchestration and callback compatibility assertions should live in `tests/test_document_pipeline.py`;
+4. corpus-level assertions should live in `real_document_validation_structural.py` and `corpus_registry.toml`.
 
 This transitional coverage is the Phase 1 acceptance gate.
 
@@ -748,6 +778,12 @@ Recommended early assertions for `lietaer-core`:
 1. the heading `Переосмысление богатства` exists in the output DOCX with the expected heading level, currently `Heading 2`;
 2. the known ordered-list block with 3 items survives in the output DOCX as real Word numbering, not only as visually indented text;
 3. these checks should be introduced during the simplified-pipeline stabilization phase, not deferred until Phase 2 architecture work.
+
+Clarification:
+
+1. this output assertion does not, by itself, prove that source extraction must classify the original paragraph as a heading;
+2. for `lietaer-core`, the Phase 1 contract is output-level preservation and regression detection;
+3. any extraction-tier expectation for this exact paragraph must be backed either by verified source formatting evidence or by an explicitly approved new heuristic rule.
 
 Verify:
 
@@ -801,6 +837,12 @@ If the current module survives temporarily, the spec should narrow it to three p
 2. image placeholder paragraphs -> centered alignment;
 3. tables -> target baseline table style such as `Table Grid`.
 
+Phase 1 API rule:
+
+1. keep the public compatibility wrappers during this narrowing;
+2. the mainline path should flow through one effective formatter implementation only;
+3. removal of the redundant protocol or second callback belongs to later API cleanup, not to the simplification patch itself.
+
 All other behavior should be marked deprecated in the spec and removed from the default path:
 
 1. `_apply_preserved_paragraph_properties()`;
@@ -814,12 +856,13 @@ The recommended order for implementation is:
 
 1. remove Category C behavior from `formatting_transfer.py`;
 2. introduce minimal `apply_output_formatting()` behavior;
-3. improve the reference DOCX style baseline;
-4. fix heading detection where style inheritance is currently missed;
-5. add Tier 1 and Tier 2 regression tests for heading detection and Pandoc round-trip;
-6. validate `lietaer-core` on the simplified pipeline;
-7. remove no-longer-needed extraction payloads such as `preserved_ppr_xml`, `list_num_xml`, and `list_abstract_num_xml`;
-8. clean up residual dead code in models and extraction logic.
+3. keep the current pipeline callback API stable while routing mainline behavior through the simplified formatter;
+4. improve the dynamic reference DOCX style baseline in `_build_reference_docx()`;
+5. fix heading detection only for verified source-signal gaps, and specify any new heuristic promotions explicitly;
+6. add Tier 1 and Tier 2 regression tests for heading detection and Pandoc round-trip;
+7. validate `lietaer-core` on the simplified pipeline;
+8. remove no-longer-needed extraction payloads such as `preserved_ppr_xml`, `list_num_xml`, and `list_abstract_num_xml`;
+9. clean up residual dead code in models and extraction logic.
 
 Only after that should the team decide whether ParagraphUnit remains sufficient or whether a full DocumentIR is justified.
 

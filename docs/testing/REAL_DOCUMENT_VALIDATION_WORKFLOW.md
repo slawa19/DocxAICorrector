@@ -161,6 +161,12 @@ The real-document acceptance contract now checks:
 - short centered paragraphs preserved
 - ordered Word numbering preserved
 
+Current Phase 1 output contract behind those checks:
+
+- Pandoc plus the dynamic reference DOCX are the primary source of heading/body/list styling;
+- the post-Pandoc formatter is intentionally minimal and is limited to caption formatting, image-placeholder centering, and baseline table styling;
+- broad source paragraph XML replay and source numbering XML injection are not part of the mainline acceptance path.
+
 The exceptional quality gate is intentionally excluded from the normal full-suite path. It is available only through the dedicated task/script so expensive real-document validation does not contaminate ordinary regression runs.
 
 ## Corpus Workflow

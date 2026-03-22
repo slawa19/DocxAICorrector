@@ -404,10 +404,12 @@ def _build_paragraph_unit(paragraph, image_assets: list[ImageAsset]) -> Paragrap
     heading_source = "explicit" if explicit_heading_level is not None else None
     if heading_level is None and not _is_caption_style(normalized_style):
         if _is_probable_heading(paragraph, text, normalized_style):
-            heading_level = 2
+            heading_level = _infer_heuristic_heading_level(text)
             heading_source = "heuristic"
     role = classify_paragraph_role(text, style_name, heading_level=heading_level)
     list_metadata = _extract_paragraph_list_metadata(paragraph, text, style_name, role)
+    if role != "list" and list_metadata["list_kind"] is not None:
+        role = "list"
     asset_id = _extract_paragraph_asset_id(text, role=role)
     role_confidence = _infer_role_confidence(
         role=role,
@@ -618,8 +620,36 @@ def _find_paragraph_property_element(paragraph, local_name: str):
     return None
 
 
+def _resolve_paragraph_alignment(paragraph) -> str | None:
+    alignment = _find_paragraph_property_element(paragraph, "jc")
+    return _get_xml_attribute(alignment, "val") if alignment is not None else None
+
+
+def _normalize_text_for_heading_heuristics(text: str) -> str:
+    normalized = MARKDOWN_LINK_PATTERN.sub(r"\1", text)
+    normalized = INLINE_HTML_TAG_PATTERN.sub("", normalized)
+    normalized = normalized.replace("**", "").replace("*", "")
+    return normalized.strip()
+
+
+def _infer_heuristic_heading_level(text: str) -> int:
+    normalized_text = _normalize_text_for_heading_heuristics(text)
+    lower_text = normalized_text.lower()
+
+    if re.match(r"^(?:глава|часть|chapter|part|appendix|приложение)\b", lower_text):
+        return 1
+    if re.match(r"^(?:раздел|section)\b", lower_text):
+        return 2
+
+    numeric_match = re.match(r"^(\d+(?:\.\d+){0,4})(?:[\):]|\s)", normalized_text)
+    if numeric_match is not None:
+        return min(numeric_match.group(1).count(".") + 2, 6)
+
+    return 2
+
+
 def _is_probable_heading(paragraph, text: str, normalized_style: str) -> bool:
-    stripped_text = text.strip()
+    stripped_text = _normalize_text_for_heading_heuristics(text)
     if not stripped_text or len(stripped_text) > 140:
         return False
     word_count = len(stripped_text.split())
@@ -636,22 +666,16 @@ def _is_probable_heading(paragraph, text: str, normalized_style: str) -> bool:
         return False
     if _is_caption_style(normalized_style):
         return False
-    direct_alignment = _resolve_direct_paragraph_alignment(paragraph)
+    resolved_alignment = _resolve_paragraph_alignment(paragraph)
     if word_count <= 8 and len(stripped_text) <= 100:
-        if direct_alignment == "center" and word_count > 2 and not _has_heading_text_signal(stripped_text):
+        if resolved_alignment == "center" and word_count > 2 and not _has_heading_text_signal(stripped_text):
             return False
-        return True
+        return _has_heading_text_signal(stripped_text) or resolved_alignment == "center"
     return _has_heading_text_signal(stripped_text)
 
 
-def _resolve_direct_paragraph_alignment(paragraph) -> str | None:
-    paragraph_properties = _find_child_element(paragraph._element, "pPr")
-    alignment = _find_child_element(paragraph_properties, "jc")
-    return _get_xml_attribute(alignment, "val") if alignment is not None else None
-
-
 def _has_heading_text_signal(text: str) -> bool:
-    stripped_text = text.strip()
+    stripped_text = _normalize_text_for_heading_heuristics(text)
     word_count = len(stripped_text.split())
     lower_text = stripped_text.lower()
 
@@ -661,15 +685,11 @@ def _has_heading_text_signal(text: str) -> bool:
         return True
     if ":" in stripped_text and word_count <= 12 and not stripped_text.endswith("."):
         return True
-    if word_count <= 8 and stripped_text[-1:] not in ".!;:" and stripped_text[:1].isupper():
-        return True
     return False
 
 
 def _paragraph_has_strong_heading_format(paragraph) -> bool:
-    paragraph_properties = _find_child_element(paragraph._element, "pPr")
-    alignment = _find_child_element(paragraph_properties, "jc")
-    alignment_value = _get_xml_attribute(alignment, "val") if alignment is not None else None
+    alignment_value = _resolve_paragraph_alignment(paragraph)
     if alignment_value == "center":
         return True
 
@@ -821,11 +841,11 @@ def _extract_run_image_placeholders(run_element, part, image_assets: list[ImageA
         placeholder = f"[[DOCX_IMAGE_img_{image_index:03d}]]"
         image_assets.append(
             ImageAsset(
-                f"img_{image_index:03d}",
-                placeholder,
-                image_blob,
-                mime_type,
-                image_index - 1,
+                image_id=f"img_{image_index:03d}",
+                placeholder=placeholder,
+                original_bytes=image_blob,
+                mime_type=mime_type,
+                position_index=image_index - 1,
                 width_emu=width_emu,
                 height_emu=height_emu,
             )
@@ -844,17 +864,20 @@ def _extract_paragraph_list_metadata(paragraph, text: str, style_name: str, role
         "list_num_xml": None,
         "list_abstract_num_xml": None,
     }
-    if role != "list":
-        return metadata
 
     explicit_kind = _detect_explicit_list_kind(text)
+    style_level = _extract_style_list_level(style_name)
+    num_pr = _resolve_paragraph_num_pr(paragraph)
+
+    if role != "list" and explicit_kind is None and num_pr is None:
+        return metadata
+
     if explicit_kind is not None:
         metadata["list_kind"] = explicit_kind
         # Still try to capture Word numbering XML so DOCX list restoration works
         # even when the source paragraph already has visible text markers in its text.
         # Per spec: numbered lists must be restored as real Word lists even if visible
         # markdown markers are present.
-        num_pr = _resolve_paragraph_num_pr(paragraph)
         if num_pr is not None:
             numbering_details = _resolve_num_pr_details(paragraph, num_pr)
             numbering_format = numbering_details["num_format"]
@@ -870,8 +893,6 @@ def _extract_paragraph_list_metadata(paragraph, text: str, style_name: str, role
                 metadata["list_kind"] = "unordered"
         return metadata
 
-    style_level = _extract_style_list_level(style_name)
-    num_pr = _resolve_paragraph_num_pr(paragraph)
     if num_pr is not None:
         list_level = max(_extract_num_pr_level(num_pr), style_level)
         numbering_details = _resolve_num_pr_details(paragraph, num_pr)
@@ -888,6 +909,11 @@ def _extract_paragraph_list_metadata(paragraph, text: str, style_name: str, role
         if numbering_format in UNORDERED_LIST_FORMATS:
             metadata["list_kind"] = "unordered"
             return metadata
+        if role != "list":
+            return metadata
+
+    if role != "list":
+        return metadata
 
     normalized_style = style_name.strip().lower()
     if any(token in normalized_style for token in ("number", "num", "нумер", "числ")):

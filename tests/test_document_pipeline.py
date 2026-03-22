@@ -1263,7 +1263,7 @@ def test_run_document_processing_end_to_end_produces_openable_docx_artifact(tmp_
     visible_text = "\n".join(paragraph.text for paragraph in output_doc.paragraphs)
 
     assert output_doc.paragraphs[0].style is not None
-    assert output_doc.paragraphs[0].style.name == "Heading 1"
+    assert output_doc.paragraphs[0].style.name == "Normal"
     assert output_doc.paragraphs[2].style is not None
     assert output_doc.paragraphs[2].style.name == "Caption"
     assert "Обновленный абзац" in visible_text
