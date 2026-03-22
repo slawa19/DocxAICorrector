@@ -22,7 +22,8 @@ dist/
 build/
 .idea/
 .history/
-.vscode/
+.vscode/*
+!.vscode/tasks.json
 .pr3-merge-resolve/
 Thumbs.db
 Desktop.ini

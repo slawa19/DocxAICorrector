@@ -1,0 +1,291 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Start Project",
+			"type": "shell",
+			"command": "${workspaceFolder}\\scripts\\start-project.ps1",
+			"options": {
+				"cwd": "${workspaceFolder}",
+				"shell": {
+					"executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+					"args": [
+						"-NoProfile",
+						"-ExecutionPolicy",
+						"Bypass",
+						"-File"
+					]
+				}
+			},
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "silent",
+				"panel": "dedicated",
+				"focus": false,
+				"clear": true,
+				"showReuseMessage": false,
+				"close": false
+			},
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			}
+		},
+		{
+			"label": "Stop Project",
+			"type": "shell",
+			"command": "${workspaceFolder}\\scripts\\stop-project.ps1",
+			"options": {
+				"cwd": "${workspaceFolder}",
+				"shell": {
+					"executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+					"args": [
+						"-NoProfile",
+						"-ExecutionPolicy",
+						"Bypass",
+						"-File"
+					]
+				}
+			},
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "silent",
+				"panel": "dedicated",
+				"focus": false,
+				"clear": true,
+				"showReuseMessage": false,
+				"close": false
+			},
+			"group": "none"
+		},
+		{
+			"label": "Project Status",
+			"type": "shell",
+			"command": "${workspaceFolder}\\scripts\\status-project.ps1",
+			"options": {
+				"cwd": "${workspaceFolder}",
+				"shell": {
+					"executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+					"args": [
+						"-NoProfile",
+						"-ExecutionPolicy",
+						"Bypass",
+						"-File"
+					]
+				}
+			},
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "silent",
+				"panel": "dedicated",
+				"focus": false,
+				"clear": true,
+				"showReuseMessage": false,
+				"close": false
+			},
+			"group": "none"
+		},
+		{
+			"label": "Run Full Pytest",
+			"type": "shell",
+			"command": "bash scripts/test.sh",
+			"options": {
+				"shell": {
+					"executable": "wsl.exe",
+					"args": ["-d", "Debian", "--cd", "${workspaceFolder}", "--"]
+				}
+			},
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated",
+				"focus": true,
+				"clear": true,
+				"showReuseMessage": false,
+				"close": false
+			},
+			"group": "test"
+		},
+		{
+			"label": "Run Current Test File",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"path=\"$1\"; path=\"${path//\\//}\"; bash scripts/test.sh \"$path\"",
+				"_",
+				"${relativeFile}"
+			],
+			"options": {
+				"shell": {
+					"executable": "wsl.exe",
+					"args": ["-d", "Debian", "--cd", "${workspaceFolder}", "--"]
+				}
+			},
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated",
+				"focus": true,
+				"clear": true,
+				"showReuseMessage": false,
+				"close": false
+			},
+			"group": "test"
+		},
+		{
+			"label": "Run Current Test Node",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"path=\"$1\"; node_suffix=\"$2\"; path=\"${path//\\//}\"; bash scripts/test.sh \"${path}::${node_suffix}\"",
+				"_",
+				"${relativeFile}",
+				"${input:pytestNodeSuffix}"
+			],
+			"options": {
+				"shell": {
+					"executable": "wsl.exe",
+					"args": ["-d", "Debian", "--cd", "${workspaceFolder}", "--"]
+				}
+			},
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated",
+				"focus": true,
+				"clear": true,
+				"showReuseMessage": false,
+				"close": false
+			},
+			"group": "test"
+		},
+		{
+			"label": "Tail Streamlit Log",
+			"type": "shell",
+			"command": "${workspaceFolder}\\scripts\\tail-streamlit-log.ps1",
+			"args": [
+				"-Lines",
+				"${input:streamlitLogLines}"
+			],
+			"options": {
+				"cwd": "${workspaceFolder}",
+				"shell": {
+					"executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+					"args": [
+						"-NoProfile",
+						"-ExecutionPolicy",
+						"Bypass",
+						"-File"
+					]
+				}
+			},
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "silent",
+				"panel": "dedicated",
+				"focus": false,
+				"clear": true,
+				"showReuseMessage": false,
+				"close": false
+			},
+			"group": "test"
+		},
+		{
+			"label": "Run Lietaer Real Validation",
+			"type": "shell",
+			"command": "bash scripts/run-real-document-validation.sh",
+			"options": {
+				"shell": {
+					"executable": "wsl.exe",
+					"args": ["-d", "Debian", "--cd", "${workspaceFolder}", "--"]
+				}
+			},
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated",
+				"focus": true,
+				"clear": true,
+				"showReuseMessage": false,
+				"close": false
+			},
+			"group": "test"
+		},
+		{
+			"label": "Run Real Document Validation Profile",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"profile=\"$1\"; run_profile=\"$2\"; if [[ -n \"$profile\" ]]; then export DOCXAI_REAL_DOCUMENT_PROFILE=\"$profile\"; fi; if [[ -n \"$run_profile\" ]]; then export DOCXAI_REAL_DOCUMENT_RUN_PROFILE=\"$run_profile\"; fi; bash scripts/run-real-document-validation.sh",
+				"_",
+				"${input:realDocumentProfileId}",
+				"${input:realDocumentRunProfileId}"
+			],
+			"options": {
+				"shell": {
+					"executable": "wsl.exe",
+					"args": ["-d", "Debian", "--cd", "${workspaceFolder}", "--"]
+				}
+			},
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated",
+				"focus": true,
+				"clear": true,
+				"showReuseMessage": false,
+				"close": false
+			},
+			"group": "test"
+		},
+		{
+			"label": "Run Real Document Quality Gate",
+			"type": "shell",
+			"command": "bash scripts/run-real-document-quality-gate.sh",
+			"options": {
+				"shell": {
+					"executable": "wsl.exe",
+					"args": ["-d", "Debian", "--cd", "${workspaceFolder}", "--"]
+				}
+			},
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated",
+				"focus": true,
+				"clear": true,
+				"showReuseMessage": false,
+				"close": false
+			},
+			"group": "test"
+		}
+	],
+	"inputs": [
+		{
+			"id": "pytestNodeSuffix",
+			"type": "promptString",
+			"description": "Pytest node suffix, e.g. test_name or TestClass::test_name"
+		},
+		{
+			"id": "streamlitLogLines",
+			"type": "promptString",
+			"description": "Number of streamlit.log tail lines",
+			"default": "80"
+		},
+		{
+			"id": "realDocumentProfileId",
+			"type": "promptString",
+			"description": "Document profile id from corpus_registry.toml",
+			"default": "lietaer-core"
+		},
+		{
+			"id": "realDocumentRunProfileId",
+			"type": "promptString",
+			"description": "Optional run profile id from corpus_registry.toml",
+			"default": ""
+		}
+	]
+}
