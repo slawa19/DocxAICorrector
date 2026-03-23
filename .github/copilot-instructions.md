@@ -134,6 +134,7 @@ Rules:
 	- introduce a single centralized component-level theme/layout contract for isolated surfaces such as `components.html(...)` if iframe inheritance is the real boundary;
 	- only use local CSS as a component contract when isolation makes true inheritance impossible.
 - Do not claim CSS inheritance should work across `components.html(...)` boundaries; treat iframe isolation as a first-class architectural constraint.
+- For markdown preview or similar `about:srcdoc` iframe surfaces, the durable default is: sync computed styles from the parent Streamlit DOM during render, instead of assuming Streamlit theme inheritance will occur automatically.
 - If the final implementation must use local component CSS, keep it minimal, centralized, and free of font overrides unless the task explicitly requires font customization.
 - Avoid solving the same class of UI problem repeatedly in separate call sites; consolidate the behavior into one helper or one component contract.
 

@@ -157,6 +157,24 @@ bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate &&
 2. Если нужен client-side state без server rerun и приходится использовать `components.html(...)`, вводить один централизованный component contract.
 3. Только если оба варианта невозможны, допустим локальный CSS/HTML workaround, и он обязан быть явно ограничен одной поверхностью.
 
+Operational-уточнение для visual debugging:
+
+- быстрый подбор CSS для iframe-поверхности допустимо делать через integrated browser и временную DOM-инъекцию стилей в уже открытый iframe;
+- такой способ подходит только для short feedback loop и не считается постоянным исправлением;
+- после подбора визуального варианта агент обязан перенести результат в централизованный helper/contract в коде.
+
+Причина этого правила:
+
+- `components.html(...)` в проекте рендерит preview как sandboxed `about:srcdoc` iframe, поэтому стили и theme основного Streamlit DOM туда не каскадируют;
+- при этом в `.streamlit/config.toml` зафиксированы `fileWatcherType = "none"` и `runOnSave = false`, поэтому сохранение Python-файла не гарантирует live-reload уже запущенного runtime;
+- следовательно, для быстрых визуальных итераций агент должен различать два режима: временная DOM-проверка в браузере и постоянная кодовая правка в `ui.py`.
+
+Отдельный обязательный вывод для markdown preview:
+
+- если preview должен визуально совпадать со Streamlit по умолчанию, агент обязан строить это не на надежде на CSS inheritance, а на явной синхронизации computed styles родительского DOM во время рендера iframe;
+- любые будущие правки preview должны сохранять этот принцип: parent style sync first, local fallback second;
+- возврат к browser-default select/textarea внутри preview считается регрессией theme-sync контракта.
+
 ---
 
 ## 2. Правила для image/OpenAI pipeline

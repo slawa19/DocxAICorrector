@@ -818,11 +818,9 @@ def _build_reference_docx(
 ) -> None:
     reference_document = Document()
     styles = reference_document.styles
-    effective_body_font = body_font or "Aptos"
-    effective_heading_font = heading_font or "Aptos Display"
 
     body_baseline = {
-        "font_name": effective_body_font,
+        "font_name": body_font,
         "font_size": 11,
         "space_after": 8,
         "line_spacing": 1.15,
@@ -846,7 +844,7 @@ def _build_reference_docx(
             continue
         _configure_paragraph_style(
             styles[style_name],
-            font_name=effective_heading_font,
+            font_name=heading_font,
             font_size=font_size,
             bold=True,
             space_before=space_before,
@@ -858,7 +856,7 @@ def _build_reference_docx(
     if "Caption" in styles:
         _configure_paragraph_style(
             styles["Caption"],
-            font_name=effective_body_font,
+            font_name=body_font,
             font_size=10,
             italic=True,
             space_before=4,
@@ -869,7 +867,7 @@ def _build_reference_docx(
     if "List Paragraph" in styles:
         _configure_paragraph_style(
             styles["List Paragraph"],
-            font_name=effective_body_font,
+            font_name=body_font,
             font_size=11,
             space_before=0,
             space_after=4,
@@ -878,10 +876,11 @@ def _build_reference_docx(
 
     if "Table Grid" in styles:
         table_grid_style = cast(Any, styles["Table Grid"])
-        table_grid_style.font.name = effective_body_font
+        if body_font is not None:
+            table_grid_style.font.name = body_font
         table_grid_style.font.size = Pt(10)
 
-    _ensure_reference_numbering_definitions(reference_document)
+    _ensure_reference_numbering_definitions(reference_document, body_font=body_font)
 
     # Patch theme fonts only when explicitly configured. This is required for
     # heading styles, whose built-in w:asciiTheme bindings outrank the direct
@@ -893,7 +892,11 @@ def _build_reference_docx(
     reference_document.save(str(reference_docx_path))
 
 
-def _ensure_reference_numbering_definitions(reference_document: "DocxDocument") -> None:
+def _ensure_reference_numbering_definitions(
+    reference_document: "DocxDocument",
+    *,
+    body_font: str | None = None,
+) -> None:
     numbering_part = reference_document.part.numbering_part
     numbering = numbering_part.element
     baseline_specs = (
@@ -912,6 +915,7 @@ def _ensure_reference_numbering_definitions(reference_document: "DocxDocument") 
             numbering,
             num_fmt=spec["num_fmt"],
             level_text_patterns=spec["level_text_patterns"],
+            body_font=body_font,
         )
         if baseline_abstract_num is None:
             abstract_num_id = _next_numbering_id(numbering, "w:abstractNum", "abstractNumId")
@@ -920,6 +924,7 @@ def _ensure_reference_numbering_definitions(reference_document: "DocxDocument") 
                 abstract_num_id=abstract_num_id,
                 num_fmt=spec["num_fmt"],
                 level_text_patterns=spec["level_text_patterns"],
+                body_font=body_font,
             )
             baseline_abstract_num = _find_abstract_num_by_id(numbering, abstract_num_id)
             if baseline_abstract_num is None:
@@ -931,12 +936,19 @@ def _ensure_reference_numbering_definitions(reference_document: "DocxDocument") 
             _append_num_instance(numbering, num_id=num_id, abstract_num_id=abstract_num_id)
 
 
-def _find_reference_baseline_abstract_num(numbering, *, num_fmt: str, level_text_patterns: tuple[str, ...]):
+def _find_reference_baseline_abstract_num(
+    numbering,
+    *,
+    num_fmt: str,
+    level_text_patterns: tuple[str, ...],
+    body_font: str | None,
+):
     for abstract_num in numbering.xpath('./*[local-name()="abstractNum"]'):
         if _abstract_num_matches_reference_baseline(
             abstract_num,
             num_fmt=num_fmt,
             level_text_patterns=level_text_patterns,
+            body_font=body_font,
         ):
             return abstract_num
     return None
@@ -962,7 +974,13 @@ def _num_instance_abstract_num_id(num_instance) -> str | None:
     return str(abstract_num_id_values[0])
 
 
-def _abstract_num_matches_reference_baseline(abstract_num, *, num_fmt: str, level_text_patterns: tuple[str, ...]) -> bool:
+def _abstract_num_matches_reference_baseline(
+    abstract_num,
+    *,
+    num_fmt: str,
+    level_text_patterns: tuple[str, ...],
+    body_font: str | None,
+) -> bool:
     levels = abstract_num.xpath('./*[local-name()="lvl"]')
     if len(levels) != len(level_text_patterns):
         return False
@@ -971,12 +989,25 @@ def _abstract_num_matches_reference_baseline(abstract_num, *, num_fmt: str, leve
         level_matches = [level for level in levels if level.get(qn("w:ilvl")) == str(ilvl)]
         if len(level_matches) != 1:
             return False
-        if not _level_matches_reference_baseline(level_matches[0], num_fmt=num_fmt, level_text=level_text, ilvl=ilvl):
+        if not _level_matches_reference_baseline(
+            level_matches[0],
+            num_fmt=num_fmt,
+            level_text=level_text,
+            ilvl=ilvl,
+            body_font=body_font,
+        ):
             return False
     return True
 
 
-def _level_matches_reference_baseline(level, *, num_fmt: str, level_text: str, ilvl: int) -> bool:
+def _level_matches_reference_baseline(
+    level,
+    *,
+    num_fmt: str,
+    level_text: str,
+    ilvl: int,
+    body_font: str | None,
+) -> bool:
     num_fmt_values = level.xpath('./*[local-name()="numFmt"]/@*[local-name()="val"]')
     level_text_values = level.xpath('./*[local-name()="lvlText"]/@*[local-name()="val"]')
     left_values = level.xpath('./*[local-name()="pPr"]/*[local-name()="ind"]/@*[local-name()="left"]')
@@ -988,6 +1019,8 @@ def _level_matches_reference_baseline(level, *, num_fmt: str, level_text: str, i
     hansi_fonts = level.xpath('./*[local-name()="rPr"]/*[local-name()="rFonts"]/@*[local-name()="hAnsi"]')
     cs_fonts = level.xpath('./*[local-name()="rPr"]/*[local-name()="rFonts"]/@*[local-name()="cs"]')
 
+    expected_fonts = [] if body_font is None else [body_font]
+
     return (
         num_fmt_values == [num_fmt]
         and level_text_values == [level_text]
@@ -996,9 +1029,9 @@ def _level_matches_reference_baseline(level, *, num_fmt: str, level_text: str, i
         and after_values == ["80"]
         and line_values == ["264"]
         and line_rule_values == ["auto"]
-        and ascii_fonts == ["Aptos"]
-        and hansi_fonts == ["Aptos"]
-        and cs_fonts == ["Aptos"]
+        and ascii_fonts == expected_fonts
+        and hansi_fonts == expected_fonts
+        and cs_fonts == expected_fonts
     )
 
 
@@ -1020,7 +1053,14 @@ def _next_numbering_id(numbering, element_name: str, attr_name: str) -> int:
     return (max(existing_ids) + 1) if existing_ids else 0
 
 
-def _append_multilevel_numbering_definition(numbering, *, abstract_num_id: int, num_fmt: str, level_text_patterns: tuple[str, str, str]) -> None:
+def _append_multilevel_numbering_definition(
+    numbering,
+    *,
+    abstract_num_id: int,
+    num_fmt: str,
+    level_text_patterns: tuple[str, str, str],
+    body_font: str | None,
+) -> None:
     abstract_num = OxmlElement("w:abstractNum")
     abstract_num.set(qn("w:abstractNumId"), str(abstract_num_id))
 
@@ -1037,12 +1077,19 @@ def _append_multilevel_numbering_definition(numbering, *, abstract_num_id: int, 
     abstract_num.append(template_code)
 
     for ilvl, level_text in enumerate(level_text_patterns):
-        abstract_num.append(_build_numbering_level(ilvl=ilvl, num_fmt=num_fmt, level_text=level_text))
+        abstract_num.append(
+            _build_numbering_level(
+                ilvl=ilvl,
+                num_fmt=num_fmt,
+                level_text=level_text,
+                body_font=body_font,
+            )
+        )
 
     numbering.append(abstract_num)
 
 
-def _build_numbering_level(*, ilvl: int, num_fmt: str, level_text: str):
+def _build_numbering_level(*, ilvl: int, num_fmt: str, level_text: str, body_font: str | None):
     level = OxmlElement("w:lvl")
     level.set(qn("w:ilvl"), str(ilvl))
 
@@ -1074,13 +1121,14 @@ def _build_numbering_level(*, ilvl: int, num_fmt: str, level_text: str):
     paragraph_properties.append(spacing)
     level.append(paragraph_properties)
 
-    run_properties = OxmlElement("w:rPr")
-    run_fonts = OxmlElement("w:rFonts")
-    run_fonts.set(qn("w:ascii"), "Aptos")
-    run_fonts.set(qn("w:hAnsi"), "Aptos")
-    run_fonts.set(qn("w:cs"), "Aptos")
-    run_properties.append(run_fonts)
-    level.append(run_properties)
+    if body_font is not None:
+        run_properties = OxmlElement("w:rPr")
+        run_fonts = OxmlElement("w:rFonts")
+        run_fonts.set(qn("w:ascii"), body_font)
+        run_fonts.set(qn("w:hAnsi"), body_font)
+        run_fonts.set(qn("w:cs"), body_font)
+        run_properties.append(run_fonts)
+        level.append(run_properties)
 
     return level
 
@@ -1097,7 +1145,7 @@ def _append_num_instance(numbering, *, num_id: int, abstract_num_id: int) -> Non
 def _configure_paragraph_style(
     style,
     *,
-    font_name: str,
+    font_name: str | None,
     font_size: int,
     bold: bool | None = None,
     italic: bool | None = None,
@@ -1107,7 +1155,8 @@ def _configure_paragraph_style(
     keep_with_next: bool | None = None,
     alignment=None,
 ) -> None:
-    style.font.name = font_name
+    if font_name is not None:
+        style.font.name = font_name
     style.font.size = Pt(font_size)
     if bold is not None:
         style.font.bold = bold

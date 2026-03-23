@@ -56,7 +56,13 @@ def _first_xpath_value(node: Any, expression: str) -> str | None:
     return values[0] if values else None
 
 
-def _find_matching_abstract_numbers(document: Any, *, num_fmt: str, level_texts: tuple[str, ...]) -> list[Any]:
+def _find_matching_abstract_numbers(
+    document: Any,
+    *,
+    num_fmt: str,
+    level_texts: tuple[str, ...],
+    body_font: str | None = None,
+) -> list[Any]:
     numbering = document.part.numbering_part.element
     matches = []
     for abstract_num in numbering.xpath('./*[local-name()="abstractNum"]'):
@@ -73,9 +79,9 @@ def _find_matching_abstract_numbers(document: Any, *, num_fmt: str, level_texts:
                 "after": "80",
                 "line": "264",
                 "line_rule": "auto",
-                "ascii_font": "Aptos",
-                "hansi_font": "Aptos",
-                "cs_font": "Aptos",
+                "ascii_font": body_font,
+                "hansi_font": body_font,
+                "cs_font": body_font,
             }
             for index, level_text in enumerate(level_texts)
         ]
@@ -1168,13 +1174,16 @@ def test_build_reference_docx_configures_body_and_heading_baselines(tmp_path):
     list_paragraph_style = _as_paragraph_style(styles["List Paragraph"])
     caption_style = _as_paragraph_style(styles["Caption"])
     table_grid_style = _as_table_style(styles["Table Grid"])
+    normal_attrs = _style_rfonts_attrs(document, "Normal")
+    heading_attrs = _style_rfonts_attrs(document, "Heading 1")
+    list_attrs = _style_rfonts_attrs(document, "List Paragraph")
+    caption_attrs = _style_rfonts_attrs(document, "Caption")
 
-    assert normal_style.font.name == "Aptos"
     assert _pt(normal_style.font.size) == 11
     assert _pt(normal_style.paragraph_format.space_after) == 8
     assert normal_style.paragraph_format.line_spacing == 1.15
+    assert "Aptos" not in normal_attrs.values()
 
-    assert body_text_style.font.name == "Aptos"
     assert _pt(body_text_style.font.size) == 11
     assert _pt(body_text_style.paragraph_format.space_after) == 8
     assert body_text_style.paragraph_format.line_spacing == 1.15
@@ -1187,7 +1196,6 @@ def test_build_reference_docx_configures_body_and_heading_baselines(tmp_path):
         heading_sizes.append(_pt(style.font.size))
         heading_space_before.append(_pt(style.paragraph_format.space_before))
         heading_space_after.append(_pt(style.paragraph_format.space_after))
-        assert style.font.name == "Aptos Display"
         assert style.font.bold is True
         assert style.paragraph_format.keep_with_next is True
         assert style.paragraph_format.line_spacing == 1.1
@@ -1195,21 +1203,22 @@ def test_build_reference_docx_configures_body_and_heading_baselines(tmp_path):
     assert heading_sizes == sorted(heading_sizes, reverse=True)
     assert heading_space_before == sorted(heading_space_before, reverse=True)
     assert heading_space_after == sorted(heading_space_after, reverse=True)
+    assert "Aptos Display" not in heading_attrs.values()
 
-    assert list_paragraph_style.font.name == "Aptos"
     assert _pt(list_paragraph_style.font.size) == 11
     assert _pt(list_paragraph_style.paragraph_format.space_before) == 0
     assert _pt(list_paragraph_style.paragraph_format.space_after) == 4
     assert list_paragraph_style.paragraph_format.line_spacing == 1.1
+    assert "Aptos" not in list_attrs.values()
 
-    assert caption_style.font.name == "Aptos"
     assert _pt(caption_style.font.size) == 10
     assert caption_style.font.italic is True
     assert _pt(caption_style.paragraph_format.space_before) == 4
     assert _pt(caption_style.paragraph_format.space_after) == 10
+    assert "Aptos" not in caption_attrs.values()
 
-    assert table_grid_style.font.name == "Aptos"
     assert _pt(table_grid_style.font.size) == 10
+    assert table_grid_style.font.name is None
 
 
 def test_build_reference_docx_ensures_decimal_and_bullet_numbering_definitions(tmp_path):
@@ -1258,6 +1267,17 @@ def test_ensure_reference_numbering_definitions_is_idempotent_for_baseline_defin
     assert _has_num_instance_for_abstract_num(document, bullet_matches[0])
 
 
+def test_build_reference_docx_without_font_config_does_not_write_aptos_to_numbering(tmp_path):
+    reference_docx_path = tmp_path / "reference.docx"
+
+    generation._build_reference_docx(reference_docx_path)
+
+    with zipfile.ZipFile(reference_docx_path) as docx_archive:
+        numbering_xml = docx_archive.read("word/numbering.xml").decode("utf-8")
+
+    assert "Aptos" not in numbering_xml
+
+
 @pytest.mark.skipif(not _pandoc_available(), reason="pandoc is unavailable in current runtime")
 def test_convert_markdown_to_docx_bytes_applies_reference_doc_heading_baseline():
     result = generation.convert_markdown_to_docx_bytes("# Заголовок\n\nАбзац")
@@ -1268,7 +1288,7 @@ def test_convert_markdown_to_docx_bytes_applies_reference_doc_heading_baseline()
 
     assert heading.text == "Заголовок"
     assert heading_style.name == "Heading 1"
-    assert heading_style.font.name == "Aptos Display"
+    assert heading_style.font.name is None
     assert _pt(heading_style.font.size) == 18
     assert _pt(heading_style.paragraph_format.space_before) == 18
     assert _pt(heading_style.paragraph_format.space_after) == 8
@@ -1362,7 +1382,7 @@ def test_patch_reference_theme_fonts_does_not_touch_style_rfonts_ascii():
     """Patching the theme must not alter w:ascii on individual heading styles.
 
     The OOXML contract is that w:asciiTheme resolves via the theme, so
-    w:ascii should remain as set by _configure_paragraph_style ("Aptos Display").
+    w:ascii should remain unset unless an explicit style font override writes it.
     """
     doc = Document()
     from docx.oxml.ns import qn as _qn
@@ -1407,11 +1427,15 @@ def test_build_reference_docx_applies_configured_fonts_to_effective_styles(tmp_p
     heading_attrs = _style_rfonts_attrs(reference_doc, "Heading 1")
     caption_attrs = _style_rfonts_attrs(reference_doc, "Caption")
 
+    with zipfile.ZipFile(reference_docx_path) as docx_archive:
+        numbering_xml = docx_archive.read("word/numbering.xml").decode("utf-8")
+
     assert body_attrs[_qn("w:ascii")] == "Times New Roman"
     assert body_attrs[_qn("w:hAnsi")] == "Times New Roman"
     assert heading_attrs[_qn("w:ascii")] == "Georgia"
     assert heading_attrs[_qn("w:hAnsi")] == "Georgia"
     assert caption_attrs[_qn("w:ascii")] == "Times New Roman"
+    assert "Times New Roman" in numbering_xml
     assert _theme_font(reference_doc, "minor") == "Times New Roman"
     assert _theme_font(reference_doc, "major") == "Georgia"
 
@@ -1449,6 +1473,10 @@ def test_convert_markdown_to_docx_bytes_no_font_args_leaves_theme_unchanged():
 
     with zipfile.ZipFile(io.BytesIO(result)) as z:
         theme_xml = z.read("word/theme/theme1.xml").decode("utf-8")
+        numbering_xml = z.read("word/numbering.xml").decode("utf-8")
+        styles_xml = z.read("word/styles.xml").decode("utf-8")
 
     # The default template uses Calibri/Cambria, not Aptos, in its theme slots.
     assert "Aptos" not in theme_xml
+    assert "Aptos" not in numbering_xml
+    assert "Aptos" not in styles_xml

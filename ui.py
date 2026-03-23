@@ -35,42 +35,63 @@ _FEED_ID_SANITIZER = re.compile(r"[^a-zA-Z0-9_-]+")
 _DOCX_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_IMAGE_img_\d+\]\]")
 _MARKDOWN_PREVIEW_THEME_CSS = """
     <style>
-    :root {{
+    :root {
         color-scheme: dark;
-    }}
-    html, body {{
+        --md-preview-surface: rgb(14, 17, 23);
+        --md-preview-surface-alt: rgb(14, 17, 23);
+        --md-preview-border: rgba(226, 232, 240, 0.2);
+        --md-preview-text: rgb(226, 232, 240);
+        --md-preview-muted: rgb(226, 232, 240);
+        --md-preview-focus: rgba(25, 198, 183, 0.72);
+        --md-preview-radius: 8px;
+    }
+    html, body {
         margin: 0;
         padding: 0;
         background: transparent;
-    }}
-    body {{
-        color: CanvasText;
-    }}
-    .md-preview-shell {{
+    }
+    body {
+        color: var(--md-preview-text);
+    }
+    .md-preview-shell {
         display: grid;
         gap: 0.75rem;
         padding: 0.25rem 0.125rem 0.5rem 0.125rem;
-    }}
-    .md-preview-caption {{
-        line-height: 1.5;
-    }}
-    .md-preview-label {{
+    }
+    .md-preview-caption {
+        color: var(--md-preview-muted);
+    }
+    .md-preview-label {
         display: block;
         font-weight: 600;
-    }}
+        color: var(--md-preview-text);
+    }
     .md-preview-select,
-    .md-preview-text {{
+    .md-preview-text {
         width: 100%;
         box-sizing: border-box;
-    }}
-    .md-preview-select {{
+        font: inherit;
+        border: 1px solid var(--md-preview-border);
+        border-radius: var(--md-preview-radius);
+        background: var(--md-preview-surface);
+        color: var(--md-preview-text);
+    }
+    .md-preview-select {
         min-height: 2.5rem;
-    }}
-    .md-preview-text {{
+        padding: 0.625rem 0.75rem;
+    }
+    .md-preview-text {
         min-height: 20rem;
+        padding: 0.875rem 1rem;
         resize: vertical;
         white-space: pre-wrap;
-    }}
+        background: var(--md-preview-surface-alt);
+    }
+    .md-preview-select:focus,
+    .md-preview-text:focus {
+        outline: 2px solid var(--md-preview-focus);
+        outline-offset: 1px;
+    }
     </style>
 """
 
@@ -143,6 +164,51 @@ def _build_markdown_preview_script(*, blocks_json: str, initial_selection: int, 
         if (!select || !textarea || !Array.isArray(blocks) || blocks.length === 0) {{
             return;
         }}
+
+        const syncParentTheme = () => {{
+            try {{
+                const parentDocument = window.parent?.document;
+                const parentWindow = window.parent;
+                const parentBody = parentDocument?.body;
+                if (!parentDocument || !parentWindow || !parentBody) {{
+                    return;
+                }}
+
+                const parentBodyStyles = parentWindow.getComputedStyle(parentBody);
+                document.body.style.color = parentBodyStyles.color;
+                document.body.style.fontFamily = parentBodyStyles.fontFamily;
+                document.body.style.fontSize = parentBodyStyles.fontSize;
+                document.body.style.lineHeight = parentBodyStyles.lineHeight;
+
+                const rootStyle = document.documentElement.style;
+                rootStyle.setProperty("--md-preview-text", parentBodyStyles.color);
+                rootStyle.setProperty("--md-preview-muted", parentBodyStyles.color);
+
+                const parentSelect = parentDocument.querySelector('[data-baseweb="select"] div');
+                if (parentSelect) {{
+                    const parentSelectStyles = parentWindow.getComputedStyle(parentSelect);
+                    rootStyle.setProperty("--md-preview-surface", parentSelectStyles.backgroundColor);
+                    rootStyle.setProperty("--md-preview-surface-alt", parentSelectStyles.backgroundColor);
+                    rootStyle.setProperty("--md-preview-border", parentSelectStyles.borderColor || parentBodyStyles.color);
+                    rootStyle.setProperty("--md-preview-radius", parentSelectStyles.borderRadius || "8px");
+                }} else {{
+                    rootStyle.setProperty("--md-preview-surface", parentBodyStyles.backgroundColor);
+                    rootStyle.setProperty("--md-preview-surface-alt", parentBodyStyles.backgroundColor);
+                }}
+
+                const parentButton = Array.from(parentDocument.querySelectorAll("button")).find((node) =>
+                    node.textContent?.includes("Скачать итоговый DOCX")
+                );
+                if (parentButton) {{
+                    const parentButtonStyles = parentWindow.getComputedStyle(parentButton);
+                    rootStyle.setProperty("--md-preview-border", parentButtonStyles.borderColor || parentBodyStyles.color);
+                    rootStyle.setProperty("--md-preview-radius", parentButtonStyles.borderRadius || "8px");
+                }}
+            }} catch (error) {{
+            }}
+        }};
+
+        syncParentTheme();
 
         const updateTextarea = (selectedIndex) => {{
             const resolvedIndex = Math.max(1, Math.min(selectedIndex, blocks.length));

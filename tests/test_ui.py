@@ -130,7 +130,12 @@ def test_render_markdown_preview_persists_new_user_selection(monkeypatch):
     assert session_state[select_key] == 3
     assert 'const blocks = ["one", "two", "three"]' in html_calls[0]
     assert 'color-scheme: dark;' in html_calls[0]
-    assert 'font-family' not in html_calls[0]
+    assert '--md-preview-text: rgb(226, 232, 240);' in html_calls[0]
+    assert 'font: inherit;' in html_calls[0]
+    assert 'const syncParentTheme = () => {' in html_calls[0]
+    assert '{{' not in html_calls[0]
+    assert '}}' not in html_calls[0]
+    assert 'document.body.style.fontFamily = parentBodyStyles.fontFamily;' in html_calls[0]
 
 
 def test_render_markdown_preview_keeps_manual_selection_when_new_block_arrives(monkeypatch):

@@ -45,6 +45,34 @@ def test_format_user_error_maps_status_code_and_runtime_errors():
     assert logger.format_user_error(runtime_exc) == "custom runtime"
 
 
+def test_format_user_error_normalizes_heading_only_runtime_error():
+    runtime_exc = RuntimeError(
+        "Модель вернула только заголовок при наличии основного текста во входном блоке (heading_only_output)."
+    )
+
+    assert logger.format_user_error(runtime_exc) == (
+        "Модель вернула неполный результат для одного из блоков документа: "
+        "вместо основного текста остался только заголовок. "
+        "Это ошибка обработки блока, а не исходного файла. Попробуйте запустить обработку ещё раз."
+    )
+
+
+def test_present_error_hides_log_id_from_user_message(monkeypatch):
+    monkeypatch.setattr(logger, "log_exception", lambda *args, **kwargs: "evt-123")
+
+    message = logger.present_error(
+        "structurally_insufficient_processed_block",
+        RuntimeError("Модель вернула пустой Markdown-блок после успешного вызова (empty_processed_block)."),
+        "Критическая ошибка обработки блока",
+    )
+
+    assert message == (
+        "Модель вернула пустой результат для одного из блоков документа. "
+        "Попробуйте запустить обработку ещё раз."
+    )
+    assert "[log:" not in message
+
+
 def test_sanitize_log_context_serializes_nested_values(tmp_path):
     payload = {
         "path": tmp_path / "file.txt",

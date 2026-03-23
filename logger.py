@@ -122,6 +122,27 @@ def extract_exception_message(exc: Exception) -> str:
     return str(exc).strip() or exc.__class__.__name__
 
 
+def _normalize_runtime_error_message(message: str) -> str:
+    lowered = message.lower()
+
+    if "heading_only_output" in lowered or (
+        "только заголовок" in lowered and "основного текста" in lowered
+    ):
+        return (
+            "Модель вернула неполный результат для одного из блоков документа: "
+            "вместо основного текста остался только заголовок. "
+            "Это ошибка обработки блока, а не исходного файла. Попробуйте запустить обработку ещё раз."
+        )
+
+    if "empty_processed_block" in lowered or "пустой markdown-блок" in lowered:
+        return (
+            "Модель вернула пустой результат для одного из блоков документа. "
+            "Попробуйте запустить обработку ещё раз."
+        )
+
+    return message
+
+
 def format_user_error(exc: Exception) -> str:
     message = extract_exception_message(exc)
     status_code = getattr(exc, "status_code", None)
@@ -150,7 +171,7 @@ def format_user_error(exc: Exception) -> str:
     if exc.__class__.__name__ == "APITimeoutError":
         return "OpenAI не ответил вовремя. Попробуйте повторить запуск."
     if isinstance(exc, (RuntimeError, ValueError)):
-        return message
+        return _normalize_runtime_error_message(message)
     return f"Непредвиденная ошибка: {message}"
 
 
@@ -170,8 +191,8 @@ def log_exception(event: str, exc: Exception, message: str, **context: object) -
 
 
 def present_error(event: str, exc: Exception, message: str, **context: object) -> str:
-    event_id = log_exception(event, exc, message, **context)
-    return f"{format_user_error(exc)} [log: {event_id}]"
+    log_exception(event, exc, message, **context)
+    return format_user_error(exc)
 
 
 def fail_critical(event: str, message: str, **context: object) -> None:
