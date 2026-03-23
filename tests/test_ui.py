@@ -32,9 +32,9 @@ class FakeProgressBar:
 
 
 def test_render_activity_feed_reverses_dom_order_for_css_autoscroll(monkeypatch):
-    markdowns = []
+    captions = []
 
-    monkeypatch.setattr(ui.st, "markdown", lambda text, unsafe_allow_html=True: markdowns.append(text))
+    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
 
     ui._render_activity_feed(
         title="События",
@@ -43,44 +43,35 @@ def test_render_activity_feed_reverses_dom_order_for_css_autoscroll(monkeypatch)
         auto_scroll=True,
     )
 
-    assert markdowns
-    markup = markdowns[-1]
-    assert markup.index("10:00:02  Последнее сообщение.") < markup.index("10:00:00  Первое сообщение.")
-    assert 'activity-feed-item-active' in markup
+    assert captions == [
+        "События",
+        "10:00:02  Последнее сообщение.",
+        "10:00:00  Первое сообщение.",
+    ]
 
 
 def test_render_markdown_preview_uses_stable_key_per_title(monkeypatch):
-    import hashlib
     session_state = SessionState(
         processed_block_markdowns=["one", "two"],
     )
-    select_keys = []
-
-    def fake_selectbox(label, options, index=0, key=None):
-        select_keys.append(key)
-        session_state[key] = options[index]
-        return options[index]
+    html_calls = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
-    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
-    monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
-    monkeypatch.setattr(ui.st, "selectbox", fake_selectbox)
-    monkeypatch.setattr(ui.st, "text_area", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.components, "html", lambda html, **kwargs: html_calls.append(html))
 
     target = FakeTarget()
     ui.render_markdown_preview(target, title="Preview A")
     ui.render_markdown_preview(target, title="Preview B")
 
-    # Different titles produce different stable keys.
-    assert len(select_keys) == 2
-    assert select_keys[0] != select_keys[1]
+    assert len(html_calls) == 2
+    assert ui._mdpreview_key("Preview A", "client_selected") in html_calls[0]
+    assert ui._mdpreview_key("Preview B", "client_selected") in html_calls[1]
+    assert ui._mdpreview_key("Preview A", "client_selected") != ui._mdpreview_key("Preview B", "client_selected")
 
-    first_key = select_keys[0]
-    select_keys.clear()
+    html_calls.clear()
     ui.render_markdown_preview(target, title="Preview A")
-    # Same title → same key on every re-render (no per-render nonce).
-    assert select_keys == [first_key]
+    assert ui._mdpreview_key("Preview A", "client_selected") in html_calls[0]
 
 
 def test_render_markdown_preview_focuses_latest_block_when_requested(monkeypatch):
@@ -88,22 +79,17 @@ def test_render_markdown_preview_focuses_latest_block_when_requested(monkeypatch
         processed_block_markdowns=["one", "[[DOCX_IMAGE_img_001]]", "three"],
     )
 
-    def fake_selectbox(label, options, index=0, key=None):
-        session_state[key] = options[index]
-        return options[index]
+    html_calls = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
-    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
-    monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
-    monkeypatch.setattr(ui.st, "selectbox", fake_selectbox)
-    monkeypatch.setattr(ui.st, "text_area", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.components, "html", lambda html, **kwargs: html_calls.append(html))
 
     select_key = ui._mdpreview_key("Текущий Markdown", "selected")
     ui.render_markdown_preview(FakeTarget(), title="Текущий Markdown", focus_latest=True)
 
-    # Placeholder-only blocks are excluded, so latest meaningful block is block 2 in preview space.
     assert session_state[select_key] == 2
+    assert '<option value="2" selected>' in html_calls[0]
 
 
 def test_render_markdown_preview_keeps_user_selection_when_focus_latest_requested(monkeypatch):
@@ -114,20 +100,16 @@ def test_render_markdown_preview_keeps_user_selection_when_focus_latest_requeste
         **{select_key: 1, last_count_key: 2},
     )
 
-    def fake_selectbox(label, options, index=0, key=None):
-        session_state[key] = options[index]
-        return options[index]
+    html_calls = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
-    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
-    monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
-    monkeypatch.setattr(ui.st, "selectbox", fake_selectbox)
-    monkeypatch.setattr(ui.st, "text_area", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.components, "html", lambda html, **kwargs: html_calls.append(html))
 
     ui.render_markdown_preview(FakeTarget(), title="Текущий Markdown", focus_latest=True)
 
     assert session_state[select_key] == 1
+    assert '<option value="1" selected>' in html_calls[0]
 
 
 def test_render_markdown_preview_persists_new_user_selection(monkeypatch):
@@ -137,23 +119,18 @@ def test_render_markdown_preview_persists_new_user_selection(monkeypatch):
         processed_block_markdowns=["one", "two", "three"],
         **{select_key: 3, last_count_key: 3},
     )
-    rendered_values = []
-
-    def fake_selectbox(label, options, index=0, key=None):
-        session_state[key] = 2
-        return 2
+    html_calls = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
-    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
-    monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
-    monkeypatch.setattr(ui.st, "selectbox", fake_selectbox)
-    monkeypatch.setattr(ui.st, "text_area", lambda label, value, **kwargs: rendered_values.append(value))
+    monkeypatch.setattr(ui.components, "html", lambda html, **kwargs: html_calls.append(html))
 
     ui.render_markdown_preview(FakeTarget(), title="Текущий Markdown")
 
-    assert session_state[select_key] == 2
-    assert rendered_values == ["two"]
+    assert session_state[select_key] == 3
+    assert 'const blocks = ["one", "two", "three"]' in html_calls[0]
+    assert 'color-scheme: dark;' in html_calls[0]
+    assert 'font-family' not in html_calls[0]
 
 
 def test_render_markdown_preview_keeps_manual_selection_when_new_block_arrives(monkeypatch):
@@ -163,23 +140,16 @@ def test_render_markdown_preview_keeps_manual_selection_when_new_block_arrives(m
         processed_block_markdowns=["one", "two", "[[DOCX_IMAGE_img_001]]"],
         **{select_key: 2, last_count_key: 2},
     )
-    rendered_values = []
-
-    def fake_selectbox(label, options, index=0, key=None):
-        session_state[key] = options[index]
-        return options[index]
+    html_calls = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
-    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
-    monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
-    monkeypatch.setattr(ui.st, "selectbox", fake_selectbox)
-    monkeypatch.setattr(ui.st, "text_area", lambda label, value, **kwargs: rendered_values.append(value))
+    monkeypatch.setattr(ui.components, "html", lambda html, **kwargs: html_calls.append(html))
 
     ui.render_markdown_preview(FakeTarget(), title="Текущий Markdown", focus_latest=True)
 
     assert session_state[select_key] == 2
-    assert rendered_values == ["two"]
+    assert '<option value="2" selected>' in html_calls[0]
 
 
 def test_render_markdown_preview_autofollows_latest_when_user_keeps_latest_selected(monkeypatch):
@@ -189,47 +159,32 @@ def test_render_markdown_preview_autofollows_latest_when_user_keeps_latest_selec
         processed_block_markdowns=["one", "two", "three"],
         **{select_key: 2, last_count_key: 2},
     )
-    rendered_values = []
-
-    def fake_selectbox(label, options, index=0, key=None):
-        session_state[key] = options[index]
-        return options[index]
+    html_calls = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
-    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
-    monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
-    monkeypatch.setattr(ui.st, "selectbox", fake_selectbox)
-    monkeypatch.setattr(ui.st, "text_area", lambda label, value, **kwargs: rendered_values.append(value))
+    monkeypatch.setattr(ui.components, "html", lambda html, **kwargs: html_calls.append(html))
 
     ui.render_markdown_preview(FakeTarget(), title="Текущий Markdown", focus_latest=True)
 
     assert session_state[select_key] == 3
-    assert rendered_values == ["three"]
+    assert '<option value="3" selected>' in html_calls[0]
 
 
 def test_render_markdown_preview_filters_placeholder_only_blocks_from_options(monkeypatch):
     session_state = SessionState(
         processed_block_markdowns=["one", "[[DOCX_IMAGE_img_001]]", "two"],
     )
-    selectbox_calls = []
-    rendered_values = []
+    html_calls = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
-    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
-    monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        ui.st,
-        "selectbox",
-        lambda label, options, index=0, key=None: selectbox_calls.append((list(options), index, key)) or options[index],
-    )
-    monkeypatch.setattr(ui.st, "text_area", lambda label, value, **kwargs: rendered_values.append(value))
+    monkeypatch.setattr(ui.components, "html", lambda html, **kwargs: html_calls.append(html))
 
     ui.render_markdown_preview(FakeTarget(), title="Текущий Markdown", focus_latest=True)
 
-    assert selectbox_calls == [([1, 2], 1, ui._mdpreview_key("Текущий Markdown", "selected"))]
-    assert rendered_values == ["two"]
+    assert 'const blocks = ["one", "two"]' in html_calls[0]
+    assert '<option value="2" selected>' in html_calls[0]
 
 
 def test_render_markdown_preview_hides_placeholder_only_content(monkeypatch):
@@ -239,8 +194,8 @@ def test_render_markdown_preview_hides_placeholder_only_content(monkeypatch):
     expander_calls = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
-    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: expander_calls.append((args, kwargs)) or nullcontext())
+    monkeypatch.setattr(ui.components, "html", lambda *args, **kwargs: None)
 
     ui.render_markdown_preview(FakeTarget(), title="Текущий Markdown", focus_latest=True)
 
@@ -302,19 +257,14 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
     ]
 
 
-def test_inject_ui_styles_normalizes_selectbox_typography(monkeypatch):
+def test_inject_ui_styles_does_not_inject_custom_css(monkeypatch):
     injected = []
 
     monkeypatch.setattr(ui.st, "markdown", lambda text, unsafe_allow_html: injected.append((text, unsafe_allow_html)))
 
     ui.inject_ui_styles()
 
-    assert injected == [(injected[0][0], True)]
-    css = injected[0][0]
-    assert 'section[data-testid="stSidebar"] div[data-baseweb="select"] [data-testid="stMarkdownContainer"] p' in css
-    assert 'flex-direction: column-reverse;' in css
-    assert 'font-weight: var(--sidebar-dropdown-font-weight) !important;' in css
-    assert 'color: inherit !important;' in css
+    assert injected == []
 
 
 def test_render_file_uploader_state_styles_hides_dropzone_when_file_selected(monkeypatch):
@@ -418,24 +368,25 @@ def test_render_live_status_shows_cache_source_for_preparation(monkeypatch):
         },
         activity_feed=[{"time": "10:00:00", "message": "[Анализ] Разбор DOCX: Ищу абзацы."}],
     )
-    markdowns = []
+    info_calls = []
+    writes = []
     captions = []
     progress_calls = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
-    monkeypatch.setattr(ui.st, "markdown", lambda text, unsafe_allow_html=True: markdowns.append(text))
+    monkeypatch.setattr(ui.st, "info", lambda text: info_calls.append(text))
+    monkeypatch.setattr(ui.st, "write", lambda text: writes.append(text))
     monkeypatch.setattr(ui.st, "progress", lambda value: progress_calls.append(value))
     monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
 
     ui.render_live_status(FakeTarget())
 
-    assert any("Идет анализ файла" in text for text in markdowns)
-    assert any("Использую кэш подготовки для текущего файла." in text for text in markdowns)
-    assert any("Прогресс: 90%" in text for text in markdowns)
-    assert any("Размер: 1.00 MB" in text for text in markdowns)
-    assert any("Источник: cache" in text for text in markdowns)
+    assert info_calls == ["Идет анализ файла"]
+    assert writes == ["Использую кэш подготовки для текущего файла."]
+    assert any("Прогресс: 90%" in text for text in captions)
+    assert any("Размер: 1.00 MB" in text for text in captions)
+    assert any("Источник: cache" in text for text in captions)
     assert progress_calls == [0.9]
-    assert captions == []
 
 
 def test_render_partial_result_shows_preview_instead_of_download(monkeypatch):
@@ -538,11 +489,8 @@ def test_render_markdown_preview_uses_only_selected_and_count_keys(monkeypatch):
     )
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
-    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
-    monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
-    monkeypatch.setattr(ui.st, "selectbox", lambda label, options, index=0, key=None: options[index])
-    monkeypatch.setattr(ui.st, "text_area", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.components, "html", lambda *args, **kwargs: None)
 
     ui.render_markdown_preview(FakeTarget(), title="Текущий Markdown")
 
@@ -564,18 +512,17 @@ def test_render_run_log_shows_entries_in_chronological_order(monkeypatch):
         last_log_hint="hint",
     )
     writes = []
-    markdowns = []
+    captions = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
     monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(ui.st, "write", lambda text: writes.append(text))
-    monkeypatch.setattr(ui.st, "markdown", lambda text, unsafe_allow_html=True: markdowns.append(text))
+    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
 
     ui.render_run_log(FakeTarget())
 
-    assert any("События" in text for text in markdowns)
-    assert any("10:00:00  Блок 2 отправлен в OpenAI." in text for text in markdowns)
+    assert captions == ["События", "10:00:00  Блок 2 отправлен в OpenAI."]
     assert writes[0].endswith("first")
     assert writes[1].endswith("second")
 
@@ -587,17 +534,17 @@ def test_render_run_log_uses_processing_activity_without_block_entries(monkeypat
         processing_status={"stage": "Инициализация", "detail": "Проверяю окружение.", "progress": 0.0, "phase": "processing"},
         last_log_hint="hint",
     )
-    markdowns = []
+    captions = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
     monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(ui.st, "write", lambda *args, **kwargs: None)
-    monkeypatch.setattr(ui.st, "markdown", lambda text, unsafe_allow_html=True: markdowns.append(text))
+    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
 
     ui.render_run_log(FakeTarget())
 
-    assert any("Запуск обработки документа." in text for text in markdowns)
+    assert captions == ["События", "10:00:00  Запуск обработки документа."]
 
 
 def test_render_run_log_skips_preparation_phase_with_empty_run_log(monkeypatch):
@@ -625,9 +572,12 @@ def test_render_run_log_skips_preparation_phase_with_empty_run_log(monkeypatch):
 def test_render_result_bundle_uses_manual_preview_mode(monkeypatch):
     preview_calls = []
     download_calls = []
+    info_calls = []
 
+    monkeypatch.setattr(ui.st, "session_state", SessionState(latest_result_notice=None))
     monkeypatch.setattr(ui.st, "subheader", lambda *args, **kwargs: None)
     monkeypatch.setattr(ui.st, "success", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.st, "info", lambda message: info_calls.append(message))
     monkeypatch.setattr(ui.st, "download_button", lambda *args, **kwargs: download_calls.append(kwargs))
     monkeypatch.setattr(ui, "render_markdown_preview", lambda *args, **kwargs: preview_calls.append(kwargs))
 
@@ -643,28 +593,52 @@ def test_render_result_bundle_uses_manual_preview_mode(monkeypatch):
     assert preview_calls == [{"title": "Предпросмотр Markdown"}]
     assert len(download_calls) == 2
     assert all(call.get("on_click") == "ignore" for call in download_calls)
+    assert info_calls == []
+
+
+def test_render_result_bundle_shows_info_notice_above_downloads(monkeypatch):
+    preview_calls = []
+    download_calls = []
+    info_calls = []
+
+    monkeypatch.setattr(
+        ui.st,
+        "session_state",
+        SessionState(latest_result_notice={"level": "info", "message": "Спокойное служебное сообщение."}),
+    )
+    monkeypatch.setattr(ui.st, "subheader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.st, "success", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.st, "info", lambda message: info_calls.append(message))
+    monkeypatch.setattr(ui.st, "download_button", lambda *args, **kwargs: download_calls.append(kwargs))
+    monkeypatch.setattr(ui, "render_markdown_preview", lambda *args, **kwargs: preview_calls.append(kwargs))
+
+    ui.render_result_bundle(
+        docx_bytes=b"docx",
+        markdown_text="markdown",
+        original_filename="report.docx",
+        title="Последний результат",
+        success_message="Документ обработан.",
+        preview_title="Предпросмотр Markdown",
+    )
+
+    assert info_calls == ["Спокойное служебное сообщение."]
+    assert preview_calls == [{"title": "Предпросмотр Markdown"}]
+    assert len(download_calls) == 2
 
 
 def test_render_markdown_preview_renders_inside_fragment(monkeypatch):
     session_state = SessionState(processed_block_markdowns=["one"])
-    fragment_calls = []
-    text_area_calls = []
-
-    def fake_fragment(fn):
-        fragment_calls.append(fn.__name__)
-        return fn
+    html_calls = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
-    monkeypatch.setattr(ui.st, "fragment", fake_fragment)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
-    monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
-    monkeypatch.setattr(ui.st, "selectbox", lambda label, options, index=0, key=None: options[index])
-    monkeypatch.setattr(ui.st, "text_area", lambda *args, **kwargs: text_area_calls.append(kwargs))
+    monkeypatch.setattr(ui.components, "html", lambda html, **kwargs: html_calls.append((html, kwargs)))
 
     ui.render_markdown_preview(FakeTarget(), title="Текущий Markdown")
 
-    assert fragment_calls == ["render_preview_fragment"]
-    assert text_area_calls[0]["disabled"] is True
+    assert len(html_calls) == 1
+    assert html_calls[0][1]["height"] == 460
+    assert "localStorage.setItem" in html_calls[0][0]
 
 
 def test_render_run_log_renders_inside_fragment(monkeypatch):

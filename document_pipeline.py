@@ -240,35 +240,90 @@ def _collect_recent_formatting_diagnostics(*, since_epoch_seconds: float) -> lis
     return recent_artifacts
 
 
-def _build_formatting_diagnostics_user_summary(artifact_paths: Sequence[str]) -> str:
-    summaries: list[str] = []
+def _load_formatting_diagnostics_payloads(artifact_paths: Sequence[str]) -> list[dict[str, object]]:
+    payloads: list[dict[str, object]] = []
 
     for artifact_path in artifact_paths:
         try:
             payload = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             continue
+        if isinstance(payload, dict):
+            payloads.append(payload)
 
-        source_count = payload.get("source_count")
-        target_count = payload.get("target_count")
-        unmapped_source_ids = payload.get("unmapped_source_ids")
-        unmapped_target_indexes = payload.get("unmapped_target_indexes")
+    return payloads
 
-        unmapped_source_count = len(unmapped_source_ids) if isinstance(unmapped_source_ids, list) else None
-        unmapped_target_count = len(unmapped_target_indexes) if isinstance(unmapped_target_indexes, list) else None
 
-        if isinstance(source_count, int) and isinstance(target_count, int) and unmapped_source_count is not None:
-            summary = (
-                "Часть форматирования могла не восстановиться: "
-                f"исходных абзацев {source_count}, итоговых {target_count}, без соответствия осталось {unmapped_source_count}"
-            )
-            if unmapped_target_count:
-                summary += f", лишних итоговых абзацев {unmapped_target_count}"
-            summaries.append(summary)
+def _formatting_diagnostics_requires_user_warning(payload: Mapping[str, object]) -> bool:
+    caption_heading_conflicts = payload.get("caption_heading_conflicts")
+    if isinstance(caption_heading_conflicts, list) and caption_heading_conflicts:
+        return True
 
-    if summaries:
-        return summaries[0]
-    return "Часть форматирования могла не восстановиться; сохранена диагностика."
+    source_count = payload.get("source_count")
+    mapped_count = payload.get("mapped_count")
+    if isinstance(source_count, int) and isinstance(mapped_count, int):
+        if source_count >= 8 and mapped_count == 0:
+            return True
+
+    return False
+
+
+def _build_formatting_diagnostics_user_message(payload: Mapping[str, object], *, warn_user: bool) -> str:
+    source_count = payload.get("source_count")
+    mapped_count = payload.get("mapped_count")
+    unmapped_source_ids = payload.get("unmapped_source_ids")
+    unmapped_source_count = len(unmapped_source_ids) if isinstance(unmapped_source_ids, list) else None
+    caption_heading_conflicts = payload.get("caption_heading_conflicts")
+    caption_conflict_count = len(caption_heading_conflicts) if isinstance(caption_heading_conflicts, list) else 0
+
+    coverage_summary = None
+    if isinstance(mapped_count, int) and isinstance(source_count, int) and source_count > 0:
+        coverage_summary = f"Совпадение найдено для {mapped_count} из {source_count} исходных абзацев"
+        if unmapped_source_count:
+            coverage_summary += f"; без точного соответствия осталось {unmapped_source_count}"
+
+    if warn_user:
+        message = (
+            "DOCX собран, но найдены спорные места форматирования, которые стоит проверить вручную. "
+            "Обычно это означает, что часть подписей, заголовков или абзацной структуры перестроилась при генерации."
+        )
+        if coverage_summary:
+            message += f" {coverage_summary}."
+        if caption_conflict_count:
+            message += f" Конфликтов подписи/заголовка: {caption_conflict_count}."
+        return message
+
+    message = (
+        "DOCX собран. Дополнительное восстановление форматирования было частично пропущено, "
+        "потому что точное сопоставление абзацев нашлось не везде. Это нормально, когда модель объединяет, делит или переформулирует абзацы."
+    )
+    if coverage_summary:
+        message += f" {coverage_summary}."
+    return message
+
+
+def _build_formatting_diagnostics_user_feedback(artifact_paths: Sequence[str]) -> tuple[str, str, str]:
+    payloads = _load_formatting_diagnostics_payloads(artifact_paths)
+    if not payloads:
+        return (
+            "INFO",
+            "Сборка DOCX завершена; сохранена служебная диагностика форматирования.",
+            "DOCX собран; сохранена служебная диагностика форматирования.",
+        )
+
+    warning_payloads = [payload for payload in payloads if _formatting_diagnostics_requires_user_warning(payload)]
+    if warning_payloads:
+        return (
+            "WARN",
+            "Сборка DOCX завершена; найдены места, где форматирование стоит проверить вручную.",
+            _build_formatting_diagnostics_user_message(warning_payloads[0], warn_user=True),
+        )
+
+    return (
+        "INFO",
+        "Сборка DOCX завершена; сохранена служебная диагностика форматирования.",
+        _build_formatting_diagnostics_user_message(payloads[0], warn_user=False),
+    )
 
 
 def _extract_marker_diagnostics_code(exc: Exception) -> str | None:
@@ -1021,22 +1076,28 @@ def run_document_processing(
         )
         return "failed"
 
+    latest_result_notice: dict[str, str] | None = None
+
     formatting_diagnostics_artifacts = _collect_recent_formatting_diagnostics(
         since_epoch_seconds=build_started_at_epoch
     )
     if formatting_diagnostics_artifacts:
-        diagnostics_summary = "; ".join(formatting_diagnostics_artifacts)
-        user_summary = _build_formatting_diagnostics_user_summary(formatting_diagnostics_artifacts)
-        emit_activity(runtime, "Сборка DOCX завершилась с частичной деградацией форматирования; сохранены diagnostics artifacts.")
-        emit_log(
-            runtime,
-            status="WARN",
-            block_index=job_count,
-            block_count=job_count,
-            target_chars=len(final_markdown),
-            context_chars=0,
-            details=f"{user_summary}; formatting diagnostics: {diagnostics_summary}",
+        severity, activity_message, user_summary = _build_formatting_diagnostics_user_feedback(
+            formatting_diagnostics_artifacts
         )
+        emit_activity(runtime, activity_message)
+        if severity == "INFO":
+            latest_result_notice = {"level": "info", "message": user_summary}
+        else:
+            emit_log(
+                runtime,
+                status=severity,
+                block_index=job_count,
+                block_count=job_count,
+                target_chars=len(final_markdown),
+                context_chars=0,
+                details=user_summary,
+            )
         log_event(
             logging.WARNING,
             "formatting_diagnostics_artifacts_detected",
@@ -1066,7 +1127,13 @@ def run_document_processing(
         )
         return "failed"
 
-    emit_state(runtime, latest_docx_bytes=docx_bytes, latest_markdown=final_markdown, last_error="")
+    emit_state(
+        runtime,
+        latest_docx_bytes=docx_bytes,
+        latest_markdown=final_markdown,
+        latest_result_notice=latest_result_notice,
+        last_error="",
+    )
     emit_finalize(
         runtime,
         "Обработка завершена",

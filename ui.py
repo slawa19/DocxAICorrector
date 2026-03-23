@@ -1,12 +1,14 @@
 import time
 from collections.abc import Mapping
 from html import escape
+import json
 from pathlib import Path
 import hashlib
 import re
 from typing import Any
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from logger import format_elapsed
 from models import ImageMode
@@ -31,6 +33,46 @@ IMAGE_MODE_DESCRIPTIONS = {
 IMAGE_MODE_VALUES_BY_LABEL = {label: value for value, label in IMAGE_MODE_LABELS.items()}
 _FEED_ID_SANITIZER = re.compile(r"[^a-zA-Z0-9_-]+")
 _DOCX_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_IMAGE_img_\d+\]\]")
+_MARKDOWN_PREVIEW_THEME_CSS = """
+    <style>
+    :root {{
+        color-scheme: dark;
+    }}
+    html, body {{
+        margin: 0;
+        padding: 0;
+        background: transparent;
+    }}
+    body {{
+        color: CanvasText;
+    }}
+    .md-preview-shell {{
+        display: grid;
+        gap: 0.75rem;
+        padding: 0.25rem 0.125rem 0.5rem 0.125rem;
+    }}
+    .md-preview-caption {{
+        line-height: 1.5;
+    }}
+    .md-preview-label {{
+        display: block;
+        font-weight: 600;
+    }}
+    .md-preview-select,
+    .md-preview-text {{
+        width: 100%;
+        box-sizing: border-box;
+    }}
+    .md-preview-select {{
+        min-height: 2.5rem;
+    }}
+    .md-preview-text {{
+        min-height: 20rem;
+        resize: vertical;
+        white-space: pre-wrap;
+    }}
+    </style>
+"""
 
 
 def _mdpreview_key(title: str, suffix: str) -> str:
@@ -51,6 +93,10 @@ def _render_trusted_html(html_markup: str) -> None:
     # This helper is reserved for trusted markup assembled inside this module.
     # Dynamic user-visible values interpolated into HTML must be escaped first.
     st.markdown(html_markup, unsafe_allow_html=True)
+
+
+def _get_sink(target=None):
+    return target if target is not None else st
 
 
 def render_file_uploader_state_styles(*, has_uploaded_file: bool) -> None:
@@ -86,234 +132,112 @@ def _meaningful_markdown_blocks(blocks: list[str]) -> list[str]:
     return [block for block in blocks if _strip_docx_image_placeholders(block)]
 
 
+def _build_markdown_preview_script(*, blocks_json: str, initial_selection: int, safe_storage_key: str) -> str:
+    return f"""
+    <script>
+    (() => {{
+        const blocks = {blocks_json};
+        const storageKey = "{safe_storage_key}";
+        const select = document.getElementById("md-preview-select-{safe_storage_key}");
+        const textarea = document.getElementById("md-preview-text-{safe_storage_key}");
+        if (!select || !textarea || !Array.isArray(blocks) || blocks.length === 0) {{
+            return;
+        }}
+
+        const updateTextarea = (selectedIndex) => {{
+            const resolvedIndex = Math.max(1, Math.min(selectedIndex, blocks.length));
+            textarea.value = blocks[resolvedIndex - 1] || "";
+            textarea.scrollTop = 0;
+            select.value = String(resolvedIndex);
+            try {{
+                window.localStorage.setItem(storageKey, String(resolvedIndex));
+            }} catch (error) {{
+            }}
+        }};
+
+        try {{
+            const persistedIndex = Number.parseInt(window.localStorage.getItem(storageKey) || "", 10);
+            if (Number.isFinite(persistedIndex)) {{
+                updateTextarea(persistedIndex);
+            }} else {{
+                updateTextarea(Number.parseInt(select.value, 10) || {initial_selection});
+            }}
+        }} catch (error) {{
+            updateTextarea(Number.parseInt(select.value, 10) || {initial_selection});
+        }}
+
+        select.addEventListener("change", (event) => {{
+            const nextIndex = Number.parseInt(event.target.value, 10) || 1;
+            updateTextarea(nextIndex);
+        }});
+    }})();
+    </script>
+    """
+
+
+def _build_markdown_preview_markup(*, options_markup: str, initial_block: str, safe_storage_key: str) -> str:
+    return f"""
+    <div class="md-preview-shell">
+        <div class="md-preview-caption">На экране показывается только один Markdown-блок, чтобы интерфейс не перегружался на больших документах.</div>
+        <label class="md-preview-label" for="md-preview-select-{safe_storage_key}">Показать блок</label>
+        <select id="md-preview-select-{safe_storage_key}" class="md-preview-select">{options_markup}</select>
+        <label class="md-preview-label" for="md-preview-text-{safe_storage_key}">Markdown блока</label>
+        <textarea id="md-preview-text-{safe_storage_key}" class="md-preview-text" readonly>{initial_block}</textarea>
+    </div>
+    """
+
+
+def _build_markdown_preview_html(*, blocks: list[str], initial_selection: int, storage_key: str) -> str:
+    options_markup = "".join(
+        f'<option value="{index}"{" selected" if index == initial_selection else ""}>{index}</option>'
+        for index in range(1, len(blocks) + 1)
+    )
+    blocks_json = json.dumps(blocks, ensure_ascii=False)
+    initial_block = escape(blocks[initial_selection - 1])
+    safe_storage_key = escape(storage_key)
+    return (
+        _build_markdown_preview_markup(
+            options_markup=options_markup,
+            initial_block=initial_block,
+            safe_storage_key=safe_storage_key,
+        )
+        + _build_markdown_preview_script(
+            blocks_json=blocks_json,
+            initial_selection=initial_selection,
+            safe_storage_key=safe_storage_key,
+        )
+        + _MARKDOWN_PREVIEW_THEME_CSS
+    )
+
+
 def _render_activity_feed(*, title: str, lines: list[str], feed_id: str | None = None, auto_scroll: bool = False) -> None:
     if not lines:
         return
 
-    resolved_feed_id = feed_id or _build_feed_id(title)
-    item_markup = []
-    for index, line in enumerate(reversed(lines)):
-        item_class = "activity-feed-item"
-        if index == 0:
-            item_class += " activity-feed-item-active"
-        item_markup.append(f'<div class="{item_class}" tabindex="-1">{escape(line)}</div>')
-
-    _render_trusted_html(
-        f"""
-        <div class="activity-feed">
-            <div class="activity-feed-title">{escape(title)}</div>
-            <div class="activity-feed-items" id="{escape(resolved_feed_id)}" tabindex="-1">{''.join(item_markup)}</div>
-        </div>
-        """
-    )
-
-_SIDEBAR_DD = 'section[data-testid="stSidebar"] div[data-baseweb="select"]'
-
-# Typography fix for sidebar dropdowns.
-# Keep custom typography only for the closed select control.
-SIDEBAR_DROPDOWN_CSS = f"""
-        /* --- Sidebar dropdown: closed state typography --- */
-        {_SIDEBAR_DD},
-        {_SIDEBAR_DD} > div,
-        {_SIDEBAR_DD} [role="combobox"],
-        {_SIDEBAR_DD} input {{
-            font-family: var(--sidebar-dropdown-font-family) !important;
-            font-size: var(--sidebar-dropdown-font-size) !important;
-            font-weight: var(--sidebar-dropdown-font-weight) !important;
-            font-style: normal !important;
-            line-height: var(--sidebar-dropdown-line-height) !important;
-            letter-spacing: var(--sidebar-dropdown-letter-spacing) !important;
-            font-synthesis: none !important;
-        }}
-
-        {_SIDEBAR_DD} span,
-        {_SIDEBAR_DD} p,
-        {_SIDEBAR_DD} [data-testid="stMarkdownContainer"],
-        {_SIDEBAR_DD} [data-testid="stMarkdownContainer"] p,
-        {_SIDEBAR_DD} [data-testid="stMarkdownContainer"] span,
-        {_SIDEBAR_DD} [data-testid="stMarkdownContainer"] div {{
-            font-family: inherit !important;
-            font-size: inherit !important;
-            font-weight: inherit !important;
-            font-style: inherit !important;
-            line-height: inherit !important;
-            letter-spacing: inherit !important;
-            font-synthesis: inherit !important;
-            color: inherit !important;
-            margin: 0 !important;
-        }}
-"""
-
+    st.caption(title)
+    for line in reversed(lines):
+        st.caption(line)
 
 def inject_ui_styles() -> None:
-    _render_trusted_html(
-        """
-        <style>
-        :root {
-            --accent-main: #19c6b7;
-            --accent-strong: #0ea5a8;
-            --accent-soft: rgba(25, 198, 183, 0.14);
-            --accent-border: rgba(45, 212, 191, 0.38);
-            --text-soft: rgba(226, 232, 240, 0.82);
-            --sidebar-dropdown-font-family: "Source Sans Pro", sans-serif;
-            --sidebar-dropdown-font-size: 1rem;
-            --sidebar-dropdown-font-weight: 400;
-            --sidebar-dropdown-line-height: 1.5;
-            --sidebar-dropdown-letter-spacing: normal;
-        }
-
-        .stApp .main .block-container,
-        section.main > div.block-container,
-        div[data-testid="stMainBlockContainer"] {
-            width: min(100%, 1040px);
-            max-width: 1040px;
-            margin-left: 0;
-            margin-right: auto;
-            padding-top: 2rem;
-            padding-right: 2rem;
-            padding-bottom: 3rem;
-            padding-left: 2rem;
-        }
-
-        @media (max-width: 768px) {
-            .stApp .main .block-container,
-            section.main > div.block-container,
-            div[data-testid="stMainBlockContainer"] {
-                width: 100%;
-                max-width: 100%;
-                padding-top: 1.25rem;
-                padding-right: 1rem;
-                padding-bottom: 2rem;
-                padding-left: 1rem;
-            }
-        }
-
-        div[data-testid="stFileUploader"] {
-            margin-top: 0.5rem;
-            margin-bottom: 1rem;
-        }
-
-        .stButton > button,
-        .stDownloadButton > button {
-            background: linear-gradient(135deg, var(--accent-main), var(--accent-strong)) !important;
-            border: 1px solid var(--accent-border) !important;
-            color: #052a2b !important;
-            font-weight: 700 !important;
-        }
-
-        .stButton > button:hover,
-        .stDownloadButton > button:hover {
-            border-color: var(--accent-main) !important;
-            color: #031b1c !important;
-        }
-
-        .stButton > button:disabled,
-        .stDownloadButton > button:disabled {
-            background: rgba(100, 116, 139, 0.22) !important;
-            border-color: rgba(148, 163, 184, 0.24) !important;
-            color: rgba(203, 213, 225, 0.65) !important;
-            box-shadow: none !important;
-            cursor: not-allowed !important;
-            opacity: 0.55 !important;
-        }
-        """
-        + SIDEBAR_DROPDOWN_CSS
-        + """
-
-        div[data-testid="stProgressBar"] > div > div > div > div {
-            background: linear-gradient(90deg, var(--accent-main), #67e8f9) !important;
-        }
-
-        div[data-baseweb="notification"] {
-            background: var(--accent-soft) !important;
-            border: 1px solid var(--accent-border) !important;
-            border-radius: 14px !important;
-        }
-
-        div[data-baseweb="notification"] * {
-            color: #d9fffb !important;
-        }
-
-        .live-status-card {
-            background: linear-gradient(180deg, rgba(10, 18, 28, 0.95), rgba(8, 15, 24, 0.88));
-            border: 1px solid var(--accent-border);
-            border-radius: 16px;
-            padding: 16px 18px;
-            margin: 8px 0 14px 0;
-            box-shadow: 0 10px 30px rgba(8, 145, 178, 0.12);
-        }
-
-        .live-status-title {
-            color: #e6fffb;
-            font-size: 1rem;
-            font-weight: 700;
-            margin-bottom: 4px;
-        }
-
-        .live-status-stage {
-            color: #99f6e4;
-            font-size: 0.95rem;
-            margin-bottom: 10px;
-        }
-
-        .live-status-meta {
-            color: var(--text-soft);
-            font-size: 0.88rem;
-            line-height: 1.55;
-        }
-
-        .activity-feed {
-            border: 1px solid rgba(45, 212, 191, 0.22);
-            border-radius: 14px;
-            padding: 12px 14px;
-            background: rgba(15, 23, 42, 0.42);
-        }
-
-        .activity-feed-items {
-            display: flex;
-            flex-direction: column-reverse;
-            gap: 0.2rem;
-            max-height: 12rem;
-            overflow-y: auto;
-            padding-right: 0.25rem;
-        }
-
-        .activity-feed-title {
-            color: #d5fffb;
-            font-size: 0.92rem;
-            font-weight: 600;
-            margin-bottom: 8px;
-        }
-
-        .activity-feed-item {
-            color: var(--text-soft);
-            font-size: 0.88rem;
-            margin: 4px 0;
-        }
-
-        .activity-feed-item-active {
-            color: #e6fffb;
-            font-weight: 600;
-            border-left: 2px solid var(--accent-main);
-            padding-left: 0.55rem;
-            margin-left: 0.1rem;
-        }
-
-        .section-gap-md {
-            height: 0.9rem;
-        }
-
-        .section-gap-lg {
-            height: 1.35rem;
-        }
-        </style>
-        """,
-    )
+    return None
 
 
 def render_section_gap(size: str = "md") -> None:
-    normalized_size = "lg" if size == "lg" else "md"
-    _render_trusted_html(f'<div class="section-gap-{normalized_size}"></div>')
+    gap_lines = 2 if size == "lg" else 1
+    for _ in range(gap_lines):
+        st.write("")
+
+
+def _render_status_panel(*, sink, title: str, stage: str, detail: str, meta_lines: list[str], info_level: str = "info") -> None:
+    render_api = sink if hasattr(sink, info_level) and hasattr(sink, "caption") and hasattr(sink, "write") else st
+    panel = getattr(render_api, info_level)
+    panel(title)
+    if stage:
+        render_api.caption(stage)
+    if detail:
+        render_api.write(detail)
+    for meta_line in meta_lines:
+        render_api.caption(meta_line)
 
 
 def render_sidebar_selectbox(
@@ -333,7 +257,7 @@ def render_live_status(target=None) -> None:
     if not status and not activity_feed:
         return
 
-    sink = target if target is not None else st
+    sink = _get_sink(target)
     with sink.container():
         started_at = status.get("started_at")
         elapsed = format_elapsed(time.time() - started_at) if started_at else "00:00"
@@ -353,30 +277,30 @@ def render_live_status(target=None) -> None:
             stage = str(status.get("stage") or "Подготовка документа")
             detail = str(status.get("detail") or "Идет анализ файла.")
             title = "Идет анализ файла" if status.get("is_running") else "Анализ файла завершён"
-            _render_trusted_html(
-                f"""
-                <div class="live-status-card">
-                    <div class="live-status-title">{escape(title)}</div>
-                    <div class="live-status-stage">{escape(stage)}</div>
-                    <div class="live-status-meta">{escape(detail)}</div>
-                    <div class="live-status-meta">Прогресс: {progress_percent}% | Источник: {'cache' if cached else 'DOCX'} | Прошло: {escape(elapsed)}</div>
-                    <div class="live-status-meta">Размер: {file_size_bytes / 1024 / 1024:.2f} MB | Абзацы: {paragraph_count} | Изображения: {image_count} | Символы: {source_chars} | Блоки: {block_count}</div>
-                </div>
-                """
+            _render_status_panel(
+                sink=sink,
+                title=title,
+                stage=stage,
+                detail=detail,
+                meta_lines=[
+                    f"Прогресс: {progress_percent}% | Источник: {'cache' if cached else 'DOCX'} | Прошло: {elapsed}",
+                    (
+                        f"Размер: {file_size_bytes / 1024 / 1024:.2f} MB | Абзацы: {paragraph_count} | "
+                        f"Изображения: {image_count} | Символы: {source_chars} | Блоки: {block_count}"
+                    ),
+                ],
             )
             st.progress(progress_value)
         else:
             title = "Идет обработка" if status.get("is_running") else "Состояние"
-            stage = escape(str(status.get("stage") or "Ожидание"))
-            detail = escape(str(status.get("detail") or ""))
-            _render_trusted_html(
-                f"""
-                <div class="live-status-card">
-                    <div class="live-status-title">{title}</div>
-                    <div class="live-status-stage">{stage}</div>
-                    <div class="live-status-meta">{detail}</div>
-                </div>
-                """
+            stage = str(status.get("stage") or "Ожидание")
+            detail = str(status.get("detail") or "")
+            _render_status_panel(
+                sink=sink,
+                title=title,
+                stage=stage,
+                detail=detail,
+                meta_lines=[],
             )
             metric_columns = st.columns(4)
             metric_columns[0].metric("Блок", f"{current_block}/{block_count}" if block_count else "0/0")
@@ -393,7 +317,7 @@ def render_preparation_summary(summary: dict[str, object] | None, target=None) -
     if not summary:
         return
 
-    sink = target if target is not None else st
+    sink = _get_sink(target)
     with sink.container():
         progress_value = max(0.0, min(_to_float(summary.get("progress"), default=0.0), 1.0))
         progress_percent = int(progress_value * 100)
@@ -405,16 +329,19 @@ def render_preparation_summary(summary: dict[str, object] | None, target=None) -
         image_count = _to_int(summary.get("image_count"), default=0)
         source_chars = _to_int(summary.get("source_chars"), default=0)
         block_count = _to_int(summary.get("block_count"), default=0)
-        _render_trusted_html(
-            f"""
-            <div class="live-status-card">
-                <div class="live-status-title">Анализ файла завершён</div>
-                <div class="live-status-stage">{escape(stage)}</div>
-                <div class="live-status-meta">{escape(str(summary.get('detail') or 'Анализ завершён.'))}</div>
-                <div class="live-status-meta">Прогресс: {progress_percent}% | Источник: {escape(source_label)}{f' | Подготовка заняла: {escape(elapsed)}' if elapsed else ''}</div>
-                <div class="live-status-meta">Размер: {file_size_bytes / 1024 / 1024:.2f} MB | Абзацы: {paragraph_count} | Изображения: {image_count} | Символы: {source_chars} | Блоки: {block_count}</div>
-            </div>
-            """
+        elapsed_fragment = f" | Подготовка заняла: {elapsed}" if elapsed else ""
+        _render_status_panel(
+            sink=sink,
+            title="Анализ файла завершён",
+            stage=stage,
+            detail=str(summary.get("detail") or "Анализ завершён."),
+            meta_lines=[
+                f"Прогресс: {progress_percent}% | Источник: {source_label}{elapsed_fragment}",
+                (
+                    f"Размер: {file_size_bytes / 1024 / 1024:.2f} MB | Абзацы: {paragraph_count} | "
+                    f"Изображения: {image_count} | Символы: {source_chars} | Блоки: {block_count}"
+                ),
+            ],
         )
         st.progress(progress_value)
 
@@ -598,28 +525,17 @@ def render_markdown_preview(
     st.session_state[selected_key] = current_selection
     st.session_state[last_count_key] = option_count
 
-    @st.fragment
-    def render_preview_fragment() -> None:
-        with sink.container():
-            with st.expander(title, expanded=False):
-                st.caption("На экране показывается только один Markdown-блок, чтобы интерфейс не перегружался на больших документах.")
-                selected_block = st.selectbox(
-                    "Показать блок",
-                    options=list(range(1, option_count + 1)),
-                    index=current_selection - 1,
-                    key=selected_key,
-                )
-                # Include the block number in the text_area key so the widget
-                # refreshes when the selection changes.
-                st.text_area(
-                    "Markdown блока",
-                    value=blocks[selected_block - 1],
-                    height=320,
-                    key=_mdpreview_key(title, f"text_{selected_block}"),
-                    disabled=True,
-                )
-
-    render_preview_fragment()
+    with sink.container():
+        with st.expander(title, expanded=False):
+            components.html(
+                _build_markdown_preview_html(
+                    blocks=blocks,
+                    initial_selection=current_selection,
+                    storage_key=_mdpreview_key(title, "client_selected"),
+                ),
+                height=460,
+                scrolling=False,
+            )
 
 
 def render_result(docx_bytes: bytes, markdown_text: str, original_filename: str) -> None:
@@ -646,6 +562,12 @@ def render_result_bundle(
         st.subheader(title)
     if success_message:
         st.success(success_message)
+    latest_result_notice = st.session_state.get("latest_result_notice")
+    if isinstance(latest_result_notice, dict):
+        notice_level = str(latest_result_notice.get("level") or "").strip().lower()
+        notice_message = str(latest_result_notice.get("message") or "").strip()
+        if notice_message and notice_level == "info":
+            st.info(notice_message)
     st.download_button(
         label="Скачать итоговый DOCX",
         data=docx_bytes,

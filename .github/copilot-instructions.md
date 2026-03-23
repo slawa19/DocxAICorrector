@@ -119,6 +119,30 @@ AI agents must follow these rules:
 
 If the user explicitly asks to change the startup contract, update the code, tests, and canonical docs together, then run `bash scripts/test.sh tests/test_startup_performance_contract.py -q` and `bash scripts/test.sh tests/test_app.py -q`.
 
+## Architectural Solution Contract
+
+AI agents must not default to literal patch-style implementation just because the user proposed a local fix.
+
+Rules:
+
+- Treat user-suggested fixes as hints, not implementation requirements, unless the user explicitly requires that exact approach.
+- Before implementing a local UI/CSS/runtime workaround, first evaluate whether the root cause comes from a broader architectural constraint such as iframe isolation, Streamlit rerun behavior, Pandoc generation boundaries, or OOXML/theme resolution.
+- When a requested patch would create brittle behavior, hidden coupling, style drift, or repeated one-off fixes, prefer a cleaner architectural alternative even if the user originally asked for the patch form.
+- In user-facing responses, explicitly present the durable options first and explain why the literal patch is weaker.
+- For UI issues, prefer one of these paths over one-off CSS fixes when applicable:
+	- revert to native Streamlit widgets/components when their built-in behavior matches the desired styling/inheritance contract;
+	- introduce a single centralized component-level theme/layout contract for isolated surfaces such as `components.html(...)` if iframe inheritance is the real boundary;
+	- only use local CSS as a component contract when isolation makes true inheritance impossible.
+- Do not claim CSS inheritance should work across `components.html(...)` boundaries; treat iframe isolation as a first-class architectural constraint.
+- If the final implementation must use local component CSS, keep it minimal, centralized, and free of font overrides unless the task explicitly requires font customization.
+- Avoid solving the same class of UI problem repeatedly in separate call sites; consolidate the behavior into one helper or one component contract.
+
+Default decision rule:
+
+- First propose the robust architecture.
+- Then implement the narrowest solution that preserves that architecture.
+- Only implement the user's literal patch idea when it is also the cleanest technical option.
+
 ## Key Directories
 
 - `tests/` — all test files

@@ -133,6 +133,54 @@ bash scripts/test.sh tests/test_script_workflow_smoke.py -q
 bash scripts/test.sh tests/ -q
 ```
 
+## Шрифты выходного документа
+
+По умолчанию Pandoc-reference document, через который строится выходной DOCX,
+использует встроенную тему python-docx: **Cambria** для текста и **Calibri** для
+заголовков. Явно переопределить это можно через секцию `[output.fonts]` в
+`config.toml`:
+
+```toml
+[output.fonts]
+body    = "Aptos"          # Normal, List Paragraph, Caption, Table
+heading = "Aptos Display"  # Heading 1–6
+```
+
+Те же параметры доступны через переменные среды (env-значение имеет приоритет
+над `config.toml`):
+
+```
+DOCX_AI_OUTPUT_BODY_FONT=Arial
+DOCX_AI_OUTPUT_HEADING_FONT=Georgia
+```
+
+**Когда секция отсутствует** — тема не трогается, а reference-document остаётся
+на штатных стилевых значениях проекта.
+
+**Архитектурный контекст.** Для обычного текста, подписей, списков и таблиц
+reference-document использует прямые `w:rFonts`, поэтому `body` применяется
+непосредственно к этим стилям. Для заголовков этого недостаточно: у built-in
+Heading styles уже есть `w:asciiTheme="majorHAnsi"`, а Word даёт theme-binding
+приоритет над прямым `style.font.name`. Поэтому `heading` дополнительно патчит
+`word/theme/theme1.xml` в reference-документе (см. `generation._patch_reference_theme_fonts`).
+Именно комбинация прямого style override для body-стилей и theme patch для
+heading-стилей даёт корректный результат.
+
+## UI-стили и HTML
+
+Для UI в этом проекте действует жёсткий порядок выбора решения:
+
+1. Сначала использовать native Streamlit-компоненты (`st.info`, `st.warning`, `st.caption`, `st.metric`, `st.progress`, `st.columns`, `st.expander`).
+2. Если нужен client-side state без server rerun и приходится использовать `components.html(...)`, оформлять это как один централизованный component-contract с единым theme/layout helper.
+3. Только в последнюю очередь использовать локальный HTML/CSS workaround.
+
+Практические правила:
+
+- не рассчитывайте, что iframe из `components.html(...)` унаследует стили основного приложения;
+- не добавляйте `font-family` override без отдельной задачи на типографику;
+- не размазывайте inline CSS по разным UI-функциям — либо native Streamlit, либо один helper/contract на компонент;
+- `unsafe_allow_html=True` допустим только для узких, явно ограниченных поверхностей, где native Streamlit не покрывает нужный UX-контракт.
+
 ## Правила изменений
 
 - Держите изменения узкими и без побочных рефакторингов.

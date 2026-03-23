@@ -1,3 +1,5 @@
+import pytest
+
 import config
 
 
@@ -152,6 +154,74 @@ def test_load_app_config_rejects_invalid_semantic_validation_policy(monkeypatch)
         assert "DOCX_AI_SEMANTIC_VALIDATION_POLICY" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError for an invalid semantic validation policy")
+
+
+def test_load_app_config_output_fonts_default_to_none(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.delenv("DOCX_AI_OUTPUT_BODY_FONT", raising=False)
+    monkeypatch.delenv("DOCX_AI_OUTPUT_HEADING_FONT", raising=False)
+
+    app_config = config.load_app_config()
+
+    assert app_config["output_body_font"] is None
+    assert app_config["output_heading_font"] is None
+
+
+def test_load_app_config_output_fonts_from_toml(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[output.fonts]\nbody = "Times New Roman"\nheading = "Georgia"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+    monkeypatch.delenv("DOCX_AI_OUTPUT_BODY_FONT", raising=False)
+    monkeypatch.delenv("DOCX_AI_OUTPUT_HEADING_FONT", raising=False)
+
+    app_config = config.load_app_config()
+
+    assert app_config["output_body_font"] == "Times New Roman"
+    assert app_config["output_heading_font"] == "Georgia"
+
+
+def test_load_app_config_output_fonts_from_env_override(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.setenv("DOCX_AI_OUTPUT_BODY_FONT", "Arial")
+    monkeypatch.setenv("DOCX_AI_OUTPUT_HEADING_FONT", "Arial Bold")
+
+    app_config = config.load_app_config()
+
+    assert app_config["output_body_font"] == "Arial"
+    assert app_config["output_heading_font"] == "Arial Bold"
+
+
+def test_load_app_config_output_fonts_env_overrides_toml(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[output.fonts]\nbody = "Times New Roman"\nheading = "Georgia"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+    monkeypatch.setenv("DOCX_AI_OUTPUT_HEADING_FONT", "Wingdings")
+    monkeypatch.delenv("DOCX_AI_OUTPUT_BODY_FONT", raising=False)
+
+    app_config = config.load_app_config()
+
+    assert app_config["output_body_font"] == "Times New Roman"   # from toml
+    assert app_config["output_heading_font"] == "Wingdings"      # env wins
+
+
+def test_load_app_config_rejects_invalid_output_fonts_table(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        "[output]\nfonts = 123\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+    monkeypatch.delenv("DOCX_AI_OUTPUT_BODY_FONT", raising=False)
+    monkeypatch.delenv("DOCX_AI_OUTPUT_HEADING_FONT", raising=False)
+
+    with pytest.raises(RuntimeError, match=r"output\.fonts"):
+        config.load_app_config()
 
 
 def test_get_client_loads_openai_api_key_from_dotenv(monkeypatch, tmp_path):

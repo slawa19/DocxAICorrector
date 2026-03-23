@@ -252,11 +252,83 @@ def test_run_document_processing_surfaces_formatting_diagnostics_artifacts(tmp_p
     )
 
     assert result == "succeeded"
-    assert runtime["activity"][-2] == "Сборка DOCX завершилась с частичной деградацией форматирования; сохранены diagnostics artifacts."
+    assert runtime["activity"][-2] == "Сборка DOCX завершена; сохранена служебная диагностика форматирования."
+    assert runtime["state"]["latest_result_notice"] == {
+        "level": "info",
+        "message": (
+            "DOCX собран. Дополнительное восстановление форматирования было частично пропущено, "
+            "потому что точное сопоставление абзацев нашлось не везде. Это нормально, когда модель объединяет, "
+            "делит или переформулирует абзацы. Совпадение найдено для 4 из 5 исходных абзацев; "
+            "без точного соответствия осталось 1."
+        ),
+    }
+    assert all(entry["status"] != "INFO" for entry in runtime["log"])
+
+
+def test_run_document_processing_warns_user_only_for_conflicting_formatting_diagnostics(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    diagnostics_dir = tmp_path / "formatting_diagnostics"
+    monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
+
+    def preserve_with_conflict_artifact(docx_bytes, paragraphs):
+        diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        (diagnostics_dir / "preserve_001.json").write_text(
+            json.dumps(
+                {
+                    "stage": "preserve",
+                    "source_count": 5,
+                    "target_count": 5,
+                    "mapped_count": 5,
+                    "unmapped_source_ids": [],
+                    "unmapped_target_indexes": [],
+                    "caption_heading_conflicts": [
+                        {"paragraph_id": "p0002", "target_heading_level": 2}
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return docx_bytes
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
+        source_paragraphs=[ParagraphStub()],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "Обработанный блок",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: b"docx-bytes",
+        preserve_source_paragraph_properties=preserve_with_conflict_artifact,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+    )
+
+    assert result == "succeeded"
+    assert runtime["activity"][-2] == "Сборка DOCX завершена; найдены места, где форматирование стоит проверить вручную."
     assert runtime["log"][-2]["status"] == "WARN"
-    assert "Часть форматирования могла не восстановиться" in runtime["log"][-2]["details"]
-    assert "исходных абзацев 5, итоговых 4, без соответствия осталось 1" in runtime["log"][-2]["details"]
-    assert "preserve_001.json" in runtime["log"][-2]["details"]
+    assert "спорные места форматирования" in runtime["log"][-2]["details"]
+    assert "Конфликтов подписи/заголовка: 1." in runtime["log"][-2]["details"]
+    assert runtime["state"].get("latest_result_notice") is None
 
 
 def test_run_document_processing_passes_marker_wrapped_text_only_when_marker_mode_enabled():

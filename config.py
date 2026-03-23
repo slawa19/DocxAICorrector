@@ -33,6 +33,8 @@ class AppConfig(Mapping[str, object]):
     chunk_size: int
     max_retries: int
     enable_paragraph_markers: bool
+    output_body_font: str | None
+    output_heading_font: str | None
     image_mode_default: str
     semantic_validation_policy: str
     keep_all_image_variants: bool
@@ -125,6 +127,35 @@ def parse_float_env(name: str, default: float) -> float:
         raise RuntimeError(f"Некорректное число в {name}: {raw_value}") from exc
 
 
+def parse_optional_str_env(name: str) -> str | None:
+    raw_value = os.getenv(name, "").strip()
+    return raw_value if raw_value else None
+
+
+def parse_optional_config_str(config_data: dict[str, object], field_name: str) -> str | None:
+    value = config_data.get(field_name)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError(f"Некорректное поле {field_name} в {CONFIG_PATH}: ожидается непустая строка")
+    return value.strip()
+
+
+def parse_optional_config_section(
+    config_data: dict[str, object],
+    field_name: str,
+    *,
+    parent_name: str | None = None,
+) -> dict[str, object]:
+    value = config_data.get(field_name)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        qualified_name = f"{parent_name}.{field_name}" if parent_name else field_name
+        raise RuntimeError(f"Некорректное поле {qualified_name} в {CONFIG_PATH}: ожидается таблица")
+    return value
+
+
 def parse_config_bool(config_data: dict[str, object], field_name: str, default: bool) -> bool:
     value = config_data.get(field_name, default)
     if not isinstance(value, bool):
@@ -205,6 +236,11 @@ def load_app_config() -> AppConfig:
         raise RuntimeError(f"Некорректное поле max_retries в {CONFIG_PATH}")
     enable_paragraph_markers = parse_config_bool(config_data, "enable_paragraph_markers", False)
 
+    output_config = parse_optional_config_section(config_data, "output")
+    output_fonts_config = parse_optional_config_section(output_config, "fonts", parent_name="output")
+    output_body_font = parse_optional_config_str(output_fonts_config, "body")
+    output_heading_font = parse_optional_config_str(output_fonts_config, "heading")
+
     image_mode_default = _parse_image_mode(
         parse_config_str(config_data, "image_mode_default", ImageMode.NO_CHANGE.value),
         source_name=str(CONFIG_PATH),
@@ -274,6 +310,8 @@ def load_app_config() -> AppConfig:
         "DOCX_AI_ENABLE_PARAGRAPH_MARKERS",
         enable_paragraph_markers,
     )
+    output_body_font = parse_optional_str_env("DOCX_AI_OUTPUT_BODY_FONT") or output_body_font
+    output_heading_font = parse_optional_str_env("DOCX_AI_OUTPUT_HEADING_FONT") or output_heading_font
     image_mode_default = _parse_image_mode(
         os.getenv("DOCX_AI_IMAGE_MODE_DEFAULT", image_mode_default).strip() or image_mode_default,
         source_name="DOCX_AI_IMAGE_MODE_DEFAULT",
@@ -368,6 +406,8 @@ def load_app_config() -> AppConfig:
         chunk_size=max(3000, min(chunk_size, 12000)),
         max_retries=max(1, min(max_retries, 5)),
         enable_paragraph_markers=enable_paragraph_markers,
+        output_body_font=output_body_font,
+        output_heading_font=output_heading_font,
         image_mode_default=image_mode_default,
         semantic_validation_policy=semantic_validation_policy,
         keep_all_image_variants=keep_all_image_variants,

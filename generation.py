@@ -7,6 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+import lxml.etree as etree
 import pypandoc
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -727,7 +728,27 @@ def generate_markdown_block(
     raise RuntimeError("Не удалось получить ответ модели.")
 
 
-def convert_markdown_to_docx_bytes(markdown_text: str) -> bytes:
+_THEME_RELATIONSHIP_TYPE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme"
+)
+_DRAWINGML_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+
+
+def convert_markdown_to_docx_bytes(
+    markdown_text: str,
+    *,
+    body_font: str | None = None,
+    heading_font: str | None = None,
+) -> bytes:
+    """Convert *markdown_text* to DOCX bytes via Pandoc.
+
+    *body_font* and *heading_font* are optional overrides for the reference
+    document. Body-facing styles are updated directly because python-docx writes
+    them as explicit ``w:rFonts`` values; heading styles additionally require a
+    theme patch because Word gives ``w:asciiTheme=majorHAnsi`` precedence over
+    the direct font name. When both are ``None`` (the default) the python-docx
+    built-in theme is left unchanged.
+    """
     ensure_pandoc_available()
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -736,7 +757,7 @@ def convert_markdown_to_docx_bytes(markdown_text: str) -> bytes:
             docx_path = temp_path / "result.docx"
             reference_docx_path = temp_path / "reference.docx"
             markdown_path.write_text(markdown_text, encoding="utf-8")
-            _build_reference_docx(reference_docx_path)
+            _build_reference_docx(reference_docx_path, body_font=body_font, heading_font=heading_font)
             pypandoc.convert_file(
                 str(markdown_path),
                 to="docx",
@@ -749,12 +770,59 @@ def convert_markdown_to_docx_bytes(markdown_text: str) -> bytes:
         raise RuntimeError(f"Ошибка при сборке DOCX: {exc}") from exc
 
 
-def _build_reference_docx(reference_docx_path: Path) -> None:
+def _patch_reference_theme_fonts(
+    reference_document: "DocxDocument",
+    *,
+    body_font: str | None,
+    heading_font: str | None,
+) -> None:
+    """Overwrite the major/minor font slots in the reference document's theme.
+
+    Word resolves ``w:asciiTheme="majorHAnsi"`` (used by all built-in Heading
+    styles) and ``w:asciiTheme="minorHAnsi"`` (body/list/caption) by looking
+    up the document's embedded ``theme1.xml``.  python-docx's default template
+    maps those slots to Calibri (major) and Cambria (minor).
+
+    Patching the theme here means every ``w:asciiTheme`` reference in every
+    style automatically picks up the configured font **without** touching
+    individual style ``w:rFonts`` elements — this is the OOXML-idiomatic
+    approach and the only reliable way to override heading fonts given that
+    python-docx's ``Style.font.name`` setter leaves ``w:asciiTheme`` intact.
+
+    Called only when at least one font is configured; both arguments may be
+    ``None`` to skip their respective slot.
+    """
+    try:
+        theme_part = reference_document.part.part_related_by(_THEME_RELATIONSHIP_TYPE)
+    except KeyError:
+        return  # Template has no theme part — nothing to patch.
+
+    root = etree.fromstring(theme_part.blob)
+
+    if heading_font is not None:
+        for el in root.findall(f".//{{{_DRAWINGML_NS}}}majorFont/{{{_DRAWINGML_NS}}}latin"):
+            el.set("typeface", heading_font)
+
+    if body_font is not None:
+        for el in root.findall(f".//{{{_DRAWINGML_NS}}}minorFont/{{{_DRAWINGML_NS}}}latin"):
+            el.set("typeface", body_font)
+
+    theme_part._blob = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+
+
+def _build_reference_docx(
+    reference_docx_path: Path,
+    *,
+    body_font: str | None = None,
+    heading_font: str | None = None,
+) -> None:
     reference_document = Document()
     styles = reference_document.styles
+    effective_body_font = body_font or "Aptos"
+    effective_heading_font = heading_font or "Aptos Display"
 
     body_baseline = {
-        "font_name": "Aptos",
+        "font_name": effective_body_font,
         "font_size": 11,
         "space_after": 8,
         "line_spacing": 1.15,
@@ -778,7 +846,7 @@ def _build_reference_docx(reference_docx_path: Path) -> None:
             continue
         _configure_paragraph_style(
             styles[style_name],
-            font_name="Aptos Display",
+            font_name=effective_heading_font,
             font_size=font_size,
             bold=True,
             space_before=space_before,
@@ -790,7 +858,7 @@ def _build_reference_docx(reference_docx_path: Path) -> None:
     if "Caption" in styles:
         _configure_paragraph_style(
             styles["Caption"],
-            font_name="Aptos",
+            font_name=effective_body_font,
             font_size=10,
             italic=True,
             space_before=4,
@@ -801,7 +869,7 @@ def _build_reference_docx(reference_docx_path: Path) -> None:
     if "List Paragraph" in styles:
         _configure_paragraph_style(
             styles["List Paragraph"],
-            font_name="Aptos",
+            font_name=effective_body_font,
             font_size=11,
             space_before=0,
             space_after=4,
@@ -810,10 +878,17 @@ def _build_reference_docx(reference_docx_path: Path) -> None:
 
     if "Table Grid" in styles:
         table_grid_style = cast(Any, styles["Table Grid"])
-        table_grid_style.font.name = "Aptos"
+        table_grid_style.font.name = effective_body_font
         table_grid_style.font.size = Pt(10)
 
     _ensure_reference_numbering_definitions(reference_document)
+
+    # Patch theme fonts only when explicitly configured. This is required for
+    # heading styles, whose built-in w:asciiTheme bindings outrank the direct
+    # font name, and keeps theme-bound fallback slots aligned with explicit
+    # style overrides.
+    if body_font is not None or heading_font is not None:
+        _patch_reference_theme_fonts(reference_document, body_font=body_font, heading_font=heading_font)
 
     reference_document.save(str(reference_docx_path))
 

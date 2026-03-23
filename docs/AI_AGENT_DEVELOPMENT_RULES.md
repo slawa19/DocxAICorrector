@@ -138,6 +138,27 @@ bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate &&
 
 ---
 
+### 1.4. UI styling должен идти через явный контракт компонента
+
+ИИ-агент не должен решать UI-проблемы спонтанным HTML/CSS-патчем, если задача может быть решена нативными Streamlit-компонентами или одним централизованным component-contract.
+
+Обязательные правила:
+
+- сначала предпочитать native Streamlit (`st.info`, `st.warning`, `st.caption`, `st.metric`, `st.progress`, `st.columns`, `st.expander`) вместо `unsafe_allow_html=True`;
+- если поверхность изолирована через `components.html(...)`, считать её отдельным документом с отдельным theme/layout contract;
+- для `components.html(...)` держать один централизованный helper/constant для theme shell, а не разбрасывать inline CSS по разным call site;
+- не задавать `font-family` в component-level CSS без явной задачи на типографику;
+- не полагаться на наследование CSS между основным Streamlit UI и iframe из `components.html(...)`;
+- не вводить новые глобальные стили только ради одного локального дефекта, если можно убрать сам HTML-обход и вернуться к native компонентам.
+
+Правило принятия решения:
+
+1. Если native Streamlit закрывает задачу без потери основного UX-контракта, использовать native Streamlit.
+2. Если нужен client-side state без server rerun и приходится использовать `components.html(...)`, вводить один централизованный component contract.
+3. Только если оба варианта невозможны, допустим локальный CSS/HTML workaround, и он обязан быть явно ограничен одной поверхностью.
+
+---
+
 ## 2. Правила для image/OpenAI pipeline
 
 ### 2.1. Явно разделяй direct и structured ветки

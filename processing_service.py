@@ -224,12 +224,25 @@ class ProcessingService:
 
 
 def build_processing_service() -> ProcessingService:
+    from config import load_app_config as _load_app_config
+
+    _cfg = _load_app_config()
+    _body_font = _cfg.output_body_font
+    _heading_font = _cfg.output_heading_font
+
+    def _convert_markdown_with_fonts(markdown_text: str) -> bytes:
+        return convert_markdown_to_docx_bytes(
+            markdown_text,
+            body_font=_body_font,
+            heading_font=_heading_font,
+        )
+
     return ProcessingService(
         get_client_fn=get_client,
         load_system_prompt_fn=load_system_prompt,
         ensure_pandoc_available_fn=ensure_pandoc_available,
         generate_markdown_block_fn=generate_markdown_block,
-        convert_markdown_to_docx_bytes_fn=convert_markdown_to_docx_bytes,
+        convert_markdown_to_docx_bytes_fn=_convert_markdown_with_fonts,
         process_document_images_impl_fn=process_document_images_impl,
         analyze_image_fn=analyze_image,
         generate_image_candidate_fn=generate_image_candidate,

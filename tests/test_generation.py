@@ -3,8 +3,10 @@ import zipfile
 from types import SimpleNamespace
 from typing import Any, cast
 
+import lxml.etree as etree
 import pytest
 from docx import Document
+from docx.document import Document as DocxDocument
 from docx.styles.style import ParagraphStyle, _TableStyle
 
 from PIL import Image
@@ -12,6 +14,9 @@ from PIL import Image
 import generation
 import image_shared
 from image_generation import _normalize_generated_document_background
+
+_THEME_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme"
+_DRAWINGML_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 
 
 def _as_openai_client(client: object) -> Any:
@@ -1310,3 +1315,140 @@ def test_convert_markdown_to_docx_bytes_preserves_ordered_list_word_numbering_se
     assert signatures[0]["lvl_text"] == "%1."
     assert signatures[0]["left"] is not None
     assert signatures[0]["hanging"] is not None
+
+
+# ---------------------------------------------------------------------------
+# _patch_reference_theme_fonts
+# ---------------------------------------------------------------------------
+
+def _theme_font(doc, slot: str) -> str | None:
+    """Return the Latin typeface for *slot* ('major' or 'minor') from theme XML."""
+    try:
+        theme_part = doc.part.part_related_by(_THEME_REL)
+    except KeyError:
+        return None
+    root = etree.fromstring(theme_part.blob)
+    elements = root.findall(f".//{{{_DRAWINGML_NS}}}{slot}Font/{{{_DRAWINGML_NS}}}latin")
+    return elements[0].get("typeface") if elements else None
+
+
+def test_patch_reference_theme_fonts_sets_both_slots():
+    doc = Document()
+    generation._patch_reference_theme_fonts(doc, body_font="Times New Roman", heading_font="Georgia")
+
+    assert _theme_font(doc, "minor") == "Times New Roman"
+    assert _theme_font(doc, "major") == "Georgia"
+
+
+def test_patch_reference_theme_fonts_only_heading():
+    doc = Document()
+    original_minor = _theme_font(doc, "minor")
+    generation._patch_reference_theme_fonts(doc, body_font=None, heading_font="Georgia")
+
+    assert _theme_font(doc, "major") == "Georgia"
+    assert _theme_font(doc, "minor") == original_minor  # body slot unchanged
+
+
+def test_patch_reference_theme_fonts_only_body():
+    doc = Document()
+    original_major = _theme_font(doc, "major")
+    generation._patch_reference_theme_fonts(doc, body_font="Arial", heading_font=None)
+
+    assert _theme_font(doc, "minor") == "Arial"
+    assert _theme_font(doc, "major") == original_major  # heading slot unchanged
+
+
+def test_patch_reference_theme_fonts_does_not_touch_style_rfonts_ascii():
+    """Patching the theme must not alter w:ascii on individual heading styles.
+
+    The OOXML contract is that w:asciiTheme resolves via the theme, so
+    w:ascii should remain as set by _configure_paragraph_style ("Aptos Display").
+    """
+    doc = Document()
+    from docx.oxml.ns import qn as _qn
+
+    generation._patch_reference_theme_fonts(doc, body_font="Arial", heading_font="Georgia")
+
+    h1 = doc.styles["Heading 1"]
+    rpr = h1.element.find(_qn("w:rPr"))
+    if rpr is not None:
+        rfonts = rpr.find(_qn("w:rFonts"))
+        if rfonts is not None:
+            # w:ascii was NOT set by _patch_reference_theme_fonts — only the theme blob changed.
+            assert rfonts.get(_qn("w:ascii")) is None
+
+
+def _style_rfonts_attrs(doc: DocxDocument, style_name: str) -> dict[str, str]:
+    from docx.oxml.ns import qn as _qn
+
+    style = doc.styles[style_name]
+    rpr = style.element.find(_qn("w:rPr"))
+    if rpr is None:
+        return {}
+    rfonts = rpr.find(_qn("w:rFonts"))
+    if rfonts is None:
+        return {}
+    return {key: value for key, value in rfonts.attrib.items()}
+
+
+def test_build_reference_docx_applies_configured_fonts_to_effective_styles(tmp_path):
+    from docx.oxml.ns import qn as _qn
+
+    reference_docx_path = tmp_path / "reference.docx"
+
+    generation._build_reference_docx(
+        reference_docx_path,
+        body_font="Times New Roman",
+        heading_font="Georgia",
+    )
+
+    reference_doc = Document(reference_docx_path)
+    body_attrs = _style_rfonts_attrs(reference_doc, "Normal")
+    heading_attrs = _style_rfonts_attrs(reference_doc, "Heading 1")
+    caption_attrs = _style_rfonts_attrs(reference_doc, "Caption")
+
+    assert body_attrs[_qn("w:ascii")] == "Times New Roman"
+    assert body_attrs[_qn("w:hAnsi")] == "Times New Roman"
+    assert heading_attrs[_qn("w:ascii")] == "Georgia"
+    assert heading_attrs[_qn("w:hAnsi")] == "Georgia"
+    assert caption_attrs[_qn("w:ascii")] == "Times New Roman"
+    assert _theme_font(reference_doc, "minor") == "Times New Roman"
+    assert _theme_font(reference_doc, "major") == "Georgia"
+
+
+@pytest.mark.skipif(not _pandoc_available(), reason="pandoc is unavailable in current runtime")
+def test_convert_markdown_to_docx_bytes_theme_fonts_applied_when_configured():
+    from docx.oxml.ns import qn as _qn
+
+    result = generation.convert_markdown_to_docx_bytes(
+        "# Заголовок\n\nАбзац",
+        body_font="Times New Roman",
+        heading_font="Georgia",
+    )
+
+    with zipfile.ZipFile(io.BytesIO(result)) as z:
+        theme_xml = z.read("word/theme/theme1.xml").decode("utf-8")
+
+    result_doc = Document(io.BytesIO(result))
+    body_attrs = _style_rfonts_attrs(result_doc, "Normal")
+    heading_attrs = _style_rfonts_attrs(result_doc, "Heading 1")
+
+    assert "Georgia" in theme_xml
+    assert "Times New Roman" in theme_xml
+    assert body_attrs[_qn("w:ascii")] == "Times New Roman"
+    assert heading_attrs[_qn("w:ascii")] == "Georgia"
+
+
+@pytest.mark.skipif(not _pandoc_available(), reason="pandoc is unavailable in current runtime")
+def test_convert_markdown_to_docx_bytes_no_font_args_leaves_theme_unchanged():
+    """When no font args are passed the theme in the output must not contain
+    any font name that was not already present in the python-docx default template.
+    'Aptos' must NOT appear in the theme — it should only appear via w:ascii on styles.
+    """
+    result = generation.convert_markdown_to_docx_bytes("# Заголовок\n\nАбзац")
+
+    with zipfile.ZipFile(io.BytesIO(result)) as z:
+        theme_xml = z.read("word/theme/theme1.xml").decode("utf-8")
+
+    # The default template uses Calibri/Cambria, not Aptos, in its theme slots.
+    assert "Aptos" not in theme_xml

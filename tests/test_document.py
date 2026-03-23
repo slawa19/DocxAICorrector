@@ -924,7 +924,7 @@ def test_preserve_source_paragraph_properties_artifact_records_caption_heading_c
     assert payload["caption_heading_conflicts"][0]["target_heading_level"] == 1
 
 
-def test_preserve_source_paragraph_properties_artifact_records_list_restoration_decisions(tmp_path, monkeypatch):
+def test_preserve_source_paragraph_properties_artifact_records_restored_list_decisions_during_mismatch(tmp_path, monkeypatch):
     source_doc = Document()
     source_doc.add_paragraph("Первый пункт", style="List Number")
     source_buffer = BytesIO()
@@ -947,7 +947,7 @@ def test_preserve_source_paragraph_properties_artifact_records_list_restoration_
     assert len(artifacts) == 1
     payload = json.loads(artifacts[0].read_text(encoding="utf-8"))
     assert len(payload["list_restoration_decisions"]) == 1
-    assert payload["list_restoration_decisions"][0]["action"] == "skipped_due_mapping_mismatch"
+    assert payload["list_restoration_decisions"][0]["action"] == "restored"
 
 
 def test_replace_xml_element_with_sequence_empty_replacements_is_noop():
@@ -1340,7 +1340,7 @@ def test_preserve_source_paragraph_properties_keeps_existing_numbered_list_seman
     assert _numbering_root_contains_num_id(updated_doc, first_num_id)
 
 
-def test_preserve_source_paragraph_properties_does_not_inject_numbering_for_plain_target_paragraphs():
+def test_preserve_source_paragraph_properties_restores_numbering_for_mapped_plain_target_paragraphs_despite_mismatch():
     source_doc = Document()
     source_doc.add_paragraph("Первый пункт", style="List Number")
     source_buffer = BytesIO()
@@ -1362,8 +1362,9 @@ def test_preserve_source_paragraph_properties_does_not_inject_numbering_for_plai
 
     assert updated_doc.paragraphs[0].style is not None
     assert updated_doc.paragraphs[0].style.name == "Normal"
-    assert ilvl is None
-    assert num_id is None
+    assert ilvl == "0"
+    assert num_id is not None
+    assert _numbering_root_contains_num_id(updated_doc, num_id)
     assert _extract_numbering_ids(updated_doc.paragraphs[1]) == (None, None)
 
 

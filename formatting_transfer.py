@@ -659,9 +659,13 @@ def apply_output_formatting(
             cast(list[dict[str, object]], diagnostics.get("accepted_split_targets", [])),
             list(relevant_source_paragraphs),
         )
-        diagnostics["list_restoration_decisions"] = _restore_list_numbering_for_mapped_paragraphs(document, mapping_pairs)
-    else:
-        diagnostics["list_restoration_decisions"] = _build_skipped_list_restoration_decisions(mapping_pairs)
+
+    # Always restore list numbering for successfully mapped paragraph pairs, even when
+    # there are unmapped paragraphs.  The mapping_pairs list already contains only the
+    # paragraphs that were matched, so applying list formatting to them is always safe.
+    # Skipping this entirely on any mismatch was the root cause of lists disappearing
+    # whenever the AI added or removed even one paragraph in its output.
+    diagnostics["list_restoration_decisions"] = _restore_list_numbering_for_mapped_paragraphs(document, mapping_pairs)
 
     if mismatch_detected:
         artifact_path = _write_formatting_diagnostics_artifact("restore", diagnostics)
@@ -847,25 +851,6 @@ def _apply_accepted_split_heading_styles(
         heading_style = f"Heading {min(max(inferred_level, 1), 6)}"
         if _style_exists(document, heading_style):
             paragraph.style = document.styles[heading_style]
-
-
-def _build_skipped_list_restoration_decisions(
-    mapping_pairs: Sequence[tuple[ParagraphUnit, Paragraph]],
-) -> list[dict[str, object]]:
-    decisions: list[dict[str, object]] = []
-    for source_paragraph, _ in mapping_pairs:
-        if source_paragraph.role != "list":
-            continue
-        decisions.append(
-            {
-                "paragraph_id": source_paragraph.paragraph_id,
-                "text_preview": _paragraph_preview(source_paragraph.text),
-                "action": "skipped_due_mapping_mismatch",
-                "list_kind": source_paragraph.list_kind,
-                "list_level": source_paragraph.list_level,
-            }
-        )
-    return decisions
 
 
 def _extract_paragraph_num_id(paragraph) -> str | None:
