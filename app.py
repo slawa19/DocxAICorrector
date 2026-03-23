@@ -38,6 +38,7 @@ from state import (
 from ui import (
     inject_ui_styles,
     render_image_validation_summary,
+    render_file_uploader_state_styles,
     render_live_status,
     render_partial_result,
     render_preparation_summary,
@@ -251,6 +252,7 @@ def main() -> None:
         return
 
     uploaded_widget_file = st.file_uploader("Загрузите DOCX/DOC-файл", type=["docx", "doc"])
+    render_file_uploader_state_styles(has_uploaded_file=uploaded_widget_file is not None)
 
     @st.fragment(run_every=1)
     def render_preparation_panel() -> None:

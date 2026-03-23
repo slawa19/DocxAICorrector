@@ -22,7 +22,7 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
 
     app_config = config.load_app_config()
 
-    assert app_config["enable_paragraph_markers"] is False
+    assert app_config["enable_paragraph_markers"] is True
     assert app_config["image_mode_default"] == "no_change"
     assert app_config["semantic_validation_policy"] == "advisory"
     assert app_config["keep_all_image_variants"] is False

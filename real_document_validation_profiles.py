@@ -154,7 +154,17 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
             else ui_defaults.keep_all_image_variants
         ),
     )
-    overrides: dict[str, object] = {}
+    explicit_profile_overrides = {
+        "model": run_profile.model,
+        "chunk_size": run_profile.chunk_size,
+        "max_retries": run_profile.max_retries,
+        "image_mode": run_profile.image_mode,
+        "enable_paragraph_markers": run_profile.enable_paragraph_markers,
+        "keep_all_image_variants": run_profile.keep_all_image_variants,
+    }
+    overrides: dict[str, object] = {
+        key: value for key, value in explicit_profile_overrides.items() if value is not None
+    }
     for key, default_value in ui_defaults.to_dict().items():
         effective_value = effective.to_dict()[key]
         if effective_value != default_value:

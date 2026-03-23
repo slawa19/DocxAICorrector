@@ -25,15 +25,17 @@ try {
     )
 
     Write-Step 'Step 1/2: stopping project'
-    $stopProcess = Start-Process -FilePath $powershellExe -ArgumentList ($commonArgs + $stopScript) -NoNewWindow -Wait -PassThru
-    if ($stopProcess.ExitCode -ne 0) {
-        throw "Stop Project failed with exit code $($stopProcess.ExitCode)"
+    & $powershellExe @commonArgs $stopScript
+    $stopExitCode = $LASTEXITCODE
+    if ($stopExitCode -ne 0) {
+        throw "Stop Project failed with exit code $stopExitCode"
     }
 
     Write-Step 'Step 2/2: starting project'
-    $startProcess = Start-Process -FilePath $powershellExe -ArgumentList ($commonArgs + $startScript) -NoNewWindow -Wait -PassThru
-    if ($startProcess.ExitCode -ne 0) {
-        throw "Start Project failed with exit code $($startProcess.ExitCode)"
+    & $powershellExe @commonArgs $startScript
+    $startExitCode = $LASTEXITCODE
+    if ($startExitCode -ne 0) {
+        throw "Start Project failed with exit code $startExitCode"
     }
 
     exit 0

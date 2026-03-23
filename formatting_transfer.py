@@ -1,7 +1,8 @@
-"""Paragraph mapping and DOCX formatting restoration.
+"""Paragraph mapping and minimal DOCX formatting restoration.
 
-Handles source-to-target paragraph alignment, preserved property transfer,
-semantic style normalization, and list numbering restoration.
+Handles source-to-target paragraph alignment, conservative diagnostics,
+minimal caption/image/table normalization, split-heading normalization,
+and list numbering restoration.
 """
 
 import json
@@ -24,11 +25,11 @@ from document import (
     IMAGE_PLACEHOLDER_PATTERN,
     INLINE_HTML_TAG_PATTERN,
     MARKDOWN_LINK_PATTERN,
-    PRESERVED_PARAGRAPH_PROPERTY_NAMES,
     _is_image_only_text,
     _detect_explicit_list_kind,
     _find_child_element,
     _get_xml_attribute,
+    _infer_heuristic_heading_level,
     _is_likely_caption_text,
     _resolve_paragraph_outline_level,
     _xml_local_name,
@@ -634,10 +635,10 @@ def apply_output_formatting(
 
     document = Document(BytesIO(docx_bytes))
     target_paragraphs = _collect_target_paragraphs(document)
-    diagnostics = _build_output_formatting_diagnostics(
-        paragraphs,
-        target_paragraphs,
-        document=document,
+    relevant_source_paragraphs = [paragraph for paragraph in paragraphs if paragraph.role != "table"]
+    mapping_pairs, diagnostics = _map_source_target_paragraphs(
+        list(relevant_source_paragraphs),
+        list(target_paragraphs),
         generated_paragraph_registry=generated_paragraph_registry,
     )
     unmapped_source_ids = cast(list[str], diagnostics["unmapped_source_ids"])
@@ -651,6 +652,17 @@ def apply_output_formatting(
     )
 
     mismatch_detected = bool(unmapped_source_ids or unmapped_target_indexes)
+    if not mismatch_detected:
+        _apply_accepted_split_heading_styles(
+            document,
+            target_paragraphs,
+            cast(list[dict[str, object]], diagnostics.get("accepted_split_targets", [])),
+            list(relevant_source_paragraphs),
+        )
+        diagnostics["list_restoration_decisions"] = _restore_list_numbering_for_mapped_paragraphs(document, mapping_pairs)
+    else:
+        diagnostics["list_restoration_decisions"] = _build_skipped_list_restoration_decisions(mapping_pairs)
+
     if mismatch_detected:
         artifact_path = _write_formatting_diagnostics_artifact("restore", diagnostics)
         log_event(
@@ -806,35 +818,54 @@ def _is_caption_anchor_block(block_element) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _apply_semantic_style(document, paragraph, source_paragraph: ParagraphUnit) -> None:
-    if source_paragraph.role == "heading":
-        level = min(max(source_paragraph.heading_level or 1, 1), 6)
-        heading_style = f"Heading {level}"
+def _apply_accepted_split_heading_styles(
+    document,
+    target_paragraphs: Sequence[Paragraph],
+    accepted_split_targets: Sequence[Mapping[str, object]],
+    source_paragraphs: Sequence[ParagraphUnit],
+) -> None:
+    for accepted_target in accepted_split_targets:
+        target_index_value = accepted_target.get("target_index")
+        source_index_value = accepted_target.get("derived_from_source_index")
+        try:
+            target_index = int(cast(int | str, target_index_value))
+            source_index = int(cast(int | str, source_index_value))
+        except (TypeError, ValueError):
+            continue
+        if target_index < 0 or target_index >= len(target_paragraphs):
+            continue
+        if source_index < 0 or source_index >= len(source_paragraphs):
+            continue
+
+        paragraph = target_paragraphs[target_index]
+        source_paragraph = source_paragraphs[source_index]
+        normalized_target = _normalize_text_for_mapping(paragraph.text)
+        normalized_source = _normalize_text_for_mapping(source_paragraph.text)
+        if not normalized_target or not normalized_source.startswith(normalized_target):
+            continue
+        inferred_level = _infer_heuristic_heading_level(paragraph.text)
+        heading_style = f"Heading {min(max(inferred_level, 1), 6)}"
         if _style_exists(document, heading_style):
             paragraph.style = document.styles[heading_style]
-        return
 
-    if source_paragraph.role == "caption":
-        if _style_exists(document, "Caption"):
-            paragraph.style = document.styles["Caption"]
-        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        return
 
-    if source_paragraph.role == "image":
-        if _style_exists(document, "Normal"):
-            paragraph.style = document.styles["Normal"]
-        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        return
-
-    if source_paragraph.role == "list":
-        if _style_exists(document, "List Paragraph"):
-            paragraph.style = document.styles["List Paragraph"]
-        return
-
-    if _style_exists(document, "Body Text"):
-        paragraph.style = document.styles["Body Text"]
-    elif _style_exists(document, "Normal"):
-        paragraph.style = document.styles["Normal"]
+def _build_skipped_list_restoration_decisions(
+    mapping_pairs: Sequence[tuple[ParagraphUnit, Paragraph]],
+) -> list[dict[str, object]]:
+    decisions: list[dict[str, object]] = []
+    for source_paragraph, _ in mapping_pairs:
+        if source_paragraph.role != "list":
+            continue
+        decisions.append(
+            {
+                "paragraph_id": source_paragraph.paragraph_id,
+                "text_preview": _paragraph_preview(source_paragraph.text),
+                "action": "skipped_due_mapping_mismatch",
+                "list_kind": source_paragraph.list_kind,
+                "list_level": source_paragraph.list_level,
+            }
+        )
+    return decisions
 
 
 def _extract_paragraph_num_id(paragraph) -> str | None:
@@ -866,6 +897,19 @@ def _restore_list_numbering_for_mapped_paragraphs(document, mapping_pairs: list[
 
     for source_paragraph, target_paragraph in mapping_pairs:
         if source_paragraph.role != "list":
+            continue
+        existing_target_num_id = _extract_paragraph_num_id(target_paragraph)
+        if existing_target_num_id is not None:
+            decisions.append(
+                {
+                    "paragraph_id": source_paragraph.paragraph_id,
+                    "text_preview": _paragraph_preview(source_paragraph.text),
+                    "action": "kept_existing_target_numbering",
+                    "list_kind": source_paragraph.list_kind,
+                    "list_level": source_paragraph.list_level,
+                    "target_num_id": existing_target_num_id,
+                }
+            )
             continue
         if not source_paragraph.list_num_xml or not source_paragraph.list_abstract_num_xml:
             decisions.append(
@@ -982,38 +1026,6 @@ def _style_exists(document, style_name: str) -> bool:
     except KeyError:
         return False
     return True
-
-
-def _apply_preserved_paragraph_properties(
-    paragraph,
-    preserved_ppr_xml: tuple[str, ...],
-    *,
-    exclude_names: frozenset[str] = frozenset(),
-) -> None:
-    if not preserved_ppr_xml:
-        return
-
-    paragraph_properties = _ensure_paragraph_properties(paragraph)
-    parsed_fragments = []
-    applied_names: set[str] = set()
-    for xml_fragment in preserved_ppr_xml:
-        try:
-            parsed_fragment = parse_xml(xml_fragment)
-        except Exception:
-            continue
-        local_name = _xml_local_name(parsed_fragment.tag)
-        if local_name in exclude_names:
-            continue
-        parsed_fragments.append(parsed_fragment)
-        applied_names.add(local_name)
-
-    for child in list(paragraph_properties):
-        local_name = _xml_local_name(child.tag)
-        if local_name in PRESERVED_PARAGRAPH_PROPERTY_NAMES and local_name in applied_names:
-            paragraph_properties.remove(child)
-
-    for parsed_fragment in parsed_fragments:
-        paragraph_properties.append(parsed_fragment)
 
 
 def _ensure_paragraph_properties(paragraph):

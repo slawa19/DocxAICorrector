@@ -53,6 +53,25 @@ def _render_trusted_html(html_markup: str) -> None:
     st.markdown(html_markup, unsafe_allow_html=True)
 
 
+def render_file_uploader_state_styles(*, has_uploaded_file: bool) -> None:
+    if not has_uploaded_file:
+        return
+
+    _render_trusted_html(
+        """
+        <style>
+        div[data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] {
+            display: none !important;
+        }
+
+        div[data-testid="stFileUploader"] {
+            margin-bottom: 0 !important;
+        }
+        </style>
+        """
+    )
+
+
 def _build_feed_id(prefix: str) -> str:
     nonce = int(time.time() * 1000)
     safe_prefix = _FEED_ID_SANITIZER.sub("-", prefix).strip("-") or "feed"
@@ -436,20 +455,25 @@ def render_run_log(target=None) -> None:
         return
 
     sink = target if target is not None else st
-    with sink.container():
-        with st.expander("Журнал обработки", expanded=True):
-            if show_processing_activity:
-                _render_activity_feed(
-                    title="События",
-                    lines=[f"{entry['time']}  {entry['message']}" for entry in activity_feed],
-                    feed_id="processing-journal-feed",
-                    auto_scroll=True,
-                )
-            for entry in run_log:
-                st.write(
-                    f"[{entry['status']}] Блок {entry['block_index']}/{entry['block_count']} | "
-                    f"цель: {entry['target_chars']} симв. | контекст: {entry['context_chars']} симв. | {entry['details']}"
-                )
+
+    @st.fragment
+    def render_run_log_fragment() -> None:
+        with sink.container():
+            with st.expander("Журнал обработки", expanded=True):
+                if show_processing_activity:
+                    _render_activity_feed(
+                        title="События",
+                        lines=[f"{entry['time']}  {entry['message']}" for entry in activity_feed],
+                        feed_id="processing-journal-feed",
+                        auto_scroll=True,
+                    )
+                for entry in run_log:
+                    st.write(
+                        f"[{entry['status']}] Блок {entry['block_index']}/{entry['block_count']} | "
+                        f"цель: {entry['target_chars']} симв. | контекст: {entry['context_chars']} симв. | {entry['details']}"
+                    )
+
+    render_run_log_fragment()
 
 
 def render_image_validation_summary(target=None) -> None:
@@ -468,27 +492,32 @@ def render_image_validation_summary(target=None) -> None:
     ]
 
     sink = target if target is not None else st
-    with sink.container():
-        with st.expander("Результаты валидации изображений", expanded=True):
-            columns = st.columns(4)
-            columns[0].metric("Обработано", f"{processed_images}/{total_images}")
-            columns[1].metric("Изменено", modified_images)
-            columns[2].metric("Fallbacks", fallback_count or int(summary.get("fallbacks_applied", 0)))
-            columns[3].metric("Оригинал оставлен", original_images)
 
-            if fallback_details:
-                st.caption("Причины fallback по изображениям:")
-                for asset in fallback_details[-5:]:
-                    image_id = str(_asset_value(asset, "image_id", "unknown"))
-                    final_variant = _asset_value(asset, "final_variant", "original")
-                    final_reason = str(_asset_value(asset, "final_reason", "Причина не указана."))
-                    st.caption(f"• {image_id}: {final_variant} | {final_reason}")
+    @st.fragment
+    def render_image_validation_fragment() -> None:
+        with sink.container():
+            with st.expander("Результаты валидации изображений", expanded=True):
+                columns = st.columns(4)
+                columns[0].metric("Обработано", f"{processed_images}/{total_images}")
+                columns[1].metric("Изменено", modified_images)
+                columns[2].metric("Fallbacks", fallback_count or int(summary.get("fallbacks_applied", 0)))
+                columns[3].metric("Оригинал оставлен", original_images)
 
-            validation_errors = summary.get("validation_errors", [])
-            if validation_errors:
-                st.caption("Ошибки валидации изображений:")
-                for error in validation_errors[-5:]:
-                    st.caption(f"• {error}")
+                if fallback_details:
+                    st.caption("Причины fallback по изображениям:")
+                    for asset in fallback_details[-5:]:
+                        image_id = str(_asset_value(asset, "image_id", "unknown"))
+                        final_variant = _asset_value(asset, "final_variant", "original")
+                        final_reason = str(_asset_value(asset, "final_reason", "Причина не указана."))
+                        st.caption(f"• {image_id}: {final_variant} | {final_reason}")
+
+                validation_errors = summary.get("validation_errors", [])
+                if validation_errors:
+                    st.caption("Ошибки валидации изображений:")
+                    for error in validation_errors[-5:]:
+                        st.caption(f"• {error}")
+
+    render_image_validation_fragment()
 
 
 def _asset_value(asset, field_name: str, default=None):
@@ -569,23 +598,28 @@ def render_markdown_preview(
     st.session_state[selected_key] = current_selection
     st.session_state[last_count_key] = option_count
 
-    with sink.container():
-        with st.expander(title, expanded=False):
-            st.caption("На экране показывается только один Markdown-блок, чтобы интерфейс не перегружался на больших документах.")
-            selected_block = st.selectbox(
-                "Показать блок",
-                options=list(range(1, option_count + 1)),
-                index=current_selection - 1,
-                key=selected_key,
-            )
-            # Include the block number in the text_area key so the widget
-            # refreshes when the selection changes.
-            st.text_area(
-                "Markdown блока",
-                value=blocks[selected_block - 1],
-                height=320,
-                key=_mdpreview_key(title, f"text_{selected_block}"),
-            )
+    @st.fragment
+    def render_preview_fragment() -> None:
+        with sink.container():
+            with st.expander(title, expanded=False):
+                st.caption("На экране показывается только один Markdown-блок, чтобы интерфейс не перегружался на больших документах.")
+                selected_block = st.selectbox(
+                    "Показать блок",
+                    options=list(range(1, option_count + 1)),
+                    index=current_selection - 1,
+                    key=selected_key,
+                )
+                # Include the block number in the text_area key so the widget
+                # refreshes when the selection changes.
+                st.text_area(
+                    "Markdown блока",
+                    value=blocks[selected_block - 1],
+                    height=320,
+                    key=_mdpreview_key(title, f"text_{selected_block}"),
+                    disabled=True,
+                )
+
+    render_preview_fragment()
 
 
 def render_result(docx_bytes: bytes, markdown_text: str, original_filename: str) -> None:

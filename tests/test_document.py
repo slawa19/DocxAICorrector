@@ -924,7 +924,7 @@ def test_preserve_source_paragraph_properties_artifact_records_caption_heading_c
     assert payload["caption_heading_conflicts"][0]["target_heading_level"] == 1
 
 
-def test_preserve_source_paragraph_properties_artifact_leaves_list_restoration_decisions_empty(tmp_path, monkeypatch):
+def test_preserve_source_paragraph_properties_artifact_records_list_restoration_decisions(tmp_path, monkeypatch):
     source_doc = Document()
     source_doc.add_paragraph("Первый пункт", style="List Number")
     source_buffer = BytesIO()
@@ -946,7 +946,8 @@ def test_preserve_source_paragraph_properties_artifact_leaves_list_restoration_d
     artifacts = sorted(diagnostics_dir.glob("*.json"))
     assert len(artifacts) == 1
     payload = json.loads(artifacts[0].read_text(encoding="utf-8"))
-    assert payload["list_restoration_decisions"] == []
+    assert len(payload["list_restoration_decisions"]) == 1
+    assert payload["list_restoration_decisions"][0]["action"] == "skipped_due_mapping_mismatch"
 
 
 def test_replace_xml_element_with_sequence_empty_replacements_is_noop():

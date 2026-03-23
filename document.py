@@ -29,27 +29,6 @@ COMPARE_ALL_VARIANT_LABELS = {
     "semantic_redraw_structured": "Вариант 3: Структурная AI-перерисовка",
 }
 MANUAL_REVIEW_SAFE_LABEL = "safe"
-PRESERVED_PARAGRAPH_PROPERTY_NAMES = {
-    "adjustRightInd",
-    "bidi",
-    "contextualSpacing",
-    "ind",
-    "jc",
-    "keepLines",
-    "keepNext",
-    "mirrorIndents",
-    "numPr",
-    "outlineLvl",
-    "pStyle",
-    "pageBreakBefore",
-    "rPr",
-    "spacing",
-    "suppressAutoHyphens",
-    "tabs",
-    "textAlignment",
-    "textDirection",
-    "widowControl",
-}
 RELATIONSHIP_NAMESPACE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 ORDERED_LIST_FORMATS = {
     "aiueo",
@@ -436,7 +415,6 @@ def _build_paragraph_unit(paragraph, image_assets: list[ImageAsset]) -> Paragrap
         list_abstract_num_id=cast(str | None, list_metadata["list_abstract_num_id"]),
         list_num_xml=cast(str | None, list_metadata["list_num_xml"]),
         list_abstract_num_xml=cast(str | None, list_metadata["list_abstract_num_xml"]),
-        preserved_ppr_xml=_capture_preserved_paragraph_properties(paragraph),
         structural_role=role,
         role_confidence=role_confidence,
     )
@@ -560,19 +538,6 @@ def _read_uploaded_docx_bytes(uploaded_file) -> bytes:
         source_bytes=source_bytes,
     )
     return normalized_document.content_bytes
-
-
-def _capture_preserved_paragraph_properties(paragraph) -> tuple[str, ...]:
-    paragraph_properties = _find_child_element(paragraph._element, "pPr")
-    if paragraph_properties is None:
-        return ()
-
-    preserved_children: list[str] = []
-    for child in paragraph_properties:
-        if _xml_local_name(child.tag) not in PRESERVED_PARAGRAPH_PROPERTY_NAMES:
-            continue
-        preserved_children.append(etree.tostring(child, encoding="unicode"))
-    return tuple(preserved_children)
 
 
 def _extract_explicit_heading_level(paragraph, style_name: str) -> int | None:

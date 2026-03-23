@@ -43,7 +43,6 @@ class ParagraphUnit:
     list_abstract_num_id: str | None = None
     list_num_xml: str | None = None
     list_abstract_num_xml: str | None = None
-    preserved_ppr_xml: tuple[str, ...] = field(default_factory=tuple)
     paragraph_id: str = ""
     source_index: int = -1
     structural_role: str = "body"

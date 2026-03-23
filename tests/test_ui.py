@@ -62,6 +62,7 @@ def test_render_markdown_preview_uses_stable_key_per_title(monkeypatch):
         return options[index]
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
     monkeypatch.setattr(ui.st, "selectbox", fake_selectbox)
@@ -92,6 +93,7 @@ def test_render_markdown_preview_focuses_latest_block_when_requested(monkeypatch
         return options[index]
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
     monkeypatch.setattr(ui.st, "selectbox", fake_selectbox)
@@ -117,6 +119,7 @@ def test_render_markdown_preview_keeps_user_selection_when_focus_latest_requeste
         return options[index]
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
     monkeypatch.setattr(ui.st, "selectbox", fake_selectbox)
@@ -141,6 +144,7 @@ def test_render_markdown_preview_persists_new_user_selection(monkeypatch):
         return 2
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
     monkeypatch.setattr(ui.st, "selectbox", fake_selectbox)
@@ -166,6 +170,7 @@ def test_render_markdown_preview_keeps_manual_selection_when_new_block_arrives(m
         return options[index]
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
     monkeypatch.setattr(ui.st, "selectbox", fake_selectbox)
@@ -191,6 +196,7 @@ def test_render_markdown_preview_autofollows_latest_when_user_keeps_latest_selec
         return options[index]
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
     monkeypatch.setattr(ui.st, "selectbox", fake_selectbox)
@@ -210,6 +216,7 @@ def test_render_markdown_preview_filters_placeholder_only_blocks_from_options(mo
     rendered_values = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
     monkeypatch.setattr(
@@ -232,6 +239,7 @@ def test_render_markdown_preview_hides_placeholder_only_content(monkeypatch):
     expander_calls = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: expander_calls.append((args, kwargs)) or nullcontext())
 
     ui.render_markdown_preview(FakeTarget(), title="Текущий Markdown", focus_latest=True)
@@ -309,6 +317,29 @@ def test_inject_ui_styles_normalizes_selectbox_typography(monkeypatch):
     assert 'color: inherit !important;' in css
 
 
+def test_render_file_uploader_state_styles_hides_dropzone_when_file_selected(monkeypatch):
+    injected = []
+
+    monkeypatch.setattr(ui.st, "markdown", lambda text, unsafe_allow_html=True: injected.append((text, unsafe_allow_html)))
+
+    ui.render_file_uploader_state_styles(has_uploaded_file=True)
+
+    assert len(injected) == 1
+    css = injected[0][0]
+    assert '[data-testid="stFileUploaderDropzone"]' in css
+    assert 'display: none !important;' in css
+
+
+def test_render_file_uploader_state_styles_does_nothing_without_file(monkeypatch):
+    injected = []
+
+    monkeypatch.setattr(ui.st, "markdown", lambda text, unsafe_allow_html=True: injected.append((text, unsafe_allow_html)))
+
+    ui.render_file_uploader_state_styles(has_uploaded_file=False)
+
+    assert injected == []
+
+
 class FakeImageColumn:
     def __init__(self):
         self.images = []
@@ -350,6 +381,7 @@ def test_render_image_validation_summary_shows_metrics(monkeypatch):
     captions = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(ui.st, "columns", lambda n: metrics)
     monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
@@ -506,6 +538,7 @@ def test_render_markdown_preview_uses_only_selected_and_count_keys(monkeypatch):
     )
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
     monkeypatch.setattr(ui.st, "selectbox", lambda label, options, index=0, key=None: options[index])
@@ -534,6 +567,7 @@ def test_render_run_log_shows_entries_in_chronological_order(monkeypatch):
     markdowns = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(ui.st, "write", lambda text: writes.append(text))
     monkeypatch.setattr(ui.st, "markdown", lambda text, unsafe_allow_html=True: markdowns.append(text))
@@ -556,6 +590,7 @@ def test_render_run_log_uses_processing_activity_without_block_entries(monkeypat
     markdowns = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(ui.st, "write", lambda *args, **kwargs: None)
     monkeypatch.setattr(ui.st, "markdown", lambda text, unsafe_allow_html=True: markdowns.append(text))
@@ -578,6 +613,7 @@ def test_render_run_log_skips_preparation_phase_with_empty_run_log(monkeypatch):
     progress_calls = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(ui.st, "progress", lambda value: progress_calls.append(value))
 
@@ -607,3 +643,70 @@ def test_render_result_bundle_uses_manual_preview_mode(monkeypatch):
     assert preview_calls == [{"title": "Предпросмотр Markdown"}]
     assert len(download_calls) == 2
     assert all(call.get("on_click") == "ignore" for call in download_calls)
+
+
+def test_render_markdown_preview_renders_inside_fragment(monkeypatch):
+    session_state = SessionState(processed_block_markdowns=["one"])
+    fragment_calls = []
+    text_area_calls = []
+
+    def fake_fragment(fn):
+        fragment_calls.append(fn.__name__)
+        return fn
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "fragment", fake_fragment)
+    monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.st, "selectbox", lambda label, options, index=0, key=None: options[index])
+    monkeypatch.setattr(ui.st, "text_area", lambda *args, **kwargs: text_area_calls.append(kwargs))
+
+    ui.render_markdown_preview(FakeTarget(), title="Текущий Markdown")
+
+    assert fragment_calls == ["render_preview_fragment"]
+    assert text_area_calls[0]["disabled"] is True
+
+
+def test_render_run_log_renders_inside_fragment(monkeypatch):
+    session_state = SessionState(
+        run_log=[{"status": "OK", "block_index": 1, "block_count": 1, "target_chars": 10, "context_chars": 2, "details": "done"}],
+        activity_feed=[],
+        processing_status={"phase": "processing"},
+    )
+    fragment_calls = []
+
+    def fake_fragment(fn):
+        fragment_calls.append(fn.__name__)
+        return fn
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "fragment", fake_fragment)
+    monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(ui.st, "write", lambda *args, **kwargs: None)
+
+    ui.render_run_log(FakeTarget())
+
+    assert fragment_calls == ["render_run_log_fragment"]
+
+
+def test_render_image_validation_summary_renders_inside_fragment(monkeypatch):
+    session_state = SessionState(
+        image_processing_summary={"total_images": 1, "processed_images": 1, "fallbacks_applied": 0, "validation_errors": []},
+        image_assets=[{"image_id": "img-1", "final_variant": "original", "final_decision": "accept"}],
+    )
+    fragment_calls = []
+    metrics = [FakeMetricTarget(), FakeMetricTarget(), FakeMetricTarget(), FakeMetricTarget()]
+
+    def fake_fragment(fn):
+        fragment_calls.append(fn.__name__)
+        return fn
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "fragment", fake_fragment)
+    monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(ui.st, "columns", lambda n: metrics)
+    monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
+
+    ui.render_image_validation_summary(FakeTarget())
+
+    assert fragment_calls == ["render_image_validation_fragment"]
