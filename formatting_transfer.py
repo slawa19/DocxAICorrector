@@ -699,78 +699,12 @@ def _build_output_formatting_diagnostics(
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
 ) -> dict[str, object]:
     relevant_source_paragraphs = [paragraph for paragraph in source_paragraphs if paragraph.role != "table"]
-    source_count = len(relevant_source_paragraphs)
-    target_count = len(target_paragraphs)
-    mapped_count = min(source_count, target_count)
-    generated_registry_by_id = _build_generated_registry_by_paragraph_id(generated_paragraph_registry)
-    source_caption_texts = {
-        _normalize_text_for_mapping(paragraph.text)
-        for paragraph in relevant_source_paragraphs
-        if paragraph.role == "caption" and paragraph.text.strip()
-    }
-    source_caption_texts.discard("")
-    generated_caption_texts = {
-        _normalize_text_for_mapping(text)
-        for paragraph_id, text in generated_registry_by_id.items()
-        if text.strip() and any(
-            paragraph.paragraph_id == paragraph_id and paragraph.role == "caption"
-            for paragraph in relevant_source_paragraphs
-        )
-    }
-    generated_caption_texts.discard("")
-
-    matched_target_indexes = {
-        index
-        for index, paragraph in enumerate(target_paragraphs)
-        if document is not None and _is_caption_candidate(
-            document,
-            paragraph,
-            source_caption_texts=source_caption_texts,
-            generated_caption_texts=generated_caption_texts,
-        )
-    }
-    unmatched_target_indexes = list(range(mapped_count, target_count))
-    unmatched_source_ids = [
-        paragraph.paragraph_id or f"p{index:04d}"
-        for index, paragraph in enumerate(relevant_source_paragraphs[mapped_count:], start=mapped_count)
-    ]
-
-    return {
-        "source_count": source_count,
-        "target_count": target_count,
-        "mapped_count": mapped_count,
-        "unmapped_source_ids": unmatched_source_ids,
-        "unmapped_target_indexes": unmatched_target_indexes,
-        "source_registry": [
-            _build_source_registry_entry(
-                paragraph,
-                index,
-                mapped_target_index=None,
-                strategy=None,
-            )
-            for index, paragraph in enumerate(relevant_source_paragraphs)
-        ],
-        "target_registry": [
-            _build_target_registry_entry(
-                paragraph,
-                index,
-                mapped=index in matched_target_indexes,
-            )
-            for index, paragraph in enumerate(target_paragraphs)
-        ],
-        "accepted_split_targets": [],
-        "caption_heading_conflicts": [
-            {
-                "target_index": index,
-                "target_style_name": getattr(getattr(paragraph, "style", None), "name", None),
-                "target_heading_level": _extract_target_heading_level(paragraph),
-                "target_text_preview": _paragraph_preview(paragraph.text),
-            }
-            for index, paragraph in enumerate(target_paragraphs)
-            if index in matched_target_indexes and _extract_target_heading_level(paragraph) is not None
-        ],
-        "list_restoration_decisions": [],
-    }
+    _, diagnostics = _map_source_target_paragraphs(
+        list(relevant_source_paragraphs),
+        list(target_paragraphs),
+        generated_paragraph_registry=generated_paragraph_registry,
+    )
+    return diagnostics
 
 
 def _apply_minimal_image_formatting(document) -> None:

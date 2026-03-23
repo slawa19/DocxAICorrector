@@ -13,7 +13,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.opc.constants import RELATIONSHIP_TYPE
 from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import qn
-from docx.shared import Inches
+from docx.shared import Inches, Pt
 
 from document import (
     build_marker_wrapped_block_text,
@@ -695,6 +695,88 @@ def test_extract_document_content_from_docx_does_not_promote_inherited_centered_
     assert paragraphs[0].role == "body"
     assert paragraphs[0].heading_level is None
     assert paragraphs[0].role_confidence == "heuristic"
+
+
+def test_extract_document_content_from_docx_promotes_short_larger_subheading_between_body_paragraphs():
+    doc = Document()
+
+    first_paragraph = doc.add_paragraph(
+        "Богатство может означать деньги, свободу выбора, устойчивость и доступ к возможностям, "
+        "которые человек иначе не получил бы."
+    )
+    first_paragraph.runs[0].font.size = Pt(11)
+
+    heading_paragraph = doc.add_paragraph("Переосмысление богатства")
+    heading_paragraph.runs[0].font.size = Pt(14)
+
+    third_paragraph = doc.add_paragraph(
+        "Богатство - это не только владение активами, но и способность направлять время, внимание "
+        "и отношения к осмысленным целям."
+    )
+    third_paragraph.runs[0].font.size = Pt(11)
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.role for paragraph in paragraphs] == ["body", "heading", "body"]
+    assert paragraphs[1].heading_source == "heuristic"
+    assert paragraphs[1].heading_level == 2
+    assert build_document_text(paragraphs) == (
+        "Богатство может означать деньги, свободу выбора, устойчивость и доступ к возможностям, "
+        "которые человек иначе не получил бы.\n\n"
+        "## Переосмысление богатства\n\n"
+        "Богатство - это не только владение активами, но и способность направлять время, внимание "
+        "и отношения к осмысленным целям."
+    )
+
+
+def test_extract_document_content_from_docx_promotes_very_short_subheading_between_body_paragraphs_without_larger_font():
+    doc = Document()
+
+    doc.add_paragraph(
+        "Привлекательность лотерейных билетов с крупными призами отчасти объясняется мечтами о переменах и доступе к новым "
+        "возможностям."
+    )
+    doc.add_paragraph("Переосмысление богатства")
+    doc.add_paragraph(
+        "Богатство - это то, чего мы все хотим, но его значение зависит не только от денег, а еще и от устойчивости, "
+        "свободы выбора и качества связей."
+    )
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.role for paragraph in paragraphs] == ["body", "heading", "body"]
+    assert paragraphs[1].heading_source == "heuristic"
+    assert paragraphs[1].heading_level == 2
+
+
+def test_extract_document_content_from_docx_does_not_promote_very_short_sentence_with_terminal_period():
+    doc = Document()
+
+    doc.add_paragraph(
+        "Привлекательность лотерейных билетов с крупными призами отчасти объясняется мечтами о переменах и доступе к новым "
+        "возможностям."
+    )
+    doc.add_paragraph("Новое богатство.")
+    doc.add_paragraph(
+        "Богатство - это то, чего мы все хотим, но его значение зависит не только от денег, а еще и от устойчивости, "
+        "свободы выбора и качества связей."
+    )
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.role for paragraph in paragraphs] == ["body", "body", "body"]
 
 
 def test_extract_document_content_from_docx_keeps_inherited_centered_caption_after_table():

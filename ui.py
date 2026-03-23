@@ -617,6 +617,7 @@ def render_result_bundle(
         data=docx_bytes,
         file_name=_build_output_filename(original_filename),
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        on_click="ignore",
         use_container_width=True,
     )
     st.download_button(
@@ -624,6 +625,7 @@ def render_result_bundle(
         data=markdown_text.encode("utf-8"),
         file_name=_build_markdown_filename(original_filename),
         mime="text/markdown",
+        on_click="ignore",
         use_container_width=True,
     )
     if preview_title:

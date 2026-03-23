@@ -170,20 +170,25 @@ def extract_document_content_from_docx(uploaded_file) -> tuple[list[ParagraphUni
     validate_docx_source_bytes(source_bytes)
     document = Document(BytesIO(source_bytes))
     paragraphs: list[ParagraphUnit] = []
+    source_paragraphs: list[Paragraph | None] = []
     image_assets: list[ImageAsset] = []
     table_count = 0
 
     for block_kind, block in _iter_document_block_items(document):
         if block_kind == "paragraph":
-            paragraph_unit = _build_paragraph_unit(cast(Paragraph, block), image_assets)
+            source_paragraph = cast(Paragraph, block)
+            paragraph_unit = _build_paragraph_unit(source_paragraph, image_assets)
         else:
+            source_paragraph = None
             table_count += 1
             paragraph_unit = _build_table_unit(cast(Table, block), image_assets, asset_id=f"table_{table_count:03d}")
         if paragraph_unit is not None:
             _assign_paragraph_identity(paragraph_unit, len(paragraphs))
             paragraphs.append(paragraph_unit)
+            source_paragraphs.append(source_paragraph)
 
     _reclassify_adjacent_captions(paragraphs)
+    _promote_short_standalone_headings(paragraphs, source_paragraphs)
 
     if not paragraphs:
         raise ValueError("В документе не найден текст для обработки.")
@@ -732,6 +737,151 @@ def _is_likely_caption_text(text: str) -> bool:
     if not stripped_text or len(stripped_text) > 140:
         return False
     return CAPTION_PREFIX_PATTERN.match(stripped_text) is not None
+
+
+def _is_short_standalone_heading_text(text: str) -> bool:
+    stripped_text = _normalize_text_for_heading_heuristics(text)
+    if not stripped_text or len(stripped_text) > 80:
+        return False
+    if _is_likely_caption_text(stripped_text):
+        return False
+    word_count = len(stripped_text.split())
+    if word_count == 0 or word_count > 6:
+        return False
+    if stripped_text.endswith((".", "?", "!", ";")):
+        return False
+    if stripped_text.count(".") > 0:
+        return False
+    return True
+
+
+def _is_very_short_standalone_heading_text(text: str) -> bool:
+    stripped_text = _normalize_text_for_heading_heuristics(text)
+    if not _is_short_standalone_heading_text(stripped_text):
+        return False
+    word_count = len(stripped_text.split())
+    return word_count <= 4 and len(stripped_text) <= 48
+
+
+def _has_body_context_signal(text: str) -> bool:
+    stripped_text = _normalize_text_for_heading_heuristics(text)
+    word_count = len(stripped_text.split())
+    if word_count >= 8:
+        return True
+    if len(stripped_text) >= 60:
+        return True
+    return any(marker in stripped_text for marker in (",", ":")) and word_count >= 5
+
+
+def _length_to_points(length) -> float | None:
+    if length is None:
+        return None
+    points = getattr(length, "pt", None)
+    if points is None:
+        return None
+    try:
+        return float(points)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_style_font_size(style) -> float | None:
+    while style is not None:
+        font = getattr(style, "font", None)
+        points = _length_to_points(getattr(font, "size", None))
+        if points is not None:
+            return points
+        style = getattr(style, "base_style", None)
+    return None
+
+
+def _resolve_effective_paragraph_font_size(paragraph) -> float | None:
+    weighted_sizes: dict[float, int] = {}
+    for run in paragraph.runs:
+        text = run.text.strip()
+        if not text:
+            continue
+        points = _length_to_points(getattr(getattr(run, "font", None), "size", None))
+        if points is None:
+            points = _resolve_style_font_size(getattr(run, "style", None))
+        if points is None:
+            continue
+        normalized_points = round(points, 2)
+        weighted_sizes[normalized_points] = weighted_sizes.get(normalized_points, 0) + len(text)
+
+    if weighted_sizes:
+        return max(weighted_sizes.items(), key=lambda item: (item[1], item[0]))[0]
+    return _resolve_style_font_size(getattr(paragraph, "style", None))
+
+
+def _infer_contextual_heading_level(paragraphs: list[ParagraphUnit], index: int) -> int:
+    for previous_index in range(index - 1, -1, -1):
+        previous_paragraph = paragraphs[previous_index]
+        if previous_paragraph.role != "heading" or previous_paragraph.heading_level is None:
+            continue
+        if previous_paragraph.heading_level <= 1:
+            return 2
+        return previous_paragraph.heading_level
+    return 2
+
+
+def _promote_short_standalone_headings(
+    paragraphs: list[ParagraphUnit],
+    source_paragraphs: list[Paragraph | None],
+) -> None:
+    if len(paragraphs) < 3:
+        return
+
+    for index in range(1, len(paragraphs) - 1):
+        paragraph = paragraphs[index]
+        source_paragraph = source_paragraphs[index]
+        if paragraph.role != "body" or source_paragraph is None:
+            continue
+        if not _is_short_standalone_heading_text(paragraph.text):
+            continue
+
+        previous_paragraph = paragraphs[index - 1]
+        next_paragraph = paragraphs[index + 1]
+        if previous_paragraph.role != "body" or next_paragraph.role != "body":
+            continue
+        if not _has_body_context_signal(previous_paragraph.text) or not _has_body_context_signal(next_paragraph.text):
+            continue
+
+        if _is_very_short_standalone_heading_text(paragraph.text):
+            paragraph.role = "heading"
+            paragraph.structural_role = "heading"
+            paragraph.role_confidence = "heuristic"
+            paragraph.heading_source = "heuristic"
+            paragraph.heading_level = _infer_contextual_heading_level(paragraphs, index)
+            continue
+
+        candidate_font_size = _resolve_effective_paragraph_font_size(source_paragraph)
+        if candidate_font_size is None:
+            continue
+
+        context_font_sizes: list[float] = []
+        previous_source = source_paragraphs[index - 1]
+        if previous_source is not None:
+            previous_font_size = _resolve_effective_paragraph_font_size(previous_source)
+            if previous_font_size is not None:
+                context_font_sizes.append(previous_font_size)
+        next_source = source_paragraphs[index + 1]
+        if next_source is not None:
+            next_font_size = _resolve_effective_paragraph_font_size(next_source)
+            if next_font_size is not None:
+                context_font_sizes.append(next_font_size)
+        if not context_font_sizes:
+            continue
+
+        required_delta = 1.0 if _paragraph_has_strong_heading_format(source_paragraph) else 1.5
+        if candidate_font_size < max(context_font_sizes) + required_delta:
+            continue
+
+        paragraph.role = "heading"
+        paragraph.structural_role = "heading"
+        paragraph.role_confidence = "heuristic"
+        paragraph.heading_source = "heuristic"
+        paragraph.heading_level = _infer_contextual_heading_level(paragraphs, index)
 
 
 def _reclassify_adjacent_captions(paragraphs: list[ParagraphUnit]) -> None:

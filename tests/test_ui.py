@@ -588,10 +588,11 @@ def test_render_run_log_skips_preparation_phase_with_empty_run_log(monkeypatch):
 
 def test_render_result_bundle_uses_manual_preview_mode(monkeypatch):
     preview_calls = []
+    download_calls = []
 
     monkeypatch.setattr(ui.st, "subheader", lambda *args, **kwargs: None)
     monkeypatch.setattr(ui.st, "success", lambda *args, **kwargs: None)
-    monkeypatch.setattr(ui.st, "download_button", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.st, "download_button", lambda *args, **kwargs: download_calls.append(kwargs))
     monkeypatch.setattr(ui, "render_markdown_preview", lambda *args, **kwargs: preview_calls.append(kwargs))
 
     ui.render_result_bundle(
@@ -604,3 +605,5 @@ def test_render_result_bundle_uses_manual_preview_mode(monkeypatch):
     )
 
     assert preview_calls == [{"title": "Предпросмотр Markdown"}]
+    assert len(download_calls) == 2
+    assert all(call.get("on_click") == "ignore" for call in download_calls)

@@ -9,6 +9,7 @@ from document import extract_document_content_from_docx
 from formatting_transfer import (
     _apply_preserved_paragraph_properties,
     _apply_semantic_style,
+    _build_output_formatting_diagnostics,
     _map_source_target_paragraphs,
     _apply_minimal_caption_formatting,
     _apply_minimal_image_formatting,
@@ -283,6 +284,48 @@ def test_mapping_accepts_split_heading_target_for_merged_source_paragraph():
     assert accepted_target["heading_level"] == 3
     assert accepted_target["target_text_preview"] == "Миф (и потенциал) индивидуального богатства"
     assert accepted_target["source_text_preview"].startswith("Миф (и потенциал) индивидуального богатства")
+
+
+def test_build_output_formatting_diagnostics_uses_real_mapping_instead_of_tail_count_mismatch():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0056",
+            text=(
+                "Миф (и потенциал) индивидуального богатства "
+                "До сих пор мы затронули три вещи, которые определяют наше понимание богатства:"
+            ),
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        )
+    ]
+    generated_registry = [
+        {
+            "paragraph_id": "p0056",
+            "text": (
+                "### Миф (и потенциал) индивидуального богатства\n"
+                "До сих пор мы затронули три вещи, которые определяют наше понимание богатства:"
+            ),
+        }
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("Миф (и потенциал) индивидуального богатства", style="Heading 3")
+    target_doc.add_paragraph("До сих пор мы затронули три вещи, которые определяют наше понимание богатства:")
+
+    diagnostics = _build_output_formatting_diagnostics(
+        source_paragraphs,
+        list(target_doc.paragraphs),
+        document=target_doc,
+        generated_paragraph_registry=generated_registry,
+    )
+
+    assert diagnostics["source_count"] == 1
+    assert diagnostics["target_count"] == 2
+    assert diagnostics["mapped_count"] == 1
+    assert diagnostics["unmapped_source_ids"] == []
+    assert diagnostics["unmapped_target_indexes"] == []
+    assert len(diagnostics["accepted_split_targets"]) == 1
 
 
 def test_apply_minimal_image_formatting_centers_only_image_only_paragraphs():

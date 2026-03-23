@@ -240,6 +240,37 @@ def _collect_recent_formatting_diagnostics(*, since_epoch_seconds: float) -> lis
     return recent_artifacts
 
 
+def _build_formatting_diagnostics_user_summary(artifact_paths: Sequence[str]) -> str:
+    summaries: list[str] = []
+
+    for artifact_path in artifact_paths:
+        try:
+            payload = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            continue
+
+        source_count = payload.get("source_count")
+        target_count = payload.get("target_count")
+        unmapped_source_ids = payload.get("unmapped_source_ids")
+        unmapped_target_indexes = payload.get("unmapped_target_indexes")
+
+        unmapped_source_count = len(unmapped_source_ids) if isinstance(unmapped_source_ids, list) else None
+        unmapped_target_count = len(unmapped_target_indexes) if isinstance(unmapped_target_indexes, list) else None
+
+        if isinstance(source_count, int) and isinstance(target_count, int) and unmapped_source_count is not None:
+            summary = (
+                "Часть форматирования могла не восстановиться: "
+                f"исходных абзацев {source_count}, итоговых {target_count}, без соответствия осталось {unmapped_source_count}"
+            )
+            if unmapped_target_count:
+                summary += f", лишних итоговых абзацев {unmapped_target_count}"
+            summaries.append(summary)
+
+    if summaries:
+        return summaries[0]
+    return "Часть форматирования могла не восстановиться; сохранена диагностика."
+
+
 def _extract_marker_diagnostics_code(exc: Exception) -> str | None:
     message = str(exc)
     marker_prefix = "paragraph_marker_validation_failed:"
@@ -995,6 +1026,7 @@ def run_document_processing(
     )
     if formatting_diagnostics_artifacts:
         diagnostics_summary = "; ".join(formatting_diagnostics_artifacts)
+        user_summary = _build_formatting_diagnostics_user_summary(formatting_diagnostics_artifacts)
         emit_activity(runtime, "Сборка DOCX завершилась с частичной деградацией форматирования; сохранены diagnostics artifacts.")
         emit_log(
             runtime,
@@ -1003,7 +1035,7 @@ def run_document_processing(
             block_count=job_count,
             target_chars=len(final_markdown),
             context_chars=0,
-            details=f"formatting diagnostics: {diagnostics_summary}",
+            details=f"{user_summary}; formatting diagnostics: {diagnostics_summary}",
         )
         log_event(
             logging.WARNING,

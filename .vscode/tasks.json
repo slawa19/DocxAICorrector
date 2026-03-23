@@ -86,6 +86,33 @@
 			"group": "none"
 		},
 		{
+			"label": "Restart Project",
+			"type": "shell",
+			"command": "${workspaceFolder}\\scripts\\restart-project.ps1",
+			"options": {
+				"cwd": "${workspaceFolder}",
+				"shell": {
+					"executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+					"args": [
+						"-NoProfile",
+						"-ExecutionPolicy",
+						"Bypass",
+						"-File"
+					]
+				}
+			},
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "silent",
+				"panel": "dedicated",
+				"focus": false,
+				"clear": true,
+				"showReuseMessage": false,
+				"close": false
+			},
+			"group": "none"
+		},
+		{
 			"label": "Run Full Pytest",
 			"type": "shell",
 			"command": "bash scripts/test.sh",

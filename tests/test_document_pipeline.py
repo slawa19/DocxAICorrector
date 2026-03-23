@@ -203,7 +203,20 @@ def test_run_document_processing_surfaces_formatting_diagnostics_artifacts(tmp_p
 
     def preserve_with_artifact(docx_bytes, paragraphs):
         diagnostics_dir.mkdir(parents=True, exist_ok=True)
-        (diagnostics_dir / "preserve_001.json").write_text('{"stage":"preserve"}', encoding="utf-8")
+        (diagnostics_dir / "preserve_001.json").write_text(
+            json.dumps(
+                {
+                    "stage": "preserve",
+                    "source_count": 5,
+                    "target_count": 4,
+                    "mapped_count": 4,
+                    "unmapped_source_ids": ["p0004"],
+                    "unmapped_target_indexes": [],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
         return docx_bytes
 
     result = document_pipeline.run_document_processing(
@@ -241,6 +254,8 @@ def test_run_document_processing_surfaces_formatting_diagnostics_artifacts(tmp_p
     assert result == "succeeded"
     assert runtime["activity"][-2] == "Сборка DOCX завершилась с частичной деградацией форматирования; сохранены diagnostics artifacts."
     assert runtime["log"][-2]["status"] == "WARN"
+    assert "Часть форматирования могла не восстановиться" in runtime["log"][-2]["details"]
+    assert "исходных абзацев 5, итоговых 4, без соответствия осталось 1" in runtime["log"][-2]["details"]
     assert "preserve_001.json" in runtime["log"][-2]["details"]
 
 
