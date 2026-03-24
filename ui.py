@@ -8,6 +8,7 @@ from typing import Any
 import streamlit as st
 
 from logger import format_elapsed
+from message_formatting import derive_live_status_title, humanize_reason, humanize_variant
 from models import ImageMode
 
 
@@ -159,7 +160,7 @@ def render_live_status(target=None) -> None:
             progress_percent = int(progress_value * 100)
             stage = str(status.get("stage") or "Подготовка документа")
             detail = str(status.get("detail") or "Идет анализ файла.")
-            title = "Идет анализ файла" if status.get("is_running") else "Анализ файла завершён"
+            title = derive_live_status_title(status)
             _render_status_panel(
                 sink=sink,
                 title=title,
@@ -175,7 +176,7 @@ def render_live_status(target=None) -> None:
             )
             st.progress(progress_value)
         else:
-            title = "Идет обработка" if status.get("is_running") else "Состояние"
+            title = derive_live_status_title(status)
             stage = str(status.get("stage") or "Ожидание")
             detail = str(status.get("detail") or "")
             _render_status_panel(
@@ -190,10 +191,8 @@ def render_live_status(target=None) -> None:
             metric_columns[1].metric("Цель", f"{target_chars} симв.")
             metric_columns[2].metric("Контекст", f"{context_chars} симв.")
             metric_columns[3].metric("Прошло", elapsed)
-        progress_value = float(status.get("progress") or 0.0)
-        if phase != "preparing":
+            progress_value = float(status.get("progress") or 0.0)
             st.progress(progress_value)
-            st.caption("Если текущий блок обрабатывается долго, это нормально: ответ OpenAI может занимать десятки секунд.")
 
 
 def render_preparation_summary(summary: dict[str, object] | None, target=None) -> None:
@@ -210,11 +209,13 @@ def render_preparation_summary(summary: dict[str, object] | None, target=None) -
         source_chars = _to_int(summary.get("source_chars"), default=0)
         block_count = _to_int(summary.get("block_count"), default=0)
         elapsed_fragment = f" | Подготовка: {elapsed}" if elapsed else ""
+        stage = str(summary.get("stage") or "Документ подготовлен")
+        detail = str(summary.get("detail") or "")
         _render_status_panel(
             sink=sink,
-            title="Анализ файла завершён",
+            title=stage,
             stage="",
-            detail="",
+            detail=detail,
             meta_lines=[
                 f"Источник: {source_label}{elapsed_fragment}",
                 (
@@ -252,12 +253,8 @@ def _get_list_of_str(config: Mapping[str, object], key: str) -> list[str]:
 
 def render_run_log(target=None) -> None:
     run_log = list(st.session_state.get("run_log", []))
-    activity_feed = list(st.session_state.get("activity_feed", []))
-    status = dict(st.session_state.get("processing_status", {}))
-    phase = str(status.get("phase") or "processing")
-    show_processing_activity = bool(activity_feed) and phase != "preparing"
 
-    if not run_log and not show_processing_activity:
+    if not run_log:
         return
 
     sink = target if target is not None else st
@@ -266,48 +263,17 @@ def render_run_log(target=None) -> None:
     def render_run_log_fragment() -> None:
         with sink.container():
             with st.expander("Журнал обработки", expanded=True):
-                if show_processing_activity:
-                    _render_activity_feed(
-                        title="События",
-                        lines=[f"{entry['time']}  {entry['message']}" for entry in activity_feed],
-                        feed_id="processing-journal-feed",
-                        auto_scroll=True,
-                    )
                 for entry in run_log:
-                    st.write(
-                        f"[{entry['status']}] Блок {entry['block_index']}/{entry['block_count']} | "
-                        f"цель: {entry['target_chars']} симв. | контекст: {entry['context_chars']} симв. | {entry['details']}"
-                    )
+                    message = str(entry.get("message") or "")
+                    if not message and entry.get("kind") == "block":
+                        message = (
+                            f"[{entry['status']}] Блок {entry['block_index']}/{entry['block_count']} | "
+                            f"цель: {entry['target_chars']} симв. | контекст: {entry['context_chars']} симв. | {entry['details']}"
+                        )
+                    if message:
+                        st.write(message)
 
     render_run_log_fragment()
-
-
-_VARIANT_LABELS: dict[str, str] = {
-    "original": "оригинал",
-    "safe": "safe-вариант",
-    "redrawn": "перерисовка",
-}
-
-_REASON_PREFIXES: list[tuple[str, str]] = [
-    ("compare_all_variants_incomplete", "не все варианты сгенерированы"),
-    ("candidate_image_unreadable", "изображение-кандидат не читается"),
-    ("validator_exception", "ошибка валидации"),
-]
-
-
-def _humanize_variant(variant: str) -> str:
-    return _VARIANT_LABELS.get(variant, variant)
-
-
-def _humanize_reason(reason: str) -> str:
-    for prefix, label in _REASON_PREFIXES:
-        if reason == prefix or reason.startswith(prefix + ":"):
-            suffix = reason[len(prefix) + 1:] if reason.startswith(prefix + ":") else ""
-            if suffix:
-                parts = [_humanize_variant(p.strip()) for p in suffix.split(",")]
-                return f"{label}: {', '.join(parts)}"
-            return label
-    return reason
 
 
 def render_image_validation_summary(target=None) -> None:
@@ -341,8 +307,8 @@ def render_image_validation_summary(target=None) -> None:
                     st.caption("Причины отката:")
                     for asset in fallback_details[-5:]:
                         image_id = str(_asset_value(asset, "image_id", "unknown"))
-                        final_variant = _humanize_variant(str(_asset_value(asset, "final_variant", "original")))
-                        final_reason = _humanize_reason(str(_asset_value(asset, "final_reason", "Причина не указана.")))
+                        final_variant = humanize_variant(str(_asset_value(asset, "final_variant", "original")))
+                        final_reason = humanize_reason(str(_asset_value(asset, "final_reason", "Причина не указана.")))
                         st.caption(f"• {image_id}: оставлен {final_variant} — {final_reason}")
 
                 validation_errors = summary.get("validation_errors", [])
@@ -433,12 +399,14 @@ def render_markdown_preview(
     st.session_state[last_count_key] = option_count
 
     select_widget_key = _mdpreview_key(title, "selectbox")
+    textarea_key = _mdpreview_key(title, "textarea")
 
     with sink.container():
         st.selectbox(
-            f"Markdown блок",
+            "Markdown",
             options=list(range(1, option_count + 1)),
             index=current_selection - 1,
+            format_func=lambda n: f"{n} / {option_count}",
             key=select_widget_key,
             help="На экране показывается только один Markdown-блок, чтобы интерфейс не перегружался на больших документах.",
         )
@@ -447,13 +415,14 @@ def render_markdown_preview(
             st.session_state[selected_key] = chosen
         else:
             chosen = current_selection
+        st.session_state[textarea_key] = blocks[chosen - 1]
         st.text_area(
             "Markdown",
             value=blocks[chosen - 1],
             height=300,
             disabled=True,
             label_visibility="collapsed",
-            key=_mdpreview_key(title, "textarea"),
+            key=textarea_key,
         )
 
 

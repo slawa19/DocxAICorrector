@@ -526,9 +526,7 @@ def _build_replacement_blocks_from_fragments(
     for fragment in fragments:
         if isinstance(fragment, tuple) and len(fragment) == 2 and fragment[0] == "table":
             flush_current_paragraph()
-            table_element = _build_variant_table_element(paragraph, fragment[1])
-            if table_element is not None:
-                replacement_blocks.append(table_element)
+            replacement_blocks.extend(_build_variant_block_elements(paragraph, fragment[1]))
             continue
 
         if current_paragraph is None:
@@ -557,35 +555,24 @@ def _extract_paragraph_child_text(child) -> str:
     return _extract_run_text(child)
 
 
-def _build_variant_table_element(paragraph, asset: ImageAsset):
+def _build_variant_block_elements(paragraph, asset: ImageAsset) -> list[etree._Element]:
     insertions = resolve_image_insertions(asset)
     if not insertions:
-        return None
-    tbl = OxmlElement("w:tbl")
-    tbl_pr = OxmlElement("w:tblPr")
-    tbl.append(tbl_pr)
-
-    tbl_grid = OxmlElement("w:tblGrid")
-    for _ in range(len(insertions)):
-        grid_col = OxmlElement("w:gridCol")
-        tbl_grid.append(grid_col)
-    tbl.append(tbl_grid)
-
-    row = OxmlElement("w:tr")
-    tbl.append(row)
+        return []
 
     add_picture_kwargs = _build_picture_size_kwargs(asset)
+    blocks: list[etree._Element] = []
     for label, image_bytes in insertions:
-        cell = OxmlElement("w:tc")
-        cell_properties = OxmlElement("w:tcPr")
-        cell.append(cell_properties)
-
-        image_paragraph = OxmlElement("w:p")
-        paragraph_properties = OxmlElement("w:pPr")
-        alignment = OxmlElement("w:jc")
+        image_paragraph = _clone_paragraph_element(paragraph)
+        paragraph_properties = _find_child_element(image_paragraph, "pPr")
+        if paragraph_properties is None:
+            paragraph_properties = OxmlElement("w:pPr")
+            image_paragraph.insert(0, paragraph_properties)
+        alignment = _find_child_element(paragraph_properties, "jc")
+        if alignment is None:
+            alignment = OxmlElement("w:jc")
+            paragraph_properties.append(alignment)
         alignment.set(qn("w:val"), "center")
-        paragraph_properties.append(alignment)
-        image_paragraph.append(paragraph_properties)
 
         image_run = OxmlElement("w:r")
         Run(image_run, paragraph).add_picture(BytesIO(image_bytes), **add_picture_kwargs)
@@ -593,33 +580,8 @@ def _build_variant_table_element(paragraph, asset: ImageAsset):
             _set_picture_description(image_run, label)
 
         image_paragraph.append(image_run)
-        cell.append(image_paragraph)
-        row.append(cell)
-
-    table = Table(tbl, paragraph._parent)
-    _configure_variant_table_layout(table)
-    return tbl
-
-
-def _configure_variant_table_layout(table) -> None:
-    table.autofit = True
-    table_properties = table._element.tblPr
-    if table_properties is None:
-        table_properties = OxmlElement("w:tblPr")
-        table._element.insert(0, table_properties)
-
-    borders = _find_child_element(table_properties, "tblBorders")
-    if borders is None:
-        borders = OxmlElement("w:tblBorders")
-        table_properties.append(borders)
-    else:
-        for child in list(borders):
-            borders.remove(child)
-
-    for edge_name in ("top", "left", "bottom", "right", "insideH", "insideV"):
-        border = OxmlElement(f"w:{edge_name}")
-        border.set(qn("w:val"), "nil")
-        borders.append(border)
+        blocks.append(image_paragraph)
+    return blocks
 
 
 def _set_picture_description(run_element, description: str) -> None:

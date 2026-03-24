@@ -7,7 +7,7 @@ ENV_PATH="$PROJECT_ROOT/.env"
 APP_PATH="$PROJECT_ROOT/app.py"
 VENV_DIR="$PROJECT_ROOT/.venv"
 VENV_PYTHON="$VENV_DIR/bin/python"
-WSL_PID_PATH="$RUN_DIR/wsl_streamlit.pid"
+WSL_PID_PATH="${DOCXAI_WSL_PID_PATH:-$RUN_DIR/wsl_streamlit.pid}"
 PANDOC_EXE="$VENV_DIR/bin/pandoc"
 STREAMLIT_LOG_PATH="$RUN_DIR/streamlit.log"
 APP_READY_PATH="$RUN_DIR/app.ready"
@@ -95,6 +95,45 @@ app_ready() {
     [[ -f "$APP_READY_PATH" ]]
 }
 
+recover_managed_pid_from_port() {
+    local port="${1:-$DEFAULT_PORT}"
+    local probe_output=""
+    local probe_exit=0
+    local pid=""
+    local found="false"
+    local owned="false"
+
+    if probe_output="$(find_repo_owned_streamlit_by_port "$port")"; then
+        probe_exit=0
+    else
+        probe_exit=$?
+    fi
+
+    if [[ "$probe_exit" -ne 0 ]]; then
+        return 1
+    fi
+
+    while IFS='=' read -r key value; do
+        [[ -n "$key" ]] || continue
+        case "$key" in
+            found) found="$value" ;;
+            owned) owned="$value" ;;
+            pid) pid="$value" ;;
+        esac
+    done <<< "$probe_output"
+
+    if [[ "$found" != "true" || "$owned" != "true" || -z "$pid" ]]; then
+        return 1
+    fi
+
+    if ! kill -0 "$pid" 2>/dev/null; then
+        return 1
+    fi
+
+    printf '%s\n' "$pid" > "$WSL_PID_PATH"
+    printf '%s\n' "$pid"
+}
+
 print_runtime_status() {
     local port="${1:-$DEFAULT_PORT}"
     local managed_pid=""
@@ -114,6 +153,14 @@ print_runtime_status() {
 
     if is_port_open "$port"; then
         port_open="true"
+    fi
+
+    if [[ "$managed_pid_running" != "true" && "$port_open" == "true" ]]; then
+        local recovered_pid=""
+        if recovered_pid="$(recover_managed_pid_from_port "$port")"; then
+            managed_pid="$recovered_pid"
+            managed_pid_running="true"
+        fi
     fi
 
     if health_ok "$port"; then
@@ -492,89 +539,6 @@ raise SystemExit(main())
 PY
 }
 
-stop_port_streamlit() {
-    local port="${1:-$DEFAULT_PORT}"
-    local probe_output=""
-    local probe_exit=0
-    local pid=""
-    local command_line=""
-    local found="false"
-    local owned="false"
-    local line=""
-
-    if probe_output="$(find_repo_owned_streamlit_by_port "$port")"; then
-        probe_exit=0
-    else
-        probe_exit=$?
-    fi
-
-    while IFS='=' read -r key value; do
-        [[ -n "$key" ]] || continue
-        case "$key" in
-            found) found="$value" ;;
-            owned) owned="$value" ;;
-            pid) pid="$value" ;;
-            cmdline) command_line="$value" ;;
-            error)
-                printf 'error=%s\n' "$value"
-                return "$probe_exit"
-                ;;
-        esac
-    done <<< "$probe_output"
-
-    if [[ "$probe_exit" -eq 3 ]]; then
-        printf 'error=port %s is occupied by a foreign process and cannot be restarted safely' "$port"
-        if [[ -n "$pid" ]]; then
-            printf ' (pid=%s' "$pid"
-            if [[ -n "$command_line" ]]; then
-                printf ', cmd=%s' "$command_line"
-            fi
-            printf ')'
-        fi
-        printf '\n'
-        return 3
-    fi
-
-    if [[ "$probe_exit" -ne 0 ]]; then
-        if [[ -n "$probe_output" ]]; then
-            printf '%s\n' "$probe_output"
-        else
-            printf 'error=failed_to_inspect_port_owner\n'
-        fi
-        return "$probe_exit"
-    fi
-
-    if [[ "$found" != "true" || "$owned" != "true" || -z "$pid" ]]; then
-        printf 'recovered=false\n'
-        printf 'pid=\n'
-        return 0
-    fi
-
-    if kill -0 "$pid" 2>/dev/null; then
-        kill "$pid" 2>/dev/null || true
-        local probe=""
-        for probe in 1 2 3 4 5 6 7 8; do
-            if ! kill -0 "$pid" 2>/dev/null; then
-                break
-            fi
-            sleep 0.25
-        done
-        if kill -0 "$pid" 2>/dev/null; then
-            kill -9 "$pid" 2>/dev/null || true
-        fi
-        if kill -0 "$pid" 2>/dev/null; then
-            printf 'error=repo-owned process on port %s did not stop cleanly (pid=%s)\n' "$port" "$pid"
-            return 1
-        fi
-    fi
-
-    rm -f "$WSL_PID_PATH"
-    rm -f "$APP_READY_PATH"
-    printf 'recovered=true\n'
-    printf 'pid=%s\n' "$pid"
-    printf 'cmdline=%s\n' "$command_line"
-}
-
 tail_log() {
     local lines="${1:-80}"
     if [[ -f "$STREAMLIT_LOG_PATH" ]]; then
@@ -612,9 +576,6 @@ case "${1:-}" in
         ;;
     stop-streamlit)
         stop_streamlit
-        ;;
-    stop-port-streamlit)
-        stop_port_streamlit "${2:-$DEFAULT_PORT}"
         ;;
     tail-log)
         tail_log "${2:-80}"

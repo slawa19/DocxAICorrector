@@ -197,29 +197,6 @@ function Stop-ManagedProject {
     Invoke-WslInProject 'stop-streamlit' 2>$null | Out-Null
 }
 
-function Stop-RepoOwnedProjectByPort {
-    param([int]$Port)
-
-    $rawOutput = Invoke-WslInProject 'stop-port-streamlit' @("$Port") 2>&1
-    $exitCode = $LASTEXITCODE
-    $status = Parse-KeyValueOutput -RawOutput $rawOutput
-
-    if ($exitCode -eq 0) {
-        return $status
-    }
-
-    if ($status.ContainsKey('error')) {
-        throw [System.InvalidOperationException]::new([string]$status['error'])
-    }
-
-    $details = ConvertTo-OutputText $rawOutput
-    if ($details) {
-        throw [System.InvalidOperationException]::new("Не удалось остановить process on port ${Port}: $details")
-    }
-
-    throw [System.InvalidOperationException]::new("Не удалось остановить process on port $Port.")
-}
-
 function Get-ProjectLogTail {
     param([int]$Lines = 80)
 
@@ -417,71 +394,6 @@ function Wait-ProjectStopped {
         stopped = (-not $managedPidRunning -and -not $portOpen)
         managed_pid_running = $managedPidRunning
         port_open = $portOpen
-        windows_port_open = $windowsPortOpen
-    }
-}
-
-function Invoke-ProjectStopSequence {
-    param(
-        [int]$Port = $port,
-        [switch]$AllowRepoOwnedPortRecovery
-    )
-
-    $status = Get-ProjectRuntimeStatus
-    $portOpen = ConvertTo-BoolFlag $status['port_open']
-    $managedPidRunning = ConvertTo-BoolFlag $status['managed_pid_running']
-
-    if (-not $portOpen -and -not $managedPidRunning) {
-        return @{
-            stopped = $true
-            already_stopped = $true
-            recovered_unmanaged = $false
-            managed_pid_running = $managedPidRunning
-            port_open = $portOpen
-            windows_port_open = $false
-        }
-    }
-
-    $recoveredUnmanaged = $false
-    $recoveredPid = ''
-
-    if ($portOpen -and -not $managedPidRunning) {
-        if (-not $AllowRepoOwnedPortRecovery) {
-            throw "Порт $Port занят неуправляемым процессом. Stop Project останавливает только экземпляр, запущенный через scripts/start-project.ps1."
-        }
-
-        Write-Warn "Порт $Port занят процессом без PID-файла. Пытаюсь безопасно завершить только экземпляр этого репозитория."
-        $recoveryStatus = Stop-RepoOwnedProjectByPort -Port $Port
-        $recoveredUnmanaged = ConvertTo-BoolFlag $recoveryStatus['recovered']
-        $recoveredPid = ''
-        if ($recoveryStatus.ContainsKey('pid')) {
-            $recoveredPid = [string]$recoveryStatus['pid']
-        }
-        if ($recoveredPid) {
-            Write-Ok "Остановлен экземпляр приложения без PID-файла. PID=$recoveredPid"
-        }
-    }
-    else {
-        Stop-ManagedProject
-    }
-
-    $stopStatus = Wait-ProjectStopped -Port $Port -TimeoutSeconds 10
-    $stopped = [bool]$stopStatus['stopped']
-    $managedPidStillRunning = [bool]$stopStatus['managed_pid_running']
-    $wslPortStillOpen = [bool]$stopStatus['port_open']
-    $windowsPortOpen = [bool]$stopStatus['windows_port_open']
-
-    if (-not $stopped) {
-        throw "Порт $Port всё ещё занят после команды остановки. managed_pid_running=$managedPidStillRunning; wsl_port_open=$wslPortStillOpen; windows_port_open=$windowsPortOpen"
-    }
-
-    return @{
-        stopped = $stopped
-        already_stopped = $false
-        recovered_unmanaged = $recoveredUnmanaged
-        recovered_pid = $recoveredPid
-        managed_pid_running = $managedPidStillRunning
-        port_open = $wslPortStillOpen
         windows_port_open = $windowsPortOpen
     }
 }

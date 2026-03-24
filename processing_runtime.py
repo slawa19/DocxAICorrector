@@ -569,6 +569,7 @@ def drain_preparation_events(*, reset_run_state, set_processing_status, finalize
             st.session_state.prepared_source_key = str(getattr(prepared_run_context, "prepared_source_key", ""))
             st.session_state.preparation_worker = None
             st.session_state.preparation_event_queue = None
+            st.session_state.processing_outcome = ProcessingOutcome.IDLE.value
             finalize_processing_status(
                 "Документ подготовлен",
                 "Анализ файла завершён. Можно запускать обработку.",
@@ -582,6 +583,7 @@ def drain_preparation_events(*, reset_run_state, set_processing_status, finalize
             st.session_state.preparation_event_queue = None
             st.session_state.last_background_error = event.error_details
             st.session_state.last_error = event.error_message
+            st.session_state.processing_outcome = ProcessingOutcome.FAILED.value
             finalize_processing_status(
                 "Ошибка подготовки",
                 event.error_message,

@@ -3,9 +3,13 @@
 try {
     Write-Step 'Restarting project'
 
+    $stopScript = Join-Path $PSScriptRoot 'stop-project.ps1'
     $startScript = Join-Path $PSScriptRoot 'start-project.ps1'
     $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
+    if (-not (Test-Path $stopScript)) {
+        throw "Missing stop-project.ps1: $stopScript"
+    }
     if (-not (Test-Path $startScript)) {
         throw "Missing start-project.ps1: $startScript"
     }
@@ -21,12 +25,10 @@ try {
     )
 
     Write-Step 'Step 1/2: stopping project'
-    $stopStatus = Invoke-ProjectStopSequence -Port $port -AllowRepoOwnedPortRecovery
-    if ([bool]$stopStatus['already_stopped']) {
-        Write-Ok 'Проект уже был остановлен перед рестартом'
-    }
-    elseif ([bool]$stopStatus['windows_port_open']) {
-        Write-Warn "WSL runtime уже остановлен, но Windows localhost:$port ещё кратковременно виден занятым. Продолжаю рестарт."
+    & $powershellExe @commonArgs $stopScript
+    $stopExitCode = $LASTEXITCODE
+    if ($stopExitCode -ne 0) {
+        throw "Stop Project failed with exit code $stopExitCode"
     }
 
     Write-Step 'Step 2/2: starting project'

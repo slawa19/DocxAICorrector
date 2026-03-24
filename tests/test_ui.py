@@ -379,6 +379,71 @@ def test_render_live_status_shows_cache_source_for_preparation(monkeypatch):
     assert progress_calls == [0.9]
 
 
+def test_render_preparation_summary_uses_stage_and_detail(monkeypatch):
+    session_state = SessionState()
+    info_calls = []
+    writes = []
+    captions = []
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "info", lambda text: info_calls.append(text))
+    monkeypatch.setattr(ui.st, "write", lambda text: writes.append(text))
+    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
+
+    ui.render_preparation_summary(
+        {
+            "stage": "Документ подготовлен",
+            "detail": "Можно запускать обработку.",
+            "file_size_bytes": 1048576,
+            "paragraph_count": 12,
+            "image_count": 2,
+            "source_chars": 5000,
+            "block_count": 4,
+            "cached": True,
+            "elapsed": "1.2 c",
+        },
+        FakeTarget(),
+    )
+
+    assert info_calls == ["Документ подготовлен"]
+    assert writes == ["Можно запускать обработку."]
+    assert any("Источник: cache | Подготовка: 1.2 c" in text for text in captions)
+    assert any("1.00 MB | 12 абзацев | 2 изображений | 5000 символов | 4 блоков" in text for text in captions)
+
+
+def test_render_live_status_shows_preparation_failure_title(monkeypatch):
+    session_state = SessionState(
+        processing_status={
+            "is_running": False,
+            "phase": "preparing",
+            "stage": "Ошибка подготовки",
+            "detail": "boom",
+            "file_size_bytes": 0,
+            "paragraph_count": 0,
+            "image_count": 0,
+            "source_chars": 0,
+            "block_count": 0,
+            "cached": False,
+            "progress": 1.0,
+            "started_at": None,
+        },
+        activity_feed=[],
+    )
+    info_calls = []
+    writes = []
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "info", lambda text: info_calls.append(text))
+    monkeypatch.setattr(ui.st, "write", lambda text: writes.append(text))
+    monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ui.st, "progress", lambda *args, **kwargs: None)
+
+    ui.render_live_status(FakeTarget())
+
+    assert info_calls == ["Ошибка подготовки файла"]
+    assert writes == ["boom"]
+
+
 def test_render_partial_result_shows_preview_instead_of_download(monkeypatch):
     session_state = SessionState(
         latest_markdown="chunk-1",
@@ -491,8 +556,8 @@ def test_render_markdown_preview_uses_only_selected_and_count_keys(monkeypatch):
 def test_render_run_log_shows_entries_in_chronological_order(monkeypatch):
     session_state = SessionState(
         run_log=[
-            {"status": "OK", "block_index": 1, "block_count": 3, "target_chars": 10, "context_chars": 2, "details": "first"},
-            {"status": "OK", "block_index": 2, "block_count": 3, "target_chars": 12, "context_chars": 3, "details": "second"},
+            {"kind": "block", "status": "OK", "block_index": 1, "block_count": 3, "target_chars": 10, "context_chars": 2, "details": "first", "message": "[OK] Блок 1/3 | цель: 10 симв. | контекст: 2 симв. | first"},
+            {"kind": "block", "status": "OK", "block_index": 2, "block_count": 3, "target_chars": 12, "context_chars": 3, "details": "second", "message": "[OK] Блок 2/3 | цель: 12 симв. | контекст: 3 симв. | second"},
         ],
         activity_feed=[{"time": "10:00:00", "message": "Блок 2 отправлен в OpenAI."}],
         processing_status={"stage": "Блок обработан", "detail": "Последний блок готов.", "progress": 0.1, "phase": "processing"},
@@ -505,55 +570,73 @@ def test_render_run_log_shows_entries_in_chronological_order(monkeypatch):
     monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
     monkeypatch.setattr(ui.st, "write", lambda text: writes.append(text))
-    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
 
     ui.render_run_log(FakeTarget())
 
-    assert captions == ["События", "10:00:00  Блок 2 отправлен в OpenAI."]
+    assert captions == []
     assert writes[0].endswith("first")
     assert writes[1].endswith("second")
 
 
-def test_render_run_log_uses_processing_activity_without_block_entries(monkeypatch):
+def test_render_run_log_shows_image_entries(monkeypatch):
+    session_state = SessionState(
+        run_log=[
+            {"kind": "image", "status": "IMG WARN", "message": "[IMG WARN] Изображение img-2 | оставлен оригинал | ошибка валидации"},
+        ],
+        activity_feed=[],
+        processing_status={"phase": "processing"},
+    )
+    writes = []
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
+    monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(ui.st, "write", lambda text: writes.append(text))
+
+    ui.render_run_log(FakeTarget())
+
+    assert writes == ["[IMG WARN] Изображение img-2 | оставлен оригинал | ошибка валидации"]
+
+
+def test_render_run_log_ignores_processing_activity_without_block_entries(monkeypatch):
     session_state = SessionState(
         run_log=[],
         activity_feed=[{"time": "10:00:00", "message": "Запуск обработки документа."}],
         processing_status={"stage": "Инициализация", "detail": "Проверяю окружение.", "progress": 0.0, "phase": "processing"},
         last_log_hint="hint",
     )
-    captions = []
+    writes = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
     monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
-    monkeypatch.setattr(ui.st, "write", lambda *args, **kwargs: None)
-    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
+    monkeypatch.setattr(ui.st, "write", lambda text: writes.append(text))
 
     ui.render_run_log(FakeTarget())
 
-    assert captions == ["События", "10:00:00  Запуск обработки документа."]
+    assert writes == []
 
 
-def test_render_run_log_skips_preparation_phase_with_empty_run_log(monkeypatch):
-    """render_run_log returns early when phase is 'preparing' and run_log is empty.
-
-    Preparation activity is rendered by render_live_status, not render_run_log."""
+def test_render_run_log_skips_activity_feed_when_run_log_empty(monkeypatch):
     session_state = SessionState(
         run_log=[],
         activity_feed=[{"time": "10:00:00", "message": "[Анализ] Разбор DOCX: Ищу абзацы."}],
         processing_status={"stage": "Подготовка документа", "detail": "Идет анализ файла.", "progress": 0.9, "phase": "preparing"},
         last_log_hint="hint",
     )
-    progress_calls = []
+    fragment_calls = []
+
+    def fake_fragment(fn):
+        fragment_calls.append(fn.__name__)
+        return fn
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
-    monkeypatch.setattr(ui.st, "fragment", lambda fn: fn)
+    monkeypatch.setattr(ui.st, "fragment", fake_fragment)
     monkeypatch.setattr(ui.st, "expander", lambda *args, **kwargs: nullcontext())
-    monkeypatch.setattr(ui.st, "progress", lambda value: progress_calls.append(value))
 
     ui.render_run_log(FakeTarget())
 
-    assert progress_calls == []
+    assert fragment_calls == []
 
 
 def test_render_result_bundle_uses_manual_preview_mode(monkeypatch):

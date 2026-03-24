@@ -5,6 +5,7 @@ from datetime import datetime
 import streamlit as st
 
 from constants import APP_LOG_PATH
+from message_formatting import build_block_journal_entry, build_image_journal_entry
 from restart_store import clear_restart_source
 from workflow_state import ProcessingOutcome
 
@@ -95,7 +96,7 @@ def reset_run_state(*, keep_restart_source: bool = True) -> None:
     st.session_state.latest_markdown = ""
     st.session_state.processed_block_markdowns = []
     for _key in list(st.session_state.keys()):
-        if _key.startswith("mdpreview_"):
+        if isinstance(_key, str) and _key.startswith("mdpreview_"):
             del st.session_state[_key]
     st.session_state.latest_docx_bytes = None
     st.session_state.latest_result_notice = None
@@ -132,6 +133,11 @@ def push_activity(message: str) -> None:
     timestamp = _current_clock_label()
     st.session_state.activity_feed.append({"time": timestamp, "message": message})
     st.session_state.activity_feed = st.session_state.activity_feed[-20:]
+
+
+def _append_run_log_entry(entry: dict[str, object]) -> None:
+    st.session_state.run_log.append(entry)
+    st.session_state.run_log = st.session_state.run_log[-30:]
 
 
 def set_processing_status(
@@ -205,6 +211,8 @@ def append_image_log(
     confidence: float,
     missing_labels: list[str] | None = None,
     suspicious_reasons: list[str] | None = None,
+    final_variant: str | None = None,
+    final_reason: str | None = None,
 ) -> None:
     summary = dict(st.session_state.image_processing_summary)
     summary["total_images"] = int(summary.get("total_images", 0)) + 1
@@ -230,6 +238,18 @@ def append_image_log(
         st.session_state.image_validation_failures = failures[-10:]
 
     st.session_state.image_processing_summary = summary
+    _append_run_log_entry(
+        build_image_journal_entry(
+            image_id=image_id,
+            status=status,
+            decision=decision,
+            confidence=confidence,
+            missing_labels=missing_labels,
+            suspicious_reasons=suspicious_reasons,
+            final_variant=final_variant,
+            final_reason=final_reason,
+        )
+    )
     push_activity(f"[IMG] {image_id}: {status} | conf: {confidence:.2f} | {decision}")
 
 
@@ -241,14 +261,13 @@ def append_log(
     context_chars: int,
     details: str,
 ) -> None:
-    st.session_state.run_log.append(
-        {
-            "status": status,
-            "block_index": block_index,
-            "block_count": block_count,
-            "target_chars": target_chars,
-            "context_chars": context_chars,
-            "details": details,
-        }
+    _append_run_log_entry(
+        build_block_journal_entry(
+            status=status,
+            block_index=block_index,
+            block_count=block_count,
+            target_chars=target_chars,
+            context_chars=context_chars,
+            details=details,
+        )
     )
-    st.session_state.run_log = st.session_state.run_log[-30:]

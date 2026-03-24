@@ -24,6 +24,7 @@ from app_runtime import (
     start_background_processing,
 )
 from logger import fail_critical, log_event, present_error
+from message_formatting import get_preparation_state_unavailable_message, get_restartable_outcome_notice
 from processing_runtime import (
     freeze_uploaded_file,
     get_current_result_bundle,
@@ -49,7 +50,7 @@ from ui import (
     render_section_gap,
     render_sidebar,
 )
-from workflow_state import IdleViewState, ProcessingOutcome
+from workflow_state import IdleViewState, ProcessingOutcome, has_restartable_outcome
 
 PERSISTED_SOURCE_TTL_SECONDS = 12 * 60 * 60
 _CLEANUP_THREAD_LOCK = threading.Lock()
@@ -339,10 +340,7 @@ def main() -> None:
         if str(st.session_state.get("preparation_input_marker", "")) == current_preparation_request_marker:
             prepared_run_context = st.session_state.get("prepared_run_context")
         if prepared_run_context is None:
-            st.warning(
-                "Подготовка файла еще не завершилась или состояние подготовки было сброшено. Подождите несколько секунд. "
-                "Если экран не обновляется, загрузите файл повторно."
-            )
+            st.warning(get_preparation_state_unavailable_message())
             render_live_status()
             render_run_log()
             _mark_app_ready()
@@ -413,14 +411,16 @@ def main() -> None:
     image_assets = prepared_run_context.image_assets
     jobs = prepared_run_context.jobs
     source_text = prepared_run_context.source_text
+    processing_outcome = str(st.session_state.get("processing_outcome") or ProcessingOutcome.IDLE.value)
+    restartable_outcome = has_restartable_outcome(processing_outcome)
 
-    if current_result is None and st.session_state.get("processing_outcome") == ProcessingOutcome.STOPPED.value:
-        st.warning(
-            f"Обработка файла «{uploaded_filename}» была остановлена. Можно изменить настройки и запустить заново без повторной загрузки."
-        )
+    outcome_notice = get_restartable_outcome_notice(processing_outcome, uploaded_filename)
+    if current_result is None and outcome_notice is not None:
+        notice_level, notice_message = outcome_notice
+        getattr(st, notice_level)(notice_message)
 
     _store_preparation_summary(prepared_run_context=prepared_run_context)
-    if not processing_active:
+    if not processing_active and not restartable_outcome:
         set_processing_status(
             stage="Документ подготовлен",
             detail=f"Собрано {len(jobs)} блоков. Можно запускать обработку.",
@@ -435,7 +435,7 @@ def main() -> None:
             is_running=False,
             phase="preparing",
         )
-    if not st.session_state.activity_feed:
+    if not st.session_state.activity_feed and not restartable_outcome:
         push_activity(f"Документ разобран на {len(jobs)} блоков.")
 
     if len(jobs) == 1:
@@ -448,7 +448,8 @@ def main() -> None:
     has_completed_result = bool(
         st.session_state.latest_docx_bytes and st.session_state.latest_source_token == uploaded_file_token
     )
-    render_preparation_summary(st.session_state.get("latest_preparation_summary"))
+    if not restartable_outcome:
+        render_preparation_summary(st.session_state.get("latest_preparation_summary"))
     render_run_log()
     render_image_validation_summary()
     render_partial_result()
@@ -474,7 +475,7 @@ def main() -> None:
             uploaded_filename=uploaded_filename,
             uploaded_token=uploaded_file_token,
             source_bytes=uploaded_file_bytes,
-            jobs=jobs,
+            jobs=cast(list[dict[str, str | int]], jobs),
             source_paragraphs=paragraphs,
             image_assets=image_assets,
             image_mode=image_mode,

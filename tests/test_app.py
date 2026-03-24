@@ -385,6 +385,91 @@ def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):
     assert summary_calls[0]["block_count"] == 2
 
 
+@pytest.mark.parametrize("outcome", ["stopped", "failed"])
+def test_main_hides_preparation_summary_for_restartable_outcome(monkeypatch, outcome):
+    prepared_run_context = type(
+        "PreparedRunContextStub",
+        (),
+        {
+            "uploaded_filename": "report.docx",
+            "uploaded_file_bytes": b"abc",
+            "uploaded_file_token": "report.docx:3:token",
+            "paragraphs": ["p1", "p2"],
+            "image_assets": [],
+            "jobs": [{"target_text": "block one"}, {"target_text": "block two"}],
+            "source_text": "source-text",
+            "preparation_stage": "Документ подготовлен",
+            "preparation_detail": "Анализ завершён. Можно запускать обработку.",
+            "preparation_cached": False,
+            "preparation_elapsed_seconds": 1.4,
+        },
+    )()
+    uploaded_file = UploadedFileStub("report.docx", b"abc")
+    session_state = SessionState(
+        app_start_logged=True,
+        processing_status={"stage": "Остановлено пользователем", "detail": "Обработка остановлена пользователем.", "phase": "processing"},
+        activity_feed=[],
+        image_assets=[],
+        preparation_input_marker="report.docx:3:ba7816bf8f01cfea:6000",
+        preparation_failed_marker="",
+        prepared_run_context=prepared_run_context,
+        latest_docx_bytes=None,
+        latest_source_token="",
+        latest_markdown="",
+        latest_image_mode="safe",
+        last_error="Ошибка обработки" if outcome == "failed" else "",
+        last_log_hint="hint",
+        processing_outcome=outcome,
+    )
+    warning_calls = []
+    error_calls = []
+    summary_calls = []
+    status_calls = []
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app, "init_session_state", lambda: None)
+    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
+    monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
+    monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
+    monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
+    monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "warning", lambda text: warning_calls.append(text))
+    monkeypatch.setattr(app.st, "error", lambda text, *args, **kwargs: error_calls.append(text))
+    monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_preparation_summary", lambda summary, *args, **kwargs: summary_calls.append(summary))
+    monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
+    monkeypatch.setattr(app, "set_processing_status", lambda **kwargs: status_calls.append(kwargs))
+    monkeypatch.setattr(compare_panel, "render_compare_all_apply_panel", lambda **kwargs: None)
+    monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)
+    monkeypatch.setattr(application_flow, "has_resettable_state", lambda **kwargs: False)
+    monkeypatch.setattr(application_flow, "derive_app_idle_view_state", lambda **kwargs: "file_selected")
+    monkeypatch.setattr(application_flow, "prepare_run_context", lambda **kwargs: (_ for _ in ()).throw(AssertionError("prepare_run_context should not be called")))
+
+    app.main()
+
+    assert summary_calls == []
+    assert status_calls == []
+    if outcome == "stopped":
+        assert warning_calls == [
+            "Обработка файла «report.docx» была остановлена. Можно изменить настройки и запустить заново без повторной загрузки."
+        ]
+        assert error_calls == []
+    else:
+        assert warning_calls == []
+        assert error_calls[0] == "Обработка файла «report.docx» завершилась ошибкой. Можно изменить настройки и запустить заново без повторной загрузки."
+
+
 def test_sync_selected_file_context_resets_run_state_for_new_file(monkeypatch):
     session_state = SessionState(
         selected_source_token="old.docx:10",

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -163,43 +165,75 @@ def test_wrapper_rejects_native_runtime_mode() -> None:
     assert "WSL-first workflow" in (result.stdout + result.stderr)
 
 
+def test_runtime_status_recovers_repo_owned_pid_when_pid_file_is_missing() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe_socket:
+        probe_socket.bind(("127.0.0.1", 0))
+        port = probe_socket.getsockname()[1]
 
-def test_stop_sequence_rejects_unmanaged_port_without_restart_recovery() -> None:
-    shared_path = _quote_for_powershell(_to_windows_path(REPO_ROOT / "scripts" / "_shared.ps1"))
-    result = _run_powershell_command(
-        (
-            f"& {{ . '{shared_path}'; "
-            "function Get-ProjectRuntimeStatus { @{ managed_pid_running = 'false'; port_open = 'true' } }; "
-            "try { Invoke-ProjectStopSequence -Port 8501 | Out-Null; exit 0 } "
-            "catch { Write-Output $_.Exception.Message; exit 2 } }"
-        )
+    pid_override_dir = Path(tempfile.mkdtemp())
+    pid_override_path = pid_override_dir / "wsl_streamlit.pid"
+    app_path = str(REPO_ROOT / "app.py")
+    process = subprocess.Popen(
+        [
+            "bash",
+            "-lc",
+            (
+                "exec -a streamlit python3 -c 'import socket, sys, time; "
+                "sock = socket.socket(); "
+                "sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); "
+                "sock.bind((\"127.0.0.1\", int(sys.argv[1]))); "
+                "sock.listen(1); "
+                "time.sleep(20)' \"$1\" \"$2\""
+            ),
+            "_",
+            str(port),
+            app_path,
+        ],
+        cwd=REPO_ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
     )
 
-    assert result.returncode == 2
-    assert "занят неуправляемым процессом" in (result.stdout + result.stderr)
+    try:
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if process.poll() is not None:
+                pytest.fail("fake streamlit probe process exited unexpectedly")
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as check_socket:
+                if check_socket.connect_ex(("127.0.0.1", port)) == 0:
+                    break
+            time.sleep(0.1)
+        else:
+            pytest.fail("fake streamlit probe process did not open the test port")
 
-
-def test_stop_sequence_allows_restart_recovery_for_repo_owned_port_process() -> None:
-    shared_path = _quote_for_powershell(_to_windows_path(REPO_ROOT / "scripts" / "_shared.ps1"))
-    result = _run_powershell_command(
-        (
-            f"& {{ . '{shared_path}'; "
-            "$script:recoveryCalled = $false; "
-            "function Get-ProjectRuntimeStatus { @{ managed_pid_running = 'false'; port_open = 'true' } }; "
-            "function Stop-RepoOwnedProjectByPort { param([int]$Port) $script:recoveryCalled = $true; @{ recovered = 'true'; pid = '4321' } }; "
-            "function Wait-ProjectStopped { param([int]$Port, [int]$TimeoutSeconds) @{ stopped = $true; managed_pid_running = $false; port_open = $false; windows_port_open = $false } }; "
-            "$status = Invoke-ProjectStopSequence -Port 8501 -AllowRepoOwnedPortRecovery; "
-            "Write-Output ('RECOVERY_CALLED=' + $script:recoveryCalled); "
-            "Write-Output ('RECOVERED=' + $status['recovered_unmanaged']); "
-            "Write-Output ('RECOVERED_PID=' + $status['recovered_pid']); "
-            "exit 0 }"
+        result = subprocess.run(
+            [str(REPO_ROOT / "scripts" / "project-control-wsl.sh"), "runtime-status", str(port)],
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=REPO_ROOT,
+            env={**os.environ, "DOCXAI_WSL_PID_PATH": str(pid_override_path)},
         )
-    )
 
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "RECOVERY_CALLED=True" in (result.stdout + result.stderr)
-    assert "RECOVERED=True" in (result.stdout + result.stderr)
-    assert "RECOVERED_PID=4321" in (result.stdout + result.stderr)
+        assert result.returncode == 0, result.stdout + result.stderr
+        status_lines = dict(
+            line.split("=", 1)
+            for line in result.stdout.splitlines()
+            if "=" in line
+        )
+        assert status_lines["managed_pid_running"] == "true"
+        assert status_lines["managed_pid"] == str(process.pid)
+        assert status_lines["state"] == "managed-starting"
+        assert pid_override_path.read_text(encoding="utf-8").strip() == str(process.pid)
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+        shutil.rmtree(pid_override_dir, ignore_errors=True)
 
 def test_vscode_test_tasks_normalize_windows_relative_paths() -> None:
     tasks_by_label = {task["label"]: task for task in _load_vscode_tasks()}

@@ -2,7 +2,7 @@ import logging
 import traceback
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from typing import Protocol, TypeAlias
+from typing import Any, Protocol, TypeAlias, cast
 
 from image_pipeline_policy import build_generation_analysis, is_hard_validation_failure, resolve_validation_delivery_outcome, should_attempt_semantic_redraw
 from models import ImageAnalysisResult, ImageMode, ImageValidationResult, ImageVariantCandidate
@@ -536,6 +536,7 @@ def process_document_images(
     context.emit_image_reset(context.runtime)
     total_images = len(image_assets)
     for index, asset in enumerate(image_assets, start=1):
+        asset = cast(Any, asset)
         asset.update_pipeline_metadata(
             preserve_all_variants_in_docx=_should_preserve_all_variants_in_docx(context.config),
         )
@@ -561,6 +562,8 @@ def process_document_images(
                 decision=asset.final_decision,
                 confidence=0.0,
                 suspicious_reasons=[asset.final_reason],
+                final_variant=asset.final_variant,
+                final_reason=asset.final_reason,
             )
             processed_assets.append(asset)
             context.emit_activity(
@@ -590,6 +593,7 @@ def process_document_images(
                     detected_mime_type=detected_source_mime_type,
                     log_event_fn=context.log_event_fn,
                 )
+                asset = cast(Any, asset)
                 context.emit_image_log(
                     context.runtime,
                     image_id=asset.image_id,
@@ -597,6 +601,8 @@ def process_document_images(
                     decision=asset.final_decision,
                     confidence=0.0,
                     suspicious_reasons=[asset.final_reason],
+                    final_variant=asset.final_variant,
+                    final_reason=asset.final_reason,
                 )
                 processed_assets.append(asset)
                 context.emit_activity(
@@ -642,6 +648,7 @@ def process_document_images(
                     client=image_client,
                     budget=document_call_budget,
                 )
+                asset = cast(Any, asset)
             elif not semantic_attempt_allowed:
                 asset.safe_bytes = context.generate_candidate(
                     asset.original_bytes,
@@ -671,7 +678,9 @@ def process_document_images(
                     pipeline_context=context,
                     client=image_client,
                 )
+                asset = cast(Any, asset)
 
+            asset = cast(Any, asset)
             validation_result = asset.validation_result
             confidence = (
                 float(getattr(validation_result, "validator_confidence", 0.0))
@@ -698,6 +707,8 @@ def process_document_images(
                 suspicious_reasons=(
                     list(getattr(validation_result, "suspicious_reasons", [])) if validation_result is not None else []
                 ),
+                final_variant=asset.final_variant,
+                final_reason=asset.final_reason,
             )
             processed_assets.append(asset)
             context.emit_activity(
@@ -705,6 +716,7 @@ def process_document_images(
                 f"Изображение {asset.image_id}: {asset.final_variant or 'original'} | {asset.final_decision or 'accept'}.",
             )
         except context.image_model_call_budget_exceeded_cls as exc:
+            asset = cast(Any, asset)
             document_budget_exhausted = _is_budget_exhausted(document_call_budget)
             asset.validation_status = "failed"
             asset.final_decision = "fallback_original"
@@ -719,6 +731,8 @@ def process_document_images(
                 decision=asset.final_decision,
                 confidence=float(getattr(analysis, "confidence", 0.0)) if analysis is not None else 0.0,
                 suspicious_reasons=[asset.final_reason],
+                final_variant=asset.final_variant,
+                final_reason=asset.final_reason,
             )
             context.log_event_fn(
                 logging.WARNING,
@@ -733,6 +747,7 @@ def process_document_images(
             )
             processed_assets.append(asset)
         except Exception as exc:
+            asset = cast(Any, asset)
             asset.validation_status = "error"
             asset.final_decision = "fallback_original"
             asset.final_variant = "original"
@@ -744,6 +759,8 @@ def process_document_images(
                 decision=asset.final_decision,
                 confidence=float(getattr(analysis, "confidence", 0.0)) if analysis is not None else 0.0,
                 suspicious_reasons=[asset.final_reason],
+                final_variant=asset.final_variant,
+                final_reason=asset.final_reason,
             )
             context.log_event_fn(
                 logging.ERROR,

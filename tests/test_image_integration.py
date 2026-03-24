@@ -705,6 +705,8 @@ def test_process_document_images_skips_unsupported_source_image_without_validati
             "decision": "fallback_original",
             "confidence": 0.0,
             "suspicious_reasons": ["unsupported_source_image_format:image/x-emf"],
+                "final_variant": "original",
+                "final_reason": "unsupported_source_image_format:image/x-emf",
         }
     ]
 

@@ -28,7 +28,7 @@ from formatting_transfer import (
     preserve_source_paragraph_properties,
 )
 from image_reinsertion import (
-    _build_variant_table_element,
+    _build_variant_block_elements,
     _replace_xml_element_with_sequence,
     resolve_image_insertions,
     resolve_final_image_bytes,
@@ -1117,10 +1117,9 @@ def test_reinsert_inline_images_labels_manual_review_variants():
         for paragraph in cell.paragraphs
     )
 
-    assert len(updated_doc.tables) == 1
-    assert len(updated_doc.tables[0].rows[0].cells) == 3
+    assert len(updated_doc.tables) == 0
     assert len(updated_doc.inline_shapes) == 3
-    assert len(updated_doc.paragraphs) == 0
+    assert len(updated_doc.paragraphs) == 3
     assert "candidate1" not in visible_text
     assert "candidate2" not in visible_text
     assert _extract_docpr_descriptions(updated_doc._element) == ["safe", "candidate1", "candidate2"]
@@ -1547,11 +1546,10 @@ def test_reinsert_inline_images_uses_shared_table_layout_for_multi_variant_place
     updated_bytes = reinsert_inline_images(buffer.getvalue(), [asset])
     updated_doc = Document(BytesIO(updated_bytes))
 
-    assert [paragraph.text for paragraph in updated_doc.paragraphs] == ["До ", " после"]
+    assert [paragraph.text for paragraph in updated_doc.paragraphs] == ["До ", "", "", "", " после"]
     assert updated_doc.paragraphs[0].runs[0].bold is True
-    assert updated_doc.paragraphs[1].runs[0].italic is True
-    assert len(updated_doc.tables) == 1
-    assert len(updated_doc.tables[0].rows[0].cells) == 3
+    assert updated_doc.paragraphs[-1].runs[0].italic is True
+    assert len(updated_doc.tables) == 0
     assert len(updated_doc.inline_shapes) == 3
     assert _extract_docpr_descriptions(updated_doc._element) == ["safe", "candidate1", "candidate2"]
 
@@ -1585,8 +1583,7 @@ def test_reinsert_inline_images_preserves_hyperlink_when_multi_variant_table_is_
 
     assert "ссылка" in visible_text
     assert "после" in visible_text
-    assert len(updated_doc.tables) == 1
-    assert len(updated_doc.tables[0].rows[0].cells) == 3
+    assert len(updated_doc.tables) == 0
     assert len(updated_doc.inline_shapes) == 3
     assert len(updated_doc._element.xpath(".//w:hyperlink")) == 1
     assert _extract_docpr_descriptions(updated_doc._element) == ["safe", "candidate1", "candidate2"]
@@ -1629,7 +1626,7 @@ def test_reinsert_inline_images_logs_warning_when_all_replacement_strategies_fai
     ]
 
 
-def test_build_variant_table_element_returns_none_for_empty_insertions(monkeypatch):
+def test_build_variant_block_elements_returns_empty_for_empty_insertions(monkeypatch):
     doc = Document()
     paragraph = doc.add_paragraph("placeholder")
     asset = ImageAsset(
@@ -1642,7 +1639,7 @@ def test_build_variant_table_element_returns_none_for_empty_insertions(monkeypat
 
     monkeypatch.setattr(image_reinsertion, "resolve_image_insertions", lambda current_asset: [])
 
-    assert _build_variant_table_element(paragraph, asset) is None
+    assert _build_variant_block_elements(paragraph, asset) == []
 
 
 def test_reinsert_inline_images_keeps_placeholder_text_when_no_image_bytes_resolved():
@@ -1801,11 +1798,10 @@ def test_reinsert_inline_images_uses_shared_table_layout_for_split_run_multi_var
     )
     updated_doc = Document(BytesIO(updated_bytes))
 
-    assert [paragraph.text for paragraph in updated_doc.paragraphs] == ["До ", " после"]
+    assert [paragraph.text for paragraph in updated_doc.paragraphs] == ["До ", "", "", "", " после"]
     assert updated_doc.paragraphs[0].runs[0].bold is True
-    assert updated_doc.paragraphs[1].runs[0].italic is True
-    assert len(updated_doc.tables) == 1
-    assert len(updated_doc.tables[0].rows[0].cells) == 3
+    assert updated_doc.paragraphs[-1].runs[0].italic is True
+    assert len(updated_doc.tables) == 0
     assert len(updated_doc.inline_shapes) == 3
     assert _extract_docpr_descriptions(updated_doc._element) == [
         "Вариант 1: Просто улучшить",
@@ -1917,9 +1913,8 @@ def test_reinsert_inline_images_in_compare_all_mode_inserts_all_generated_varian
     )
 
     assert len(updated_doc.inline_shapes) == 3
-    assert len(updated_doc.tables) == 1
-    assert len(updated_doc.tables[0].rows[0].cells) == 3
-    assert [paragraph.text for paragraph in updated_doc.paragraphs] == ["До", "После"]
+    assert len(updated_doc.tables) == 0
+    assert [paragraph.text for paragraph in updated_doc.paragraphs] == ["До", "", "", "", "После"]
     assert "Вариант 1: Просто улучшить" not in visible_text
     assert "Вариант 2: Креативная AI-перерисовка" not in visible_text
     assert "Вариант 3: Структурная AI-перерисовка" not in visible_text

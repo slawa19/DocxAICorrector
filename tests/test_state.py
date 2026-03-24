@@ -37,7 +37,9 @@ def test_append_log_keeps_only_last_thirty_entries(monkeypatch):
         state.append_log("OK", index, 35, 10, 5, f"entry-{index}")
 
     assert len(session_state.run_log) == 30
+    assert session_state.run_log[0]["kind"] == "block"
     assert session_state.run_log[0]["details"] == "entry-5"
+    assert session_state.run_log[0]["message"].endswith("entry-5")
     assert session_state.run_log[-1]["details"] == "entry-34"
 
 
@@ -155,6 +157,10 @@ def test_append_image_log_updates_summary_and_activity(monkeypatch):
     assert session_state.image_processing_summary["fallbacks_applied"] == 0
     assert session_state.image_processing_summary["validation_errors"] == ["img-2: validator_exception:RuntimeError"]
     assert session_state.image_validation_failures == ["img-2: validator_exception:RuntimeError"]
+    assert session_state.run_log[0]["kind"] == "image"
+    assert session_state.run_log[0]["message"] == "[IMG OK] Изображение img-1 | обработка завершена | confidence: 0.92"
+    assert session_state.run_log[1]["kind"] == "image"
+    assert session_state.run_log[1]["message"] == "[IMG ERR] Изображение img-2 | ошибка обработки | ошибка валидации: RuntimeError"
     assert session_state.activity_feed[-1]["message"] == "[IMG] img-2: error | conf: 0.10 | fallback_safe"
 
 
@@ -197,3 +203,6 @@ def test_append_image_log_counts_skipped_fallback_without_validation_error(monke
     assert session_state.image_processing_summary["fallbacks_applied"] == 1
     assert session_state.image_processing_summary["validation_errors"] == []
     assert session_state.image_validation_failures == []
+    assert session_state.run_log[-1]["message"] == (
+        "[IMG WARN] Изображение img-unsupported | оставлен оригинал | неподдерживаемый формат исходного изображения: image/x-emf"
+    )
