@@ -108,7 +108,13 @@ def test_run_processing_worker_emits_worker_complete_after_unhandled_crash():
 
     assert emitted_events[-1] == WorkerCompleteEvent(outcome="failed")
     assert any(isinstance(event, SetStateEvent) and str(event.values["last_error"]).startswith("Критическая ошибка фоновой обработки") for event in emitted_events)
-    assert any(isinstance(event, SetStateEvent) and event.values["last_background_error"]["stage"] == "processing" for event in emitted_events)
+    def _is_processing_background_error(event) -> bool:
+        if not isinstance(event, SetStateEvent):
+            return False
+        payload = event.values.get("last_background_error")
+        return isinstance(payload, dict) and payload.get("stage") == "processing"
+
+    assert any(_is_processing_background_error(event) for event in emitted_events)
     assert any(isinstance(event, FinalizeProcessingStatusEvent) for event in emitted_events)
     assert any(isinstance(event, AppendLogEvent) for event in emitted_events)
 
@@ -122,7 +128,13 @@ def test_run_processing_worker_emits_success_outcome_and_runtime_events():
 
     def run_document_processing_impl(**kwargs):
         kwargs["emit_state"](kwargs["runtime"], latest_markdown="Готово", latest_docx_bytes=b"docx")
-        kwargs["emit_finalize"](kwargs["runtime"], "Обработка завершена", "DOCX собран", 1.0)
+        kwargs["emit_finalize"](
+            kwargs["runtime"],
+            "Обработка завершена",
+            "DOCX собран",
+            1.0,
+            "completed",
+        )
         kwargs["emit_log"](kwargs["runtime"], status="DONE", block_index=1, block_count=1, target_chars=6, context_chars=0, details="ok")
         return "succeeded"
 
@@ -165,5 +177,208 @@ def test_get_processing_service_returns_singleton_until_reset(monkeypatch):
     assert first is singleton
     assert second is singleton
     assert len(build_calls) == 1
+
+    processing_service.reset_processing_service()
+
+
+def test_build_processing_service_builds_runtime_emitters_from_processing_runtime(monkeypatch):
+    processing_service.reset_processing_service()
+
+    emit_state = object()
+    emit_finalize = object()
+    emit_activity = object()
+    emit_log = object()
+    emit_status = object()
+    emit_image_log = object()
+    emit_image_reset = object()
+    captured = {}
+
+    monkeypatch.setattr(processing_service, "set_processing_status", object())
+    monkeypatch.setattr(processing_service, "finalize_processing_status", object())
+    monkeypatch.setattr(processing_service, "push_activity", object())
+    monkeypatch.setattr(processing_service, "append_log", object())
+    monkeypatch.setattr(processing_service, "append_image_log", object())
+    monkeypatch.setattr(
+        processing_service,
+        "build_runtime_event_emitters",
+        lambda *, dependencies: (
+            captured.setdefault("dependencies", dependencies),
+            type(
+                "Emitters",
+                (),
+                {
+                    "emit_state": emit_state,
+                    "emit_finalize": emit_finalize,
+                    "emit_activity": emit_activity,
+                    "emit_log": emit_log,
+                    "emit_status": emit_status,
+                    "emit_image_log": emit_image_log,
+                    "emit_image_reset": emit_image_reset,
+                },
+            )(),
+        )[1],
+    )
+    monkeypatch.setattr(processing_service, "ProcessingService", lambda **kwargs: (captured.setdefault("kwargs", kwargs), object())[1])
+
+    processing_service.build_processing_service()
+
+    assert captured["dependencies"].set_processing_status is processing_service.set_processing_status
+    assert captured["dependencies"].finalize_processing_status is processing_service.finalize_processing_status
+    assert captured["dependencies"].push_activity is processing_service.push_activity
+    assert captured["dependencies"].append_log is processing_service.append_log
+    assert captured["dependencies"].append_image_log is processing_service.append_image_log
+    assert captured["kwargs"]["emit_state_fn"] is emit_state
+    assert captured["kwargs"]["emit_finalize_fn"] is emit_finalize
+    assert captured["kwargs"]["emit_activity_fn"] is emit_activity
+    assert captured["kwargs"]["emit_log_fn"] is emit_log
+    assert captured["kwargs"]["emit_status_fn"] is emit_status
+    assert captured["kwargs"]["emit_image_log_fn"] is emit_image_log
+    assert captured["kwargs"]["emit_image_reset_fn"] is emit_image_reset
+
+
+def test_run_prepared_background_document_uses_preparation_and_job_mutator(monkeypatch):
+    service = _build_service(run_document_processing_impl_fn=lambda **kwargs: "succeeded")
+    prepared = type(
+        "PreparedRunContextStub",
+        (),
+        {
+            "uploaded_filename": "prepared-report.docx",
+            "jobs": [{"target_text": "one"}],
+            "paragraphs": ["p1"],
+            "image_assets": ["img1"],
+        },
+    )()
+    captured = {}
+
+    monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: {"frozen": uploaded_file})
+    monkeypatch.setattr(
+        processing_service.application_flow,
+        "prepare_run_context_for_background",
+        lambda **kwargs: (captured.setdefault("prepare", kwargs), prepared)[1],
+    )
+
+    result, returned_prepared = service.run_prepared_background_document(
+        uploaded_file="report.docx",
+        chunk_size=123,
+        image_mode="safe",
+        keep_all_image_variants=False,
+        app_config={"x": 1},
+        model="gpt-5.4",
+        max_retries=2,
+        job_mutator=lambda job: {**job, "job_kind": "passthrough"},
+        progress_callback=None,
+        runtime={"state": {}},
+    )
+
+    assert captured["prepare"]["uploaded_payload"] == {"frozen": "report.docx"}
+    assert captured["prepare"]["chunk_size"] == 123
+    assert result == "succeeded"
+    assert returned_prepared is prepared
+
+
+def test_run_prepared_background_document_passes_prepared_payload_into_processing(monkeypatch):
+    captured = {}
+    service = _build_service(
+        run_document_processing_impl_fn=lambda **kwargs: (captured.setdefault("run", kwargs), "succeeded")[1],
+    )
+    prepared = type(
+        "PreparedRunContextStub",
+        (),
+        {
+            "uploaded_filename": "prepared-report.docx",
+            "jobs": [{"target_text": "one"}],
+            "paragraphs": ["p1"],
+            "image_assets": ["img1"],
+        },
+    )()
+
+    monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: uploaded_file)
+    monkeypatch.setattr(
+        processing_service.application_flow,
+        "prepare_run_context_for_background",
+        lambda **kwargs: prepared,
+    )
+
+    service.run_prepared_background_document(
+        uploaded_file="report.docx",
+        chunk_size=123,
+        image_mode="safe",
+        keep_all_image_variants=True,
+        app_config={"x": 1},
+        model="gpt-5.4",
+        max_retries=2,
+        job_mutator=lambda job: {**job, "job_kind": "passthrough"},
+        progress_callback=None,
+        runtime={"state": {}},
+    )
+
+    assert captured["run"]["uploaded_file"] == "prepared-report.docx"
+    assert captured["run"]["jobs"] == [{"target_text": "one", "job_kind": "passthrough"}]
+    assert captured["run"]["source_paragraphs"] == ["p1"]
+    assert captured["run"]["image_assets"] == ["img1"]
+
+
+def test_run_prepared_background_document_supports_distinct_prepare_and_processing_callbacks(monkeypatch):
+    captured = {}
+    service = _build_service(
+        run_document_processing_impl_fn=lambda **kwargs: (captured.setdefault("run", kwargs), "succeeded")[1],
+    )
+    prepared = type(
+        "PreparedRunContextStub",
+        (),
+        {
+            "uploaded_filename": "prepared-report.docx",
+            "jobs": [{"target_text": "one"}],
+            "paragraphs": ["p1"],
+            "image_assets": ["img1"],
+        },
+    )()
+    prepare_progress_calls = []
+    processing_progress_calls = []
+
+    def _prepare_run_context_for_background(**kwargs):
+        kwargs["progress_callback"](stage="prepare", detail="prepared", progress=0.25)
+        return prepared
+
+    def _run_document_processing_impl(**kwargs):
+        kwargs["on_progress"](stage="process", detail="running", progress=0.75)
+        captured["run"] = kwargs
+        return "succeeded"
+
+    service = _build_service(run_document_processing_impl_fn=_run_document_processing_impl)
+    monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: uploaded_file)
+    monkeypatch.setattr(
+        processing_service.application_flow,
+        "prepare_run_context_for_background",
+        _prepare_run_context_for_background,
+    )
+
+    service.run_prepared_background_document(
+        uploaded_file="report.docx",
+        chunk_size=123,
+        image_mode="safe",
+        keep_all_image_variants=True,
+        app_config={"x": 1},
+        model="gpt-5.4",
+        max_retries=2,
+        prepare_progress_callback=lambda **payload: prepare_progress_calls.append(payload),
+        processing_progress_callback=lambda **payload: processing_progress_calls.append(payload),
+        runtime={"state": {}},
+    )
+
+    assert prepare_progress_calls == [{"stage": "prepare", "detail": "prepared", "progress": 0.25}]
+    assert processing_progress_calls == [{"stage": "process", "detail": "running", "progress": 0.75}]
+
+
+def test_clone_processing_service_returns_overridden_copy_without_mutating_singleton(monkeypatch):
+    processing_service.reset_processing_service()
+    default_service = _build_service()
+    monkeypatch.setattr(processing_service, "build_processing_service", lambda: default_service)
+
+    cloned_service = processing_service.clone_processing_service(load_system_prompt_fn=lambda: "override")
+
+    assert cloned_service is not default_service
+    assert cloned_service.load_system_prompt_fn() == "override"
+    assert default_service.load_system_prompt_fn() == "system"
 
     processing_service.reset_processing_service()

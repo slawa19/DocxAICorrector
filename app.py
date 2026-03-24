@@ -13,7 +13,7 @@ st.set_page_config(
 
 from constants import APP_READY_PATH, MAX_DOCX_ARCHIVE_SIZE_BYTES
 import application_flow
-from compare_panel import render_compare_all_apply_panel
+import compare_panel
 from config import load_app_config
 from app_runtime import (
     build_preparation_request_marker,
@@ -453,7 +453,7 @@ def main() -> None:
     render_image_validation_summary()
     render_partial_result()
 
-    render_compare_all_apply_panel(
+    compare_panel.render_compare_all_apply_panel(
         latest_image_mode=st.session_state.latest_image_mode,
         image_assets=st.session_state.image_assets,
         render_section_gap=render_section_gap,

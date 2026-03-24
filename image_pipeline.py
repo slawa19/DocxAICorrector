@@ -147,10 +147,12 @@ class ImageProcessingContext:
 
 def _mark_asset_as_unsupported_source(asset, *, detected_mime_type, log_event_fn):
     source_mime_type = detected_mime_type or asset.mime_type or "unknown"
-    asset.validation_status = "skipped"
-    asset.final_decision = "fallback_original"
-    asset.final_variant = "original"
-    asset.final_reason = f"unsupported_source_image_format:{source_mime_type}"
+    asset.apply_final_selection_outcome(
+        validation_status="skipped",
+        final_decision="fallback_original",
+        final_variant="original",
+        final_reason=f"unsupported_source_image_format:{source_mime_type}",
+    )
     log_event_fn(
         logging.WARNING,
         "image_processing_skipped_unsupported_source",
@@ -195,9 +197,9 @@ def _apply_validation_result_to_asset(asset, validation_result, *, image_mode: s
     }
 
     asset.mode_requested = image_mode
-    asset.validation_result = validation_result
-    asset.validation_status = "passed" if validation_result.validation_passed else "failed"
-    asset.update_pipeline_metadata(
+    asset.update_runtime_attempt_state(validation_result=validation_result)
+    asset.apply_final_selection_outcome(
+        validation_status="passed" if validation_result.validation_passed else "failed",
         strict_validation_decision=validation_result.decision,
         strict_validation_passed=validation_result.validation_passed,
     )
@@ -207,11 +209,13 @@ def _apply_validation_result_to_asset(asset, validation_result, *, image_mode: s
         validation_policy=validation_policy,
         has_safe_fallback=bool(asset.safe_bytes),
     )
-    asset.validation_status = str(outcome["validation_status"])
-    asset.final_decision = str(outcome["final_decision"])
-    asset.final_variant = str(outcome["final_variant"])
-    asset.final_reason = str(outcome["final_reason"])
-    asset.update_pipeline_metadata(soft_accepted=bool(outcome["soft_accepted"]))
+    asset.apply_final_selection_outcome(
+        validation_status=str(outcome["validation_status"]),
+        final_decision=str(outcome["final_decision"]),
+        final_variant=str(outcome["final_variant"]),
+        final_reason=str(outcome["final_reason"]),
+        soft_accepted=bool(outcome["soft_accepted"]),
+    )
 
     if asset.final_decision == "accept_soft":
         log_event_fn(
@@ -336,8 +340,10 @@ def _build_compare_variant_candidate(
 
     attempt_asset = _clone_image_asset_for_attempt(asset)
     attempt_asset.safe_bytes = asset.safe_bytes
-    attempt_asset.redrawn_bytes = candidate_bytes
-    attempt_asset.redrawn_mime_type = candidate_mime_type
+    attempt_asset.update_runtime_attempt_state(
+        redrawn_bytes=candidate_bytes,
+        redrawn_mime_type=candidate_mime_type,
+    )
     attempt_asset.update_pipeline_metadata(rendered_mime_type=candidate_mime_type)
     candidate_analysis = pipeline_context.analyze_image(
         candidate_bytes,
@@ -362,15 +368,33 @@ def _build_compare_variant_candidate(
 
 
 def _apply_compare_all_incomplete_fallback(asset, *, prepared_modes: list[str]) -> object:
-    asset.validation_status = "failed"
-    if asset.safe_bytes:
-        asset.final_decision = "fallback_safe"
-        asset.final_variant = ImageMode.SAFE.value
-    else:
-        asset.final_decision = "fallback_original"
-        asset.final_variant = "original"
-    asset.selected_compare_variant = None
-    asset.final_reason = f"compare_all_variants_incomplete:{', '.join(prepared_modes) or 'none'}"
+    asset.apply_final_selection_outcome(
+        validation_status="failed",
+        final_decision="fallback_safe" if asset.safe_bytes else "fallback_original",
+        final_variant=ImageMode.SAFE.value if asset.safe_bytes else "original",
+        final_reason=f"compare_all_variants_incomplete:{', '.join(prepared_modes) or 'none'}",
+        clear_selected_compare_variant=True,
+    )
+    return asset
+
+
+def _apply_safe_fallback_outcome(asset, *, reason: str, validation_status: str = "skipped"):
+    asset.apply_final_selection_outcome(
+        validation_status=validation_status,
+        final_decision="fallback_safe",
+        final_variant=ImageMode.SAFE.value,
+        final_reason=reason,
+    )
+    return asset
+
+
+def _apply_original_fallback_outcome(asset, *, reason: str, validation_status: str):
+    asset.apply_final_selection_outcome(
+        validation_status=validation_status,
+        final_decision="fallback_original",
+        final_variant="original",
+        final_reason=reason,
+    )
     return asset
 
 
@@ -401,18 +425,20 @@ def select_best_semantic_asset(
     for attempt_index in range(1, attempt_count + 1):
         try:
             attempt_asset = _clone_image_asset_for_attempt(asset)
-            attempt_asset.redrawn_bytes = pipeline_context.generate_candidate(
+            candidate_bytes = pipeline_context.generate_candidate(
                 attempt_asset.original_bytes,
                 analysis,
                 mode=image_mode,
                 client=client,
                 budget=operation_budget,
             )
+            attempt_asset.update_runtime_attempt_state(redrawn_bytes=candidate_bytes)
             if attempt_asset.safe_bytes and attempt_asset.redrawn_bytes == attempt_asset.safe_bytes:
-                attempt_asset.validation_status = "skipped"
-                attempt_asset.final_decision = "fallback_safe"
-                attempt_asset.final_variant = ImageMode.SAFE.value
-                attempt_asset.final_reason = "semantic_redraw_fell_back_to_safe_candidate"
+                _apply_safe_fallback_outcome(
+                    attempt_asset,
+                    reason="semantic_redraw_fell_back_to_safe_candidate",
+                    validation_status="skipped",
+                )
                 pipeline_context.log_event_fn(
                     logging.WARNING,
                     "semantic_candidate_resolved_to_safe_fallback",
@@ -420,9 +446,11 @@ def select_best_semantic_asset(
                     attempt_index=attempt_index,
                     **attempt_asset.to_log_context(),
                 )
-                attempt_asset.attempt_variants = list(attempt_variants)
+                attempt_asset.update_runtime_attempt_state(attempt_variants=list(attempt_variants))
                 return attempt_asset
-            attempt_asset.redrawn_mime_type = pipeline_context.detect_image_mime_type_fn(attempt_asset.redrawn_bytes)
+            attempt_asset.update_runtime_attempt_state(
+                redrawn_mime_type=pipeline_context.detect_image_mime_type_fn(attempt_asset.redrawn_bytes)
+            )
             attempt_asset.update_pipeline_metadata(rendered_mime_type=attempt_asset.redrawn_mime_type)
             candidate_analysis = pipeline_context.analyze_image(
                 attempt_asset.redrawn_bytes,
@@ -471,7 +499,7 @@ def select_best_semantic_asset(
             continue
 
         attempt_variants.append(_build_attempt_variant(attempt_asset, attempt_index=attempt_index))
-        attempt_asset.attempt_variants = list(attempt_variants)
+        attempt_asset.update_runtime_attempt_state(attempt_variants=list(attempt_variants))
 
         score = score_semantic_candidate(attempt_asset)
         pipeline_context.log_event_fn(
@@ -495,17 +523,21 @@ def select_best_semantic_asset(
             return attempt_asset
 
     if best_asset is None:
-        asset.attempt_variants = list(attempt_variants)
-        asset.validation_status = "failed" if budget_exhausted else "error"
+        asset.update_runtime_attempt_state(attempt_variants=list(attempt_variants))
         if asset.safe_bytes:
-            asset.final_decision = "fallback_safe"
-            asset.final_variant = ImageMode.SAFE.value
+            _apply_safe_fallback_outcome(
+                asset,
+                reason=budget_exhausted_reason if budget_exhausted else "semantic_candidate_attempts_exhausted",
+                validation_status="failed" if budget_exhausted else "error",
+            )
         else:
-            asset.final_decision = "fallback_original"
-            asset.final_variant = "original"
-        asset.final_reason = budget_exhausted_reason if budget_exhausted else "semantic_candidate_attempts_exhausted"
+            _apply_original_fallback_outcome(
+                asset,
+                reason=budget_exhausted_reason if budget_exhausted else "semantic_candidate_attempts_exhausted",
+                validation_status="failed" if budget_exhausted else "error",
+            )
         return asset
-    best_asset.attempt_variants = list(attempt_variants)
+    best_asset.update_runtime_attempt_state(attempt_variants=list(attempt_variants))
     return best_asset
 
 
@@ -523,10 +555,12 @@ def process_document_images(
         context.emit_image_reset(context.runtime)
         for asset in image_assets:
             asset.mode_requested = image_mode
-            asset.validation_status = "skipped"
-            asset.final_decision = "accept"
-            asset.final_variant = "original"
-            asset.final_reason = "no_change_mode"
+            asset.apply_final_selection_outcome(
+                validation_status="skipped",
+                final_decision="accept",
+                final_variant="original",
+                final_reason="no_change_mode",
+            )
             context.emit_image_log(
                 context.runtime,
                 image_id=asset.image_id,
@@ -562,10 +596,11 @@ def process_document_images(
             return processed_assets
 
         if document_budget_exhausted:
-            asset.validation_status = "failed"
-            asset.final_decision = "fallback_original"
-            asset.final_variant = "original"
-            asset.final_reason = "document_model_call_budget_exhausted"
+            _apply_original_fallback_outcome(
+                asset,
+                reason="document_model_call_budget_exhausted",
+                validation_status="failed",
+            )
             context.emit_image_log(
                 context.runtime,
                 image_id=asset.image_id,
@@ -637,10 +672,12 @@ def process_document_images(
                     client=image_client,
                     budget=document_call_budget,
                 )
-                asset.validation_status = "skipped"
-                asset.final_decision = "accept"
-                asset.final_variant = ImageMode.SAFE.value if asset.safe_bytes else "original"
-                asset.final_reason = "Изображение обработано в safe-mode."
+                asset.apply_final_selection_outcome(
+                    validation_status="skipped",
+                    final_decision="accept",
+                    final_variant=ImageMode.SAFE.value if asset.safe_bytes else "original",
+                    final_reason="Изображение обработано в safe-mode.",
+                )
             elif image_mode == ImageMode.COMPARE_ALL.value:
                 if image_client is None:
                     image_client = context.ensure_client()
@@ -660,10 +697,12 @@ def process_document_images(
                     client=image_client,
                     budget=document_call_budget,
                 )
-                asset.validation_status = "skipped"
-                asset.final_decision = "accept"
-                asset.final_variant = ImageMode.SAFE.value if asset.safe_bytes else "original"
-                asset.final_reason = "Semantic redraw отключен для этого изображения, применен safe-mode."
+                asset.apply_final_selection_outcome(
+                    validation_status="skipped",
+                    final_decision="accept",
+                    final_variant=ImageMode.SAFE.value if asset.safe_bytes else "original",
+                    final_reason="Semantic redraw отключен для этого изображения, применен safe-mode.",
+                )
             else:
                 if image_client is None:
                     image_client = context.ensure_client()
@@ -717,11 +756,12 @@ def process_document_images(
         except context.image_model_call_budget_exceeded_cls as exc:
             asset = cast(Any, asset)
             document_budget_exhausted = _is_budget_exhausted(document_call_budget)
-            asset.validation_status = "failed"
-            asset.final_decision = "fallback_original"
-            asset.final_variant = "original"
-            asset.final_reason = (
-                "document_model_call_budget_exhausted" if document_budget_exhausted else "image_model_call_budget_exhausted"
+            _apply_original_fallback_outcome(
+                asset,
+                reason=(
+                    "document_model_call_budget_exhausted" if document_budget_exhausted else "image_model_call_budget_exhausted"
+                ),
+                validation_status="failed",
             )
             context.emit_image_log(
                 context.runtime,
@@ -747,10 +787,11 @@ def process_document_images(
             processed_assets.append(asset)
         except Exception as exc:
             asset = cast(Any, asset)
-            asset.validation_status = "error"
-            asset.final_decision = "fallback_original"
-            asset.final_variant = "original"
-            asset.final_reason = f"image_processing_exception:{exc.__class__.__name__}"
+            _apply_original_fallback_outcome(
+                asset,
+                reason=f"image_processing_exception:{exc.__class__.__name__}",
+                validation_status="error",
+            )
             context.emit_image_log(
                 context.runtime,
                 image_id=asset.image_id,
@@ -777,23 +818,14 @@ def process_document_images(
 def _clone_image_asset_for_attempt(asset):
     cloned_asset = replace(
         asset,
-        validation_result=None,
-        validation_status="pending",
+        metadata=replace(asset.metadata),
+        runtime_attempt_state=replace(asset.runtime_attempt_state),
+    )
+    cloned_asset.reset_runtime_attempt_state()
+    cloned_asset.apply_final_selection_outcome(
         final_decision=None,
         final_variant=None,
         final_reason=None,
-        redrawn_bytes=None,
-        redrawn_mime_type=None,
-        attempt_variants=[],
-        comparison_variants={},
-        selected_compare_variant=None,
-        metadata=replace(asset.metadata),
-    )
-    cloned_asset.update_pipeline_metadata(
-        rendered_mime_type=None,
-        strict_validation_decision=None,
-        strict_validation_passed=None,
-        soft_accepted=False,
     )
     return cloned_asset
 
@@ -841,16 +873,18 @@ def _prepare_compare_variants(
 
         variant_map[candidate_mode] = variant
 
-    asset.comparison_variants = variant_map
+    asset.update_runtime_attempt_state(comparison_variants=variant_map)
     prepared_modes = [mode for mode in candidate_modes if mode in variant_map]
     if len(prepared_modes) != len(expected_modes):
         return _apply_compare_all_incomplete_fallback(asset, prepared_modes=prepared_modes)
 
-    asset.selected_compare_variant = "original"
-    asset.validation_status = "compared"
-    asset.final_decision = "compared"
-    asset.final_variant = "original"
-    asset.final_reason = f"compare_all_variants_ready:{', '.join(prepared_modes)}"
+    asset.apply_final_selection_outcome(
+        validation_status="compared",
+        final_decision="compared",
+        final_variant="original",
+        final_reason=f"compare_all_variants_ready:{', '.join(prepared_modes)}",
+        selected_compare_variant="original",
+    )
     return asset
 
 

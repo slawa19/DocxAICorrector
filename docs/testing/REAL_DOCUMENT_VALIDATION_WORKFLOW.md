@@ -123,7 +123,7 @@ The latest manifest and progress snapshot now also record:
 - current progress value
 - acceptance outcome
 - final failure classification and `last_error`
-- resolved runtime config and explicit runtime overrides relative to UI defaults
+- resolved `runtime_config` and explicit runtime overrides relative to UI defaults; `runtime_configuration` больше не считается допустимым report alias
 
 ## Live Progress
 
@@ -164,8 +164,10 @@ The real-document acceptance contract now checks:
 Current Phase 1 output contract behind those checks:
 
 - Pandoc plus the dynamic reference DOCX are the primary source of heading/body/list styling;
-- the post-Pandoc formatter is intentionally minimal and is limited to caption formatting, image-placeholder centering, and baseline table styling;
+- the post-Pandoc formatter is intentionally minimal and is limited to caption formatting, image-placeholder centering, baseline table styling, and direct paragraph alignment restoration for mapped paragraphs;
 - broad source paragraph XML replay and source numbering XML injection are not part of the mainline acceptance path.
+
+The centered-paragraph acceptance check is therefore expected to pass through mapped direct-alignment restoration rather than through a validator-side exception or broad paragraph-XML replay.
 
 The exceptional quality gate is intentionally excluded from the normal full-suite path. It is available only through the dedicated task/script so expensive real-document validation does not contaminate ordinary regression runs.
 

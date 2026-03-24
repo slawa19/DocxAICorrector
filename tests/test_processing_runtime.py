@@ -91,6 +91,43 @@ def test_drain_processing_events_applies_typed_runtime_events(monkeypatch):
     assert session_state.processing_stop_requested is False
 
 
+def test_build_runtime_event_emitters_emits_typed_events_for_background_runtime():
+    emitted_events = []
+
+    class RuntimeStub:
+        def emit(self, event):
+            emitted_events.append(event)
+
+    emitters = processing_runtime.build_runtime_event_emitters(
+        dependencies=processing_runtime.RuntimeEventEmitterDependencies(
+            set_processing_status=lambda **payload: None,
+            finalize_processing_status=lambda stage, detail, progress, terminal_kind=None: None,
+            push_activity=lambda message: None,
+            append_log=lambda **payload: None,
+            append_image_log=lambda **payload: None,
+        )
+    )
+
+    runtime = RuntimeStub()
+    emitters.emit_state(runtime, last_error="boom")
+    emitters.emit_image_reset(runtime)
+    emitters.emit_status(runtime, stage="run", detail="detail")
+    emitters.emit_finalize(runtime, "done", "ok", 1.0, "completed")
+    emitters.emit_activity(runtime, "hello")
+    emitters.emit_log(runtime, status="OK", block_index=1, block_count=1, target_chars=2, context_chars=0, details="done")
+    emitters.emit_image_log(runtime, image_id="img_1", status="validated", decision="accept", confidence=0.9)
+
+    assert emitted_events == [
+        SetStateEvent(values={"last_error": "boom"}),
+        ResetImageStateEvent(),
+        SetProcessingStatusEvent(payload={"stage": "run", "detail": "detail"}),
+        FinalizeProcessingStatusEvent(stage="done", detail="ok", progress=1.0, terminal_kind="completed"),
+        PushActivityEvent(message="hello"),
+        AppendLogEvent(payload={"status": "OK", "block_index": 1, "block_count": 1, "target_chars": 2, "context_chars": 0, "details": "done"}),
+        AppendImageLogEvent(payload={"image_id": "img_1", "status": "validated", "decision": "accept", "confidence": 0.9}),
+    ]
+
+
 def test_drain_preparation_events_stores_prepared_context(monkeypatch):
     prepared_run_context = type("PreparedRunContextStub", (), {
         "uploaded_file_token": "report.docx:3:abc",
@@ -452,3 +489,24 @@ def test_build_uploaded_file_token_for_legacy_doc_is_stable_across_converter_out
     second = processing_runtime.build_uploaded_file_token(source_name="legacy.doc", source_bytes=source_bytes)
 
     assert first == second
+
+
+def test_resolve_upload_contract_separates_source_identity_from_normalized_payload(monkeypatch):
+    source_bytes = bytes.fromhex("D0CF11E0A1B11AE1") + b"same-legacy-doc"
+    monkeypatch.setattr(
+        processing_runtime,
+        "_convert_legacy_doc_to_docx",
+        lambda **kwargs: (b"converted-docx", "libreoffice"),
+    )
+
+    contract = processing_runtime.resolve_upload_contract(filename="legacy.doc", source_bytes=source_bytes)
+    payload = processing_runtime.freeze_resolved_upload(contract)
+
+    assert contract.source_identity.original_filename == "legacy.doc"
+    assert contract.source_identity.source_bytes == source_bytes
+    assert contract.normalized_document.filename == "legacy.docx"
+    assert contract.normalized_document.content_bytes == b"converted-docx"
+    assert payload.filename == "legacy.docx"
+    assert payload.content_bytes == b"converted-docx"
+    assert payload.file_token == contract.file_token
+    assert payload.file_token.endswith(f":{contract.source_identity.token_hash}")

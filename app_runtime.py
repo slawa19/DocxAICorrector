@@ -1,3 +1,5 @@
+"""Thin Streamlit-facing adapter over processing runtime primitives."""
+
 from processing_runtime import (
     BackgroundRuntime,
     build_preparation_request_marker,

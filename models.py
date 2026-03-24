@@ -34,6 +34,7 @@ class ParagraphUnit:
     role: str
     asset_id: str | None = None
     attached_to_asset_id: str | None = None
+    paragraph_alignment: str | None = None
     heading_level: int | None = None
     heading_source: str | None = None
     list_kind: str | None = None
@@ -152,6 +153,89 @@ class ImageVariantCandidate:
         }
 
 
+@dataclass
+class ImageRuntimeAttemptState:
+    redrawn_bytes: bytes | None = None
+    redrawn_mime_type: str | None = None
+    validation_result: "ImageValidationResult | dict[str, object] | None" = None
+    validation_status: str = "pending"
+    attempt_variants: list[ImageVariantCandidate | dict[str, object]] = field(default_factory=list)
+    comparison_variants: dict[str, ImageVariantCandidate | dict[str, object]] = field(default_factory=dict)
+    selected_compare_variant: str | None = None
+
+
+@dataclass(frozen=True)
+class ImageSourceIdentitySnapshot:
+    image_id: str
+    placeholder: str
+    mime_type: str | None
+    position_index: int
+    width_emu: int | None = None
+    height_emu: int | None = None
+    source_mime_type: str | None = None
+    source_width_emu: int | None = None
+    source_height_emu: int | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ImageRuntimeStateSnapshot:
+    mode_requested: str | None
+    analysis_result: ImageAnalysisResult | dict[str, object] | None
+    prompt_key: str | None
+    render_strategy: str | None
+    safe_bytes_present: bool
+    redrawn_bytes_present: bool
+    redrawn_mime_type: str | None
+    validation_result: ImageValidationResult | dict[str, object] | None
+    validation_status: str
+    attempt_variants: tuple[ImageVariantCandidate | dict[str, object], ...]
+    comparison_variants: dict[str, ImageVariantCandidate | dict[str, object]]
+    selected_compare_variant: str | None
+    rendered_mime_type: str | None
+    strict_validation_decision: str | None
+    strict_validation_passed: bool | None
+    soft_accepted: bool
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "mode_requested": self.mode_requested,
+            "analysis_result": self.analysis_result.to_dict() if isinstance(self.analysis_result, ImageAnalysisResult) else self.analysis_result,
+            "prompt_key": self.prompt_key,
+            "render_strategy": self.render_strategy,
+            "safe_bytes_present": self.safe_bytes_present,
+            "redrawn_bytes_present": self.redrawn_bytes_present,
+            "redrawn_mime_type": self.redrawn_mime_type,
+            "validation_result": self.validation_result.to_dict() if isinstance(self.validation_result, ImageValidationResult) else self.validation_result,
+            "validation_status": self.validation_status,
+            "attempt_variants": [
+                variant.to_dict() if isinstance(variant, ImageVariantCandidate) else variant
+                for variant in self.attempt_variants
+            ],
+            "comparison_variants": {
+                key: variant.to_dict() if isinstance(variant, ImageVariantCandidate) else variant
+                for key, variant in self.comparison_variants.items()
+            },
+            "selected_compare_variant": self.selected_compare_variant,
+            "rendered_mime_type": self.rendered_mime_type,
+            "strict_validation_decision": self.strict_validation_decision,
+            "strict_validation_passed": self.strict_validation_passed,
+            "soft_accepted": self.soft_accepted,
+        }
+
+
+@dataclass(frozen=True)
+class ImageFinalSelectionSnapshot:
+    final_decision: str | None
+    final_variant: str | None
+    final_reason: str | None
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
 def get_image_variant_value(variant: "ImageVariantCandidate | dict[str, object] | None", field_name: str, default=None):
     if isinstance(variant, dict):
         return variant.get(field_name, default)
@@ -184,6 +268,7 @@ class ImageAsset:
     redrawn_bytes: bytes | None = None
     redrawn_mime_type: str | None = None
     metadata: ImagePipelineMetadata = field(default_factory=ImagePipelineMetadata)
+    runtime_attempt_state: ImageRuntimeAttemptState = field(default_factory=ImageRuntimeAttemptState)
     validation_result: ImageValidationResult | dict[str, object] | None = None
     validation_status: str = "pending"
     final_decision: str | None = None
@@ -194,7 +279,26 @@ class ImageAsset:
     selected_compare_variant: str | None = None
 
     def __post_init__(self) -> None:
+        self.sync_runtime_attempt_state_from_fields()
         self.sync_pipeline_metadata()
+
+    def sync_runtime_attempt_state_from_fields(self) -> None:
+        self.runtime_attempt_state.redrawn_bytes = self.redrawn_bytes
+        self.runtime_attempt_state.redrawn_mime_type = self.redrawn_mime_type
+        self.runtime_attempt_state.validation_result = self.validation_result
+        self.runtime_attempt_state.validation_status = self.validation_status
+        self.runtime_attempt_state.attempt_variants = list(self.attempt_variants)
+        self.runtime_attempt_state.comparison_variants = dict(self.comparison_variants)
+        self.runtime_attempt_state.selected_compare_variant = self.selected_compare_variant
+
+    def _sync_fields_from_runtime_attempt_state(self) -> None:
+        self.redrawn_bytes = self.runtime_attempt_state.redrawn_bytes
+        self.redrawn_mime_type = self.runtime_attempt_state.redrawn_mime_type
+        self.validation_result = self.runtime_attempt_state.validation_result
+        self.validation_status = self.runtime_attempt_state.validation_status
+        self.attempt_variants = list(self.runtime_attempt_state.attempt_variants)
+        self.comparison_variants = dict(self.runtime_attempt_state.comparison_variants)
+        self.selected_compare_variant = self.runtime_attempt_state.selected_compare_variant
 
     def sync_pipeline_metadata(self) -> None:
         if self.metadata.source_mime_type is None:
@@ -212,34 +316,253 @@ class ImageAsset:
                 setattr(self.metadata, key, value)
         self.sync_pipeline_metadata()
 
+    def update_runtime_attempt_state(
+        self,
+        *,
+        redrawn_bytes=...,
+        redrawn_mime_type=...,
+        validation_result=...,
+        validation_status=...,
+        attempt_variants=...,
+        comparison_variants=...,
+        selected_compare_variant=...,
+        clear_selected_compare_variant: bool = False,
+    ) -> None:
+        if redrawn_bytes is not ...:
+            self.runtime_attempt_state.redrawn_bytes = redrawn_bytes
+        if redrawn_mime_type is not ...:
+            self.runtime_attempt_state.redrawn_mime_type = redrawn_mime_type
+        if validation_result is not ...:
+            self.runtime_attempt_state.validation_result = validation_result
+        if validation_status is not ...:
+            self.runtime_attempt_state.validation_status = validation_status
+        if attempt_variants is not ...:
+            self.runtime_attempt_state.attempt_variants = list(attempt_variants)
+        if comparison_variants is not ...:
+            self.runtime_attempt_state.comparison_variants = dict(comparison_variants)
+        if clear_selected_compare_variant:
+            self.runtime_attempt_state.selected_compare_variant = None
+        elif selected_compare_variant is not ...:
+            self.runtime_attempt_state.selected_compare_variant = selected_compare_variant
+        self._sync_fields_from_runtime_attempt_state()
+        self.sync_pipeline_metadata()
+
+    def source_identity_snapshot(self) -> ImageSourceIdentitySnapshot:
+        self.sync_pipeline_metadata()
+        return ImageSourceIdentitySnapshot(
+            image_id=self.image_id,
+            placeholder=self.placeholder,
+            mime_type=self.mime_type,
+            position_index=self.position_index,
+            width_emu=self.width_emu,
+            height_emu=self.height_emu,
+            source_mime_type=self.metadata.source_mime_type,
+            source_width_emu=self.metadata.source_width_emu,
+            source_height_emu=self.metadata.source_height_emu,
+        )
+
+    def runtime_state_snapshot(self) -> ImageRuntimeStateSnapshot:
+        self.sync_runtime_attempt_state_from_fields()
+        self.sync_pipeline_metadata()
+        return ImageRuntimeStateSnapshot(
+            mode_requested=self.mode_requested,
+            analysis_result=self.analysis_result,
+            prompt_key=self.prompt_key,
+            render_strategy=self.render_strategy,
+            safe_bytes_present=self.safe_bytes is not None,
+            redrawn_bytes_present=self.runtime_attempt_state.redrawn_bytes is not None,
+            redrawn_mime_type=self.runtime_attempt_state.redrawn_mime_type,
+            validation_result=self.runtime_attempt_state.validation_result,
+            validation_status=self.runtime_attempt_state.validation_status,
+            attempt_variants=tuple(self.runtime_attempt_state.attempt_variants),
+            comparison_variants=dict(self.runtime_attempt_state.comparison_variants),
+            selected_compare_variant=self.runtime_attempt_state.selected_compare_variant,
+            rendered_mime_type=self.metadata.rendered_mime_type,
+            strict_validation_decision=self.metadata.strict_validation_decision,
+            strict_validation_passed=self.metadata.strict_validation_passed,
+            soft_accepted=self.metadata.soft_accepted,
+        )
+
+    def final_selection_snapshot(self) -> ImageFinalSelectionSnapshot:
+        return ImageFinalSelectionSnapshot(
+            final_decision=self.final_decision,
+            final_variant=self.final_variant,
+            final_reason=self.final_reason,
+        )
+
+    def reset_runtime_attempt_state(self) -> None:
+        self.update_runtime_attempt_state(
+            redrawn_bytes=None,
+            redrawn_mime_type=None,
+            validation_result=None,
+            validation_status="pending",
+            attempt_variants=[],
+            comparison_variants={},
+            selected_compare_variant=None,
+            clear_selected_compare_variant=True,
+        )
+        self.update_pipeline_metadata(
+            rendered_mime_type=None,
+            strict_validation_decision=None,
+            strict_validation_passed=None,
+            soft_accepted=False,
+        )
+
+    def apply_final_selection_outcome(
+        self,
+        *,
+        validation_status: str | None = None,
+        final_decision: str | None = None,
+        final_variant: str | None = None,
+        final_reason: str | None = None,
+        selected_compare_variant: str | None = None,
+        clear_selected_compare_variant: bool = False,
+        strict_validation_decision: str | None = None,
+        strict_validation_passed: bool | None = None,
+        soft_accepted: bool | None = None,
+    ) -> None:
+        self.final_decision = final_decision
+        self.final_variant = final_variant
+        self.final_reason = final_reason
+        if validation_status is not None or clear_selected_compare_variant or selected_compare_variant is not None:
+            self.update_runtime_attempt_state(
+                validation_status=validation_status,
+                selected_compare_variant=selected_compare_variant,
+                clear_selected_compare_variant=clear_selected_compare_variant,
+            )
+        metadata_updates = {}
+        if strict_validation_decision is not None:
+            metadata_updates["strict_validation_decision"] = strict_validation_decision
+        if strict_validation_passed is not None:
+            metadata_updates["strict_validation_passed"] = strict_validation_passed
+        if soft_accepted is not None:
+            metadata_updates["soft_accepted"] = soft_accepted
+        if metadata_updates:
+            self.update_pipeline_metadata(**metadata_updates)
+
     def to_log_context(self) -> dict[str, object]:
         self.sync_pipeline_metadata()
-        analysis_result = self.analysis_result
-        validation_result = self.validation_result
+        source_identity = self.source_identity_snapshot()
+        runtime_state = self.runtime_state_snapshot()
+        final_selection = self.final_selection_snapshot()
         return {
-            "image_id": self.image_id,
-            "placeholder": self.placeholder,
-            "mime_type": self.mime_type,
-            "position_index": self.position_index,
-            "width_emu": self.width_emu,
-            "height_emu": self.height_emu,
-            "mode_requested": self.mode_requested,
-            "prompt_key": self.prompt_key,
-            "render_strategy": self.render_strategy,
-            "redrawn_mime_type": self.redrawn_mime_type,
+            "image_id": source_identity.image_id,
+            "placeholder": source_identity.placeholder,
+            "mime_type": source_identity.mime_type,
+            "position_index": source_identity.position_index,
+            "width_emu": source_identity.width_emu,
+            "height_emu": source_identity.height_emu,
+            "mode_requested": runtime_state.mode_requested,
+            "prompt_key": runtime_state.prompt_key,
+            "render_strategy": runtime_state.render_strategy,
+            "redrawn_mime_type": runtime_state.redrawn_mime_type,
             "metadata": self.metadata.to_dict(),
-            "validation_status": self.validation_status,
-            "final_decision": self.final_decision,
-            "final_variant": self.final_variant,
-            "final_reason": self.final_reason,
+            "validation_status": runtime_state.validation_status,
+            "final_decision": final_selection.final_decision,
+            "final_variant": final_selection.final_variant,
+            "final_reason": final_selection.final_reason,
             "attempt_variants": [
                 variant.to_dict() if isinstance(variant, ImageVariantCandidate) else variant
-                for variant in self.attempt_variants
+                for variant in runtime_state.attempt_variants
             ],
-            "analysis_result": analysis_result.to_dict() if isinstance(analysis_result, ImageAnalysisResult) else analysis_result,
+            "analysis_result": runtime_state.analysis_result.to_dict() if isinstance(runtime_state.analysis_result, ImageAnalysisResult) else runtime_state.analysis_result,
             "validation_result": (
-                validation_result.to_dict()
-                if isinstance(validation_result, ImageValidationResult)
-                else validation_result
+                runtime_state.validation_result.to_dict()
+                if isinstance(runtime_state.validation_result, ImageValidationResult)
+                else runtime_state.validation_result
             ),
         }
+
+
+def clone_image_variant_candidate(variant: "ImageVariantCandidate | dict[str, object] | None"):
+    if isinstance(variant, ImageVariantCandidate):
+        return ImageVariantCandidate(
+            mode=variant.mode,
+            bytes=bytes(variant.bytes) if isinstance(variant.bytes, (bytes, bytearray)) else variant.bytes,
+            mime_type=variant.mime_type,
+            validation_result=(
+                variant.validation_result.to_dict()
+                if isinstance(variant.validation_result, ImageValidationResult)
+                else _clone_validation_payload(variant.validation_result)
+                if hasattr(variant.validation_result, "__dataclass_fields__")
+                else dict(variant.validation_result)
+                if isinstance(variant.validation_result, dict)
+                else variant.validation_result
+            ),
+            validation_status=variant.validation_status,
+            final_decision=variant.final_decision,
+            final_variant=variant.final_variant,
+            final_reason=variant.final_reason,
+        )
+    if isinstance(variant, dict):
+        cloned_variant = dict(variant)
+        validation_result = cloned_variant.get("validation_result")
+        if isinstance(validation_result, ImageValidationResult):
+            cloned_variant["validation_result"] = validation_result.to_dict()
+        elif hasattr(validation_result, "__dataclass_fields__"):
+            cloned_variant["validation_result"] = _clone_validation_payload(validation_result)
+        elif isinstance(validation_result, dict):
+            cloned_variant["validation_result"] = dict(validation_result)
+        return cloned_variant
+    return variant
+
+
+def _clone_validation_payload(value):
+    if isinstance(value, ImageValidationResult):
+        return value.to_dict()
+    if hasattr(value, "__dataclass_fields__"):
+        return asdict(value)
+    if isinstance(value, dict):
+        return dict(value)
+    return value
+
+
+def _clone_analysis_payload(value):
+    if isinstance(value, ImageAnalysisResult):
+        return value.to_dict()
+    if hasattr(value, "__dataclass_fields__"):
+        return asdict(value)
+    if isinstance(value, dict):
+        return dict(value)
+    return value
+
+
+def clone_prepared_image_asset(asset):
+    if not isinstance(asset, ImageAsset):
+        return asset
+    asset.sync_runtime_attempt_state_from_fields()
+    metadata = asset.metadata if isinstance(asset.metadata, ImagePipelineMetadata) else ImagePipelineMetadata()
+    return ImageAsset(
+        image_id=asset.image_id,
+        placeholder=asset.placeholder,
+        original_bytes=bytes(asset.original_bytes),
+        mime_type=asset.mime_type,
+        position_index=asset.position_index,
+        width_emu=asset.width_emu,
+        height_emu=asset.height_emu,
+        mode_requested=asset.mode_requested,
+        analysis_result=_clone_analysis_payload(asset.analysis_result),
+        prompt_key=asset.prompt_key,
+        render_strategy=asset.render_strategy,
+        safe_bytes=bytes(asset.safe_bytes) if isinstance(asset.safe_bytes, (bytes, bytearray)) else asset.safe_bytes,
+        redrawn_bytes=bytes(asset.redrawn_bytes) if isinstance(asset.redrawn_bytes, (bytes, bytearray)) else asset.redrawn_bytes,
+        redrawn_mime_type=asset.redrawn_mime_type,
+        metadata=ImagePipelineMetadata(**metadata.to_dict()),
+        runtime_attempt_state=ImageRuntimeAttemptState(
+            redrawn_bytes=bytes(asset.runtime_attempt_state.redrawn_bytes) if isinstance(asset.runtime_attempt_state.redrawn_bytes, (bytes, bytearray)) else asset.runtime_attempt_state.redrawn_bytes,
+            redrawn_mime_type=asset.runtime_attempt_state.redrawn_mime_type,
+            validation_result=_clone_validation_payload(asset.runtime_attempt_state.validation_result),
+            validation_status=asset.runtime_attempt_state.validation_status,
+            attempt_variants=[clone_image_variant_candidate(variant) for variant in asset.runtime_attempt_state.attempt_variants if variant is not None],
+            comparison_variants={key: clone_image_variant_candidate(variant) for key, variant in asset.runtime_attempt_state.comparison_variants.items() if variant is not None},
+            selected_compare_variant=asset.runtime_attempt_state.selected_compare_variant,
+        ),
+        validation_result=_clone_validation_payload(asset.validation_result),
+        validation_status=asset.validation_status,
+        final_decision=asset.final_decision,
+        final_variant=asset.final_variant,
+        final_reason=asset.final_reason,
+        attempt_variants=[clone_image_variant_candidate(variant) for variant in asset.attempt_variants if variant is not None],
+        comparison_variants={key: clone_image_variant_candidate(variant) for key, variant in asset.comparison_variants.items() if variant is not None},
+        selected_compare_variant=asset.selected_compare_variant,
+    )

@@ -12,14 +12,13 @@ from typing import Any, cast
 from docx import Document
 from docx.oxml.ns import qn
 
-import application_flow
-import document_pipeline
 import processing_runtime
 from config import load_app_config
 from document import build_document_text, extract_document_content_from_docx, inspect_placeholder_integrity
 from formatting_transfer import normalize_semantic_output_docx, preserve_source_paragraph_properties
 from generation import convert_markdown_to_docx_bytes, ensure_pandoc_available
 from image_reinsertion import reinsert_inline_images
+from processing_service import clone_processing_service
 from real_document_validation_profiles import DocumentProfile, RunProfile, apply_runtime_resolution_to_app_config, resolve_runtime_resolution
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -84,61 +83,23 @@ def run_structural_passthrough_validation(
 ) -> dict[str, object]:
     source_path = document_profile.resolved_source_path(PROJECT_ROOT)
     source_bytes = source_path.read_bytes()
-    normalized_source = processing_runtime.normalize_uploaded_document(filename=source_path.name, source_bytes=source_bytes)
     app_config = load_app_config()
     runtime_resolution = resolve_runtime_resolution(app_config, run_profile)
     runtime_config = apply_runtime_resolution_to_app_config(app_config, runtime_resolution)
-    uploaded_payload = processing_runtime.freeze_uploaded_file(
-        UploadedFileStub(normalized_source.filename, normalized_source.content_bytes)
-    )
-    prepared = application_flow.prepare_run_context_for_background(
-        uploaded_payload=uploaded_payload,
-        chunk_size=int(runtime_resolution.effective.chunk_size),
-        image_mode=str(runtime_resolution.effective.image_mode),
-        keep_all_image_variants=bool(runtime_resolution.effective.keep_all_image_variants),
-        progress_callback=None,
-    )
     runtime = _build_runtime_capture()
     event_log: list[dict[str, object]] = []
     formatting_before = _snapshot_formatting_diagnostics_paths()
-
-    result = document_pipeline.run_document_processing(
-        uploaded_file=prepared.uploaded_filename,
-        jobs=[_build_passthrough_job(job) for job in prepared.jobs],
-        source_paragraphs=prepared.paragraphs,
-        image_assets=prepared.image_assets,
+    result, prepared = _build_validation_processing_service(event_log).run_prepared_background_document(
+        uploaded_file=UploadedFileStub(source_path.name, source_bytes),
+        chunk_size=int(runtime_resolution.effective.chunk_size),
         image_mode=str(runtime_resolution.effective.image_mode),
+        keep_all_image_variants=bool(runtime_resolution.effective.keep_all_image_variants),
         app_config=runtime_config,
         model=str(runtime_resolution.effective.model),
         max_retries=int(runtime_resolution.effective.max_retries),
-        on_progress=lambda **kwargs: None,
+        job_mutator=_build_passthrough_job,
+        progress_callback=None,
         runtime=runtime,
-        resolve_uploaded_filename=processing_runtime.resolve_uploaded_filename,
-        get_client=lambda: object(),
-        ensure_pandoc_available=ensure_pandoc_available,
-        load_system_prompt=lambda: "",
-        log_event=lambda level, event_id, message, **context: event_log.append(
-            {
-                "level": level,
-                "event_id": event_id,
-                "message": message,
-                "context": context,
-            }
-        ),
-        present_error=lambda code, exc, title, **context: f"{title}: {exc}",
-        emit_state=_emit_state,
-        emit_finalize=_emit_finalize,
-        emit_activity=_emit_activity,
-        emit_log=_emit_log,
-        emit_status=_emit_status,
-        should_stop_processing=lambda runtime: False,
-        generate_markdown_block=lambda **kwargs: cast(str, kwargs.get("target_text") or ""),
-        process_document_images=lambda **kwargs: list(kwargs.get("image_assets") or []),
-        inspect_placeholder_integrity=_inspect_placeholder_integrity_adapter,
-        convert_markdown_to_docx_bytes=convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=_preserve_source_paragraph_properties_adapter,
-        normalize_semantic_output_docx=_normalize_semantic_output_docx_adapter,
-        reinsert_inline_images=_reinsert_inline_images_adapter,
     )
 
     formatting_after = _snapshot_formatting_diagnostics_paths()
@@ -152,7 +113,7 @@ def run_structural_passthrough_validation(
         latest_docx_bytes = b""
     output_artifacts = _build_output_artifacts(bytes(latest_docx_bytes), latest_markdown)
 
-    source_paragraphs, source_image_assets = extract_document_content_from_docx(BytesIO(normalized_source.content_bytes))
+    source_paragraphs, source_image_assets = extract_document_content_from_docx(BytesIO(prepared.uploaded_file_bytes))
     output_paragraphs = []
     output_image_assets = []
     if output_artifacts["output_docx_openable"]:
@@ -230,7 +191,6 @@ def _build_validation_result(
         "metrics": metrics,
         "checks": checks,
         "runtime_config": runtime_config,
-        "runtime_configuration": runtime_config,
         "output_artifacts": output_artifacts,
         "formatting_diagnostics": formatting_diagnostics,
         "event_log": event_log or [],
@@ -241,6 +201,51 @@ def _build_passthrough_job(job: Mapping[str, object]) -> dict[str, object]:
     cloned = dict(job)
     cloned["job_kind"] = "passthrough"
     return cloned
+
+
+def _build_validation_processing_service(event_log: list[dict[str, object]]):
+    def _run_document_processing_impl(**kwargs: object) -> str:
+        from document_pipeline import run_document_processing
+
+        return cast(str, run_document_processing(**kwargs))
+
+    return clone_processing_service(
+        get_client_fn=lambda: object(),
+        load_system_prompt_fn=lambda: "",
+        ensure_pandoc_available_fn=ensure_pandoc_available,
+        generate_markdown_block_fn=lambda **kwargs: cast(str, kwargs.get("target_text") or ""),
+        convert_markdown_to_docx_bytes_fn=convert_markdown_to_docx_bytes,
+        process_document_images_impl_fn=lambda **kwargs: list(kwargs.get("image_assets") or []),
+        analyze_image_fn=lambda *args, **kwargs: None,
+        generate_image_candidate_fn=lambda *args, **kwargs: b"",
+        validate_redraw_result_fn=lambda *args, **kwargs: None,
+        detect_image_mime_type_fn=lambda *args, **kwargs: None,
+        inspect_placeholder_integrity_fn=_inspect_placeholder_integrity_adapter,
+        preserve_source_paragraph_properties_fn=_preserve_source_paragraph_properties_adapter,
+        normalize_semantic_output_docx_fn=_normalize_semantic_output_docx_adapter,
+        reinsert_inline_images_fn=_reinsert_inline_images_adapter,
+        run_document_processing_impl_fn=_run_document_processing_impl,
+        present_error_fn=lambda code, exc, title, **context: f"{title}: {exc}",
+        log_event_fn=lambda level, event_id, message, **context: event_log.append(
+            {
+                "level": level,
+                "event_id": event_id,
+                "message": message,
+                "context": context,
+            }
+        ),
+        emit_state_fn=_emit_state,
+        emit_finalize_fn=_emit_finalize,
+        emit_activity_fn=_emit_activity,
+        emit_log_fn=_emit_log,
+        emit_status_fn=_emit_status,
+        emit_image_log_fn=lambda runtime, **payload: None,
+        emit_image_reset_fn=lambda runtime: None,
+        should_stop_processing_fn=lambda runtime: False,
+        resolve_uploaded_filename_fn=processing_runtime.resolve_uploaded_filename,
+        image_model_call_budget_cls=object,
+        image_model_call_budget_exceeded_cls=RuntimeError,
+    )
 
 
 def _build_structural_metrics(*, paragraphs: Sequence[object], image_assets: Sequence[object]) -> dict[str, object]:
@@ -472,8 +477,16 @@ def _emit_state(runtime: object, **values: object) -> None:
     _runtime_state(runtime).update(values)
 
 
-def _emit_finalize(runtime: object, stage: str, detail: str, progress: float) -> None:
-    cast(list[object], _runtime_mapping(runtime).setdefault("finalize", [])).append((stage, detail, progress))
+def _emit_finalize(
+    runtime: object,
+    stage: str,
+    detail: str,
+    progress: float,
+    terminal_kind: str | None = None,
+) -> None:
+    cast(list[object], _runtime_mapping(runtime).setdefault("finalize", [])).append(
+        (stage, detail, progress, terminal_kind)
+    )
 
 
 def _emit_activity(runtime: object, message: str) -> None:

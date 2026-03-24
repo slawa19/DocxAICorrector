@@ -129,6 +129,52 @@ def test_prepare_document_for_processing_clones_attempt_variants_independently(m
     assert second.image_assets[0].attempt_variants[0].validation_result == {"score": 0.5}
 
 
+def test_prepare_document_for_processing_clones_comparison_variants_independently(monkeypatch):
+    session_state = {"preparation_cache": {}}
+    source_bytes = b"docx-bytes"
+
+    asset = ImageAsset(
+        image_id="img-1",
+        placeholder="[[DOCX_IMAGE_img-1]]",
+        original_bytes=b"orig",
+        mime_type="image/png",
+        position_index=0,
+        comparison_variants={
+            "safe": {
+                "mode": "safe",
+                "validation_result": {"score": 0.7},
+                "final_reason": "initial",
+            }
+        },
+    )
+
+    monkeypatch.setattr(preparation, "extract_document_content_from_docx", lambda uploaded_file: ([{"text": "p"}], [asset]))
+    monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "text")
+    monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars: ["block"])
+    monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [{"target_text": "text", "target_chars": 4, "context_chars": 0}])
+
+    first = preparation.prepare_document_for_processing(
+        uploaded_filename="report.docx",
+        source_bytes=source_bytes,
+        uploaded_file_token="report.docx:10:hash",
+        chunk_size=6000,
+        session_state=session_state,
+    )
+    second = preparation.prepare_document_for_processing(
+        uploaded_filename="report.docx",
+        source_bytes=source_bytes,
+        uploaded_file_token="report.docx:10:hash",
+        chunk_size=6000,
+        session_state=session_state,
+    )
+
+    first.image_assets[0].comparison_variants["safe"]["final_reason"] = "mutated"
+    first.image_assets[0].comparison_variants["safe"]["validation_result"]["score"] = 0.2
+
+    assert second.image_assets[0].comparison_variants["safe"]["final_reason"] == "initial"
+    assert second.image_assets[0].comparison_variants["safe"]["validation_result"] == {"score": 0.7}
+
+
 def test_prepare_document_for_processing_limits_session_cache_size(monkeypatch):
     session_state = {"preparation_cache": {}}
 
@@ -298,24 +344,15 @@ def test_clear_preparation_cache_requires_explicit_shared_clear(monkeypatch):
     assert uncached_after_explicit_clear.cached is False
 
 
-def test_prepare_document_for_processing_miss_uses_single_deepcopy_for_return(monkeypatch):
+def test_prepare_document_for_processing_miss_returns_clone_separate_from_cached_entry(monkeypatch):
     session_state = {"preparation_cache": {}}
-    deepcopy_calls = []
 
     monkeypatch.setattr(preparation, "extract_document_content_from_docx", lambda uploaded_file: ([{"text": "p"}], [{"image": b"x"}]))
     monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "text")
     monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars: ["block"])
     monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [{"target_text": "text", "target_chars": 4, "context_chars": 0}])
 
-    original_deepcopy = preparation.deepcopy
-
-    def tracking_deepcopy(value):
-        deepcopy_calls.append(type(value).__name__)
-        return original_deepcopy(value)
-
-    monkeypatch.setattr(preparation, "deepcopy", tracking_deepcopy)
-
-    preparation.prepare_document_for_processing(
+    result = preparation.prepare_document_for_processing(
         uploaded_filename="report.docx",
         source_bytes=b"docx-bytes",
         uploaded_file_token="report.docx:10:hash",
@@ -323,7 +360,13 @@ def test_prepare_document_for_processing_miss_uses_single_deepcopy_for_return(mo
         session_state=session_state,
     )
 
-    assert deepcopy_calls == ["list", "dict"]
+    cached_entry = session_state["preparation_cache"]["report.docx:10:hash:6000"]
+
+    assert result is not cached_entry
+    assert result.paragraphs is not cached_entry.paragraphs
+    assert result.image_assets is not cached_entry.image_assets
+    assert result.jobs is not cached_entry.jobs
+    assert result.jobs[0] is not cached_entry.jobs[0]
 
 
 def test_prepare_document_for_processing_reports_stage_metrics(monkeypatch):

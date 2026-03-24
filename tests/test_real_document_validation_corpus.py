@@ -1,8 +1,11 @@
 import json
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from real_document_validation_profiles import load_validation_registry
+import real_document_validation_structural
 from real_document_validation_structural import evaluate_extraction_profile, run_structural_passthrough_validation
 
 
@@ -34,4 +37,94 @@ def test_corpus_structural_passthrough(document_profile) -> None:
     assert result["validation_tier"] == "structural"
     assert result["run_profile_id"] == STRUCTURAL_RUN_PROFILE.id
     assert result["runtime_config"]["effective"]["image_mode"] == STRUCTURAL_RUN_PROFILE.image_mode
+    assert "runtime_configuration" not in result
     assert result["passed"] is True, json.dumps(result, ensure_ascii=False, indent=2)
+
+
+def test_structural_passthrough_uses_original_legacy_doc_bytes_for_prepared_facade(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project-root"
+    source_dir = project_root / "tests" / "sources"
+    source_dir.mkdir(parents=True)
+    source_path = source_dir / "legacy.doc"
+    source_bytes = bytes.fromhex("D0CF11E0A1B11AE1") + b"legacy-source"
+    source_path.write_bytes(source_bytes)
+    document_profile = SimpleNamespace(id="legacy-doc", resolved_source_path=lambda project_root=None: source_path)
+    run_profile = SimpleNamespace(id="structural-passthrough-default")
+    captured = {}
+
+    def _resolution_payload(**values):
+        return SimpleNamespace(**values, to_dict=lambda: dict(values))
+
+    monkeypatch.setattr(real_document_validation_structural, "PROJECT_ROOT", Path(project_root))
+    monkeypatch.setattr(real_document_validation_structural, "load_app_config", lambda: object())
+    monkeypatch.setattr(
+        real_document_validation_structural,
+        "resolve_runtime_resolution",
+        lambda app_config, run_profile: SimpleNamespace(
+            effective=_resolution_payload(
+                chunk_size=6000,
+                image_mode="safe",
+                keep_all_image_variants=False,
+                model="gpt-5.4",
+                max_retries=1,
+            ),
+            ui_defaults=_resolution_payload(
+                chunk_size=6000,
+                image_mode="safe",
+                keep_all_image_variants=False,
+                model="gpt-5.4",
+                max_retries=1,
+            ),
+            overrides={},
+        ),
+    )
+    monkeypatch.setattr(real_document_validation_structural, "apply_runtime_resolution_to_app_config", lambda app_config, resolution: {})
+    monkeypatch.setattr(real_document_validation_structural, "_snapshot_formatting_diagnostics_paths", lambda: set())
+    monkeypatch.setattr(real_document_validation_structural, "_collect_new_formatting_diagnostics_paths", lambda before, after: [])
+    monkeypatch.setattr(real_document_validation_structural, "_load_formatting_diagnostics_payloads", lambda paths: [])
+    monkeypatch.setattr(
+        real_document_validation_structural,
+        "extract_document_content_from_docx",
+        lambda uploaded_file: ([], []),
+    )
+    monkeypatch.setattr(real_document_validation_structural, "_build_output_artifacts", lambda docx_bytes, markdown_text: {"output_docx_openable": True})
+    monkeypatch.setattr(real_document_validation_structural, "_build_structural_metrics", lambda *, paragraphs, image_assets: {})
+    monkeypatch.setattr(real_document_validation_structural, "_build_extraction_checks", lambda document_profile, metrics: [])
+    monkeypatch.setattr(
+        real_document_validation_structural,
+        "_build_structural_checks",
+        lambda document_profile, result, metrics, output_artifacts: [],
+    )
+
+    def _run_prepared_background_document(**kwargs):
+        uploaded_file = kwargs["uploaded_file"]
+        captured["uploaded_filename"] = uploaded_file.name
+        captured["uploaded_bytes"] = uploaded_file.getvalue()
+        runtime = kwargs["runtime"]
+        runtime["state"]["latest_docx_bytes"] = b"PK\x03\x04output"
+        runtime["state"]["latest_markdown"] = "markdown"
+        return "succeeded", SimpleNamespace(
+            uploaded_file_bytes=b"PK\x03\x04normalized-source",
+            source_text="text",
+            paragraphs=[],
+            image_assets=[],
+            jobs=[{"job_kind": "passthrough"}],
+        )
+
+    monkeypatch.setattr(
+        real_document_validation_structural,
+        "_build_validation_processing_service",
+        lambda event_log: SimpleNamespace(run_prepared_background_document=_run_prepared_background_document),
+    )
+    monkeypatch.setattr(
+        real_document_validation_structural.processing_runtime,
+        "normalize_uploaded_document",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("validator should not pre-normalize uploads")),
+    )
+
+    result = run_structural_passthrough_validation(document_profile, run_profile)
+
+    assert captured["uploaded_filename"] == "legacy.doc"
+    assert captured["uploaded_bytes"] == source_bytes
+    assert result["result"] == "succeeded"
+    assert "runtime_configuration" not in result

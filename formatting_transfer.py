@@ -650,6 +650,7 @@ def apply_output_formatting(
         paragraphs,
         generated_paragraph_registry=generated_paragraph_registry,
     )
+    _restore_direct_paragraph_alignment_for_mapped_pairs(mapping_pairs)
 
     mismatch_detected = bool(unmapped_source_ids or unmapped_target_indexes)
     if not mismatch_detected:
@@ -1011,6 +1012,26 @@ def _style_exists(document, style_name: str) -> bool:
     except KeyError:
         return False
     return True
+
+
+def _set_direct_paragraph_alignment(paragraph, alignment_value: str | None) -> None:
+    paragraph_properties = _ensure_paragraph_properties(paragraph)
+    existing_alignment = _find_child_element(paragraph_properties, "jc")
+    if alignment_value is None:
+        if existing_alignment is not None:
+            paragraph_properties.remove(existing_alignment)
+        return
+    if existing_alignment is None:
+        existing_alignment = OxmlElement("w:jc")
+        paragraph_properties.append(existing_alignment)
+    existing_alignment.set(qn("w:val"), alignment_value)
+
+
+def _restore_direct_paragraph_alignment_for_mapped_pairs(mapping_pairs: list[tuple[ParagraphUnit, Paragraph]]) -> None:
+    for source_paragraph, target_paragraph in mapping_pairs:
+        if not source_paragraph.paragraph_alignment:
+            continue
+        _set_direct_paragraph_alignment(target_paragraph, source_paragraph.paragraph_alignment)
 
 
 def _ensure_paragraph_properties(paragraph):

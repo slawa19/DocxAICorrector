@@ -12,7 +12,7 @@
 - Единственный runtime для Python, pytest, Streamlit и Pandoc: WSL `.venv`.
 - Windows PowerShell используется только как thin wrapper и transport layer для lifecycle/diagnostic scripts и соответствующих VS Code tasks.
 - Каталог `.venv-win/` допустим только для editor tooling и статического анализа; он не должен участвовать в runtime auto-selection.
-- Upload contract больше не DOCX-only: пользовательский вход может быть `.docx` или legacy `.doc`, но после boundary в `processing_runtime.py` все слои обязаны работать с normalized DOCX bytes.
+- Upload contract больше не DOCX-only: пользовательский вход может быть `.docx` или legacy `.doc`; после boundary в `processing_runtime.py` downstream-слои обязаны работать с normalized DOCX bytes, но для legacy `.doc` token identity остаётся привязанной к исходным source bytes.
 - Предпочтительный backend автоконвертации legacy `.doc` внутри WSL: `LibreOffice` / `soffice`; fallback backend: `antiword` + `pandoc`.
 - Официальные entry points для запуска и диагностики: `Project Status`, `Start Project`, `Stop Project`, `Run Full Pytest`, `Run Current Test File`, `Run Current Test Node`, `Tail Streamlit Log`.
 - Официальные видимые real-document entry points: `Run Lietaer Real Validation`, `Run Real Document Validation Profile`, `Run Real Document Quality Gate`.
@@ -23,7 +23,8 @@
 
 ## Upload Normalization Contract
 
-- `freeze_uploaded_file`, `build_uploaded_file_token` и preparation path должны строиться только на normalized payload, а не на raw upload bytes.
+- `freeze_uploaded_file` и preparation path должны строиться на одном canonical normalized payload contract.
+- `build_uploaded_file_token` для legacy `.doc` обязан сохранять source-byte-based identity; normalized DOCX bytes используются как processing payload, а не как canonical identity source.
 - `document.py` не должен самостоятельно изобретать отдельный conversion path для legacy `.doc`; его boundary проходит через общий normalizer helper.
 - Structural tier, full-tier validator и UI path должны переиспользовать один и тот же conversion contract, чтобы real-document corpus отражал реальные пользовательские upload paths.
 - Любое будущее расширение форматов входа должно добавляться на этот boundary, а не в отдельные feature-specific обходные пути.

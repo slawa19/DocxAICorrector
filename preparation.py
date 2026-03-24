@@ -1,6 +1,6 @@
 from collections import OrderedDict
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import logging
 from threading import Event, Lock
 
@@ -11,7 +11,7 @@ from document import (
     extract_document_content_from_docx,
 )
 from logger import log_event
-from models import ImageAsset, ImagePipelineMetadata, ImageValidationResult, ImageVariantCandidate
+from models import clone_prepared_image_asset
 from processing_runtime import build_in_memory_uploaded_file
 
 
@@ -139,40 +139,10 @@ def _clone_prepared_document(data: PreparedDocumentData, prepared_source_key: st
     return PreparedDocumentData(
         source_text=data.source_text,
         paragraphs=deepcopy(data.paragraphs),
-        image_assets=[_clone_prepared_image_asset(asset) for asset in data.image_assets],
+        image_assets=[clone_prepared_image_asset(asset) for asset in data.image_assets],
         jobs=[dict(job) for job in data.jobs],
         prepared_source_key=prepared_source_key,
         cached=cached,
-    )
-
-
-def _clone_prepared_image_variant(variant):
-    if isinstance(variant, ImageVariantCandidate):
-        return replace(
-            variant,
-            validation_result=deepcopy(variant.validation_result),
-        )
-    if isinstance(variant, dict):
-        cloned_variant = dict(variant)
-        if "validation_result" in cloned_variant:
-            cloned_variant["validation_result"] = deepcopy(cloned_variant["validation_result"])
-        return cloned_variant
-    return deepcopy(variant)
-
-
-def _clone_prepared_image_asset(asset):
-    if not isinstance(asset, ImageAsset):
-        return deepcopy(asset)
-    return replace(
-        asset,
-        analysis_result=deepcopy(asset.analysis_result),
-        metadata=replace(asset.metadata) if isinstance(asset.metadata, ImagePipelineMetadata) else deepcopy(asset.metadata),
-        validation_result=deepcopy(asset.validation_result),
-        attempt_variants=[_clone_prepared_image_variant(variant) for variant in asset.attempt_variants],
-        comparison_variants={
-            variant_key: _clone_prepared_image_variant(variant)
-            for variant_key, variant in asset.comparison_variants.items()
-        },
     )
 
 

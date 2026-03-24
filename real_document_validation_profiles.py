@@ -10,7 +10,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "corpus_registry.toml"
 _SUPPORTED_TIERS = {"extraction", "structural", "full"}
 _SUPPORTED_STRUCTURAL_MODES = {"strict", "tolerant"}
-_SUPPORTED_ACCEPTANCE_POLICIES = {"strict"}
 
 
 @dataclass(frozen=True)
@@ -38,7 +37,6 @@ class DocumentProfile:
     require_nonempty_output: bool = True
     forbid_heading_only_collapse: bool = False
     default_run_profile: str | None = None
-    expected_acceptance_policy: str = "strict"
     tags: tuple[str, ...] = ()
     provenance: str = ""
     tolerance_reason: str | None = None
@@ -60,7 +58,6 @@ class RunProfile:
     enable_paragraph_markers: bool | None = None
     keep_all_image_variants: bool | None = None
     repeat_count: int = 1
-    expected_acceptance_policy: str | None = None
 
 
 @dataclass(frozen=True)
@@ -212,7 +209,6 @@ def _build_document_profile(payload: Any) -> DocumentProfile:
         require_nonempty_output=_coerce_bool(payload, "require_nonempty_output", True),
         forbid_heading_only_collapse=_coerce_bool(payload, "forbid_heading_only_collapse", False),
         default_run_profile=_optional_str(payload, "default_run_profile"),
-        expected_acceptance_policy=_coerce_acceptance_policy(payload, "expected_acceptance_policy", default="strict"),
         tags=tuple(_coerce_str_list(payload, "tags")),
         provenance=_require_str(payload, "provenance", default=""),
         tolerance_reason=_optional_str(payload, "tolerance_reason"),
@@ -242,7 +238,6 @@ def _build_run_profile(payload: Any) -> RunProfile:
         enable_paragraph_markers=_optional_bool(payload, "enable_paragraph_markers"),
         keep_all_image_variants=_optional_bool(payload, "keep_all_image_variants"),
         repeat_count=repeat_count,
-        expected_acceptance_policy=_optional_acceptance_policy(payload, "expected_acceptance_policy"),
     )
 
 
@@ -306,23 +301,3 @@ def _coerce_str_list(payload: dict[str, Any], key: str) -> list[str]:
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         raise RuntimeError(f"Registry field {key} must be a list of strings")
     return [item.strip() for item in value if item.strip()]
-
-
-def _coerce_acceptance_policy(payload: dict[str, Any], key: str, *, default: str) -> str:
-    value = _require_str(payload, key, default=default)
-    if value not in _SUPPORTED_ACCEPTANCE_POLICIES:
-        raise RuntimeError(
-            f"Unsupported expected_acceptance_policy: {value}. Supported values: {sorted(_SUPPORTED_ACCEPTANCE_POLICIES)}"
-        )
-    return value
-
-
-def _optional_acceptance_policy(payload: dict[str, Any], key: str) -> str | None:
-    value = _optional_str(payload, key)
-    if value is None:
-        return None
-    if value not in _SUPPORTED_ACCEPTANCE_POLICIES:
-        raise RuntimeError(
-            f"Unsupported expected_acceptance_policy: {value}. Supported values: {sorted(_SUPPORTED_ACCEPTANCE_POLICIES)}"
-        )
-    return value

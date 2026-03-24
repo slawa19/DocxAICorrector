@@ -95,6 +95,103 @@ def test_image_validation_result_and_asset_log_context_are_serializable():
     assert context["validation_result"]["decision"] == "accept"
 
 
+def test_image_asset_lifecycle_snapshots_and_reset_keep_boundaries_explicit():
+    asset = ImageAsset(
+        image_id="img-lifecycle",
+        placeholder="[[image-lifecycle]]",
+        original_bytes=PNG_BYTES,
+        mime_type="image/png",
+        position_index=4,
+        width_emu=111,
+        height_emu=222,
+        analysis_result=build_analysis_result(),
+        prompt_key="diagram_semantic_redraw",
+        render_strategy="semantic_redraw_structured",
+        safe_bytes=PNG_BYTES,
+        redrawn_bytes=PNG_BYTES,
+        redrawn_mime_type="image/png",
+        validation_result=ImageValidationResult(
+            validation_passed=True,
+            decision="accept",
+            semantic_match_score=1.0,
+            text_match_score=1.0,
+            structure_match_score=1.0,
+            validator_confidence=1.0,
+            missing_labels=[],
+            added_entities_detected=False,
+            suspicious_reasons=[],
+        ),
+        validation_status="passed",
+        final_decision="accept",
+        final_variant="redrawn",
+        final_reason="accepted",
+        selected_compare_variant="semantic_redraw_direct",
+    )
+    asset.update_pipeline_metadata(
+        rendered_mime_type="image/png",
+        strict_validation_decision="accept",
+        strict_validation_passed=True,
+        soft_accepted=True,
+    )
+
+    source = asset.source_identity_snapshot()
+    runtime = asset.runtime_state_snapshot()
+    final = asset.final_selection_snapshot()
+
+    assert source.image_id == "img-lifecycle"
+    assert source.source_width_emu == 111
+    assert runtime.safe_bytes_present is True
+    assert runtime.redrawn_bytes_present is True
+    assert runtime.strict_validation_decision == "accept"
+    assert final.final_variant == "redrawn"
+
+    asset.reset_runtime_attempt_state()
+
+    runtime_after_reset = asset.runtime_state_snapshot()
+    final_after_reset = asset.final_selection_snapshot()
+
+    assert runtime_after_reset.validation_status == "pending"
+    assert runtime_after_reset.redrawn_bytes_present is False
+    assert runtime_after_reset.selected_compare_variant is None
+    assert runtime_after_reset.strict_validation_decision is None
+    assert runtime_after_reset.soft_accepted is False
+    assert final_after_reset.final_decision == "accept"
+    assert final_after_reset.final_variant == "redrawn"
+
+
+def test_image_asset_apply_final_selection_outcome_updates_final_state_without_second_source_of_truth():
+    asset = ImageAsset(
+        image_id="img-final",
+        placeholder="[[image-final]]",
+        original_bytes=PNG_BYTES,
+        mime_type="image/png",
+        position_index=5,
+    )
+
+    asset.apply_final_selection_outcome(
+        validation_status="compared",
+        final_decision="compared",
+        final_variant="original",
+        final_reason="compare_all_variants_ready:safe, semantic_redraw_direct, semantic_redraw_structured",
+        selected_compare_variant="original",
+        strict_validation_decision="fallback_safe",
+        strict_validation_passed=False,
+        soft_accepted=True,
+    )
+
+    runtime = asset.runtime_state_snapshot()
+    final = asset.final_selection_snapshot()
+    context = asset.to_log_context()
+
+    assert runtime.validation_status == "compared"
+    assert runtime.selected_compare_variant == "original"
+    assert runtime.strict_validation_decision == "fallback_safe"
+    assert runtime.soft_accepted is True
+    assert final.final_decision == "compared"
+    assert context["final_decision"] == "compared"
+    assert context["validation_status"] == "compared"
+
+
 def test_validate_redraw_result_accepts_matching_candidate_analysis():
     analysis_before = build_analysis_result()
     candidate_analysis = build_analysis_result()

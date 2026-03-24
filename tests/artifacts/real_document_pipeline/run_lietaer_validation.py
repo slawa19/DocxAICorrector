@@ -836,11 +836,6 @@ def _run_repeat_validation(
                 "ui_defaults": runtime_resolution.ui_defaults.to_dict(),
                 "overrides": runtime_resolution.overrides,
             },
-            "runtime_configuration": {
-                "effective": runtime_resolution.effective.to_dict(),
-                "ui_defaults": runtime_resolution.ui_defaults.to_dict(),
-                "overrides": runtime_resolution.overrides,
-            },
             "failure_classification": failure_classification,
             "signals": {
                 "intermittent_failure_detected": repeat_summary["intermittent_failure_detected"],
@@ -1747,18 +1742,13 @@ def main() -> None:
 
     try:
         source_bytes = source_path.read_bytes()
-        normalized_source = processing_runtime.normalize_uploaded_document(filename=source_path.name, source_bytes=source_bytes)
-        source_docx_bytes = normalized_source.content_bytes
         tracker.emit(
             event_type="source",
             phase="startup",
             stage="Исходный документ загружен",
             detail=f"Прочитан {source_path.name}.",
             progress=0.02,
-            metrics={"target_chars": len(source_docx_bytes)},
-        )
-        uploaded_payload = processing_runtime.freeze_uploaded_file(
-            UploadedFileStub(normalized_source.filename, source_docx_bytes)
+            metrics={"target_chars": len(source_bytes)},
         )
         app_config = load_app_config()
         runtime_resolution = resolve_runtime_resolution(app_config, run_profile)
@@ -1778,13 +1768,22 @@ def main() -> None:
             progress=0.05,
             metrics={"job_count": 0},
         )
-        prepared = application_flow.prepare_run_context_for_background(
-            uploaded_payload=uploaded_payload,
+        validation_service = processing_service.clone_processing_service(
+            log_event_fn=log_event_capture,
+        )
+        result, prepared = validation_service.run_prepared_background_document(
+            uploaded_file=UploadedFileStub(source_path.name, source_bytes),
             chunk_size=runtime_resolution.effective.chunk_size,
             image_mode=runtime_resolution.effective.image_mode,
             keep_all_image_variants=runtime_resolution.effective.keep_all_image_variants,
-            progress_callback=emit_prepare_progress,
+            app_config=app_config_dict,
+            model=runtime_resolution.effective.model,
+            max_retries=runtime_resolution.effective.max_retries,
+            prepare_progress_callback=emit_prepare_progress,
+            processing_progress_callback=lambda **payload: progress_events.append({"phase": "process", **payload}),
+            runtime=runtime,
         )
+        source_docx_bytes = prepared.uploaded_file_bytes
         tracker.emit(
             event_type="prepared",
             phase="prepare",
@@ -1795,39 +1794,6 @@ def main() -> None:
                 "job_count": len(prepared.jobs),
                 "target_chars": len(prepared.source_text),
             },
-        )
-        result = document_pipeline.run_document_processing(
-            uploaded_file=prepared.uploaded_filename,
-            jobs=prepared.jobs,
-            source_paragraphs=prepared.paragraphs,
-            image_assets=prepared.image_assets,
-            image_mode=runtime_resolution.effective.image_mode,
-            app_config=app_config_dict,
-            model=runtime_resolution.effective.model,
-            max_retries=runtime_resolution.effective.max_retries,
-            on_progress=lambda **payload: progress_events.append(
-                {"phase": "process", **payload}
-            ),
-            runtime=runtime,
-            resolve_uploaded_filename=processing_runtime.resolve_uploaded_filename,
-            get_client=get_client,
-            ensure_pandoc_available=ensure_pandoc_available,
-            load_system_prompt=load_system_prompt,
-            log_event=log_event_capture,
-            present_error=present_error_adapter,
-            emit_state=emit_state_adapter,
-            emit_finalize=emit_finalize_adapter,
-            emit_activity=emit_activity_adapter,
-            emit_log=emit_log_adapter,
-            emit_status=emit_status_adapter,
-            should_stop_processing=should_stop_processing_adapter,
-            generate_markdown_block=generate_markdown_block_adapter,
-            process_document_images=process_document_images_adapter,
-            inspect_placeholder_integrity=inspect_placeholder_integrity_adapter,
-            convert_markdown_to_docx_bytes=convert_markdown_to_docx_bytes,
-            preserve_source_paragraph_properties=preserve_source_paragraph_properties_adapter,
-            normalize_semantic_output_docx=normalize_semantic_output_docx_adapter,
-            reinsert_inline_images=reinsert_inline_images_adapter,
         )
     except Exception as exc:
         exception_payload = {
@@ -1965,7 +1931,6 @@ def main() -> None:
         "progress_path": _path_for_report(progress_path),
         "result": result,
         "runtime_config": _build_report_runtime_config(runtime_resolution),
-        "runtime_configuration": _build_report_runtime_config(runtime_resolution),
         "preparation": preparation_payload,
         "runtime": runtime_snapshot,
         "last_error": last_error,

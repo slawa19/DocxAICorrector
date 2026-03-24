@@ -549,3 +549,52 @@ def test_prepare_run_context_for_background_skips_renormalization_for_frozen_pay
     assert result.uploaded_filename == payload.filename
     assert result.uploaded_file_bytes == payload.content_bytes
     assert result.uploaded_file_token == payload.file_token
+
+
+def test_prepare_run_context_sync_and_background_share_same_upload_contract(monkeypatch):
+    monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: None)
+    prepared_document = SimpleNamespace(
+        source_text="text",
+        paragraphs=["p1"],
+        image_assets=[],
+        jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
+        prepared_source_key="prepared-key",
+        cached=False,
+    )
+    sync_calls = []
+    background_calls = []
+    payload = _freeze_uploaded_file("report.docx", b"abc")
+
+    def prepare_sync(**kwargs):
+        sync_calls.append(kwargs)
+        return prepared_document
+
+    def prepare_background(**kwargs):
+        background_calls.append(kwargs)
+        return prepared_document
+
+    sync_result = application_flow.prepare_run_context(
+        uploaded_file=UploadedFileStub("report.docx", b"abc"),
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=True,
+        session_state=SessionState(selected_source_token="", prepared_source_key=""),
+        reset_run_state_fn=lambda **kwargs: None,
+        fail_critical_fn=lambda *args, **kwargs: None,
+        log_event_fn=lambda *args, **kwargs: None,
+        prepare_document_for_processing_fn=prepare_sync,
+    )
+    background_result = application_flow.prepare_run_context_for_background(
+        uploaded_payload=payload,
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=True,
+        prepare_document_for_processing_fn=prepare_background,
+    )
+
+    assert sync_calls[0]["uploaded_filename"] == background_calls[0]["uploaded_filename"] == "report.docx"
+    assert sync_calls[0]["source_bytes"] == background_calls[0]["source_bytes"] == b"abc"
+    assert sync_calls[0]["uploaded_file_token"] == background_calls[0]["uploaded_file_token"] == payload.file_token
+    assert sync_result.uploaded_filename == background_result.uploaded_filename
+    assert sync_result.uploaded_file_bytes == background_result.uploaded_file_bytes
+    assert sync_result.uploaded_file_token == background_result.uploaded_file_token

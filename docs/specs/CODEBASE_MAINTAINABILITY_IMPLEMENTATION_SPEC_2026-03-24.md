@@ -1,7 +1,7 @@
 # Codebase Maintainability Implementation Spec
 
 Date: 2026-03-24
-Status: Proposed
+Status: Completed
 Scope type: multi-phase maintainability and architecture cleanup
 Primary input: `docs/reviews/CODEBASE_MAINTAINABILITY_REVIEW_2026-03-24.md`
 
@@ -57,29 +57,57 @@ Any phase that appears to pressure one of these contracts must explicitly docume
 
 This spec is driven by the validated findings from the maintainability review.
 
-Revalidation note against the current repository snapshot on 2026-03-24:
+Revalidation note against the current repository snapshot after the latest P0-P3 implementation waves:
 
-- `REL-001`, `PERF-001`, `DUP-002`, `DUP-004`, `APP-002`, `STALE-001`, `ARCH-001`, `DATA-001`, and the validation-harness drift findings are still present in code;
-- the image-processing summary default shape is no longer duplicated as two independently maintained dict literals; `state.py` is already the authoritative shape source, and the remaining cleanup is removal of redundant wrapper aliases rather than re-unifying diverged implementations;
-- `real_document_validation_profiles.py` still exposes `expected_acceptance_policy`, but current runtime paths and registry resolution do not consume it outside parsing/tests, so this remains an active maintainability issue that should be folded into validation-harness convergence rather than left implicit.
+- `REL-001`, `PERF-001`, `DUP-002`, `DUP-004`, and `DEAD-001` are now addressed in code;
+- `APP-002` is only partially open: repeated frame-finalization tails in `app.py` have been centralized, but some avoidable late imports still remain and should be evaluated against the final ownership split rather than treated as closed by naming cleanup alone;
+- `STALE-001` is addressed: `scripts/run_pic1_modes.py` now uses the supported service-level image-processing surface instead of the removed `app.process_document_images` surface;
+- `DUP-003` is functionally resolved: `state.py` is the authoritative owner for the image-processing summary default shape and `processing_runtime.py` consumes that owner rather than maintaining a parallel default literal;
+- `ARCH-001` is now closed in practice: `processing_service.py` no longer depends on `app_runtime.py`, validation entrypoints run through the shared production-compatible service facade, and the normal call graph remains documented without new ownership overlap;
+- `DATA-001` is now closed for the runtime-attempt scope tracked by this spec: `ImageAsset` retains the broad public model, but runtime-attempt mutations now flow through the dedicated nested owner and its transition helpers rather than open-coded field mutation across orchestration paths;
+- validation-harness convergence is now closed for both maintained entrypoints: `real_document_validation_structural.py` and `tests/artifacts/real_document_pipeline/run_lietaer_validation.py` both consume the shared production-compatible execution facade instead of rebuilding low-level orchestration directly;
+- report-surface ownership is now closed for runtime configuration reporting: `runtime_config` is the sole canonical field and the transitional `runtime_configuration` alias has been removed.
+- the final real-document acceptance regression discovered after convergence is now closed: mapped paragraph direct alignment is preserved/restored again, and the latest Lietaer validation run passes `centered_short_paragraphs_preserved`.
+
+### 5.1 Implementation Status Snapshot
+
+Completed or effectively closed:
+
+- lock-protected `config.py:get_client()`;
+- single-sourced upload identity and normalization contract for sync/background preparation;
+- shared Responses API traversal helpers extracted into `openai_response_utils.py`;
+- in-memory uploaded-file reconstruction unified on the runtime-side owner;
+- central frame-finalization helper introduced in `app.py`;
+- `processing_service.py` boundary cleaned up so service/domain wiring no longer depends on `app_runtime.py`;
+- structural validation switched to a narrow production-compatible facade;
+- dead `expected_acceptance_policy` registry/runtime surface removed.
+
+Final closure items completed in the closing implementation wave:
+
+- `ImageAsset` runtime-attempt state now has a dedicated nested owner and orchestrators update it through owner helpers;
+- the full real-document validation harness now runs through `ProcessingService.run_prepared_background_document(...)` via `clone_processing_service(...)` instead of manual low-level prepare/process orchestration;
+- runtime configuration reporting now uses only `runtime_config` across structural and full validation reports;
+- direct paragraph alignment from source paragraphs is now preserved in extracted paragraph units and restored for mapped output paragraphs, closing the centered-short-paragraph acceptance regression;
+- this spec has been refreshed to reflect final closure status.
 
 ### P0 findings
 
-- `REL-001`: `config.py:get_client()` performs unlocked singleton initialization.
-- `PERF-001`: `_prepare_run_context_core()` can normalize the same upload twice in the synchronous path when `uploaded_payload is None`.
-- `DUP-002`: response parsing logic is duplicated between `generation.py` and `image_shared.py`.
-- `DUP-003`: image-processing summary defaults are already single-sourced in `state.py`, but redundant wrapper aliases remain in `processing_runtime.py` and `state.py`.
-- `DUP-004`: in-memory uploaded-file builders are duplicated between `processing_runtime.py` and `preparation.py`.
-- `GEN-001`: duplicated raise branch in `generation.py`.
-- `APP-002`: `app.py` contains repeated frame-finalization calls and avoidable late imports.
-- `STALE-001`: `scripts/run_pic1_modes.py` references a removed surface (`app.process_document_images`).
+- `REL-001`: closed. `config.py:get_client()` is now lock-protected with double-checked singleton initialization.
+- `PERF-001`: closed. `_prepare_run_context_core()` now runs through one resolved upload path instead of re-normalizing in the sync path.
+- `DUP-002`: closed. response parsing traversal is single-sourced in a neutral helper module.
+- `DUP-003`: closed in practice. `state.py` is the default-shape owner and runtime code consumes that owner.
+- `DUP-004`: closed. in-memory uploaded-file reconstruction is single-sourced on the runtime-side owner and `preparation.py` consumes that helper.
+- `GEN-001`: closed. the redundant recovery-path raise duplication in `generation.py` has been removed.
+- `APP-002`: partially closed. repeated frame-finalization calls have been centralized; remaining late imports should be revisited as part of final orchestration cleanup.
+- `STALE-001`: closed. `scripts/run_pic1_modes.py` now uses the supported processing service surface.
 
 ### P1-P3 findings
 
-- `ARCH-001`: orchestration ownership is spread across too many modules.
-- `DATA-001`: `models.py:ImageAsset` is overloaded with multiple lifecycle concerns.
-- `BOUNDARY-001`: real-document structural validation partially duplicates production orchestration behavior.
-- `DEAD-001`: `real_document_validation_profiles.py` still exposes `expected_acceptance_policy`, but no runtime validation path meaningfully consumes it.
+- `ARCH-001`: closed. ownership is materially cleaner and the maintained validation entrypoints now consume the shared service facade instead of rebuilding low-level runtime wiring.
+- `DATA-001`: closed for this spec scope. runtime-attempt state ownership is narrowed behind `ImageRuntimeAttemptState` plus owner helpers, and orchestration paths update the nested owner instead of open-coding those transitions.
+- `BOUNDARY-001`: closed. both structural and full real-document validation entrypoints now use the narrow production-compatible service facade.
+- `DEAD-001`: closed. `expected_acceptance_policy` has been removed from the registry and runtime type surface.
+- `REPORT-001`: closed. `runtime_config` is canonical and `runtime_configuration` has been removed from maintained validation reports.
 
 ## 6. Design Principles
 
@@ -235,6 +263,11 @@ Preferred target: extract shared response-shape parsing into a small dedicated m
 
 `ImageAsset` should continue to represent a document image unit, but mutable pipeline state should be narrowed.
 
+Current status note:
+
+- lifecycle snapshots and controlled mutation helpers already exist and are useful intermediate scaffolding;
+- this does not by itself satisfy the target state while compare-all state, attempt state, validation state, and final-selection state still live on one broad mutable object.
+
 The target is not necessarily to delete `ImageAsset`. The target is to stop using one object as all of the following simultaneously:
 
 - source asset descriptor;
@@ -263,6 +296,11 @@ Validation-facade rule:
 - validation code must prefer a narrow production facade that exposes prepared-input execution and result capture;
 - validation code must not wire together low-level runtime helpers ad hoc when the same behavior can be reached through the shared facade;
 - if the facade is too wide or Streamlit-coupled, narrow the production facade rather than reproducing production wiring in validator-only code.
+
+Current status note:
+
+- `real_document_validation_structural.py` has already moved onto a production-compatible facade and now preserves the legacy `.doc` source-byte identity contract in that path;
+- the full Lietaer/real-document runner under `tests/artifacts/real_document_pipeline/` still uses direct low-level preparation and processing wiring and therefore remains in scope for convergence.
 
 ## 8. Workstreams and Priorities
 
@@ -358,6 +396,11 @@ Acceptance:
 - each shared shape/helper has one authoritative implementation, with wrapper aliases retained only when they carry real behavior;
 - import direction remains simple and acyclic.
 
+Status update:
+
+- upload-file reconstruction is already unified on the runtime-side owner;
+- image summary defaults are already owned by `state.py`.
+
 ### P0.5 Remove stale developer surface
 
 Files in scope:
@@ -390,6 +433,11 @@ Acceptance:
 - no UI behavior change;
 - fewer repeated tail blocks;
 - no new import cycle.
+
+Status update:
+
+- the repeated frame-finalization tail is already centralized via a dedicated helper;
+- remaining work in this item is limited to justified late-import cleanup, not to the already-closed tail duplication itself.
 
 ## 8.2 Priority P1: Upload and Preparation Contract Consolidation
 
@@ -541,6 +589,12 @@ Field and alias rule:
 3. Fewer unrelated fields on the main asset object.
 4. Explicit lifecycle invariants for source identity, runtime attempt state, and finalized output state.
 
+Remaining closure criteria:
+
+- introduce one explicit runtime-attempt or compare-state owner rather than keeping those concerns as peer mutable fields on `ImageAsset`;
+- ensure final-selection state and runtime-attempt state are not simultaneously writable through unrelated field mutation paths;
+- remove the need to treat snapshot/helper additions as the only boundary, because the data model itself must reflect the boundary.
+
 ## 8.5 Priority P3: Validation Harness Convergence
 
 Objective: make real-document validation reuse production behavior more directly.
@@ -550,6 +604,11 @@ Objective: make real-document validation reuse production behavior more directly
 `real_document_validation_structural.py` currently composes a partial runtime using adapters and inline orchestration assembly. It works, but it duplicates production wiring concepts and can drift.
 
 `real_document_validation_profiles.py` also exposes configuration surface that is currently narrower in practice than its type surface suggests, for example around acceptance policy handling.
+
+Current remaining gap after recent implementation:
+
+- structural validation has been converged onto the shared facade, but the full Lietaer/real-document runner still follows a validator-local wiring path;
+- structural validation reports still expose both `runtime_config` and `runtime_configuration`, which violates the source-of-truth ownership rule unless one is explicitly transitional.
 
 ### Target
 
@@ -576,6 +635,7 @@ Forbidden outcomes:
 3. Clearer registry semantics.
 4. No dead validation-policy field that appears configurable but does not affect runtime behavior.
 5. Validation execution flows through a documented narrow facade, not ad hoc low-level production wiring.
+6. One canonical runtime-config report field, with any compatibility alias explicitly deprecated and then removed.
 
 ## 9. Implementation Sequence
 
@@ -652,6 +712,8 @@ Each PR must include only the smallest necessary test additions.
     - registry-driven runtime override behavior remains correct;
     - no dead acceptance-policy field remains unless it is actually enforced.
     - validator entrypoints use the shared narrow production facade instead of ad hoc low-level wiring.
+   - the full real-document runner entrypoint also converges on the same production-compatible facade rather than preserving a separate low-level assembly path.
+   - only one runtime-config report field remains canonical once convergence is complete.
 
 ### Architectural verification expectations
 
@@ -735,6 +797,7 @@ This initiative is complete when all of the following are true:
 9. Session-state mutation, restart/completed-source persistence, and prepared-input cache ownership each have one explicit authoritative owner.
 10. `document_pipeline.py` and downstream processing consume prepared inputs rather than reconstructing upload semantics.
 11. Duplicate field names, session keys, or report fields either have one canonical owner with a documented deprecation alias or are removed.
+12. The structural validator and the full real-document runner both execute through the same production-compatible facade class of contract rather than maintaining separate low-level orchestration wiring.
 
 ## 13. Deferred Items
 
@@ -743,6 +806,7 @@ The following items are intentionally deferred unless later evidence elevates th
 - broader decomposition of `document_pipeline.py` beyond what is needed to clarify orchestration boundaries;
 - cleanup of thin wiring tests unless they directly obstruct refactoring confidence;
 - speculative optimization work not tied to a measured bottleneck;
+- remaining non-critical `app.py` late-import cleanup after the frame-finalization centralization;
 - UI redesign or component-library style changes.
 
 ## 14. Recommended Execution Order

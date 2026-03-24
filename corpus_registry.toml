@@ -22,7 +22,6 @@ require_numbered_lists_preserved = true
 require_nonempty_output = true
 forbid_heading_only_collapse = true
 default_run_profile = "ui-parity-default"
-expected_acceptance_policy = "strict"
 tags = ["headings", "formatting", "manual-regression"]
 provenance = "Canonical real document regression sample"
 
@@ -50,7 +49,6 @@ require_numbered_lists_preserved = false
 require_nonempty_output = true
 forbid_heading_only_collapse = true
 default_run_profile = "ui-parity-default"
-expected_acceptance_policy = "strict"
 tags = ["legacy-doc", "headings", "manual-regression"]
 provenance = "Canonical legacy DOC corpus sample processed through project-level auto-conversion during validation runs."
 tolerance_reason = "Current normalized legacy-DOC sample preserves structure and text but retains one page-separator artifact that maps to a single formatting diagnostics entry during deterministic passthrough."
@@ -61,7 +59,6 @@ tier = "full"
 mode = "regression"
 enable_paragraph_markers = true
 repeat_count = 1
-expected_acceptance_policy = "strict"
 
 [[run_profiles]]
 id = "structural-passthrough-default"
@@ -70,7 +67,6 @@ mode = "regression"
 image_mode = "safe"
 enable_paragraph_markers = false
 repeat_count = 1
-expected_acceptance_policy = "strict"
 
 [[run_profiles]]
 id = "ui-parity-soak-3x"
@@ -78,4 +74,3 @@ tier = "full"
 mode = "soak"
 enable_paragraph_markers = true
 repeat_count = 3
-expected_acceptance_policy = "strict"

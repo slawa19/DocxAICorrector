@@ -6,6 +6,7 @@ import os
 from io import BytesIO
 from pathlib import Path
 from contextlib import redirect_stdout
+from types import SimpleNamespace
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -401,6 +402,124 @@ def test_full_tier_runtime_contract_is_nested_only() -> None:
     runtime_config = validation._build_report_runtime_config(None)
 
     assert set(runtime_config.keys()) == {"effective", "ui_defaults", "overrides"}
+
+
+def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, monkeypatch) -> None:
+    validation = _load_validation_module()
+    source_path = tmp_path / "legacy.doc"
+    source_bytes = bytes.fromhex("D0CF11E0A1B11AE1") + b"legacy-source"
+    source_path.write_bytes(source_bytes)
+
+    def _resolution_payload(**values):
+        return SimpleNamespace(**values, to_dict=lambda: dict(values))
+
+    document_profile = SimpleNamespace(
+        id="lietaer-core",
+        artifact_prefix="lietaer_validation",
+        output_basename="lietaer_output",
+        max_unmapped_source_paragraphs=0,
+        resolved_source_path=lambda project_root=None: source_path,
+    )
+    run_profile = SimpleNamespace(
+        id="ui-parity-default",
+        tier="full",
+        repeat_count=1,
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=False,
+        model="gpt-5.4",
+        max_retries=1,
+    )
+    registry = SimpleNamespace(
+        get_document_profile=lambda profile_id: document_profile,
+        resolve_run_profile=lambda profile, requested_run_profile_id: run_profile,
+    )
+    captured = {}
+
+    class _ValidationServiceStub:
+        def run_prepared_background_document(self, **kwargs):
+            uploaded_file = kwargs["uploaded_file"]
+            captured["uploaded_filename"] = uploaded_file.name
+            captured["uploaded_bytes"] = uploaded_file.getvalue()
+            kwargs["runtime"].emit(
+                validation.SetStateEvent(
+                    values={
+                        "latest_markdown": "validated output",
+                        "latest_docx_bytes": _docx_bytes(Document()),
+                    }
+                )
+            )
+            return "succeeded", SimpleNamespace(
+                uploaded_filename="prepared.docx",
+                uploaded_file_bytes=b"PK\x03\x04normalized-source",
+                paragraphs=[],
+                image_assets=[],
+                jobs=[{"job_kind": "block"}],
+                source_text="source text",
+                preparation_cached=False,
+                preparation_elapsed_seconds=0.1,
+                uploaded_file_token="token-1",
+            )
+
+    monkeypatch.setattr(validation, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(validation, "REAL_DOCUMENT_ARTIFACT_ROOT", tmp_path / "artifacts")
+    monkeypatch.setattr(validation, "load_validation_registry", lambda: registry)
+    monkeypatch.setattr(validation, "load_app_config", lambda: object())
+    monkeypatch.setattr(
+        validation,
+        "resolve_runtime_resolution",
+        lambda app_config, run_profile: SimpleNamespace(
+            effective=_resolution_payload(
+                chunk_size=6000,
+                image_mode="safe",
+                keep_all_image_variants=False,
+                model="gpt-5.4",
+                max_retries=1,
+            ),
+            ui_defaults=_resolution_payload(
+                chunk_size=6000,
+                image_mode="safe",
+                keep_all_image_variants=False,
+                model="gpt-5.4",
+                max_retries=1,
+            ),
+            overrides={},
+        ),
+    )
+    monkeypatch.setattr(validation, "apply_runtime_resolution_to_app_config", lambda app_config, resolution: {"x": 1})
+    monkeypatch.setattr(validation, "evaluate_lietaer_acceptance", lambda report, **kwargs: {"passed": True, "failed_checks": [], "checks": []})
+    monkeypatch.setattr(validation, "_snapshot_formatting_diagnostics_paths", lambda: set())
+    monkeypatch.setattr(validation, "_collect_new_formatting_diagnostics_paths", lambda before, after: [])
+    monkeypatch.setattr(validation, "_extract_run_formatting_diagnostics_paths", lambda event_log: [])
+    monkeypatch.setattr(validation, "_load_recent_formatting_diagnostics", lambda started_at: ([], []))
+    monkeypatch.setattr(validation, "_load_formatting_diagnostics_payloads", lambda paths: [])
+    monkeypatch.setattr(validation, "_print_terminal_completion_summary", lambda **kwargs: None)
+    monkeypatch.setattr(validation.processing_service, "clone_processing_service", lambda **kwargs: _ValidationServiceStub())
+    monkeypatch.setattr(
+        validation.application_flow,
+        "prepare_run_context_for_background",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("main should use service facade instead of direct prepare")),
+    )
+    monkeypatch.setattr(
+        validation.document_pipeline,
+        "run_document_processing",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("main should use service facade instead of direct pipeline orchestration")),
+    )
+
+    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_PROFILE", "lietaer-core")
+    monkeypatch.delenv("DOCXAI_REAL_DOCUMENT_RUN_PROFILE", raising=False)
+    monkeypatch.delenv("DOCXAI_REAL_DOCUMENT_REPEAT_COUNT_OVERRIDE", raising=False)
+    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_FORCED_RUN_ID", "run-123")
+
+    validation.main()
+
+    report_path = tmp_path / "artifacts" / "runs" / "run-123" / "lietaer_validation_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+
+    assert captured["uploaded_filename"] == "legacy.doc"
+    assert captured["uploaded_bytes"] == source_bytes
+    assert report["runtime_config"]["effective"]["image_mode"] == "safe"
+    assert "runtime_configuration" not in report
 
 
 def test_classify_failure_detects_heading_only_output_from_block_rejection_event() -> None:

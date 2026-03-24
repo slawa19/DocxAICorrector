@@ -8,6 +8,7 @@ import threading
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+from collections.abc import Callable
 from typing import Protocol, cast, runtime_checkable
 
 import streamlit as st
@@ -86,6 +87,40 @@ class NormalizedUploadedDocument:
     content_bytes: bytes
     source_format: str
     conversion_backend: str | None
+
+
+@dataclass(frozen=True)
+class UploadSourceIdentity:
+    original_filename: str
+    source_bytes: bytes
+    token_size: int
+    token_hash: str
+
+
+@dataclass(frozen=True)
+class ResolvedUploadContract:
+    source_identity: UploadSourceIdentity
+    normalized_document: NormalizedUploadedDocument
+
+    @property
+    def filename(self) -> str:
+        return self.normalized_document.filename
+
+    @property
+    def content_bytes(self) -> bytes:
+        return self.normalized_document.content_bytes
+
+    @property
+    def file_size(self) -> int:
+        return len(self.normalized_document.content_bytes)
+
+    @property
+    def content_hash(self) -> str:
+        return hashlib.sha256(self.normalized_document.content_bytes).hexdigest()[:16]
+
+    @property
+    def file_token(self) -> str:
+        return f"{self.filename}:{self.source_identity.token_size}:{self.source_identity.token_hash}"
 
 
 def read_uploaded_file_bytes(uploaded_file: UploadedFileLike | BytesIO) -> bytes:
@@ -284,22 +319,37 @@ def _build_uploaded_file_token_components(*, normalized_document: NormalizedUplo
     return len(identity_bytes), identity_hash
 
 
-def freeze_uploaded_file(uploaded_file: UploadedFileLike | BytesIO) -> FrozenUploadPayload:
-    source_bytes = read_uploaded_file_bytes(uploaded_file)
-    filename = getattr(uploaded_file, "name", "") or _DEFAULT_UPLOADED_FILENAME
+def resolve_upload_contract(*, filename: str, source_bytes: bytes) -> ResolvedUploadContract:
     normalized_document = normalize_uploaded_document(filename=filename, source_bytes=source_bytes)
     token_size, token_hash = _build_uploaded_file_token_components(
         normalized_document=normalized_document,
         source_bytes=source_bytes,
     )
-    content_hash = hashlib.sha256(normalized_document.content_bytes).hexdigest()[:16]
-    return FrozenUploadPayload(
-        filename=normalized_document.filename,
-        content_bytes=normalized_document.content_bytes,
-        file_size=len(normalized_document.content_bytes),
-        content_hash=content_hash,
-        file_token=f"{normalized_document.filename}:{token_size}:{token_hash}",
+    return ResolvedUploadContract(
+        source_identity=UploadSourceIdentity(
+            original_filename=filename,
+            source_bytes=bytes(source_bytes),
+            token_size=token_size,
+            token_hash=token_hash,
+        ),
+        normalized_document=normalized_document,
     )
+
+
+def freeze_resolved_upload(contract: ResolvedUploadContract) -> FrozenUploadPayload:
+    return FrozenUploadPayload(
+        filename=contract.filename,
+        content_bytes=contract.content_bytes,
+        file_size=contract.file_size,
+        content_hash=contract.content_hash,
+        file_token=contract.file_token,
+    )
+
+
+def freeze_uploaded_file(uploaded_file: UploadedFileLike | BytesIO) -> FrozenUploadPayload:
+    source_bytes = read_uploaded_file_bytes(uploaded_file)
+    filename = getattr(uploaded_file, "name", "") or _DEFAULT_UPLOADED_FILENAME
+    return freeze_resolved_upload(resolve_upload_contract(filename=filename, source_bytes=source_bytes))
 
 
 def build_uploaded_file_token(uploaded_file: UploadedFileLike | BytesIO | None = None, *, source_name: str | None = None, source_bytes: bytes | None = None) -> str:
@@ -310,12 +360,7 @@ def build_uploaded_file_token(uploaded_file: UploadedFileLike | BytesIO | None =
             raise ValueError("Для построения токена нужен uploaded_file или source_bytes.")
         source_bytes = read_uploaded_file_bytes(uploaded_file)
     file_name = source_name if source_name is not None else (getattr(uploaded_file, "name", "") or _DEFAULT_UPLOADED_FILENAME)
-    normalized_document = normalize_uploaded_document(filename=file_name, source_bytes=bytes(source_bytes))
-    file_size, content_hash = _build_uploaded_file_token_components(
-        normalized_document=normalized_document,
-        source_bytes=bytes(source_bytes),
-    )
-    return f"{normalized_document.filename}:{file_size}:{content_hash}"
+    return resolve_upload_contract(filename=file_name, source_bytes=bytes(source_bytes)).file_token
 
 
 def build_in_memory_uploaded_file(*, source_name: str, source_bytes: bytes):
@@ -444,6 +489,61 @@ def emit_or_apply_image_log(runtime: BackgroundRuntime | None, *, append_image_l
         append_image_log(**payload)
         return
     runtime.emit(AppendImageLogEvent(payload=payload))
+
+
+@dataclass(frozen=True)
+class RuntimeEventEmitterDependencies:
+    set_processing_status: Callable[..., None]
+    finalize_processing_status: Callable[..., None]
+    push_activity: Callable[[str], None]
+    append_log: Callable[..., None]
+    append_image_log: Callable[..., None]
+
+
+@dataclass(frozen=True)
+class RuntimeEventEmitters:
+    emit_state: Callable[..., None]
+    emit_image_reset: Callable[..., None]
+    emit_status: Callable[..., None]
+    emit_finalize: Callable[..., None]
+    emit_activity: Callable[..., None]
+    emit_log: Callable[..., None]
+    emit_image_log: Callable[..., None]
+
+
+def build_runtime_event_emitters(*, dependencies: RuntimeEventEmitterDependencies) -> RuntimeEventEmitters:
+    return RuntimeEventEmitters(
+        emit_state=emit_or_apply_state,
+        emit_image_reset=emit_or_apply_image_reset,
+        emit_status=lambda runtime, **payload: emit_or_apply_status(
+            runtime,
+            set_processing_status=dependencies.set_processing_status,
+            **payload,
+        ),
+        emit_finalize=lambda runtime, stage, detail, progress, terminal_kind=None: emit_or_apply_finalize(
+            runtime,
+            finalize_processing_status=dependencies.finalize_processing_status,
+            stage=stage,
+            detail=detail,
+            progress=progress,
+            terminal_kind=terminal_kind,
+        ),
+        emit_activity=lambda runtime, message: emit_or_apply_activity(
+            runtime,
+            push_activity=dependencies.push_activity,
+            message=message,
+        ),
+        emit_log=lambda runtime, **payload: emit_or_apply_log(
+            runtime,
+            append_log=dependencies.append_log,
+            **payload,
+        ),
+        emit_image_log=lambda runtime, **payload: emit_or_apply_image_log(
+            runtime,
+            append_image_log=dependencies.append_image_log,
+            **payload,
+        ),
+    )
 
 
 def should_stop_processing(runtime: BackgroundRuntime | None) -> bool:

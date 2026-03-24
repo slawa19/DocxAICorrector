@@ -39,6 +39,24 @@ class PreparedRunContext:
     preparation_cached: bool
     preparation_elapsed_seconds: float
 
+
+@dataclass(frozen=True)
+class ResolvedPreparationUpload:
+    uploaded_payload: FrozenUploadPayload
+    needs_read_stage: bool
+
+    @property
+    def uploaded_filename(self) -> str:
+        return self.uploaded_payload.filename
+
+    @property
+    def uploaded_file_bytes(self) -> bytes:
+        return self.uploaded_payload.content_bytes
+
+    @property
+    def uploaded_file_token(self) -> str:
+        return self.uploaded_payload.file_token
+
 def sync_selected_file_context(*, session_state, reset_run_state_fn, uploaded_file_token: str) -> None:
     previous_token = session_state.get("selected_source_token", "")
     if not previous_token or previous_token == uploaded_file_token:
@@ -118,6 +136,14 @@ def _resolve_preparation_dependencies(
     )
 
 
+def _resolve_preparation_upload(*, uploaded_file=None, uploaded_payload: FrozenUploadPayload | None = None) -> ResolvedPreparationUpload:
+    if uploaded_payload is not None:
+        return ResolvedPreparationUpload(uploaded_payload=uploaded_payload, needs_read_stage=False)
+    if uploaded_file is None:
+        raise ValueError("Для синхронной подготовки требуется uploaded_file.")
+    return ResolvedPreparationUpload(uploaded_payload=freeze_uploaded_file(uploaded_file), needs_read_stage=True)
+
+
 def _prepare_run_context_core(
     *,
     uploaded_file=None,
@@ -138,29 +164,26 @@ def _prepare_run_context_core(
         prepare_document_for_processing_fn=prepare_document_for_processing_fn,
         resolve_uploaded_filename_fn=resolve_uploaded_filename_fn,
     )
-    if uploaded_payload is not None:
-        uploaded_filename = uploaded_payload.filename
-        uploaded_file_bytes = uploaded_payload.content_bytes
-        uploaded_file_token = uploaded_payload.file_token
-    else:
-        uploaded_filename = resolve_uploaded_filename_fn(uploaded_file)
+    upload_filename_for_read = resolve_uploaded_filename_fn(uploaded_file) if uploaded_payload is None else uploaded_payload.filename
+    if uploaded_payload is None:
         emit_preparation_progress(
             progress_callback,
             stage="Чтение файла",
-            detail=f"Читаю содержимое {uploaded_filename}",
+            detail=f"Читаю содержимое {upload_filename_for_read}",
             progress=0.05,
         )
-        if uploaded_file is None:
-            raise ValueError("Для синхронной подготовки требуется uploaded_file.")
         try:
-            frozen_upload = freeze_uploaded_file(uploaded_file)
+            resolved_upload = _resolve_preparation_upload(uploaded_file=uploaded_file, uploaded_payload=None)
         except RuntimeError as exc:
             if fail_critical_fn is not None:
-                fail_critical_fn("doc_conversion_failed", str(exc), filename=uploaded_filename)
+                fail_critical_fn("doc_conversion_failed", str(exc), filename=upload_filename_for_read)
             raise
-        uploaded_filename = frozen_upload.filename
-        uploaded_file_bytes = frozen_upload.content_bytes
-        uploaded_file_token = frozen_upload.file_token
+    else:
+        resolved_upload = _resolve_preparation_upload(uploaded_payload=uploaded_payload)
+
+    uploaded_filename = resolved_upload.uploaded_filename
+    uploaded_file_bytes = resolved_upload.uploaded_file_bytes
+    uploaded_file_token = resolved_upload.uploaded_file_token
     emit_preparation_progress(
         progress_callback,
         stage="Файл прочитан",

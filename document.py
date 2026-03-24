@@ -406,6 +406,7 @@ def _build_paragraph_unit(paragraph, image_assets: list[ImageAsset]) -> Paragrap
         text=text,
         role=role,
         asset_id=asset_id,
+        paragraph_alignment=_resolve_paragraph_alignment(paragraph),
         heading_level=heading_level,
         heading_source=heading_source,
         list_kind=cast(str | None, list_metadata["list_kind"]),

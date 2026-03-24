@@ -96,9 +96,9 @@ def _prepare_state(monkeypatch):
     session_state = SessionState()
     monkeypatch.setattr(state.st, "session_state", session_state)
     state.init_session_state()
-    monkeypatch.setattr(processing_service, "emit_status_impl", lambda runtime, **kwargs: None)
-    monkeypatch.setattr(processing_service, "emit_activity_impl", lambda runtime, message: None)
-    monkeypatch.setattr(processing_service, "emit_image_log_impl", lambda runtime, **kwargs: None)
+    monkeypatch.setattr(processing_service, "set_processing_status", lambda **kwargs: None)
+    monkeypatch.setattr(processing_service, "push_activity", lambda message: None)
+    monkeypatch.setattr(processing_service, "append_image_log", lambda **kwargs: None)
     monkeypatch.setattr(processing_service, "log_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(processing_service, "analyze_image", lambda *args, **kwargs: build_analysis_result())
     monkeypatch.setattr(processing_service, "get_client", lambda: object())
@@ -560,6 +560,49 @@ def test_process_document_images_compare_all_falls_back_when_variants_are_incomp
     assert result[0].final_reason == "compare_all_variants_incomplete:safe"
 
 
+def test_process_document_images_attempt_clone_resets_runtime_attempt_state_without_losing_safe_source(monkeypatch):
+    _, service = _prepare_state(monkeypatch)
+    analyses = iter([build_analysis_result(), build_analysis_result()])
+
+    asset = build_asset()
+    asset.validation_result = build_validation_result()
+    asset.validation_status = "failed"
+    asset.final_decision = "fallback_safe"
+    asset.final_variant = "safe"
+    asset.final_reason = "stale-final"
+    asset.redrawn_bytes = b"stale-redrawn"
+    asset.redrawn_mime_type = "image/jpeg"
+    asset.selected_compare_variant = "safe"
+    asset.comparison_variants = {"safe": {"mode": "safe"}}
+    asset.attempt_variants = [{"mode": "candidate0"}]
+    asset.update_pipeline_metadata(
+        rendered_mime_type="image/jpeg",
+        strict_validation_decision="fallback_safe",
+        strict_validation_passed=False,
+        soft_accepted=True,
+    )
+
+    monkeypatch.setattr(processing_service, "analyze_image", lambda *args, **kwargs: next(analyses))
+    service = processing_service.build_processing_service()
+
+    result = service.process_document_images(
+        image_assets=[asset],
+        image_mode="semantic_redraw_direct",
+        config={"keep_all_image_variants": True, "validation_model": "gpt-4.1", "semantic_redraw_max_attempts": 1},
+        on_progress=lambda **kwargs: None,
+        client=object(),
+    )
+
+    processed = result[0]
+    assert processed.final_decision == "accept"
+    assert processed.final_variant == "redrawn"
+    assert processed.validation_status == "passed"
+    assert processed.metadata.strict_validation_decision == "accept"
+    assert processed.metadata.rendered_mime_type == "image/png"
+    assert processed.selected_compare_variant is None
+    assert [variant.mode for variant in processed.attempt_variants] == ["candidate1"]
+
+
 def test_process_document_images_uses_safe_variant_when_semantic_candidate_collapses_to_safe(monkeypatch):
     _, service = _prepare_state(monkeypatch)
     monkeypatch.setattr(processing_service, "analyze_image", lambda *args, **kwargs: build_analysis_result(render_strategy="deterministic_reconstruction"))
@@ -674,7 +717,7 @@ def test_process_document_images_skips_unsupported_source_image_without_validati
     asset.original_bytes = b"\x01\x02not-a-supported-raster"
     asset.mime_type = "image/x-emf"
 
-    monkeypatch.setattr(processing_service, "emit_image_log_impl", lambda runtime, **kwargs: image_logs.append(kwargs))
+    monkeypatch.setattr(processing_service, "append_image_log", lambda **kwargs: image_logs.append(kwargs))
     monkeypatch.setattr(
         processing_service,
         "analyze_image",

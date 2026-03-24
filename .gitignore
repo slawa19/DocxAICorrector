@@ -28,3 +28,10 @@ build/
 Thumbs.db
 Desktop.ini
 .review-design-image-analysis-pipeline/
+
+# Generated test artifacts
+tests/artifacts/real_image_pipeline/**
+!tests/artifacts/real_image_pipeline/
+tests/artifacts/real_document_pipeline/**
+!tests/artifacts/real_document_pipeline/
+!tests/artifacts/real_document_pipeline/run_lietaer_validation.py
