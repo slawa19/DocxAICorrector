@@ -163,6 +163,44 @@ def test_wrapper_rejects_native_runtime_mode() -> None:
     assert "WSL-first workflow" in (result.stdout + result.stderr)
 
 
+
+def test_stop_sequence_rejects_unmanaged_port_without_restart_recovery() -> None:
+    shared_path = _quote_for_powershell(_to_windows_path(REPO_ROOT / "scripts" / "_shared.ps1"))
+    result = _run_powershell_command(
+        (
+            f"& {{ . '{shared_path}'; "
+            "function Get-ProjectRuntimeStatus { @{ managed_pid_running = 'false'; port_open = 'true' } }; "
+            "try { Invoke-ProjectStopSequence -Port 8501 | Out-Null; exit 0 } "
+            "catch { Write-Output $_.Exception.Message; exit 2 } }"
+        )
+    )
+
+    assert result.returncode == 2
+    assert "занят неуправляемым процессом" in (result.stdout + result.stderr)
+
+
+def test_stop_sequence_allows_restart_recovery_for_repo_owned_port_process() -> None:
+    shared_path = _quote_for_powershell(_to_windows_path(REPO_ROOT / "scripts" / "_shared.ps1"))
+    result = _run_powershell_command(
+        (
+            f"& {{ . '{shared_path}'; "
+            "$script:recoveryCalled = $false; "
+            "function Get-ProjectRuntimeStatus { @{ managed_pid_running = 'false'; port_open = 'true' } }; "
+            "function Stop-RepoOwnedProjectByPort { param([int]$Port) $script:recoveryCalled = $true; @{ recovered = 'true'; pid = '4321' } }; "
+            "function Wait-ProjectStopped { param([int]$Port, [int]$TimeoutSeconds) @{ stopped = $true; managed_pid_running = $false; port_open = $false; windows_port_open = $false } }; "
+            "$status = Invoke-ProjectStopSequence -Port 8501 -AllowRepoOwnedPortRecovery; "
+            "Write-Output ('RECOVERY_CALLED=' + $script:recoveryCalled); "
+            "Write-Output ('RECOVERED=' + $status['recovered_unmanaged']); "
+            "Write-Output ('RECOVERED_PID=' + $status['recovered_pid']); "
+            "exit 0 }"
+        )
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "RECOVERY_CALLED=True" in (result.stdout + result.stderr)
+    assert "RECOVERED=True" in (result.stdout + result.stderr)
+    assert "RECOVERED_PID=4321" in (result.stdout + result.stderr)
+
 def test_vscode_test_tasks_normalize_windows_relative_paths() -> None:
     tasks_by_label = {task["label"]: task for task in _load_vscode_tasks()}
 

@@ -1,14 +1,11 @@
 import time
 from collections.abc import Mapping
-from html import escape
-import json
 from pathlib import Path
 import hashlib
 import re
 from typing import Any
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 from logger import format_elapsed
 from models import ImageMode
@@ -33,67 +30,7 @@ IMAGE_MODE_DESCRIPTIONS = {
 IMAGE_MODE_VALUES_BY_LABEL = {label: value for value, label in IMAGE_MODE_LABELS.items()}
 _FEED_ID_SANITIZER = re.compile(r"[^a-zA-Z0-9_-]+")
 _DOCX_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_IMAGE_img_\d+\]\]")
-_MARKDOWN_PREVIEW_THEME_CSS = """
-    <style>
-    :root {
-        color-scheme: dark;
-        --md-preview-surface: rgb(14, 17, 23);
-        --md-preview-surface-alt: rgb(14, 17, 23);
-        --md-preview-border: rgba(226, 232, 240, 0.2);
-        --md-preview-text: rgb(226, 232, 240);
-        --md-preview-muted: rgb(226, 232, 240);
-        --md-preview-focus: rgba(25, 198, 183, 0.72);
-        --md-preview-radius: 8px;
-    }
-    html, body {
-        margin: 0;
-        padding: 0;
-        background: transparent;
-    }
-    body {
-        color: var(--md-preview-text);
-    }
-    .md-preview-shell {
-        display: grid;
-        gap: 0.75rem;
-        padding: 0.25rem 0.125rem 0.5rem 0.125rem;
-    }
-    .md-preview-caption {
-        color: var(--md-preview-muted);
-    }
-    .md-preview-label {
-        display: block;
-        font-weight: 600;
-        color: var(--md-preview-text);
-    }
-    .md-preview-select,
-    .md-preview-text {
-        width: 100%;
-        box-sizing: border-box;
-        font: inherit;
-        border: 1px solid var(--md-preview-border);
-        border-radius: var(--md-preview-radius);
-        background: var(--md-preview-surface);
-        color: var(--md-preview-text);
-    }
-    .md-preview-select {
-        min-height: 2.5rem;
-        padding: 0.625rem 0.75rem;
-    }
-    .md-preview-text {
-        min-height: 20rem;
-        padding: 0.875rem 1rem;
-        resize: vertical;
-        white-space: pre-wrap;
-        background: var(--md-preview-surface-alt);
-    }
-    .md-preview-select:focus,
-    .md-preview-text:focus {
-        outline: 2px solid var(--md-preview-focus);
-        outline-offset: 1px;
-    }
-    </style>
-"""
+
 
 
 def _mdpreview_key(title: str, suffix: str) -> str:
@@ -153,127 +90,7 @@ def _meaningful_markdown_blocks(blocks: list[str]) -> list[str]:
     return [block for block in blocks if _strip_docx_image_placeholders(block)]
 
 
-def _build_markdown_preview_script(*, blocks_json: str, initial_selection: int, safe_storage_key: str) -> str:
-    return f"""
-    <script>
-    (() => {{
-        const blocks = {blocks_json};
-        const storageKey = "{safe_storage_key}";
-        const select = document.getElementById("md-preview-select-{safe_storage_key}");
-        const textarea = document.getElementById("md-preview-text-{safe_storage_key}");
-        if (!select || !textarea || !Array.isArray(blocks) || blocks.length === 0) {{
-            return;
-        }}
 
-        const syncParentTheme = () => {{
-            try {{
-                const parentDocument = window.parent?.document;
-                const parentWindow = window.parent;
-                const parentBody = parentDocument?.body;
-                if (!parentDocument || !parentWindow || !parentBody) {{
-                    return;
-                }}
-
-                const parentBodyStyles = parentWindow.getComputedStyle(parentBody);
-                document.body.style.color = parentBodyStyles.color;
-                document.body.style.fontFamily = parentBodyStyles.fontFamily;
-                document.body.style.fontSize = parentBodyStyles.fontSize;
-                document.body.style.lineHeight = parentBodyStyles.lineHeight;
-
-                const rootStyle = document.documentElement.style;
-                rootStyle.setProperty("--md-preview-text", parentBodyStyles.color);
-                rootStyle.setProperty("--md-preview-muted", parentBodyStyles.color);
-
-                const parentSelect = parentDocument.querySelector('[data-baseweb="select"] div');
-                if (parentSelect) {{
-                    const parentSelectStyles = parentWindow.getComputedStyle(parentSelect);
-                    rootStyle.setProperty("--md-preview-surface", parentSelectStyles.backgroundColor);
-                    rootStyle.setProperty("--md-preview-surface-alt", parentSelectStyles.backgroundColor);
-                    rootStyle.setProperty("--md-preview-border", parentSelectStyles.borderColor || parentBodyStyles.color);
-                    rootStyle.setProperty("--md-preview-radius", parentSelectStyles.borderRadius || "8px");
-                }} else {{
-                    rootStyle.setProperty("--md-preview-surface", parentBodyStyles.backgroundColor);
-                    rootStyle.setProperty("--md-preview-surface-alt", parentBodyStyles.backgroundColor);
-                }}
-
-                const parentButton = Array.from(parentDocument.querySelectorAll("button")).find((node) =>
-                    node.textContent?.includes("Скачать итоговый DOCX")
-                );
-                if (parentButton) {{
-                    const parentButtonStyles = parentWindow.getComputedStyle(parentButton);
-                    rootStyle.setProperty("--md-preview-border", parentButtonStyles.borderColor || parentBodyStyles.color);
-                    rootStyle.setProperty("--md-preview-radius", parentButtonStyles.borderRadius || "8px");
-                }}
-            }} catch (error) {{
-            }}
-        }};
-
-        syncParentTheme();
-
-        const updateTextarea = (selectedIndex) => {{
-            const resolvedIndex = Math.max(1, Math.min(selectedIndex, blocks.length));
-            textarea.value = blocks[resolvedIndex - 1] || "";
-            textarea.scrollTop = 0;
-            select.value = String(resolvedIndex);
-            try {{
-                window.localStorage.setItem(storageKey, String(resolvedIndex));
-            }} catch (error) {{
-            }}
-        }};
-
-        try {{
-            const persistedIndex = Number.parseInt(window.localStorage.getItem(storageKey) || "", 10);
-            if (Number.isFinite(persistedIndex)) {{
-                updateTextarea(persistedIndex);
-            }} else {{
-                updateTextarea(Number.parseInt(select.value, 10) || {initial_selection});
-            }}
-        }} catch (error) {{
-            updateTextarea(Number.parseInt(select.value, 10) || {initial_selection});
-        }}
-
-        select.addEventListener("change", (event) => {{
-            const nextIndex = Number.parseInt(event.target.value, 10) || 1;
-            updateTextarea(nextIndex);
-        }});
-    }})();
-    </script>
-    """
-
-
-def _build_markdown_preview_markup(*, options_markup: str, initial_block: str, safe_storage_key: str) -> str:
-    return f"""
-    <div class="md-preview-shell">
-        <div class="md-preview-caption">На экране показывается только один Markdown-блок, чтобы интерфейс не перегружался на больших документах.</div>
-        <label class="md-preview-label" for="md-preview-select-{safe_storage_key}">Показать блок</label>
-        <select id="md-preview-select-{safe_storage_key}" class="md-preview-select">{options_markup}</select>
-        <label class="md-preview-label" for="md-preview-text-{safe_storage_key}">Markdown блока</label>
-        <textarea id="md-preview-text-{safe_storage_key}" class="md-preview-text" readonly>{initial_block}</textarea>
-    </div>
-    """
-
-
-def _build_markdown_preview_html(*, blocks: list[str], initial_selection: int, storage_key: str) -> str:
-    options_markup = "".join(
-        f'<option value="{index}"{" selected" if index == initial_selection else ""}>{index}</option>'
-        for index in range(1, len(blocks) + 1)
-    )
-    blocks_json = json.dumps(blocks, ensure_ascii=False)
-    initial_block = escape(blocks[initial_selection - 1])
-    safe_storage_key = escape(storage_key)
-    return (
-        _build_markdown_preview_markup(
-            options_markup=options_markup,
-            initial_block=initial_block,
-            safe_storage_key=safe_storage_key,
-        )
-        + _build_markdown_preview_script(
-            blocks_json=blocks_json,
-            initial_selection=initial_selection,
-            safe_storage_key=safe_storage_key,
-        )
-        + _MARKDOWN_PREVIEW_THEME_CSS
-    )
 
 
 def _render_activity_feed(*, title: str, lines: list[str], feed_id: str | None = None, auto_scroll: bool = False) -> None:
@@ -385,31 +202,27 @@ def render_preparation_summary(summary: dict[str, object] | None, target=None) -
 
     sink = _get_sink(target)
     with sink.container():
-        progress_value = max(0.0, min(_to_float(summary.get("progress"), default=0.0), 1.0))
-        progress_percent = int(progress_value * 100)
         file_size_bytes = _to_int(summary.get("file_size_bytes"), default=0)
         source_label = "cache" if bool(summary.get("cached", False)) else "DOCX"
-        stage = str(summary.get("stage") or "Документ подготовлен")
         elapsed = str(summary.get("elapsed") or "")
         paragraph_count = _to_int(summary.get("paragraph_count"), default=0)
         image_count = _to_int(summary.get("image_count"), default=0)
         source_chars = _to_int(summary.get("source_chars"), default=0)
         block_count = _to_int(summary.get("block_count"), default=0)
-        elapsed_fragment = f" | Подготовка заняла: {elapsed}" if elapsed else ""
+        elapsed_fragment = f" | Подготовка: {elapsed}" if elapsed else ""
         _render_status_panel(
             sink=sink,
             title="Анализ файла завершён",
-            stage=stage,
-            detail=str(summary.get("detail") or "Анализ завершён."),
+            stage="",
+            detail="",
             meta_lines=[
-                f"Прогресс: {progress_percent}% | Источник: {source_label}{elapsed_fragment}",
+                f"Источник: {source_label}{elapsed_fragment}",
                 (
-                    f"Размер: {file_size_bytes / 1024 / 1024:.2f} MB | Абзацы: {paragraph_count} | "
-                    f"Изображения: {image_count} | Символы: {source_chars} | Блоки: {block_count}"
+                    f"{file_size_bytes / 1024 / 1024:.2f} MB | {paragraph_count} абзацев | "
+                    f"{image_count} изображений | {source_chars} символов | {block_count} блоков"
                 ),
             ],
         )
-        st.progress(progress_value)
 
 
 def _to_int(value: Any, *, default: int) -> int:
@@ -469,6 +282,34 @@ def render_run_log(target=None) -> None:
     render_run_log_fragment()
 
 
+_VARIANT_LABELS: dict[str, str] = {
+    "original": "оригинал",
+    "safe": "safe-вариант",
+    "redrawn": "перерисовка",
+}
+
+_REASON_PREFIXES: list[tuple[str, str]] = [
+    ("compare_all_variants_incomplete", "не все варианты сгенерированы"),
+    ("candidate_image_unreadable", "изображение-кандидат не читается"),
+    ("validator_exception", "ошибка валидации"),
+]
+
+
+def _humanize_variant(variant: str) -> str:
+    return _VARIANT_LABELS.get(variant, variant)
+
+
+def _humanize_reason(reason: str) -> str:
+    for prefix, label in _REASON_PREFIXES:
+        if reason == prefix or reason.startswith(prefix + ":"):
+            suffix = reason[len(prefix) + 1:] if reason.startswith(prefix + ":") else ""
+            if suffix:
+                parts = [_humanize_variant(p.strip()) for p in suffix.split(",")]
+                return f"{label}: {', '.join(parts)}"
+            return label
+    return reason
+
+
 def render_image_validation_summary(target=None) -> None:
     summary = st.session_state.get("image_processing_summary", st.session_state.get("image_validation_summary", {}))
     image_assets = list(st.session_state.get("image_assets", []))
@@ -493,20 +334,20 @@ def render_image_validation_summary(target=None) -> None:
                 columns = st.columns(4)
                 columns[0].metric("Обработано", f"{processed_images}/{total_images}")
                 columns[1].metric("Изменено", modified_images)
-                columns[2].metric("Fallbacks", fallback_count or int(summary.get("fallbacks_applied", 0)))
+                columns[2].metric("Откаты", fallback_count or int(summary.get("fallbacks_applied", 0)))
                 columns[3].metric("Оригинал оставлен", original_images)
 
                 if fallback_details:
-                    st.caption("Причины fallback по изображениям:")
+                    st.caption("Причины отката:")
                     for asset in fallback_details[-5:]:
                         image_id = str(_asset_value(asset, "image_id", "unknown"))
-                        final_variant = _asset_value(asset, "final_variant", "original")
-                        final_reason = str(_asset_value(asset, "final_reason", "Причина не указана."))
-                        st.caption(f"• {image_id}: {final_variant} | {final_reason}")
+                        final_variant = _humanize_variant(str(_asset_value(asset, "final_variant", "original")))
+                        final_reason = _humanize_reason(str(_asset_value(asset, "final_reason", "Причина не указана.")))
+                        st.caption(f"• {image_id}: оставлен {final_variant} — {final_reason}")
 
                 validation_errors = summary.get("validation_errors", [])
                 if validation_errors:
-                    st.caption("Ошибки валидации изображений:")
+                    st.caption("Ошибки валидации:")
                     for error in validation_errors[-5:]:
                         st.caption(f"• {error}")
 
@@ -591,17 +432,29 @@ def render_markdown_preview(
     st.session_state[selected_key] = current_selection
     st.session_state[last_count_key] = option_count
 
+    select_widget_key = _mdpreview_key(title, "selectbox")
+
     with sink.container():
-        with st.expander(title, expanded=False):
-            components.html(
-                _build_markdown_preview_html(
-                    blocks=blocks,
-                    initial_selection=current_selection,
-                    storage_key=_mdpreview_key(title, "client_selected"),
-                ),
-                height=460,
-                scrolling=False,
-            )
+        st.selectbox(
+            f"Markdown блок",
+            options=list(range(1, option_count + 1)),
+            index=current_selection - 1,
+            key=select_widget_key,
+            help="На экране показывается только один Markdown-блок, чтобы интерфейс не перегружался на больших документах.",
+        )
+        chosen = st.session_state.get(select_widget_key, current_selection)
+        if isinstance(chosen, int) and 1 <= chosen <= option_count:
+            st.session_state[selected_key] = chosen
+        else:
+            chosen = current_selection
+        st.text_area(
+            "Markdown",
+            value=blocks[chosen - 1],
+            height=300,
+            disabled=True,
+            label_visibility="collapsed",
+            key=_mdpreview_key(title, "textarea"),
+        )
 
 
 def render_result(docx_bytes: bytes, markdown_text: str, original_filename: str) -> None:
@@ -609,9 +462,7 @@ def render_result(docx_bytes: bytes, markdown_text: str, original_filename: str)
         docx_bytes=docx_bytes,
         markdown_text=markdown_text,
         original_filename=original_filename,
-        title=None,
         success_message="Документ обработан.",
-        preview_title="Предпросмотр Markdown",
     )
 
 
@@ -620,21 +471,12 @@ def render_result_bundle(
     docx_bytes: bytes,
     markdown_text: str,
     original_filename: str,
-    title: str | None,
-    success_message: str | None,
-    preview_title: str | None,
+    success_message: str | None = None,
 ) -> None:
-    if title:
-        st.subheader(title)
     if success_message:
         st.success(success_message)
-    latest_result_notice = st.session_state.get("latest_result_notice")
-    if isinstance(latest_result_notice, dict):
-        notice_level = str(latest_result_notice.get("level") or "").strip().lower()
-        notice_message = str(latest_result_notice.get("message") or "").strip()
-        if notice_message and notice_level == "info":
-            st.info(notice_message)
-    st.download_button(
+    col_docx, col_md = st.columns(2)
+    col_docx.download_button(
         label="Скачать итоговый DOCX",
         data=docx_bytes,
         file_name=_build_output_filename(original_filename),
@@ -642,7 +484,7 @@ def render_result_bundle(
         on_click="ignore",
         use_container_width=True,
     )
-    st.download_button(
+    col_md.download_button(
         label="Скачать итоговый Markdown",
         data=markdown_text.encode("utf-8"),
         file_name=_build_markdown_filename(original_filename),
@@ -650,8 +492,6 @@ def render_result_bundle(
         on_click="ignore",
         use_container_width=True,
     )
-    if preview_title:
-        render_markdown_preview(title=preview_title)
 
 
 def render_partial_result() -> None:

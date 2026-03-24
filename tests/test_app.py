@@ -522,7 +522,7 @@ def test_has_restartable_source_returns_false_when_restart_file_was_removed(tmp_
     restart_path.unlink()
 
     assert application_flow.has_restartable_source(session_state=session_state) is False
-def test_compare_panel_renders_notice_for_completed_compare_assets(monkeypatch):
+def test_compare_panel_is_noop_for_completed_compare_assets(monkeypatch):
     calls = []
 
     monkeypatch.setattr(compare_panel.st, "info", lambda message: calls.append(("info", message)))
@@ -534,8 +534,7 @@ def test_compare_panel_renders_notice_for_completed_compare_assets(monkeypatch):
         render_section_gap=lambda gap: calls.append(("gap", gap)),
     )
 
-    assert ("gap", "lg") in calls
-    assert any(kind == "info" for kind, _ in calls)
+    assert calls == []
 
 
 def test_compare_panel_does_not_render_apply_controls(monkeypatch):

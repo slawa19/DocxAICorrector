@@ -163,6 +163,19 @@ def _coerce_optional_text_field(job: ProcessingJob, field_name: str) -> str | No
     return value
 
 
+def _coerce_required_int_field(job: ProcessingJob, field_name: str) -> int:
+    value = job[field_name]
+    if value is None:
+        raise ValueError(f"{field_name} is None")
+    if isinstance(value, bool):
+        raise TypeError(f"{field_name} must be an integer")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        return int(value)
+    raise TypeError(f"{field_name} must be an integer or numeric string")
+
+
 def _coerce_job_kind(job: ProcessingJob) -> str:
     value = job.get("job_kind", "llm")
     if not isinstance(value, str):
@@ -478,7 +491,7 @@ def run_document_processing(
         block_map = []
         for block_idx, block_job in enumerate(jobs, start=1):
             try:
-                chars = int(block_job["target_chars"])
+                chars = _coerce_required_int_field(block_job, "target_chars")
             except (KeyError, TypeError, ValueError):
                 chars = -1
             block_map.append({
@@ -563,8 +576,8 @@ def run_document_processing(
 
         try:
             job_kind = _coerce_job_kind(job)
-            target_chars = int(job["target_chars"])
-            context_chars = int(job["context_chars"])
+            target_chars = _coerce_required_int_field(job, "target_chars")
+            context_chars = _coerce_required_int_field(job, "context_chars")
             target_text = _coerce_required_text_field(job, "target_text", allow_blank=False)
             target_text_with_markers = _coerce_optional_text_field(job, "target_text_with_markers") or target_text
             paragraph_ids = _coerce_optional_string_list(job, "paragraph_ids")

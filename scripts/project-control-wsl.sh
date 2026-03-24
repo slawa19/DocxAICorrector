@@ -357,6 +357,224 @@ stop_streamlit() {
     rm -f "$APP_READY_PATH"
 }
 
+find_repo_owned_streamlit_by_port() {
+    local port="${1:-$DEFAULT_PORT}"
+    local python_bin=""
+
+    if venv_ready; then
+        python_bin="$VENV_PYTHON"
+    elif command -v python3 >/dev/null 2>&1; then
+        python_bin="$(command -v python3)"
+    else
+        echo "error=python_not_available"
+        return 2
+    fi
+
+    "$python_bin" - "$port" "$APP_PATH" <<'PY'
+from __future__ import annotations
+
+import os
+import sys
+
+
+def _listening_socket_inodes(port: int) -> set[str]:
+    inodes: set[str] = set()
+    port_hex = f"{port:04X}"
+    for table_path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(table_path, encoding="utf-8") as handle:
+                next(handle, None)
+                for raw_line in handle:
+                    columns = raw_line.split()
+                    if len(columns) < 10:
+                        continue
+                    local_address = columns[1]
+                    state = columns[3]
+                    inode = columns[9]
+                    if state != "0A":
+                        continue
+                    _, local_port_hex = local_address.rsplit(":", 1)
+                    if local_port_hex.upper() == port_hex:
+                        inodes.add(inode)
+        except OSError:
+            continue
+    return inodes
+
+
+def _pids_for_inodes(inodes: set[str]) -> list[int]:
+    pids: set[int] = set()
+    for pid_name in os.listdir("/proc"):
+        if not pid_name.isdigit():
+            continue
+        fd_dir = f"/proc/{pid_name}/fd"
+        try:
+            fd_names = os.listdir(fd_dir)
+        except OSError:
+            continue
+        for fd_name in fd_names:
+            fd_path = f"{fd_dir}/{fd_name}"
+            try:
+                target = os.readlink(fd_path)
+            except OSError:
+                continue
+            if target.startswith("socket:[") and target.endswith("]") and target[8:-1] in inodes:
+                pids.add(int(pid_name))
+                break
+    return sorted(pids)
+
+
+def _read_cmdline(pid: int) -> list[str]:
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as handle:
+            return [part.decode("utf-8", errors="replace") for part in handle.read().split(b"\0") if part]
+    except OSError:
+        return []
+
+
+def _is_repo_owned_streamlit(cmdline: list[str], app_path: str) -> bool:
+    if not cmdline:
+        return False
+    joined = " ".join(cmdline)
+    real_tokens = {
+        os.path.realpath(token)
+        for token in cmdline
+        if token.startswith("/") and os.path.exists(token)
+    }
+    return app_path in real_tokens and "streamlit" in joined
+
+
+def main() -> int:
+    port = int(sys.argv[1])
+    app_path = os.path.realpath(sys.argv[2])
+    inodes = _listening_socket_inodes(port)
+    if not inodes:
+        print("found=false")
+        return 0
+
+    pids = _pids_for_inodes(inodes)
+    if not pids:
+        print("found=false")
+        return 0
+
+    repo_owned: tuple[int, str] | None = None
+    foreign: tuple[int, str] | None = None
+
+    for pid in pids:
+        cmdline = _read_cmdline(pid)
+        joined = " ".join(cmdline).replace("\n", " ").strip()
+        if _is_repo_owned_streamlit(cmdline, app_path):
+            repo_owned = (pid, joined)
+            break
+        if foreign is None:
+            foreign = (pid, joined)
+
+    if repo_owned is not None:
+        pid, command = repo_owned
+        print("found=true")
+        print("owned=true")
+        print(f"pid={pid}")
+        print(f"cmdline={command}")
+        return 0
+
+    if foreign is not None:
+        pid, command = foreign
+        print("found=true")
+        print("owned=false")
+        print(f"pid={pid}")
+        print(f"cmdline={command}")
+        return 3
+
+    print("found=false")
+    return 0
+
+
+raise SystemExit(main())
+PY
+}
+
+stop_port_streamlit() {
+    local port="${1:-$DEFAULT_PORT}"
+    local probe_output=""
+    local probe_exit=0
+    local pid=""
+    local command_line=""
+    local found="false"
+    local owned="false"
+    local line=""
+
+    if probe_output="$(find_repo_owned_streamlit_by_port "$port")"; then
+        probe_exit=0
+    else
+        probe_exit=$?
+    fi
+
+    while IFS='=' read -r key value; do
+        [[ -n "$key" ]] || continue
+        case "$key" in
+            found) found="$value" ;;
+            owned) owned="$value" ;;
+            pid) pid="$value" ;;
+            cmdline) command_line="$value" ;;
+            error)
+                printf 'error=%s\n' "$value"
+                return "$probe_exit"
+                ;;
+        esac
+    done <<< "$probe_output"
+
+    if [[ "$probe_exit" -eq 3 ]]; then
+        printf 'error=port %s is occupied by a foreign process and cannot be restarted safely' "$port"
+        if [[ -n "$pid" ]]; then
+            printf ' (pid=%s' "$pid"
+            if [[ -n "$command_line" ]]; then
+                printf ', cmd=%s' "$command_line"
+            fi
+            printf ')'
+        fi
+        printf '\n'
+        return 3
+    fi
+
+    if [[ "$probe_exit" -ne 0 ]]; then
+        if [[ -n "$probe_output" ]]; then
+            printf '%s\n' "$probe_output"
+        else
+            printf 'error=failed_to_inspect_port_owner\n'
+        fi
+        return "$probe_exit"
+    fi
+
+    if [[ "$found" != "true" || "$owned" != "true" || -z "$pid" ]]; then
+        printf 'recovered=false\n'
+        printf 'pid=\n'
+        return 0
+    fi
+
+    if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null || true
+        local probe=""
+        for probe in 1 2 3 4 5 6 7 8; do
+            if ! kill -0 "$pid" 2>/dev/null; then
+                break
+            fi
+            sleep 0.25
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -9 "$pid" 2>/dev/null || true
+        fi
+        if kill -0 "$pid" 2>/dev/null; then
+            printf 'error=repo-owned process on port %s did not stop cleanly (pid=%s)\n' "$port" "$pid"
+            return 1
+        fi
+    fi
+
+    rm -f "$WSL_PID_PATH"
+    rm -f "$APP_READY_PATH"
+    printf 'recovered=true\n'
+    printf 'pid=%s\n' "$pid"
+    printf 'cmdline=%s\n' "$command_line"
+}
+
 tail_log() {
     local lines="${1:-80}"
     if [[ -f "$STREAMLIT_LOG_PATH" ]]; then
@@ -394,6 +612,9 @@ case "${1:-}" in
         ;;
     stop-streamlit)
         stop_streamlit
+        ;;
+    stop-port-streamlit)
+        stop_port_streamlit "${2:-$DEFAULT_PORT}"
         ;;
     tail-log)
         tail_log "${2:-80}"

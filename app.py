@@ -40,6 +40,7 @@ from ui import (
     render_image_validation_summary,
     render_file_uploader_state_styles,
     render_live_status,
+    render_markdown_preview,
     render_partial_result,
     render_preparation_summary,
     render_result,
@@ -366,19 +367,19 @@ def main() -> None:
                 _schedule_stale_persisted_sources_cleanup()
                 return
             completed_result = cast(dict[str, object], current_result)
+            render_run_log()
+            render_image_validation_summary()
+            render_markdown_preview(title="Предпросмотр Markdown")
             render_result_bundle(
                 docx_bytes=cast(bytes, completed_result["docx_bytes"]),
                 markdown_text=str(completed_result["markdown_text"]),
                 original_filename=str(completed_result["source_name"]),
-                title="Последний результат",
-                success_message=None,
-                preview_title="Предпросмотр Markdown",
             )
         elif idle_view_state == IdleViewState.RESTARTABLE:
             st.info("Можно изменить настройки и запустить обработку заново без повторной загрузки файла.")
-        render_run_log()
-        render_image_validation_summary()
-        render_partial_result()
+            render_run_log()
+            render_image_validation_summary()
+            render_partial_result()
         _mark_app_ready()
         _schedule_stale_persisted_sources_cleanup()
         return
@@ -448,9 +449,9 @@ def main() -> None:
         st.session_state.latest_docx_bytes and st.session_state.latest_source_token == uploaded_file_token
     )
     render_preparation_summary(st.session_state.get("latest_preparation_summary"))
-    render_partial_result()
     render_run_log()
     render_image_validation_summary()
+    render_partial_result()
 
     from compare_panel import render_compare_all_apply_panel
 
@@ -461,6 +462,7 @@ def main() -> None:
     )
 
     if has_completed_result:
+        render_markdown_preview(title="Предпросмотр Markdown")
         render_result(st.session_state.latest_docx_bytes, st.session_state.latest_markdown, uploaded_filename)
 
     render_section_gap("lg")
