@@ -15,6 +15,40 @@ class FakeTarget:
         return nullcontext()
 
 
+class FakeLiveStatusTarget(FakeTarget):
+    def __init__(self):
+        self.info_calls = []
+        self.warning_calls = []
+        self.error_calls = []
+        self.write_calls = []
+        self.caption_calls = []
+        self.progress_calls = []
+        self.columns_calls = []
+
+    def info(self, text):
+        self.info_calls.append(text)
+
+    def warning(self, text):
+        self.warning_calls.append(text)
+
+    def error(self, text):
+        self.error_calls.append(text)
+
+    def write(self, text):
+        self.write_calls.append(text)
+
+    def caption(self, text):
+        self.caption_calls.append(text)
+
+    def progress(self, value):
+        self.progress_calls.append(value)
+
+    def columns(self, count):
+        cols = [FakeMetricTarget() for _ in range(count)]
+        self.columns_calls.append(cols)
+        return cols
+
+
 class FakeMetricTarget:
     def __init__(self):
         self.calls = []
@@ -429,19 +463,96 @@ def test_render_live_status_shows_preparation_failure_title(monkeypatch):
         },
         activity_feed=[],
     )
-    info_calls = []
+    error_calls = []
     writes = []
 
     monkeypatch.setattr(ui.st, "session_state", session_state)
-    monkeypatch.setattr(ui.st, "info", lambda text: info_calls.append(text))
+    monkeypatch.setattr(ui.st, "info", lambda text: (_ for _ in ()).throw(AssertionError(f"st.info should not be called for error, got: {text}")))
+    monkeypatch.setattr(ui.st, "error", lambda text: error_calls.append(text))
     monkeypatch.setattr(ui.st, "write", lambda text: writes.append(text))
     monkeypatch.setattr(ui.st, "caption", lambda *args, **kwargs: None)
     monkeypatch.setattr(ui.st, "progress", lambda *args, **kwargs: None)
 
     ui.render_live_status(FakeTarget())
 
-    assert info_calls == ["Ошибка подготовки файла"]
+    assert error_calls == ["Ошибка подготовки файла"]
     assert writes == ["boom"]
+
+
+def test_render_live_status_uses_target_columns_progress_and_clamps_processing_progress(monkeypatch):
+    session_state = SessionState(
+        processing_status={
+            "is_running": True,
+            "phase": "processing",
+            "stage": "Обработка блока",
+            "detail": "Идет работа.",
+            "current_block": 2,
+            "block_count": 5,
+            "target_chars": 100,
+            "context_chars": 25,
+            "progress": 1.7,
+            "started_at": None,
+        },
+        activity_feed=[],
+    )
+    target = FakeLiveStatusTarget()
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "columns", lambda n: (_ for _ in ()).throw(AssertionError("st.columns should not be used")))
+    monkeypatch.setattr(ui.st, "progress", lambda value: (_ for _ in ()).throw(AssertionError("st.progress should not be used")))
+
+    ui.render_live_status(target)
+
+    assert target.info_calls == ["Идет обработка"]
+    assert target.progress_calls == [1.0]
+    assert len(target.columns_calls) == 1
+    assert target.columns_calls[0][0].calls == [("Блок", "2/5")]
+
+
+def test_render_live_status_uses_target_warning_for_stopped_processing(monkeypatch):
+    session_state = SessionState(
+        processing_status={
+            "is_running": False,
+            "phase": "processing",
+            "stage": "Нейтральный статус",
+            "detail": "Пользователь остановил выполнение.",
+            "progress": 1.0,
+            "terminal_kind": "stopped",
+            "started_at": None,
+        },
+        activity_feed=[],
+    )
+    target = FakeLiveStatusTarget()
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+
+    ui.render_live_status(target)
+
+    assert target.warning_calls == ["Обработка остановлена"]
+    assert target.write_calls == ["Пользователь остановил выполнение."]
+
+
+def test_render_live_status_uses_target_error_for_failed_processing(monkeypatch):
+    session_state = SessionState(
+        processing_status={
+            "is_running": False,
+            "phase": "processing",
+            "stage": "Нейтральный статус",
+            "detail": "boom",
+            "progress": 1.0,
+            "terminal_kind": "error",
+            "started_at": None,
+        },
+        activity_feed=[],
+    )
+    target = FakeLiveStatusTarget()
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+
+    ui.render_live_status(target)
+
+    assert target.error_calls == ["Ошибка обработки"]
+    assert target.write_calls == ["boom"]
 
 
 def test_render_partial_result_shows_preview_instead_of_download(monkeypatch):

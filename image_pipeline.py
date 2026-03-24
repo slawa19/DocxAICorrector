@@ -323,7 +323,7 @@ def _build_compare_variant_candidate(
         variant.validation_status = "skipped"
         variant.final_decision = "accept"
         variant.final_variant = ImageMode.SAFE.value
-        variant.final_reason = "compare_all_safe_variant_prepared"
+        variant.final_reason = "compare_all_safe_variant_ready"
         asset.safe_bytes = candidate_bytes
         return variant
 
@@ -520,12 +520,22 @@ def process_document_images(
         return []
 
     if image_mode == ImageMode.NO_CHANGE.value:
+        context.emit_image_reset(context.runtime)
         for asset in image_assets:
             asset.mode_requested = image_mode
             asset.validation_status = "skipped"
             asset.final_decision = "accept"
             asset.final_variant = "original"
-            asset.final_reason = "Режим «Без изменения» — изображения оставлены как есть."
+            asset.final_reason = "no_change_mode"
+            context.emit_image_log(
+                context.runtime,
+                image_id=asset.image_id,
+                status="skipped",
+                decision="accept",
+                confidence=0.0,
+                final_variant="original",
+                final_reason="no_change_mode",
+            )
         context.emit_state(context.runtime, image_assets=image_assets)
         return list(image_assets)
 
@@ -546,6 +556,7 @@ def process_document_images(
                 "Остановлено пользователем",
                 "Обработка изображений остановлена пользователем.",
                 (index - 1) / max(total_images, 1),
+                "stopped",
             )
             context.emit_activity(context.runtime, "Обработка изображений остановлена пользователем.")
             return processed_assets
@@ -566,10 +577,6 @@ def process_document_images(
                 final_reason=asset.final_reason,
             )
             processed_assets.append(asset)
-            context.emit_activity(
-                context.runtime,
-                f"Изображение {asset.image_id}: {asset.final_variant or 'original'} | {asset.final_decision or 'accept'}.",
-            )
             context.emit_state(context.runtime, image_assets=processed_assets)
             continue
 
@@ -605,10 +612,6 @@ def process_document_images(
                     final_reason=asset.final_reason,
                 )
                 processed_assets.append(asset)
-                context.emit_activity(
-                    context.runtime,
-                    f"Изображение {asset.image_id}: {asset.final_variant or 'original'} | {asset.final_decision or 'accept'}.",
-                )
                 context.emit_state(context.runtime, image_assets=processed_assets)
                 continue
 
@@ -711,10 +714,6 @@ def process_document_images(
                 final_reason=asset.final_reason,
             )
             processed_assets.append(asset)
-            context.emit_activity(
-                context.runtime,
-                f"Изображение {asset.image_id}: {asset.final_variant or 'original'} | {asset.final_decision or 'accept'}.",
-            )
         except context.image_model_call_budget_exceeded_cls as exc:
             asset = cast(Any, asset)
             document_budget_exhausted = _is_budget_exhausted(document_call_budget)
@@ -813,13 +812,11 @@ def _prepare_compare_variants(
         ImageMode.SEMANTIC_REDRAW_DIRECT.value,
         ImageMode.SEMANTIC_REDRAW_STRUCTURED.value,
     ]
-    if should_attempt_semantic_redraw(analysis, ImageMode.COMPARE_ALL.value):
-        expected_modes = candidate_modes
-    else:
-        expected_modes = candidate_modes
+    semantic_redraw_enabled = should_attempt_semantic_redraw(analysis, ImageMode.COMPARE_ALL.value)
+    expected_modes = list(candidate_modes)
 
     for candidate_mode in candidate_modes:
-        if candidate_mode != ImageMode.SAFE.value and not should_attempt_semantic_redraw(analysis, ImageMode.COMPARE_ALL.value):
+        if candidate_mode != ImageMode.SAFE.value and not semantic_redraw_enabled:
             continue
         try:
             variant = _build_compare_variant_candidate(
@@ -853,7 +850,7 @@ def _prepare_compare_variants(
     asset.validation_status = "compared"
     asset.final_decision = "compared"
     asset.final_variant = "original"
-    asset.final_reason = f"Подготовлены compare-all варианты: {', '.join(prepared_modes)}."
+    asset.final_reason = f"compare_all_variants_ready:{', '.join(prepared_modes)}"
     return asset
 
 

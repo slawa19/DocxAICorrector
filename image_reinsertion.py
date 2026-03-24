@@ -1,11 +1,12 @@
 """DOCX image reinsertion and variant resolution.
 
 Replaces image placeholders in generated DOCX files with actual image bytes,
-handles multi-variant comparison tables, and resolves final image selection.
+handles synthetic multi-variant image blocks, and resolves final image selection.
 """
 
 import logging
 import re
+from dataclasses import dataclass
 from copy import deepcopy
 from io import BytesIO
 from typing import cast
@@ -14,7 +15,6 @@ from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Emu
-from docx.table import Table
 from docx.text.paragraph import Paragraph
 from docx.text.run import Run
 import lxml.etree as etree
@@ -85,6 +85,7 @@ def reinsert_inline_images(docx_bytes: bytes, image_assets: list[ImageAsset]) ->
     source_stream = BytesIO(docx_bytes)
     document = Document(source_stream)
     asset_map = {asset.placeholder: asset for asset in image_assets}
+    insertion_cache: dict[str, list[tuple[str | None, bytes]]] = {}
 
     for paragraph in _iter_reinsertion_paragraphs(document):
         paragraph_text = paragraph.text
@@ -92,16 +93,16 @@ def reinsert_inline_images(docx_bytes: bytes, image_assets: list[ImageAsset]) ->
         if not placeholders:
             continue
 
-        if _replace_multi_variant_placeholders_with_tables(paragraph, asset_map):
+        if _replace_multi_variant_placeholders_with_blocks(paragraph, asset_map, insertion_cache):
             continue
 
-        if _replace_run_level_placeholders(paragraph, placeholders, asset_map):
+        if _replace_run_level_placeholders(paragraph, placeholders, asset_map, insertion_cache):
             continue
 
-        if _replace_multi_run_placeholders(paragraph, asset_map):
+        if _replace_multi_run_placeholders(paragraph, asset_map, insertion_cache):
             continue
 
-        if _replace_paragraph_placeholders_fallback(paragraph, paragraph_text, asset_map):
+        if _replace_paragraph_placeholders_fallback(paragraph, paragraph_text, asset_map, insertion_cache):
             continue
 
         log_event(
@@ -214,7 +215,31 @@ def _paragraph_preview(text: str, *, limit: int = 120) -> str:
     return normalized[: limit - 3].rstrip() + "..."
 
 
-def _replace_run_level_placeholders(paragraph, placeholders: list[str], asset_map: dict[str, ImageAsset]) -> bool:
+def _resolve_cached_insertions(
+    asset: ImageAsset,
+    insertion_cache: dict[str, list[tuple[str | None, bytes]]],
+) -> list[tuple[str | None, bytes]]:
+    placeholder = asset.placeholder.strip()
+    if placeholder in insertion_cache:
+        return insertion_cache[placeholder]
+
+    insertions = resolve_image_insertions(asset)
+    insertion_cache[placeholder] = insertions
+    return insertions
+
+
+@dataclass(frozen=True)
+class _MultiVariantBlockFragment:
+    asset: ImageAsset
+    insertions: list[tuple[str | None, bytes]]
+
+
+def _replace_run_level_placeholders(
+    paragraph,
+    placeholders: list[str],
+    asset_map: dict[str, ImageAsset],
+    insertion_cache: dict[str, list[tuple[str | None, bytes]]],
+) -> bool:
     runs = list(paragraph.runs)
     run_placeholders: list[str] = []
     for run in runs:
@@ -229,12 +254,22 @@ def _replace_run_level_placeholders(paragraph, placeholders: list[str], asset_ma
         if not run_tokens:
             continue
 
-        replacement_elements = _build_run_replacement_elements(paragraph, run._element, run_text, asset_map)
+        replacement_elements = _build_run_replacement_elements(
+            paragraph,
+            run._element,
+            run_text,
+            asset_map,
+            insertion_cache,
+        )
         _replace_xml_element_with_sequence(run._element, replacement_elements)
     return True
 
 
-def _replace_multi_run_placeholders(paragraph, asset_map: dict[str, ImageAsset]) -> bool:
+def _replace_multi_run_placeholders(
+    paragraph,
+    asset_map: dict[str, ImageAsset],
+    insertion_cache: dict[str, list[tuple[str | None, bytes]]],
+) -> bool:
     paragraph_children = [child for child in list(paragraph._element) if _xml_local_name(child.tag) in {"r", "hyperlink"}]
     if not paragraph_children:
         return False
@@ -277,6 +312,7 @@ def _replace_multi_run_placeholders(paragraph, asset_map: dict[str, ImageAsset])
                             paragraph,
                             child,
                             asset_map[placeholder_text],
+                            insertion_cache,
                             placeholder_text=placeholder_text,
                         )
                     )
@@ -307,7 +343,12 @@ def _replace_multi_run_placeholders(paragraph, asset_map: dict[str, ImageAsset])
     return True
 
 
-def _replace_paragraph_placeholders_fallback(paragraph, paragraph_text: str, asset_map: dict[str, ImageAsset]) -> bool:
+def _replace_paragraph_placeholders_fallback(
+    paragraph,
+    paragraph_text: str,
+    asset_map: dict[str, ImageAsset],
+    insertion_cache: dict[str, list[tuple[str | None, bytes]]],
+) -> bool:
     if any(_xml_local_name(child.tag) == "hyperlink" for child in list(paragraph._element)):
         return False
 
@@ -320,11 +361,20 @@ def _replace_paragraph_placeholders_fallback(paragraph, paragraph_text: str, ass
         if asset is None:
             paragraph.add_run(part)
             continue
-        _append_image_insertions_to_paragraph(paragraph, asset, placeholder_text=part)
+        _append_image_insertions_to_paragraph(
+            paragraph,
+            asset,
+            insertion_cache,
+            placeholder_text=part,
+        )
     return True
 
 
-def _replace_multi_variant_placeholders_with_tables(paragraph, asset_map: dict[str, ImageAsset]) -> bool:
+def _replace_multi_variant_placeholders_with_blocks(
+    paragraph,
+    asset_map: dict[str, ImageAsset],
+    insertion_cache: dict[str, list[tuple[str | None, bytes]]],
+) -> bool:
     paragraph_children = [child for child in list(paragraph._element) if _xml_local_name(child.tag) in {"r", "hyperlink"}]
     if not paragraph_children:
         return False
@@ -339,10 +389,15 @@ def _replace_multi_variant_placeholders_with_tables(paragraph, asset_map: dict[s
     if not placeholder_matches:
         return False
 
-    if not any(len(resolve_image_insertions(asset_map[match.group(0)])) > 1 for match in placeholder_matches):
+    multi_variant_placeholders = [
+        match.group(0)
+        for match in placeholder_matches
+        if len(_resolve_cached_insertions(asset_map[match.group(0)], insertion_cache)) > 1
+    ]
+    if not multi_variant_placeholders:
         return False
 
-    fragments: list[etree._Element | tuple[str, ImageAsset]] = []
+    fragments: list[etree._Element | _MultiVariantBlockFragment] = []
     child_ranges: list[tuple[etree._Element, str, int, int]] = []
     cursor = 0
     for child, child_text in zip(paragraph_children, child_texts):
@@ -364,18 +419,31 @@ def _replace_multi_variant_placeholders_with_tables(paragraph, asset_map: dict[s
                 if position == current_match.start():
                     placeholder_text = current_match.group(0)
                     asset = asset_map[placeholder_text]
-                    insertions = resolve_image_insertions(asset)
+                    insertions = _resolve_cached_insertions(asset, insertion_cache)
                     if len(insertions) > 1:
-                        fragments.append(("table", asset))
+                        if _xml_local_name(child.tag) != "r":
+                            _log_multi_variant_block_warning(
+                                "image_reinsertion_multi_variant_block_fallback_to_text",
+                                paragraph,
+                                [placeholder_text],
+                                reason="multi_variant_placeholder_inside_hyperlink_or_non_run_child",
+                            )
+                            fragments.append(deepcopy(child))
+                            position = min(child_end, current_match.end())
+                            continue
+                        fragments.append(_MultiVariantBlockFragment(asset=asset, insertions=insertions))
                     elif _xml_local_name(child.tag) == "r":
                         fragments.extend(
                             _build_insertion_run_elements(
                                 paragraph,
                                 child,
                                 asset,
+                                insertion_cache,
                                 placeholder_text=placeholder_text,
                             )
                         )
+                    else:
+                        fragments.append(deepcopy(child))
                 position = min(child_end, current_match.end())
                 continue
 
@@ -394,6 +462,12 @@ def _replace_multi_variant_placeholders_with_tables(paragraph, asset_map: dict[s
 
     replacement_blocks = _build_replacement_blocks_from_fragments(paragraph, fragments)
     if not replacement_blocks:
+        _log_multi_variant_block_warning(
+            "image_reinsertion_multi_variant_block_unresolved",
+            paragraph,
+            multi_variant_placeholders,
+            reason="multi_variant_block_builder_returned_no_output",
+        )
         return False
 
     anchor = cast(etree._Element, paragraph._element)
@@ -409,7 +483,13 @@ def _replace_multi_variant_placeholders_with_tables(paragraph, asset_map: dict[s
 # ---------------------------------------------------------------------------
 
 
-def _build_run_replacement_elements(paragraph, template_run_element, run_text: str, asset_map: dict[str, ImageAsset]):
+def _build_run_replacement_elements(
+    paragraph,
+    template_run_element,
+    run_text: str,
+    asset_map: dict[str, ImageAsset],
+    insertion_cache: dict[str, list[tuple[str | None, bytes]]],
+):
     replacement_elements = []
     parts = re.split(f"({IMAGE_PLACEHOLDER_PATTERN.pattern})", run_text)
     for part in parts:
@@ -420,18 +500,36 @@ def _build_run_replacement_elements(paragraph, template_run_element, run_text: s
             replacement_elements.append(_build_text_run_element(paragraph, template_run_element, part))
             continue
         replacement_elements.extend(
-            _build_insertion_run_elements(paragraph, template_run_element, asset, placeholder_text=part)
+            _build_insertion_run_elements(
+                paragraph,
+                template_run_element,
+                asset,
+                insertion_cache,
+                placeholder_text=part,
+            )
         )
     return replacement_elements
 
 
-def _append_image_insertions_to_paragraph(paragraph, asset: ImageAsset, *, placeholder_text: str) -> None:
-    insertions = resolve_image_insertions(asset)
+def _append_image_insertions_to_paragraph(
+    paragraph,
+    asset: ImageAsset,
+    insertion_cache: dict[str, list[tuple[str | None, bytes]]],
+    *,
+    placeholder_text: str,
+) -> None:
+    insertions = _resolve_cached_insertions(asset, insertion_cache)
     if not insertions:
         paragraph.add_run(placeholder_text)
         return
 
     if len(insertions) > 1:
+        _log_multi_variant_block_warning(
+            "image_reinsertion_multi_variant_block_fallback_to_text",
+            paragraph,
+            [placeholder_text],
+            reason="single_paragraph_fallback_supports_only_one_image",
+        )
         paragraph.add_run(placeholder_text)
         return
 
@@ -442,12 +540,25 @@ def _append_image_insertions_to_paragraph(paragraph, asset: ImageAsset, *, place
         _set_picture_description(run._element, insertions[0][0])
 
 
-def _build_insertion_run_elements(paragraph, template_run_element, asset: ImageAsset, *, placeholder_text: str):
-    insertions = resolve_image_insertions(asset)
+def _build_insertion_run_elements(
+    paragraph,
+    template_run_element,
+    asset: ImageAsset,
+    insertion_cache: dict[str, list[tuple[str | None, bytes]]],
+    *,
+    placeholder_text: str,
+):
+    insertions = _resolve_cached_insertions(asset, insertion_cache)
     if not insertions:
         return [_build_text_run_element(paragraph, template_run_element, placeholder_text)]
 
     if len(insertions) > 1:
+        _log_multi_variant_block_warning(
+            "image_reinsertion_multi_variant_block_fallback_to_text",
+            paragraph,
+            [placeholder_text],
+            reason="run_level_replacement_supports_only_one_image",
+        )
         return [_build_text_run_element(paragraph, template_run_element, placeholder_text)]
 
     add_picture_kwargs = _build_picture_size_kwargs(asset)
@@ -506,13 +617,13 @@ def _replace_xml_element_with_sequence(element, replacements) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Multi-variant table building
+# Multi-variant block building
 # ---------------------------------------------------------------------------
 
 
 def _build_replacement_blocks_from_fragments(
     paragraph,
-    fragments: list[etree._Element | tuple[str, ImageAsset]],
+    fragments: list[etree._Element | _MultiVariantBlockFragment],
 ) -> list[etree._Element]:
     replacement_blocks: list[etree._Element] = []
     current_paragraph = None
@@ -524,9 +635,9 @@ def _build_replacement_blocks_from_fragments(
         current_paragraph = None
 
     for fragment in fragments:
-        if isinstance(fragment, tuple) and len(fragment) == 2 and fragment[0] == "table":
+        if isinstance(fragment, _MultiVariantBlockFragment):
             flush_current_paragraph()
-            replacement_blocks.extend(_build_variant_block_elements(paragraph, fragment[1]))
+            replacement_blocks.extend(_build_variant_block_elements(paragraph, fragment.asset, insertions=fragment.insertions))
             continue
 
         if current_paragraph is None:
@@ -555,24 +666,20 @@ def _extract_paragraph_child_text(child) -> str:
     return _extract_run_text(child)
 
 
-def _build_variant_block_elements(paragraph, asset: ImageAsset) -> list[etree._Element]:
-    insertions = resolve_image_insertions(asset)
+def _build_variant_block_elements(
+    paragraph,
+    asset: ImageAsset,
+    *,
+    insertions: list[tuple[str | None, bytes]] | None = None,
+) -> list[etree._Element]:
+    insertions = resolve_image_insertions(asset) if insertions is None else insertions
     if not insertions:
         return []
 
     add_picture_kwargs = _build_picture_size_kwargs(asset)
     blocks: list[etree._Element] = []
     for label, image_bytes in insertions:
-        image_paragraph = _clone_paragraph_element(paragraph)
-        paragraph_properties = _find_child_element(image_paragraph, "pPr")
-        if paragraph_properties is None:
-            paragraph_properties = OxmlElement("w:pPr")
-            image_paragraph.insert(0, paragraph_properties)
-        alignment = _find_child_element(paragraph_properties, "jc")
-        if alignment is None:
-            alignment = OxmlElement("w:jc")
-            paragraph_properties.append(alignment)
-        alignment.set(qn("w:val"), "center")
+        image_paragraph = _build_synthetic_image_block_paragraph()
 
         image_run = OxmlElement("w:r")
         Run(image_run, paragraph).add_picture(BytesIO(image_bytes), **add_picture_kwargs)
@@ -584,15 +691,44 @@ def _build_variant_block_elements(paragraph, asset: ImageAsset) -> list[etree._E
     return blocks
 
 
+def _build_synthetic_image_block_paragraph():
+    paragraph_element = OxmlElement("w:p")
+    paragraph_properties = OxmlElement("w:pPr")
+    alignment = OxmlElement("w:jc")
+    alignment.set(qn("w:val"), "center")
+    paragraph_properties.append(alignment)
+    paragraph_element.append(paragraph_properties)
+    return paragraph_element
+
+
 def _set_picture_description(run_element, description: str) -> None:
     if not description:
         return
 
-    doc_properties = run_element.xpath(".//wp:docPr")
-    if not doc_properties:
-        return
+    word_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    wordprocessing_drawing_ns = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
 
-    doc_properties[-1].set("descr", description)
+    for drawing in run_element.iterchildren(tag=f"{{{word_ns}}}drawing"):
+        for container_local_name in ("inline", "anchor"):
+            container = drawing.find(f"{{{wordprocessing_drawing_ns}}}{container_local_name}")
+            if container is None:
+                continue
+            doc_properties = container.find(f"{{{wordprocessing_drawing_ns}}}docPr")
+            if doc_properties is not None:
+                doc_properties.set("descr", description)
+                return
+
+
+def _log_multi_variant_block_warning(event_name: str, paragraph, placeholders: list[str], *, reason: str) -> None:
+    log_event(
+        logging.WARNING,
+        event_name,
+        "Multi-variant image placeholder не удалось безопасно развернуть в synthetic blocks; placeholder оставлен как текст.",
+        placeholder_count=len(placeholders),
+        placeholders=placeholders,
+        paragraph_text_preview=_paragraph_preview(paragraph.text),
+        reason=reason,
+    )
 
 
 # ---------------------------------------------------------------------------

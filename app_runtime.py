@@ -39,13 +39,14 @@ def emit_status(runtime: BackgroundRuntime | None, **payload) -> None:
     emit_or_apply_status_impl(runtime, set_processing_status=set_processing_status, **payload)
 
 
-def emit_finalize(runtime: BackgroundRuntime | None, stage: str, detail: str, progress: float) -> None:
+def emit_finalize(runtime: BackgroundRuntime | None, stage: str, detail: str, progress: float, terminal_kind: str | None = None) -> None:
     emit_or_apply_finalize_impl(
         runtime,
         finalize_processing_status=finalize_processing_status,
         stage=stage,
         detail=detail,
         progress=progress,
+        terminal_kind=terminal_kind,
     )
 
 

@@ -109,6 +109,21 @@ def build_square_generated_output_with_large_margins(size: int = 24) -> bytes:
     return output.getvalue()
 
 
+def _detect_edge_bands(restored_image) -> tuple[bool, bool]:
+    top_band_detected = False
+    bottom_band_detected = False
+    for x_coord in range(restored_image.width):
+        for y_coord in range(max(1, restored_image.height // 3)):
+            top_pixel = restored_image.getpixel((x_coord, y_coord))
+            if top_pixel[1] > top_pixel[0] + 40 and top_pixel[1] > top_pixel[2] + 20:
+                top_band_detected = True
+        for y_coord in range(max(0, restored_image.height - max(1, restored_image.height // 3)), restored_image.height):
+            bottom_pixel = restored_image.getpixel((x_coord, y_coord))
+            if bottom_pixel[0] > bottom_pixel[1] + 40 and bottom_pixel[0] > bottom_pixel[2] + 40:
+                bottom_band_detected = True
+    return top_band_detected, bottom_band_detected
+
+
 def test_generate_image_candidate_safe_enhances_image_bytes():
     original_bytes = build_detailed_png_bytes()
     candidate = image_generation.generate_image_candidate(original_bytes, build_analysis_result(), mode="safe")
@@ -193,18 +208,44 @@ def test_generate_image_candidate_structured_preserves_generated_resolution_with
     with Image.open(BytesIO(candidate)) as restored_image:
         assert restored_image.width >= 18
         assert restored_image.height >= 10
-        top_band_detected = False
-        bottom_band_detected = False
-        for x_coord in range(restored_image.width):
-            for y_coord in range(max(1, restored_image.height // 3)):
-                top_pixel = restored_image.getpixel((x_coord, y_coord))
-                if top_pixel[1] > top_pixel[0] + 40 and top_pixel[1] > top_pixel[2] + 20:
-                    top_band_detected = True
-            for y_coord in range(max(0, restored_image.height - max(1, restored_image.height // 3)), restored_image.height):
-                bottom_pixel = restored_image.getpixel((x_coord, y_coord))
-                if bottom_pixel[0] > bottom_pixel[1] + 40 and bottom_pixel[0] > bottom_pixel[2] + 40:
-                    bottom_band_detected = True
+        top_band_detected, bottom_band_detected = _detect_edge_bands(restored_image)
+        assert top_band_detected
+        assert bottom_band_detected
 
+
+def test_generate_image_candidate_structured_edit_preserves_edge_content_without_generate_fallback(monkeypatch):
+    captured = {"edit": None}
+
+    class FakeImagesClient:
+        def edit(self, **kwargs):
+            captured["edit"] = dict(kwargs)
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(
+                        b64_json=base64.b64encode(build_square_generated_output_with_edge_markers()).decode("ascii"),
+                        revised_prompt=None,
+                    )
+                ]
+            )
+
+        def generate(self, **kwargs):
+            raise AssertionError("structured edit should not fall back to generate")
+
+    client = build_semantic_client(images=FakeImagesClient())
+    monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
+
+    candidate = image_generation.generate_image_candidate(
+        build_rectangular_png_bytes(),
+        build_analysis_result(render_strategy="semantic_redraw_structured"),
+        mode="semantic_redraw_structured",
+        client=client,
+    )
+
+    assert captured["edit"] is not None
+    with Image.open(BytesIO(candidate)) as restored_image:
+        assert restored_image.width >= 18
+        assert restored_image.height >= 10
+        top_band_detected, bottom_band_detected = _detect_edge_bands(restored_image)
         assert top_band_detected
         assert bottom_band_detected
 

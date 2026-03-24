@@ -10,6 +10,17 @@ from restart_store import clear_restart_source
 from workflow_state import ProcessingOutcome
 
 
+def build_default_image_processing_summary() -> dict[str, object]:
+    return {
+        "total_images": 0,
+        "processed_images": 0,
+        "images_validated": 0,
+        "validation_passed": 0,
+        "fallbacks_applied": 0,
+        "validation_errors": [],
+    }
+
+
 def _current_unix_timestamp() -> float:
     return time.time()
 
@@ -36,18 +47,12 @@ def _default_processing_status() -> dict[str, object]:
         "started_at": None,
         "last_update_at": None,
         "progress": 0.0,
+        "terminal_kind": None,
     }
 
 
 def _default_image_processing_summary() -> dict[str, object]:
-    return {
-        "total_images": 0,
-        "processed_images": 0,
-        "images_validated": 0,
-        "validation_passed": 0,
-        "fallbacks_applied": 0,
-        "validation_errors": [],
-    }
+    return build_default_image_processing_summary()
 
 
 def init_session_state() -> None:
@@ -156,6 +161,7 @@ def set_processing_status(
     progress: float = 0.0,
     is_running: bool | None = None,
     phase: str | None = None,
+    terminal_kind: str | None = None,
 ) -> None:
     status = dict(st.session_state.processing_status)
     if is_running is not None:
@@ -172,6 +178,7 @@ def set_processing_status(
             "context_chars": context_chars,
             "last_update_at": _current_unix_timestamp(),
             "progress": max(0.0, min(progress, 1.0)),
+            "terminal_kind": terminal_kind if terminal_kind in {None, "completed", "stopped", "error"} else None,
         }
     )
     if file_size_bytes is not None:
@@ -189,7 +196,7 @@ def set_processing_status(
     st.session_state.processing_status = status
 
 
-def finalize_processing_status(stage: str, detail: str, progress: float) -> None:
+def finalize_processing_status(stage: str, detail: str, progress: float, terminal_kind: str | None = None) -> None:
     status = dict(st.session_state.processing_status)
     status.update(
         {
@@ -198,6 +205,7 @@ def finalize_processing_status(stage: str, detail: str, progress: float) -> None
             "detail": detail,
             "last_update_at": _current_unix_timestamp(),
             "progress": max(0.0, min(progress, 1.0)),
+            "terminal_kind": terminal_kind if terminal_kind in {None, "completed", "stopped", "error"} else None,
         }
     )
     st.session_state.processing_status = status
@@ -218,13 +226,14 @@ def append_image_log(
     summary["total_images"] = int(summary.get("total_images", 0)) + 1
     summary["processed_images"] = int(summary.get("processed_images", 0)) + 1
 
-    if status in {"validated", "skipped", "compared"}:
+    if status == "validated":
         summary["images_validated"] = int(summary.get("images_validated", 0)) + 1
         if decision in {"accept", "accept_soft"}:
             summary["validation_passed"] = int(summary.get("validation_passed", 0)) + 1
-        elif decision.startswith("fallback_"):
-            summary["fallbacks_applied"] = int(summary.get("fallbacks_applied", 0)) + 1
-    else:
+    if decision.startswith("fallback_"):
+        summary["fallbacks_applied"] = int(summary.get("fallbacks_applied", 0)) + 1
+
+    if status not in {"validated", "skipped", "compared"}:
         errors = list(summary.get("validation_errors", []))
         reason = "unknown"
         if suspicious_reasons:
@@ -250,7 +259,6 @@ def append_image_log(
             final_reason=final_reason,
         )
     )
-    push_activity(f"[IMG] {image_id}: {status} | conf: {confidence:.2f} | {decision}")
 
 
 def append_log(

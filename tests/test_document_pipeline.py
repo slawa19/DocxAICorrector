@@ -45,8 +45,8 @@ def _emit_state(runtime, **values):
     runtime.setdefault("state", {}).update(values)
 
 
-def _emit_finalize(runtime, stage, detail, progress):
-    runtime.setdefault("finalize", []).append((stage, detail, progress))
+def _emit_finalize(runtime, stage, detail, progress, terminal_kind=None):
+    runtime.setdefault("finalize", []).append((stage, detail, progress, terminal_kind))
 
 
 def _emit_activity(runtime, message):
@@ -149,7 +149,7 @@ def test_run_document_processing_happy_path_updates_runtime_state():
     assert result == "succeeded"
     assert runtime["state"]["latest_docx_bytes"] == b"final-docx"
     assert runtime["state"]["latest_markdown"] == "Обработанный блок"
-    assert runtime["finalize"][-1][0] == "Обработка завершена"
+    assert runtime["finalize"][-1] == ("Обработка завершена", runtime["finalize"][-1][1], 1.0, "completed")
     assert runtime["log"][-1]["status"] == "DONE"
     assert len(progress_calls) == 3
 
@@ -592,6 +592,7 @@ def test_run_document_processing_stops_before_second_block():
 
     assert result == "stopped"
     assert runtime["finalize"][-1][0] == "Остановлено пользователем"
+    assert runtime["finalize"][-1][3] == "stopped"
     assert runtime["log"][-1]["status"] == "STOP"
 
 
@@ -633,6 +634,7 @@ def test_run_document_processing_fails_on_empty_processed_block():
     assert result == "failed"
     assert runtime["state"]["last_error"].endswith("empty_processed_block).")
     assert runtime["finalize"][-1][0] == "Критическая ошибка"
+    assert runtime["finalize"][-1][3] == "error"
     assert runtime["log"][-1]["status"] == "ERROR"
 
 
@@ -681,6 +683,7 @@ def test_run_document_processing_rejects_heading_only_output_for_body_heavy_inpu
     assert "heading_only_output" in runtime["state"]["last_error"]
     assert runtime["state"].get("latest_docx_bytes") is None
     assert runtime["finalize"][-1][0] == "Критическая ошибка"
+    assert runtime["finalize"][-1][3] == "error"
     assert runtime["activity"][-1] == "Блок 1: отклонён структурно недостаточный Markdown."
     assert runtime["log"][-1]["status"] == "ERROR"
 
@@ -772,6 +775,7 @@ def test_run_document_processing_fails_on_empty_processing_plan():
         "Ошибка подготовки обработки",
         "Ошибка подготовки обработки: План обработки документа пуст.",
         0.0,
+        "error",
     )
     assert runtime["activity"][-1] == "Обработка документа остановлена: не найдено ни одного блока для обработки."
     assert runtime["log"][-1]["status"] == "ERROR"
@@ -829,6 +833,7 @@ def test_run_document_processing_fails_on_initialization_and_clears_stale_runtim
         "Ошибка инициализации",
         "Ошибка инициализации обработки: pandoc is unavailable",
         0.0,
+        "error",
     )
 
 
@@ -876,6 +881,7 @@ def test_run_document_processing_fails_when_process_document_images_raises():
         "Ошибка обработки изображений",
         "Ошибка обработки изображений: image pipeline exploded",
         1.0,
+        "error",
     )
     assert runtime["activity"][-1] == "Ошибка на этапе обработки изображений документа."
     assert runtime["log"][-1]["status"] == "ERROR"
@@ -1011,6 +1017,7 @@ def test_run_document_processing_fails_on_invalid_job_shape():
         "Ошибка подготовки блока",
         "Ошибка на блоке 1: Ошибка подготовки блока: 'target_chars'",
         0.0,
+        "error",
     )
     assert runtime["activity"][-1] == "Блок 1: некорректный план обработки."
     assert runtime["log"][-1]["status"] == "ERROR"
@@ -1243,7 +1250,7 @@ def test_run_document_processing_fails_when_convert_markdown_to_docx_bytes_raise
     assert runtime["state"]["latest_markdown"] == "Обработанный блок"
     assert runtime["state"]["latest_docx_bytes"] is None
     assert runtime["state"]["last_error"] == "Ошибка сборки DOCX: convert exploded"
-    assert runtime["finalize"][-1] == ("Ошибка сборки DOCX", "Ошибка сборки DOCX: convert exploded", 1.0)
+    assert runtime["finalize"][-1] == ("Ошибка сборки DOCX", "Ошибка сборки DOCX: convert exploded", 1.0, "error")
     assert runtime["activity"][-1] == "Ошибка на этапе сборки DOCX."
     assert runtime["log"][-1]["status"] == "ERROR"
 

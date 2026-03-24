@@ -21,6 +21,7 @@ class FinalizeProcessingStatusEvent:
     stage: str
     detail: str
     progress: float
+    terminal_kind: str | None = None
 
 
 @dataclass(frozen=True)

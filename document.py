@@ -495,6 +495,8 @@ def _extract_run_element_images(run_element, part) -> list[tuple[bytes, str | No
     images: list[tuple[bytes, str | None, int | None, int | None]] = []
     for drawing in run_element.xpath(".//w:drawing"):
         blips = drawing.xpath(".//a:blip")
+        # Explicit boundary: we currently preserve visible drawing extents only.
+        # Word-native crop metadata such as a:srcRect is not extracted/reapplied yet.
         width_emu, height_emu = _resolve_drawing_extent_emu(drawing)
         for blip in blips:
             embed_id = blip.get(f"{{{RELATIONSHIP_NAMESPACE}}}embed")

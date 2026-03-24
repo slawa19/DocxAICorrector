@@ -205,7 +205,7 @@ class ProcessingService:
                 user_message=error_message,
             )
             runtime.emit(SetStateEvent(values={"last_error": error_message, "last_background_error": background_error}))
-            runtime.emit(FinalizeProcessingStatusEvent(stage="Критическая ошибка", detail=error_message, progress=1.0))
+            runtime.emit(FinalizeProcessingStatusEvent(stage="Критическая ошибка", detail=error_message, progress=1.0, terminal_kind="error"))
             runtime.emit(PushActivityEvent(message="Фоновый worker аварийно завершился; runtime-state принудительно очищается."))
             runtime.emit(
                 AppendLogEvent(

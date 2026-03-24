@@ -53,7 +53,7 @@ class StateEmitter(Protocol):
 
 
 class FinalizeEmitter(Protocol):
-    def __call__(self, runtime: object, stage: str, detail: str, progress: float) -> None: ...
+    def __call__(self, runtime: object, stage: str, detail: str, progress: float, terminal_kind: str | None = None) -> None: ...
 
 
 class ActivityEmitter(Protocol):
@@ -462,7 +462,7 @@ def run_document_processing(
             processed_block_markdowns=[],
             latest_docx_bytes=None,
         )
-        emit_finalize(runtime, "Ошибка подготовки обработки", error_message, 0.0)
+        emit_finalize(runtime, "Ошибка подготовки обработки", error_message, 0.0, "error")
         emit_activity(runtime, "Обработка документа остановлена: план обработки некорректен.")
         emit_log(
             runtime,
@@ -522,7 +522,7 @@ def run_document_processing(
             processed_block_markdowns=[],
             latest_docx_bytes=None,
         )
-        emit_finalize(runtime, "Ошибка инициализации", error_message, 0.0)
+        emit_finalize(runtime, "Ошибка инициализации", error_message, 0.0, "error")
         return "failed"
 
     system_prompt: str | None = None
@@ -541,7 +541,7 @@ def run_document_processing(
             processed_block_markdowns=[],
             latest_docx_bytes=None,
         )
-        emit_finalize(runtime, 'Ошибка подготовки обработки', error_message, 0.0)
+        emit_finalize(runtime, 'Ошибка подготовки обработки', error_message, 0.0, "error")
         emit_activity(runtime, 'Обработка документа остановлена: не найдено ни одного блока для обработки.')
         emit_log(
             runtime,
@@ -561,7 +561,7 @@ def run_document_processing(
     for index, job in enumerate(jobs, start=1):
         if should_stop_processing(runtime):
             stop_message = "Обработка остановлена пользователем."
-            emit_finalize(runtime, "Остановлено пользователем", stop_message, (index - 1) / job_count)
+            emit_finalize(runtime, "Остановлено пользователем", stop_message, (index - 1) / job_count, "stopped")
             emit_activity(runtime, stop_message)
             emit_log(
                 runtime,
@@ -596,7 +596,7 @@ def run_document_processing(
             )
             formatted_error = f"Ошибка на блоке {index}: {error_message}"
             emit_state(runtime, last_error=formatted_error, latest_docx_bytes=None)
-            emit_finalize(runtime, "Ошибка подготовки блока", formatted_error, (index - 1) / job_count)
+            emit_finalize(runtime, "Ошибка подготовки блока", formatted_error, (index - 1) / job_count, "error")
             emit_activity(runtime, f"Блок {index}: некорректный план обработки.")
             emit_log(
                 runtime,
@@ -716,7 +716,7 @@ def run_document_processing(
                 latest_docx_bytes=None,
                 latest_marker_diagnostics_artifact=marker_diagnostics_artifact,
             )
-            emit_finalize(runtime, "Ошибка обработки", formatted_error, (index - 1) / job_count)
+            emit_finalize(runtime, "Ошибка обработки", formatted_error, (index - 1) / job_count, "error")
             emit_activity(runtime, f"Блок {index}: ошибка обработки.")
             emit_log(
                 runtime,
@@ -756,7 +756,7 @@ def run_document_processing(
             )
             formatted_error = f"Ошибка на блоке {index}: {critical_message}"
             emit_state(runtime, last_error=formatted_error, latest_docx_bytes=None)
-            emit_finalize(runtime, "Критическая ошибка", formatted_error, (index - 1) / job_count)
+            emit_finalize(runtime, "Критическая ошибка", formatted_error, (index - 1) / job_count, "error")
             emit_activity(runtime, f"Блок {index}: модель вернула пустой Markdown.")
             emit_log(
                 runtime,
@@ -781,7 +781,7 @@ def run_document_processing(
             )
             formatted_error = f"Ошибка на блоке {index}: {critical_message}"
             emit_state(runtime, last_error=formatted_error, latest_docx_bytes=None)
-            emit_finalize(runtime, "Критическая ошибка", formatted_error, (index - 1) / job_count)
+            emit_finalize(runtime, "Критическая ошибка", formatted_error, (index - 1) / job_count, "error")
             emit_activity(runtime, f"Блок {index}: отклонён структурно недостаточный Markdown.")
             emit_log(
                 runtime,
@@ -855,7 +855,7 @@ def run_document_processing(
                     latest_docx_bytes=None,
                     latest_marker_diagnostics_artifact=marker_diagnostics_artifact,
                 )
-                emit_finalize(runtime, "Ошибка marker-реестра", formatted_error, index / job_count)
+                emit_finalize(runtime, "Ошибка marker-реестра", formatted_error, index / job_count, "error")
                 emit_activity(runtime, f"Блок {index}: не удалось собрать marker-aware paragraph registry.")
                 emit_log(
                     runtime,
@@ -938,7 +938,7 @@ def run_document_processing(
             incomplete_count=max(job_count - len(processed_chunks), 0),
         )
         emit_state(runtime, last_error=critical_message, latest_docx_bytes=None)
-        emit_finalize(runtime, "Критическая ошибка", critical_message, len(processed_chunks) / max(job_count, 1))
+        emit_finalize(runtime, "Критическая ошибка", critical_message, len(processed_chunks) / max(job_count, 1), "error")
         emit_activity(runtime, "Обнаружено несоответствие количества обработанных блоков.")
         emit_log(
             runtime,
@@ -983,7 +983,7 @@ def run_document_processing(
             image_mode=image_mode,
         )
         emit_state(runtime, latest_markdown=final_markdown, last_error=error_message, latest_docx_bytes=None)
-        emit_finalize(runtime, "Ошибка обработки изображений", error_message, 1.0)
+        emit_finalize(runtime, "Ошибка обработки изображений", error_message, 1.0, "error")
         emit_activity(runtime, "Ошибка на этапе обработки изображений документа.")
         emit_log(
             runtime,
@@ -996,7 +996,7 @@ def run_document_processing(
         )
         return "failed"
     if should_stop_processing(runtime):
-        emit_finalize(runtime, "Остановлено пользователем", "Обработка остановлена пользователем.", 1.0)
+        emit_finalize(runtime, "Остановлено пользователем", "Обработка остановлена пользователем.", 1.0, "stopped")
         emit_activity(runtime, "Обработка документа остановлена пользователем.")
         return "stopped"
 
@@ -1023,7 +1023,7 @@ def run_document_processing(
             mismatch_details=mismatch_details,
         )
         emit_state(runtime, last_error=critical_message, latest_docx_bytes=None)
-        emit_finalize(runtime, "Критическая ошибка", critical_message, 1.0)
+        emit_finalize(runtime, "Критическая ошибка", critical_message, 1.0, "error")
         emit_activity(runtime, "Сборка DOCX остановлена из-за потери или дублирования image placeholder.")
         emit_log(
             runtime,
@@ -1076,7 +1076,7 @@ def run_document_processing(
             final_markdown_chars=len(final_markdown),
         )
         emit_state(runtime, last_error=error_message, latest_docx_bytes=None)
-        emit_finalize(runtime, "Ошибка сборки DOCX", error_message, 1.0)
+        emit_finalize(runtime, "Ошибка сборки DOCX", error_message, 1.0, "error")
         emit_activity(runtime, "Ошибка на этапе сборки DOCX.")
         emit_log(
             runtime,
@@ -1127,7 +1127,7 @@ def run_document_processing(
             filename=uploaded_filename,
         )
         emit_state(runtime, last_error=critical_message, latest_docx_bytes=None)
-        emit_finalize(runtime, "Критическая ошибка", critical_message, 1.0)
+        emit_finalize(runtime, "Критическая ошибка", critical_message, 1.0, "error")
         emit_activity(runtime, "DOCX собран без содержимого.")
         emit_log(
             runtime,
@@ -1152,6 +1152,7 @@ def run_document_processing(
         "Обработка завершена",
         f"Документ обработан за {time.perf_counter() - started_at:.1f} сек.",
         1.0,
+        "completed",
     )
     emit_activity(runtime, "Документ обработан полностью.")
     log_event(

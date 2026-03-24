@@ -8,7 +8,7 @@ from typing import Any
 import streamlit as st
 
 from logger import format_elapsed
-from message_formatting import derive_live_status_title, humanize_reason, humanize_variant
+from message_formatting import derive_live_status_title_and_severity, humanize_reason, humanize_variant
 from models import ImageMode
 
 
@@ -56,6 +56,12 @@ def _render_trusted_html(html_markup: str) -> None:
 
 def _get_sink(target=None):
     return target if target is not None else st
+
+
+def _resolve_render_target(target, *required_methods: str):
+    if target is not None and all(hasattr(target, method_name) for method_name in required_methods):
+        return target
+    return st
 
 
 def render_file_uploader_state_styles(*, has_uploaded_file: bool) -> None:
@@ -160,7 +166,7 @@ def render_live_status(target=None) -> None:
             progress_percent = int(progress_value * 100)
             stage = str(status.get("stage") or "Подготовка документа")
             detail = str(status.get("detail") or "Идет анализ файла.")
-            title = derive_live_status_title(status)
+            title, severity = derive_live_status_title_and_severity(status)
             _render_status_panel(
                 sink=sink,
                 title=title,
@@ -173,10 +179,12 @@ def render_live_status(target=None) -> None:
                         f"Изображения: {image_count} | Символы: {source_chars} | Блоки: {block_count}"
                     ),
                 ],
+                info_level=severity,
             )
-            st.progress(progress_value)
+            progress_api = _resolve_render_target(target, "progress")
+            progress_api.progress(progress_value)
         else:
-            title = derive_live_status_title(status)
+            title, severity = derive_live_status_title_and_severity(status)
             stage = str(status.get("stage") or "Ожидание")
             detail = str(status.get("detail") or "")
             _render_status_panel(
@@ -185,14 +193,17 @@ def render_live_status(target=None) -> None:
                 stage=stage,
                 detail=detail,
                 meta_lines=[],
+                info_level=severity,
             )
-            metric_columns = st.columns(4)
+            metric_api = _resolve_render_target(target, "columns")
+            metric_columns = metric_api.columns(4)
             metric_columns[0].metric("Блок", f"{current_block}/{block_count}" if block_count else "0/0")
             metric_columns[1].metric("Цель", f"{target_chars} симв.")
             metric_columns[2].metric("Контекст", f"{context_chars} симв.")
             metric_columns[3].metric("Прошло", elapsed)
-            progress_value = float(status.get("progress") or 0.0)
-            st.progress(progress_value)
+            progress_value = max(0.0, min(float(status.get("progress") or 0.0), 1.0))
+            progress_api = _resolve_render_target(target, "progress")
+            progress_api.progress(progress_value)
 
 
 def render_preparation_summary(summary: dict[str, object] | None, target=None) -> None:

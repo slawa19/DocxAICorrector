@@ -77,6 +77,7 @@ Startup contract считается отдельной защищённой по
 
 - при разработке, проверках, тестах, диагностике и live-валидации по умолчанию использовать именно этот WSL-first runtime;
 - запускать Python-команды, `pytest`, диагностические импорты и runtime-проверки через проектную `.venv` внутри WSL;
+- перед выводом о broken imports, missing deps, недоступности Pandoc или общем broken environment сначала сверяться с project runtime contract и по возможности использовать канонический путь `bash scripts/test.sh ...`, а не Windows `py`/`python`;
 - не делать выводы о зависимостях, import health, доступности Pandoc или общем состоянии окружения на основании случайного `python`, `py`, Windows virtualenv или иного системного интерпретатора, пока не проверен project runtime;
 - при расхождении между системным интерпретатором и project runtime считать источником истины project runtime;
 - предпочитать существующие project entry points вместо ad-hoc команд: `bash scripts/test.sh ...`, `scripts/start-project.ps1`, `scripts/status-project.ps1`, `scripts/project-control-wsl.sh`.

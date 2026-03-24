@@ -1518,7 +1518,7 @@ def test_reinsert_inline_images_preserves_hyperlink_xml_when_placeholder_is_in_s
     assert len(updated_paragraph._element.xpath("./w:hyperlink")) == 1
 
 
-def test_reinsert_inline_images_uses_shared_table_layout_for_multi_variant_placeholder_inside_paragraph():
+def test_reinsert_inline_images_uses_shared_block_layout_for_multi_variant_placeholder_inside_paragraph():
     doc = Document()
     paragraph = doc.add_paragraph()
     before_run = paragraph.add_run("До ")
@@ -1554,7 +1554,7 @@ def test_reinsert_inline_images_uses_shared_table_layout_for_multi_variant_place
     assert _extract_docpr_descriptions(updated_doc._element) == ["safe", "candidate1", "candidate2"]
 
 
-def test_reinsert_inline_images_preserves_hyperlink_when_multi_variant_table_is_inserted_nearby():
+def test_reinsert_inline_images_preserves_hyperlink_when_multi_variant_blocks_are_inserted_nearby():
     doc = Document()
     paragraph = doc.add_paragraph()
     paragraph.add_run("До ")
@@ -1604,10 +1604,26 @@ def test_reinsert_inline_images_logs_warning_when_all_replacement_strategies_fai
     )
 
     events = []
-    monkeypatch.setattr(image_reinsertion, "_replace_multi_variant_placeholders_with_tables", lambda paragraph, asset_map: False)
-    monkeypatch.setattr(image_reinsertion, "_replace_run_level_placeholders", lambda paragraph, placeholders, asset_map: False)
-    monkeypatch.setattr(image_reinsertion, "_replace_multi_run_placeholders", lambda paragraph, asset_map: False)
-    monkeypatch.setattr(image_reinsertion, "_replace_paragraph_placeholders_fallback", lambda paragraph, paragraph_text, asset_map: False)
+    monkeypatch.setattr(
+        image_reinsertion,
+        "_replace_multi_variant_placeholders_with_blocks",
+        lambda paragraph, asset_map, insertion_cache: False,
+    )
+    monkeypatch.setattr(
+        image_reinsertion,
+        "_replace_run_level_placeholders",
+        lambda paragraph, placeholders, asset_map, insertion_cache: False,
+    )
+    monkeypatch.setattr(
+        image_reinsertion,
+        "_replace_multi_run_placeholders",
+        lambda paragraph, asset_map, insertion_cache: False,
+    )
+    monkeypatch.setattr(
+        image_reinsertion,
+        "_replace_paragraph_placeholders_fallback",
+        lambda paragraph, paragraph_text, asset_map, insertion_cache: False,
+    )
     monkeypatch.setattr(image_reinsertion, "log_event", lambda level, event, message, **context: events.append((event, context)))
 
     updated_bytes = reinsert_inline_images(buffer.getvalue(), [asset])
@@ -1766,7 +1782,7 @@ def test_reinsert_inline_images_replaces_placeholder_split_across_runs_without_p
     assert len(updated_doc.inline_shapes) == 1
 
 
-def test_reinsert_inline_images_uses_shared_table_layout_for_split_run_multi_variant_placeholder():
+def test_reinsert_inline_images_uses_shared_block_layout_for_split_run_multi_variant_placeholder():
     doc = Document()
     paragraph = doc.add_paragraph()
     first_run = paragraph.add_run("До [[DOCX_")
@@ -1923,6 +1939,281 @@ def test_reinsert_inline_images_in_compare_all_mode_inserts_all_generated_varian
         "Вариант 2: Креативная AI-перерисовка",
         "Вариант 3: Структурная AI-перерисовка",
     ]
+
+
+def test_reinsert_inline_images_resolves_multi_variant_insertions_once_per_placeholder(monkeypatch):
+    doc = Document()
+    doc.add_paragraph("[[DOCX_IMAGE_img_001]]")
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    asset = ImageAsset(
+        image_id="img_001",
+        placeholder="[[DOCX_IMAGE_img_001]]",
+        original_bytes=PNG_BYTES,
+        mime_type="image/png",
+        position_index=0,
+    )
+    call_count = 0
+
+    def fake_resolve_image_insertions(current_asset):
+        nonlocal call_count
+        call_count += 1
+        return [
+            ("safe", PNG_BYTES),
+            ("candidate1", PNG_BYTES),
+            ("candidate2", PNG_BYTES),
+        ]
+
+    monkeypatch.setattr(image_reinsertion, "resolve_image_insertions", fake_resolve_image_insertions)
+
+    updated_bytes = reinsert_inline_images(buffer.getvalue(), [asset])
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    assert call_count == 1
+    assert len(updated_doc.inline_shapes) == 3
+
+
+def test_reinsert_inline_images_resolves_reused_placeholder_once_per_pass_across_paragraphs(monkeypatch):
+    doc = Document()
+    doc.add_paragraph("[[DOCX_IMAGE_img_001]]")
+    doc.add_paragraph("Before [[DOCX_IMAGE_img_001]] after")
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    asset = ImageAsset(
+        image_id="img_001",
+        placeholder="[[DOCX_IMAGE_img_001]]",
+        original_bytes=PNG_BYTES,
+        mime_type="image/png",
+        position_index=0,
+    )
+    call_count = 0
+
+    def fake_resolve_image_insertions(current_asset):
+        nonlocal call_count
+        call_count += 1
+        assert current_asset.placeholder == "[[DOCX_IMAGE_img_001]]"
+        return [(None, PNG_BYTES)]
+
+    monkeypatch.setattr(image_reinsertion, "resolve_image_insertions", fake_resolve_image_insertions)
+
+    updated_bytes = reinsert_inline_images(buffer.getvalue(), [asset])
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    assert call_count == 1
+    assert len(updated_doc.inline_shapes) == 2
+    assert updated_doc.paragraphs[0].text == ""
+    assert updated_doc.paragraphs[1].text == "Before  after"
+
+
+def test_reinsert_inline_images_different_placeholders_keep_separate_cache_entries(monkeypatch):
+    doc = Document()
+    doc.add_paragraph("[[DOCX_IMAGE_img_001]]")
+    doc.add_paragraph("[[DOCX_IMAGE_img_002]]")
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    first_asset = ImageAsset(
+        image_id="img_001",
+        placeholder="[[DOCX_IMAGE_img_001]]",
+        original_bytes=PNG_BYTES,
+        mime_type="image/png",
+        position_index=0,
+        width_emu=914400,
+        height_emu=914400,
+        final_variant="original",
+    )
+    second_asset = ImageAsset(
+        image_id="img_002",
+        placeholder="[[DOCX_IMAGE_img_002]]",
+        original_bytes=PNG_BYTES,
+        mime_type="image/png",
+        position_index=1,
+        width_emu=1828800,
+        height_emu=1828800,
+        final_variant="original",
+    )
+    seen_placeholders = []
+
+    def fake_resolve_image_insertions(current_asset):
+        seen_placeholders.append(current_asset.placeholder)
+        return [(None, current_asset.original_bytes)]
+
+    monkeypatch.setattr(image_reinsertion, "resolve_image_insertions", fake_resolve_image_insertions)
+
+    updated_bytes = reinsert_inline_images(buffer.getvalue(), [first_asset, second_asset])
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    assert seen_placeholders == ["[[DOCX_IMAGE_img_001]]", "[[DOCX_IMAGE_img_002]]"]
+    assert len(updated_doc.inline_shapes) == 2
+    assert updated_doc.inline_shapes[0].width == 914400
+    assert updated_doc.inline_shapes[1].width == 1828800
+
+
+def test_reinsert_inline_images_multi_variant_blocks_drop_list_indent_and_keep_next_formatting():
+    doc = Document()
+    _append_decimal_numbering_definition(doc, num_id="77", abstract_num_id="700")
+    paragraph = doc.add_paragraph("[[DOCX_IMAGE_img_001]]")
+    _attach_numbering(paragraph, num_id="77", ilvl="0")
+    paragraph.paragraph_format.left_indent = Inches(0.5)
+    paragraph_properties = paragraph._element.get_or_add_pPr()
+    keep_next = OxmlElement("w:keepNext")
+    paragraph_properties.append(keep_next)
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    asset = ImageAsset(
+        image_id="img_001",
+        placeholder="[[DOCX_IMAGE_img_001]]",
+        original_bytes=PNG_BYTES,
+        mime_type="image/png",
+        position_index=0,
+        safe_bytes=PNG_BYTES,
+        attempt_variants=[
+            ImageVariantCandidate(mode="candidate1", bytes=PNG_BYTES, mime_type="image/png"),
+            ImageVariantCandidate(mode="candidate2", bytes=PNG_BYTES, mime_type="image/png"),
+        ],
+    )
+    asset.update_pipeline_metadata(preserve_all_variants_in_docx=True)
+
+    updated_bytes = reinsert_inline_images(buffer.getvalue(), [asset])
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    assert len(updated_doc.paragraphs) == 3
+    for updated_paragraph in updated_doc.paragraphs:
+        paragraph_properties = updated_paragraph._element.pPr
+        assert paragraph_properties is not None
+        alignment = paragraph_properties.find(qn("w:jc"))
+        assert alignment is not None
+        assert alignment.get(qn("w:val")) == "center"
+        assert paragraph_properties.find(qn("w:numPr")) is None
+        assert paragraph_properties.find(qn("w:ind")) is None
+        assert paragraph_properties.find(qn("w:keepNext")) is None
+
+
+def test_reinsert_inline_images_multi_variant_blocks_drop_heading_style_from_source_paragraph():
+    doc = Document()
+    paragraph = doc.add_paragraph("[[DOCX_IMAGE_img_001]]", style="Heading 1")
+    paragraph_properties = paragraph._element.get_or_add_pPr()
+    keep_lines = OxmlElement("w:keepLines")
+    paragraph_properties.append(keep_lines)
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    asset = ImageAsset(
+        image_id="img_001",
+        placeholder="[[DOCX_IMAGE_img_001]]",
+        original_bytes=PNG_BYTES,
+        mime_type="image/png",
+        position_index=0,
+        safe_bytes=PNG_BYTES,
+        attempt_variants=[
+            ImageVariantCandidate(mode="candidate1", bytes=PNG_BYTES, mime_type="image/png"),
+            ImageVariantCandidate(mode="candidate2", bytes=PNG_BYTES, mime_type="image/png"),
+        ],
+    )
+    asset.update_pipeline_metadata(preserve_all_variants_in_docx=True)
+
+    updated_bytes = reinsert_inline_images(buffer.getvalue(), [asset])
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    assert len(updated_doc.paragraphs) == 3
+    for updated_paragraph in updated_doc.paragraphs:
+        paragraph_properties = updated_paragraph._element.pPr
+        assert paragraph_properties is not None
+        assert paragraph_properties.find(qn("w:pStyle")) is None
+        assert paragraph_properties.find(qn("w:outlineLvl")) is None
+        assert paragraph_properties.find(qn("w:keepLines")) is None
+        alignment = paragraph_properties.find(qn("w:jc"))
+        assert alignment is not None
+        assert alignment.get(qn("w:val")) == "center"
+
+
+def test_reinsert_inline_images_keeps_single_variant_placeholder_text_and_logs_when_inside_hyperlink_in_mixed_multi_variant_paragraph(monkeypatch):
+    doc = Document()
+    paragraph = doc.add_paragraph()
+    paragraph.add_run("Lead ")
+    _add_hyperlink(paragraph, "[[DOCX_IMAGE_img_001]]", "https://example.com")
+    paragraph.add_run(" middle [[DOCX_IMAGE_img_002]] tail")
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    first_asset = ImageAsset(
+        image_id="img_001",
+        placeholder="[[DOCX_IMAGE_img_001]]",
+        original_bytes=PNG_BYTES,
+        mime_type="image/png",
+        position_index=0,
+        width_emu=914400,
+        height_emu=914400,
+        final_variant="original",
+    )
+    second_asset = ImageAsset(
+        image_id="img_002",
+        placeholder="[[DOCX_IMAGE_img_002]]",
+        original_bytes=PNG_BYTES,
+        mime_type="image/png",
+        position_index=1,
+        safe_bytes=PNG_BYTES,
+        attempt_variants=[
+            ImageVariantCandidate(mode="candidate1", bytes=PNG_BYTES, mime_type="image/png"),
+            ImageVariantCandidate(mode="candidate2", bytes=PNG_BYTES, mime_type="image/png"),
+        ],
+    )
+    second_asset.update_pipeline_metadata(preserve_all_variants_in_docx=True)
+
+    events = []
+    monkeypatch.setattr(image_reinsertion, "log_event", lambda level, event, message, **context: events.append((event, context)))
+
+    updated_bytes = reinsert_inline_images(buffer.getvalue(), [first_asset, second_asset])
+    updated_doc = Document(BytesIO(updated_bytes))
+    visible_text = "\n".join(paragraph.text for paragraph in updated_doc.paragraphs)
+
+    assert "[[DOCX_IMAGE_img_001]]" in visible_text
+    assert "tail" in visible_text
+    assert len(updated_doc.inline_shapes) == 3
+    assert len(updated_doc._element.xpath(".//w:hyperlink")) == 1
+    assert not any(
+        event == "image_reinsertion_multi_variant_block_fallback_to_text"
+        and context.get("reason") == "multi_variant_placeholder_inside_hyperlink_or_non_run_child"
+        for event, context in events
+    )
+
+
+def test_reinsert_inline_images_logs_multi_variant_specific_warning_when_block_build_fails(monkeypatch):
+    doc = Document()
+    doc.add_paragraph("[[DOCX_IMAGE_img_001]]")
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    asset = ImageAsset(
+        image_id="img_001",
+        placeholder="[[DOCX_IMAGE_img_001]]",
+        original_bytes=PNG_BYTES,
+        mime_type="image/png",
+        position_index=0,
+        safe_bytes=PNG_BYTES,
+        attempt_variants=[
+            ImageVariantCandidate(mode="candidate1", bytes=PNG_BYTES, mime_type="image/png"),
+            ImageVariantCandidate(mode="candidate2", bytes=PNG_BYTES, mime_type="image/png"),
+        ],
+    )
+    asset.update_pipeline_metadata(preserve_all_variants_in_docx=True)
+
+    events = []
+    monkeypatch.setattr(image_reinsertion, "_build_replacement_blocks_from_fragments", lambda paragraph, fragments: [])
+    monkeypatch.setattr(image_reinsertion, "log_event", lambda level, event, message, **context: events.append((event, context)))
+
+    updated_bytes = reinsert_inline_images(buffer.getvalue(), [asset])
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    assert updated_doc.paragraphs[0].text == "[[DOCX_IMAGE_img_001]]"
+    assert any(
+        event == "image_reinsertion_multi_variant_block_unresolved"
+        and context.get("reason") == "multi_variant_block_builder_returned_no_output"
+        for event, context in events
+    )
 
 
 def test_resolve_final_image_bytes_prefers_selected_compare_variant():

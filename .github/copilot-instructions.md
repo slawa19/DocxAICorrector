@@ -20,6 +20,8 @@ bash scripts/test.sh tests/ -q -x --tb=short
 
 Never use PowerShell `.ps1` wrappers to run tests. They pipe output through WSL→PowerShell bridge which causes hangs and lost output.
 
+Before concluding that imports are broken, dependencies are missing, or Pandoc is unavailable, first verify the project runtime contract in WSL and prefer the canonical path `bash scripts/test.sh ...` over Windows `py`/`python`.
+
 When an AI agent runs tests for verification inside VS Code, the final user-facing verification path must be user-visible:
 
 - use the existing VS Code tasks `Run Full Pytest`, `Run Current Test File`, or `Run Current Test Node` whenever one of them matches the requested scope;

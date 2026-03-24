@@ -397,6 +397,7 @@ def _generate_direct_semantic_candidate(
 ) -> bytes:
     use_high_fidelity = _uses_high_fidelity_semantic_edit(analysis, requested_mode)
     semantic_upload, restore_context = _prepare_semantic_edit_image(image_bytes)
+    original_size = restore_context["original_size"]
     request_payload = {
         "model": IMAGE_EDIT_MODEL,
         "image": [_build_edit_file_like(semantic_upload)],
@@ -404,7 +405,7 @@ def _generate_direct_semantic_candidate(
         "quality": "high" if use_high_fidelity else "medium",
         "input_fidelity": "high" if use_high_fidelity else "low",
         "output_format": "png",
-        "size": _select_generate_size(restore_context["original_size"]),
+        "size": _select_generate_size(original_size),
         "response_format": "b64_json",
     }
     response = _call_images_edit(client, request_payload, budget=budget)
@@ -851,7 +852,7 @@ def _build_edit_file_like(image_upload: tuple[str, bytes, str]):
 
 def _prepare_semantic_edit_image(
     image_bytes: bytes,
-) -> tuple[tuple[str, bytes, str], dict[str, int | tuple[int, int] | tuple[int, int, int, int]]]:
+) -> tuple[tuple[str, bytes, str], dict[str, int | tuple[int, int]]]:
     try:
         with Image.open(BytesIO(image_bytes)) as source_image:
             source_image.load()
@@ -874,7 +875,6 @@ def _prepare_semantic_edit_image(
                 {
                     "original_size": original_size,
                     "canvas_size": canvas_size,
-                    "crop_box": (offset_x, offset_y, offset_x + original_size[0], offset_y + original_size[1]),
                 },
             )
     except Exception as exc:
@@ -883,13 +883,12 @@ def _prepare_semantic_edit_image(
 
 def _restore_semantic_output(
     image_bytes: bytes,
-    restore_context: dict[str, int | tuple[int, int] | tuple[int, int, int, int]],
+    restore_context: dict[str, int | tuple[int, int]],
     prefer_light_background: bool = False,
 ) -> bytes:
     original_size = restore_context.get("original_size")
-    crop_box = restore_context.get("crop_box")
     canvas_size = restore_context.get("canvas_size")
-    if not isinstance(original_size, tuple) or not isinstance(crop_box, tuple) or not isinstance(canvas_size, int) or canvas_size <= 0:
+    if not isinstance(original_size, tuple) or not isinstance(canvas_size, int) or canvas_size <= 0:
         return image_bytes
 
     try:
@@ -899,21 +898,15 @@ def _restore_semantic_output(
             if normalized_image.width <= 0 or normalized_image.height <= 0:
                 return image_bytes
 
-            left, top, right, bottom = crop_box
-            scale_x = normalized_image.width / canvas_size
-            scale_y = normalized_image.height / canvas_size
-            scaled_crop_box = (
-                max(0, int(round(left * scale_x))),
-                max(0, int(round(top * scale_y))),
-                min(normalized_image.width, int(round(right * scale_x))),
-                min(normalized_image.height, int(round(bottom * scale_y))),
-            )
-            cropped = normalized_image.crop(scaled_crop_box)
+            cropped = _trim_generated_outer_padding(normalized_image)
             if prefer_light_background:
                 cropped = _normalize_generated_document_background(cropped)
             target_size = _select_preserved_output_size(original_size, cropped.size)
-            if cropped.size != target_size:
-                cropped = ImageOps.fit(cropped, target_size, Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+            cropped = _restore_contained_output_image(
+                cropped,
+                target_size,
+                prefer_light_background=prefer_light_background,
+            )
 
             output = BytesIO()
             output_format = _select_pillow_output_format(semantic_image.format)
@@ -1185,19 +1178,11 @@ def _restore_generated_output(
             if prefer_light_background:
                 trimmed_image = _normalize_generated_document_background(trimmed_image)
             target_size = _select_preserved_output_size(original_size, trimmed_image.size)
-            contained_image = ImageOps.contain(trimmed_image, target_size, Image.Resampling.LANCZOS)
-            if contained_image.size == target_size:
-                restored_image = contained_image
-            else:
-                background_color = (255, 255, 255, 255) if prefer_light_background else _pick_generated_background_color(contained_image)
-                canvas_mode = "RGBA" if contained_image.mode in {"RGBA", "LA"} else "RGB"
-                restored_image = Image.new(canvas_mode, target_size, background_color)
-                offset_x = (target_size[0] - contained_image.width) // 2
-                offset_y = (target_size[1] - contained_image.height) // 2
-                if canvas_mode == "RGBA":
-                    restored_image.alpha_composite(contained_image.convert("RGBA"), (offset_x, offset_y))
-                else:
-                    restored_image.paste(contained_image, (offset_x, offset_y))
+            restored_image = _restore_contained_output_image(
+                trimmed_image,
+                target_size,
+                prefer_light_background=prefer_light_background,
+            )
 
             output = BytesIO()
             output_format = _select_pillow_output_format(generated_image.format)
@@ -1214,6 +1199,32 @@ def _restore_generated_output(
             return restored_bytes or image_bytes
     except Exception:
         return image_bytes
+
+
+def _restore_contained_output_image(
+    image: Image.Image,
+    target_size: tuple[int, int],
+    *,
+    prefer_light_background: bool = False,
+) -> Image.Image:
+    contained_image = ImageOps.contain(image, target_size, Image.Resampling.LANCZOS)
+    if contained_image.size == target_size:
+        return contained_image
+
+    background_color = (
+        (255, 255, 255, 255)
+        if prefer_light_background
+        else _pick_generated_background_color(contained_image)
+    )
+    canvas_mode = "RGBA" if contained_image.mode in {"RGBA", "LA"} else "RGB"
+    restored_image = Image.new(canvas_mode, target_size, background_color)
+    offset_x = (target_size[0] - contained_image.width) // 2
+    offset_y = (target_size[1] - contained_image.height) // 2
+    if canvas_mode == "RGBA":
+        restored_image.alpha_composite(contained_image.convert("RGBA"), (offset_x, offset_y))
+    else:
+        restored_image.paste(contained_image, (offset_x, offset_y))
+    return restored_image
 
 
 def _trim_generated_outer_padding(image: Image.Image) -> Image.Image:

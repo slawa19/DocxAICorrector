@@ -22,8 +22,9 @@
 - `docs/ARCHIVE_INDEX.md`
 - `docs/WORKFLOW_AND_IMAGE_MODES.md`
 - `docs/STARTUP_PERFORMANCE_CONTRACT.md`
-- `docs/DOCX_FORMATTING_HARDENING_SPEC_2026-03-13.md`
 - `docs/UNIVERSAL_REAL_DOCUMENT_VALIDATION_SPEC_2026-03-21.md`
+- `docs/CODEBASE_MAINTAINABILITY_IMPLEMENTATION_SPEC_2026-03-24.md`
+- `docs/DOCX_IMAGE_REINSERTION_HARDENING_SPEC_2026-03-24.md`
 - `docs/AI_AGENT_DEVELOPMENT_RULES.md`
 - `docs/testing/REAL_DOCUMENT_VALIDATION_WORKFLOW.md`
 - `docs/testing/UNIVERSAL_TEST_SYSTEM_MAINTENANCE_GUIDE_2026-03-21.md`
@@ -37,6 +38,8 @@
 
 ## Archived Specs And Plans
 
+- `docs/archive/specs/DOCX_FORMATTING_HARDENING_SPEC_2026-03-13.md` — implemented 2026-03-13
+- `docs/archive/specs/USER_MESSAGE_AND_PROCESSING_JOURNAL_SPEC_2026-03-24.md` — implemented 2026-03-24
 - `docs/archive/specs/DOCUMENT_ENTITY_ROUNDTRIP_REFACTOR_SPEC_2026-03-21.md`
 - `docs/archive/specs/DOCUMENT_ENTITY_ROUNDTRIP_DEVELOPMENT_PLAN_2026-03-21.md`
 - `docs/archive/specs/decomposition.md`
@@ -44,6 +47,17 @@
 - `docs/archive/specs/IMAGE_PIPELINE_V2_SPEC.md`
 - `docs/archive/specs/IMAGE_PIPELINE_REFACTOR_PLAN.md`
 - `docs/archive/specs/REFACTORING_STATE_AND_PREPARATION_SPEC.md`
+- `docs/archive/specs/CODE_REVIEW_REMEDIATION_SPEC_2026-03-16.md`
+- `docs/archive/specs/DOCX_FORMATTING_REGRESSION_FIX_PLAN_2026-03-15.md`
+- `docs/archive/specs/DOCX_FORMATTING_RELIABILITY_REFACTOR_SPEC_2026-03-18.md`
+- `docs/archive/specs/DOCUMENT_MODULE_DECOMPOSITION_SPEC_2026-03-20.md`
+- `docs/archive/specs/EMPTY_RESPONSE_RETRY_SPEC_2026-03-17.md`
+- `docs/archive/specs/FORMAT_RESTORATION_OVERHAUL_SPEC_2026-03-20.md`
+- `docs/archive/specs/LIETAER_QUALITY_REGRESSIONS_SPEC_2026-03-20.md`
+- `docs/archive/specs/PROMPT_SAFETY_HARDENING_SPEC_2026-03-17.md`
+- `docs/archive/specs/TEST_REFACTORING_SPEC_2026-03-15.md`
+- `docs/archive/specs/TEXT_MODEL_IO_REGRESSION_FIX_SPEC_2026-03-16.md`
+- `docs/archive/specs/UI_LIVE_PANEL_REFACTOR_SPEC_2026-03-16.md`
 - `docs/archive/specs/Спецификация MVP_ AI-редактор DOCX через Markdown с веб-интерфейсом.md`
 - `docs/archive/specs/Спецификация v1_ сохранение и улучшение изображений в DOCX.md`
 - `docs/archive/specs/Спецификация разработки_ Level 1 post-check для image semantic-redraw-mode.md`

@@ -14,6 +14,7 @@ import streamlit as st
 
 from logger import log_event
 from restart_store import clear_restart_source, load_restart_source_bytes, store_completed_source, store_restart_source
+from state import build_default_image_processing_summary
 from runtime_events import (
     AppendImageLogEvent,
     AppendLogEvent,
@@ -38,14 +39,7 @@ _DOC_CONVERSION_TIMEOUT_SECONDS = 120
 
 
 def _build_default_image_processing_summary() -> dict[str, object]:
-    return {
-        "total_images": 0,
-        "processed_images": 0,
-        "images_validated": 0,
-        "validation_passed": 0,
-        "fallbacks_applied": 0,
-        "validation_errors": [],
-    }
+    return build_default_image_processing_summary()
 
 
 def _reset_image_state() -> None:
@@ -430,11 +424,11 @@ def emit_or_apply_status(runtime: BackgroundRuntime | None, *, set_processing_st
     runtime.emit(SetProcessingStatusEvent(payload=payload))
 
 
-def emit_or_apply_finalize(runtime: BackgroundRuntime | None, *, finalize_processing_status, stage: str, detail: str, progress: float) -> None:
+def emit_or_apply_finalize(runtime: BackgroundRuntime | None, *, finalize_processing_status, stage: str, detail: str, progress: float, terminal_kind: str | None = None) -> None:
     if runtime is None:
-        finalize_processing_status(stage, detail, progress)
+        finalize_processing_status(stage, detail, progress, terminal_kind)
         return
-    runtime.emit(FinalizeProcessingStatusEvent(stage=stage, detail=detail, progress=progress))
+    runtime.emit(FinalizeProcessingStatusEvent(stage=stage, detail=detail, progress=progress, terminal_kind=terminal_kind))
 
 
 def emit_or_apply_activity(runtime: BackgroundRuntime | None, *, push_activity, message: str) -> None:
@@ -487,7 +481,7 @@ def drain_processing_events(*, set_processing_status, finalize_processing_status
         elif isinstance(event, SetProcessingStatusEvent):
             set_processing_status(**event.payload)
         elif isinstance(event, FinalizeProcessingStatusEvent):
-            finalize_processing_status(event.stage, event.detail, event.progress)
+            finalize_processing_status(event.stage, event.detail, event.progress, event.terminal_kind)
         elif isinstance(event, PushActivityEvent):
             push_activity(event.message)
         elif isinstance(event, AppendLogEvent):
@@ -553,7 +547,7 @@ def drain_preparation_events(*, reset_run_state, set_processing_status, finalize
         if isinstance(event, SetProcessingStatusEvent):
             set_processing_status(**event.payload)
         elif isinstance(event, FinalizeProcessingStatusEvent):
-            finalize_processing_status(event.stage, event.detail, event.progress)
+            finalize_processing_status(event.stage, event.detail, event.progress, event.terminal_kind)
         elif isinstance(event, PushActivityEvent):
             push_activity(event.message)
         elif isinstance(event, PreparationCompleteEvent):
@@ -574,6 +568,7 @@ def drain_preparation_events(*, reset_run_state, set_processing_status, finalize
                 "Документ подготовлен",
                 "Анализ файла завершён. Можно запускать обработку.",
                 1.0,
+                "completed",
             )
         elif isinstance(event, PreparationFailedEvent):
             st.session_state.prepared_run_context = None
@@ -588,6 +583,7 @@ def drain_preparation_events(*, reset_run_state, set_processing_status, finalize
                 "Ошибка подготовки",
                 event.error_message,
                 1.0,
+                "error",
             )
             push_activity("Не удалось прочитать и проанализировать DOCX-файл.")
 

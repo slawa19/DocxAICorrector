@@ -24,7 +24,7 @@ def _build_service(**overrides):
         "present_error_fn": lambda code, exc, title, **kwargs: f"{title}: {exc}",
         "log_event_fn": lambda *args, **kwargs: None,
         "emit_state_fn": lambda runtime, **values: runtime.setdefault("state", {}).update(values) if isinstance(runtime, dict) else None,
-        "emit_finalize_fn": lambda runtime, stage, detail, progress: runtime.setdefault("finalize", []).append((stage, detail, progress)) if isinstance(runtime, dict) else None,
+        "emit_finalize_fn": lambda runtime, stage, detail, progress, terminal_kind=None: runtime.setdefault("finalize", []).append((stage, detail, progress, terminal_kind)) if isinstance(runtime, dict) else None,
         "emit_activity_fn": lambda runtime, message: runtime.setdefault("activity", []).append(message) if isinstance(runtime, dict) else None,
         "emit_log_fn": lambda runtime, **payload: runtime.setdefault("log", []).append(payload) if isinstance(runtime, dict) else None,
         "emit_status_fn": lambda runtime, **payload: runtime.setdefault("status", []).append(payload) if isinstance(runtime, dict) else None,
@@ -129,8 +129,8 @@ def test_run_processing_worker_emits_success_outcome_and_runtime_events():
     service = _build_service(
         run_document_processing_impl_fn=run_document_processing_impl,
         emit_state_fn=lambda runtime, **values: runtime.emit(SetStateEvent(values=values)),
-        emit_finalize_fn=lambda runtime, stage, detail, progress: runtime.emit(
-            FinalizeProcessingStatusEvent(stage=stage, detail=detail, progress=progress)
+        emit_finalize_fn=lambda runtime, stage, detail, progress, terminal_kind=None: runtime.emit(
+            FinalizeProcessingStatusEvent(stage=stage, detail=detail, progress=progress, terminal_kind=terminal_kind)
         ),
         emit_log_fn=lambda runtime, **payload: runtime.emit(AppendLogEvent(payload=payload)),
     )
@@ -147,7 +147,7 @@ def test_run_processing_worker_emits_success_outcome_and_runtime_events():
     )
 
     assert any(isinstance(event, SetStateEvent) and event.values["latest_markdown"] == "Готово" for event in emitted_events)
-    assert any(isinstance(event, FinalizeProcessingStatusEvent) and event.stage == "Обработка завершена" for event in emitted_events)
+    assert any(isinstance(event, FinalizeProcessingStatusEvent) and event.stage == "Обработка завершена" and event.terminal_kind == "completed" for event in emitted_events)
     assert any(isinstance(event, AppendLogEvent) and event.payload["status"] == "DONE" for event in emitted_events)
     assert emitted_events[-1] == WorkerCompleteEvent(outcome="succeeded")
 

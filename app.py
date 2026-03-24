@@ -374,7 +374,15 @@ def main() -> None:
                 original_filename=str(completed_result["source_name"]),
             )
         elif idle_view_state == IdleViewState.RESTARTABLE:
-            st.info("Можно изменить настройки и запустить обработку заново без повторной загрузки файла.")
+            processing_outcome = str(st.session_state.get("processing_outcome") or ProcessingOutcome.IDLE.value)
+            restart_source = st.session_state.get("restart_source") or {}
+            restart_filename = str(restart_source.get("filename", ""))
+            outcome_notice = get_restartable_outcome_notice(processing_outcome, restart_filename)
+            if outcome_notice is not None:
+                notice_level, notice_message = outcome_notice
+                getattr(st, notice_level)(notice_message)
+            else:
+                st.info("Можно изменить настройки и запустить обработку заново без повторной загрузки файла.")
             render_run_log()
             render_image_validation_summary()
             render_partial_result()
@@ -434,6 +442,7 @@ def main() -> None:
             progress=1.0,
             is_running=False,
             phase="preparing",
+            terminal_kind="completed",
         )
     if not st.session_state.activity_feed and not restartable_outcome:
         push_activity(f"Документ разобран на {len(jobs)} блоков.")

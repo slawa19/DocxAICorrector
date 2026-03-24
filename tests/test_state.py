@@ -76,6 +76,7 @@ def test_init_session_state_initializes_image_processing_summary(monkeypatch):
     assert session_state.prepared_source_key == ""
     assert session_state.preparation_cache == {}
     assert session_state.processing_status["cached"] is False
+    assert session_state.processing_status["terminal_kind"] is None
     assert session_state.restart_source is None
     assert session_state.completed_source is None
 
@@ -128,7 +129,7 @@ def test_reset_run_state_can_clear_restart_source(monkeypatch):
     assert session_state.last_background_error is None
 
 
-def test_append_image_log_updates_summary_and_activity(monkeypatch):
+def test_append_image_log_updates_summary_and_run_log(monkeypatch):
     session_state = SessionState()
     monkeypatch.setattr(state.st, "session_state", session_state)
 
@@ -154,14 +155,15 @@ def test_append_image_log_updates_summary_and_activity(monkeypatch):
     assert session_state.image_processing_summary["processed_images"] == 2
     assert session_state.image_processing_summary["images_validated"] == 1
     assert session_state.image_processing_summary["validation_passed"] == 1
-    assert session_state.image_processing_summary["fallbacks_applied"] == 0
+    assert session_state.image_processing_summary["fallbacks_applied"] == 1
     assert session_state.image_processing_summary["validation_errors"] == ["img-2: validator_exception:RuntimeError"]
     assert session_state.image_validation_failures == ["img-2: validator_exception:RuntimeError"]
     assert session_state.run_log[0]["kind"] == "image"
     assert session_state.run_log[0]["message"] == "[IMG OK] Изображение img-1 | обработка завершена | confidence: 0.92"
     assert session_state.run_log[1]["kind"] == "image"
     assert session_state.run_log[1]["message"] == "[IMG ERR] Изображение img-2 | ошибка обработки | ошибка валидации: RuntimeError"
-    assert session_state.activity_feed[-1]["message"] == "[IMG] img-2: error | conf: 0.10 | fallback_safe"
+    # append_image_log no longer writes to activity_feed — image results go only to run_log
+    assert session_state.activity_feed == []
 
 
 def test_append_image_log_counts_soft_accept_as_success(monkeypatch):
@@ -199,10 +201,30 @@ def test_append_image_log_counts_skipped_fallback_without_validation_error(monke
 
     assert session_state.image_processing_summary["total_images"] == 1
     assert session_state.image_processing_summary["processed_images"] == 1
-    assert session_state.image_processing_summary["images_validated"] == 1
+    assert session_state.image_processing_summary["images_validated"] == 0
     assert session_state.image_processing_summary["fallbacks_applied"] == 1
     assert session_state.image_processing_summary["validation_errors"] == []
     assert session_state.image_validation_failures == []
     assert session_state.run_log[-1]["message"] == (
         "[IMG WARN] Изображение img-unsupported | оставлен оригинал | неподдерживаемый формат исходного изображения: image/x-emf"
     )
+
+
+def test_append_image_log_does_not_count_compared_as_validated_but_counts_fallback(monkeypatch):
+    session_state = SessionState()
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    state.init_session_state()
+
+    state.append_image_log(
+        image_id="img-compared",
+        status="compared",
+        decision="fallback_safe",
+        confidence=0.0,
+        final_variant="safe",
+        final_reason="compare_all_variants_incomplete:safe",
+    )
+
+    assert session_state.image_processing_summary["images_validated"] == 0
+    assert session_state.image_processing_summary["fallbacks_applied"] == 1
+    assert session_state.image_processing_summary["validation_errors"] == []

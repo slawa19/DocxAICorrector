@@ -54,7 +54,7 @@ def test_drain_processing_events_applies_typed_runtime_events(monkeypatch):
     session_state.processing_event_queue.put(SetStateEvent(values={"last_error": "boom"}))
     session_state.processing_event_queue.put(ResetImageStateEvent())
     session_state.processing_event_queue.put(SetProcessingStatusEvent(payload={"stage": "run", "detail": "detail"}))
-    session_state.processing_event_queue.put(FinalizeProcessingStatusEvent(stage="done", detail="ok", progress=1.0))
+    session_state.processing_event_queue.put(FinalizeProcessingStatusEvent(stage="done", detail="ok", progress=1.0, terminal_kind="completed"))
     session_state.processing_event_queue.put(PushActivityEvent(message="hello"))
     session_state.processing_event_queue.put(AppendLogEvent(payload={"status": "OK", "block_index": 1, "block_count": 2, "target_chars": 3, "context_chars": 4, "details": "done"}))
     session_state.processing_event_queue.put(AppendImageLogEvent(payload={"image_id": "img_1", "status": "validated", "decision": "accept", "confidence": 0.9}))
@@ -62,7 +62,7 @@ def test_drain_processing_events_applies_typed_runtime_events(monkeypatch):
 
     processing_runtime.drain_processing_events(
         set_processing_status=lambda **payload: calls["status"].append(payload),
-        finalize_processing_status=lambda stage, detail, progress: calls["finalize"].append((stage, detail, progress)),
+        finalize_processing_status=lambda stage, detail, progress, terminal_kind=None: calls["finalize"].append((stage, detail, progress, terminal_kind)),
         push_activity=lambda message: calls["activity"].append(message),
         append_log=lambda **payload: calls["log"].append(payload),
         append_image_log=lambda **payload: calls["image_log"].append(payload),
@@ -80,7 +80,7 @@ def test_drain_processing_events_applies_typed_runtime_events(monkeypatch):
         "validation_errors": [],
     }
     assert calls["status"] == [{"stage": "run", "detail": "detail"}]
-    assert calls["finalize"] == [("done", "ok", 1.0)]
+    assert calls["finalize"] == [("done", "ok", 1.0, "completed")]
     assert calls["activity"] == ["hello"]
     assert calls["log"][0]["status"] == "OK"
     assert calls["image_log"][0]["image_id"] == "img_1"
@@ -114,7 +114,7 @@ def test_drain_preparation_events_stores_prepared_context(monkeypatch):
     processing_runtime.drain_preparation_events(
         reset_run_state=lambda **kwargs: None,
         set_processing_status=lambda **payload: None,
-        finalize_processing_status=lambda stage, detail, progress: finalized.append((stage, detail, progress)),
+        finalize_processing_status=lambda stage, detail, progress, terminal_kind=None: finalized.append((stage, detail, progress, terminal_kind)),
         push_activity=lambda message: None,
     )
 
@@ -123,7 +123,7 @@ def test_drain_preparation_events_stores_prepared_context(monkeypatch):
     assert session_state.selected_source_token == "report.docx:3:abc"
     assert session_state.preparation_worker is None
     assert session_state.preparation_event_queue is None
-    assert finalized == [("Документ подготовлен", "Анализ файла завершён. Можно запускать обработку.", 1.0)]
+    assert finalized == [("Документ подготовлен", "Анализ файла завершён. Можно запускать обработку.", 1.0, "completed")]
 
 
 def test_drain_preparation_events_marks_failure(monkeypatch):
@@ -154,7 +154,7 @@ def test_drain_preparation_events_marks_failure(monkeypatch):
     processing_runtime.drain_preparation_events(
         reset_run_state=lambda **kwargs: None,
         set_processing_status=lambda **payload: None,
-        finalize_processing_status=lambda stage, detail, progress: finalized.append((stage, detail, progress)),
+        finalize_processing_status=lambda stage, detail, progress, terminal_kind=None: finalized.append((stage, detail, progress, terminal_kind)),
         push_activity=lambda message: activities.append(message),
     )
 
@@ -164,7 +164,7 @@ def test_drain_preparation_events_marks_failure(monkeypatch):
     assert session_state.last_background_error["stage"] == "preparation"
     assert session_state.preparation_worker is None
     assert session_state.preparation_event_queue is None
-    assert finalized == [("Ошибка подготовки", "boom", 1.0)]
+    assert finalized == [("Ошибка подготовки", "boom", 1.0, "error")]
     assert activities == ["Не удалось прочитать и проанализировать DOCX-файл."]
 
 
@@ -233,7 +233,7 @@ def test_start_background_preparation_propagates_cached_flag(monkeypatch):
     processing_runtime.drain_preparation_events(
         reset_run_state=lambda **kwargs: None,
         set_processing_status=lambda **payload: statuses.append(payload),
-        finalize_processing_status=lambda stage, detail, progress: None,
+        finalize_processing_status=lambda stage, detail, progress, terminal_kind=None: None,
         push_activity=lambda message: activities.append(message),
     )
     assert any(payload.get("cached") is True for payload in statuses)
