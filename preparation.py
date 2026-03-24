@@ -1,7 +1,6 @@
 from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from io import BytesIO
 import logging
 from threading import Event, Lock
 
@@ -13,6 +12,7 @@ from document import (
 )
 from logger import log_event
 from models import ImageAsset, ImagePipelineMetadata, ImageValidationResult, ImageVariantCandidate
+from processing_runtime import build_in_memory_uploaded_file
 
 
 @dataclass
@@ -39,15 +39,6 @@ def emit_preparation_progress(progress_callback, *, stage: str, detail: str, pro
 
 def build_prepared_source_key(uploaded_file_token: str, chunk_size: int) -> str:
     return f"{uploaded_file_token}:{chunk_size}"
-
-
-def _build_in_memory_uploaded_file(*, source_name: str, source_bytes: bytes):
-    uploaded_file = BytesIO(source_bytes)
-    uploaded_file.name = source_name
-    setattr(uploaded_file, "size", len(source_bytes))
-    return uploaded_file
-
-
 def _prepare_document_for_processing(source_name: str, source_bytes: bytes, chunk_size: int, *, progress_callback=None):
     emit_preparation_progress(
         progress_callback,
@@ -55,7 +46,7 @@ def _prepare_document_for_processing(source_name: str, source_bytes: bytes, chun
         detail="Извлекаю абзацы и встроенные изображения.",
         progress=0.3,
     )
-    uploaded_file = _build_in_memory_uploaded_file(source_name=source_name, source_bytes=source_bytes)
+    uploaded_file = build_in_memory_uploaded_file(source_name=source_name, source_bytes=source_bytes)
     paragraphs, image_assets = extract_document_content_from_docx(uploaded_file)
     emit_preparation_progress(
         progress_callback,

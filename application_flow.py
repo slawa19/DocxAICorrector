@@ -9,9 +9,7 @@ from preparation import emit_preparation_progress, prepare_document_for_processi
 from processing_runtime import (
     FrozenUploadPayload,
     build_in_memory_uploaded_file,
-    build_uploaded_file_token,
-    normalize_uploaded_document,
-    read_uploaded_file_bytes,
+    freeze_uploaded_file,
     resolve_uploaded_filename,
 )
 from restart_store import clear_restart_source, load_restart_source_bytes
@@ -113,14 +111,10 @@ def _resolve_preparation_dependencies(
     *,
     prepare_document_for_processing_fn,
     resolve_uploaded_filename_fn,
-    read_uploaded_file_bytes_fn,
-    build_uploaded_file_token_fn,
 ):
     return (
         prepare_document_for_processing if prepare_document_for_processing_fn is None else prepare_document_for_processing_fn,
         resolve_uploaded_filename if resolve_uploaded_filename_fn is None else resolve_uploaded_filename_fn,
-        read_uploaded_file_bytes if read_uploaded_file_bytes_fn is None else read_uploaded_file_bytes_fn,
-        build_uploaded_file_token if build_uploaded_file_token_fn is None else build_uploaded_file_token_fn,
     )
 
 
@@ -133,8 +127,6 @@ def _prepare_run_context_core(
     progress_callback,
     prepare_document_for_processing_fn,
     resolve_uploaded_filename_fn,
-    read_uploaded_file_bytes_fn,
-    build_uploaded_file_token_fn,
     reset_run_state_fn=None,
     fail_critical_fn=None,
 ):
@@ -142,13 +134,9 @@ def _prepare_run_context_core(
     (
         prepare_document_for_processing_fn,
         resolve_uploaded_filename_fn,
-        read_uploaded_file_bytes_fn,
-        build_uploaded_file_token_fn,
     ) = _resolve_preparation_dependencies(
         prepare_document_for_processing_fn=prepare_document_for_processing_fn,
         resolve_uploaded_filename_fn=resolve_uploaded_filename_fn,
-        read_uploaded_file_bytes_fn=read_uploaded_file_bytes_fn,
-        build_uploaded_file_token_fn=build_uploaded_file_token_fn,
     )
     if uploaded_payload is not None:
         uploaded_filename = uploaded_payload.filename
@@ -162,16 +150,17 @@ def _prepare_run_context_core(
             detail=f"Читаю содержимое {uploaded_filename}",
             progress=0.05,
         )
-        uploaded_file_bytes = read_uploaded_file_bytes_fn(uploaded_file)
-        uploaded_file_token = build_uploaded_file_token_fn(source_name=uploaded_filename, source_bytes=uploaded_file_bytes)
+        if uploaded_file is None:
+            raise ValueError("Для синхронной подготовки требуется uploaded_file.")
         try:
-            normalized_document = normalize_uploaded_document(filename=uploaded_filename, source_bytes=uploaded_file_bytes)
+            frozen_upload = freeze_uploaded_file(uploaded_file)
         except RuntimeError as exc:
             if fail_critical_fn is not None:
                 fail_critical_fn("doc_conversion_failed", str(exc), filename=uploaded_filename)
             raise
-        uploaded_filename = normalized_document.filename
-        uploaded_file_bytes = normalized_document.content_bytes
+        uploaded_filename = frozen_upload.filename
+        uploaded_file_bytes = frozen_upload.content_bytes
+        uploaded_file_token = frozen_upload.file_token
     emit_preparation_progress(
         progress_callback,
         stage="Файл прочитан",
@@ -304,8 +293,6 @@ def prepare_run_context(
     log_event_fn,
     prepare_document_for_processing_fn=None,
     resolve_uploaded_filename_fn=None,
-    read_uploaded_file_bytes_fn=None,
-    build_uploaded_file_token_fn=None,
     progress_callback=None,
 ) -> PreparedRunContext:
     uploaded_filename, uploaded_file_bytes, uploaded_file_token, prepared_document, elapsed_seconds = _prepare_run_context_core(
@@ -315,8 +302,6 @@ def prepare_run_context(
         progress_callback=progress_callback,
         prepare_document_for_processing_fn=prepare_document_for_processing_fn,
         resolve_uploaded_filename_fn=resolve_uploaded_filename_fn,
-        read_uploaded_file_bytes_fn=read_uploaded_file_bytes_fn,
-        build_uploaded_file_token_fn=build_uploaded_file_token_fn,
         reset_run_state_fn=reset_run_state_fn,
         fail_critical_fn=fail_critical_fn,
     )
@@ -368,8 +353,6 @@ def prepare_run_context_for_background(
     keep_all_image_variants: bool,
     prepare_document_for_processing_fn=None,
     resolve_uploaded_filename_fn=None,
-    read_uploaded_file_bytes_fn=None,
-    build_uploaded_file_token_fn=None,
     progress_callback=None,
 ) -> PreparedRunContext:
     uploaded_filename, uploaded_file_bytes, uploaded_file_token, prepared_document, elapsed_seconds = _prepare_run_context_core(
@@ -379,8 +362,6 @@ def prepare_run_context_for_background(
         progress_callback=progress_callback,
         prepare_document_for_processing_fn=prepare_document_for_processing_fn,
         resolve_uploaded_filename_fn=resolve_uploaded_filename_fn,
-        read_uploaded_file_bytes_fn=read_uploaded_file_bytes_fn,
-        build_uploaded_file_token_fn=build_uploaded_file_token_fn,
         fail_critical_fn=None,
     )
     _raise_or_fail_preparation(prepared_document=prepared_document, uploaded_filename=uploaded_filename)

@@ -92,9 +92,68 @@ Implementation must follow these principles:
 5. Prefer production-path reuse over validator-only or debug-only orchestration forks.
 6. Preserve current behavior first; behavior changes require an explicit acceptance section.
 
+### 6.1 Dependency Direction Rule
+
+Implementation must preserve one-way dependency direction.
+
+- lower layers must not import UI-facing or adapter-facing modules;
+- service/domain layers must not depend on `app_runtime.py`, `app.py`, or UI modules;
+- `document_pipeline.py` and downstream processing modules must not depend on Streamlit session machinery, page composition helpers, or UI event transport details;
+- adapter modules may depend inward on runtime/service/domain contracts, but inward layers must not depend back on adapters.
+
+Forbidden outcome:
+
+- solving ownership ambiguity by introducing a new bidirectional import path or by moving UI concerns into service/domain modules.
+
+### 6.2 Session-State Ownership Rule
+
+Session state must have a single writer per concern.
+
+- each session key or state family must have one authoritative mutation owner;
+- orchestrators may decide when a state transition happens, but they must call the owner contract instead of open-coding equivalent mutations;
+- `application_flow.py` and other orchestration modules may coordinate transition timing, but must not become parallel writers for the same runtime/session-state concern;
+- if a state value must be mirrored for compatibility during migration, one field remains canonical and the mirror must be treated as a temporary alias.
+
+### 6.3 Source-of-Truth Ownership Rule
+
+Each runtime concept must have one authoritative owner.
+
+- one concept must not be represented by multiple equally authoritative helpers, fields, session keys, or report fields;
+- if compatibility aliases are temporarily required, the canonical owner must be documented and all aliases must be explicitly marked transitional;
+- duplicate field names, session keys, or report fields must not remain indefinitely once the canonical owner exists.
+
+### 6.4 Orchestrator Responsibility Rule
+
+Orchestrators coordinate when work happens, not the detailed semantics of how lower-level contracts work.
+
+- orchestration modules may choose order, retries, and high-level flow branches;
+- they must not reimplement normalization, persistence, parsing, or state-shape semantics that belong to lower-level owners;
+- `document_pipeline.py` must operate on prepared inputs and must not silently recreate upload-preparation semantics downstream.
+
+### 6.5 Boundary Justification Rule
+
+Adapter layers must justify their existence with a real boundary role.
+
+- a retained adapter layer must translate contracts, isolate framework/runtime coupling, or narrow a public facade;
+- forwarding-only layers with no ownership, translation, or compatibility role should be collapsed;
+- this rule applies specifically to `app_runtime.py` and to validator-side adapter surfaces.
+
 ## 7. Target Architecture
 
 The target is not a large rewrite. It is a clarified boundary model.
+
+### 7.0 Boundary and Ownership Clarifications
+
+The following ownership rules apply across the target architecture:
+
+- upload contract ownership: one upload/preparation contract owns source-byte identity, normalization, prepared payload shape, and in-memory uploaded-file reconstruction;
+- preparation cache ownership: one preparation-layer owner must own cache key semantics, cache writes, and invalidation rules for prepared inputs;
+- runtime event transport ownership: one runtime-layer owner must own background event queue creation, transport, and event application entrypoints;
+- session-state mutation ownership: UI/session state mutations must flow through designated owner helpers rather than ad hoc writes across multiple modules;
+- restart/completed-source persistence ownership: one runtime/session-state owner must own persisted-source lifecycle, including restart carry-forward, completion marking, and cleanup scheduling;
+- validation facade ownership: validation entrypoints must consume one narrow production-compatible facade rather than assemble low-level runtime parts ad hoc.
+
+If ownership for one of these concerns is moved during implementation, the new owner must be explicit in code and tests within the same PR.
 
 ### 7.1 UI Layer
 
@@ -106,6 +165,8 @@ The target is not a large rewrite. It is a clarified boundary model.
 - top-level rerun flow;
 - widget rendering order;
 - user-facing control decisions.
+
+`app.py` must not become the authoritative owner for restart/completed-source persistence semantics, upload normalization semantics, or background event transport semantics.
 
 `app.py` should not own:
 
@@ -126,6 +187,12 @@ That contract includes:
 - in-memory uploaded file reconstruction for downstream DOCX readers.
 
 The contract currently spans `processing_runtime.py`, `application_flow.py`, and `preparation.py`. After implementation, preparation and runtime code should both consume the same canonical helper surface.
+
+Prepared-input rule:
+
+- once a document enters `document_pipeline.py` or any downstream processing stage, it must already be represented as a prepared input under the canonical preparation contract;
+- downstream modules must not re-detect upload format, rebuild token semantics, or perform a second authoritative normalization pass;
+- if a downstream conversion/cache artifact is needed for processing efficiency, it must derive from the prepared input contract rather than redefine it.
 
 ### 7.3 Processing Orchestration Layer
 
@@ -150,6 +217,12 @@ The target boundary is:
 - `processing_service.py`: wires dependencies for worker execution;
 - `document_pipeline.py`: executes the processing pipeline on prepared inputs.
 
+Additional boundary requirements:
+
+- `application_flow.py` coordinates when preparation and runtime transitions occur, but does not own the semantics of upload normalization, persistence payload shape, or event transport;
+- `processing_service.py` may assemble dependencies, but must not absorb UI/session-state policy;
+- `document_pipeline.py` may coordinate processing stages, but must not become an alternate source of truth for upload, restart-persistence, or session-key semantics.
+
 ### 7.4 OpenAI Response Parsing Layer
 
 OpenAI Responses API text extraction must live in one shared utility surface.
@@ -172,11 +245,24 @@ The target is not necessarily to delete `ImageAsset`. The target is to stop usin
 
 Implementation may keep `ImageAsset` as the base document-facing shape and introduce one additional runtime state structure if that materially reduces mutation ambiguity.
 
+Lifecycle invariants guidance:
+
+- immutable source identity fields must not be repurposed after construction;
+- runtime attempt state, validation state, and compare-all candidate state must have explicit ownership and reset rules;
+- final selected-output state must be distinguishable from in-progress candidate state;
+- logging/report serialization must not depend on partially mutated incidental fields when a more explicit finalized state exists.
+
 ### 7.6 Validation Harness Layer
 
 Real-document validation should consume the narrowest possible production contract.
 
 The structural harness should reuse production preparation/runtime helpers rather than recreating orchestration logic inline wherever practical. The goal is to reduce drift between validator behavior and application behavior without forcing the validator to depend on Streamlit session machinery.
+
+Validation-facade rule:
+
+- validation code must prefer a narrow production facade that exposes prepared-input execution and result capture;
+- validation code must not wire together low-level runtime helpers ad hoc when the same behavior can be reached through the shared facade;
+- if the facade is too wide or Streamlit-coupled, narrow the production facade rather than reproducing production wiring in validator-only code.
 
 ## 8. Workstreams and Priorities
 
@@ -339,6 +425,7 @@ Not acceptable:
 
 - leaving normalization/token semantics duplicated across multiple call sites;
 - changing legacy `.doc` identity behavior to normalized-byte identity.
+- allowing `document_pipeline.py` or other downstream modules to accept raw upload objects as an alternate processing contract.
 
 ### Deliverables
 
@@ -346,6 +433,7 @@ Not acceptable:
 2. Clear separation between upload identity and normalized processing payload.
 3. Reduced branch-specific logic inside `_prepare_run_context_core()`.
 4. Tests covering sync and background preparation equivalence.
+5. One explicit owner for prepared-input cache writes, reads, and invalidation rules if a preparation cache remains in use.
 
 ## 8.3 Priority P2: Orchestration Boundary Cleanup
 
@@ -385,12 +473,20 @@ This is not fully broken, but boundaries are not explicit enough. That drives la
 - avoid moving Streamlit session mutation into modules that should remain runtime-agnostic;
 - avoid pushing too much orchestration into `document_pipeline.py`, which should stay downstream of prepared inputs.
 
+Forbidden outcomes:
+
+- `app_runtime.py` remains as a forwarding-only layer with no translation or boundary role;
+- service/domain modules import `app.py`, `app_runtime.py`, or UI modules;
+- restart persistence, completed-source persistence, or session-state mutation remain split across multiple peer writers for the same concern;
+- `document_pipeline.py` accepts raw uploads or reconstructs preparation semantics internally.
+
 ### Deliverables
 
 1. A documented call graph for the normal processing flow.
 2. An explicit decision on whether `app_runtime.py` stays as a minimal adapter or is collapsed, with the resulting ownership documented.
 3. Removal of avoidable late imports introduced by fuzzy ownership.
 4. Fewer top-level modules that need to be touched for a single orchestration change.
+5. One explicit owner for restart/completed-source persistence lifecycle and one explicit owner for runtime event transport.
 
 ## 8.4 Priority P3: Image Pipeline State Model Narrowing
 
@@ -427,6 +523,12 @@ Two acceptable options:
 
 Option 1 is preferred if the delta remains modest and avoids a wide, risky rewrite.
 
+Field and alias rule:
+
+- duplicate field names for the same lifecycle concept must be consolidated to one canonical field;
+- if migration compatibility requires an alias, the alias must be documented as transitional and must not become a second writable source of truth;
+- the same rule applies to session keys and report/output fields derived from image state.
+
 ### Non-goal within this phase
 
 - do not redesign image generation algorithms or validation policies;
@@ -437,6 +539,7 @@ Option 1 is preferred if the delta remains modest and avoids a wide, risky rewri
 1. A clearer state boundary for image processing mutations.
 2. Smaller, more focused serializer/logging behavior.
 3. Fewer unrelated fields on the main asset object.
+4. Explicit lifecycle invariants for source identity, runtime attempt state, and finalized output state.
 
 ## 8.5 Priority P3: Validation Harness Convergence
 
@@ -460,12 +563,19 @@ Objective: make real-document validation reuse production behavior more directly
 - move structural validation to that contract rather than importing a large set of low-level production pieces directly;
 - prune or tighten registry/config fields that are technically present but not meaningfully variable today, especially `expected_acceptance_policy` if enforcement is not added.
 
+Forbidden outcomes:
+
+- replacing one validator-only wiring fork with another low-level assembly path under a different module name;
+- keeping broad low-level helper imports in the validator when a narrower production facade exists;
+- preserving duplicate registry/report field names without a canonical owner and deprecation path.
+
 ### Deliverables
 
 1. Reduced drift between app execution and validation execution.
 2. Smaller adapter surface in the structural validator.
 3. Clearer registry semantics.
 4. No dead validation-policy field that appears configurable but does not affect runtime behavior.
+5. Validation execution flows through a documented narrow facade, not ad hoc low-level production wiring.
 
 ## 9. Implementation Sequence
 
@@ -527,9 +637,10 @@ Each PR must include only the smallest necessary test additions.
    - unchanged empty/collapsed-output behavior.
 
 4. App orchestration
-   - no regression in visible idle/preparation/processing state transitions;
-   - no regression in restart/completed-source handling;
-   - `app_runtime.py` keep-or-collapse choice leaves a clearer and still-correct runtime call graph.
+    - no regression in visible idle/preparation/processing state transitions;
+    - no regression in restart/completed-source handling;
+    - `app_runtime.py` keep-or-collapse choice leaves a clearer and still-correct runtime call graph.
+    - import direction remains one-way from UI/adapters toward runtime/service/domain modules.
 
 5. Image pipeline state migration
    - compare-all behavior preserved;
@@ -537,9 +648,18 @@ Each PR must include only the smallest necessary test additions.
    - logging context remains complete enough for diagnostics.
 
 6. Validation harness
-   - structural validator still produces the same class of output artifacts;
-   - registry-driven runtime override behavior remains correct;
-   - no dead acceptance-policy field remains unless it is actually enforced.
+    - structural validator still produces the same class of output artifacts;
+    - registry-driven runtime override behavior remains correct;
+    - no dead acceptance-policy field remains unless it is actually enforced.
+    - validator entrypoints use the shared narrow production facade instead of ad hoc low-level wiring.
+
+### Architectural verification expectations
+
+In addition to behavior tests, each architectural PR should include the lightest practical verification for boundary cleanliness, for example:
+
+- targeted tests around canonical owner helpers instead of duplicate call-site wiring tests;
+- import- or module-level assertions where practical for critical forbidden dependencies;
+- explicit tests that only the canonical field/session key/report field remains writable when aliases are transitional.
 
 ### Verification commands/tasks
 
@@ -580,6 +700,13 @@ Mitigation:
 - first centralize repeated tails and imports;
 - do not split UI code into speculative presenter layers unless ownership reduction is concrete.
 
+### Risk 4a: Cleaner names but unchanged ownership
+
+Mitigation:
+
+- reject refactors that only rename modules while preserving duplicate writers or duplicate semantic owners;
+- require each phase to identify the authoritative owner for every moved concern.
+
 ### Risk 5: Wide image-pipeline churn
 
 Mitigation:
@@ -604,6 +731,10 @@ This initiative is complete when all of the following are true:
 5. The image pipeline no longer relies on one overly broad mutable asset structure for every lifecycle concern.
 6. Structural validation consumes a tighter production contract with less inline orchestration assembly, and validation registry surface no longer advertises dead policy knobs.
 7. The existing protected contracts remain intact unless explicitly updated as part of an approved change.
+8. Dependency direction is enforceable from code structure: lower layers do not import UI/adapters, and service/domain modules do not depend on `app.py`, `app_runtime.py`, or UI modules.
+9. Session-state mutation, restart/completed-source persistence, and prepared-input cache ownership each have one explicit authoritative owner.
+10. `document_pipeline.py` and downstream processing consume prepared inputs rather than reconstructing upload semantics.
+11. Duplicate field names, session keys, or report fields either have one canonical owner with a documented deprecation alias or are removed.
 
 ## 13. Deferred Items
 

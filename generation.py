@@ -2,7 +2,7 @@ import logging
 import re
 import tempfile
 import time
-from collections.abc import Iterable, Mapping, Sequence, Sized
+from collections.abc import Iterable, Sequence, Sized
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -17,13 +17,13 @@ from docx.shared import Pt
 
 from image_shared import is_retryable_error
 from logger import log_event
+from openai_response_utils import collect_response_text_traversal, read_response_field
 
 if TYPE_CHECKING:
     from docx.document import Document as DocxDocument
     from openai import OpenAI
 
 
-_SUPPORTED_RESPONSE_TEXT_TYPES = {"output_text", "text"}
 _PARAGRAPH_MARKER_PATTERN = re.compile(r"\[\[DOCX_PARA_([A-Za-z0-9_]+)\]\]")
 _IMAGE_ONLY_TARGET_PATTERN = re.compile(r"^(?:\s*\[\[DOCX_IMAGE_img_\d+\]\]\s*)+$")
 _WORD_TOKEN_PATTERN = re.compile(r"\w+(?:[-']\w+)*", re.UNICODE)
@@ -331,105 +331,35 @@ def _finalize_generated_markdown(
     raise ContextLeakageError(f"context_leakage_detected:{leaked_fragment}")
 
 
-def _read_response_field(value: object, field_name: str) -> object:
-    if isinstance(value, Mapping):
-        return value.get(field_name)
-    return getattr(value, field_name, None)
-
-
-def _coerce_response_text_value(value: object) -> str | None:
-    if isinstance(value, str):
-        return value
-    nested_value = _read_response_field(value, "value")
-    if isinstance(nested_value, str):
-        return nested_value
-    return None
-
-
-def _extract_text_from_content_item(content_item: object) -> tuple[str | None, bool]:
-    item_type = _read_response_field(content_item, "type")
-    if item_type not in _SUPPORTED_RESPONSE_TEXT_TYPES:
-        return None, False
-    text_value = _coerce_response_text_value(_read_response_field(content_item, "text"))
-    if text_value is None:
-        raise RuntimeError("Модель вернула ответ в неподдерживаемом формате (unsupported_response_shape).")
-    return text_value, True
-
-
 def _extract_response_output_text(response: object) -> str:
-    output_text = getattr(response, "output_text", None)
-    raw_output_text: str | None = None
-    if output_text is not None:
-        if not isinstance(output_text, str):
-            raise RuntimeError("Модель вернула ответ в неподдерживаемом формате (unsupported_response_shape).")
-        if output_text.strip():
-            return output_text
-        raw_output_text = output_text
-
-    output_items = _read_response_field(response, "output")
-    if output_items is None:
-        return raw_output_text or ""
-    if isinstance(output_items, (str, bytes)) or not isinstance(output_items, Iterable):
-        raise RuntimeError("Модель вернула ответ в неподдерживаемом формате (unsupported_response_shape).")
-
-    collected_texts: list[str] = []
-    saw_output_items = False
-    saw_supported_text_shape = False
-    saw_empty_content_container = False
-
-    for output_item in output_items:
-        saw_output_items = True
-
-        direct_text, direct_supported = _extract_text_from_content_item(output_item)
-        if direct_supported:
-            saw_supported_text_shape = True
-            if direct_text:
-                collected_texts.append(direct_text)
-            continue
-
-        content_items = _read_response_field(output_item, "content")
-        if content_items is None:
-            continue
-        if isinstance(content_items, (str, bytes)) or not isinstance(content_items, Iterable):
-            raise RuntimeError("Модель вернула ответ в неподдерживаемом формате (unsupported_response_shape).")
-
-        content_list = list(content_items)
-        if not content_list:
-            saw_empty_content_container = True
-            continue
-
-        for content_item in content_list:
-            extracted_text, supported = _extract_text_from_content_item(content_item)
-            if not supported:
-                continue
-            saw_supported_text_shape = True
-            if extracted_text:
-                collected_texts.append(extracted_text)
-
-    if collected_texts:
-        return "\n".join(collected_texts)
-    if raw_output_text is not None:
-        return raw_output_text
-    if not saw_output_items or saw_supported_text_shape or saw_empty_content_container:
+    traversal = collect_response_text_traversal(
+        response,
+        unsupported_message="Модель вернула ответ в неподдерживаемом формате (unsupported_response_shape).",
+    )
+    if traversal.collected_texts:
+        return "\n".join(traversal.collected_texts)
+    if traversal.raw_output_text is not None:
+        return traversal.raw_output_text
+    if not traversal.saw_output_items or traversal.saw_supported_text_shape or traversal.saw_empty_content_container:
         return ""
     raise RuntimeError("Модель вернула ответ в неподдерживаемом формате (unsupported_response_shape).")
 
 
 def _log_empty_response_shape(response: object, raw_output_text: str, *, error_code: str) -> None:
-    output_items = _read_response_field(response, "output")
+    output_items = read_response_field(response, "output")
     output_items_len = len(output_items) if isinstance(output_items, Sized) else None
 
     first_item_summary: dict[str, object] | None = None
     if isinstance(output_items, Iterable) and not isinstance(output_items, (str, bytes)):
         for item in output_items:
-            item_type = _read_response_field(item, "type")
-            refusal = _read_response_field(item, "refusal")
-            status = _read_response_field(item, "status")
-            content_items = _read_response_field(item, "content")
+            item_type = read_response_field(item, "type")
+            refusal = read_response_field(item, "refusal")
+            status = read_response_field(item, "status")
+            content_items = read_response_field(item, "content")
             content_types: list[str] = []
             if isinstance(content_items, Iterable) and not isinstance(content_items, (str, bytes)):
                 content_types = [
-                    str(_read_response_field(c, "type") or type(c).__name__)
+                    str(read_response_field(c, "type") or type(c).__name__)
                     for c in content_items
                 ]
             first_item_summary = {
@@ -449,13 +379,13 @@ def _log_empty_response_shape(response: object, raw_output_text: str, *, error_c
         raw_output_len=len(raw_output_text),
         output_items_type=type(output_items).__name__ if output_items is not None else "None",
         output_items_len=output_items_len,
-        response_status=_read_response_field(response, "status"),
+        response_status=read_response_field(response, "status"),
         first_output_item=first_item_summary,
     )
 
 
 def _extract_normalized_markdown(response: object) -> str:
-    response_status = _read_response_field(response, "status")
+    response_status = read_response_field(response, "status")
     if response_status == "incomplete":
         _log_empty_response_shape(response, "", error_code="incomplete_response")
         raise RuntimeError("Модель не завершила генерацию (incomplete_response).")

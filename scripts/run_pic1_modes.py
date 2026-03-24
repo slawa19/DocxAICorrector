@@ -2,6 +2,7 @@ import json
 import sys
 import time
 from pathlib import Path
+from typing import Any, Mapping
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -12,11 +13,11 @@ SOURCE_IMAGE = TESTS_DIR / "pic1_lietaer.jpg"
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-import app
 from config import get_client, load_app_config
 from image_analysis import analyze_image
 from image_generation import detect_image_mime_type, generate_image_candidate
 from models import ImageAsset, get_image_variant_bytes
+from processing_service import get_processing_service
 from state import init_session_state
 
 
@@ -32,16 +33,46 @@ def _detect_extension(payload: bytes) -> str:
     return ".bin"
 
 
-def _build_reconstruction_render_config(config: dict[str, object]) -> dict[str, object]:
+def _int_setting(config: Mapping[str, object], key: str, default: int) -> int:
+    value = config.get(key, default)
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        return int(value)
+    return default
+
+
+def _float_setting(config: Mapping[str, object], key: str, default: float) -> float:
+    value = config.get(key, default)
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        return float(value)
+    return default
+
+
+def _build_reconstruction_render_config(config: Mapping[str, object]) -> dict[str, object]:
     return {
-        "min_canvas_short_side_px": int(config.get("reconstruction_min_canvas_short_side_px", 900)),
-        "target_min_font_px": int(config.get("reconstruction_target_min_font_px", 18)),
-        "max_upscale_factor": float(config.get("reconstruction_max_upscale_factor", 3.0)),
-        "background_sample_ratio": float(config.get("reconstruction_background_sample_ratio", 0.04)),
-        "background_color_distance_threshold": float(
-            config.get("reconstruction_background_color_distance_threshold", 48.0)
+        "min_canvas_short_side_px": _int_setting(config, "reconstruction_min_canvas_short_side_px", 900),
+        "target_min_font_px": _int_setting(config, "reconstruction_target_min_font_px", 18),
+        "max_upscale_factor": _float_setting(config, "reconstruction_max_upscale_factor", 3.0),
+        "background_sample_ratio": _float_setting(config, "reconstruction_background_sample_ratio", 0.04),
+        "background_color_distance_threshold": _float_setting(
+            config,
+            "reconstruction_background_color_distance_threshold",
+            48.0,
         ),
-        "background_uniformity_threshold": float(config.get("reconstruction_background_uniformity_threshold", 10.0)),
+        "background_uniformity_threshold": _float_setting(
+            config,
+            "reconstruction_background_uniformity_threshold",
+            10.0,
+        ),
     }
 
 
@@ -56,13 +87,14 @@ def main() -> None:
     init_session_state()
     config = load_app_config()
     client = get_client()
+    processing_service = get_processing_service()
     image_bytes = SOURCE_IMAGE.read_bytes()
 
     analysis_started = time.perf_counter()
     analysis = analyze_image(image_bytes, model="gpt-4.1", client=client)
     analysis_elapsed = time.perf_counter() - analysis_started
 
-    summary: dict[str, object] = {
+    summary: dict[str, Any] = {
         "source": str(SOURCE_IMAGE),
         "analysis": {
             "image_type": analysis.image_type,
@@ -101,7 +133,7 @@ def main() -> None:
         position_index=0,
     )
     compare_started = time.perf_counter()
-    compare_assets = app.process_document_images(
+    compare_assets = processing_service.process_document_images(
         image_assets=[asset],
         image_mode="compare_all",
         config=config,

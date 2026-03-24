@@ -3,6 +3,7 @@ import tomllib
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
+from threading import Lock
 from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
@@ -21,6 +22,7 @@ from models import IMAGE_MODE_VALUES, ImageMode
 
 OpenAI = None
 _CLIENT = None
+_CLIENT_LOCK = Lock()
 
 if TYPE_CHECKING:
     from openai import OpenAI as OpenAIClient
@@ -451,17 +453,20 @@ def get_client() -> "OpenAIClient":
     global _CLIENT
     if _CLIENT is not None:
         return _CLIENT
+    with _CLIENT_LOCK:
+        if _CLIENT is not None:
+            return _CLIENT
 
-    load_project_dotenv()
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("Не найден OPENAI_API_KEY. Добавьте его в .env или переменные окружения.")
-    global OpenAI
-    client_cls = OpenAI
-    if client_cls is None:
-        from openai import OpenAI as imported_openai
+        load_project_dotenv()
+        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError("Не найден OPENAI_API_KEY. Добавьте его в .env или переменные окружения.")
+        global OpenAI
+        client_cls = OpenAI
+        if client_cls is None:
+            from openai import OpenAI as imported_openai
 
-        client_cls = imported_openai
-        OpenAI = imported_openai
-    _CLIENT = client_cls(api_key=api_key)
-    return _CLIENT
+            client_cls = imported_openai
+            OpenAI = imported_openai
+        _CLIENT = client_cls(api_key=api_key)
+        return _CLIENT

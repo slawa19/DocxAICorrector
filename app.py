@@ -12,6 +12,8 @@ st.set_page_config(
 )
 
 from constants import APP_READY_PATH, MAX_DOCX_ARCHIVE_SIZE_BYTES
+import application_flow
+from compare_panel import render_compare_all_apply_panel
 from config import load_app_config
 from app_runtime import (
     build_preparation_request_marker,
@@ -90,6 +92,13 @@ def _mark_app_ready() -> None:
     APP_READY_PATH.write_text(f"{time.time():.6f}\n", encoding="utf-8")
 
 
+def _finalize_app_frame(*, add_section_gap: bool = False) -> None:
+    if add_section_gap:
+        render_section_gap("lg")
+    _mark_app_ready()
+    _schedule_stale_persisted_sources_cleanup()
+
+
 def _is_uploaded_file_too_large(uploaded_file) -> bool:
     file_size = getattr(uploaded_file, "size", None)
     return isinstance(file_size, int) and file_size > MAX_DOCX_ARCHIVE_SIZE_BYTES
@@ -146,10 +155,8 @@ def _start_background_preparation(
     image_mode: str,
     keep_all_image_variants: bool,
 ) -> None:
-    from application_flow import prepare_run_context_for_background
-
     start_background_preparation(
-        worker_target=prepare_run_context_for_background,
+        worker_target=application_flow.prepare_run_context_for_background,
         uploaded_payload=uploaded_payload,
         upload_marker=upload_marker,
         chunk_size=chunk_size,
@@ -237,9 +244,7 @@ def main() -> None:
             render_run_log()
             render_image_validation_summary()
             render_partial_result()
-            render_section_gap("lg")
-            _mark_app_ready()
-            _schedule_stale_persisted_sources_cleanup()
+            _finalize_app_frame(add_section_gap=True)
 
             action = _render_processing_controls(can_start=False, is_processing=_processing_worker_is_active())
             if action == "stop":
@@ -261,8 +266,7 @@ def main() -> None:
         _drain_preparation_events()
         render_live_status()
         render_run_log()
-        _mark_app_ready()
-        _schedule_stale_persisted_sources_cleanup()
+        _finalize_app_frame()
         if not _preparation_worker_is_active():
             st.rerun()
 
@@ -271,8 +275,7 @@ def main() -> None:
             f"Размер DOCX/DOC превышает допустимый предел {MAX_DOCX_ARCHIVE_SIZE_BYTES // (1024 * 1024)} МБ. Загрузите файл меньшего размера."
         )
         render_run_log()
-        _mark_app_ready()
-        _schedule_stale_persisted_sources_cleanup()
+        _finalize_app_frame()
         return
 
     if preparation_active:
@@ -288,8 +291,7 @@ def main() -> None:
         render_run_log()
         render_image_validation_summary()
         render_partial_result()
-        _mark_app_ready()
-        _schedule_stale_persisted_sources_cleanup()
+        _finalize_app_frame()
         return
 
     uploaded_widget_payload = None
@@ -314,21 +316,12 @@ def main() -> None:
                 st.error(st.session_state.last_error)
             render_live_status()
             render_run_log()
-            _mark_app_ready()
-            _schedule_stale_persisted_sources_cleanup()
+            _finalize_app_frame()
             return
 
-    from application_flow import (
-        SessionStateLike,
-        derive_app_idle_view_state,
-        has_resettable_state,
-        prepare_run_context,
-        resolve_effective_uploaded_file,
-    )
+    session_state = cast(application_flow.SessionStateLike, st.session_state)
 
-    session_state = cast(SessionStateLike, st.session_state)
-
-    uploaded_file = resolve_effective_uploaded_file(
+    uploaded_file = application_flow.resolve_effective_uploaded_file(
         uploaded_file=uploaded_widget_file,
         current_result=current_result,
         session_state=session_state,
@@ -343,15 +336,14 @@ def main() -> None:
             st.warning(get_preparation_state_unavailable_message())
             render_live_status()
             render_run_log()
-            _mark_app_ready()
-            _schedule_stale_persisted_sources_cleanup()
+            _finalize_app_frame()
             return
 
-    if has_resettable_state(current_result=current_result, session_state=session_state):
+    if application_flow.has_resettable_state(current_result=current_result, session_state=session_state):
         if st.button("Сбросить результаты", use_container_width=True):
             reset_run_state(keep_restart_source=False)
             st.rerun()
-    idle_view_state = derive_app_idle_view_state(
+    idle_view_state = application_flow.derive_app_idle_view_state(
         current_result=current_result,
         uploaded_file=uploaded_file,
         session_state=session_state,
@@ -361,8 +353,7 @@ def main() -> None:
         if idle_view_state == IdleViewState.COMPLETED:
             if current_result is None:
                 st.error("Результат обработки недоступен в текущей сессии.")
-                _mark_app_ready()
-                _schedule_stale_persisted_sources_cleanup()
+                _finalize_app_frame()
                 return
             completed_result = cast(dict[str, object], current_result)
             render_run_log()
@@ -386,13 +377,12 @@ def main() -> None:
             render_run_log()
             render_image_validation_summary()
             render_partial_result()
-        _mark_app_ready()
-        _schedule_stale_persisted_sources_cleanup()
+        _finalize_app_frame()
         return
 
     if prepared_run_context is None:
         try:
-            prepared_run_context = prepare_run_context(
+            prepared_run_context = application_flow.prepare_run_context(
                 uploaded_file=uploaded_file,
                 chunk_size=chunk_size,
                 image_mode=image_mode,
@@ -463,8 +453,6 @@ def main() -> None:
     render_image_validation_summary()
     render_partial_result()
 
-    from compare_panel import render_compare_all_apply_panel
-
     render_compare_all_apply_panel(
         latest_image_mode=st.session_state.latest_image_mode,
         image_assets=st.session_state.image_assets,
@@ -475,9 +463,7 @@ def main() -> None:
         render_markdown_preview(title="Предпросмотр Markdown")
         render_result(st.session_state.latest_docx_bytes, st.session_state.latest_markdown, uploaded_filename)
 
-    render_section_gap("lg")
-    _mark_app_ready()
-    _schedule_stale_persisted_sources_cleanup()
+    _finalize_app_frame(add_section_gap=True)
     action = _render_processing_controls(can_start=True, is_processing=False)
     if action == "start":
         _start_background_processing(

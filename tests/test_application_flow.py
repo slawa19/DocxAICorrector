@@ -22,9 +22,33 @@ class UploadedFileStub:
     def __init__(self, name: str, content: bytes):
         self.name = name
         self._content = content
+        self.size = len(content)
+        self._cursor = 0
 
     def getvalue(self):
         return self._content
+
+    def read(self, size: int = -1) -> bytes:
+        if size < 0:
+            chunk = self._content[self._cursor :]
+            self._cursor = len(self._content)
+            return chunk
+        end = min(len(self._content), self._cursor + size)
+        chunk = self._content[self._cursor : end]
+        self._cursor = end
+        return chunk
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        if whence == 0:
+            self._cursor = max(0, offset)
+        elif whence == 1:
+            self._cursor = max(0, self._cursor + offset)
+        elif whence == 2:
+            self._cursor = max(0, len(self._content) + offset)
+        else:
+            raise ValueError(f"Unsupported whence: {whence}")
+        self._cursor = min(self._cursor, len(self._content))
+        return self._cursor
 
 
 def _freeze_uploaded_file(name: str, content: bytes):
@@ -243,11 +267,13 @@ def test_prepare_run_context_normalizes_legacy_doc_before_validation(monkeypatch
     session_state = SessionState(selected_source_token="", prepared_source_key="")
     validated = []
     received = {}
+    freeze_calls = []
 
     monkeypatch.setattr(
         application_flow,
-        "normalize_uploaded_document",
-        lambda **kwargs: SimpleNamespace(filename="legacy.docx", content_bytes=b"converted-docx"),
+        "freeze_uploaded_file",
+        lambda uploaded_file: freeze_calls.append(uploaded_file.name)
+        or SimpleNamespace(filename="legacy.docx", content_bytes=b"converted-docx", file_token="legacy.docx:6:mocked"),
     )
     monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: validated.append(source_bytes) or None)
 
@@ -274,14 +300,15 @@ def test_prepare_run_context_normalizes_legacy_doc_before_validation(monkeypatch
         fail_critical_fn=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected critical error")),
         log_event_fn=lambda *args, **kwargs: None,
         prepare_document_for_processing_fn=prepare_document_for_processing_stub,
-        build_uploaded_file_token_fn=lambda **kwargs: f"{kwargs['source_name']}:{len(kwargs['source_bytes'])}:mocked",
     )
 
+    assert freeze_calls == ["legacy.doc"]
     assert validated == [b"converted-docx"]
     assert received["uploaded_filename"] == "legacy.docx"
     assert received["source_bytes"] == b"converted-docx"
     assert result.uploaded_filename == "legacy.docx"
     assert result.uploaded_file_bytes == b"converted-docx"
+    assert result.uploaded_file_token == "legacy.docx:6:mocked"
 
 
 def test_prepare_run_context_reports_doc_conversion_failure_via_fail_critical(monkeypatch):
@@ -290,8 +317,8 @@ def test_prepare_run_context_reports_doc_conversion_failure_via_fail_critical(mo
 
     monkeypatch.setattr(
         application_flow,
-        "normalize_uploaded_document",
-        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("converter missing")),
+        "freeze_uploaded_file",
+        lambda uploaded_file: (_ for _ in ()).throw(RuntimeError("converter missing")),
     )
 
     def fail_critical_stub(event, message, **context):
@@ -309,10 +336,51 @@ def test_prepare_run_context_reports_doc_conversion_failure_via_fail_critical(mo
             fail_critical_fn=fail_critical_stub,
             log_event_fn=lambda *args, **kwargs: None,
             prepare_document_for_processing_fn=lambda **kwargs: (_ for _ in ()).throw(AssertionError("unexpected")),
-            build_uploaded_file_token_fn=lambda **kwargs: "legacy.docx:token",
         )
 
     assert failures == [("doc_conversion_failed", "converter missing", {"filename": "legacy.doc"})]
+
+
+def test_prepare_run_context_sync_path_freezes_upload_once(monkeypatch):
+    session_state = SessionState(selected_source_token="", prepared_source_key="")
+    freeze_calls = []
+    validate_calls = []
+
+    monkeypatch.setattr(
+        application_flow,
+        "freeze_uploaded_file",
+        lambda uploaded_file: freeze_calls.append(uploaded_file.name)
+        or SimpleNamespace(filename="legacy.docx", content_bytes=b"converted-docx", file_token="legacy.docx:token"),
+    )
+    monkeypatch.setattr(
+        application_flow,
+        "validate_docx_source_bytes",
+        lambda source_bytes: validate_calls.append(source_bytes),
+    )
+
+    prepared_document = SimpleNamespace(
+        source_text="text",
+        paragraphs=["p1"],
+        image_assets=[],
+        jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
+        prepared_source_key="prepared-key",
+        cached=False,
+    )
+
+    application_flow.prepare_run_context(
+        uploaded_file=UploadedFileStub("legacy.doc", b"legacy"),
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=True,
+        session_state=session_state,
+        reset_run_state_fn=lambda **kwargs: None,
+        fail_critical_fn=lambda *args, **kwargs: None,
+        log_event_fn=lambda *args, **kwargs: None,
+        prepare_document_for_processing_fn=lambda **kwargs: prepared_document,
+    )
+
+    assert freeze_calls == ["legacy.doc"]
+    assert validate_calls == [b"converted-docx"]
 
 
 def test_restart_flow_restores_uploaded_file_from_run_store_and_cleans_up(tmp_path, monkeypatch):
@@ -457,8 +525,8 @@ def test_prepare_run_context_for_background_skips_renormalization_for_frozen_pay
     monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: None)
     monkeypatch.setattr(
         application_flow,
-        "normalize_uploaded_document",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("unexpected renormalization")),
+        "freeze_uploaded_file",
+        lambda uploaded_file: (_ for _ in ()).throw(AssertionError("unexpected refreeze")),
     )
     prepared_document = SimpleNamespace(
         source_text="text",

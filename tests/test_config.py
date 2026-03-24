@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 
 import config
@@ -241,3 +243,47 @@ def test_get_client_loads_openai_api_key_from_dotenv(monkeypatch, tmp_path):
     config.get_client()
 
     assert captured["api_key"] == "test-key-from-dotenv"
+
+
+def test_get_client_uses_single_locked_initialization(monkeypatch, tmp_path):
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("OPENAI_API_KEY=test-key-from-dotenv\n", encoding="utf-8")
+
+    created_instances = []
+    constructor_started = threading.Event()
+    constructor_release = threading.Event()
+
+    class FakeOpenAI:
+        def __init__(self, *, api_key):
+            created_instances.append((self, api_key))
+            constructor_started.set()
+            assert constructor_release.wait(timeout=2)
+
+    monkeypatch.setattr(config, "ENV_PATH", dotenv_path)
+    monkeypatch.setattr(config, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(config, "_CLIENT", None)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    results = []
+    errors = []
+
+    def worker() -> None:
+        try:
+            results.append(config.get_client())
+        except Exception as exc:  # pragma: no cover - assertion aid
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker), threading.Thread(target=worker)]
+    for thread in threads:
+        thread.start()
+
+    assert constructor_started.wait(timeout=2)
+    constructor_release.set()
+
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert errors == []
+    assert len(results) == 2
+    assert results[0] is results[1]
+    assert len(created_instances) == 1

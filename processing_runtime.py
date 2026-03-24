@@ -36,16 +36,10 @@ _DOCX_ZIP_MAGIC = b"PK\x03\x04"
 _LEGACY_DOC_MAGIC = bytes.fromhex("D0CF11E0A1B11AE1")
 _DEFAULT_UPLOADED_FILENAME = "document.docx"
 _DOC_CONVERSION_TIMEOUT_SECONDS = 120
-
-
-def _build_default_image_processing_summary() -> dict[str, object]:
-    return build_default_image_processing_summary()
-
-
 def _reset_image_state() -> None:
     st.session_state.image_assets = []
     st.session_state.image_validation_failures = []
-    st.session_state.image_processing_summary = _build_default_image_processing_summary()
+    st.session_state.image_processing_summary = build_default_image_processing_summary()
 
 
 class BackgroundRuntime:

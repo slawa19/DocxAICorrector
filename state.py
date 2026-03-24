@@ -49,12 +49,6 @@ def _default_processing_status() -> dict[str, object]:
         "progress": 0.0,
         "terminal_kind": None,
     }
-
-
-def _default_image_processing_summary() -> dict[str, object]:
-    return build_default_image_processing_summary()
-
-
 def init_session_state() -> None:
     st.session_state.setdefault("app_start_logged", False)
     st.session_state.setdefault("run_log", [])
@@ -72,7 +66,7 @@ def init_session_state() -> None:
     st.session_state.setdefault("processing_status", _default_processing_status())
     st.session_state.setdefault("image_assets", [])
     st.session_state.setdefault("image_validation_failures", [])
-    st.session_state.setdefault("image_processing_summary", _default_image_processing_summary())
+    st.session_state.setdefault("image_processing_summary", build_default_image_processing_summary())
     st.session_state.setdefault("processing_stop_requested", False)
     st.session_state.setdefault("processing_worker", None)
     st.session_state.setdefault("processing_event_queue", None)
@@ -111,7 +105,7 @@ def reset_run_state(*, keep_restart_source: bool = True) -> None:
     st.session_state.last_background_error = None
     st.session_state.image_assets = []
     st.session_state.image_validation_failures = []
-    st.session_state.image_processing_summary = _default_image_processing_summary()
+    st.session_state.image_processing_summary = build_default_image_processing_summary()
     st.session_state.processing_status = _default_processing_status()
     st.session_state.processing_stop_requested = False
     st.session_state.processing_worker = None
