@@ -718,7 +718,7 @@ def start_background_processing(
 ) -> None:
     previous_restart_source = st.session_state.get("restart_source")
     restart_session_id = str(st.session_state.get("restart_session_id", ""))
-    reset_run_state()
+    reset_run_state(preserve_preparation=True)
     st.session_state.latest_source_name = uploaded_filename
     st.session_state.latest_source_token = uploaded_token
     st.session_state.selected_source_token = uploaded_token

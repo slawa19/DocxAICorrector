@@ -87,9 +87,15 @@ def init_session_state() -> None:
     st.session_state.setdefault("latest_image_mode", "no_change")
 
 
-def reset_run_state(*, keep_restart_source: bool = True) -> None:
+def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: bool = False) -> None:
     restart_source = st.session_state.get("restart_source")
     completed_source = st.session_state.get("completed_source")
+    prepared_run_context = st.session_state.get("prepared_run_context") if preserve_preparation else None
+    latest_preparation_summary = st.session_state.get("latest_preparation_summary") if preserve_preparation else None
+    preparation_input_marker = str(st.session_state.get("preparation_input_marker", "")) if preserve_preparation else ""
+    preparation_failed_marker = str(st.session_state.get("preparation_failed_marker", "")) if preserve_preparation else ""
+    prepared_source_key = str(st.session_state.get("prepared_source_key", "")) if preserve_preparation else ""
+    preparation_cache = dict(st.session_state.get("preparation_cache", {})) if preserve_preparation else {}
     st.session_state.run_log = []
     st.session_state.activity_feed = []
     st.session_state.latest_markdown = ""
@@ -113,13 +119,13 @@ def reset_run_state(*, keep_restart_source: bool = True) -> None:
     st.session_state.processing_stop_event = None
     st.session_state.preparation_worker = None
     st.session_state.preparation_event_queue = None
-    st.session_state.prepared_run_context = None
-    st.session_state.latest_preparation_summary = None
-    st.session_state.preparation_input_marker = ""
-    st.session_state.preparation_failed_marker = ""
+    st.session_state.prepared_run_context = prepared_run_context
+    st.session_state.latest_preparation_summary = latest_preparation_summary
+    st.session_state.preparation_input_marker = preparation_input_marker
+    st.session_state.preparation_failed_marker = preparation_failed_marker
     st.session_state.processing_outcome = ProcessingOutcome.IDLE.value
-    st.session_state.prepared_source_key = ""
-    st.session_state.preparation_cache = {}
+    st.session_state.prepared_source_key = prepared_source_key
+    st.session_state.preparation_cache = preparation_cache
     st.session_state.latest_image_mode = "no_change"
     clear_restart_source(completed_source)
     st.session_state.completed_source = None

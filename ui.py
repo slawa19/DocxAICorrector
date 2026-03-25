@@ -83,6 +83,29 @@ def render_file_uploader_state_styles(*, has_uploaded_file: bool) -> None:
     )
 
 
+def render_intro_layout_styles() -> None:
+    """Constrain main block container width on the idle/upload screen.
+
+    Keeps content pressed to the sidebar while preventing it from stretching
+    across very wide viewports.  The container naturally fills all available
+    space (100% of stMain); the cap only activates when stMain exceeds
+    1100px — i.e. viewport > ~1400px with sidebar open.
+    Effective text width at cap: 1100 − 160 (Streamlit padding) = 940px.
+    """
+    _render_trusted_html(
+        """
+        <style>
+        .stMain {
+            align-items: flex-start !important;
+        }
+        [data-testid="stMainBlockContainer"] {
+            max-width: 1100px;
+        }
+        </style>
+        """
+    )
+
+
 def _build_feed_id(prefix: str) -> str:
     nonce = int(time.time() * 1000)
     safe_prefix = _FEED_ID_SANITIZER.sub("-", prefix).strip("-") or "feed"

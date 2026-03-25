@@ -42,6 +42,7 @@ from ui import (
     inject_ui_styles,
     render_image_validation_summary,
     render_file_uploader_state_styles,
+    render_intro_layout_styles,
     render_live_status,
     render_markdown_preview,
     render_partial_result,
@@ -215,12 +216,6 @@ def main() -> None:
         log_event(logging.INFO, "app_start", "Приложение инициализировано")
         st.session_state.app_start_logged = True
 
-    st.title("AI-редактор DOCX/DOC через Markdown")
-    st.write(
-        "Загрузите DOCX или legacy DOC, приложение при необходимости автоконвертирует его в DOCX, "
-        "соберет смысловые блоки из нескольких абзацев, добавит соседний контекст для модели и соберет новый DOCX."
-    )
-
     try:
         app_config = _cached_load_app_config()
     except Exception as exc:
@@ -233,10 +228,23 @@ def main() -> None:
     app_config["keep_all_image_variants"] = keep_all_image_variants
 
     processing_active = _processing_worker_is_active()
+    processing_outcome = str(st.session_state.get("processing_outcome") or ProcessingOutcome.IDLE.value)
+    processing_in_progress = processing_active or processing_outcome == ProcessingOutcome.RUNNING.value
     preparation_active = _preparation_worker_is_active()
     current_result = get_current_result_bundle()
 
-    if processing_active:
+    if not processing_in_progress and current_result is None:
+        render_intro_layout_styles()
+
+    st.title("AI-редактор DOCX/DOC через Markdown")
+    st.write(
+        "Загрузите DOCX или legacy DOC, приложение при необходимости автоконвертирует его в DOCX, "
+        "соберет смысловые блоки из нескольких абзацев, добавит соседний контекст для модели и соберет новый DOCX."
+    )
+    uploaded_widget_file = st.file_uploader("Загрузите DOCX/DOC-файл", type=["docx", "doc"])
+    render_file_uploader_state_styles(has_uploaded_file=uploaded_widget_file is not None)
+
+    if processing_in_progress:
         @st.fragment(run_every=2)
         def render_processing_panel() -> None:
             _drain_processing_events()
@@ -246,20 +254,18 @@ def main() -> None:
             render_partial_result()
             _finalize_app_frame(add_section_gap=True)
 
-            action = _render_processing_controls(can_start=False, is_processing=_processing_worker_is_active())
+            still_running = str(st.session_state.get("processing_outcome") or ProcessingOutcome.IDLE.value) == ProcessingOutcome.RUNNING.value
+            action = _render_processing_controls(can_start=False, is_processing=still_running)
             if action == "stop":
                 push_activity("Остановлено. Завершение текущего шага...")
                 _request_processing_stop()
                 st.rerun()
 
-            if not _processing_worker_is_active():
+            if not still_running:
                 st.rerun()
 
         render_processing_panel()
         return
-
-    uploaded_widget_file = st.file_uploader("Загрузите DOCX/DOC-файл", type=["docx", "doc"])
-    render_file_uploader_state_styles(has_uploaded_file=uploaded_widget_file is not None)
 
     @st.fragment(run_every=1)
     def render_preparation_panel() -> None:

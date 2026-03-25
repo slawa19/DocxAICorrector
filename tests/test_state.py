@@ -129,6 +129,35 @@ def test_reset_run_state_can_clear_restart_source(monkeypatch):
     assert session_state.last_background_error is None
 
 
+def test_reset_run_state_can_preserve_preparation_state(monkeypatch):
+    prepared_run_context = object()
+    session_state = SessionState(
+        prepared_run_context=prepared_run_context,
+        latest_preparation_summary={"stage": "Документ подготовлен"},
+        preparation_input_marker="report.docx:3:token:6000",
+        preparation_failed_marker="",
+        prepared_source_key="report.docx:3:token:6000",
+        preparation_cache={"report.docx:3:token:6000": {"cached": True}},
+        latest_markdown="stale",
+        run_log=[{"message": "stale"}],
+        activity_feed=[{"message": "stale"}],
+    )
+    monkeypatch.setattr(state.st, "session_state", session_state)
+    monkeypatch.setattr(state, "clear_restart_source", lambda restart_source: None)
+
+    state.init_session_state()
+    state.reset_run_state(preserve_preparation=True)
+
+    assert session_state.prepared_run_context is prepared_run_context
+    assert session_state.latest_preparation_summary == {"stage": "Документ подготовлен"}
+    assert session_state.preparation_input_marker == "report.docx:3:token:6000"
+    assert session_state.prepared_source_key == "report.docx:3:token:6000"
+    assert session_state.preparation_cache == {"report.docx:3:token:6000": {"cached": True}}
+    assert session_state.latest_markdown == ""
+    assert session_state.run_log == []
+    assert session_state.activity_feed == []
+
+
 def test_append_image_log_updates_summary_and_run_log(monkeypatch):
     session_state = SessionState()
     monkeypatch.setattr(state.st, "session_state", session_state)

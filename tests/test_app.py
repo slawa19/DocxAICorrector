@@ -314,6 +314,43 @@ def test_main_renders_live_status_during_active_preparation(monkeypatch):
     assert calls == ["live_status", "run_log"]
 
 
+def test_main_keeps_processing_panel_visible_while_outcome_is_running(monkeypatch):
+    session_state = SessionState(
+        app_start_logged=True,
+        processing_status={},
+        activity_feed=[],
+        processing_outcome="running",
+        processing_stop_requested=False,
+    )
+    calls = []
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app, "init_session_state", lambda: None)
+    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
+    monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
+    monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
+    monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
+    monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "fragment", lambda **kw: (lambda fn: fn))
+    monkeypatch.setattr(app, "render_intro_layout_styles", lambda: calls.append("intro"))
+    monkeypatch.setattr(app, "render_live_status", lambda *args, **kwargs: calls.append("live_status"))
+    monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: calls.append("run_log"))
+    monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: calls.append("image_summary"))
+    monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: calls.append("partial_result"))
+    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
+
+    app.main()
+
+    assert calls == ["live_status", "run_log", "image_summary", "partial_result"]
+
+
 def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):
     prepared_run_context = type(
         "PreparedRunContextStub",

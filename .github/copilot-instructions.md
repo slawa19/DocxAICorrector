@@ -64,6 +64,13 @@ Use the integrated browser when the task involves:
 - inspecting DOM/CSS/layout issues;
 - sharing a page with the agent or using browser tools on an already-open page.
 
+For Streamlit UI, spacing, width, responsiveness, or layout-only changes:
+
+- verify the result in the integrated browser before claiming success;
+- prefer browser validation plus code inspection over running the full pytest suite;
+- do not run the full pytest suite as the default verification step for CSS-only or layout-only tweaks;
+- run targeted tests only if the UI change also modifies Python behavior that is already covered by tests.
+
 Prefer these repo configs when available:
 
 - `Start Project and Launch Streamlit in Integrated Browser` when the app may not already be running;
@@ -133,8 +140,10 @@ Rules:
 - In user-facing responses, explicitly present the durable options first and explain why the literal patch is weaker.
 - For UI issues, prefer one of these paths over one-off CSS fixes when applicable:
 	- revert to native Streamlit widgets/components when their built-in behavior matches the desired styling/inheritance contract;
+	- for Streamlit width/spacing/layout problems, prefer `st.set_page_config`, `st.columns`, `st.container`, `st.sidebar`, and built-in `use_container_width` behavior before any DOM-targeting CSS;
 	- introduce a single centralized component-level theme/layout contract for isolated surfaces such as `components.html(...)` if iframe inheritance is the real boundary;
 	- only use local CSS as a component contract when isolation makes true inheritance impossible.
+- If the user explicitly asks for no custom styles, do not add or suggest CSS selectors against Streamlit DOM nodes; solve it with native Streamlit layout primitives only.
 - Do not claim CSS inheritance should work across `components.html(...)` boundaries; treat iframe isolation as a first-class architectural constraint.
 - For markdown preview or similar `about:srcdoc` iframe surfaces, the durable default is: sync computed styles from the parent Streamlit DOM during render, instead of assuming Streamlit theme inheritance will occur automatically.
 - If the final implementation must use local component CSS, keep it minimal, centralized, and free of font overrides unless the task explicitly requires font customization.

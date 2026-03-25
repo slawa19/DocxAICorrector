@@ -78,3 +78,10 @@ wsl -- bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/acti
 - `docs/WORKFLOW_AND_IMAGE_MODES.md`
 - `docs/AI_AGENT_DEVELOPMENT_RULES.md`
 - `.github/copilot-instructions.md`
+
+## Streamlit Layout Contract
+
+- Для проблем с растянутой шириной, отступами и компоновкой сначала используйте нативные примитивы Streamlit: `st.set_page_config`, `st.columns`, `st.container`, `st.sidebar`, `use_container_width`.
+- Если пользователь явно просит без кастомных стилей, не решайте задачу через CSS-селекторы по DOM Streamlit; сначала меняйте layout-композицию штатными средствами Streamlit.
+- Для UI/layout-проверки Streamlit используйте встроенный browser-editor/integrated browser как основной способ верификации результата.
+- Не прогоняйте полный pytest suite по умолчанию после CSS-only или layout-only правок; для таких изменений сначала достаточно браузерной проверки и точечных тестов только если затронута Python-логика.

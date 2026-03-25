@@ -395,6 +395,58 @@ def test_start_background_processing_degrades_gracefully_when_restart_store_fail
     assert len(log_events) == 1
 
 
+def test_start_background_processing_preserves_prepared_context(monkeypatch):
+    prepared_run_context = object()
+    session_state = SessionState(
+        restart_session_id="session-a",
+        prepared_run_context=prepared_run_context,
+        latest_preparation_summary={"stage": "Документ подготовлен"},
+        preparation_input_marker="report.docx:3:abc:6000",
+        prepared_source_key="report.docx:3:abc:6000",
+        preparation_cache={"report.docx:3:abc:6000": {"cached": True}},
+    )
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    monkeypatch.setattr(state.st, "session_state", session_state)
+    state.init_session_state()
+    session_state.restart_session_id = "session-a"
+    monkeypatch.setattr(
+        processing_runtime,
+        "store_restart_source",
+        lambda **kwargs: {
+            "filename": kwargs["source_name"],
+            "token": kwargs["source_token"],
+            "storage_path": "restart.bin",
+            "session_id": kwargs["session_id"],
+        },
+    )
+
+    processing_runtime.start_background_processing(
+        worker_target=lambda **kwargs: None,
+        reset_run_state=state.reset_run_state,
+        push_activity=lambda message: None,
+        set_processing_status=lambda **kwargs: None,
+        uploaded_filename="report.docx",
+        uploaded_token="report.docx:3:abc",
+        source_bytes=b"abc",
+        jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
+        source_paragraphs=["paragraph"],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+    )
+
+    session_state.processing_worker.join(timeout=5)
+
+    assert session_state.prepared_run_context is prepared_run_context
+    assert session_state.latest_preparation_summary == {"stage": "Документ подготовлен"}
+    assert session_state.preparation_input_marker == "report.docx:3:abc:6000"
+    assert session_state.prepared_source_key == "report.docx:3:abc:6000"
+    assert session_state.preparation_cache == {"report.docx:3:abc:6000": {"cached": True}}
+    assert session_state.processing_outcome == "running"
+
+
 def test_freeze_uploaded_file_normalizes_legacy_doc_payload(monkeypatch):
     uploaded_file = processing_runtime.build_in_memory_uploaded_file(
         source_name="legacy.doc",

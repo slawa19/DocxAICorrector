@@ -730,6 +730,198 @@ def test_run_document_processing_accepts_heading_only_output_for_legitimate_head
     assert runtime["log"][-1]["status"] == "DONE"
 
 
+def test_run_document_processing_accepts_heading_only_output_for_uppercase_title_input():
+    runtime = _build_runtime_capture()
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{
+            "target_text": "РАЗВИТИЕ МЕСТНОЙ ЭКОНОМИКИ С ПОМОЩЬЮ МЕСТНЫХ ВАЛЮТ",
+            "context_before": "",
+            "context_after": "",
+            "target_chars": 50,
+            "context_chars": 0,
+        }],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "## Развитие местной экономики с помощью местных валют",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
+    )
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_markdown"] == "## Развитие местной экономики с помощью местных валют"
+    assert runtime["state"]["latest_docx_bytes"] == b"docx-bytes"
+    assert runtime["finalize"][-1][0] == "Обработка завершена"
+    assert runtime["log"][-1]["status"] == "DONE"
+
+
+def test_run_document_processing_accepts_heading_only_output_for_table_of_contents_line():
+    runtime = _build_runtime_capture()
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{
+            "target_text": "Предисловие Денниса Мидоуза Предисловие Хантера Ловинса Благодарности",
+            "context_before": "",
+            "context_after": "",
+            "target_chars": 69,
+            "context_chars": 0,
+        }],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "## Предисловия и благодарности",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
+    )
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_markdown"] == "## Предисловия и благодарности"
+    assert runtime["state"]["latest_docx_bytes"] == b"docx-bytes"
+    assert runtime["finalize"][-1][0] == "Обработка завершена"
+    assert runtime["log"][-1]["status"] == "DONE"
+
+
+def test_run_document_processing_accepts_heading_only_output_for_colon_section_title():
+    runtime = _build_runtime_capture()
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{
+            "target_text": "Часть II: Примеры дополнительных валют",
+            "context_before": "",
+            "context_after": "",
+            "target_chars": 38,
+            "context_chars": 0,
+        }],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "## Часть II: Примеры дополнительных валют",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
+    )
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_markdown"] == "## Часть II: Примеры дополнительных валют"
+    assert runtime["state"]["latest_docx_bytes"] == b"docx-bytes"
+    assert runtime["finalize"][-1][0] == "Обработка завершена"
+    assert runtime["log"][-1]["status"] == "DONE"
+
+
+def test_run_document_processing_accepts_heading_only_output_for_plaintext_banner_input():
+    runtime = _build_runtime_capture()
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{
+            "target_text": "РАСТУЩЕЕ\tМЕСТНЫХ\tЭКОНОМИКИ С\tМЕСТНЫМИ\tВАЛЮТАМИ",
+            "context_before": "",
+            "context_after": "",
+            "target_chars": 46,
+            "context_chars": 0,
+        }],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "## Развитие местных экономик с помощью местных валют",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
+    )
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_markdown"] == "## Развитие местных экономик с помощью местных валют"
+    assert runtime["state"]["latest_docx_bytes"] == b"docx-bytes"
+    assert runtime["finalize"][-1][0] == "Обработка завершена"
+    assert runtime["log"][-1]["status"] == "DONE"
+
+
 def test_run_document_processing_fails_on_empty_processing_plan():
     runtime = _build_runtime_capture()
     runtime["state"]["latest_docx_bytes"] = b"stale-docx"
