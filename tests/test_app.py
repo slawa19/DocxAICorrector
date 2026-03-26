@@ -233,6 +233,36 @@ def test_render_processing_controls_enables_start_and_disables_stop_when_idle(mo
     assert stop_column.calls == []
 
 
+def test_render_processing_controls_demotes_start_after_completed_result(monkeypatch):
+    session_state = SessionState(processing_stop_requested=False)
+    start_column = FakeColumn(result=False)
+    stop_column = FakeColumn(result=False)
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app.st, "columns", lambda n: [start_column, stop_column])
+
+    action = app._render_processing_controls(can_start=True, is_processing=False, emphasize_start=False)
+
+    assert action is None
+    assert start_column.calls == [(
+        "Начать обработку",
+        {
+            "type": "secondary",
+            "use_container_width": True,
+            "disabled": False,
+            "key": "start_processing_button",
+        },
+    )]
+    assert stop_column.calls == [(
+        "Стоп",
+        {
+            "use_container_width": True,
+            "disabled": True,
+            "key": "stop_processing_button",
+        },
+    )]
+
+
 def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatch):
     session_state = SessionState(
         app_start_logged=True,

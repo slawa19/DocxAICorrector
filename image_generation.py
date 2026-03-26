@@ -1,5 +1,6 @@
 import base64
 import logging
+import re
 import time
 from io import BytesIO
 from types import SimpleNamespace
@@ -7,6 +8,7 @@ from types import SimpleNamespace
 from PIL import Image, ImageDraw, ImageEnhance, ImageOps
 from PIL import ImageChops
 
+from image_output_policy import resolve_image_output_policy, select_nearest_fallback_size, select_nearest_size
 from image_shared import (
     detect_image_mime_type as shared_detect_image_mime_type,
     extract_model_response_error_code,
@@ -62,6 +64,7 @@ def generate_image_candidate(
     prefer_deterministic_reconstruction: bool = True,
     reconstruction_model: str | None = None,
     reconstruction_render_config: dict[str, object] | None = None,
+    image_output_config: dict[str, object] | None = None,
     client=None,
     budget: ImageModelCallBudget | None = None,
 ) -> bytes:
@@ -73,6 +76,7 @@ def generate_image_candidate(
     requested_mode = mode if mode in {ImageMode.SAFE.value, *SEMANTIC_MODES} else ImageMode.SAFE.value
     if requested_mode != ImageMode.SAFE.value and not analysis.semantic_redraw_allowed:
         requested_mode = ImageMode.SAFE.value
+    image_output_policy = resolve_image_output_policy(image_output_config)
 
     if requested_mode == ImageMode.SAFE.value:
         candidate_bytes = _generate_safe_candidate(image_bytes)
@@ -99,6 +103,7 @@ def generate_image_candidate(
             prefer_deterministic_reconstruction=prefer_deterministic_reconstruction,
             reconstruction_model=reconstruction_model,
             reconstruction_render_config=reconstruction_render_config,
+            image_output_policy=image_output_policy,
             client=client,
             budget=budget,
         )
@@ -170,6 +175,7 @@ def _generate_reconstructed_candidate(
     budget: ImageModelCallBudget | None = None,
     reconstruction_model: str | None = None,
     reconstruction_render_config: dict[str, object] | None = None,
+    image_output_policy=None,
 ) -> bytes:
     """Deterministic reconstruction via VLM scene-graph extraction + PIL rendering.
 
@@ -242,6 +248,7 @@ def _generate_semantic_candidate(
     prefer_deterministic_reconstruction: bool,
     reconstruction_model: str | None = None,
     reconstruction_render_config: dict[str, object] | None = None,
+    image_output_policy=None,
     client=None,
     budget: ImageModelCallBudget | None = None,
 ) -> bytes:
@@ -265,6 +272,7 @@ def _generate_semantic_candidate(
                 prompt_text=prompt_text,
                 prompt_profile=prompt_profile,
                 prompt=prompt,
+                image_output_policy=image_output_policy,
                 budget=budget,
             )
         except Exception as exc:
@@ -287,6 +295,7 @@ def _generate_semantic_candidate(
                     budget=budget,
                     reconstruction_model=reconstruction_model,
                     reconstruction_render_config=reconstruction_render_config,
+                    image_output_policy=image_output_policy,
                 )
             raise
 
@@ -298,6 +307,7 @@ def _generate_semantic_candidate(
             prompt_text=prompt_text,
             prompt_profile=prompt_profile,
             prompt=prompt,
+            image_output_policy=image_output_policy,
             budget=budget,
         )
     except Exception as exc:
@@ -318,6 +328,7 @@ def _generate_semantic_candidate(
                 image_bytes,
                 analysis,
                 prompt=prompt,
+                image_output_policy=image_output_policy,
                 budget=budget,
             )
         except Exception as fallback_exc:
@@ -338,6 +349,7 @@ def _generate_semantic_candidate(
                 prompt_text=prompt_text,
                 prompt_profile=prompt_profile,
                 prompt=prompt,
+                image_output_policy=image_output_policy,
                 budget=budget,
             )
 
@@ -350,6 +362,7 @@ def _generate_creative_candidate(
     prompt_text: str,
     prompt_profile: dict[str, str],
     prompt: str,
+    image_output_policy=None,
     budget: ImageModelCallBudget | None = None,
 ) -> bytes:
     original_size = _read_image_size(image_bytes)
@@ -365,15 +378,25 @@ def _generate_creative_candidate(
     request_payload = {
         "model": IMAGE_GENERATE_MODEL,
         "prompt": generate_prompt,
-        "size": _select_generate_size(original_size),
+        "size": _select_generate_size(original_size, image_output_policy),
         "quality": "high",
         "background": "transparent",
         "output_format": "png",
         "response_format": "b64_json",
     }
-    response = _call_images_generate(client, request_payload, budget=budget)
+    response = _call_images_generate(
+        client,
+        request_payload,
+        fallback_sizes=image_output_policy.generate_candidate_sizes,
+        budget=budget,
+    )
     candidate_bytes, revised_prompt = _extract_image_bytes(response)
-    candidate_bytes = _restore_generated_output(candidate_bytes, original_size, prefer_light_background=True)
+    candidate_bytes = _restore_generated_output(
+        candidate_bytes,
+        original_size,
+        prefer_light_background=True,
+        image_output_policy=image_output_policy,
+    )
     log_event(
         logging.INFO,
         "creative_semantic_generate_completed",
@@ -393,6 +416,7 @@ def _generate_direct_semantic_candidate(
     *,
     prompt: str,
     requested_mode: str = "semantic_redraw_direct",
+    image_output_policy=None,
     budget: ImageModelCallBudget | None = None,
 ) -> bytes:
     use_high_fidelity = _uses_high_fidelity_semantic_edit(analysis, requested_mode)
@@ -405,12 +429,22 @@ def _generate_direct_semantic_candidate(
         "quality": "high" if use_high_fidelity else "medium",
         "input_fidelity": "high" if use_high_fidelity else "low",
         "output_format": "png",
-        "size": _select_generate_size(original_size),
+        "size": _select_generate_size(original_size, image_output_policy),
         "response_format": "b64_json",
     }
-    response = _call_images_edit(client, request_payload, budget=budget)
+    response = _call_images_edit(
+        client,
+        request_payload,
+        fallback_sizes=image_output_policy.edit_candidate_sizes,
+        budget=budget,
+    )
     candidate_bytes, revised_prompt = _extract_image_bytes(response)
-    candidate_bytes = _restore_semantic_output(candidate_bytes, restore_context, prefer_light_background=True)
+    candidate_bytes = _restore_semantic_output(
+        candidate_bytes,
+        restore_context,
+        prefer_light_background=True,
+        image_output_policy=image_output_policy,
+    )
     log_event(
         logging.INFO,
         "semantic_image_edit_completed",
@@ -431,6 +465,7 @@ def _generate_structured_candidate(
     prompt_text: str,
     prompt_profile: dict[str, str],
     prompt: str,
+    image_output_policy=None,
     budget: ImageModelCallBudget | None = None,
 ) -> bytes:
     try:
@@ -440,6 +475,7 @@ def _generate_structured_candidate(
             analysis,
             prompt=prompt,
             requested_mode="semantic_redraw_structured",
+            image_output_policy=image_output_policy,
             budget=budget,
         )
     except Exception as exc:
@@ -466,15 +502,25 @@ def _generate_structured_candidate(
     request_payload = {
         "model": IMAGE_GENERATE_MODEL,
         "prompt": generate_prompt,
-        "size": _select_generate_size(original_size),
+        "size": _select_generate_size(original_size, image_output_policy),
         "quality": "high",
         "background": "transparent",
         "output_format": "png",
         "response_format": "b64_json",
     }
-    response = _call_images_generate(client, request_payload, budget=budget)
+    response = _call_images_generate(
+        client,
+        request_payload,
+        fallback_sizes=image_output_policy.generate_candidate_sizes,
+        budget=budget,
+    )
     candidate_bytes, revised_prompt = _extract_image_bytes(response)
-    candidate_bytes = _restore_generated_output(candidate_bytes, original_size, prefer_light_background=True)
+    candidate_bytes = _restore_generated_output(
+        candidate_bytes,
+        original_size,
+        prefer_light_background=True,
+        image_output_policy=image_output_policy,
+    )
     log_event(
         logging.INFO,
         "structured_image_generate_completed",
@@ -487,7 +533,13 @@ def _generate_structured_candidate(
     return candidate_bytes
 
 
-def _call_images_edit(client, request_payload: dict[str, object], *, budget: ImageModelCallBudget | None = None):
+def _call_images_edit(
+    client,
+    request_payload: dict[str, object],
+    *,
+    fallback_sizes: tuple[str, ...] | None = None,
+    budget: ImageModelCallBudget | None = None,
+):
     retryable_optional_params = {
         "moderation",
         "input_fidelity",
@@ -533,7 +585,11 @@ def _call_images_edit(client, request_payload: dict[str, object], *, budget: Ima
                     prompt_limit=prompt_limit,
                 )
                 continue
-            fallback_size = _extract_supported_size_fallback(str(exc), str(current_payload.get("size", "")))
+            fallback_size = _extract_supported_size_fallback(
+                str(exc),
+                str(current_payload.get("size", "")),
+                fallback_sizes=fallback_sizes,
+            )
             if fallback_size is not None:
                 current_payload["size"] = fallback_size
                 adaptation_attempts += 1
@@ -581,7 +637,13 @@ def _call_images_edit(client, request_payload: dict[str, object], *, budget: Ima
             return result
 
 
-def _call_images_generate(client, request_payload: dict[str, object], *, budget: ImageModelCallBudget | None = None):
+def _call_images_generate(
+    client,
+    request_payload: dict[str, object],
+    *,
+    fallback_sizes: tuple[str, ...] | None = None,
+    budget: ImageModelCallBudget | None = None,
+):
     retryable_optional_params = {"background", "output_format", "quality", "response_format", "size", "timeout"}
     current_payload = _with_timeout(dict(request_payload))
     attempt = 1
@@ -619,7 +681,11 @@ def _call_images_generate(client, request_payload: dict[str, object], *, budget:
                     prompt_limit=prompt_limit,
                 )
                 continue
-            fallback_size = _extract_supported_generate_size_fallback(str(exc), str(current_payload.get("size", "")))
+            fallback_size = _extract_supported_generate_size_fallback(
+                str(exc),
+                str(current_payload.get("size", "")),
+                fallback_sizes=fallback_sizes,
+            )
             if fallback_size is not None:
                 current_payload["size"] = fallback_size
                 adaptation_attempts += 1
@@ -784,30 +850,61 @@ def _shorten_prompt_for_limit(prompt_text: str, limit: int) -> str:
     return f"{shortened_body}{suffix}"[:limit]
 
 
-def _extract_supported_size_fallback(error_message: str, current_size: str) -> str | None:
+def _extract_supported_size_fallback(
+    error_message: str,
+    current_size: str,
+    *,
+    fallback_sizes: tuple[str, ...] | None,
+) -> str | None:
     if "Supported values are:" not in error_message or "size" not in error_message:
         return None
-    supported_sizes = []
-    for candidate in ("1536x1024", "1024x1536", "1024x1024", "512x512", "256x256"):
-        if candidate in error_message:
-            supported_sizes.append(candidate)
-    for candidate in supported_sizes:
-        if candidate != current_size:
-            return candidate
-    return None
+    supported_sizes = _extract_supported_sizes_from_error(
+        error_message,
+        fallback_sizes or ("1536x1024", "1024x1536", "1024x1024", "512x512", "256x256"),
+    )
+    next_size = select_nearest_fallback_size(current_size, supported_sizes)
+    if next_size == current_size:
+        return None
+    return next_size
 
 
-def _extract_supported_generate_size_fallback(error_message: str, current_size: str) -> str | None:
+def _extract_supported_generate_size_fallback(
+    error_message: str,
+    current_size: str,
+    *,
+    fallback_sizes: tuple[str, ...] | None,
+) -> str | None:
     if "Supported values are:" not in error_message or "size" not in error_message:
         return None
+    supported_sizes = _extract_supported_sizes_from_error(
+        error_message,
+        fallback_sizes or ("1536x1024", "1024x1536", "1024x1024", "1792x1024", "1024x1792"),
+    )
+    next_size = select_nearest_fallback_size(current_size, supported_sizes)
+    if next_size == current_size:
+        return None
+    return next_size
+
+
+def _extract_supported_sizes_from_error(error_message: str, known_sizes: tuple[str, ...]) -> tuple[str, ...]:
+    supported_values_match = re.search(r"Supported values are:(.*)", error_message)
+    search_text = supported_values_match.group(1) if supported_values_match else error_message
+    search_text_lower = search_text.lower()
+
     supported_sizes = []
-    for candidate in ("1536x1024", "1024x1536", "1024x1024", "1792x1024", "1024x1792"):
-        if candidate in error_message:
-            supported_sizes.append(candidate)
-    for candidate in supported_sizes:
-        if candidate != current_size:
-            return candidate
-    return None
+    seen_sizes = set()
+    for candidate in re.findall(r"\b\d+x\d+\b", search_text):
+        normalized_candidate = candidate.lower()
+        if normalized_candidate not in seen_sizes:
+            seen_sizes.add(normalized_candidate)
+            supported_sizes.append(normalized_candidate)
+    for candidate in known_sizes:
+        normalized_candidate = candidate.lower()
+        if normalized_candidate in seen_sizes or normalized_candidate not in search_text_lower:
+            continue
+        seen_sizes.add(normalized_candidate)
+        supported_sizes.append(normalized_candidate)
+    return tuple(supported_sizes)
 
 
 def _build_image_upload(image_bytes: bytes, prefer_png: bool = False) -> tuple[str, bytes, str]:
@@ -885,6 +982,7 @@ def _restore_semantic_output(
     image_bytes: bytes,
     restore_context: dict[str, int | tuple[int, int]],
     prefer_light_background: bool = False,
+    image_output_policy=None,
 ) -> bytes:
     original_size = restore_context.get("original_size")
     canvas_size = restore_context.get("canvas_size")
@@ -898,7 +996,7 @@ def _restore_semantic_output(
             if normalized_image.width <= 0 or normalized_image.height <= 0:
                 return image_bytes
 
-            cropped = _trim_generated_outer_padding(normalized_image)
+            cropped = _trim_generated_outer_padding(normalized_image, image_output_policy)
             if prefer_light_background:
                 cropped = _normalize_generated_document_background(cropped)
             target_size = _select_preserved_output_size(original_size, cropped.size)
@@ -1155,26 +1253,28 @@ def _read_image_size(image_bytes: bytes) -> tuple[int, int]:
         raise RuntimeError("Не удалось определить размеры исходного изображения.") from exc
 
 
-def _select_generate_size(_source_size: tuple[int, int]) -> str:
-    source_width, source_height = _source_size
-    if source_width <= 0 or source_height <= 0:
-        return "1024x1024"
-    aspect_ratio = source_width / source_height
-    if aspect_ratio >= 1.2:
-        return "1536x1024"
-    if aspect_ratio <= (1 / 1.2):
-        return "1024x1536"
-    return "1024x1024"
+def _resolve_image_output_policy_arg(image_output_policy):
+    if image_output_policy is None or isinstance(image_output_policy, dict):
+        return resolve_image_output_policy(image_output_policy)
+    return image_output_policy
+
+
+def _select_generate_size(_source_size: tuple[int, int], image_output_policy=None) -> str:
+    policy = _resolve_image_output_policy_arg(image_output_policy)
+    return select_nearest_size(_source_size, policy.generate_candidate_sizes)
+
+
 def _restore_generated_output(
     image_bytes: bytes,
     original_size: tuple[int, int],
     prefer_light_background: bool = False,
+    image_output_policy=None,
 ) -> bytes:
     try:
         with Image.open(BytesIO(image_bytes)) as generated_image:
             generated_image.load()
             normalized_image = ImageOps.exif_transpose(generated_image)
-            trimmed_image = _trim_generated_outer_padding(normalized_image)
+            trimmed_image = _trim_generated_outer_padding(normalized_image, image_output_policy)
             if prefer_light_background:
                 trimmed_image = _normalize_generated_document_background(trimmed_image)
             target_size = _select_preserved_output_size(original_size, trimmed_image.size)
@@ -1227,12 +1327,13 @@ def _restore_contained_output_image(
     return restored_image
 
 
-def _trim_generated_outer_padding(image: Image.Image) -> Image.Image:
+def _trim_generated_outer_padding(image: Image.Image, image_output_policy=None) -> Image.Image:
+    policy = _resolve_image_output_policy_arg(image_output_policy)
     rgb_image = image.convert("RGB")
     background_rgb = _pick_generated_background_color(rgb_image)
     background = Image.new("RGB", rgb_image.size, background_rgb)
     difference = ImageChops.difference(rgb_image, background)
-    mask = difference.convert("L").point(lambda value: 255 if value > 12 else 0)
+    mask = difference.convert("L").point(lambda value: 255 if value > policy.trim_tolerance else 0)
     bbox = mask.getbbox()
     if bbox is None:
         return image
@@ -1241,8 +1342,17 @@ def _trim_generated_outer_padding(image: Image.Image) -> Image.Image:
     if left == 0 and top == 0 and right == image.width and bottom == image.height:
         return image
 
-    pad_x = max(2, int(round(image.width * 0.01)))
-    pad_y = max(2, int(round(image.height * 0.01)))
+    left_ratio = max(0.0, left / image.width) if image.width > 0 else 0.0
+    right_ratio = max(0.0, (image.width - right) / image.width) if image.width > 0 else 0.0
+    top_ratio = max(0.0, top / image.height) if image.height > 0 else 0.0
+    bottom_ratio = max(0.0, (image.height - bottom) / image.height) if image.height > 0 else 0.0
+    horizontal_asymmetric_loss = max(left_ratio, right_ratio) > policy.trim_max_loss_ratio and min(left_ratio, right_ratio) < 0.02
+    vertical_asymmetric_loss = max(top_ratio, bottom_ratio) > policy.trim_max_loss_ratio and min(top_ratio, bottom_ratio) < 0.02
+    if horizontal_asymmetric_loss or vertical_asymmetric_loss:
+        return image
+
+    pad_x = max(policy.trim_padding_min_px, int(round(image.width * policy.trim_padding_ratio)))
+    pad_y = max(policy.trim_padding_min_px, int(round(image.height * policy.trim_padding_ratio)))
     expanded_bbox = (
         max(0, left - pad_x),
         max(0, top - pad_y),

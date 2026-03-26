@@ -23,6 +23,7 @@ from models import IMAGE_MODE_VALUES, ImageMode
 OpenAI = None
 _CLIENT = None
 _CLIENT_LOCK = Lock()
+_IMAGE_OUTPUT_SIZE_VALUES = {"256x256", "512x512", "1024x1024", "1024x1536", "1536x1024", "1024x1792", "1792x1024"}
 
 if TYPE_CHECKING:
     from openai import OpenAI as OpenAIClient
@@ -60,6 +61,16 @@ class AppConfig(Mapping[str, object]):
     reconstruction_background_sample_ratio: float
     reconstruction_background_color_distance_threshold: float
     reconstruction_background_uniformity_threshold: float
+    image_output_generate_size_square: str
+    image_output_generate_size_landscape: str
+    image_output_generate_size_portrait: str
+    image_output_generate_candidate_sizes: tuple[str, ...]
+    image_output_edit_candidate_sizes: tuple[str, ...]
+    image_output_aspect_ratio_threshold: float
+    image_output_trim_tolerance: int
+    image_output_trim_padding_ratio: float
+    image_output_trim_padding_min_px: int
+    image_output_trim_max_loss_ratio: float
 
     def __getitem__(self, key: str) -> object:
         try:
@@ -200,6 +211,34 @@ def parse_config_int(config_data: dict[str, object], field_name: str, default: i
     return value
 
 
+def parse_image_output_size(value: str, *, source_name: str) -> str:
+    normalized = value.strip().lower()
+    if normalized not in _IMAGE_OUTPUT_SIZE_VALUES:
+        raise RuntimeError(f"Некорректный размер image output в {source_name}: {value}")
+    return normalized
+
+
+def parse_image_output_size_list(value: object, *, source_name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    if value is None:
+        return default
+    if not isinstance(value, list):
+        raise RuntimeError(f"Некорректный список размеров image output в {source_name}")
+    normalized = tuple(parse_image_output_size(item, source_name=source_name) for item in value)
+    if not normalized:
+        raise RuntimeError(f"Пустой список размеров image output в {source_name}")
+    return normalized
+
+
+def parse_image_output_size_csv_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return default
+    items = [item.strip() for item in raw_value.split(",") if item.strip()]
+    if not items:
+        raise RuntimeError(f"Переменная {name} задана, но список размеров пуст.")
+    return tuple(parse_image_output_size(item, source_name=name) for item in items)
+
+
 def _reject_legacy_manual_review_aliases(config_data: dict[str, object]) -> None:
     if "enable_post_redraw_validation" in config_data:
         raise RuntimeError(
@@ -242,6 +281,7 @@ def load_app_config() -> AppConfig:
     output_fonts_config = parse_optional_config_section(output_config, "fonts", parent_name="output")
     output_body_font = parse_optional_config_str(output_fonts_config, "body")
     output_heading_font = parse_optional_config_str(output_fonts_config, "heading")
+    image_output_config = parse_optional_config_section(config_data, "image_output")
 
     image_mode_default = _parse_image_mode(
         parse_config_str(config_data, "image_mode_default", ImageMode.NO_CHANGE.value),
@@ -300,6 +340,37 @@ def load_app_config() -> AppConfig:
         "reconstruction_background_uniformity_threshold",
         10.0,
     )
+    image_output_generate_size_square = parse_image_output_size(
+        parse_config_str(image_output_config, "generate_size_square", "1024x1024"),
+        source_name=f"{CONFIG_PATH}: image_output.generate_size_square",
+    )
+    image_output_generate_size_landscape = parse_image_output_size(
+        parse_config_str(image_output_config, "generate_size_landscape", "1536x1024"),
+        source_name=f"{CONFIG_PATH}: image_output.generate_size_landscape",
+    )
+    image_output_generate_size_portrait = parse_image_output_size(
+        parse_config_str(image_output_config, "generate_size_portrait", "1024x1536"),
+        source_name=f"{CONFIG_PATH}: image_output.generate_size_portrait",
+    )
+    image_output_aspect_ratio_threshold = parse_config_float(
+        image_output_config,
+        "aspect_ratio_threshold",
+        1.2,
+    )
+    image_output_generate_candidate_sizes = parse_image_output_size_list(
+        image_output_config.get("generate_candidate_sizes"),
+        source_name=f"{CONFIG_PATH}: image_output.generate_candidate_sizes",
+        default=("1536x1024", "1024x1536", "1024x1024"),
+    )
+    image_output_edit_candidate_sizes = parse_image_output_size_list(
+        image_output_config.get("edit_candidate_sizes"),
+        source_name=f"{CONFIG_PATH}: image_output.edit_candidate_sizes",
+        default=("1536x1024", "1024x1536", "1024x1024", "512x512", "256x256"),
+    )
+    image_output_trim_tolerance = parse_config_int(image_output_config, "trim_tolerance", 20)
+    image_output_trim_padding_ratio = parse_config_float(image_output_config, "trim_padding_ratio", 0.02)
+    image_output_trim_padding_min_px = parse_config_int(image_output_config, "trim_padding_min_px", 4)
+    image_output_trim_max_loss_ratio = parse_config_float(image_output_config, "trim_max_loss_ratio", 0.15)
 
     env_model_options = parse_csv_env("DOCX_AI_MODEL_OPTIONS")
     if env_model_options is not None:
@@ -398,6 +469,49 @@ def load_app_config() -> AppConfig:
         "DOCX_AI_RECONSTRUCTION_BACKGROUND_UNIFORMITY_THRESHOLD",
         reconstruction_background_uniformity_threshold,
     )
+    image_output_generate_size_square = parse_image_output_size(
+        os.getenv("DOCX_AI_IMAGE_OUTPUT_GENERATE_SIZE_SQUARE", image_output_generate_size_square).strip()
+        or image_output_generate_size_square,
+        source_name="DOCX_AI_IMAGE_OUTPUT_GENERATE_SIZE_SQUARE",
+    )
+    image_output_generate_size_landscape = parse_image_output_size(
+        os.getenv("DOCX_AI_IMAGE_OUTPUT_GENERATE_SIZE_LANDSCAPE", image_output_generate_size_landscape).strip()
+        or image_output_generate_size_landscape,
+        source_name="DOCX_AI_IMAGE_OUTPUT_GENERATE_SIZE_LANDSCAPE",
+    )
+    image_output_generate_size_portrait = parse_image_output_size(
+        os.getenv("DOCX_AI_IMAGE_OUTPUT_GENERATE_SIZE_PORTRAIT", image_output_generate_size_portrait).strip()
+        or image_output_generate_size_portrait,
+        source_name="DOCX_AI_IMAGE_OUTPUT_GENERATE_SIZE_PORTRAIT",
+    )
+    image_output_generate_candidate_sizes = parse_image_output_size_csv_env(
+        "DOCX_AI_IMAGE_OUTPUT_GENERATE_CANDIDATE_SIZES",
+        image_output_generate_candidate_sizes,
+    )
+    image_output_edit_candidate_sizes = parse_image_output_size_csv_env(
+        "DOCX_AI_IMAGE_OUTPUT_EDIT_CANDIDATE_SIZES",
+        image_output_edit_candidate_sizes,
+    )
+    image_output_aspect_ratio_threshold = parse_float_env(
+        "DOCX_AI_IMAGE_OUTPUT_ASPECT_RATIO_THRESHOLD",
+        image_output_aspect_ratio_threshold,
+    )
+    image_output_trim_tolerance = parse_int_env(
+        "DOCX_AI_IMAGE_OUTPUT_TRIM_TOLERANCE",
+        image_output_trim_tolerance,
+    )
+    image_output_trim_padding_ratio = parse_float_env(
+        "DOCX_AI_IMAGE_OUTPUT_TRIM_PADDING_RATIO",
+        image_output_trim_padding_ratio,
+    )
+    image_output_trim_padding_min_px = parse_int_env(
+        "DOCX_AI_IMAGE_OUTPUT_TRIM_PADDING_MIN_PX",
+        image_output_trim_padding_min_px,
+    )
+    image_output_trim_max_loss_ratio = parse_float_env(
+        "DOCX_AI_IMAGE_OUTPUT_TRIM_MAX_LOSS_RATIO",
+        image_output_trim_max_loss_ratio,
+    )
 
     if default_model not in model_options:
         model_options = [default_model, *[item for item in model_options if item != default_model]]
@@ -433,6 +547,16 @@ def load_app_config() -> AppConfig:
         reconstruction_background_sample_ratio=max(0.01, min(reconstruction_background_sample_ratio, 0.2)),
         reconstruction_background_color_distance_threshold=max(5.0, min(reconstruction_background_color_distance_threshold, 255.0)),
         reconstruction_background_uniformity_threshold=max(1.0, min(reconstruction_background_uniformity_threshold, 64.0)),
+        image_output_generate_size_square=image_output_generate_size_square,
+        image_output_generate_size_landscape=image_output_generate_size_landscape,
+        image_output_generate_size_portrait=image_output_generate_size_portrait,
+        image_output_generate_candidate_sizes=image_output_generate_candidate_sizes,
+        image_output_edit_candidate_sizes=image_output_edit_candidate_sizes,
+        image_output_aspect_ratio_threshold=max(1.01, min(image_output_aspect_ratio_threshold, 3.0)),
+        image_output_trim_tolerance=max(0, min(image_output_trim_tolerance, 64)),
+        image_output_trim_padding_ratio=max(0.0, min(image_output_trim_padding_ratio, 0.25)),
+        image_output_trim_padding_min_px=max(0, min(image_output_trim_padding_min_px, 128)),
+        image_output_trim_max_loss_ratio=max(0.0, min(image_output_trim_max_loss_ratio, 0.49)),
     )
 
 

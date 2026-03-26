@@ -20,18 +20,20 @@ from docx.text.run import Run
 import lxml.etree as etree
 
 from document import (
-    COMPARE_ALL_VARIANT_LABELS,
     IMAGE_PLACEHOLDER_PATTERN,
-    MANUAL_REVIEW_SAFE_LABEL,
     _extract_run_text,
     _find_child_element,
     _xml_local_name,
 )
 from logger import log_event
-from models import ImageAsset, get_image_variant_bytes
+from models import ImageAsset, ImageDeliveryPayload, get_image_variant_bytes
 
 
 def resolve_final_image_bytes(asset: ImageAsset) -> bytes:
+    delivery_payload = _resolve_delivery_payload(asset)
+    if isinstance(delivery_payload.final_bytes, (bytes, bytearray)):
+        return bytes(delivery_payload.final_bytes)
+
     if asset.selected_compare_variant:
         if asset.selected_compare_variant == "original":
             return asset.original_bytes
@@ -47,35 +49,18 @@ def resolve_final_image_bytes(asset: ImageAsset) -> bytes:
 
 
 def resolve_image_insertions(asset: ImageAsset) -> list[tuple[str | None, bytes]]:
-    if getattr(asset, "validation_status", None) == "compared" and getattr(asset, "comparison_variants", None):
-        insertions: list[tuple[str | None, bytes]] = []
-        for mode in ["safe", "semantic_redraw_direct", "semantic_redraw_structured"]:
-            variant = asset.comparison_variants.get(mode)
-            variant_bytes = get_image_variant_bytes(variant)
-            if variant_bytes:
-                insertions.append((COMPARE_ALL_VARIANT_LABELS[mode], variant_bytes))
-        if insertions:
-            return insertions
-
-    if bool(getattr(getattr(asset, "metadata", None), "preserve_all_variants_in_docx", False)):
-        # Manual review mode keeps the conservative safe result plus every
-        # generated semantic candidate so fallback decisions can be inspected in
-        # the final DOCX without rerunning the pipeline.
-        insertions: list[tuple[str | None, bytes]] = []
-        if asset.safe_bytes:
-            insertions.append((MANUAL_REVIEW_SAFE_LABEL, asset.safe_bytes))
-        for variant in list(getattr(asset, "attempt_variants", []))[:2]:
-            variant_label = str(getattr(variant, "mode", "")).strip() or None
-            variant_bytes = get_image_variant_bytes(variant)
-            if variant_label and variant_bytes:
-                insertions.append((variant_label, variant_bytes))
-        if insertions:
-            return insertions
+    delivery_payload = _resolve_delivery_payload(asset)
+    if delivery_payload.insertions:
+        return [(insertion.label, bytes(insertion.bytes)) for insertion in delivery_payload.insertions]
 
     final_bytes = resolve_final_image_bytes(asset)
     if not final_bytes:
         return []
     return [(None, final_bytes)]
+
+
+def _resolve_delivery_payload(asset: ImageAsset) -> ImageDeliveryPayload:
+    return asset.resolved_delivery_payload()
 
 
 def reinsert_inline_images(docx_bytes: bytes, image_assets: list[ImageAsset]) -> bytes:
@@ -538,6 +523,7 @@ def _append_image_insertions_to_paragraph(
     run.add_picture(BytesIO(insertions[0][1]), **add_picture_kwargs)
     if insertions[0][0]:
         _set_picture_description(run._element, insertions[0][0])
+    _apply_source_geometry_metadata(run._element, asset, preferred_description=insertions[0][0])
 
 
 def _build_insertion_run_elements(
@@ -566,6 +552,7 @@ def _build_insertion_run_elements(
         _build_picture_run_element(
             paragraph,
             template_run_element,
+            asset,
             insertions[0][1],
             add_picture_kwargs,
             description=insertions[0][0],
@@ -583,6 +570,7 @@ def _build_text_run_element(paragraph, template_run_element, text: str):
 def _build_picture_run_element(
     paragraph,
     template_run_element,
+    asset: ImageAsset,
     image_bytes: bytes,
     add_picture_kwargs: dict[str, Emu],
     *,
@@ -593,6 +581,7 @@ def _build_picture_run_element(
     Run(run_element, paragraph).add_picture(BytesIO(image_bytes), **add_picture_kwargs)
     if description:
         _set_picture_description(run_element, description)
+    _apply_source_geometry_metadata(run_element, asset, preferred_description=description)
     return run_element
 
 
@@ -685,6 +674,7 @@ def _build_variant_block_elements(
         Run(image_run, paragraph).add_picture(BytesIO(image_bytes), **add_picture_kwargs)
         if label:
             _set_picture_description(image_run, label)
+        _apply_source_geometry_metadata(image_run, asset, preferred_description=label)
 
         image_paragraph.append(image_run)
         blocks.append(image_paragraph)
@@ -717,6 +707,161 @@ def _set_picture_description(run_element, description: str) -> None:
             if doc_properties is not None:
                 doc_properties.set("descr", description)
                 return
+
+
+def _apply_source_geometry_metadata(
+    run_element,
+    asset: ImageAsset | None,
+    *,
+    source_forensics: dict[str, object] | None = None,
+    preferred_description: str | None = None,
+) -> None:
+    resolved_forensics = source_forensics
+    if resolved_forensics is None and asset is not None:
+        resolved_forensics = asset.source_forensics
+    if not isinstance(resolved_forensics, dict) or not resolved_forensics:
+        return
+
+    _apply_source_drawing_container(run_element, resolved_forensics)
+    _apply_picture_source_rect(run_element, resolved_forensics.get("source_rect"))
+    _apply_picture_doc_properties(
+        run_element,
+        resolved_forensics.get("doc_properties"),
+        preferred_description=preferred_description,
+    )
+
+
+def _apply_source_drawing_container(run_element, source_forensics: dict[str, object]) -> None:
+    if source_forensics.get("drawing_container") != "anchor":
+        return
+
+    container_xml = source_forensics.get("drawing_container_xml")
+    if not isinstance(container_xml, str) or not container_xml.strip():
+        return
+
+    word_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    wordprocessing_drawing_ns = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+    drawingml_ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+
+    drawings = list(run_element.iterchildren(tag=f"{{{word_ns}}}drawing"))
+    if not drawings:
+        return
+    drawing = drawings[0]
+
+    current_container = None
+    for container_local_name in ("inline", "anchor"):
+        current_container = drawing.find(f"{{{wordprocessing_drawing_ns}}}{container_local_name}")
+        if current_container is not None:
+            break
+    if current_container is None:
+        return
+
+    try:
+        source_container = etree.fromstring(container_xml.encode("utf-8"))
+    except etree.XMLSyntaxError:
+        return
+
+    current_graphic = current_container.find(f"{{{drawingml_ns}}}graphic")
+    source_graphic = source_container.find(f"{{{drawingml_ns}}}graphic")
+    if current_graphic is not None:
+        if source_graphic is not None:
+            source_graphic.getparent().replace(source_graphic, deepcopy(current_graphic))
+        else:
+            source_container.append(deepcopy(current_graphic))
+
+    current_extent = current_container.find(f"{{{wordprocessing_drawing_ns}}}extent")
+    source_extent = source_container.find(f"{{{wordprocessing_drawing_ns}}}extent")
+    if current_extent is not None:
+        if source_extent is None:
+            source_container.insert(0, deepcopy(current_extent))
+        else:
+            for attribute_name in ("cx", "cy"):
+                attribute_value = current_extent.get(attribute_name)
+                if attribute_value:
+                    source_extent.set(attribute_name, attribute_value)
+
+    current_doc_properties = current_container.find(f"{{{wordprocessing_drawing_ns}}}docPr")
+    source_doc_properties = source_container.find(f"{{{wordprocessing_drawing_ns}}}docPr")
+    if current_doc_properties is not None and source_doc_properties is not None:
+        current_id = current_doc_properties.get("id")
+        if current_id:
+            source_doc_properties.set("id", current_id)
+
+    drawing.replace(current_container, source_container)
+
+
+def _apply_picture_source_rect(run_element, source_rect_payload: object) -> None:
+    source_rect = _normalize_source_rect(source_rect_payload)
+    if source_rect is None:
+        return
+
+    drawingml_ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    blip_fills = run_element.xpath(".//pic:blipFill")
+    if not blip_fills:
+        return
+
+    blip_fill = blip_fills[0]
+    existing_source_rects = blip_fill.xpath("./a:srcRect")
+    if existing_source_rects:
+        source_rect_element = existing_source_rects[0]
+    else:
+        source_rect_element = OxmlElement("a:srcRect")
+        blip = blip_fill.find(f"{{{drawingml_ns}}}blip")
+        if blip is not None:
+            blip.addnext(source_rect_element)
+        else:
+            blip_fill.insert(0, source_rect_element)
+
+    for key, value in source_rect.items():
+        source_rect_element.set(key, str(value))
+
+
+def _apply_picture_doc_properties(
+    run_element,
+    doc_properties_payload: object,
+    *,
+    preferred_description: str | None = None,
+) -> None:
+    if not isinstance(doc_properties_payload, dict):
+        if preferred_description:
+            _set_picture_description(run_element, preferred_description)
+        return
+
+    wordprocessing_drawing_ns = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+    word_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    description_value = preferred_description or doc_properties_payload.get("descr")
+    for drawing in run_element.iterchildren(tag=f"{{{word_ns}}}drawing"):
+        for container_local_name in ("inline", "anchor"):
+            container = drawing.find(f"{{{wordprocessing_drawing_ns}}}{container_local_name}")
+            if container is None:
+                continue
+            doc_properties = container.find(f"{{{wordprocessing_drawing_ns}}}docPr")
+            if doc_properties is None:
+                continue
+            if description_value:
+                doc_properties.set("descr", str(description_value))
+            title_value = doc_properties_payload.get("title")
+            if title_value:
+                doc_properties.set("title", str(title_value))
+            name_value = doc_properties_payload.get("name")
+            if name_value:
+                doc_properties.set("name", str(name_value))
+            return
+
+
+def _normalize_source_rect(source_rect_payload: object) -> dict[str, int] | None:
+    if not isinstance(source_rect_payload, dict):
+        return None
+    normalized: dict[str, int] = {}
+    for key in ("l", "t", "r", "b"):
+        raw_value = source_rect_payload.get(key)
+        if raw_value is None:
+            continue
+        try:
+            normalized[key] = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+    return normalized or None
 
 
 def _log_multi_variant_block_warning(event_name: str, paragraph, placeholders: list[str], *, reason: str) -> None:

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import traceback
+import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -1525,6 +1526,43 @@ def _build_report_runtime_config(runtime_resolution) -> dict[str, object]:
     }
 
 
+def _serialize_image_asset_forensics(image_assets: Sequence[object]) -> list[dict[str, object]]:
+    payload: list[dict[str, object]] = []
+    for asset in image_assets:
+        if not hasattr(asset, "source_identity_snapshot"):
+            continue
+        source_snapshot = asset.source_identity_snapshot()
+        runtime_snapshot = asset.runtime_state_snapshot() if hasattr(asset, "runtime_state_snapshot") else None
+        final_snapshot = asset.final_selection_snapshot() if hasattr(asset, "final_selection_snapshot") else None
+
+        source_payload = source_snapshot.to_dict() if hasattr(source_snapshot, "to_dict") else {}
+        source_bytes = getattr(asset, "original_bytes", None)
+        if isinstance(source_bytes, (bytes, bytearray)):
+            source_payload["source_sha256"] = hashlib.sha256(bytes(source_bytes)).hexdigest()
+            source_payload["source_bytes_size"] = len(source_bytes)
+
+        payload.append(
+            {
+                "source": source_payload,
+                "runtime": runtime_snapshot.to_dict() if hasattr(runtime_snapshot, "to_dict") else None,
+                "final_selection": final_snapshot.to_dict() if hasattr(final_snapshot, "to_dict") else None,
+            }
+        )
+    return payload
+
+
+def _build_image_forensics_report(prepared, runtime_snapshot: Mapping[str, object]) -> dict[str, object]:
+    runtime_state = cast(Mapping[str, object], runtime_snapshot.get("state") or {})
+    processed_assets = runtime_state.get("image_assets")
+    prepared_assets = prepared.image_assets if prepared is not None else []
+    return {
+        "prepared_assets": _serialize_image_asset_forensics(cast(Sequence[object], prepared_assets)),
+        "processed_assets": _serialize_image_asset_forensics(
+            cast(Sequence[object], processed_assets) if isinstance(processed_assets, Sequence) else []
+        ),
+    }
+
+
 def main() -> None:
     registry = load_validation_registry()
     document_profile_id = os.environ.get("DOCXAI_REAL_DOCUMENT_PROFILE", "lietaer-core").strip() or "lietaer-core"
@@ -1933,6 +1971,7 @@ def main() -> None:
         "runtime_config": _build_report_runtime_config(runtime_resolution),
         "preparation": preparation_payload,
         "runtime": runtime_snapshot,
+        "image_forensics": _build_image_forensics_report(prepared, runtime_snapshot),
         "last_error": last_error,
         "exception": exception_payload,
         "failure_classification": None,

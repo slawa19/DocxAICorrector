@@ -134,6 +134,13 @@ def _extract_docpr_descriptions(element) -> list[str]:
     return [doc_pr.get("descr") for doc_pr in element.xpath(".//wp:docPr") if doc_pr.get("descr")]
 
 
+def _extract_source_rects(element) -> list[dict[str, str]]:
+    return [
+        {key: src_rect.get(key) for key in ("l", "t", "r", "b") if src_rect.get(key) is not None}
+        for src_rect in element.xpath(".//a:srcRect")
+    ]
+
+
 def _extract_numbering_ids(paragraph) -> tuple[str | None, str | None]:
     paragraph_properties = paragraph._element.pPr
     if paragraph_properties is None:
@@ -348,6 +355,37 @@ def test_extract_document_content_from_docx_populates_image_asset_payload_fields
     assert asset.height_emu is not None
 
 
+def test_extract_document_content_from_docx_captures_source_rect_forensics(tmp_path):
+    image_path = tmp_path / "cropped-image.png"
+    image_path.write_bytes(PNG_BYTES)
+
+    doc = Document()
+    run = doc.add_paragraph().add_run()
+    run.add_picture(str(image_path), width=Inches(1.25))
+    blip_fill = run._element.xpath(".//pic:blipFill")[0]
+    source_rect = OxmlElement("a:srcRect")
+    source_rect.set("l", "1250")
+    source_rect.set("t", "2500")
+    source_rect.set("r", "3750")
+    source_rect.set("b", "5000")
+    blip = blip_fill.xpath("./a:blip")[0]
+    blip.addnext(source_rect)
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    _, image_assets = extract_document_content_from_docx(buffer)
+
+    assert image_assets[0].source_forensics["source_rect"] == {
+        "l": 1250,
+        "t": 2500,
+        "r": 3750,
+        "b": 5000,
+    }
+    assert "<wp:inline" in str(image_assets[0].source_forensics["drawing_container_xml"])
+
+
 def test_inspect_placeholder_integrity_reports_unexpected_placeholders():
     asset = ImageAsset(
         image_id="img_001",
@@ -413,6 +451,99 @@ def test_build_document_text_does_not_duplicate_existing_list_markers():
     ]
 
     assert build_document_text(paragraphs) == "1. Уже размеченный пункт\n\n- Уже размеченный маркер"
+
+
+def _make_docx_with_emdash_bullet_numbering(texts: list[str]) -> BytesIO:
+    """Create a DOCX where 'List Paragraph' paragraphs use em-dash (U+2014) as bullet char."""
+    doc = Document()
+    doc.add_paragraph("Обычный текст перед списком.")
+
+    numbering_part = doc.part.numbering_part
+    numbering_root = numbering_part._element
+    ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+    abstract_num = OxmlElement("w:abstractNum")
+    abstract_num.set(qn("w:abstractNumId"), "900")
+    lvl = OxmlElement("w:lvl")
+    lvl.set(qn("w:ilvl"), "0")
+    num_fmt = OxmlElement("w:numFmt")
+    num_fmt.set(qn("w:val"), "bullet")
+    lvl.append(num_fmt)
+    lvl_text = OxmlElement("w:lvlText")
+    lvl_text.set(qn("w:val"), "\u2014")
+    lvl.append(lvl_text)
+    abstract_num.append(lvl)
+    numbering_root.append(abstract_num)
+
+    num = OxmlElement("w:num")
+    num.set(qn("w:numId"), "900")
+    abstract_ref = OxmlElement("w:abstractNumId")
+    abstract_ref.set(qn("w:val"), "900")
+    num.append(abstract_ref)
+    numbering_root.append(num)
+
+    for text in texts:
+        para = doc.add_paragraph(text, style="List Paragraph")
+        pPr = para._element.find(qn("w:pPr"))
+        if pPr is None:
+            pPr = OxmlElement("w:pPr")
+            para._element.insert(0, pPr)
+        numPr = OxmlElement("w:numPr")
+        ilvl = OxmlElement("w:ilvl")
+        ilvl.set(qn("w:val"), "0")
+        numId = OxmlElement("w:numId")
+        numId.set(qn("w:val"), "900")
+        numPr.append(ilvl)
+        numPr.append(numId)
+        pPr.append(numPr)
+
+    doc.add_paragraph("Обычный текст после.")
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+
+def test_emdash_bullet_paragraphs_are_not_classified_as_list():
+    """Em-dash (—) bullet in OOXML numbering is Russian typographic convention, not a real list."""
+    buffer = _make_docx_with_emdash_bullet_numbering([
+        "Американская торговая палата тратит на лоббизм больше всех.",
+        "Эти многоплановые усилия — прерогатива местных сообществ.",
+    ])
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    emdash_paras = [p for p in paragraphs if "торговая палата" in p.text or "многоплановые" in p.text]
+    assert len(emdash_paras) == 2
+    for p in emdash_paras:
+        assert p.role == "body", f"Expected role='body', got '{p.role}' for: {p.text[:60]}"
+        assert p.list_kind is None
+        assert p.list_num_xml is None
+        assert p.list_abstract_num_xml is None
+
+
+def test_emdash_bullet_paragraphs_render_without_list_markers():
+    """Paragraphs demoted from em-dash bullet should render as plain text, no '- ' prefix."""
+    buffer = _make_docx_with_emdash_bullet_numbering(["Цитата из книги."])
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    quote_para = [p for p in paragraphs if "Цитата" in p.text][0]
+    assert quote_para.role == "body"
+    text = build_document_text([quote_para])
+    assert not text.startswith("- ")
+    assert not text.startswith("— ")
+
+
+def test_classify_paragraph_role_does_not_treat_emdash_prefix_as_list():
+    """Text starting with '— ' should not be classified as list by text pattern."""
+    from document import classify_paragraph_role
+
+    assert classify_paragraph_role("— Это прямая речь", "Body Text") == "body"
+    assert classify_paragraph_role("— Цитата из книги", "Normal") == "body"
+    # Real list markers still work
+    assert classify_paragraph_role("- Пункт списка", "Body Text") == "list"
+    assert classify_paragraph_role("• Маркированный пункт", "Normal") == "list"
 
 
 def test_extract_document_content_from_docx_renders_title_and_outline_levels_as_markdown_headings():
@@ -1732,6 +1863,99 @@ def test_reinsert_inline_images_replaces_placeholder_with_picture_inside_table_c
     assert updated_doc.inline_shapes[0].height == 914400
 
 
+def test_reinsert_inline_images_reapplies_source_rect_and_doc_properties_for_original_asset():
+    doc = Document()
+    doc.add_paragraph("[[DOCX_IMAGE_img_001]]")
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    updated_bytes = reinsert_inline_images(
+        buffer.getvalue(),
+        [
+            ImageAsset(
+                image_id="img_001",
+                placeholder="[[DOCX_IMAGE_img_001]]",
+                original_bytes=PNG_BYTES,
+                mime_type="image/png",
+                position_index=0,
+                width_emu=914400,
+                height_emu=914400,
+                final_variant="original",
+                source_forensics={
+                    "source_rect": {"l": 1250, "t": 2500, "r": 3750, "b": 5000},
+                    "doc_properties": {
+                        "descr": "Исходное описание",
+                        "title": "Исходный title",
+                        "name": "Исходное имя",
+                    },
+                },
+            )
+        ],
+    )
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    assert _extract_source_rects(updated_doc._element) == [
+        {"l": "1250", "t": "2500", "r": "3750", "b": "5000"}
+    ]
+    doc_pr = updated_doc._element.xpath(".//wp:docPr")[0]
+    assert doc_pr.get("descr") == "Исходное описание"
+    assert doc_pr.get("title") == "Исходный title"
+    assert doc_pr.get("name") == "Исходное имя"
+
+
+def test_reinsert_inline_images_restores_anchor_container_from_source_forensics():
+        doc = Document()
+        doc.add_paragraph("[[DOCX_IMAGE_img_001]]")
+        buffer = BytesIO()
+        doc.save(buffer)
+
+        source_anchor_xml = """
+        <wp:anchor xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+                             xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+                             xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"
+                             simplePos="0" relativeHeight="0" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">
+            <wp:simplePos x="0" y="0"/>
+            <wp:positionH relativeFrom="column"><wp:posOffset>0</wp:posOffset></wp:positionH>
+            <wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV>
+            <wp:extent cx="914400" cy="914400"/>
+            <wp:wrapNone/>
+            <wp:docPr id="7" name="Source Anchor" descr="Исходный anchor"/>
+            <wp:cNvGraphicFramePr/>
+            <a:graphic>
+                <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                    <pic:pic/>
+                </a:graphicData>
+            </a:graphic>
+        </wp:anchor>
+        """
+
+        updated_bytes = reinsert_inline_images(
+                buffer.getvalue(),
+                [
+                        ImageAsset(
+                                image_id="img_001",
+                                placeholder="[[DOCX_IMAGE_img_001]]",
+                                original_bytes=PNG_BYTES,
+                                mime_type="image/png",
+                                position_index=0,
+                                width_emu=914400,
+                                height_emu=914400,
+                                final_variant="original",
+                                source_forensics={
+                                        "drawing_container": "anchor",
+                                        "drawing_container_xml": source_anchor_xml,
+                                        "doc_properties": {"descr": "Исходный anchor", "name": "Source Anchor"},
+                                },
+                        )
+                ],
+        )
+        updated_doc = Document(BytesIO(updated_bytes))
+
+        assert len(updated_doc._element.xpath(".//wp:anchor")) == 1
+        assert len(updated_doc._element.xpath(".//wp:inline")) == 0
+        assert updated_doc._element.xpath(".//wp:docPr")[0].get("descr") == "Исходный anchor"
+
+
 def test_reinsert_inline_images_replaces_placeholder_with_picture_inside_nested_table_cell():
     doc = Document()
     outer_table = doc.add_table(rows=1, cols=1)
@@ -2251,6 +2475,8 @@ def test_resolve_final_image_bytes_prefers_selected_compare_variant():
     )
 
     assert resolve_final_image_bytes(asset) == b"chosen"
+    assert asset.resolved_delivery_payload().selected_variant == "semantic_redraw_direct"
+    assert asset.resolved_delivery_payload().final_bytes == b"chosen"
 
 
 def test_resolve_final_image_bytes_returns_original_for_explicit_original_compare_choice():
@@ -2289,6 +2515,37 @@ def test_resolve_image_insertions_returns_all_compare_all_variants_before_single
         ("Вариант 1: Просто улучшить", b"safe"),
         ("Вариант 2: Креативная AI-перерисовка", b"direct"),
         ("Вариант 3: Структурная AI-перерисовка", b"structured"),
+    ]
+    assert asset.resolved_delivery_payload().delivery_kind == "compare_all_variants"
+    assert [insertion.variant_key for insertion in asset.resolved_delivery_payload().insertions] == [
+        "safe",
+        "semantic_redraw_direct",
+        "semantic_redraw_structured",
+    ]
+
+
+def test_resolved_delivery_payload_uses_manual_review_insertions_when_enabled():
+    asset = ImageAsset(
+        image_id="img_001",
+        placeholder="[[DOCX_IMAGE_img_001]]",
+        original_bytes=b"original",
+        mime_type="image/png",
+        position_index=0,
+        safe_bytes=b"safe",
+        attempt_variants=[
+            ImageVariantCandidate(mode="candidate1", bytes=b"candidate-1", mime_type="image/png"),
+            ImageVariantCandidate(mode="candidate2", bytes=b"candidate-2", mime_type="image/png"),
+        ],
+    )
+    asset.update_pipeline_metadata(preserve_all_variants_in_docx=True)
+
+    payload = asset.resolved_delivery_payload()
+
+    assert payload.delivery_kind == "manual_review_variants"
+    assert [(insertion.label, insertion.bytes) for insertion in payload.insertions] == [
+        ("safe", b"safe"),
+        ("candidate1", b"candidate-1"),
+        ("candidate2", b"candidate-2"),
     ]
 
 

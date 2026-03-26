@@ -105,7 +105,7 @@ def _prepare_state(monkeypatch):
     monkeypatch.setattr(
         processing_service,
         "generate_image_candidate",
-        lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, reconstruction_render_config=None, client=None, budget=None: (
+        lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, reconstruction_render_config=None, image_output_config=None, client=None, budget=None: (
             PNG_BYTES if mode == "safe" else REDRAWN_BYTES
         ),
     )
@@ -157,6 +157,77 @@ def test_process_document_images_no_change_skips_all_image_processing(monkeypatc
     assert generate_calls == []
 
 
+@pytest.mark.parametrize(
+    ("image_mode", "expected_generated_modes", "expected_status", "expected_decision", "expected_variant"),
+    [
+        ("no_change", [], "skipped", "accept", "original"),
+        ("safe", ["safe"], "skipped", "accept", "safe"),
+        ("semantic_redraw_direct", ["safe", "semantic_redraw_direct"], "passed", "accept", "redrawn"),
+        ("semantic_redraw_structured", ["safe", "semantic_redraw_structured"], "passed", "accept", "redrawn"),
+        (
+            "compare_all",
+            ["safe", "semantic_redraw_direct", "semantic_redraw_structured"],
+            "compared",
+            "compared",
+            "original",
+        ),
+    ],
+)
+def test_process_document_images_mode_scenario_matrix(
+    monkeypatch,
+    image_mode,
+    expected_generated_modes,
+    expected_status,
+    expected_decision,
+    expected_variant,
+):
+    _, service = _prepare_state(monkeypatch)
+    generated_modes = []
+    analyze_calls = []
+
+    def fake_analyze_image(*args, **kwargs):
+        analyze_calls.append((args, kwargs))
+        return build_analysis_result()
+
+    def fake_generate_image_candidate(
+        image_bytes,
+        analysis,
+        *,
+        mode,
+        prefer_deterministic_reconstruction=True,
+        reconstruction_model=None,
+        reconstruction_render_config=None,
+        image_output_config=None,
+        client=None,
+        budget=None,
+    ):
+        generated_modes.append(mode)
+        return PNG_BYTES if mode == "safe" else REDRAWN_BYTES
+
+    monkeypatch.setattr(processing_service, "analyze_image", fake_analyze_image)
+    monkeypatch.setattr(processing_service, "generate_image_candidate", fake_generate_image_candidate)
+    service = processing_service.build_processing_service()
+
+    result = service.process_document_images(
+        image_assets=[build_asset()],
+        image_mode=image_mode,
+        config={"keep_all_image_variants": True, "validation_model": "gpt-4.1"},
+        on_progress=lambda **kwargs: None,
+        client=object(),
+    )
+
+    assert len(result) == 1
+    assert generated_modes == expected_generated_modes
+    assert result[0].validation_status == expected_status
+    assert result[0].final_decision == expected_decision
+    assert result[0].final_variant == expected_variant
+    assert result[0].resolved_delivery_payload().final_variant == expected_variant
+    if image_mode == "no_change":
+        assert analyze_calls == []
+    else:
+        assert analyze_calls != []
+
+
 def test_process_document_images_soft_accepts_advisory_type_drift(monkeypatch):
     _, service = _prepare_state(monkeypatch)
     analyses = iter(
@@ -191,6 +262,7 @@ def test_process_document_images_applies_fallback_original_for_unreadable_candid
         prefer_deterministic_reconstruction=True,
         reconstruction_model=None,
         reconstruction_render_config=None,
+        image_output_config=None,
         client=None,
         budget=None,
     ):
@@ -306,6 +378,7 @@ def test_process_document_images_reuses_single_client_for_image_attempts(monkeyp
         prefer_deterministic_reconstruction=True,
         reconstruction_model=None,
         reconstruction_render_config=None,
+        image_output_config=None,
         client=None,
         budget=None,
     ):
@@ -383,7 +456,7 @@ def test_process_document_images_uses_detected_redraw_mime_type_for_candidate_an
     monkeypatch.setattr(
         processing_service,
         "generate_image_candidate",
-        lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, reconstruction_render_config=None, client=None, budget=None: PNG_BYTES if mode == "safe" else REDRAWN_BYTES,
+        lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, reconstruction_render_config=None, image_output_config=None, client=None, budget=None: PNG_BYTES if mode == "safe" else REDRAWN_BYTES,
     )
     service = processing_service.build_processing_service()
 
@@ -414,6 +487,7 @@ def test_process_document_images_compare_all_prepares_three_variants(monkeypatch
         prefer_deterministic_reconstruction=True,
         reconstruction_model=None,
         reconstruction_render_config=None,
+        image_output_config=None,
         client=None,
         budget=None,
     ):
@@ -467,6 +541,7 @@ def test_process_document_images_attempts_semantic_mode_for_advisory_dense_text_
         prefer_deterministic_reconstruction=True,
         reconstruction_model=None,
         reconstruction_render_config=None,
+        image_output_config=None,
         client=None,
         budget=None,
     ):
@@ -494,7 +569,7 @@ def test_process_document_images_falls_back_when_model_call_budget_is_exhausted(
     monkeypatch.setattr(
         processing_service,
         "generate_image_candidate",
-        lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, reconstruction_render_config=None, client=None, budget=None: (_ for _ in ()).throw(
+        lambda image_bytes, analysis, *, mode, prefer_deterministic_reconstruction=True, reconstruction_model=None, reconstruction_render_config=None, image_output_config=None, client=None, budget=None: (_ for _ in ()).throw(
             processing_service.ImageModelCallBudgetExceeded("budget exhausted")
         )
         if mode != "safe"
@@ -533,6 +608,7 @@ def test_process_document_images_compare_all_falls_back_when_variants_are_incomp
         prefer_deterministic_reconstruction=True,
         reconstruction_model=None,
         reconstruction_render_config=None,
+        image_output_config=None,
         client=None,
         budget=None,
     ):
@@ -660,6 +736,7 @@ def test_process_document_images_stops_future_images_when_document_budget_is_exh
         prefer_deterministic_reconstruction=True,
         reconstruction_model=None,
         reconstruction_render_config=None,
+        image_output_config=None,
         client=None,
         budget=None,
     ):
@@ -767,6 +844,7 @@ def test_process_document_images_does_not_request_candidate2_after_hard_validati
         prefer_deterministic_reconstruction=True,
         reconstruction_model=None,
         reconstruction_render_config=None,
+        image_output_config=None,
         client=None,
         budget=None,
     ):

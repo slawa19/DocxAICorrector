@@ -406,6 +406,8 @@ def test_full_tier_runtime_contract_is_nested_only() -> None:
 
 def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, monkeypatch) -> None:
     validation = _load_validation_module()
+    from models import ImageAsset
+
     source_path = tmp_path / "legacy.doc"
     source_bytes = bytes.fromhex("D0CF11E0A1B11AE1") + b"legacy-source"
     source_path.write_bytes(source_bytes)
@@ -435,6 +437,30 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
         resolve_run_profile=lambda profile, requested_run_profile_id: run_profile,
     )
     captured = {}
+    prepared_asset = ImageAsset(
+        image_id="img_001",
+        placeholder="[[DOCX_IMAGE_img_001]]",
+        original_bytes=PNG_BYTES,
+        mime_type="image/png",
+        position_index=0,
+        width_emu=123,
+        height_emu=456,
+        source_forensics={"drawing_container": "inline", "source_rect": {"l": 10}},
+    )
+    processed_asset = ImageAsset(
+        image_id="img_001",
+        placeholder="[[DOCX_IMAGE_img_001]]",
+        original_bytes=PNG_BYTES,
+        mime_type="image/png",
+        position_index=0,
+        width_emu=123,
+        height_emu=456,
+        source_forensics={"drawing_container": "inline", "source_rect": {"l": 10}},
+        final_decision="accept",
+        final_variant="redrawn",
+        final_reason="accepted",
+    )
+    processed_asset.update_runtime_attempt_state(validation_status="passed")
 
     class _ValidationServiceStub:
         def run_prepared_background_document(self, **kwargs):
@@ -446,6 +472,7 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
                     values={
                         "latest_markdown": "validated output",
                         "latest_docx_bytes": _docx_bytes(Document()),
+                        "image_assets": [processed_asset],
                     }
                 )
             )
@@ -453,7 +480,7 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
                 uploaded_filename="prepared.docx",
                 uploaded_file_bytes=b"PK\x03\x04normalized-source",
                 paragraphs=[],
-                image_assets=[],
+                image_assets=[prepared_asset],
                 jobs=[{"job_kind": "block"}],
                 source_text="source text",
                 preparation_cached=False,
@@ -519,6 +546,9 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
     assert captured["uploaded_filename"] == "legacy.doc"
     assert captured["uploaded_bytes"] == source_bytes
     assert report["runtime_config"]["effective"]["image_mode"] == "safe"
+    assert report["image_forensics"]["prepared_assets"][0]["source"]["source_forensics"]["drawing_container"] == "inline"
+    assert report["image_forensics"]["prepared_assets"][0]["source"]["source_sha256"]
+    assert report["image_forensics"]["processed_assets"][0]["final_selection"]["final_variant"] == "redrawn"
     assert "runtime_configuration" not in report
 
 

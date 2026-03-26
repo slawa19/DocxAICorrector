@@ -98,7 +98,7 @@ def classify_paragraph_role(text: str, style_name: str, *, heading_level: int | 
     if "list" in normalized_style or "спис" in normalized_style:
         return "list"
 
-    if stripped_text.startswith(("- ", "* ", "• ", "— ")):
+    if stripped_text.startswith(("- ", "* ", "• ")):
         return "list"
 
     if re.match(r"^\d+[\.)]\s+", stripped_text):
@@ -394,6 +394,9 @@ def _build_paragraph_unit(paragraph, image_assets: list[ImageAsset]) -> Paragrap
     list_metadata = _extract_paragraph_list_metadata(paragraph, text, style_name, role)
     if role != "list" and list_metadata["list_kind"] is not None:
         role = "list"
+    if role == "list" and list_metadata.get("_is_typographic_emdash_bullet"):
+        role = "body"
+        list_metadata = _empty_list_metadata()
     asset_id = _extract_paragraph_asset_id(text, role=role)
     role_confidence = _infer_role_confidence(
         role=role,
@@ -488,16 +491,14 @@ def _escape_html_preserving_breaks(text: str) -> str:
     return "<br/>".join(html.escape(part, quote=False) for part in text.split("<br/>"))
 
 
-def _extract_run_images(run) -> list[tuple[bytes, str | None, int | None, int | None]]:
+def _extract_run_images(run) -> list[tuple[bytes, str | None, int | None, int | None, dict[str, object]]]:
     return _extract_run_element_images(run._element, run.part)
 
 
-def _extract_run_element_images(run_element, part) -> list[tuple[bytes, str | None, int | None, int | None]]:
-    images: list[tuple[bytes, str | None, int | None, int | None]] = []
+def _extract_run_element_images(run_element, part) -> list[tuple[bytes, str | None, int | None, int | None, dict[str, object]]]:
+    images: list[tuple[bytes, str | None, int | None, int | None, dict[str, object]]] = []
     for drawing in run_element.xpath(".//w:drawing"):
         blips = drawing.xpath(".//a:blip")
-        # Explicit boundary: we currently preserve visible drawing extents only.
-        # Word-native crop metadata such as a:srcRect is not extracted/reapplied yet.
         width_emu, height_emu = _resolve_drawing_extent_emu(drawing)
         for blip in blips:
             embed_id = blip.get(f"{{{RELATIONSHIP_NAMESPACE}}}embed")
@@ -506,7 +507,15 @@ def _extract_run_element_images(run_element, part) -> list[tuple[bytes, str | No
             image_part = part.related_parts.get(embed_id)
             if image_part is None:
                 continue
-            images.append((image_part.blob, getattr(image_part, "content_type", None), width_emu, height_emu))
+            images.append(
+                (
+                    image_part.blob,
+                    getattr(image_part, "content_type", None),
+                    width_emu,
+                    height_emu,
+                    _build_drawing_forensics(drawing, embed_id=embed_id),
+                )
+            )
     return images
 
 
@@ -525,6 +534,63 @@ def _resolve_drawing_extent_emu(drawing) -> tuple[int | None, int | None]:
     if width_emu <= 0 or height_emu <= 0:
         return None, None
     return width_emu, height_emu
+
+
+def _build_drawing_forensics(drawing, *, embed_id: str) -> dict[str, object]:
+    doc_properties = _resolve_drawing_doc_properties(drawing)
+    return {
+        "relationship_id": embed_id,
+        "drawing_container": _resolve_drawing_container_kind(drawing),
+        "drawing_container_xml": _resolve_drawing_container_xml(drawing),
+        "source_rect": _resolve_drawing_source_rect(drawing),
+        "doc_properties": doc_properties,
+    }
+
+
+def _resolve_drawing_container_kind(drawing) -> str | None:
+    if drawing.xpath("./wp:inline"):
+        return "inline"
+    if drawing.xpath("./wp:anchor"):
+        return "anchor"
+    return None
+
+
+def _resolve_drawing_container_xml(drawing) -> str | None:
+    containers = drawing.xpath("./wp:inline | ./wp:anchor")
+    if not containers:
+        return None
+    return etree.tostring(containers[0], encoding="unicode")
+
+
+def _resolve_drawing_source_rect(drawing) -> dict[str, int] | None:
+    source_rects = drawing.xpath(".//a:srcRect")
+    if not source_rects:
+        return None
+    source_rect = source_rects[0]
+    resolved: dict[str, int] = {}
+    for key in ("l", "t", "r", "b"):
+        raw_value = source_rect.get(key)
+        if raw_value is None:
+            continue
+        try:
+            resolved[key] = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+    return resolved or None
+
+
+def _resolve_drawing_doc_properties(drawing) -> dict[str, object] | None:
+    properties = drawing.xpath(".//wp:docPr")
+    if not properties:
+        return None
+    doc_pr = properties[0]
+    payload = {
+        "id": doc_pr.get("id"),
+        "name": doc_pr.get("name"),
+        "descr": doc_pr.get("descr"),
+        "title": doc_pr.get("title"),
+    }
+    return {key: value for key, value in payload.items() if value not in {None, ""}}
 
 
 def _xml_local_name(tag: str) -> str:
@@ -954,7 +1020,7 @@ def _extract_vertical_align(run_properties) -> str | None:
 
 def _extract_run_image_placeholders(run_element, part, image_assets: list[ImageAsset]) -> list[str]:
     placeholders: list[str] = []
-    for image_blob, mime_type, width_emu, height_emu in _extract_run_element_images(run_element, part):
+    for image_blob, mime_type, width_emu, height_emu, source_forensics in _extract_run_element_images(run_element, part):
         image_index = len(image_assets) + 1
         placeholder = f"[[DOCX_IMAGE_img_{image_index:03d}]]"
         image_assets.append(
@@ -966,14 +1032,18 @@ def _extract_run_image_placeholders(run_element, part, image_assets: list[ImageA
                 position_index=image_index - 1,
                 width_emu=width_emu,
                 height_emu=height_emu,
+                source_forensics=source_forensics,
             )
         )
         placeholders.append(placeholder)
     return placeholders
 
 
-def _extract_paragraph_list_metadata(paragraph, text: str, style_name: str, role: str) -> dict[str, object]:
-    metadata: dict[str, object] = {
+_TYPOGRAPHIC_BULLET_CHARS = {"\u2014", "\u2013"}  # em-dash, en-dash
+
+
+def _empty_list_metadata() -> dict[str, object]:
+    return {
         "list_kind": None,
         "list_level": 0,
         "list_numbering_format": None,
@@ -982,6 +1052,17 @@ def _extract_paragraph_list_metadata(paragraph, text: str, style_name: str, role
         "list_num_xml": None,
         "list_abstract_num_xml": None,
     }
+
+
+def _is_typographic_emdash_bullet(numbering_details: dict[str, str | None]) -> bool:
+    return (
+        numbering_details.get("num_format") == "bullet"
+        and (numbering_details.get("lvl_text") or "") in _TYPOGRAPHIC_BULLET_CHARS
+    )
+
+
+def _extract_paragraph_list_metadata(paragraph, text: str, style_name: str, role: str) -> dict[str, object]:
+    metadata: dict[str, object] = _empty_list_metadata()
 
     explicit_kind = _detect_explicit_list_kind(text)
     style_level = _extract_style_list_level(style_name)
@@ -998,6 +1079,8 @@ def _extract_paragraph_list_metadata(paragraph, text: str, style_name: str, role
         # markdown markers are present.
         if num_pr is not None:
             numbering_details = _resolve_num_pr_details(paragraph, num_pr)
+            if _is_typographic_emdash_bullet(numbering_details):
+                return _empty_list_metadata()
             numbering_format = numbering_details["num_format"]
             metadata["list_level"] = _extract_num_pr_level(num_pr)
             metadata["list_numbering_format"] = numbering_format
@@ -1014,6 +1097,9 @@ def _extract_paragraph_list_metadata(paragraph, text: str, style_name: str, role
     if num_pr is not None:
         list_level = max(_extract_num_pr_level(num_pr), style_level)
         numbering_details = _resolve_num_pr_details(paragraph, num_pr)
+        if _is_typographic_emdash_bullet(numbering_details):
+            metadata["_is_typographic_emdash_bullet"] = True
+            return metadata
         numbering_format = numbering_details["num_format"]
         metadata["list_level"] = list_level
         metadata["list_numbering_format"] = numbering_format
@@ -1049,7 +1135,7 @@ def _extract_paragraph_list_metadata(paragraph, text: str, style_name: str, role
 
 def _detect_explicit_list_kind(text: str) -> str | None:
     stripped_text = text.lstrip()
-    if stripped_text.startswith(("- ", "* ", "• ", "— ")):
+    if stripped_text.startswith(("- ", "* ", "• ")):
         return "unordered"
     if re.match(r"^\d+[\.)]\s+", stripped_text):
         return "ordered"
@@ -1151,10 +1237,12 @@ def _resolve_num_pr_details(paragraph, num_pr) -> dict[str, str | None]:
             if _get_xml_attribute(level, "ilvl") != ilvl:
                 continue
             num_format = _find_child_element(level, "numFmt")
+            lvl_text = _find_child_element(level, "lvlText")
             return {
                 "num_id": num_id,
                 "abstract_num_id": abstract_num_id,
                 "num_format": _get_xml_attribute(num_format, "val") if num_format is not None else None,
+                "lvl_text": _get_xml_attribute(lvl_text, "val") if lvl_text is not None else None,
                 "num_xml": num_xml,
                 "abstract_num_xml": abstract_num_xml,
             }

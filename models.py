@@ -2,9 +2,13 @@ import builtins
 import re
 from enum import StrEnum
 from dataclasses import asdict, dataclass, field
+from typing import Any, cast
 
 
-EXPLICIT_LIST_MARKER_PATTERN = re.compile(r"^(?:\s*[-*•—]\s+|\s*\d+[\.)]\s+)")
+_UNSET = object()
+
+
+EXPLICIT_LIST_MARKER_PATTERN = re.compile(r"^(?:\s*[-*•]\s+|\s*\d+[\.)]\s+)")
 EXPLICIT_HEADING_PATTERN = re.compile(r"^#{1,6}\s+")
 
 
@@ -175,6 +179,7 @@ class ImageSourceIdentitySnapshot:
     source_mime_type: str | None = None
     source_width_emu: int | None = None
     source_height_emu: int | None = None
+    source_forensics: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -236,6 +241,48 @@ class ImageFinalSelectionSnapshot:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class ImageDeliveryInsertion:
+    label: str | None
+    bytes: builtins.bytes
+    variant_key: str | None = None
+    mime_type: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "label": self.label,
+            "variant_key": self.variant_key,
+            "mime_type": self.mime_type,
+            "has_bytes": bool(self.bytes),
+            "bytes_size": len(self.bytes),
+        }
+
+
+@dataclass(frozen=True)
+class ImageDeliveryPayload:
+    delivery_kind: str
+    final_bytes: builtins.bytes | None = None
+    insertions: tuple[ImageDeliveryInsertion, ...] = ()
+    selected_variant: str | None = None
+    final_variant: str | None = None
+    final_decision: str | None = None
+    final_reason: str | None = None
+    source_forensics: dict[str, object] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "delivery_kind": self.delivery_kind,
+            "has_final_bytes": self.final_bytes is not None,
+            "final_bytes_size": len(self.final_bytes) if isinstance(self.final_bytes, (bytes, bytearray)) else 0,
+            "selected_variant": self.selected_variant,
+            "final_variant": self.final_variant,
+            "final_decision": self.final_decision,
+            "final_reason": self.final_reason,
+            "insertions": [insertion.to_dict() for insertion in self.insertions],
+            "source_forensics": dict(self.source_forensics),
+        }
+
+
 def get_image_variant_value(variant: "ImageVariantCandidate | dict[str, object] | None", field_name: str, default=None):
     if isinstance(variant, dict):
         return variant.get(field_name, default)
@@ -260,6 +307,7 @@ class ImageAsset:
     position_index: int
     width_emu: int | None = None
     height_emu: int | None = None
+    source_forensics: dict[str, object] = field(default_factory=dict)
     mode_requested: str | None = None
     analysis_result: ImageAnalysisResult | dict[str, object] | None = None
     prompt_key: str | None = None
@@ -277,10 +325,12 @@ class ImageAsset:
     attempt_variants: list[ImageVariantCandidate | dict[str, object]] = field(default_factory=list)
     comparison_variants: dict[str, ImageVariantCandidate | dict[str, object]] = field(default_factory=dict)
     selected_compare_variant: str | None = None
+    delivery_payload: ImageDeliveryPayload | None = None
 
     def __post_init__(self) -> None:
         self.sync_runtime_attempt_state_from_fields()
         self.sync_pipeline_metadata()
+        self.sync_delivery_payload()
 
     def sync_runtime_attempt_state_from_fields(self) -> None:
         self.runtime_attempt_state.redrawn_bytes = self.redrawn_bytes
@@ -315,37 +365,47 @@ class ImageAsset:
             if hasattr(self.metadata, key):
                 setattr(self.metadata, key, value)
         self.sync_pipeline_metadata()
+        self.sync_delivery_payload()
 
     def update_runtime_attempt_state(
         self,
         *,
-        redrawn_bytes=...,
-        redrawn_mime_type=...,
-        validation_result=...,
-        validation_status=...,
-        attempt_variants=...,
-        comparison_variants=...,
-        selected_compare_variant=...,
+        redrawn_bytes: bytes | None | Any = _UNSET,
+        redrawn_mime_type: str | None | Any = _UNSET,
+        validation_result: ImageValidationResult | dict[str, object] | None | Any = _UNSET,
+        validation_status: str | Any = _UNSET,
+        attempt_variants: list[ImageVariantCandidate | dict[str, object]] | Any = _UNSET,
+        comparison_variants: dict[str, ImageVariantCandidate | dict[str, object]] | Any = _UNSET,
+        selected_compare_variant: str | None | Any = _UNSET,
         clear_selected_compare_variant: bool = False,
     ) -> None:
-        if redrawn_bytes is not ...:
+        if redrawn_bytes is not _UNSET:
             self.runtime_attempt_state.redrawn_bytes = redrawn_bytes
-        if redrawn_mime_type is not ...:
+        if redrawn_mime_type is not _UNSET:
             self.runtime_attempt_state.redrawn_mime_type = redrawn_mime_type
-        if validation_result is not ...:
+        if validation_result is not _UNSET:
             self.runtime_attempt_state.validation_result = validation_result
-        if validation_status is not ...:
+        if validation_status is not _UNSET:
             self.runtime_attempt_state.validation_status = validation_status
-        if attempt_variants is not ...:
+        if attempt_variants is not _UNSET:
             self.runtime_attempt_state.attempt_variants = list(attempt_variants)
-        if comparison_variants is not ...:
+        if comparison_variants is not _UNSET:
             self.runtime_attempt_state.comparison_variants = dict(comparison_variants)
         if clear_selected_compare_variant:
             self.runtime_attempt_state.selected_compare_variant = None
-        elif selected_compare_variant is not ...:
+        elif selected_compare_variant is not _UNSET:
             self.runtime_attempt_state.selected_compare_variant = selected_compare_variant
         self._sync_fields_from_runtime_attempt_state()
         self.sync_pipeline_metadata()
+        self.sync_delivery_payload()
+
+    def sync_delivery_payload(self) -> None:
+        self.delivery_payload = build_image_delivery_payload(self)
+
+    def resolved_delivery_payload(self) -> ImageDeliveryPayload:
+        if self.delivery_payload is None:
+            self.sync_delivery_payload()
+        return self.delivery_payload if self.delivery_payload is not None else build_image_delivery_payload(self)
 
     def source_identity_snapshot(self) -> ImageSourceIdentitySnapshot:
         self.sync_pipeline_metadata()
@@ -359,6 +419,7 @@ class ImageAsset:
             source_mime_type=self.metadata.source_mime_type,
             source_width_emu=self.metadata.source_width_emu,
             source_height_emu=self.metadata.source_height_emu,
+            source_forensics=dict(self.source_forensics),
         )
 
     def runtime_state_snapshot(self) -> ImageRuntimeStateSnapshot:
@@ -439,6 +500,7 @@ class ImageAsset:
             metadata_updates["soft_accepted"] = soft_accepted
         if metadata_updates:
             self.update_pipeline_metadata(**metadata_updates)
+        self.sync_delivery_payload()
 
     def to_log_context(self) -> dict[str, object]:
         self.sync_pipeline_metadata()
@@ -452,6 +514,7 @@ class ImageAsset:
             "position_index": source_identity.position_index,
             "width_emu": source_identity.width_emu,
             "height_emu": source_identity.height_emu,
+            "source_forensics": dict(source_identity.source_forensics),
             "mode_requested": runtime_state.mode_requested,
             "prompt_key": runtime_state.prompt_key,
             "render_strategy": runtime_state.render_strategy,
@@ -461,6 +524,7 @@ class ImageAsset:
             "final_decision": final_selection.final_decision,
             "final_variant": final_selection.final_variant,
             "final_reason": final_selection.final_reason,
+            "delivery_payload": self.resolved_delivery_payload().to_dict(),
             "attempt_variants": [
                 variant.to_dict() if isinstance(variant, ImageVariantCandidate) else variant
                 for variant in runtime_state.attempt_variants
@@ -540,6 +604,7 @@ def clone_prepared_image_asset(asset):
         position_index=asset.position_index,
         width_emu=asset.width_emu,
         height_emu=asset.height_emu,
+        source_forensics=dict(asset.source_forensics),
         mode_requested=asset.mode_requested,
         analysis_result=_clone_analysis_payload(asset.analysis_result),
         prompt_key=asset.prompt_key,
@@ -547,14 +612,30 @@ def clone_prepared_image_asset(asset):
         safe_bytes=bytes(asset.safe_bytes) if isinstance(asset.safe_bytes, (bytes, bytearray)) else asset.safe_bytes,
         redrawn_bytes=bytes(asset.redrawn_bytes) if isinstance(asset.redrawn_bytes, (bytes, bytearray)) else asset.redrawn_bytes,
         redrawn_mime_type=asset.redrawn_mime_type,
-        metadata=ImagePipelineMetadata(**metadata.to_dict()),
+        metadata=ImagePipelineMetadata(
+            source_mime_type=metadata.source_mime_type,
+            rendered_mime_type=metadata.rendered_mime_type,
+            source_width_emu=metadata.source_width_emu,
+            source_height_emu=metadata.source_height_emu,
+            strict_validation_decision=metadata.strict_validation_decision,
+            strict_validation_passed=metadata.strict_validation_passed,
+            soft_accepted=metadata.soft_accepted,
+            placeholder_status=metadata.placeholder_status,
+            preserve_all_variants_in_docx=metadata.preserve_all_variants_in_docx,
+        ),
         runtime_attempt_state=ImageRuntimeAttemptState(
             redrawn_bytes=bytes(asset.runtime_attempt_state.redrawn_bytes) if isinstance(asset.runtime_attempt_state.redrawn_bytes, (bytes, bytearray)) else asset.runtime_attempt_state.redrawn_bytes,
             redrawn_mime_type=asset.runtime_attempt_state.redrawn_mime_type,
             validation_result=_clone_validation_payload(asset.runtime_attempt_state.validation_result),
             validation_status=asset.runtime_attempt_state.validation_status,
-            attempt_variants=[clone_image_variant_candidate(variant) for variant in asset.runtime_attempt_state.attempt_variants if variant is not None],
-            comparison_variants={key: clone_image_variant_candidate(variant) for key, variant in asset.runtime_attempt_state.comparison_variants.items() if variant is not None},
+            attempt_variants=cast(
+                list[ImageVariantCandidate | dict[str, object]],
+                [clone_image_variant_candidate(variant) for variant in asset.runtime_attempt_state.attempt_variants if variant is not None],
+            ),
+            comparison_variants=cast(
+                dict[str, ImageVariantCandidate | dict[str, object]],
+                {key: clone_image_variant_candidate(variant) for key, variant in asset.runtime_attempt_state.comparison_variants.items() if variant is not None},
+            ),
             selected_compare_variant=asset.runtime_attempt_state.selected_compare_variant,
         ),
         validation_result=_clone_validation_payload(asset.validation_result),
@@ -562,7 +643,145 @@ def clone_prepared_image_asset(asset):
         final_decision=asset.final_decision,
         final_variant=asset.final_variant,
         final_reason=asset.final_reason,
-        attempt_variants=[clone_image_variant_candidate(variant) for variant in asset.attempt_variants if variant is not None],
-        comparison_variants={key: clone_image_variant_candidate(variant) for key, variant in asset.comparison_variants.items() if variant is not None},
+        attempt_variants=cast(
+            list[ImageVariantCandidate | dict[str, object]],
+            [clone_image_variant_candidate(variant) for variant in asset.attempt_variants if variant is not None],
+        ),
+        comparison_variants=cast(
+            dict[str, ImageVariantCandidate | dict[str, object]],
+            {key: clone_image_variant_candidate(variant) for key, variant in asset.comparison_variants.items() if variant is not None},
+        ),
         selected_compare_variant=asset.selected_compare_variant,
+        delivery_payload=(
+            ImageDeliveryPayload(
+                delivery_kind=asset.delivery_payload.delivery_kind,
+                final_bytes=(
+                    bytes(asset.delivery_payload.final_bytes)
+                    if isinstance(asset.delivery_payload.final_bytes, (bytes, bytearray))
+                    else asset.delivery_payload.final_bytes
+                ),
+                insertions=tuple(
+                    ImageDeliveryInsertion(
+                        label=insertion.label,
+                        bytes=bytes(insertion.bytes),
+                        variant_key=insertion.variant_key,
+                        mime_type=insertion.mime_type,
+                    )
+                    for insertion in asset.delivery_payload.insertions
+                ),
+                selected_variant=asset.delivery_payload.selected_variant,
+                final_variant=asset.delivery_payload.final_variant,
+                final_decision=asset.delivery_payload.final_decision,
+                final_reason=asset.delivery_payload.final_reason,
+                source_forensics=dict(asset.delivery_payload.source_forensics),
+            )
+            if isinstance(asset.delivery_payload, ImageDeliveryPayload)
+            else None
+        ),
     )
+
+
+def build_image_delivery_payload(asset: ImageAsset) -> ImageDeliveryPayload:
+    compare_insertions = _resolve_compare_delivery_insertions(asset)
+    if compare_insertions:
+        return ImageDeliveryPayload(
+            delivery_kind="compare_all_variants",
+            final_bytes=_resolve_final_image_bytes_from_asset(asset),
+            insertions=compare_insertions,
+            selected_variant=asset.selected_compare_variant,
+            final_variant=asset.final_variant,
+            final_decision=asset.final_decision,
+            final_reason=asset.final_reason,
+            source_forensics=dict(asset.source_forensics),
+        )
+
+    manual_review_insertions = _resolve_manual_review_delivery_insertions(asset)
+    if manual_review_insertions:
+        return ImageDeliveryPayload(
+            delivery_kind="manual_review_variants",
+            final_bytes=_resolve_final_image_bytes_from_asset(asset),
+            insertions=manual_review_insertions,
+            selected_variant=asset.selected_compare_variant,
+            final_variant=asset.final_variant,
+            final_decision=asset.final_decision,
+            final_reason=asset.final_reason,
+            source_forensics=dict(asset.source_forensics),
+        )
+
+    return ImageDeliveryPayload(
+        delivery_kind="final_selection",
+        final_bytes=_resolve_final_image_bytes_from_asset(asset),
+        selected_variant=asset.selected_compare_variant,
+        final_variant=asset.final_variant,
+        final_decision=asset.final_decision,
+        final_reason=asset.final_reason,
+        source_forensics=dict(asset.source_forensics),
+    )
+
+
+def _resolve_compare_delivery_insertions(asset: ImageAsset) -> tuple[ImageDeliveryInsertion, ...]:
+    if getattr(asset, "validation_status", None) != "compared" or not getattr(asset, "comparison_variants", None):
+        return ()
+    insertions: list[ImageDeliveryInsertion] = []
+    for mode in DOCX_COMPARE_VARIANT_MODE_VALUES:
+        variant = asset.comparison_variants.get(mode)
+        variant_bytes = get_image_variant_bytes(variant)
+        if variant_bytes:
+            insertions.append(
+                ImageDeliveryInsertion(
+                    label=(
+                        "Вариант 1: Просто улучшить"
+                        if mode == ImageMode.SAFE.value
+                        else "Вариант 2: Креативная AI-перерисовка"
+                        if mode == ImageMode.SEMANTIC_REDRAW_DIRECT.value
+                        else "Вариант 3: Структурная AI-перерисовка"
+                    ),
+                    bytes=variant_bytes,
+                    variant_key=mode,
+                    mime_type=cast(str | None, get_image_variant_value(variant, "mime_type")),
+                )
+            )
+    return tuple(insertions)
+
+
+def _resolve_manual_review_delivery_insertions(asset: ImageAsset) -> tuple[ImageDeliveryInsertion, ...]:
+    if not bool(getattr(getattr(asset, "metadata", None), "preserve_all_variants_in_docx", False)):
+        return ()
+    insertions: list[ImageDeliveryInsertion] = []
+    if asset.safe_bytes:
+        insertions.append(
+            ImageDeliveryInsertion(
+                label="safe",
+                bytes=bytes(asset.safe_bytes),
+                variant_key=ImageMode.SAFE.value,
+                mime_type=asset.mime_type,
+            )
+        )
+    for variant in list(getattr(asset, "attempt_variants", []))[:2]:
+        variant_label = str(get_image_variant_value(variant, "mode", "")).strip() or None
+        variant_bytes = get_image_variant_bytes(variant)
+        if variant_label and variant_bytes:
+            insertions.append(
+                ImageDeliveryInsertion(
+                    label=variant_label,
+                    bytes=variant_bytes,
+                    variant_key=variant_label,
+                    mime_type=cast(str | None, get_image_variant_value(variant, "mime_type")),
+                )
+            )
+    return tuple(insertions)
+
+
+def _resolve_final_image_bytes_from_asset(asset: ImageAsset) -> bytes:
+    if asset.selected_compare_variant:
+        if asset.selected_compare_variant == "original":
+            return asset.original_bytes
+        selected_variant = asset.comparison_variants.get(asset.selected_compare_variant)
+        selected_bytes = get_image_variant_bytes(selected_variant)
+        if selected_bytes:
+            return selected_bytes
+    if asset.final_variant == "redrawn" and asset.redrawn_bytes:
+        return bytes(asset.redrawn_bytes)
+    if asset.final_variant == "safe" and asset.safe_bytes:
+        return bytes(asset.safe_bytes)
+    return bytes(asset.original_bytes)

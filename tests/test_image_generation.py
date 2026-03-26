@@ -3,7 +3,7 @@ from io import BytesIO
 from types import SimpleNamespace
 
 import image_generation
-from PIL import Image
+from PIL import Image, ImageDraw
 from models import ImageAnalysisResult
 
 
@@ -288,8 +288,8 @@ def test_generate_image_candidate_structured_trims_large_generated_margins_befor
                     leftmost_blue = min(leftmost_blue, x_coord)
                     rightmost_blue = max(rightmost_blue, x_coord)
 
-        assert leftmost_blue <= 4
-        assert rightmost_blue >= restored_image.width - 5
+        assert leftmost_blue <= 6
+        assert rightmost_blue >= restored_image.width - 7
 
 
 def test_generate_image_candidate_direct_uses_creative_vision_and_images_generate(monkeypatch):
@@ -354,10 +354,77 @@ def test_generate_image_candidate_direct_normalizes_dark_outer_background_to_whi
         assert normalized_image.getpixel((23, 23))[:3] == (255, 255, 255)
 
 
+def test_trim_generated_outer_padding_skips_trim_when_loss_ratio_is_too_large():
+    image = Image.new("RGB", (100, 100), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((20, 0, 99, 99), fill="black")
+
+    trimmed = image_generation._trim_generated_outer_padding(
+        image,
+        {
+            "image_output_trim_tolerance": 20,
+            "image_output_trim_padding_ratio": 0.02,
+            "image_output_trim_padding_min_px": 4,
+            "image_output_trim_max_loss_ratio": 0.15,
+        },
+    )
+
+    assert trimmed.size == image.size
+
+
+def test_trim_generated_outer_padding_applies_trim_when_loss_ratio_is_safe():
+    image = Image.new("RGB", (100, 100), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((10, 10, 90, 90), fill="black")
+
+    trimmed = image_generation._trim_generated_outer_padding(
+        image,
+        {
+            "image_output_trim_tolerance": 20,
+            "image_output_trim_padding_ratio": 0.02,
+            "image_output_trim_padding_min_px": 4,
+            "image_output_trim_max_loss_ratio": 0.15,
+        },
+    )
+
+    assert trimmed.size[0] < image.size[0]
+    assert trimmed.size[1] < image.size[1]
+
+
 def test_select_generate_size_uses_fixed_aspect_presets():
     assert image_generation._select_generate_size((400, 400)) == "1024x1024"
     assert image_generation._select_generate_size((800, 400)) == "1536x1024"
     assert image_generation._select_generate_size((400, 800)) == "1024x1536"
+
+
+def test_select_generate_size_uses_policy_overrides():
+    policy = {
+        "image_output_generate_candidate_sizes": ("1024x1024", "1024x1792"),
+    }
+
+    assert image_generation._select_generate_size((400, 400), policy) == "1024x1024"
+    assert image_generation._select_generate_size((800, 400), policy) == "1024x1024"
+    assert image_generation._select_generate_size((400, 800), policy) == "1024x1792"
+
+
+def test_extract_supported_generate_size_fallback_prefers_nearest_supported_size():
+    fallback = image_generation._extract_supported_generate_size_fallback(
+        "Error code: 400 - {'error': {'message': \"Invalid value: '1536x1024'. Supported values are: '1024x1024', '1024x1792'.\", 'param': 'size'}}",
+        "1536x1024",
+        fallback_sizes=("1024x1792", "1024x1024"),
+    )
+
+    assert fallback == "1024x1024"
+
+
+def test_extract_supported_edit_size_fallback_prefers_nearest_supported_size():
+    fallback = image_generation._extract_supported_size_fallback(
+        "Error code: 400 - {'error': {'message': \"Invalid value: '1536x1024'. Supported values are: '512x512', '1024x1024'.\", 'param': 'size'}}",
+        "1536x1024",
+        fallback_sizes=("512x512", "1024x1024"),
+    )
+
+    assert fallback == "1024x1024"
 
 
 def test_generate_image_candidate_uses_provided_client(monkeypatch):

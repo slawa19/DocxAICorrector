@@ -183,13 +183,13 @@ def _store_preparation_summary(*, prepared_run_context) -> None:
     }
 
 
-def _render_processing_controls(*, can_start: bool, is_processing: bool) -> str | None:
+def _render_processing_controls(*, can_start: bool, is_processing: bool, emphasize_start: bool = True) -> str | None:
     stop_requested = bool(st.session_state.get("processing_stop_requested", False))
     start_col, stop_col = st.columns(2)
 
     if start_col.button(
         "Обработка запущена" if is_processing else "Начать обработку",
-        type="primary",
+        type="primary" if emphasize_start else "secondary",
         use_container_width=True,
         disabled=(not can_start) or is_processing,
         key="start_processing_button",
@@ -470,7 +470,11 @@ def main() -> None:
         render_result(st.session_state.latest_docx_bytes, st.session_state.latest_markdown, uploaded_filename)
 
     _finalize_app_frame(add_section_gap=True)
-    action = _render_processing_controls(can_start=True, is_processing=False)
+    action = _render_processing_controls(
+        can_start=True,
+        is_processing=False,
+        emphasize_start=not has_completed_result,
+    )
     if action == "start":
         _start_background_processing(
             uploaded_filename=uploaded_filename,

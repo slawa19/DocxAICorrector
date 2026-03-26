@@ -803,6 +803,7 @@ def test_render_result_bundle_shows_downloads_in_columns(monkeypatch):
     assert len(cols[0].calls) == 1
     assert len(cols[1].calls) == 1
     assert "DOCX" in cols[0].calls[0]["label"]
+    assert cols[0].calls[0]["type"] == "primary"
     assert "Markdown" in cols[1].calls[0]["label"]
 
 

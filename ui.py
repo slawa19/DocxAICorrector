@@ -485,6 +485,7 @@ def render_result_bundle(
         file_name=_build_output_filename(original_filename),
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         on_click="ignore",
+        type="primary",
         use_container_width=True,
     )
     col_md.download_button(

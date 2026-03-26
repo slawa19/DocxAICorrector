@@ -47,6 +47,16 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["reconstruction_min_canvas_short_side_px"] == 900
     assert app_config["reconstruction_target_min_font_px"] == 18
     assert app_config["reconstruction_max_upscale_factor"] == 3.0
+    assert app_config["image_output_generate_size_square"] == "1024x1024"
+    assert app_config["image_output_generate_size_landscape"] == "1536x1024"
+    assert app_config["image_output_generate_size_portrait"] == "1024x1536"
+    assert app_config["image_output_generate_candidate_sizes"] == ("1536x1024", "1024x1536", "1024x1024")
+    assert app_config["image_output_edit_candidate_sizes"] == ("1536x1024", "1024x1536", "1024x1024", "512x512", "256x256")
+    assert app_config["image_output_aspect_ratio_threshold"] == 1.2
+    assert app_config["image_output_trim_tolerance"] == 20
+    assert app_config["image_output_trim_padding_ratio"] == 0.02
+    assert app_config["image_output_trim_padding_min_px"] == 4
+    assert app_config["image_output_trim_max_loss_ratio"] == 0.15
 
 
 def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
@@ -72,6 +82,16 @@ def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
     monkeypatch.setenv("DOCX_AI_RECONSTRUCTION_MIN_CANVAS_SHORT_SIDE_PX", "8192")
     monkeypatch.setenv("DOCX_AI_RECONSTRUCTION_TARGET_MIN_FONT_PX", "8")
     monkeypatch.setenv("DOCX_AI_RECONSTRUCTION_MAX_UPSCALE_FACTOR", "9")
+    monkeypatch.setenv("DOCX_AI_IMAGE_OUTPUT_GENERATE_SIZE_SQUARE", "1536x1024")
+    monkeypatch.setenv("DOCX_AI_IMAGE_OUTPUT_GENERATE_SIZE_LANDSCAPE", "1024x1024")
+    monkeypatch.setenv("DOCX_AI_IMAGE_OUTPUT_GENERATE_SIZE_PORTRAIT", "1024x1024")
+    monkeypatch.setenv("DOCX_AI_IMAGE_OUTPUT_GENERATE_CANDIDATE_SIZES", "1024x1024,1536x1024")
+    monkeypatch.setenv("DOCX_AI_IMAGE_OUTPUT_EDIT_CANDIDATE_SIZES", "512x512,256x256")
+    monkeypatch.setenv("DOCX_AI_IMAGE_OUTPUT_ASPECT_RATIO_THRESHOLD", "9")
+    monkeypatch.setenv("DOCX_AI_IMAGE_OUTPUT_TRIM_TOLERANCE", "99")
+    monkeypatch.setenv("DOCX_AI_IMAGE_OUTPUT_TRIM_PADDING_RATIO", "9")
+    monkeypatch.setenv("DOCX_AI_IMAGE_OUTPUT_TRIM_PADDING_MIN_PX", "999")
+    monkeypatch.setenv("DOCX_AI_IMAGE_OUTPUT_TRIM_MAX_LOSS_RATIO", "9")
 
     app_config = config.load_app_config()
 
@@ -96,6 +116,32 @@ def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
     assert app_config["reconstruction_min_canvas_short_side_px"] == 4096
     assert app_config["reconstruction_target_min_font_px"] == 10
     assert app_config["reconstruction_max_upscale_factor"] == 6.0
+    assert app_config["image_output_generate_size_square"] == "1536x1024"
+    assert app_config["image_output_generate_size_landscape"] == "1024x1024"
+    assert app_config["image_output_generate_size_portrait"] == "1024x1024"
+    assert app_config["image_output_generate_candidate_sizes"] == ("1024x1024", "1536x1024")
+    assert app_config["image_output_edit_candidate_sizes"] == ("512x512", "256x256")
+    assert app_config["image_output_aspect_ratio_threshold"] == 3.0
+    assert app_config["image_output_trim_tolerance"] == 64
+    assert app_config["image_output_trim_padding_ratio"] == 0.25
+    assert app_config["image_output_trim_padding_min_px"] == 128
+    assert app_config["image_output_trim_max_loss_ratio"] == 0.49
+
+
+def test_load_app_config_rejects_invalid_image_output_size_override(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.setenv("DOCX_AI_IMAGE_OUTPUT_GENERATE_SIZE_SQUARE", "2048x2048")
+
+    with pytest.raises(RuntimeError, match="DOCX_AI_IMAGE_OUTPUT_GENERATE_SIZE_SQUARE"):
+        config.load_app_config()
+
+
+def test_load_app_config_rejects_invalid_image_output_size_list_override(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.setenv("DOCX_AI_IMAGE_OUTPUT_GENERATE_CANDIDATE_SIZES", "2048x2048")
+
+    with pytest.raises(RuntimeError, match="DOCX_AI_IMAGE_OUTPUT_GENERATE_CANDIDATE_SIZES"):
+        config.load_app_config()
 
 
 def test_parse_csv_env_rejects_empty_effective_list(monkeypatch):

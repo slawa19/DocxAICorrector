@@ -22,6 +22,9 @@ _BudgetExceededClass: TypeAlias = type[Exception]
 _AnalyzeImageFn: TypeAlias = Callable[..., ImageAnalysisResult]
 _GenerateImageCandidateFn: TypeAlias = Callable[..., bytes]
 _ValidateRedrawResultFn: TypeAlias = Callable[..., ImageValidationResult]
+_PlanExecutor: TypeAlias = Callable[..., object]
+_SelectionExecutor: TypeAlias = Callable[..., object]
+_DeliveryExecutor: TypeAlias = Callable[..., object]
 
 
 @dataclass(frozen=True)
@@ -36,6 +39,19 @@ class _CompositeImageModelCallBudget:
         self.ensure_available(operation_name)
         for budget in self.budgets:
             budget.consume(operation_name)
+
+
+@dataclass(frozen=True)
+class ImageProcessingPlan:
+    requested_mode: str
+    effective_mode: str
+    generation_strategy: str
+    delivery_mode: str
+    validation_strategy: str
+    compare_modes: tuple[str, ...] = ()
+    semantic_attempt_allowed: bool = False
+    needs_client: bool = False
+    needs_safe_candidate: bool = False
 
 
 @dataclass
@@ -101,6 +117,7 @@ class ImageProcessingContext:
             prefer_deterministic_reconstruction=_config_bool(self.config, "prefer_deterministic_reconstruction", True),
             reconstruction_model=_config_optional_str(self.config.get("reconstruction_model")),
             reconstruction_render_config=_build_reconstruction_render_config(self.config),
+            image_output_config=_build_image_output_config(self.config),
             client=client,
             budget=budget,
         )
@@ -300,6 +317,18 @@ def _should_request_challenger_candidate(attempt_asset, *, attempt_index: int, a
     return getattr(attempt_asset, "validation_status", None) == "failed"
 
 
+def _is_incomplete_compare_variant_result(candidate_mode: str, candidate_asset) -> bool:
+    if candidate_mode == ImageMode.SAFE.value:
+        return candidate_asset.safe_bytes is None
+
+    final_reason = getattr(candidate_asset, "final_reason", None) or ""
+    if final_reason.startswith("image_processing_exception:"):
+        return True
+    if final_reason == "semantic_candidate_attempts_exhausted":
+        return True
+    return final_reason.endswith("budget_exhausted")
+
+
 def _build_compare_variant_candidate(
     asset,
     analysis,
@@ -309,61 +338,53 @@ def _build_compare_variant_candidate(
     client,
     budget=None,
 ):
-    candidate_bytes = pipeline_context.generate_candidate(
-        asset.original_bytes,
+    candidate_plan = _build_image_processing_plan(analysis, candidate_mode)
+    candidate_asset = _clone_image_asset_for_attempt(asset)
+    candidate_asset.safe_bytes = asset.safe_bytes
+    candidate_asset = _execute_image_processing_plan(
+        candidate_asset,
         analysis,
-        mode=candidate_mode,
+        analysis,
+        candidate_plan,
+        pipeline_context=pipeline_context,
         client=client,
         budget=budget,
     )
-    candidate_mime_type = pipeline_context.detect_image_mime_type_fn(candidate_bytes)
+    candidate_asset = cast(Any, candidate_asset)
+
+    if _is_incomplete_compare_variant_result(candidate_mode, candidate_asset):
+        raise RuntimeError(
+            f"compare_all_variant_incomplete:{candidate_mode}:{candidate_asset.final_reason or 'unknown'}"
+        )
+
+    candidate_bytes = None
+    candidate_mime_type = None
+    if candidate_asset.final_variant == ImageMode.SAFE.value and candidate_asset.safe_bytes:
+        candidate_bytes = candidate_asset.safe_bytes
+        candidate_mime_type = pipeline_context.detect_image_mime_type_fn(candidate_bytes)
+    elif candidate_asset.final_variant == "redrawn" and candidate_asset.redrawn_bytes:
+        candidate_bytes = candidate_asset.redrawn_bytes
+        candidate_mime_type = candidate_asset.redrawn_mime_type
+    else:
+        delivery_payload = candidate_asset.resolved_delivery_payload()
+        candidate_bytes = delivery_payload.final_bytes
+        candidate_mime_type = pipeline_context.detect_image_mime_type_fn(candidate_bytes) if candidate_bytes else None
+
     variant = ImageVariantCandidate(
         mode=candidate_mode,
         bytes=candidate_bytes,
         mime_type=candidate_mime_type,
+        validation_result=candidate_asset.validation_result,
+        validation_status=candidate_asset.validation_status,
+        final_decision=candidate_asset.final_decision,
+        final_variant=candidate_asset.final_variant,
+        final_reason=candidate_asset.final_reason,
     )
 
     if candidate_mode == ImageMode.SAFE.value:
-        variant.validation_status = "skipped"
-        variant.final_decision = "accept"
-        variant.final_variant = ImageMode.SAFE.value
+        asset.safe_bytes = candidate_asset.safe_bytes or candidate_bytes
         variant.final_reason = "compare_all_safe_variant_ready"
-        asset.safe_bytes = candidate_bytes
-        return variant
 
-    if asset.safe_bytes and candidate_bytes == asset.safe_bytes:
-        variant.validation_status = "skipped"
-        variant.final_decision = "fallback_safe"
-        variant.final_variant = ImageMode.SAFE.value
-        variant.final_reason = "semantic_redraw_fell_back_to_safe_candidate"
-        return variant
-
-    attempt_asset = _clone_image_asset_for_attempt(asset)
-    attempt_asset.safe_bytes = asset.safe_bytes
-    attempt_asset.update_runtime_attempt_state(
-        redrawn_bytes=candidate_bytes,
-        redrawn_mime_type=candidate_mime_type,
-    )
-    attempt_asset.update_pipeline_metadata(rendered_mime_type=candidate_mime_type)
-    candidate_analysis = pipeline_context.analyze_image(
-        candidate_bytes,
-        mime_type=candidate_mime_type or attempt_asset.mime_type,
-        client=client,
-        budget=budget,
-    )
-    attempt_asset = _validate_semantic_attempt(
-        attempt_asset,
-        image_mode=candidate_mode,
-        pipeline_context=pipeline_context,
-        candidate_analysis=candidate_analysis,
-        client=client,
-        budget=budget,
-    )
-    variant.validation_result = attempt_asset.validation_result
-    variant.validation_status = attempt_asset.validation_status
-    variant.final_decision = attempt_asset.final_decision
-    variant.final_variant = attempt_asset.final_variant
-    variant.final_reason = attempt_asset.final_reason
     return variant
 
 
@@ -396,6 +417,379 @@ def _apply_original_fallback_outcome(asset, *, reason: str, validation_status: s
         final_reason=reason,
     )
     return asset
+
+
+def _build_passthrough_image_processing_plan(image_mode: str) -> ImageProcessingPlan:
+    if image_mode == ImageMode.NO_CHANGE.value:
+        return ImageProcessingPlan(
+            requested_mode=image_mode,
+            effective_mode=ImageMode.NO_CHANGE.value,
+            generation_strategy="none",
+            delivery_mode="original_drawing",
+            validation_strategy="skip",
+        )
+    return ImageProcessingPlan(
+        requested_mode=image_mode,
+        effective_mode=image_mode,
+        generation_strategy="safe_only",
+        delivery_mode="raster_with_geometry",
+        validation_strategy="skip",
+    )
+
+
+def _build_image_processing_plan(analysis, image_mode: str) -> ImageProcessingPlan:
+    if image_mode == ImageMode.NO_CHANGE.value:
+        return _build_passthrough_image_processing_plan(image_mode)
+    if image_mode == ImageMode.SAFE.value:
+        return ImageProcessingPlan(
+            requested_mode=image_mode,
+            effective_mode=ImageMode.SAFE.value,
+            generation_strategy="safe_only",
+            delivery_mode="raster_with_geometry",
+            validation_strategy="skip",
+        )
+    if image_mode == ImageMode.COMPARE_ALL.value:
+        compare_modes = [ImageMode.SAFE.value]
+        semantic_redraw_enabled = should_attempt_semantic_redraw(analysis, ImageMode.COMPARE_ALL.value)
+        if semantic_redraw_enabled:
+            compare_modes.extend(
+                [
+                    ImageMode.SEMANTIC_REDRAW_DIRECT.value,
+                    ImageMode.SEMANTIC_REDRAW_STRUCTURED.value,
+                ]
+            )
+        return ImageProcessingPlan(
+            requested_mode=image_mode,
+            effective_mode=ImageMode.COMPARE_ALL.value,
+            generation_strategy="compare_all",
+            delivery_mode="compare_all_candidates",
+            validation_strategy="compare",
+            compare_modes=tuple(compare_modes),
+            semantic_attempt_allowed=semantic_redraw_enabled,
+            needs_client=semantic_redraw_enabled,
+            needs_safe_candidate=True,
+        )
+
+    semantic_attempt_allowed = should_attempt_semantic_redraw(analysis, image_mode)
+    if not semantic_attempt_allowed:
+        return ImageProcessingPlan(
+            requested_mode=image_mode,
+            effective_mode=ImageMode.SAFE.value,
+            generation_strategy="safe_only",
+            delivery_mode="raster_with_geometry",
+            validation_strategy="skip",
+            semantic_attempt_allowed=False,
+        )
+
+    return ImageProcessingPlan(
+        requested_mode=image_mode,
+        effective_mode=image_mode,
+        generation_strategy="semantic_with_safe_fallback",
+        delivery_mode="raster_with_geometry",
+        validation_strategy="strict_or_advisory",
+        semantic_attempt_allowed=True,
+        needs_client=True,
+        needs_safe_candidate=True,
+    )
+
+
+def _execute_image_processing_plan(
+    asset,
+    source_analysis,
+    generation_analysis,
+    plan: ImageProcessingPlan,
+    *,
+    pipeline_context: ImageProcessingContext,
+    client,
+    budget=None,
+):
+    strategy_executor = _IMAGE_PROCESSING_STRATEGY_EXECUTORS.get(plan.generation_strategy)
+    if strategy_executor is None:
+        raise RuntimeError(f"Unsupported image processing strategy: {plan.generation_strategy}")
+    processed_asset = strategy_executor(
+        asset,
+        source_analysis,
+        generation_analysis,
+        plan,
+        pipeline_context=pipeline_context,
+        client=client,
+        budget=budget,
+    )
+    return _execute_plan_delivery_strategy(
+        processed_asset,
+        source_analysis,
+        generation_analysis,
+        plan,
+        pipeline_context=pipeline_context,
+        client=client,
+        budget=budget,
+    )
+
+
+def _execute_safe_only_strategy(
+    asset,
+    source_analysis,
+    generation_analysis,
+    plan: ImageProcessingPlan,
+    *,
+    pipeline_context: ImageProcessingContext,
+    client,
+    budget=None,
+):
+    if asset.safe_bytes is None:
+        asset.safe_bytes = pipeline_context.generate_candidate(
+            asset.original_bytes,
+            source_analysis,
+            mode=ImageMode.SAFE.value,
+            client=client,
+            budget=budget,
+        )
+    return _execute_plan_selection_strategy(
+        asset,
+        source_analysis,
+        generation_analysis,
+        plan,
+        pipeline_context=pipeline_context,
+        client=client,
+        budget=budget,
+    )
+
+
+def _execute_compare_all_strategy(
+    asset,
+    source_analysis,
+    generation_analysis,
+    plan: ImageProcessingPlan,
+    *,
+    pipeline_context: ImageProcessingContext,
+    client,
+    budget=None,
+):
+    return _execute_plan_selection_strategy(
+        asset,
+        source_analysis,
+        generation_analysis,
+        plan,
+        pipeline_context=pipeline_context,
+        client=client,
+        budget=budget,
+    )
+
+
+def _execute_semantic_with_safe_fallback_strategy(
+    asset,
+    source_analysis,
+    generation_analysis,
+    plan: ImageProcessingPlan,
+    *,
+    pipeline_context: ImageProcessingContext,
+    client,
+    budget=None,
+):
+    if asset.safe_bytes is None:
+        asset.safe_bytes = pipeline_context.generate_candidate(
+            asset.original_bytes,
+            source_analysis,
+            mode=ImageMode.SAFE.value,
+            client=client,
+            budget=budget,
+        )
+    return _execute_plan_selection_strategy(
+        asset,
+        source_analysis,
+        generation_analysis,
+        plan,
+        pipeline_context=pipeline_context,
+        client=client,
+        budget=budget,
+    )
+
+
+def _execute_passthrough_strategy(
+    asset,
+    source_analysis,
+    generation_analysis,
+    plan: ImageProcessingPlan,
+    *,
+    pipeline_context: ImageProcessingContext,
+    client,
+    budget=None,
+):
+    del source_analysis, generation_analysis, pipeline_context, client, budget
+    asset.mode_requested = plan.requested_mode
+    asset.apply_final_selection_outcome(
+        validation_status="skipped",
+        final_decision="accept",
+        final_variant="original",
+        final_reason="no_change_mode",
+    )
+    return asset
+
+
+def _execute_plan_selection_strategy(
+    asset,
+    source_analysis,
+    generation_analysis,
+    plan: ImageProcessingPlan,
+    *,
+    pipeline_context: ImageProcessingContext,
+    client,
+    budget=None,
+):
+    selection_executor = _IMAGE_SELECTION_STRATEGY_EXECUTORS.get(plan.validation_strategy)
+    if selection_executor is None:
+        raise RuntimeError(f"Unsupported image selection strategy: {plan.validation_strategy}")
+    return selection_executor(
+        asset,
+        source_analysis,
+        generation_analysis,
+        plan,
+        pipeline_context=pipeline_context,
+        client=client,
+        budget=budget,
+    )
+
+
+def _execute_plan_delivery_strategy(
+    asset,
+    source_analysis,
+    generation_analysis,
+    plan: ImageProcessingPlan,
+    *,
+    pipeline_context: ImageProcessingContext,
+    client,
+    budget=None,
+):
+    delivery_executor = _IMAGE_DELIVERY_STRATEGY_EXECUTORS.get(plan.delivery_mode)
+    if delivery_executor is None:
+        raise RuntimeError(f"Unsupported image delivery strategy: {plan.delivery_mode}")
+    return delivery_executor(
+        asset,
+        source_analysis,
+        generation_analysis,
+        plan,
+        pipeline_context=pipeline_context,
+        client=client,
+        budget=budget,
+    )
+
+
+def _execute_skip_selection_strategy(
+    asset,
+    source_analysis,
+    generation_analysis,
+    plan: ImageProcessingPlan,
+    *,
+    pipeline_context: ImageProcessingContext,
+    client,
+    budget=None,
+):
+    del source_analysis, generation_analysis, pipeline_context, client, budget
+    final_reason = (
+        "Semantic redraw отключен для этого изображения, применен safe-mode."
+        if plan.requested_mode != plan.effective_mode
+        else "Изображение обработано в safe-mode."
+    )
+    asset.apply_final_selection_outcome(
+        validation_status="skipped",
+        final_decision="accept",
+        final_variant=ImageMode.SAFE.value if asset.safe_bytes else "original",
+        final_reason=final_reason,
+    )
+    return asset
+
+
+def _execute_compare_selection_strategy(
+    asset,
+    source_analysis,
+    generation_analysis,
+    plan: ImageProcessingPlan,
+    *,
+    pipeline_context: ImageProcessingContext,
+    client,
+    budget=None,
+):
+    del source_analysis
+    return _prepare_compare_variants(
+        asset,
+        generation_analysis,
+        pipeline_context,
+        client=client,
+        budget=budget,
+        candidate_modes=plan.compare_modes,
+    )
+
+
+def _execute_semantic_selection_strategy(
+    asset,
+    source_analysis,
+    generation_analysis,
+    plan: ImageProcessingPlan,
+    *,
+    pipeline_context: ImageProcessingContext,
+    client,
+    budget=None,
+):
+    del source_analysis, budget
+    return select_best_semantic_asset(
+        asset,
+        generation_analysis,
+        plan.effective_mode,
+        pipeline_context=pipeline_context,
+        client=client,
+    )
+
+
+def _execute_standard_delivery_strategy(
+    asset,
+    source_analysis,
+    generation_analysis,
+    plan: ImageProcessingPlan,
+    *,
+    pipeline_context: ImageProcessingContext,
+    client,
+    budget=None,
+):
+    del source_analysis, generation_analysis, plan, pipeline_context, client, budget
+    asset.sync_delivery_payload()
+    return asset
+
+
+def _execute_compare_all_delivery_strategy(
+    asset,
+    source_analysis,
+    generation_analysis,
+    plan: ImageProcessingPlan,
+    *,
+    pipeline_context: ImageProcessingContext,
+    client,
+    budget=None,
+):
+    del source_analysis, generation_analysis, plan, pipeline_context, client, budget
+    asset.sync_delivery_payload()
+    return asset
+
+
+_IMAGE_PROCESSING_STRATEGY_EXECUTORS: dict[str, _PlanExecutor] = {
+    "none": _execute_passthrough_strategy,
+    "safe_only": _execute_safe_only_strategy,
+    "compare_all": _execute_compare_all_strategy,
+    "semantic_with_safe_fallback": _execute_semantic_with_safe_fallback_strategy,
+}
+
+
+_IMAGE_SELECTION_STRATEGY_EXECUTORS: dict[str, _SelectionExecutor] = {
+    "skip": _execute_skip_selection_strategy,
+    "compare": _execute_compare_selection_strategy,
+    "strict_or_advisory": _execute_semantic_selection_strategy,
+}
+
+
+_IMAGE_DELIVERY_STRATEGY_EXECUTORS: dict[str, _DeliveryExecutor] = {
+    "original_drawing": _execute_standard_delivery_strategy,
+    "raster_with_geometry": _execute_standard_delivery_strategy,
+    "compare_all_candidates": _execute_compare_all_delivery_strategy,
+}
 
 
 def select_best_semantic_asset(
@@ -541,6 +935,49 @@ def select_best_semantic_asset(
     return best_asset
 
 
+def _resolve_image_log_status(asset) -> str | None:
+    if asset.validation_status == "compared":
+        return "compared"
+    if asset.validation_status in {"passed", "failed", "soft-pass"}:
+        return "validated"
+    return asset.validation_status
+
+
+def _emit_asset_image_log(
+    context: ImageProcessingContext,
+    asset,
+    *,
+    analysis=None,
+    status_override: str | None = None,
+    append_final_reason_as_suspicious: bool = False,
+) -> None:
+    validation_result = asset.validation_result
+    delivery_payload = asset.resolved_delivery_payload()
+    suspicious_reasons = (
+        list(getattr(validation_result, "suspicious_reasons", [])) if validation_result is not None else []
+    )
+    final_reason = delivery_payload.final_reason or asset.final_reason
+    if append_final_reason_as_suspicious and final_reason and final_reason not in suspicious_reasons:
+        suspicious_reasons.append(final_reason)
+    confidence = (
+        float(getattr(validation_result, "validator_confidence", 0.0))
+        if validation_result is not None
+        else float(getattr(analysis, "confidence", 0.0)) if analysis is not None else 0.0
+    )
+    log_payload = {
+        "image_id": asset.image_id,
+        "status": status_override or _resolve_image_log_status(asset),
+        "decision": asset.final_decision or "accept",
+        "confidence": confidence,
+        "suspicious_reasons": suspicious_reasons,
+        "final_variant": delivery_payload.final_variant or asset.final_variant,
+        "final_reason": final_reason,
+    }
+    if validation_result is not None:
+        log_payload["missing_labels"] = list(getattr(validation_result, "missing_labels", []))
+    context.emit_image_log(context.runtime, **log_payload)
+
+
 def process_document_images(
     *,
     image_assets,
@@ -551,27 +988,7 @@ def process_document_images(
         context.emit_state(context.runtime, image_assets=[])
         return []
 
-    if image_mode == ImageMode.NO_CHANGE.value:
-        context.emit_image_reset(context.runtime)
-        for asset in image_assets:
-            asset.mode_requested = image_mode
-            asset.apply_final_selection_outcome(
-                validation_status="skipped",
-                final_decision="accept",
-                final_variant="original",
-                final_reason="no_change_mode",
-            )
-            context.emit_image_log(
-                context.runtime,
-                image_id=asset.image_id,
-                status="skipped",
-                decision="accept",
-                confidence=0.0,
-                final_variant="original",
-                final_reason="no_change_mode",
-            )
-        context.emit_state(context.runtime, image_assets=image_assets)
-        return list(image_assets)
+    passthrough_plan = _build_passthrough_image_processing_plan(image_mode)
 
     processed_assets = []
     image_client = context.client
@@ -601,15 +1018,11 @@ def process_document_images(
                 reason="document_model_call_budget_exhausted",
                 validation_status="failed",
             )
-            context.emit_image_log(
-                context.runtime,
-                image_id=asset.image_id,
-                status="failed",
-                decision=asset.final_decision,
-                confidence=0.0,
-                suspicious_reasons=[asset.final_reason],
-                final_variant=asset.final_variant,
-                final_reason=asset.final_reason,
+            _emit_asset_image_log(
+                context,
+                asset,
+                status_override="failed",
+                append_final_reason_as_suspicious=True,
             )
             processed_assets.append(asset)
             context.emit_state(context.runtime, image_assets=processed_assets)
@@ -628,6 +1041,22 @@ def process_document_images(
         context.on_progress(preview_title="Текущий Markdown")
         analysis = None
         try:
+            if passthrough_plan.generation_strategy == "none":
+                asset = _execute_image_processing_plan(
+                    asset,
+                    None,
+                    None,
+                    passthrough_plan,
+                    pipeline_context=context,
+                    client=image_client,
+                    budget=document_call_budget,
+                )
+                asset = cast(Any, asset)
+                _emit_asset_image_log(context, asset, status_override="skipped")
+                processed_assets.append(asset)
+                context.emit_state(context.runtime, image_assets=processed_assets)
+                continue
+
             detected_source_mime_type = context.detect_image_mime_type_fn(asset.original_bytes)
             if detected_source_mime_type is None:
                 asset = _mark_asset_as_unsupported_source(
@@ -636,15 +1065,11 @@ def process_document_images(
                     log_event_fn=context.log_event_fn,
                 )
                 asset = cast(Any, asset)
-                context.emit_image_log(
-                    context.runtime,
-                    image_id=asset.image_id,
-                    status="skipped",
-                    decision=asset.final_decision,
-                    confidence=0.0,
-                    suspicious_reasons=[asset.final_reason],
-                    final_variant=asset.final_variant,
-                    final_reason=asset.final_reason,
+                _emit_asset_image_log(
+                    context,
+                    asset,
+                    status_override="skipped",
+                    append_final_reason_as_suspicious=True,
                 )
                 processed_assets.append(asset)
                 context.emit_state(context.runtime, image_assets=processed_assets)
@@ -662,96 +1087,23 @@ def process_document_images(
             asset.prompt_key = analysis.prompt_key
             asset.render_strategy = analysis.render_strategy
             generation_analysis = build_generation_analysis(analysis)
-            semantic_attempt_allowed = should_attempt_semantic_redraw(analysis, image_mode)
+            plan = _build_image_processing_plan(generation_analysis, image_mode)
+            asset.mode_requested = plan.requested_mode
 
-            if image_mode == ImageMode.SAFE.value:
-                asset.safe_bytes = context.generate_candidate(
-                    asset.original_bytes,
-                    analysis,
-                    mode=ImageMode.SAFE.value,
-                    client=image_client,
-                    budget=document_call_budget,
-                )
-                asset.apply_final_selection_outcome(
-                    validation_status="skipped",
-                    final_decision="accept",
-                    final_variant=ImageMode.SAFE.value if asset.safe_bytes else "original",
-                    final_reason="Изображение обработано в safe-mode.",
-                )
-            elif image_mode == ImageMode.COMPARE_ALL.value:
-                if image_client is None:
-                    image_client = context.ensure_client()
-                asset = _prepare_compare_variants(
-                    asset,
-                    generation_analysis,
-                    pipeline_context=context,
-                    client=image_client,
-                    budget=document_call_budget,
-                )
-                asset = cast(Any, asset)
-            elif not semantic_attempt_allowed:
-                asset.safe_bytes = context.generate_candidate(
-                    asset.original_bytes,
-                    analysis,
-                    mode=ImageMode.SAFE.value,
-                    client=image_client,
-                    budget=document_call_budget,
-                )
-                asset.apply_final_selection_outcome(
-                    validation_status="skipped",
-                    final_decision="accept",
-                    final_variant=ImageMode.SAFE.value if asset.safe_bytes else "original",
-                    final_reason="Semantic redraw отключен для этого изображения, применен safe-mode.",
-                )
-            else:
-                if image_client is None:
-                    image_client = context.ensure_client()
-                asset.safe_bytes = context.generate_candidate(
-                    asset.original_bytes,
-                    analysis,
-                    mode=ImageMode.SAFE.value,
-                    client=image_client,
-                    budget=document_call_budget,
-                )
-                asset = select_best_semantic_asset(
-                    asset,
-                    generation_analysis,
-                    image_mode,
-                    pipeline_context=context,
-                    client=image_client,
-                )
-                asset = cast(Any, asset)
+            if plan.needs_client and image_client is None:
+                image_client = context.ensure_client()
 
+            asset = _execute_image_processing_plan(
+                asset,
+                analysis,
+                generation_analysis,
+                plan,
+                pipeline_context=context,
+                client=image_client,
+                budget=document_call_budget,
+            )
             asset = cast(Any, asset)
-            validation_result = asset.validation_result
-            confidence = (
-                float(getattr(validation_result, "validator_confidence", 0.0))
-                if validation_result is not None
-                else float(getattr(analysis, "confidence", 0.0))
-            )
-            context.emit_image_log(
-                context.runtime,
-                image_id=asset.image_id,
-                status=(
-                    "compared"
-                    if asset.validation_status == "compared"
-                    else (
-                    "validated"
-                    if asset.validation_status in {"passed", "failed", "soft-pass"}
-                    else asset.validation_status
-                    )
-                ),
-                decision=asset.final_decision or "accept",
-                confidence=confidence,
-                missing_labels=(
-                    list(getattr(validation_result, "missing_labels", [])) if validation_result is not None else []
-                ),
-                suspicious_reasons=(
-                    list(getattr(validation_result, "suspicious_reasons", [])) if validation_result is not None else []
-                ),
-                final_variant=asset.final_variant,
-                final_reason=asset.final_reason,
-            )
+            _emit_asset_image_log(context, asset, analysis=analysis)
             processed_assets.append(asset)
         except context.image_model_call_budget_exceeded_cls as exc:
             asset = cast(Any, asset)
@@ -763,15 +1115,12 @@ def process_document_images(
                 ),
                 validation_status="failed",
             )
-            context.emit_image_log(
-                context.runtime,
-                image_id=asset.image_id,
-                status="failed",
-                decision=asset.final_decision,
-                confidence=float(getattr(analysis, "confidence", 0.0)) if analysis is not None else 0.0,
-                suspicious_reasons=[asset.final_reason],
-                final_variant=asset.final_variant,
-                final_reason=asset.final_reason,
+            _emit_asset_image_log(
+                context,
+                asset,
+                analysis=analysis,
+                status_override="failed",
+                append_final_reason_as_suspicious=True,
             )
             context.log_event_fn(
                 logging.WARNING,
@@ -792,15 +1141,12 @@ def process_document_images(
                 reason=f"image_processing_exception:{exc.__class__.__name__}",
                 validation_status="error",
             )
-            context.emit_image_log(
-                context.runtime,
-                image_id=asset.image_id,
-                status="error",
-                decision=asset.final_decision,
-                confidence=float(getattr(analysis, "confidence", 0.0)) if analysis is not None else 0.0,
-                suspicious_reasons=[asset.final_reason],
-                final_variant=asset.final_variant,
-                final_reason=asset.final_reason,
+            _emit_asset_image_log(
+                context,
+                asset,
+                analysis=analysis,
+                status_override="error",
+                append_final_reason_as_suspicious=True,
             )
             context.log_event_fn(
                 logging.ERROR,
@@ -837,19 +1183,30 @@ def _prepare_compare_variants(
     *,
     client,
     budget=None,
+    candidate_modes: tuple[str, ...] | None = None,
 ):
     variant_map: dict[str, ImageVariantCandidate] = {}
-    candidate_modes = [
+    default_candidate_modes = (
         ImageMode.SAFE.value,
         ImageMode.SEMANTIC_REDRAW_DIRECT.value,
         ImageMode.SEMANTIC_REDRAW_STRUCTURED.value,
-    ]
-    semantic_redraw_enabled = should_attempt_semantic_redraw(analysis, ImageMode.COMPARE_ALL.value)
-    expected_modes = list(candidate_modes)
+    )
+    if candidate_modes is None:
+        resolved_candidate_modes_list = [ImageMode.SAFE.value]
+        if should_attempt_semantic_redraw(analysis, ImageMode.COMPARE_ALL.value):
+            resolved_candidate_modes_list.extend(
+                [
+                    ImageMode.SEMANTIC_REDRAW_DIRECT.value,
+                    ImageMode.SEMANTIC_REDRAW_STRUCTURED.value,
+                ]
+            )
+        resolved_candidate_modes = tuple(resolved_candidate_modes_list)
+        expected_modes = list(default_candidate_modes)
+    else:
+        resolved_candidate_modes = candidate_modes
+        expected_modes = list(resolved_candidate_modes)
 
-    for candidate_mode in candidate_modes:
-        if candidate_mode != ImageMode.SAFE.value and not semantic_redraw_enabled:
-            continue
+    for candidate_mode in resolved_candidate_modes:
         try:
             variant = _build_compare_variant_candidate(
                 asset,
@@ -874,7 +1231,7 @@ def _prepare_compare_variants(
         variant_map[candidate_mode] = variant
 
     asset.update_runtime_attempt_state(comparison_variants=variant_map)
-    prepared_modes = [mode for mode in candidate_modes if mode in variant_map]
+    prepared_modes = [mode for mode in resolved_candidate_modes if mode in variant_map]
     if len(prepared_modes) != len(expected_modes):
         return _apply_compare_all_incomplete_fallback(asset, prepared_modes=prepared_modes)
 
@@ -1034,4 +1391,25 @@ def _build_reconstruction_render_config(config: Mapping[str, object]) -> dict[st
             "reconstruction_background_uniformity_threshold",
             10.0,
         ),
+    }
+
+
+def _build_image_output_config(config: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "image_output_generate_candidate_sizes": config.get(
+            "image_output_generate_candidate_sizes",
+            ("1536x1024", "1024x1536", "1024x1024"),
+        ),
+        "image_output_edit_candidate_sizes": config.get(
+            "image_output_edit_candidate_sizes",
+            ("1536x1024", "1024x1536", "1024x1024", "512x512", "256x256"),
+        ),
+        "image_output_generate_size_square": _config_str(config, "image_output_generate_size_square", "1024x1024"),
+        "image_output_generate_size_landscape": _config_str(config, "image_output_generate_size_landscape", "1536x1024"),
+        "image_output_generate_size_portrait": _config_str(config, "image_output_generate_size_portrait", "1024x1536"),
+        "image_output_aspect_ratio_threshold": _config_float(config, "image_output_aspect_ratio_threshold", 1.2),
+        "image_output_trim_tolerance": _config_int(config, "image_output_trim_tolerance", 20),
+        "image_output_trim_padding_ratio": _config_float(config, "image_output_trim_padding_ratio", 0.02),
+        "image_output_trim_padding_min_px": _config_int(config, "image_output_trim_padding_min_px", 4),
+        "image_output_trim_max_loss_ratio": _config_float(config, "image_output_trim_max_loss_ratio", 0.15),
     }

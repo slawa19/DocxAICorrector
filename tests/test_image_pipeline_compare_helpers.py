@@ -1,5 +1,18 @@
-from models import ImageAnalysisResult, ImageAsset, ImageValidationResult, ImageVariantCandidate
-from image_pipeline import ImageProcessingContext, _build_compare_variant_candidate, _prepare_compare_variants
+import image_pipeline
+from typing import cast
+from models import ImageAnalysisResult, ImageAsset, ImageDeliveryPayload, ImageValidationResult, ImageVariantCandidate
+from image_pipeline import (
+    ImageProcessingPlan,
+    ImageProcessingContext,
+    _build_compare_variant_candidate,
+    _build_image_processing_plan,
+    _build_passthrough_image_processing_plan,
+    _emit_asset_image_log,
+    _execute_image_processing_plan,
+    _execute_plan_delivery_strategy,
+    _execute_plan_selection_strategy,
+    _prepare_compare_variants,
+)
 
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"compare-helpers-payload"
@@ -109,6 +122,306 @@ def test_build_compare_variant_candidate_marks_safe_variant_without_validation()
     assert asset.safe_bytes == PNG_BYTES
 
 
+def test_build_compare_variant_candidate_executes_shared_child_plan(monkeypatch):
+    captured = []
+
+    def fake_execute(asset, source_analysis, generation_analysis, plan, **kwargs):
+        captured.append(
+            {
+                "requested_mode": plan.requested_mode,
+                "effective_mode": plan.effective_mode,
+                "generation_strategy": plan.generation_strategy,
+                "delivery_mode": plan.delivery_mode,
+                "source_prompt_key": source_analysis.prompt_key,
+                "generation_prompt_key": generation_analysis.prompt_key,
+            }
+        )
+        asset.safe_bytes = PNG_BYTES
+        asset.apply_final_selection_outcome(
+            validation_status="skipped",
+            final_decision="accept",
+            final_variant="safe",
+            final_reason="shared_plan_result",
+        )
+        return asset
+
+    monkeypatch.setattr(image_pipeline, "_execute_image_processing_plan", fake_execute)
+    asset = _build_asset()
+    analysis = _build_analysis(prompt_key="compare-plan")
+
+    variant = _build_compare_variant_candidate(
+        asset,
+        analysis,
+        "safe",
+        _build_context(),
+        client=object(),
+    )
+
+    assert captured == [
+        {
+            "requested_mode": "safe",
+            "effective_mode": "safe",
+            "generation_strategy": "safe_only",
+            "delivery_mode": "raster_with_geometry",
+            "source_prompt_key": "compare-plan",
+            "generation_prompt_key": "compare-plan",
+        }
+    ]
+    assert variant.final_reason == "compare_all_safe_variant_ready"
+
+
+def test_build_passthrough_image_processing_plan_marks_no_change_as_original_drawing():
+    plan = _build_passthrough_image_processing_plan("no_change")
+
+    assert plan.requested_mode == "no_change"
+    assert plan.generation_strategy == "none"
+    assert plan.delivery_mode == "original_drawing"
+    assert plan.validation_strategy == "skip"
+
+
+def test_build_image_processing_plan_for_compare_all_reduces_modes_when_semantic_is_disabled():
+    analysis = _build_analysis(semantic_redraw_allowed=False, render_strategy="safe_mode")
+
+    plan = _build_image_processing_plan(analysis, "compare_all")
+
+    assert plan.generation_strategy == "compare_all"
+    assert plan.compare_modes == ("safe",)
+    assert plan.needs_client is False
+
+
+def test_build_image_processing_plan_for_semantic_mode_falls_back_to_safe_strategy_when_redraw_disabled():
+    analysis = _build_analysis(semantic_redraw_allowed=False, render_strategy="safe_mode")
+
+    plan = _build_image_processing_plan(analysis, "semantic_redraw_direct")
+
+    assert plan.requested_mode == "semantic_redraw_direct"
+    assert plan.effective_mode == "safe"
+    assert plan.generation_strategy == "safe_only"
+    assert plan.needs_client is False
+
+
+def test_build_image_processing_plan_for_structured_semantic_uses_semantic_strategy():
+    analysis = _build_analysis()
+
+    plan = _build_image_processing_plan(analysis, "semantic_redraw_structured")
+
+    assert plan.effective_mode == "semantic_redraw_structured"
+    assert plan.generation_strategy == "semantic_with_safe_fallback"
+    assert plan.needs_client is True
+    assert plan.needs_safe_candidate is True
+
+
+def test_execute_image_processing_plan_dispatches_via_strategy_registry(monkeypatch):
+    calls = []
+
+    def fake_executor(asset, source_analysis, generation_analysis, plan, **kwargs):
+        calls.append(
+            {
+                "asset": asset.image_id,
+                "requested_mode": plan.requested_mode,
+                "source_prompt_key": source_analysis.prompt_key,
+                "generation_prompt_key": generation_analysis.prompt_key,
+            }
+        )
+        return asset
+
+    monkeypatch.setitem(image_pipeline._IMAGE_PROCESSING_STRATEGY_EXECUTORS, "test_strategy", fake_executor)
+    asset = _build_asset()
+    source_analysis = _build_analysis(prompt_key="source")
+    generation_analysis = _build_analysis(prompt_key="generation")
+    plan = ImageProcessingPlan(
+        requested_mode="semantic_redraw_direct",
+        effective_mode="semantic_redraw_direct",
+        generation_strategy="test_strategy",
+        delivery_mode="raster_with_geometry",
+        validation_strategy="strict_or_advisory",
+    )
+
+    result = _execute_image_processing_plan(
+        asset,
+        source_analysis,
+        generation_analysis,
+        plan,
+        pipeline_context=_build_context(),
+        client=object(),
+    )
+
+    assert result is asset
+    assert calls == [
+        {
+            "asset": "img_001",
+            "requested_mode": "semantic_redraw_direct",
+            "source_prompt_key": "source",
+            "generation_prompt_key": "generation",
+        }
+    ]
+
+
+def test_execute_plan_selection_strategy_dispatches_via_selection_registry(monkeypatch):
+    calls = []
+
+    def fake_selection_executor(asset, source_analysis, generation_analysis, plan, **kwargs):
+        calls.append(
+            {
+                "asset": asset.image_id,
+                "validation_strategy": plan.validation_strategy,
+                "source_prompt_key": source_analysis.prompt_key,
+                "generation_prompt_key": generation_analysis.prompt_key,
+            }
+        )
+        return asset
+
+    monkeypatch.setitem(image_pipeline._IMAGE_SELECTION_STRATEGY_EXECUTORS, "test_selection", fake_selection_executor)
+    asset = _build_asset()
+    source_analysis = _build_analysis(prompt_key="source-selection")
+    generation_analysis = _build_analysis(prompt_key="generation-selection")
+    plan = ImageProcessingPlan(
+        requested_mode="safe",
+        effective_mode="safe",
+        generation_strategy="safe_only",
+        delivery_mode="raster_with_geometry",
+        validation_strategy="test_selection",
+    )
+
+    result = _execute_plan_selection_strategy(
+        asset,
+        source_analysis,
+        generation_analysis,
+        plan,
+        pipeline_context=_build_context(),
+        client=object(),
+    )
+
+    assert result is asset
+    assert calls == [
+        {
+            "asset": "img_001",
+            "validation_strategy": "test_selection",
+            "source_prompt_key": "source-selection",
+            "generation_prompt_key": "generation-selection",
+        }
+    ]
+
+
+def test_execute_plan_delivery_strategy_dispatches_via_delivery_registry(monkeypatch):
+    calls = []
+
+    def fake_delivery_executor(asset, source_analysis, generation_analysis, plan, **kwargs):
+        calls.append(
+            {
+                "asset": asset.image_id,
+                "delivery_mode": plan.delivery_mode,
+                "source_prompt_key": source_analysis.prompt_key,
+                "generation_prompt_key": generation_analysis.prompt_key,
+            }
+        )
+        return asset
+
+    monkeypatch.setitem(image_pipeline._IMAGE_DELIVERY_STRATEGY_EXECUTORS, "test_delivery", fake_delivery_executor)
+    asset = _build_asset()
+    source_analysis = _build_analysis(prompt_key="source-delivery")
+    generation_analysis = _build_analysis(prompt_key="generation-delivery")
+    plan = ImageProcessingPlan(
+        requested_mode="safe",
+        effective_mode="safe",
+        generation_strategy="safe_only",
+        delivery_mode="test_delivery",
+        validation_strategy="skip",
+    )
+
+    result = _execute_plan_delivery_strategy(
+        asset,
+        source_analysis,
+        generation_analysis,
+        plan,
+        pipeline_context=_build_context(),
+        client=object(),
+    )
+
+    assert result is asset
+    assert calls == [
+        {
+            "asset": "img_001",
+            "delivery_mode": "test_delivery",
+            "source_prompt_key": "source-delivery",
+            "generation_prompt_key": "generation-delivery",
+        }
+    ]
+
+
+def test_execute_image_processing_plan_runs_delivery_stage_after_generation(monkeypatch):
+    call_order = []
+
+    def fake_executor(asset, source_analysis, generation_analysis, plan, **kwargs):
+        call_order.append(("generation", plan.generation_strategy))
+        return asset
+
+    def fake_delivery_executor(asset, source_analysis, generation_analysis, plan, **kwargs):
+        call_order.append(("delivery", plan.delivery_mode))
+        return asset
+
+    monkeypatch.setitem(image_pipeline._IMAGE_PROCESSING_STRATEGY_EXECUTORS, "test_strategy", fake_executor)
+    monkeypatch.setitem(image_pipeline._IMAGE_DELIVERY_STRATEGY_EXECUTORS, "test_delivery", fake_delivery_executor)
+    asset = _build_asset()
+    source_analysis = _build_analysis(prompt_key="source")
+    generation_analysis = _build_analysis(prompt_key="generation")
+    plan = ImageProcessingPlan(
+        requested_mode="semantic_redraw_direct",
+        effective_mode="semantic_redraw_direct",
+        generation_strategy="test_strategy",
+        delivery_mode="test_delivery",
+        validation_strategy="strict_or_advisory",
+    )
+
+    result = _execute_image_processing_plan(
+        asset,
+        source_analysis,
+        generation_analysis,
+        plan,
+        pipeline_context=_build_context(),
+        client=object(),
+    )
+
+    assert result is asset
+    assert call_order == [
+        ("generation", "test_strategy"),
+        ("delivery", "test_delivery"),
+    ]
+
+
+def test_emit_asset_image_log_uses_resolved_delivery_payload_variant():
+    captured = []
+    asset = _build_asset()
+    asset.apply_final_selection_outcome(
+        validation_status="passed",
+        final_decision="accept",
+        final_variant="original",
+        final_reason="stale_final_variant",
+    )
+    asset.delivery_payload = ImageDeliveryPayload(
+        delivery_kind="final_selection",
+        final_bytes=asset.original_bytes,
+        final_variant="safe",
+        final_decision="accept",
+        final_reason="delivery_payload_authority",
+    )
+    context = _build_context(emit_image_log=lambda runtime, **payload: captured.append(payload))
+
+    _emit_asset_image_log(context, asset, analysis=_build_analysis(confidence=0.42))
+
+    assert captured == [
+        {
+            "image_id": "img_001",
+            "status": "validated",
+            "decision": "accept",
+            "confidence": 0.42,
+            "suspicious_reasons": [],
+            "final_variant": "safe",
+            "final_reason": "delivery_payload_authority",
+        }
+    ]
+
+
 def test_build_compare_variant_candidate_uses_processed_semantic_outcome():
     asset = _build_asset()
     asset.safe_bytes = PNG_BYTES[:-1] + b"s"
@@ -153,12 +466,12 @@ def test_prepare_compare_variants_keeps_original_as_selected_default():
         log_event_fn=lambda *args, **kwargs: logged.append((args, kwargs)),
     )
 
-    result = _prepare_compare_variants(
+    result = cast(ImageAsset, _prepare_compare_variants(
         asset,
         analysis,
         context,
         client=object(),
-    )
+    ))
 
     assert result.selected_compare_variant == "original"
     assert result.final_variant == "original"
@@ -177,12 +490,12 @@ def test_prepare_compare_variants_falls_back_to_safe_when_compare_all_is_incompl
         generate_image_candidate_fn=lambda image_bytes, analysis, *, mode, **kwargs: PNG_BYTES,
     )
 
-    result = _prepare_compare_variants(
+    result = cast(ImageAsset, _prepare_compare_variants(
         asset,
         analysis,
         context,
         client=object(),
-    )
+    ))
 
     assert result.validation_status == "failed"
     assert result.final_decision == "fallback_safe"
