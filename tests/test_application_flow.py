@@ -484,7 +484,7 @@ def test_prepare_run_context_for_background_uses_real_cache(monkeypatch):
     )
 
     assert calls["extract"] == 1
-    assert second.prepared_source_key.endswith(":6000")
+    assert second.prepared_source_key.endswith(":6000:high_only")
     assert second.preparation_cached is True
     assert second.preparation_stage == "Документ подготовлен"
     assert progress_events[-1]["stage"] == "Документ подготовлен"

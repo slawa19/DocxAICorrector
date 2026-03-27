@@ -13,6 +13,8 @@ def test_load_validation_registry_reads_lietaer_profile() -> None:
     assert document_profile.source_path == "tests/sources/Лиетар глава1.docx"
     assert document_profile.artifact_prefix == "lietaer_validation"
     assert document_profile.default_run_profile == "ui-parity-default"
+    assert document_profile.min_merged_groups == 1
+    assert document_profile.min_merged_raw_paragraphs == 2
     assert "headings" in document_profile.tags
     assert run_profile.tier == "full"
     assert run_profile.enable_paragraph_markers is True

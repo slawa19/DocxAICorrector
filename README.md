@@ -192,6 +192,7 @@ OPENAI_API_KEY=sk-...
 - `DOCX_AI_MODEL_OPTIONS` — список моделей для sidebar через запятую.
 - `DOCX_AI_CHUNK_SIZE` — размер целевого блока документа.
 - `DOCX_AI_MAX_RETRIES` — число retry для текстовых вызовов.
+- `DOCX_AI_LOG_LEVEL` — уровень логирования приложения: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`; по умолчанию `INFO`, некорректное значение безопасно откатывается к `INFO` с warning-записью в лог.
 - `DOCX_AI_IMAGE_MODE_DEFAULT` — режим изображений по умолчанию: `no_change`, `safe`, `semantic_redraw_direct`, `semantic_redraw_structured`, `compare_all`.
 - `DOCX_AI_SEMANTIC_VALIDATION_POLICY` — политика post-check: `advisory` или `strict`.
 - `DOCX_AI_KEEP_ALL_IMAGE_VARIANTS` — сохраняет в итоговом DOCX `safe`, `candidate1` и `candidate2` для ручной проверки.
@@ -205,6 +206,7 @@ DOCX_AI_DEFAULT_MODEL=gpt-5-mini
 DOCX_AI_MODEL_OPTIONS=gpt-5.4,gpt-5.4-pro,gpt-5.2,gpt-5.1,gpt-5-mini
 DOCX_AI_CHUNK_SIZE=6000
 DOCX_AI_MAX_RETRIES=3
+DOCX_AI_LOG_LEVEL=INFO
 DOCX_AI_IMAGE_MODE_DEFAULT=no_change
 DOCX_AI_SEMANTIC_VALIDATION_POLICY=advisory
 DOCX_AI_KEEP_ALL_IMAGE_VARIANTS=false
@@ -253,6 +255,7 @@ DOCX_AI_DEFAULT_MODEL=gpt-5-mini
 DOCX_AI_MODEL_OPTIONS=gpt-5.4,gpt-5.4-pro,gpt-5.2,gpt-5.1,gpt-5-mini
 DOCX_AI_CHUNK_SIZE=6000
 DOCX_AI_MAX_RETRIES=3
+DOCX_AI_LOG_LEVEL=INFO
 DOCX_AI_IMAGE_MODE_DEFAULT=no_change
 DOCX_AI_SEMANTIC_VALIDATION_POLICY=advisory
 DOCX_AI_KEEP_ALL_IMAGE_VARIANTS=false
@@ -268,12 +271,23 @@ Prompt registry для изображений хранится в `prompts/image
 
 ## Логи
 
-Проект пишет два основных файла логов:
+Основные runtime-артефакты и логи живут в `.run/`. Эта директория считается production-like local runtime area и подпадает под runtime cleanup/retention. Артефакты под `tests/artifacts/...` относятся к validation/dev workflow и не очищаются runtime retention-механикой.
+
+Проект пишет три основных файла логов:
 
 - `.run/app.log` — лог приложения, обработки блоков и ошибок OpenAI.
-- `.run/project.log` — лог PowerShell-скриптов запуска и остановки.
+- `.run/project.log` — лог PowerShell-скриптов запуска, остановки и status-проверок; теперь это rotating log с ограниченным числом backup-файлов, текущая реализация по умолчанию использует порог `256 KiB` и `5` backup-ов.
+- `.run/streamlit.log` — stdout/stderr Streamlit runtime; файл по-прежнему очищается на старте процесса, а во время долгого uptime дополнительно ограничивается WSL control script через периодическую size-check ротацию, текущие дефолты `256 KiB`, `5` backup-ов и проверка каждые `30` секунд, при этом активный путь остаётся `.run/streamlit.log`.
+
+Дополнительно в `.run/` действуют связанные runtime-retention правила:
+
+- `.run/app.log` сохраняет прежнюю ротацию через `RotatingFileHandler`.
+- `.run/app.ready` остаётся internal liveness marker для control flow, но steady-state перезаписывается примерно раз в `15` секунд, а не на каждом UI-цикле; содержимое файла не является стабильным внешним data contract.
+- `.run/formatting_diagnostics/` теперь имеет централизованную ограниченную retention-политику: хранение до `7` дней, максимум `100` артефактов, pruning по самым старым файлам во время записи.
 
 Если в UI отображается ошибка с `log: ...`, соответствующую техническую запись можно найти по этому идентификатору в `.run/app.log`.
+
+Для временной отладки с повышенной детализацией запускайте приложение с `DOCX_AI_LOG_LEVEL=DEBUG`; после диагностики возвращайте `INFO`, чтобы не раздувать `.run/app.log` без необходимости.
 
 ## Тесты
 

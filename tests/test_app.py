@@ -6,6 +6,7 @@ import app
 import application_flow
 import compare_panel
 import processing_runtime
+from runtime_artifacts import AppReadyMarkerWriter
 from constants import MAX_DOCX_ARCHIVE_SIZE_BYTES
 from models import ImageAsset
 
@@ -180,6 +181,40 @@ def test_schedule_stale_persisted_sources_cleanup_resets_flag_under_lock(monkeyp
     assert lock_events == ["enter", "exit", "enter", "exit"]
 
 
+def test_app_ready_marker_writer_throttles_repeated_writes_within_window(tmp_path):
+    ready_path = tmp_path / ".run" / "app.ready"
+    time_values = iter([100.0, 105.0, 116.0])
+    writer = AppReadyMarkerWriter(
+        path=ready_path,
+        freshness_window_seconds=15.0,
+        time_fn=lambda: next(time_values),
+    )
+
+    assert writer.mark_ready() is True
+    first_contents = ready_path.read_text(encoding="utf-8")
+
+    assert writer.mark_ready() is False
+    assert ready_path.read_text(encoding="utf-8") == first_contents
+
+    assert writer.mark_ready() is True
+    assert ready_path.read_text(encoding="utf-8") == "116.000000\n"
+
+
+def test_mark_app_ready_uses_shared_throttled_writer(monkeypatch):
+    calls = []
+
+    class WriterStub:
+        def mark_ready(self):
+            calls.append("mark_ready")
+            return False
+
+    monkeypatch.setattr(app, "_APP_READY_MARKER_WRITER", WriterStub())
+
+    app._mark_app_ready()
+
+    assert calls == ["mark_ready"]
+
+
 def test_render_processing_controls_keeps_start_visible_while_processing(monkeypatch):
     session_state = SessionState(processing_stop_requested=False)
     start_column = FakeColumn(result=False)
@@ -245,7 +280,7 @@ def test_render_processing_controls_demotes_start_after_completed_result(monkeyp
 
     assert action is None
     assert start_column.calls == [(
-        "Начать обработку",
+        "Обработать повторно",
         {
             "type": "secondary",
             "use_container_width": True,

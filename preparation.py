@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import logging
 from threading import Event, Lock
 
+from config import load_app_config
 from document import (
     build_document_text,
     build_editing_jobs,
@@ -37,8 +38,15 @@ def emit_preparation_progress(progress_callback, *, stage: str, detail: str, pro
     progress_callback(stage=stage, detail=detail, progress=progress, metrics=metrics or {})
 
 
-def build_prepared_source_key(uploaded_file_token: str, chunk_size: int) -> str:
-    return f"{uploaded_file_token}:{chunk_size}"
+def build_prepared_source_key(
+    uploaded_file_token: str,
+    chunk_size: int,
+    *,
+    paragraph_boundary_normalization_mode: str = "high_only",
+) -> str:
+    return f"{uploaded_file_token}:{chunk_size}:{paragraph_boundary_normalization_mode}"
+
+
 def _prepare_document_for_processing(source_name: str, source_bytes: bytes, chunk_size: int, *, progress_callback=None):
     emit_preparation_progress(
         progress_callback,
@@ -202,7 +210,17 @@ def clear_preparation_cache(*, session_state=None, clear_shared: bool = False) -
 
 
 def prepare_document_for_processing(*, uploaded_filename: str, source_bytes: bytes, uploaded_file_token: str, chunk_size: int, session_state=None, progress_callback=None) -> PreparedDocumentData:
-    prepared_source_key = build_prepared_source_key(uploaded_file_token, chunk_size)
+    app_config = load_app_config()
+    normalization_mode = (
+        str(app_config["paragraph_boundary_normalization_mode"])
+        if bool(app_config["paragraph_boundary_normalization_enabled"])
+        else "off"
+    )
+    prepared_source_key = build_prepared_source_key(
+        uploaded_file_token,
+        chunk_size,
+        paragraph_boundary_normalization_mode=normalization_mode,
+    )
     cached, in_flight, cache_level = _read_or_reserve_cached_prepared_document(
         session_state=session_state,
         prepared_source_key=prepared_source_key,

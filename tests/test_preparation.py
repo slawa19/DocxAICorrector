@@ -56,6 +56,14 @@ def test_prepare_document_for_processing_uses_cache_for_identical_inputs(monkeyp
     assert progress_events[-1]["metrics"]["cached"] is True
 
 
+def test_build_prepared_source_key_includes_normalization_mode():
+    assert preparation.build_prepared_source_key(
+        "report.docx:10:hash",
+        6000,
+        paragraph_boundary_normalization_mode="high_only",
+    ) == "report.docx:10:hash:6000:high_only"
+
+
 def test_prepare_document_for_processing_returns_independent_copies():
     session_state = {"preparation_cache": {}}
     source_bytes = _build_docx_bytes(["Первый абзац.", "Второй абзац."])
@@ -206,8 +214,8 @@ def test_prepare_document_for_processing_limits_session_cache_size(monkeypatch):
     )
 
     assert list(session_state["preparation_cache"].keys()) == [
-        "two:3:b:6000",
-        "three:5:c:6000",
+        "two:3:b:6000:high_only",
+        "three:5:c:6000:high_only",
     ]
 
 
@@ -360,7 +368,7 @@ def test_prepare_document_for_processing_miss_returns_clone_separate_from_cached
         session_state=session_state,
     )
 
-    cached_entry = session_state["preparation_cache"]["report.docx:10:hash:6000"]
+    cached_entry = session_state["preparation_cache"]["report.docx:10:hash:6000:high_only"]
 
     assert result is not cached_entry
     assert result.paragraphs is not cached_entry.paragraphs
@@ -428,10 +436,10 @@ def test_prepare_document_for_processing_logs_cache_miss_and_hit(monkeypatch):
     assert logged_events == [
         (
             "preparation_cache_miss",
-            {"prepared_source_key": "report.docx:10:hash:6000"},
+            {"prepared_source_key": "report.docx:10:hash:6000:high_only"},
         ),
         (
             "preparation_cache_hit",
-            {"prepared_source_key": "report.docx:10:hash:6000", "cache_level": "session"},
+            {"prepared_source_key": "report.docx:10:hash:6000:high_only", "cache_level": "session"},
         ),
     ]

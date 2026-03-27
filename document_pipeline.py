@@ -6,12 +6,19 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Siz
 from pathlib import Path
 from typing import Literal, Protocol, TypeAlias
 
+from formatting_diagnostics_retention import (
+    collect_recent_formatting_diagnostics,
+    get_formatting_diagnostics_dir,
+    load_formatting_diagnostics_payloads,
+    write_formatting_diagnostics_artifact,
+)
+
 
 JobValue: TypeAlias = object
 ProcessingJob: TypeAlias = Mapping[str, JobValue]
 PipelineResult: TypeAlias = Literal["succeeded", "failed", "stopped"]
 ProcessedBlockStatus: TypeAlias = Literal["valid", "empty", "heading_only_output"]
-FORMATTING_DIAGNOSTICS_DIR = Path(".run") / "formatting_diagnostics"
+FORMATTING_DIAGNOSTICS_DIR = get_formatting_diagnostics_dir()
 
 
 class ParagraphLike(Protocol):
@@ -296,32 +303,14 @@ def _reconcile_placeholder_integrity(
 
 
 def _collect_recent_formatting_diagnostics(*, since_epoch_seconds: float) -> list[str]:
-    if not FORMATTING_DIAGNOSTICS_DIR.exists():
-        return []
-
-    recent_artifacts: list[str] = []
-    threshold = max(0.0, since_epoch_seconds - 1.0)
-    for artifact_path in sorted(FORMATTING_DIAGNOSTICS_DIR.glob("*.json")):
-        try:
-            if artifact_path.stat().st_mtime >= threshold:
-                recent_artifacts.append(str(artifact_path))
-        except OSError:
-            continue
-    return recent_artifacts
+    return collect_recent_formatting_diagnostics(
+        since_epoch_seconds=since_epoch_seconds,
+        diagnostics_dir=FORMATTING_DIAGNOSTICS_DIR,
+    )
 
 
 def _load_formatting_diagnostics_payloads(artifact_paths: Sequence[str]) -> list[dict[str, object]]:
-    payloads: list[dict[str, object]] = []
-
-    for artifact_path in artifact_paths:
-        try:
-            payload = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            continue
-        if isinstance(payload, dict):
-            payloads.append(payload)
-
-    return payloads
+    return load_formatting_diagnostics_payloads(artifact_paths)
 
 
 def _formatting_diagnostics_requires_user_warning(payload: Mapping[str, object]) -> bool:
@@ -420,11 +409,11 @@ def _write_marker_diagnostics_artifact(
     paragraph_ids: Sequence[str] | None,
     processed_chunk: str | None = None,
 ) -> str | None:
-    try:
-        FORMATTING_DIAGNOSTICS_DIR.mkdir(parents=True, exist_ok=True)
-        artifact_path = FORMATTING_DIAGNOSTICS_DIR / f"marker_block_{stage}_{block_index:03d}_{int(time.time() * 1000)}.json"
-        payload = {
-            "stage": stage,
+    return write_formatting_diagnostics_artifact(
+        stage=stage,
+        filename_prefix=f"marker_block_{stage}_{block_index:03d}",
+        diagnostics_dir=FORMATTING_DIAGNOSTICS_DIR,
+        diagnostics={
             "uploaded_filename": uploaded_filename,
             "block_index": block_index,
             "block_count": block_count,
@@ -434,11 +423,50 @@ def _write_marker_diagnostics_artifact(
             "context_before_preview": context_before[:600],
             "context_after_preview": context_after[:600],
             "processed_chunk_preview": (processed_chunk or "")[:1000],
-        }
-        artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        return str(artifact_path)
-    except Exception:
-        return None
+        },
+    )
+
+
+def _summarize_block_plan(jobs: ProcessingJobs) -> dict[str, object]:
+    block_sizes: list[int] = []
+    job_kinds: dict[str, int] = {"llm": 0, "passthrough": 0}
+    first_block_sizes: list[int] = []
+
+    for block_job in jobs:
+        try:
+            target_chars = _coerce_required_int_field(block_job, "target_chars")
+        except (KeyError, TypeError, ValueError):
+            target_chars = -1
+        block_sizes.append(target_chars)
+        if len(first_block_sizes) < 5:
+            first_block_sizes.append(target_chars)
+        try:
+            job_kind = _coerce_job_kind(block_job)
+        except (TypeError, ValueError):
+            job_kind = "llm"
+        job_kinds[job_kind] = job_kinds.get(job_kind, 0) + 1
+
+    valid_sizes = [size for size in block_sizes if size >= 0]
+    total_target_chars = sum(valid_sizes)
+    return {
+        "block_count": len(block_sizes),
+        "llm_block_count": job_kinds.get("llm", 0),
+        "passthrough_block_count": job_kinds.get("passthrough", 0),
+        "total_target_chars": total_target_chars,
+        "min_target_chars": min(valid_sizes) if valid_sizes else None,
+        "max_target_chars": max(valid_sizes) if valid_sizes else None,
+        "avg_target_chars": round(total_target_chars / len(valid_sizes), 1) if valid_sizes else None,
+        "first_block_target_chars": first_block_sizes,
+        "blocks": [
+            {
+                "block_index": block_index,
+                "target_chars": block_sizes[block_index - 1],
+                "job_kind": _coerce_job_kind(block_job) if isinstance(block_job, Mapping) else "llm",
+                "preview": str(block_job.get("target_text", ""))[:120] if isinstance(block_job, Mapping) else "",
+            }
+            for block_index, block_job in enumerate(jobs, start=1)
+        ],
+    }
 
 
 def _build_processed_paragraph_registry_entries(*, block_index: int, paragraph_ids: Sequence[str], processed_chunk: str) -> list[dict[str, object]]:
@@ -545,23 +573,27 @@ def run_document_processing(
             max_retries=max_retries,
             image_count=len(image_assets),
         )
-        block_map = []
-        for block_idx, block_job in enumerate(jobs, start=1):
-            try:
-                chars = _coerce_required_int_field(block_job, "target_chars")
-            except (KeyError, TypeError, ValueError):
-                chars = -1
-            block_map.append({
-                "block": block_idx,
-                "target_chars": chars,
-                "preview": str(block_job.get("target_text", ""))[:120],
-            })
+        block_plan_summary = _summarize_block_plan(jobs)
         log_event(
             logging.INFO,
-            "block_map",
-            "Карта блоков документа",
+            "block_plan_summary",
+            "План блоков документа подготовлен",
             filename=uploaded_filename,
-            blocks=block_map,
+            block_count=block_plan_summary["block_count"],
+            llm_block_count=block_plan_summary["llm_block_count"],
+            passthrough_block_count=block_plan_summary["passthrough_block_count"],
+            total_target_chars=block_plan_summary["total_target_chars"],
+            min_target_chars=block_plan_summary["min_target_chars"],
+            max_target_chars=block_plan_summary["max_target_chars"],
+            avg_target_chars=block_plan_summary["avg_target_chars"],
+            first_block_target_chars=block_plan_summary["first_block_target_chars"],
+        )
+        log_event(
+            logging.DEBUG,
+            "block_plan_detail",
+            "Детальная карта блоков документа подготовлена",
+            filename=uploaded_filename,
+            blocks=block_plan_summary["blocks"],
         )
         emit_activity(runtime, f"Инициализация завершена. Модель: {model}.")
     except Exception as exc:
@@ -683,7 +715,7 @@ def run_document_processing(
         )
         emit_activity(runtime, f"Начата обработка блока {index} из {job_count}.")
         log_event(
-            logging.INFO,
+            logging.DEBUG,
             "block_started",
             "Начата обработка блока",
             filename=uploaded_filename,
@@ -875,7 +907,7 @@ def run_document_processing(
                     )
                 )
                 log_event(
-                    logging.INFO,
+                    logging.DEBUG,
                     "block_marker_registry_built",
                     "Для блока собран marker-aware paragraph registry.",
                     filename=uploaded_filename,
@@ -968,7 +1000,7 @@ def run_document_processing(
         output_chars = len(processed_chunk)
         output_ratio = round(output_chars / max(target_chars, 1), 2)
         log_event(
-            logging.INFO,
+            logging.DEBUG,
             "block_completed",
             "Блок обработан успешно",
             filename=uploaded_filename,

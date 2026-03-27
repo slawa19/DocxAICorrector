@@ -296,6 +296,41 @@ def test_build_output_formatting_diagnostics_uses_real_mapping_instead_of_tail_c
     assert len(diagnostics["accepted_split_targets"]) == 1
 
 
+def test_mapping_reports_accepted_merged_sources_in_diagnostics():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0010",
+            text="Это один логический абзац после нормализации.",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+            origin_raw_indexes=[10, 11],
+            origin_raw_texts=["Это один логический", "абзац после нормализации."],
+            boundary_source="normalized_merge",
+            boundary_confidence="high",
+        )
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("Это один логический абзац после нормализации.")
+
+    _, diagnostics = _map_source_target_paragraphs(source_paragraphs, target_doc.paragraphs)
+
+    assert diagnostics["unmapped_source_ids"] == []
+    assert diagnostics["unmapped_target_indexes"] == []
+    assert diagnostics["accepted_merged_sources"] == [
+        {
+            "logical_paragraph_id": "p0010",
+            "origin_raw_indexes": [10, 11],
+            "dominant_raw_index": 10,
+            "kind": "normalized_merge",
+            "target_index": 0,
+            "target_text_preview": "Это один логический абзац после нормализации.",
+            "source_text_preview": "Это один логический абзац после нормализации.",
+        }
+    ]
+
+
 def test_restore_source_formatting_normalizes_split_heading_prefix_to_heading_2():
     source_paragraphs = [
         ParagraphUnit(

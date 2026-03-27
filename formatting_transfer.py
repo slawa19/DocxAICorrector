@@ -5,13 +5,10 @@ minimal caption/image/table normalization, split-heading normalization,
 and list numbering restoration.
 """
 
-import json
 import logging
 import re
-import time
 from difflib import SequenceMatcher
 from io import BytesIO
-from pathlib import Path
 from typing import Mapping, Sequence, cast
 
 from docx import Document
@@ -36,8 +33,9 @@ from document import (
 )
 from logger import log_event
 from models import ParagraphUnit
+from formatting_diagnostics_retention import get_formatting_diagnostics_dir, write_formatting_diagnostics_artifact
 
-FORMATTING_DIAGNOSTICS_DIR = Path(".run") / "formatting_diagnostics"
+FORMATTING_DIAGNOSTICS_DIR = get_formatting_diagnostics_dir()
 MARKDOWN_HEADING_LINE_PATTERN = re.compile(r"^#{1,6}\s+\S")
 
 
@@ -115,6 +113,10 @@ def _build_source_registry_entry(
         "list_numbering_format": paragraph.list_numbering_format,
         "list_num_id": paragraph.list_num_id,
         "list_abstract_num_id": paragraph.list_abstract_num_id,
+        "origin_raw_indexes": list(paragraph.origin_raw_indexes),
+        "origin_raw_text_count": len(paragraph.origin_raw_texts),
+        "boundary_source": paragraph.boundary_source,
+        "boundary_confidence": paragraph.boundary_confidence,
         "mapped_target_index": mapped_target_index,
         "mapping_strategy": strategy,
         "text_preview": _paragraph_preview(_normalize_text_for_mapping(paragraph.text) or paragraph.text),
@@ -301,6 +303,30 @@ def _collect_accepted_split_targets(
         )
 
     return accepted_targets
+
+
+def _collect_accepted_merged_sources(
+    source_paragraphs: list[ParagraphUnit],
+    target_paragraphs: list[Paragraph],
+    mapped_target_by_source: Mapping[int, int],
+) -> list[dict[str, object]]:
+    accepted_sources: list[dict[str, object]] = []
+    for source_index, target_index in sorted(mapped_target_by_source.items()):
+        source_paragraph = source_paragraphs[source_index]
+        if len(source_paragraph.origin_raw_indexes) <= 1:
+            continue
+        accepted_sources.append(
+            {
+                "logical_paragraph_id": source_paragraph.paragraph_id or f"p{source_index:04d}",
+                "origin_raw_indexes": list(source_paragraph.origin_raw_indexes),
+                "dominant_raw_index": source_paragraph.origin_raw_indexes[0],
+                "kind": source_paragraph.boundary_source or "false_paragraph_boundary_merge",
+                "target_index": target_index,
+                "target_text_preview": _paragraph_preview(target_paragraphs[target_index].text),
+                "source_text_preview": _paragraph_preview(source_paragraph.text),
+            }
+        )
+    return accepted_sources
 
 
 def _map_source_target_paragraphs(
@@ -514,6 +540,11 @@ def _map_source_target_paragraphs(
         mapped_target_by_source,
         generated_registry_by_id,
     )
+    accepted_merged_sources = _collect_accepted_merged_sources(
+        source_paragraphs,
+        target_paragraphs,
+        mapped_target_by_source,
+    )
     accepted_split_target_indexes = {entry["target_index"] for entry in accepted_split_targets}
 
     diagnostics = {
@@ -548,6 +579,7 @@ def _map_source_target_paragraphs(
             for index, paragraph in enumerate(target_paragraphs)
         ],
         "accepted_split_targets": accepted_split_targets,
+        "accepted_merged_sources": accepted_merged_sources,
         "caption_heading_conflicts": _build_caption_heading_conflicts(
             source_paragraphs,
             target_paragraphs,
@@ -560,18 +592,11 @@ def _map_source_target_paragraphs(
 
 
 def _write_formatting_diagnostics_artifact(stage: str, diagnostics: dict[str, object]) -> str | None:
-    try:
-        FORMATTING_DIAGNOSTICS_DIR.mkdir(parents=True, exist_ok=True)
-        artifact_path = FORMATTING_DIAGNOSTICS_DIR / f"{stage}_{int(time.time() * 1000)}.json"
-        payload = {
-            "stage": stage,
-            "generated_at_epoch_ms": int(time.time() * 1000),
-            **diagnostics,
-        }
-        artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        return str(artifact_path)
-    except Exception:
-        return None
+    return write_formatting_diagnostics_artifact(
+        stage=stage,
+        diagnostics=diagnostics,
+        diagnostics_dir=FORMATTING_DIAGNOSTICS_DIR,
+    )
 
 
 # ---------------------------------------------------------------------------

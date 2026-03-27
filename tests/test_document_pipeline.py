@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 from io import BytesIO
 from pathlib import Path
 
@@ -7,6 +8,7 @@ import document_pipeline
 from docx import Document
 
 from document import extract_document_content_from_docx
+from models import ParagraphUnit
 
 
 PNG_BYTES = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK3cAAAAASUVORK5CYII=")
@@ -107,6 +109,15 @@ def _run_processing(runtime, **overrides):
     }
     params.update(overrides)
     return document_pipeline.run_document_processing(**params)
+
+
+def _capture_log_events():
+    events = []
+
+    def _log_event(level, event_id, message, **context):
+        events.append({"level": level, "event_id": event_id, "message": message, "context": context})
+
+    return events, _log_event
 
 
 def test_run_document_processing_happy_path_updates_runtime_state():
@@ -331,6 +342,62 @@ def test_run_document_processing_warns_user_only_for_conflicting_formatting_diag
     assert runtime["state"].get("latest_result_notice") is None
 
 
+def test_run_document_processing_logs_compact_block_plan_summary_at_info() -> None:
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+
+    result = _run_processing(
+        runtime,
+        jobs=[
+            {"target_text": "alpha", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0},
+            {"target_text": "beta", "context_before": "", "context_after": "", "target_chars": 8, "context_chars": 0, "job_kind": "passthrough"},
+        ],
+        log_event=log_event,
+    )
+
+    assert result == "succeeded"
+    info_events = [event for event in events if event["level"] == logging.INFO]
+    summary_event = next(event for event in info_events if event["event_id"] == "block_plan_summary")
+    assert summary_event["context"]["block_count"] == 2
+    assert summary_event["context"]["llm_block_count"] == 1
+    assert summary_event["context"]["passthrough_block_count"] == 1
+    assert summary_event["context"]["total_target_chars"] == 13
+    assert summary_event["context"]["first_block_target_chars"] == [5, 8]
+    assert "blocks" not in summary_event["context"]
+    assert all(event["event_id"] != "block_map" for event in info_events)
+
+
+def test_run_document_processing_demotes_block_chatter_to_debug() -> None:
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+
+    result = _run_processing(
+        runtime,
+        app_config={"enable_paragraph_markers": True},
+        jobs=[{
+            "target_text": "Исходный блок",
+            "target_text_with_markers": "[[DOCX_PARA_p0001]]\nИсходный блок",
+            "paragraph_ids": ["p0001"],
+            "context_before": "",
+            "context_after": "",
+            "target_chars": 13,
+            "context_chars": 0,
+        }],
+        generate_markdown_block=lambda **kwargs: "Очищенный блок",
+        log_event=log_event,
+    )
+
+    assert result == "succeeded"
+    info_event_ids = {event["event_id"] for event in events if event["level"] == logging.INFO}
+    debug_event_ids = {event["event_id"] for event in events if event["level"] == logging.DEBUG}
+    assert "processing_started" in info_event_ids
+    assert "processing_completed" in info_event_ids
+    assert "block_started" not in info_event_ids
+    assert "block_completed" not in info_event_ids
+    assert "block_marker_registry_built" not in info_event_ids
+    assert {"block_started", "block_completed", "block_marker_registry_built"}.issubset(debug_event_ids)
+
+
 def test_run_document_processing_passes_marker_wrapped_text_only_when_marker_mode_enabled():
     runtime = _build_runtime_capture()
     generate_calls = []
@@ -435,6 +502,66 @@ def test_run_document_processing_passes_generated_paragraph_registry_into_docx_r
     # Registry is still threaded into both callbacks even though the effective restore work now happens in preserve.
     assert preserve_calls == [expected_registry]
     assert normalize_calls == [expected_registry]
+
+
+def test_run_document_processing_registry_uses_logical_marker_for_merged_source_paragraph():
+    runtime = _build_runtime_capture()
+    generate_calls = []
+    merged_paragraph = ParagraphUnit(
+        text="Слитый логический абзац",
+        role="body",
+        paragraph_id="p0007",
+        origin_raw_indexes=[0, 1],
+        origin_raw_texts=["Слитый", "логический абзац"],
+        boundary_source="normalized_merge",
+        boundary_confidence="high",
+    )
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{
+            "target_text": "Слитый логический абзац",
+            "target_text_with_markers": "[[DOCX_PARA_p0007]]\nСлитый логический абзац",
+            "paragraph_ids": ["p0007"],
+            "context_before": "",
+            "context_after": "",
+            "target_chars": 24,
+            "context_chars": 0,
+        }],
+        source_paragraphs=[merged_paragraph],
+        image_assets=[],
+        image_mode="safe",
+        app_config={"enable_paragraph_markers": True},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: generate_calls.append(kwargs) or "Слитый логический абзац",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
+    )
+
+    assert result == "succeeded"
+    assert generate_calls[0]["expected_paragraph_ids"] == ["p0007"]
+    assert runtime["state"]["processed_paragraph_registry"] == [
+        {"block_index": 1, "paragraph_id": "p0007", "text": "Слитый логический абзац"}
+    ]
 
 
 def test_run_document_processing_writes_marker_generation_diagnostics_artifact_on_marker_validation_failure(tmp_path, monkeypatch):

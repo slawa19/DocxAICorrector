@@ -565,7 +565,7 @@ def _call_images_edit(
             if adaptation_attempts > IMAGE_API_MAX_ADAPTATION_RETRIES:
                 raise RuntimeError("Images.edit adaptation retry limit exceeded.") from exc
             log_event(
-                logging.INFO,
+                logging.DEBUG,
                 "semantic_image_edit_retry_without_optional_param",
                 "OpenAI SDK не поддерживает один из optional params для Images.edit, повторяю запрос без него.",
                 removed_param=unsupported_param,
@@ -579,7 +579,7 @@ def _call_images_edit(
                 if adaptation_attempts > IMAGE_API_MAX_ADAPTATION_RETRIES:
                     raise RuntimeError("Images.edit adaptation retry limit exceeded.") from exc
                 log_event(
-                    logging.INFO,
+                    logging.DEBUG,
                     "semantic_image_edit_retry_with_shorter_prompt",
                     "Images API отклонил слишком длинный prompt, повторяю запрос с сокращенным prompt.",
                     prompt_limit=prompt_limit,
@@ -596,7 +596,7 @@ def _call_images_edit(
                 if adaptation_attempts > IMAGE_API_MAX_ADAPTATION_RETRIES:
                     raise RuntimeError("Images.edit adaptation retry limit exceeded.") from exc
                 log_event(
-                    logging.INFO,
+                    logging.DEBUG,
                     "semantic_image_edit_retry_with_fallback_size",
                     "Images API отклонил auto-size, повторяю запрос с совместимым фиксированным размером.",
                     fallback_size=fallback_size,
@@ -609,7 +609,7 @@ def _call_images_edit(
                 if adaptation_attempts > IMAGE_API_MAX_ADAPTATION_RETRIES:
                     raise RuntimeError("Images.edit adaptation retry limit exceeded.") from exc
                 log_event(
-                    logging.INFO,
+                    logging.DEBUG,
                     "semantic_image_edit_retry_without_optional_param",
                     "Images API отклонил optional param, повторяю запрос без него.",
                     removed_param=unsupported_param,
@@ -661,7 +661,7 @@ def _call_images_generate(
             if adaptation_attempts > IMAGE_API_MAX_ADAPTATION_RETRIES:
                 raise RuntimeError("Images.generate adaptation retry limit exceeded.") from exc
             log_event(
-                logging.INFO,
+                logging.DEBUG,
                 "structured_image_generate_retry_without_optional_param",
                 "OpenAI SDK не поддерживает optional param для Images.generate, повторяю запрос без него.",
                 removed_param=unsupported_param,
@@ -675,7 +675,7 @@ def _call_images_generate(
                 if adaptation_attempts > IMAGE_API_MAX_ADAPTATION_RETRIES:
                     raise RuntimeError("Images.generate adaptation retry limit exceeded.") from exc
                 log_event(
-                    logging.INFO,
+                    logging.DEBUG,
                     "structured_image_generate_retry_with_shorter_prompt",
                     "Images.generate отклонил слишком длинный prompt, повторяю запрос с сокращенным prompt.",
                     prompt_limit=prompt_limit,
@@ -692,7 +692,7 @@ def _call_images_generate(
                 if adaptation_attempts > IMAGE_API_MAX_ADAPTATION_RETRIES:
                     raise RuntimeError("Images.generate adaptation retry limit exceeded.") from exc
                 log_event(
-                    logging.INFO,
+                    logging.DEBUG,
                     "structured_image_generate_retry_with_fallback_size",
                     "Images.generate отклонил размер, повторяю запрос с совместимым размером.",
                     fallback_size=fallback_size,
@@ -705,7 +705,7 @@ def _call_images_generate(
                 if adaptation_attempts > IMAGE_API_MAX_ADAPTATION_RETRIES:
                     raise RuntimeError("Images.generate adaptation retry limit exceeded.") from exc
                 log_event(
-                    logging.INFO,
+                    logging.DEBUG,
                     "structured_image_generate_retry_without_optional_param",
                     "Images.generate отклонил optional param, повторяю запрос без него.",
                     removed_param=unsupported_param,
@@ -747,7 +747,7 @@ def _call_responses_create(client, request_payload: dict[str, object], *, budget
                 raise
             current_payload.pop(unsupported_param, None)
             log_event(
-                logging.INFO,
+                logging.DEBUG,
                 "structured_layout_retry_without_optional_param",
                 "OpenAI SDK не поддерживает optional param для Responses API, повторяю запрос без него.",
                 removed_param=unsupported_param,
@@ -758,7 +758,7 @@ def _call_responses_create(client, request_payload: dict[str, object], *, budget
             if unsupported_param in retryable_optional_params and unsupported_param in current_payload:
                 current_payload.pop(unsupported_param, None)
                 log_event(
-                    logging.INFO,
+                    logging.DEBUG,
                     "structured_layout_retry_without_optional_param",
                     "Responses API отклонил optional param, повторяю запрос без него.",
                     removed_param=unsupported_param,

@@ -1403,6 +1403,29 @@ def evaluate_lietaer_acceptance(
         output_contains_placeholder_markup=output_artifacts.get("output_contains_placeholder_markup"),
     )
 
+    runtime = cast(Mapping[str, object], report.get("runtime") or {})
+    runtime_state = cast(Mapping[str, object], runtime.get("state") or {})
+    latest_markdown = str(runtime_state.get("latest_markdown") or "")
+    processed_block_markdowns = cast(Sequence[object], runtime_state.get("processed_block_markdowns") or [])
+    combined_processed_markdown = "\n\n".join(
+        str(item) for item in processed_block_markdowns if isinstance(item, str) and item.strip()
+    )
+
+    known_false_split_patterns = {
+        "lietaer_exchange_install_roof_split": "установить\n\nустановить новую крышу",
+    }
+    for check_suffix, bad_pattern in known_false_split_patterns.items():
+        add_check(
+            f"known_false_split_absent_in_final_markdown:{check_suffix}",
+            bad_pattern not in latest_markdown.lower(),
+            bad_pattern=bad_pattern,
+        )
+        add_check(
+            f"known_false_split_absent_in_processed_markdown:{check_suffix}",
+            bad_pattern not in combined_processed_markdown.lower(),
+            bad_pattern=bad_pattern,
+        )
+
     worst_unmapped_source_count = 0
     total_caption_heading_conflicts = 0
     for payload in formatting_diagnostics:

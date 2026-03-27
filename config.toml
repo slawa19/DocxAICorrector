@@ -55,6 +55,11 @@ reconstruction_background_sample_ratio = 0.04
 reconstruction_background_color_distance_threshold = 48.0
 reconstruction_background_uniformity_threshold = 10.0
 
+[paragraph_boundary_normalization]
+enabled = true
+mode = "high_only"
+save_debug_artifacts = true
+
 [image_output]
 generate_candidate_sizes = ["1536x1024", "1024x1536", "1024x1024"]
 edit_candidate_sizes = ["1536x1024", "1024x1536", "1024x1024", "512x512", "256x256"]

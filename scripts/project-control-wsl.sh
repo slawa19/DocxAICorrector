@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUN_DIR="$PROJECT_ROOT/.run"
+RUN_DIR="${DOCXAI_RUN_DIR:-$PROJECT_ROOT/.run}"
 ENV_PATH="$PROJECT_ROOT/.env"
 APP_PATH="$PROJECT_ROOT/app.py"
 VENV_DIR="$PROJECT_ROOT/.venv"
@@ -12,6 +12,10 @@ PANDOC_EXE="$VENV_DIR/bin/pandoc"
 STREAMLIT_LOG_PATH="$RUN_DIR/streamlit.log"
 APP_READY_PATH="$RUN_DIR/app.ready"
 DEFAULT_PORT="8501"
+STREAMLIT_LOG_MAX_BYTES="${DOCXAI_STREAMLIT_LOG_MAX_BYTES:-262144}"
+STREAMLIT_LOG_BACKUP_COUNT="${DOCXAI_STREAMLIT_LOG_BACKUP_COUNT:-5}"
+STREAMLIT_LOG_CHECK_INTERVAL_SECONDS="${DOCXAI_STREAMLIT_LOG_CHECK_INTERVAL_SECONDS:-30}"
+STREAMLIT_LOG_ROTATOR_PID_PATH="${DOCXAI_STREAMLIT_LOG_ROTATOR_PID_PATH:-$RUN_DIR/streamlit_log_rotator.pid}"
 
 mkdir -p "$RUN_DIR"
 
@@ -28,6 +32,75 @@ require_venv() {
     if ! venv_ready; then
         echo "WSL venv python not found: $VENV_PYTHON" >&2
         exit 1
+    fi
+}
+
+is_positive_integer() {
+    [[ "${1:-}" =~ ^[0-9]+$ ]] && [[ "${1:-0}" -gt 0 ]]
+}
+
+streamlit_log_retention_enabled() {
+    is_positive_integer "$STREAMLIT_LOG_MAX_BYTES" && is_positive_integer "$STREAMLIT_LOG_BACKUP_COUNT"
+}
+
+rotate_streamlit_log_if_needed() {
+    if ! streamlit_log_retention_enabled; then
+        return 0
+    fi
+
+    if [[ ! -f "$STREAMLIT_LOG_PATH" ]]; then
+        : > "$STREAMLIT_LOG_PATH"
+        return 0
+    fi
+
+    local current_size="0"
+    current_size="$(wc -c < "$STREAMLIT_LOG_PATH" 2>/dev/null | tr -d '[:space:]')"
+    if [[ -z "$current_size" ]] || [[ "$current_size" -lt "$STREAMLIT_LOG_MAX_BYTES" ]]; then
+        return 0
+    fi
+
+    local last_index="$STREAMLIT_LOG_BACKUP_COUNT"
+    rm -f "$STREAMLIT_LOG_PATH.$last_index"
+
+    local index=""
+    for ((index=last_index-1; index>=1; index--)); do
+        if [[ -f "$STREAMLIT_LOG_PATH.$index" ]]; then
+            mv -f "$STREAMLIT_LOG_PATH.$index" "$STREAMLIT_LOG_PATH.$((index + 1))"
+        fi
+    done
+
+    cp "$STREAMLIT_LOG_PATH" "$STREAMLIT_LOG_PATH.1"
+    : > "$STREAMLIT_LOG_PATH"
+}
+
+streamlit_log_rotator_loop() {
+    while true; do
+        sleep "$STREAMLIT_LOG_CHECK_INTERVAL_SECONDS"
+        rotate_streamlit_log_if_needed || true
+    done
+}
+
+start_streamlit_log_rotator() {
+    if ! streamlit_log_retention_enabled; then
+        rm -f "$STREAMLIT_LOG_ROTATOR_PID_PATH"
+        return 0
+    fi
+
+    stop_streamlit_log_rotator
+    nohup bash "$0" internal-streamlit-log-rotator > /dev/null 2>&1 < /dev/null &
+    local rotator_pid="$!"
+    disown "$rotator_pid" 2>/dev/null || true
+    printf '%s\n' "$rotator_pid" > "$STREAMLIT_LOG_ROTATOR_PID_PATH"
+}
+
+stop_streamlit_log_rotator() {
+    if [[ -f "$STREAMLIT_LOG_ROTATOR_PID_PATH" ]]; then
+        local rotator_pid
+        rotator_pid="$(tr -d '[:space:]' < "$STREAMLIT_LOG_ROTATOR_PID_PATH")"
+        if [[ -n "$rotator_pid" ]] && kill -0 "$rotator_pid" 2>/dev/null; then
+            kill "$rotator_pid" 2>/dev/null || true
+        fi
+        rm -f "$STREAMLIT_LOG_ROTATOR_PID_PATH"
     fi
 }
 
@@ -331,6 +404,7 @@ run_streamlit() {
 
     : > "$STREAMLIT_LOG_PATH"
     rm -f "$APP_READY_PATH"
+    start_streamlit_log_rotator
     # nohup ignores SIGHUP; disown removes from job table so the process
     # survives after this bash script exits. $! is the real Streamlit PID.
     nohup "$VENV_PYTHON" -m streamlit run "$APP_PATH" \
@@ -346,6 +420,7 @@ run_streamlit() {
     for probe in 1 2 3 4; do
         sleep 0.25
         if ! kill -0 "$streamlit_pid" 2>/dev/null; then
+            stop_streamlit_log_rotator
             echo "streamlit process died immediately" >&2
             [[ -s "$STREAMLIT_LOG_PATH" ]] && tail -n 80 "$STREAMLIT_LOG_PATH" >&2 || true
             return 1
@@ -402,6 +477,7 @@ stop_streamlit() {
     fi
     rm -f "$WSL_PID_PATH"
     rm -f "$APP_READY_PATH"
+    stop_streamlit_log_rotator
 }
 
 find_repo_owned_streamlit_by_port() {
@@ -546,6 +622,10 @@ tail_log() {
     fi
 }
 
+rotate_log_now() {
+    rotate_streamlit_log_if_needed
+}
+
 case "${1:-}" in
     check-python)
         check_python
@@ -579,6 +659,12 @@ case "${1:-}" in
         ;;
     tail-log)
         tail_log "${2:-80}"
+        ;;
+    rotate-log-now)
+        rotate_log_now
+        ;;
+    internal-streamlit-log-rotator)
+        streamlit_log_rotator_loop
         ;;
     *)
         echo "Unsupported action: ${1:-}" >&2

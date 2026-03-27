@@ -33,6 +33,8 @@ class DocumentProfile:
     max_unmapped_target_paragraphs: int = 0
     max_heading_level_drift: int = 1
     min_text_similarity: float = 0.98
+    min_merged_groups: int = 0
+    min_merged_raw_paragraphs: int = 0
     require_numbered_lists_preserved: bool = False
     require_nonempty_output: bool = True
     forbid_heading_only_collapse: bool = False
@@ -205,6 +207,8 @@ def _build_document_profile(payload: Any) -> DocumentProfile:
         max_unmapped_target_paragraphs=_coerce_int(payload, "max_unmapped_target_paragraphs", 0),
         max_heading_level_drift=_coerce_int(payload, "max_heading_level_drift", 1),
         min_text_similarity=_coerce_float(payload, "min_text_similarity", 0.98),
+        min_merged_groups=_coerce_int(payload, "min_merged_groups", 0),
+        min_merged_raw_paragraphs=_coerce_int(payload, "min_merged_raw_paragraphs", 0),
         require_numbered_lists_preserved=_coerce_bool(payload, "require_numbered_lists_preserved", has_numbered_lists),
         require_nonempty_output=_coerce_bool(payload, "require_nonempty_output", True),
         forbid_heading_only_collapse=_coerce_bool(payload, "forbid_heading_only_collapse", False),

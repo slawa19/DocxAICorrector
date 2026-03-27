@@ -51,9 +51,10 @@ The current document structure recognition in `document.py` relies on ~200 lines
 ## 3. Non-Goals
 
 - Replacing the editing LLM pipeline (chunking, generation, formatting transfer).
-- Changing the DOCX extraction layer (python-docx parsing, XML property reading).
-- Adding new role types to the downstream pipeline (epigraph/attribution are mapped to existing roles with metadata).
-- Restructuring `document.py` beyond adding the integration seam.
+- Changing the DOCX extraction logic (python-docx parsing, XML property reading, role classification). Three new fields (`style_name`, `is_bold`, `font_size_pt`) are added to `ParagraphUnit` and populated during extraction, but the extraction algorithm and role heuristics are unchanged.
+- Adding new role types to the main processing pipeline (epigraph/attribution are mapped to existing `role` values; the finer taxonomy lives only in `structural_role`).
+- Expanding output formatting back into broad source-style replay. This feature improves semantic classification only; the existing simplified formatting contract remains reference-DOCX-first with minimal post-formatting.
+- Restructuring `document.py` beyond preserving extra metadata on `ParagraphUnit`.
 - Full TOC parsing or outline reconstruction (future phase).
 
 ## 4. Design
@@ -65,10 +66,11 @@ DOCX file
     │
     ▼
 ┌─────────────────────────────────────────┐
-│  Stage 0: DOCX Extraction (unchanged)   │
+│  Stage 0: DOCX Extraction (minimal Δ)   │
 │  document.py → extract paragraphs       │
 │  Output: list[ParagraphUnit] with       │
 │    explicit styles + raw heuristics     │
+│    + style_name, is_bold, font_size_pt  │
 └───────────────────┬─────────────────────┘
                     │
                     ▼
@@ -131,9 +133,10 @@ def apply_structure_map(
 
 def build_paragraph_descriptors(
     paragraphs: list[ParagraphUnit],
-    source_paragraphs: list[Paragraph],
 ) -> list[ParagraphDescriptor]:
-    """Extract compact metadata from raw DOCX paragraphs for AI input."""
+    """Build compact metadata from ParagraphUnit fields for AI input.
+    Reads style_name, is_bold, font_size_pt, paragraph_alignment
+    directly from ParagraphUnit — no raw Paragraph access needed."""
 ```
 
 ### 4.3. Data Structures
@@ -298,19 +301,22 @@ Paragraphs:
 def _prepare_document_for_processing(source_name, source_bytes, chunk_size, *, progress_callback=None):
     uploaded_file = build_in_memory_uploaded_file(source_name, source_bytes)
 
-    # Stage 0: Extract (unchanged)
+    # Stage 0: Extract (unchanged logic, ParagraphUnit now carries
+    # style_name, is_bold, font_size_pt populated during extraction)
     paragraphs, image_assets = extract_document_content_from_docx(uploaded_file)
 
     # ──── NEW: Stage 1 — AI Structure Recognition ────
-    if _should_run_structure_recognition(app_config):
-        descriptors = build_paragraph_descriptors(paragraphs, source_paragraphs)
+    from config import load_app_config, get_client
+    app_config = load_app_config()
+    if app_config.get("structure_recognition_enabled", False):
         structure_map = build_structure_map(
             paragraphs,
             client=get_client(),
             model=app_config.get("structure_model", "gpt-4o-mini"),
         )
         apply_structure_map(paragraphs, structure_map)
-        # Optionally cache/save structure_map for debugging
+    else:
+        structure_map = None
     # ──── End NEW ────
 
     # Stage 2+: Everything below unchanged
@@ -325,7 +331,8 @@ def _prepare_document_for_processing(source_name, source_bytes, chunk_size, *, p
 - After `extract_document_content_from_docx` → paragraphs exist with raw metadata
 - Before `build_semantic_blocks` → corrected roles improve chunking quality
 - Before `build_document_text` → `rendered_text` uses correct `#` heading prefixes
-- No changes needed in `document_pipeline.py`, `generation.py`, `formatting_transfer.py`, or `processing_service.py`
+- No code changes needed in `document_pipeline.py`, `generation.py`, or `processing_service.py`
+- `formatting_transfer.py` needs no code changes but its diagnostic output will carry new `structural_role` / `role_confidence` values (see §7)
 
 ### 4.7. Role Priority and Application Rules
 
@@ -334,8 +341,10 @@ When `apply_structure_map` enriches `ParagraphUnit` fields:
 ```python
 def apply_structure_map(paragraphs: list[ParagraphUnit], structure_map: StructureMap) -> None:
     for paragraph in paragraphs:
-        # Rule 1: Explicit DOCX heading styles are NEVER overridden
-        if paragraph.heading_source == "explicit":
+        # Rule 1: Explicit and adjacent classifications are NEVER overridden
+        if paragraph.role_confidence == "explicit":
+            continue
+        if paragraph.role_confidence == "adjacent":
             continue
 
         classification = structure_map.get(paragraph.source_index)
@@ -356,26 +365,29 @@ def apply_structure_map(paragraphs: list[ParagraphUnit], structure_map: Structur
 
         paragraph.role = ai_role
         paragraph.role_confidence = "ai"
-        paragraph.heading_source = "ai" if ai_role == "heading" else paragraph.heading_source
+        paragraph.heading_source = "ai" if ai_role == "heading" else None
 
         if classification.heading_level is not None:
             paragraph.heading_level = classification.heading_level
+        elif ai_role != "heading":
+            paragraph.heading_level = None
 
         if classification.role in ("epigraph", "attribution", "toc_entry", "toc_header", "dedication"):
             paragraph.structural_role = classification.role
+        else:
+            paragraph.structural_role = ai_role
 ```
 
-**Priority cascade**: `explicit` (DOCX style) → `ai` (structure map) → `heuristic` (current code, fallback)
+**Priority cascade**: `explicit` / `adjacent` → `ai` (structure map) → `heuristic` (current code, fallback)
 
 ### 4.8. Descriptor Extraction (Compact Input Building)
 
 ```python
 def build_paragraph_descriptors(
     paragraphs: list[ParagraphUnit],
-    source_paragraphs: list[Paragraph],
 ) -> list[ParagraphDescriptor]:
     descriptors = []
-    for paragraph, source in zip(paragraphs, source_paragraphs):
+    for paragraph in paragraphs:
         if not paragraph.text.strip():
             continue
 
@@ -384,11 +396,11 @@ def build_paragraph_descriptors(
             index=paragraph.source_index,
             text_preview=text[:60],
             text_length=len(text),
-            style_name=paragraph.style_name if hasattr(paragraph, 'style_name') else "",
-            is_bold=_all_runs_bold(source) if source else False,
+            style_name=paragraph.style_name,
+            is_bold=paragraph.is_bold,
             is_centered=paragraph.paragraph_alignment == "center",
             is_all_caps=text[:60] == text[:60].upper() and any(c.isalpha() for c in text[:60]),
-            font_size_pt=_resolve_effective_paragraph_font_size(source) if source else None,
+            font_size_pt=paragraph.font_size_pt,
             has_numbering=paragraph.list_kind is not None,
             explicit_heading_level=paragraph.heading_level if paragraph.heading_source == "explicit" else None,
         ))
@@ -404,7 +416,7 @@ def build_paragraph_descriptors(
 
 Structure maps are cached in two tiers:
 
-1. **Session cache** (in-memory): keyed by `(source_bytes_hash, model)`. Avoids re-running when a user re-processes the same document.
+1. **Session cache** (in-memory): keyed by `(source_bytes_hash, model)`. Avoids re-running when a user re-processes the same document. Note: the preparation-level cache (§12.2) is the primary staleness guard for the Phase 1 on/off toggle. Model and confidence changes remain an accepted Phase 1 limitation.
 
 2. **Debug artifact** (file): saved to `.run/structure_maps/{filename}_{hash8}.json` for inspection.
 
@@ -450,13 +462,25 @@ def build_structure_map(...) -> StructureMap:
 
 **Contract**: AI structure recognition is always optional. Pipeline correctness never depends on it. An empty `StructureMap` means "use heuristic classifications as before."
 
+### 4.10.1. Timeout, Cancellation, and Background Worker Behavior
+
+Structure recognition runs on the **critical preparation path** — sequentially within `_prepare_document_for_processing`, which is called from the background preparation worker (`prepare_run_context_for_background`). It is **not parallelized** with other preparation steps.
+
+**Timeout**: Each API window call uses `timeout_seconds` from config (default: 60s). On timeout, the window returns empty classifications for that range. If all windows time out, the result is an empty `StructureMap` → full fallback.
+
+**Network/API failure**: Caught in the `except` block above. Logged, empty map returned, preparation continues without delay.
+
+**Background worker cancellation**: The existing background preparation worker does not support mid-flight cancellation (no cancellation token in `_prepare_document_for_processing`). If the user re-uploads a file or navigates away during structure recognition, the background thread completes (or times out) and its result is discarded by the event-draining logic in `app.py`. This is the same behavior as for any long preparation step today.
+
+**Worst-case latency addition to preparation**: 60s (one window timeout). Typical: 5–15s for a full book on gpt-4o-mini. The progress UI (§10.1) communicates this as a distinct stage so the user knows the system is waiting for AI.
+
 ### 4.11. Configuration
 
 New fields in `config.toml` and app config:
 
 ```toml
 [structure_recognition]
-enabled = true                    # Master switch
+enabled = false                  # Master switch; Phase 1 rollout is opt-in
 model = "gpt-4o-mini"            # Model for structure analysis
 max_window_paragraphs = 1800     # Paragraphs per API call
 overlap_paragraphs = 50          # Overlap between windows
@@ -593,12 +617,16 @@ After validating Phase 1 on multiple documents:
 - Track heuristic vs AI classification divergence in formatting diagnostics
 - Gradually reduce heuristic code as AI reliability is confirmed
 
-### Phase 3: Extended Taxonomy (future)
+### Phase 3: Extended Taxonomy Consumers (future)
 
-- Use `structural_role` for epigraph/attribution/toc to improve:
-  - Semantic block building (never split epigraph from its heading)
-  - Formatting transfer (epigraphs keep italic/center even if LLM changes text)
-  - Markdown rendering (optional: render epigraphs as blockquotes)
+Phase 1 sets `structural_role` to fine-grained values (`epigraph`, `attribution`, `toc_entry`, etc.), but no current consumer reads these for behavioral decisions. In Phase 1, the practical improvement comes only from AI overriding `role` and `heading_level` — correctly classifying heuristic headings/body and fixing heading levels.
+
+`structural_role` becomes actionable in Phase 3 when consumers learn to use it:
+- `build_semantic_blocks`: never split epigraph from its heading; treat toc_entry sequences as one block
+- `formatting_transfer`: epigraphs keep italic/center even if LLM changes text
+- `rendered_text` / markdown rendering: render epigraphs as blockquotes, suppress toc_entry from editing chunks
+
+Until Phase 3, `structural_role` is informational (diagnostics, UI preview, debug artifacts).
 
 ## 7. ParagraphUnit Changes
 
@@ -621,7 +649,9 @@ class ParagraphUnit:
     # Extended with: "ai" for AI-classified paragraphs
 ```
 
-The `role` field maps to the 6 existing pipeline roles (`heading`, `body`, `caption`, `list`, `image`, `table`). The `structural_role` field carries the finer AI taxonomy. This avoids any downstream changes — `build_semantic_blocks`, `rendered_text`, and `formatting_transfer` all key on `role`, not `structural_role`.
+The `role` field maps to the 6 existing pipeline roles (`heading`, `body`, `caption`, `list`, `image`, `table`). The `structural_role` field carries the finer AI taxonomy. The main processing path (`build_semantic_blocks`, `rendered_text`, LLM generation) keys on `role`, not `structural_role`, so the core pipeline behavior is unchanged.
+
+**Diagnostic surface impact**: `formatting_transfer.py` serializes `structural_role` and `role_confidence` into formatting diagnostics JSON (`_build_source_registry_entry`), and `_build_caption_heading_conflicts` reads `role_confidence` values. New values (`"ai"` for `role_confidence`; `"epigraph"`, `"attribution"`, `"toc_entry"` etc. for `structural_role`) will appear in diagnostic artifacts and caption-heading conflict reports. This changes the content of `.run/formatting_diagnostics/*.json` and any test assertions that snapshot these artifacts. No code changes in `formatting_transfer.py` are needed — the serialization is generic — but diagnostic expectations shift.
 
 ## 8. Risk Assessment
 
@@ -629,7 +659,7 @@ The `role` field maps to the 6 existing pipeline roles (`heading`, `body`, `capt
 |------|------------|--------|------------|
 | AI misclassifies paragraphs | Medium | Medium | Confidence filtering (only apply high/medium). Explicit styles never overridden. Diagnostic logging for review. |
 | API unavailable | Low | None | Empty StructureMap → full fallback to heuristics. No pipeline breakage. |
-| Latency too high for UX | Low | Low | gpt-4o-mini is fast (10-15s for full book). Can show progress indicator. Runs in parallel with other init. |
+| Latency too high for UX | Low | Low | gpt-4o-mini is fast (10-15s for full book). Progress indicator shows dedicated stage. Runs on critical preparation path (sequential, not parallel). Timeout + empty fallback prevents blocking. |
 | Output JSON malformed | Low | None | Schema validation. On parse failure → empty map → fallback. |
 | Window boundary misclassification | Low | Low | 50-paragraph overlap. Boundary-aware merge prefers non-edge classifications. |
 | Cost concerns | Very Low | Very Low | <$0.02 for a full book. <0.2% of total processing cost. |
@@ -649,17 +679,20 @@ The `role` field maps to the 6 existing pipeline roles (`heading`, `body`, `capt
 8. Full pipeline smoke test: Lietaer chapter 1 processes end-to-end with structure recognition ON.
 9. Full pipeline smoke test: same document processes with structure recognition OFF (fallback).
 10. Existing test suite passes with zero regressions.
+11. Config tests (`test_config.py`) pass with the new `[structure_recognition]` section — both default-value wiring and env-override paths (`test_load_app_config_applies_env_overrides_and_clamps`, `test_load_app_config_exposes_image_validation_defaults` which assert all config keys).
+12. `build_prepared_source_key` tests (`test_preparation.py`) updated for the new `structure_recognition_enabled` parameter.
+13. New `ParagraphUnit` fields (`style_name`, `is_bold`, `font_size_pt`) populated correctly during extraction — verified on a synthetic DOCX fixture.
+14. Existing preparation tests continue to pass with structure recognition disabled by default; cache-key tests cover the new `structure_recognition_enabled` parameter.
 
 ### Integration validation (post-merge, manual)
 
-11. Run structure recognition on the full book (`bernardlietaer...ru.docx`), inspect artifact JSON:
+15. Run structure recognition on the full book (`bernardlietaer...ru.docx`), inspect artifact JSON:
     - All "ГЛАВА N" paragraphs classified as heading level 1
     - All "ЧАСТЬ N" paragraphs classified as heading level 1
     - Author names (ЭПИКТЕТ, ДЖОРДЖ МОНБИОТ, etc.) classified as attribution, NOT heading
     - TOC entries (indices 48-70) classified as toc_header / toc_entry
     - Body subheadings (Переосмысление богатства, Системный подход, etc.) classified as heading level 3+
-
-12. Compare semantic blocks built with/without structure recognition — blocks should be more semantically coherent with structure recognition ON.
+16. Compare semantic blocks built with/without structure recognition — blocks should be more semantically coherent with structure recognition ON.
 
 ## 10. UI Integration
 
@@ -870,7 +903,7 @@ This expander appears between `render_preparation_summary` and the processing co
 |------|--------|-------------|
 | `structure_recognition.py` | **Create** | Core module: descriptors, AI call, windowing, parsing, application |
 | `models.py` | **Modify** | Add `ParagraphDescriptor`, `ParagraphClassification`, `StructureMap`; add `style_name` field to `ParagraphUnit` |
-| `preparation.py` | **Modify** | Insert structure recognition between extraction and block building; add two new `emit_preparation_progress` calls |
+| `preparation.py` | **Modify** | Insert structure recognition between extraction and block building; add two new `emit_preparation_progress` calls; extend `build_prepared_source_key` with `structure_recognition_enabled` flag |
 | `document.py` | **Modify** | Make `_resolve_effective_paragraph_font_size` public; preserve `style_name` during extraction |
 | `config.py` / `config.toml` | **Modify** | Add `[structure_recognition]` config section |
 | `application_flow.py` | **Modify** | Propagate `ai_classified_count` / `ai_heading_count` into `PreparedRunContext` |
@@ -880,4 +913,168 @@ This expander appears between `render_preparation_summary` and the processing co
 | `tests/test_structure_recognition.py` | **Create** | Unit + integration tests |
 | `prompts/structure_recognition_system.txt` | **Create** | System prompt for structure analysis |
 
-No changes to: `document_pipeline.py`, `generation.py`, `formatting_transfer.py`, `processing_service.py`, `app_runtime.py`, or any existing test files.
+No changes to: `document_pipeline.py`, `generation.py`, `formatting_transfer.py` (diagnostic output changes, no code changes), `processing_service.py`, `app_runtime.py`.
+
+Existing test files with minor updates: `tests/test_config.py` (new config section), `tests/test_preparation.py` (cache key signature). See §9 for details.
+
+## 12. Open Questions — Resolved
+
+### 12.1. Where do descriptor inputs live?
+
+**Decision: extend `ParagraphUnit` with three new fields; extract from DOCX during `_build_paragraph_unit`.**
+
+The AI structure recognition stage needs compact descriptors with: `text`, `style_name`, `is_bold`, `is_centered`, `font_size_pt`, `char_count`, `source_index`. Current state of these inputs on `ParagraphUnit`:
+
+| Field | Already on ParagraphUnit | Currently computed in |
+|-------|--------------------------|----------------------|
+| `text` | Yes | — |
+| `style_name` | **No** | `_build_paragraph_unit` local variable |
+| `is_bold` | **No** | `_paragraph_has_strong_heading_format` (transient) |
+| `is_centered` | Indirectly (`paragraph_alignment`) | `_resolve_paragraph_alignment` |
+| `font_size_pt` | **No** | `_resolve_effective_paragraph_font_size` (transient, operates on raw `Paragraph` object) |
+| `char_count` | Computable from `text` | — |
+| `source_index` | Yes | — |
+
+Three fields are missing: `style_name`, `is_bold`, `font_size_pt`. Two options were considered:
+
+**Option A: New return contract from extraction.** `extract_document_content_from_docx` returns a third element — a list of raw descriptor dicts alongside `ParagraphUnit` list. Pros: no ParagraphUnit pollution. Cons: parallel lists are fragile, extraction must re-iterate raw paragraphs, and the data diverges unless kept in sync manually.
+
+**Option B: Extend ParagraphUnit.** Add `style_name: str = ""`, `is_bold: bool = False`, `font_size_pt: float | None = None` directly on the dataclass. Populate in `_build_paragraph_unit` where the raw `Paragraph` object is in scope. Pros: single source of truth, data travels with the paragraph through the whole pipeline, useful for formatting diagnostics even without AI recognition. Cons: 3 new fields on a central dataclass.
+
+**Chosen: Option B.** The fields are small, have sensible defaults, and serve purposes beyond structure recognition (formatting debugging, future heuristic improvements). `is_centered` is already derivable from the existing `paragraph_alignment` field — no additional field needed.
+
+New fields on `ParagraphUnit`:
+
+```python
+@dataclass
+class ParagraphUnit:
+    # ... existing 18 fields ...
+    style_name: str = ""           # DOCX style name, e.g. "Body Text", "Heading 1"
+    is_bold: bool = False          # True when ≥50% of visible chars are bold
+    font_size_pt: float | None = None  # Effective font size in points, None if unresolvable
+```
+
+Populated in `_build_paragraph_unit`:
+
+```python
+style_name = paragraph.style.name if paragraph.style and paragraph.style.name else ""
+is_bold = _paragraph_has_strong_heading_format(paragraph)  # already called, reuse result
+font_size_pt = _resolve_effective_paragraph_font_size(paragraph)
+```
+
+`build_paragraph_descriptors` in `structure_recognition.py` reads directly from `ParagraphUnit` fields — no parallel data structures, no re-parsing.
+
+### 12.2. What enters the preparation cache key?
+
+**Decision: add `structure_recognition_enabled` flag to `prepared_source_key`. This is required in Phase 1.**
+
+Current cache key: `f"{uploaded_file_token}:{chunk_size}"` — computed in `build_prepared_source_key`. The `uploaded_file_token` is a content-based hash of the file bytes.
+
+The structure recognition step runs inside `_prepare_document_for_processing`, whose return value (`PreparedDocumentData`) is cached. The cached `paragraphs` carry the AI-enriched `role`, `heading_level`, `heading_source`, `role_confidence`, `structural_role` fields. This means if a user toggles structure recognition on/off and re-processes the same file, the cache would return paragraphs with the wrong classification unless the key discriminates the flag.
+
+**New cache key format:**
+
+```python
+def build_prepared_source_key(
+    uploaded_file_token: str,
+    chunk_size: int,
+    *,
+    structure_recognition_enabled: bool = False,
+) -> str:
+    sr_suffix = ":sr=1" if structure_recognition_enabled else ""
+    return f"{uploaded_file_token}:{chunk_size}{sr_suffix}"
+```
+
+Adding the flag is cheap (one bool) and prevents the stale-result scenario entirely. The existing `PREPARATION_CACHE_LIMIT = 2` means at most 2 entries coexist — a toggle simply misses the cache and re-runs preparation, which is the correct behavior.
+
+Model name, `min_confidence`, and other config details are **not** included in the key in Phase 1. These change much less frequently than the on/off toggle, and addressing them would require a full config-hash approach that can be deferred to Phase 2. If model/confidence tuning becomes interactive, extend the key at that point.
+
+**PreparedDocumentData extension**: add `structure_map: StructureMap | None = None` for diagnostics/UI. Cached automatically alongside paragraphs.
+
+### 12.3. Can AI downgrade heuristic headings to body/attribution?
+
+**Decision: yes. AI can override heuristic classifications, but explicit classifications and adjacent captions remain frozen.**
+
+The priority cascade is:
+
+| `heading_source` / `role_confidence` | AI can override? | Rationale |
+|--------------------------------------|-------------------|-----------|
+| `"explicit"` (Heading 1-6 style, Title, Subtitle, outline level) | **No** | The author explicitly marked this as a heading in Word. The structure is unambiguous. |
+| `"heuristic"` (bold+centered+short → heading by format guess) | **Yes** | This is exactly where heuristics fail most. Bold centered text can be an epigraph attribution ("ЭПИКТЕТ"), a dedication, a TOC header — not a heading. The AI sees context and can correctly reclassify. |
+| `"adjacent"` (caption reclassified from context) | **No** | Adjacent captions are structural (image/table proximity) and not semantic. AI should not interfere with asset-related classification. |
+| Body/list/caption with `role_confidence="heuristic"` | **Yes** | AI can upgrade body to heading, or reclassify body as epigraph/attribution via `structural_role`. |
+| Body/list/caption with `role_confidence="explicit"` | **No** | Explicit caption style, explicit list style — these are author-intended. |
+
+Implementation in `apply_structure_map`:
+
+```python
+def apply_structure_map(paragraphs: list[ParagraphUnit], structure_map: StructureMap) -> None:
+    for paragraph in paragraphs:
+        classification = structure_map.get(paragraph.source_index)
+        if classification is None:
+            continue
+        # Never override explicit or adjacent classifications
+        if paragraph.role_confidence == "explicit":
+            continue
+        if paragraph.role_confidence == "adjacent":
+            continue
+        ai_role = _map_ai_role_to_pipeline_role(classification.role)
+        # AI override: both upgrades and downgrades allowed
+        paragraph.role = ai_role
+        paragraph.heading_level = classification.heading_level
+        paragraph.heading_source = "ai" if ai_role == "heading" else None
+        paragraph.structural_role = classification.role
+        paragraph.role_confidence = "ai"
+```
+
+This means a paragraph currently classified as `heading` with `heading_source="heuristic"` (e.g. "ЭПИКТЕТ" — bold, centered, caps, detected as heading by format heuristics) **will be reclassified** to `body` with `structural_role="attribution"` if the AI determines it's an attribution. This is the correct behavior — it's the core value proposition of the feature.
+
+The `"ai"` value is added to the `heading_source` and `role_confidence` vocabularies. The downstream pipeline (`build_semantic_blocks`, `rendered_text`, `formatting_transfer`) keys on `role` (not `heading_source`), so a downgrade from heading to body changes chunking and rendering — which is the desired outcome.
+
+### 12.4. Which existing test files need updates?
+
+**Decision: only two existing test files require minor updates; all other test files are unchanged. New tests go in a new file.**
+
+Analysis of the test surface:
+
+**`tests/test_config.py`** (20 tests):
+- Tests assert every key in the app config dict. Adding `[structure_recognition]` config section means default-value tests and env-override tests need to cover the new keys.
+- **Change needed**: add test functions for `structure_recognition_enabled`, `structure_model`, etc. or extend parametrized assertions. Existing tests are unaffected since new config keys use defaults.
+
+**`tests/test_preparation.py`**:
+- `test_build_prepared_source_key_formats_token_and_chunk_size` — the function signature changes (§12.2). This test needs updating for the new `structure_recognition_enabled` parameter.
+- Integration-style preparation tests: structure recognition must be mocked/disabled or rely on the Phase 1 default (`enabled=false`). No assertion changes.
+- **Change needed**: update cache key test(s).
+
+**`tests/test_document.py`** (60+ tests, primary risk area):
+- 20+ tests assert specific `role`, `heading_level`, `heading_source`, `role_confidence` values from `extract_document_content_from_docx`.
+- **These tests all verify extraction output BEFORE structure recognition runs.** Structure recognition is a separate stage that runs in `preparation.py`, after extraction. `extract_document_content_from_docx` returns paragraphs with heuristic/explicit classifications — these don't change.
+- Adding `style_name`, `is_bold`, `font_size_pt` fields to `ParagraphUnit` uses defaults (`""`, `False`, `None`) — existing tests that construct `ParagraphUnit` without these fields will not break.
+- **Change needed**: none (defaults handle it). Optionally add a targeted test that `style_name`/`is_bold`/`font_size_pt` are populated during extraction.
+
+**`tests/test_format_restoration.py`**, **`tests/test_generation.py`**:
+- These test downstream processing. They receive `ParagraphUnit` objects with pre-set roles. Adding new fields with defaults doesn't affect them.
+- Formatting diagnostics contain `structural_role` and `role_confidence` — but these tests don't snapshot diagnostic JSON content.
+- **Change needed**: none.
+
+**`tests/test_document_pipeline.py`**, **`tests/test_processing_service.py`**:
+- End-to-end pipeline tests. Structure recognition will be OFF by default in config. No breakage.
+- **Change needed**: none.
+
+**`tests/test_real_document_pipeline_validation.py`**, **`tests/test_real_document_quality_gate.py`**:
+- Integration tests against real documents. Threshold-based, not exact-match. May produce different (plausibly better) scores when structure recognition is enabled. Threshold adjustments are done in validation profiles, not in test code.
+- **Change needed**: none.
+
+**Summary**:
+
+| Test file | Impact | Change needed |
+|-----------|--------|---------------|
+| `tests/test_config.py` | New config keys need coverage | **Minor: add tests for `[structure_recognition]` section** |
+| `tests/test_preparation.py` | Cache key signature changes | **Minor: update cache key test** |
+| All `tests/test_document.py` | None — tests verify pre-AI extraction | **No changes** |
+| All `tests/test_format_restoration.py` | None — downstream, receives pre-set ParagraphUnits | **No changes** |
+| All `tests/test_generation.py` | None — downstream | **No changes** |
+| `tests/test_real_document_*.py` | May improve — threshold-based | **No changes** |
+| **`tests/test_structure_recognition.py`** | **New file** | **Created in Phase 1** |
+
+If for any reason a real-document integration test produces a different (better or worse) acceptance score after Phase 1, the threshold can be adjusted in the validation profile — but the test file itself is not modified.

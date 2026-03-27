@@ -195,6 +195,40 @@ def test_evaluate_lietaer_acceptance_passes_for_clean_structural_output(tmp_path
     assert acceptance["failed_checks"] == []
 
 
+def test_evaluate_lietaer_acceptance_detects_known_false_split_in_runtime_markdown() -> None:
+    validation = _load_validation_module()
+
+    source_doc = Document()
+    source_doc.add_paragraph("Однако деньги — не единственное средство обмена.")
+    output_doc = Document()
+    output_doc.add_paragraph("Однако деньги — не единственное средство обмена.")
+
+    report = {
+        "result": "succeeded",
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [],
+        "runtime": {
+            "state": {
+                "latest_markdown": "Вы помогаете соседу установить\n\nустановить новую крышу.",
+                "processed_block_markdowns": ["Вы помогаете соседу установить\n\nустановить новую крышу."],
+            }
+        },
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+    )
+
+    assert acceptance["passed"] is False
+    assert "known_false_split_absent_in_final_markdown:lietaer_exchange_install_roof_split" in acceptance["failed_checks"]
+    assert "known_false_split_absent_in_processed_markdown:lietaer_exchange_install_roof_split" in acceptance["failed_checks"]
+
+
 def test_evaluate_lietaer_acceptance_allows_centered_text_edits_when_alignment_is_preserved() -> None:
     validation = _load_validation_module()
 

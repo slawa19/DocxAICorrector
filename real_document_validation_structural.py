@@ -14,10 +14,16 @@ from docx.oxml.ns import qn
 
 import processing_runtime
 from config import load_app_config
-from document import build_document_text, extract_document_content_from_docx, inspect_placeholder_integrity
+from document import (
+    build_document_text,
+    extract_document_content_from_docx,
+    extract_document_content_with_boundary_report,
+    inspect_placeholder_integrity,
+)
 from formatting_transfer import normalize_semantic_output_docx, preserve_source_paragraph_properties
 from generation import convert_markdown_to_docx_bytes, ensure_pandoc_available
 from image_reinsertion import reinsert_inline_images
+from models import ParagraphBoundaryNormalizationReport
 from processing_service import clone_processing_service
 from real_document_validation_profiles import DocumentProfile, RunProfile, apply_runtime_resolution_to_app_config, resolve_runtime_resolution
 
@@ -60,8 +66,14 @@ def evaluate_extraction_profile(document_profile: DocumentProfile) -> dict[str, 
     source_path = document_profile.resolved_source_path(PROJECT_ROOT)
     source_bytes = source_path.read_bytes()
     normalized_source = processing_runtime.normalize_uploaded_document(filename=source_path.name, source_bytes=source_bytes)
-    paragraphs, image_assets = extract_document_content_from_docx(BytesIO(normalized_source.content_bytes))
-    metrics = _build_structural_metrics(paragraphs=paragraphs, image_assets=image_assets)
+    paragraphs, image_assets, normalization_report = extract_document_content_with_boundary_report(
+        BytesIO(normalized_source.content_bytes)
+    )
+    metrics = _build_structural_metrics(
+        paragraphs=paragraphs,
+        image_assets=image_assets,
+        normalization_report=normalization_report,
+    )
     checks = _build_extraction_checks(document_profile, metrics)
     return _build_validation_result(
         document_profile=document_profile,
@@ -113,12 +125,18 @@ def run_structural_passthrough_validation(
         latest_docx_bytes = b""
     output_artifacts = _build_output_artifacts(bytes(latest_docx_bytes), latest_markdown)
 
-    source_paragraphs, source_image_assets = extract_document_content_from_docx(BytesIO(prepared.uploaded_file_bytes))
+    source_paragraphs, source_image_assets, source_normalization_report = extract_document_content_with_boundary_report(
+        BytesIO(prepared.uploaded_file_bytes)
+    )
     output_paragraphs = []
     output_image_assets = []
     if output_artifacts["output_docx_openable"]:
         output_paragraphs, output_image_assets = extract_document_content_from_docx(BytesIO(bytes(latest_docx_bytes)))
-    metrics = _build_structural_metrics(paragraphs=source_paragraphs, image_assets=source_image_assets)
+    metrics = _build_structural_metrics(
+        paragraphs=source_paragraphs,
+        image_assets=source_image_assets,
+        normalization_report=source_normalization_report,
+    )
     metrics.update(
         {
             "output_paragraph_count": len(output_paragraphs),
@@ -248,7 +266,12 @@ def _build_validation_processing_service(event_log: list[dict[str, object]]):
     )
 
 
-def _build_structural_metrics(*, paragraphs: Sequence[object], image_assets: Sequence[object]) -> dict[str, object]:
+def _build_structural_metrics(
+    *,
+    paragraphs: Sequence[object],
+    image_assets: Sequence[object],
+    normalization_report: ParagraphBoundaryNormalizationReport | None = None,
+) -> dict[str, object]:
     paragraph_units = list(paragraphs)
     return {
         "paragraph_count": len(paragraph_units),
@@ -260,6 +283,10 @@ def _build_structural_metrics(*, paragraphs: Sequence[object], image_assets: Seq
         ),
         "image_count": len(list(image_assets)),
         "table_count": sum(1 for paragraph in paragraph_units if getattr(paragraph, "role", None) == "table"),
+        "raw_paragraph_count": 0 if normalization_report is None else normalization_report.total_raw_paragraphs,
+        "logical_paragraph_count": 0 if normalization_report is None else normalization_report.total_logical_paragraphs,
+        "merged_group_count": 0 if normalization_report is None else normalization_report.merged_group_count,
+        "merged_raw_paragraph_count": 0 if normalization_report is None else normalization_report.merged_raw_paragraph_count,
     }
 
 
@@ -267,6 +294,22 @@ def _build_extraction_checks(document_profile: DocumentProfile, metrics: Mapping
     checks = [
         _check_minimum("paragraph_count_minimum", _as_int(metrics, "paragraph_count"), document_profile.min_paragraphs),
     ]
+    if document_profile.min_merged_groups > 0:
+        checks.append(
+            _check_minimum(
+                "merged_group_count_minimum",
+                _as_int(metrics, "merged_group_count"),
+                document_profile.min_merged_groups,
+            )
+        )
+    if document_profile.min_merged_raw_paragraphs > 0:
+        checks.append(
+            _check_minimum(
+                "merged_raw_paragraph_count_minimum",
+                _as_int(metrics, "merged_raw_paragraph_count"),
+                document_profile.min_merged_raw_paragraphs,
+            )
+        )
     if document_profile.has_headings:
         checks.append(_check_minimum("heading_count_minimum", _as_int(metrics, "heading_count"), document_profile.min_headings))
     if document_profile.has_numbered_lists:

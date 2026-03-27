@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import shutil
 import time
 from logging.handlers import RotatingFileHandler
@@ -9,6 +10,13 @@ from constants import APP_LOG_PATH, RUN_DIR
 
 
 _LOGGER: logging.Logger | None = None
+_SUPPORTED_LOG_LEVELS = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
 
 
 class _WSLSafeRotatingFileHandler(RotatingFileHandler):
@@ -36,18 +44,38 @@ class _WSLSafeRotatingFileHandler(RotatingFileHandler):
                 pass  # last resort: skip rotation, handler stays alive
 
 
+def _resolve_log_level() -> tuple[int, str | None]:
+    raw_value = os.getenv("DOCX_AI_LOG_LEVEL")
+    if raw_value is None:
+        return logging.INFO, None
+
+    normalized_value = raw_value.strip().upper()
+    resolved_level = _SUPPORTED_LOG_LEVELS.get(normalized_value)
+    if resolved_level is not None:
+        return resolved_level, None
+
+    warning_message = (
+        f"Invalid DOCX_AI_LOG_LEVEL={raw_value!r}; "
+        "falling back to INFO. Supported values: DEBUG, INFO, WARNING, ERROR, CRITICAL."
+    )
+    return logging.INFO, warning_message
+
+
 def setup_logger() -> logging.Logger:
     RUN_DIR.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("docxaicorrector")
     if logger.handlers:
         return logger
 
-    logger.setLevel(logging.INFO)
+    resolved_level, warning_message = _resolve_log_level()
+    logger.setLevel(resolved_level)
     handler = _WSLSafeRotatingFileHandler(APP_LOG_PATH, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
     formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     logger.propagate = False
+    if warning_message is not None:
+        logger.warning(warning_message)
     return logger
 
 

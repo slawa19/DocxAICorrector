@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from models import ParagraphBoundaryNormalizationReport
 from real_document_validation_profiles import load_validation_registry
 import real_document_validation_structural
 from real_document_validation_structural import evaluate_extraction_profile, run_structural_passthrough_validation
@@ -84,11 +85,20 @@ def test_structural_passthrough_uses_original_legacy_doc_bytes_for_prepared_faca
     monkeypatch.setattr(real_document_validation_structural, "_load_formatting_diagnostics_payloads", lambda paths: [])
     monkeypatch.setattr(
         real_document_validation_structural,
+        "extract_document_content_with_boundary_report",
+        lambda uploaded_file: ([], [], ParagraphBoundaryNormalizationReport(0, 0, 0, 0)),
+    )
+    monkeypatch.setattr(
+        real_document_validation_structural,
         "extract_document_content_from_docx",
         lambda uploaded_file: ([], []),
     )
     monkeypatch.setattr(real_document_validation_structural, "_build_output_artifacts", lambda docx_bytes, markdown_text: {"output_docx_openable": True})
-    monkeypatch.setattr(real_document_validation_structural, "_build_structural_metrics", lambda *, paragraphs, image_assets: {})
+    monkeypatch.setattr(
+        real_document_validation_structural,
+        "_build_structural_metrics",
+        lambda *, paragraphs, image_assets, normalization_report=None: {},
+    )
     monkeypatch.setattr(real_document_validation_structural, "_build_extraction_checks", lambda document_profile, metrics: [])
     monkeypatch.setattr(
         real_document_validation_structural,
@@ -128,3 +138,64 @@ def test_structural_passthrough_uses_original_legacy_doc_bytes_for_prepared_faca
     assert captured["uploaded_bytes"] == source_bytes
     assert result["result"] == "succeeded"
     assert "runtime_configuration" not in result
+
+
+def test_evaluate_extraction_profile_reports_merged_boundary_metrics(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project-root"
+    source_dir = project_root / "tests" / "sources"
+    source_dir.mkdir(parents=True)
+    source_path = source_dir / "sample.docx"
+    source_path.write_bytes(b"PK\x03\x04source")
+
+    document_profile = SimpleNamespace(
+        id="sample-doc",
+        resolved_source_path=lambda project_root=None: source_path,
+        min_paragraphs=1,
+        min_merged_groups=1,
+        min_merged_raw_paragraphs=2,
+        has_headings=False,
+        min_headings=0,
+        has_numbered_lists=False,
+        min_numbered_items=0,
+        has_images=False,
+        min_images=0,
+        has_tables=False,
+        min_tables=0,
+        max_formatting_diagnostics=0,
+        max_unmapped_source_paragraphs=0,
+        max_unmapped_target_paragraphs=0,
+        max_heading_level_drift=0,
+        min_text_similarity=1.0,
+        require_numbered_lists_preserved=False,
+        require_nonempty_output=True,
+        forbid_heading_only_collapse=False,
+    )
+
+    monkeypatch.setattr(real_document_validation_structural, "PROJECT_ROOT", Path(project_root))
+    monkeypatch.setattr(
+        real_document_validation_structural.processing_runtime,
+        "normalize_uploaded_document",
+        lambda **kwargs: SimpleNamespace(content_bytes=b"PK\x03\x04normalized"),
+    )
+    monkeypatch.setattr(
+        real_document_validation_structural,
+        "extract_document_content_with_boundary_report",
+        lambda uploaded_file: (
+            [SimpleNamespace(role="body"), SimpleNamespace(role="body")],
+            [],
+            ParagraphBoundaryNormalizationReport(
+                total_raw_paragraphs=3,
+                total_logical_paragraphs=2,
+                merged_group_count=1,
+                merged_raw_paragraph_count=2,
+            ),
+        ),
+    )
+
+    result = evaluate_extraction_profile(document_profile)
+
+    assert result["passed"] is True
+    assert result["metrics"]["merged_group_count"] == 1
+    assert result["metrics"]["merged_raw_paragraph_count"] == 2
+    assert result["metrics"]["raw_paragraph_count"] == 3
+    assert "merged_group_count_minimum" in {check["name"] for check in result["checks"]}

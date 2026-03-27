@@ -30,6 +30,62 @@ DOCX_COMPARE_VARIANT_MODE_VALUES = (
     ImageMode.SEMANTIC_REDRAW_DIRECT.value,
     ImageMode.SEMANTIC_REDRAW_STRUCTURED.value,
 )
+PARAGRAPH_BOUNDARY_NORMALIZATION_MODE_VALUES = ("off", "high_only", "high_and_medium")
+
+
+@dataclass(frozen=True)
+class RawParagraph:
+    raw_index: int
+    text: str
+    style_name: str
+    paragraph_alignment: str | None = None
+    is_bold: bool = False
+    font_size_pt: float | None = None
+    explicit_heading_level: int | None = None
+    heading_level: int | None = None
+    heading_source: str | None = None
+    list_kind: str | None = None
+    list_level: int = 0
+    list_numbering_format: str | None = None
+    list_num_id: str | None = None
+    list_abstract_num_id: str | None = None
+    list_num_xml: str | None = None
+    list_abstract_num_xml: str | None = None
+    role_hint: str = "body"
+    source_xml_fingerprint: str | None = None
+    origin_raw_indexes: tuple[int, ...] = ()
+    origin_raw_texts: tuple[str, ...] = ()
+    boundary_source: str = "raw"
+    boundary_confidence: str = "explicit"
+    boundary_rationale: str | None = None
+
+
+@dataclass(frozen=True)
+class RawTable:
+    raw_index: int
+    html_text: str
+    asset_id: str
+
+
+RawBlock = RawParagraph | RawTable
+
+
+@dataclass(frozen=True)
+class ParagraphBoundaryDecision:
+    left_raw_index: int
+    right_raw_index: int
+    decision: str
+    confidence: str
+    reasons: tuple[str, ...]
+
+
+@dataclass
+class ParagraphBoundaryNormalizationReport:
+    total_raw_paragraphs: int
+    total_logical_paragraphs: int
+    merged_group_count: int
+    merged_raw_paragraph_count: int
+    decisions: list[ParagraphBoundaryDecision] = field(default_factory=list)
 
 
 @dataclass
@@ -52,6 +108,14 @@ class ParagraphUnit:
     source_index: int = -1
     structural_role: str = "body"
     role_confidence: str = "heuristic"
+    style_name: str = ""
+    is_bold: bool = False
+    font_size_pt: float | None = None
+    origin_raw_indexes: list[int] = field(default_factory=list)
+    origin_raw_texts: list[str] = field(default_factory=list)
+    boundary_source: str = "raw"
+    boundary_confidence: str = "explicit"
+    boundary_rationale: str | None = None
 
     @property
     def rendered_text(self) -> str:

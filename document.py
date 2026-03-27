@@ -1,7 +1,10 @@
 import html
+import hashlib
+import json
 import re
 import zipfile
 from io import BytesIO
+from pathlib import Path
 from typing import cast
 
 from docx import Document
@@ -15,7 +18,17 @@ from constants import (
     MAX_DOCX_ENTRY_COUNT,
     MAX_DOCX_UNCOMPRESSED_SIZE_BYTES,
 )
-from models import DocumentBlock, ImageAsset, ParagraphUnit
+from models import (
+    PARAGRAPH_BOUNDARY_NORMALIZATION_MODE_VALUES,
+    DocumentBlock,
+    ImageAsset,
+    ParagraphBoundaryDecision,
+    ParagraphBoundaryNormalizationReport,
+    ParagraphUnit,
+    RawBlock,
+    RawParagraph,
+    RawTable,
+)
 from processing_runtime import normalize_uploaded_document, read_uploaded_file_bytes, resolve_uploaded_filename
 
 IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_IMAGE_img_\d+\]\]")
@@ -80,6 +93,9 @@ ORDERED_LIST_FORMATS = {
 UNORDERED_LIST_FORMATS = {"bullet", "none"}
 INLINE_HTML_TAG_PATTERN = re.compile(r"</?(?:u|sup|sub)>", re.IGNORECASE)
 MARKDOWN_LINK_PATTERN = re.compile(r"\[([^\]]+)\]\([^\)]+\)")
+STRONG_PARAGRAPH_TERMINATOR_PATTERN = re.compile(r"[.!?…]\s*$")
+TOC_ENTRY_PATTERN = re.compile(r"^.{1,120}(?:\.{2,}|\s{2,})\d+\s*$")
+PARAGRAPH_BOUNDARY_REPORTS_DIR = Path(".run") / "paragraph_boundary_reports"
 
 
 def classify_paragraph_role(text: str, style_name: str, *, heading_level: int | None = None) -> str:
@@ -132,6 +148,10 @@ def _assign_paragraph_identity(paragraph: ParagraphUnit, source_index: int) -> N
     paragraph.paragraph_id = f"p{source_index:04d}"
     if not paragraph.structural_role or paragraph.structural_role == "body":
         paragraph.structural_role = paragraph.role
+    if not paragraph.origin_raw_indexes:
+        paragraph.origin_raw_indexes = [source_index]
+    if not paragraph.origin_raw_texts:
+        paragraph.origin_raw_texts = [paragraph.text]
 
 
 def extract_paragraph_units_from_docx(uploaded_file) -> list[ParagraphUnit]:
@@ -145,33 +165,34 @@ def extract_inline_images(uploaded_file) -> list[ImageAsset]:
 
 
 def extract_document_content_from_docx(uploaded_file) -> tuple[list[ParagraphUnit], list[ImageAsset]]:
+    paragraphs, image_assets, _ = extract_document_content_with_boundary_report(uploaded_file)
+    return paragraphs, image_assets
+
+
+def extract_document_content_with_boundary_report(
+    uploaded_file,
+) -> tuple[list[ParagraphUnit], list[ImageAsset], ParagraphBoundaryNormalizationReport]:
     source_bytes = _read_uploaded_docx_bytes(uploaded_file)
     validate_docx_source_bytes(source_bytes)
     document = Document(BytesIO(source_bytes))
-    paragraphs: list[ParagraphUnit] = []
-    source_paragraphs: list[Paragraph | None] = []
-    image_assets: list[ImageAsset] = []
-    table_count = 0
-
-    for block_kind, block in _iter_document_block_items(document):
-        if block_kind == "paragraph":
-            source_paragraph = cast(Paragraph, block)
-            paragraph_unit = _build_paragraph_unit(source_paragraph, image_assets)
-        else:
-            source_paragraph = None
-            table_count += 1
-            paragraph_unit = _build_table_unit(cast(Table, block), image_assets, asset_id=f"table_{table_count:03d}")
-        if paragraph_unit is not None:
-            _assign_paragraph_identity(paragraph_unit, len(paragraphs))
-            paragraphs.append(paragraph_unit)
-            source_paragraphs.append(source_paragraph)
-
+    raw_blocks, image_assets = _build_raw_document_blocks(document)
+    normalization_mode, save_debug_artifacts = _resolve_paragraph_boundary_normalization_settings()
+    normalized_blocks, boundary_report = _normalize_paragraph_boundaries(raw_blocks, mode=normalization_mode)
+    paragraphs = _build_logical_paragraph_units(normalized_blocks)
     _reclassify_adjacent_captions(paragraphs)
-    _promote_short_standalone_headings(paragraphs, source_paragraphs)
+    _promote_short_standalone_headings(paragraphs)
+
+    if save_debug_artifacts:
+        _write_paragraph_boundary_report_artifact(
+            source_name=resolve_uploaded_filename(uploaded_file),
+            source_bytes=source_bytes,
+            mode=normalization_mode,
+            report=boundary_report,
+        )
 
     if not paragraphs:
         raise ValueError("В документе не найден текст для обработки.")
-    return paragraphs, image_assets
+    return paragraphs, image_assets, boundary_report
 
 
 def build_document_text(paragraphs: list[ParagraphUnit]) -> str:
@@ -376,7 +397,30 @@ def _build_paragraph_text_with_placeholders(paragraph, image_assets: list[ImageA
     return "".join(parts)
 
 
-def _build_paragraph_unit(paragraph, image_assets: list[ImageAsset]) -> ParagraphUnit | None:
+def _build_raw_document_blocks(document) -> tuple[list[RawBlock], list[ImageAsset]]:
+    raw_blocks: list[RawBlock] = []
+    image_assets: list[ImageAsset] = []
+    table_count = 0
+
+    for block_kind, block in _iter_document_block_items(document):
+        raw_index = len(raw_blocks)
+        if block_kind == "paragraph":
+            raw_block = _build_raw_paragraph(cast(Paragraph, block), image_assets, raw_index=raw_index)
+        else:
+            table_count += 1
+            raw_block = _build_raw_table(
+                cast(Table, block),
+                image_assets,
+                raw_index=raw_index,
+                asset_id=f"table_{table_count:03d}",
+            )
+        if raw_block is not None:
+            raw_blocks.append(raw_block)
+
+    return raw_blocks, image_assets
+
+
+def _build_raw_paragraph(paragraph, image_assets: list[ImageAsset], *, raw_index: int) -> RawParagraph | None:
     text = _build_paragraph_text_with_placeholders(paragraph, image_assets).strip()
     if not text:
         return None
@@ -405,11 +449,14 @@ def _build_paragraph_unit(paragraph, image_assets: list[ImageAsset]) -> Paragrap
         explicit_heading_level=explicit_heading_level,
         heading_source=heading_source,
     )
-    return ParagraphUnit(
+    return RawParagraph(
+        raw_index=raw_index,
         text=text,
-        role=role,
-        asset_id=asset_id,
+        style_name=style_name,
         paragraph_alignment=_resolve_paragraph_alignment(paragraph),
+        is_bold=_paragraph_is_effectively_bold(paragraph),
+        font_size_pt=_resolve_effective_paragraph_font_size(paragraph),
+        explicit_heading_level=explicit_heading_level,
         heading_level=heading_level,
         heading_source=heading_source,
         list_kind=cast(str | None, list_metadata["list_kind"]),
@@ -419,22 +466,388 @@ def _build_paragraph_unit(paragraph, image_assets: list[ImageAsset]) -> Paragrap
         list_abstract_num_id=cast(str | None, list_metadata["list_abstract_num_id"]),
         list_num_xml=cast(str | None, list_metadata["list_num_xml"]),
         list_abstract_num_xml=cast(str | None, list_metadata["list_abstract_num_xml"]),
-        structural_role=role,
-        role_confidence=role_confidence,
+        role_hint=role,
+        source_xml_fingerprint=_build_source_xml_fingerprint(paragraph),
+        origin_raw_indexes=(raw_index,),
+        origin_raw_texts=(text,),
+        boundary_source="raw",
+        boundary_confidence="explicit" if role_confidence == "explicit" else "high",
     )
 
 
-def _build_table_unit(table: Table, image_assets: list[ImageAsset], *, asset_id: str) -> ParagraphUnit | None:
+def _build_raw_table(table: Table, image_assets: list[ImageAsset], *, raw_index: int, asset_id: str) -> RawTable | None:
     html_table = _render_table_html(table, image_assets)
     if not html_table.strip():
         return None
-    return ParagraphUnit(
-        text=html_table,
-        role="table",
-        asset_id=asset_id,
-        structural_role="table",
-        role_confidence="explicit",
+    return RawTable(raw_index=raw_index, html_text=html_table, asset_id=asset_id)
+
+
+def _build_logical_paragraph_units(raw_blocks: list[RawBlock]) -> list[ParagraphUnit]:
+    paragraphs: list[ParagraphUnit] = []
+    for block in raw_blocks:
+        if isinstance(block, RawParagraph):
+            paragraph = ParagraphUnit(
+                text=block.text,
+                role=block.role_hint,
+                asset_id=_extract_paragraph_asset_id(block.text, role=block.role_hint),
+                paragraph_alignment=block.paragraph_alignment,
+                heading_level=block.heading_level,
+                heading_source=block.heading_source,
+                list_kind=block.list_kind,
+                list_level=block.list_level,
+                list_numbering_format=block.list_numbering_format,
+                list_num_id=block.list_num_id,
+                list_abstract_num_id=block.list_abstract_num_id,
+                list_num_xml=block.list_num_xml,
+                list_abstract_num_xml=block.list_abstract_num_xml,
+                structural_role=block.role_hint,
+                role_confidence=_infer_role_confidence(
+                    role=block.role_hint,
+                    text=block.text,
+                    normalized_style=block.style_name.strip().lower(),
+                    explicit_heading_level=block.explicit_heading_level,
+                    heading_source=block.heading_source,
+                ),
+                style_name=block.style_name,
+                is_bold=block.is_bold,
+                font_size_pt=block.font_size_pt,
+                origin_raw_indexes=list(block.origin_raw_indexes or (block.raw_index,)),
+                origin_raw_texts=list(block.origin_raw_texts or (block.text,)),
+                boundary_source=block.boundary_source,
+                boundary_confidence=block.boundary_confidence,
+                boundary_rationale=block.boundary_rationale,
+            )
+        else:
+            paragraph = ParagraphUnit(
+                text=block.html_text,
+                role="table",
+                asset_id=block.asset_id,
+                structural_role="table",
+                role_confidence="explicit",
+                origin_raw_indexes=[block.raw_index],
+                origin_raw_texts=[block.html_text],
+            )
+        _assign_paragraph_identity(paragraph, len(paragraphs))
+        paragraphs.append(paragraph)
+    return paragraphs
+
+
+def _resolve_paragraph_boundary_normalization_settings() -> tuple[str, bool]:
+    from config import load_app_config
+
+    app_config = load_app_config()
+    enabled = bool(app_config.get("paragraph_boundary_normalization_enabled", True))
+    mode = str(app_config.get("paragraph_boundary_normalization_mode", "high_only"))
+    if mode not in PARAGRAPH_BOUNDARY_NORMALIZATION_MODE_VALUES:
+        mode = "high_only"
+    if not enabled:
+        mode = "off"
+    return mode, bool(app_config.get("paragraph_boundary_normalization_save_debug_artifacts", True))
+
+
+def _normalize_paragraph_boundaries(
+    raw_blocks: list[RawBlock],
+    *,
+    mode: str,
+) -> tuple[list[RawBlock], ParagraphBoundaryNormalizationReport]:
+    total_raw_paragraphs = sum(1 for block in raw_blocks if isinstance(block, RawParagraph))
+    if mode == "off":
+        report = ParagraphBoundaryNormalizationReport(
+            total_raw_paragraphs=total_raw_paragraphs,
+            total_logical_paragraphs=total_raw_paragraphs,
+            merged_group_count=0,
+            merged_raw_paragraph_count=0,
+            decisions=[],
+        )
+        return list(raw_blocks), report
+
+    normalized_blocks: list[RawBlock] = []
+    decisions: list[ParagraphBoundaryDecision] = []
+    merged_group_count = 0
+    merged_raw_paragraph_count = 0
+    index = 0
+
+    while index < len(raw_blocks):
+        block = raw_blocks[index]
+        if not isinstance(block, RawParagraph):
+            normalized_blocks.append(block)
+            index += 1
+            continue
+
+        group = [block]
+        group_reasons: list[str] = []
+        look_ahead = index
+        while look_ahead + 1 < len(raw_blocks) and isinstance(raw_blocks[look_ahead + 1], RawParagraph):
+            next_block = cast(RawParagraph, raw_blocks[look_ahead + 1])
+            decision = _evaluate_paragraph_boundary(group[-1], next_block)
+            decisions.append(decision)
+            if decision.decision != "merge":
+                break
+            if decision.confidence == "medium" and mode != "high_and_medium":
+                break
+            group.append(next_block)
+            group_reasons.extend(decision.reasons)
+            look_ahead += 1
+
+        if len(group) == 1:
+            normalized_blocks.append(block)
+            index += 1
+            continue
+
+        merged_group_count += 1
+        merged_raw_paragraph_count += len(group)
+        normalized_blocks.append(_merge_raw_paragraph_group(group, group_reasons))
+        index += len(group)
+
+    report = ParagraphBoundaryNormalizationReport(
+        total_raw_paragraphs=total_raw_paragraphs,
+        total_logical_paragraphs=sum(1 for block in normalized_blocks if isinstance(block, RawParagraph)),
+        merged_group_count=merged_group_count,
+        merged_raw_paragraph_count=merged_raw_paragraph_count,
+        decisions=decisions,
     )
+    return normalized_blocks, report
+
+
+def _evaluate_paragraph_boundary(left: RawParagraph, right: RawParagraph) -> ParagraphBoundaryDecision:
+    blocked_reasons: list[str] = []
+    positive_reasons: list[str] = []
+
+    if left.heading_level is not None or right.heading_level is not None:
+        blocked_reasons.append("heading_boundary")
+    if left.role_hint != "body" or right.role_hint != "body":
+        blocked_reasons.append("non_body_role")
+    if left.list_kind is not None or right.list_kind is not None:
+        blocked_reasons.append("list_metadata")
+    if _detect_explicit_list_kind(right.text) is not None:
+        blocked_reasons.append("right_explicit_list_marker")
+    if _is_likely_caption_text(left.text) or _is_likely_caption_text(right.text):
+        blocked_reasons.append("caption_like_boundary")
+    if _is_likely_attribution_text(right.text):
+        blocked_reasons.append("right_attribution_like")
+    if _is_likely_toc_entry_text(right.text):
+        blocked_reasons.append("right_toc_like")
+    if _style_transition_implies_structure(left, right):
+        blocked_reasons.append("style_transition")
+    if _alignment_transition_implies_structure(left, right):
+        blocked_reasons.append("alignment_transition")
+    if _ends_with_strong_paragraph_terminator(left.text) and _starts_with_new_sentence_signal(right.text):
+        blocked_reasons.append("terminal_punctuation_sentence_reset")
+
+    if blocked_reasons:
+        return ParagraphBoundaryDecision(
+            left_raw_index=left.raw_index,
+            right_raw_index=right.raw_index,
+            decision="keep",
+            confidence="blocked",
+            reasons=tuple(blocked_reasons),
+        )
+
+    if _styles_are_compatible(left, right):
+        positive_reasons.append("same_body_style")
+    if _alignments_are_compatible(left, right):
+        positive_reasons.append("compatible_alignment")
+    if not _ends_with_strong_paragraph_terminator(left.text):
+        positive_reasons.append("left_not_terminal")
+    if _starts_with_continuation_signal(right.text):
+        positive_reasons.append("right_starts_continuation")
+    if _left_paragraph_looks_incomplete(left.text):
+        positive_reasons.append("left_incomplete")
+    if _combined_text_reads_as_continuation(left.text, right.text):
+        positive_reasons.append("combined_sentence_plausible")
+
+    if {"same_body_style", "left_not_terminal", "right_starts_continuation"}.issubset(set(positive_reasons)):
+        return ParagraphBoundaryDecision(
+            left_raw_index=left.raw_index,
+            right_raw_index=right.raw_index,
+            decision="merge",
+            confidence="high",
+            reasons=tuple(positive_reasons),
+        )
+
+    return ParagraphBoundaryDecision(
+        left_raw_index=left.raw_index,
+        right_raw_index=right.raw_index,
+        decision="keep",
+        confidence="medium",
+        reasons=tuple(positive_reasons or ("insufficient_merge_signals",)),
+    )
+
+
+def _merge_raw_paragraph_group(group: list[RawParagraph], reasons: list[str]) -> RawParagraph:
+    dominant = group[0]
+    merged_text = _join_merged_paragraph_text(group)
+    merged_indexes = tuple(index for paragraph in group for index in paragraph.origin_raw_indexes)
+    merged_texts = tuple(text for paragraph in group for text in paragraph.origin_raw_texts)
+    rationale = ", ".join(dict.fromkeys(reasons)) or None
+    return RawParagraph(
+        raw_index=dominant.raw_index,
+        text=merged_text,
+        style_name=dominant.style_name,
+        paragraph_alignment=dominant.paragraph_alignment,
+        is_bold=dominant.is_bold,
+        font_size_pt=dominant.font_size_pt,
+        explicit_heading_level=dominant.explicit_heading_level,
+        heading_level=dominant.heading_level,
+        heading_source=dominant.heading_source,
+        list_kind=dominant.list_kind,
+        list_level=dominant.list_level,
+        list_numbering_format=dominant.list_numbering_format,
+        list_num_id=dominant.list_num_id,
+        list_abstract_num_id=dominant.list_abstract_num_id,
+        list_num_xml=dominant.list_num_xml,
+        list_abstract_num_xml=dominant.list_abstract_num_xml,
+        role_hint=dominant.role_hint,
+        source_xml_fingerprint=dominant.source_xml_fingerprint,
+        origin_raw_indexes=merged_indexes,
+        origin_raw_texts=merged_texts,
+        boundary_source="normalized_merge",
+        boundary_confidence="high",
+        boundary_rationale=rationale,
+    )
+
+
+def _join_merged_paragraph_text(group: list[RawParagraph]) -> str:
+    merged_text = " ".join(paragraph.text.strip() for paragraph in group if paragraph.text.strip())
+    merged_text = re.sub(r"\s+([,.;:!?…])", r"\1", merged_text)
+    merged_text = re.sub(r"\s+", " ", merged_text)
+    return merged_text.strip()
+
+
+def _styles_are_compatible(left: RawParagraph, right: RawParagraph) -> bool:
+    left_style = left.style_name.strip().lower()
+    right_style = right.style_name.strip().lower()
+    if left_style == right_style:
+        return True
+    body_aliases = {"", "normal", "body text", "текст", "обычный"}
+    return left_style in body_aliases and right_style in body_aliases
+
+
+def _alignments_are_compatible(left: RawParagraph, right: RawParagraph) -> bool:
+    compatible = {None, "left", "start", "both"}
+    if left.paragraph_alignment == right.paragraph_alignment:
+        return True
+    return left.paragraph_alignment in compatible and right.paragraph_alignment in compatible
+
+
+def _alignment_transition_implies_structure(left: RawParagraph, right: RawParagraph) -> bool:
+    if _alignments_are_compatible(left, right):
+        return False
+    structured_alignments = {"center", "right", "end"}
+    return left.paragraph_alignment in structured_alignments or right.paragraph_alignment in structured_alignments
+
+
+def _style_transition_implies_structure(left: RawParagraph, right: RawParagraph) -> bool:
+    for style_name in (left.style_name, right.style_name):
+        normalized_style = style_name.strip().lower()
+        if _is_caption_style(normalized_style):
+            return True
+        if HEADING_STYLE_PATTERN.match(normalized_style) is not None:
+            return True
+        if "list" in normalized_style or "спис" in normalized_style:
+            return True
+    return False
+
+
+def _ends_with_strong_paragraph_terminator(text: str) -> bool:
+    return STRONG_PARAGRAPH_TERMINATOR_PATTERN.search(text.strip()) is not None
+
+
+def _starts_with_continuation_signal(text: str) -> bool:
+    stripped = text.lstrip()
+    if not stripped:
+        return False
+    for char in stripped:
+        if char in {'"', "'", "«", "(", "["}:
+            continue
+        if char.islower() or char.isdigit():
+            return True
+        break
+    first_word = stripped.split()[0].strip("\"'«»()[]").lower() if stripped.split() else ""
+    return first_word in {"и", "а", "но", "или", "что", "как", "поэтому", "and", "but", "or", "that", "which"}
+
+
+def _starts_with_new_sentence_signal(text: str) -> bool:
+    stripped = text.lstrip()
+    if not stripped:
+        return False
+    for char in stripped:
+        if char in {'"', "'", "«", "(", "["}:
+            continue
+        if char.isupper():
+            return True
+        break
+    return _has_heading_text_signal(stripped)
+
+
+def _left_paragraph_looks_incomplete(text: str) -> bool:
+    stripped = text.rstrip()
+    if not stripped:
+        return False
+    if _ends_with_strong_paragraph_terminator(stripped):
+        return False
+    return stripped[-1].isalnum() or stripped.endswith((",", ";", ":", "-", "(", "["))
+
+
+def _combined_text_reads_as_continuation(left_text: str, right_text: str) -> bool:
+    if not left_text.strip() or not right_text.strip():
+        return False
+    return _left_paragraph_looks_incomplete(left_text) and _starts_with_continuation_signal(right_text)
+
+
+def _is_likely_attribution_text(text: str) -> bool:
+    stripped = text.strip()
+    return bool(stripped) and len(stripped) <= 120 and stripped.startswith(("-", "—", "–"))
+
+
+def _is_likely_toc_entry_text(text: str) -> bool:
+    return TOC_ENTRY_PATTERN.match(text.strip()) is not None
+
+
+def _build_source_xml_fingerprint(paragraph) -> str | None:
+    try:
+        xml_text = etree.tostring(paragraph._element, encoding="utf-8")
+    except Exception:
+        return None
+    return hashlib.sha1(xml_text).hexdigest()[:12]
+
+
+def _write_paragraph_boundary_report_artifact(
+    *,
+    source_name: str,
+    source_bytes: bytes,
+    mode: str,
+    report: ParagraphBoundaryNormalizationReport,
+) -> str | None:
+    try:
+        PARAGRAPH_BOUNDARY_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        source_hash = hashlib.sha1(source_bytes).hexdigest()[:8]
+        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", source_name or "document.docx").strip("_") or "document.docx"
+        artifact_path = PARAGRAPH_BOUNDARY_REPORTS_DIR / f"{safe_name}_{source_hash}.json"
+        payload = {
+            "version": 1,
+            "source_file": source_name,
+            "source_hash": source_hash,
+            "mode": mode,
+            "total_raw_paragraphs": report.total_raw_paragraphs,
+            "total_logical_paragraphs": report.total_logical_paragraphs,
+            "merged_group_count": report.merged_group_count,
+            "merged_raw_paragraph_count": report.merged_raw_paragraph_count,
+            "decisions": [
+                {
+                    "left_raw_index": decision.left_raw_index,
+                    "right_raw_index": decision.right_raw_index,
+                    "decision": decision.decision,
+                    "confidence": decision.confidence,
+                    "reasons": list(decision.reasons),
+                }
+                for decision in report.decisions
+            ],
+        }
+        artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return str(artifact_path)
+    except Exception:
+        return None
 
 
 def _iter_document_block_items(document):
@@ -727,11 +1140,8 @@ def _has_heading_text_signal(text: str) -> bool:
     return False
 
 
-def _paragraph_has_strong_heading_format(paragraph) -> bool:
+def _paragraph_is_effectively_bold(paragraph) -> bool:
     alignment_value = _resolve_paragraph_alignment(paragraph)
-    if alignment_value == "center":
-        return True
-
     visible_runs = [run for run in paragraph.runs if run.text and run.text.strip()]
     if not visible_runs:
         return False
@@ -743,6 +1153,17 @@ def _paragraph_has_strong_heading_format(paragraph) -> bool:
     visible_chars = sum(len(run.text.strip()) for run in visible_runs)
     bold_chars = sum(len(run.text.strip()) for run in bold_runs)
     return bool(bold_runs) and visible_chars > 0 and (bold_chars / visible_chars) >= 0.5
+
+
+def _paragraph_has_strong_heading_format(paragraph) -> bool:
+    alignment_value = _resolve_paragraph_alignment(paragraph)
+    if alignment_value == "center":
+        return True
+    return _paragraph_is_effectively_bold(paragraph)
+
+
+def _paragraph_unit_has_strong_heading_format(paragraph: ParagraphUnit) -> bool:
+    return paragraph.paragraph_alignment == "center" or paragraph.is_bold
 
 
 def _is_image_only_text(text: str) -> bool:
@@ -859,17 +1280,13 @@ def _infer_contextual_heading_level(paragraphs: list[ParagraphUnit], index: int)
     return 2
 
 
-def _promote_short_standalone_headings(
-    paragraphs: list[ParagraphUnit],
-    source_paragraphs: list[Paragraph | None],
-) -> None:
+def _promote_short_standalone_headings(paragraphs: list[ParagraphUnit]) -> None:
     if len(paragraphs) < 3:
         return
 
     for index in range(1, len(paragraphs) - 1):
         paragraph = paragraphs[index]
-        source_paragraph = source_paragraphs[index]
-        if paragraph.role != "body" or source_paragraph is None:
+        if paragraph.role != "body":
             continue
         if not _is_short_standalone_heading_text(paragraph.text):
             continue
@@ -889,25 +1306,21 @@ def _promote_short_standalone_headings(
             paragraph.heading_level = _infer_contextual_heading_level(paragraphs, index)
             continue
 
-        candidate_font_size = _resolve_effective_paragraph_font_size(source_paragraph)
+        candidate_font_size = paragraph.font_size_pt
         if candidate_font_size is None:
             continue
 
         context_font_sizes: list[float] = []
-        previous_source = source_paragraphs[index - 1]
-        if previous_source is not None:
-            previous_font_size = _resolve_effective_paragraph_font_size(previous_source)
-            if previous_font_size is not None:
-                context_font_sizes.append(previous_font_size)
-        next_source = source_paragraphs[index + 1]
-        if next_source is not None:
-            next_font_size = _resolve_effective_paragraph_font_size(next_source)
-            if next_font_size is not None:
-                context_font_sizes.append(next_font_size)
+        previous_font_size = paragraphs[index - 1].font_size_pt
+        if previous_font_size is not None:
+            context_font_sizes.append(previous_font_size)
+        next_font_size = paragraphs[index + 1].font_size_pt
+        if next_font_size is not None:
+            context_font_sizes.append(next_font_size)
         if not context_font_sizes:
             continue
 
-        required_delta = 1.0 if _paragraph_has_strong_heading_format(source_paragraph) else 1.5
+        required_delta = 1.0 if _paragraph_unit_has_strong_heading_format(paragraph) else 1.5
         if candidate_font_size < max(context_font_sizes) + required_delta:
             continue
 

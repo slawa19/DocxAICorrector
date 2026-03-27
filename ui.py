@@ -494,6 +494,7 @@ def render_result_bundle(
         file_name=_build_markdown_filename(original_filename),
         mime="text/markdown",
         on_click="ignore",
+        type="primary",
         use_container_width=True,
     )
 

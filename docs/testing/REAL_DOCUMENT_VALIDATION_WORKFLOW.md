@@ -146,6 +146,10 @@ Formatting diagnostics are attributed to the current run in this order:
 2. explicit artifact paths emitted into the runtime event log;
 3. recent-file fallback scan.
 
+Runtime formatting diagnostics now use bounded retention inside `.run/formatting_diagnostics/`: current implementation keeps up to 7 days of history, caps the directory at 100 artifacts, and prunes oldest files first on write. This retention applies only to the runtime `.run/` area.
+
+Validation artifacts under `tests/artifacts/...` remain separate, run-scoped validation/dev outputs and are not cleaned by runtime retention logic.
+
 This prevents ambiguity when multiple old `preserve_*.json`, `normalize_*.json`, or `restore_*.json` files already exist.
 
 ## Acceptance Signals

@@ -18,7 +18,7 @@ from constants import (
     SYSTEM_PROMPT_PATH,
 )
 from image_shared import clamp_score
-from models import IMAGE_MODE_VALUES, ImageMode
+from models import IMAGE_MODE_VALUES, PARAGRAPH_BOUNDARY_NORMALIZATION_MODE_VALUES, ImageMode
 
 OpenAI = None
 _CLIENT = None
@@ -36,6 +36,9 @@ class AppConfig(Mapping[str, object]):
     chunk_size: int
     max_retries: int
     enable_paragraph_markers: bool
+    paragraph_boundary_normalization_enabled: bool
+    paragraph_boundary_normalization_mode: str
+    paragraph_boundary_normalization_save_debug_artifacts: bool
     output_body_font: str | None
     output_heading_font: str | None
     image_mode_default: str
@@ -282,6 +285,30 @@ def load_app_config() -> AppConfig:
     output_body_font = parse_optional_config_str(output_fonts_config, "body")
     output_heading_font = parse_optional_config_str(output_fonts_config, "heading")
     image_output_config = parse_optional_config_section(config_data, "image_output")
+    paragraph_boundary_normalization_config = parse_optional_config_section(
+        config_data,
+        "paragraph_boundary_normalization",
+    )
+    paragraph_boundary_normalization_enabled = parse_config_bool(
+        paragraph_boundary_normalization_config,
+        "enabled",
+        True,
+    )
+    paragraph_boundary_normalization_mode = parse_choice_str(
+        paragraph_boundary_normalization_config,
+        "mode",
+        "high_only",
+        set(PARAGRAPH_BOUNDARY_NORMALIZATION_MODE_VALUES),
+    )
+    if paragraph_boundary_normalization_mode == "high_and_medium":
+        raise RuntimeError(
+            "Режим paragraph_boundary_normalization.mode=high_and_medium зарезервирован для Phase 3 и ещё не реализован"
+        )
+    paragraph_boundary_normalization_save_debug_artifacts = parse_config_bool(
+        paragraph_boundary_normalization_config,
+        "save_debug_artifacts",
+        True,
+    )
 
     image_mode_default = _parse_image_mode(
         parse_config_str(config_data, "image_mode_default", ImageMode.NO_CHANGE.value),
@@ -522,6 +549,9 @@ def load_app_config() -> AppConfig:
         chunk_size=max(3000, min(chunk_size, 12000)),
         max_retries=max(1, min(max_retries, 5)),
         enable_paragraph_markers=enable_paragraph_markers,
+        paragraph_boundary_normalization_enabled=paragraph_boundary_normalization_enabled,
+        paragraph_boundary_normalization_mode=paragraph_boundary_normalization_mode,
+        paragraph_boundary_normalization_save_debug_artifacts=paragraph_boundary_normalization_save_debug_artifacts,
         output_body_font=output_body_font,
         output_heading_font=output_heading_font,
         image_mode_default=image_mode_default,

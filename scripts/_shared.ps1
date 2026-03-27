@@ -17,6 +17,8 @@ $wslControlScript = Join-Path $PSScriptRoot 'project-control-wsl.sh'
 $appPath = Join-Path $projectRoot 'app.py'
 $runDir = Join-Path $projectRoot '.run'
 $projectLogPath = Join-Path $runDir 'project.log'
+$projectLogMaxBytes = 262144
+$projectLogBackupCount = 5
 $serverHost = '0.0.0.0'   # used in stop-project.ps1 (Test-TcpPort) and start-project.ps1 (Invoke-WslInProject)
 $loopbackHost = '127.0.0.1'
 $port = 8501
@@ -238,12 +240,83 @@ function Write-LogLine {
     Write-Host "[$Level] $Message" -ForegroundColor $Color
 }
 
+function Get-ProjectLogRetentionSettings {
+    return @{
+        MaxBytes = $projectLogMaxBytes
+        BackupCount = $projectLogBackupCount
+    }
+}
+
+function Invoke-ProjectLogRollover {
+    param(
+        [long]$MaxBytes = $projectLogMaxBytes,
+        [int]$BackupCount = $projectLogBackupCount
+    )
+
+    if ($BackupCount -lt 1) {
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $projectLogPath)) {
+        return
+    }
+
+    try {
+        $item = Get-Item -LiteralPath $projectLogPath -ErrorAction Stop
+        if ($item.Length -lt $MaxBytes) {
+            return
+        }
+
+        for ($index = $BackupCount; $index -ge 1; $index--) {
+            $sourcePath = if ($index -eq 1) { $projectLogPath } else { "$projectLogPath.$($index - 1)" }
+            $targetPath = "$projectLogPath.$index"
+
+            if (-not (Test-Path -LiteralPath $sourcePath)) {
+                continue
+            }
+
+            if ($index -eq $BackupCount -and (Test-Path -LiteralPath $targetPath)) {
+                Remove-Item -LiteralPath $targetPath -Force -ErrorAction SilentlyContinue
+            }
+
+            Move-Item -LiteralPath $sourcePath -Destination $targetPath -Force -ErrorAction Stop
+        }
+    }
+    catch {
+        try {
+            $backupPath = "$projectLogPath.1"
+            if (Test-Path -LiteralPath "$projectLogPath.$BackupCount") {
+                Remove-Item -LiteralPath "$projectLogPath.$BackupCount" -Force -ErrorAction SilentlyContinue
+            }
+            for ($index = $BackupCount - 1; $index -ge 1; $index--) {
+                $sourcePath = "$projectLogPath.$index"
+                $targetPath = "$projectLogPath.$($index + 1)"
+                if (Test-Path -LiteralPath $sourcePath) {
+                    Move-Item -LiteralPath $sourcePath -Destination $targetPath -Force -ErrorAction SilentlyContinue
+                }
+            }
+            Copy-Item -LiteralPath $projectLogPath -Destination $backupPath -Force -ErrorAction Stop
+            $truncateStream = [System.IO.File]::Open($projectLogPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+            try {
+                $truncateStream.SetLength(0)
+                $truncateStream.Flush()
+            }
+            finally {
+                $truncateStream.Dispose()
+            }
+        }
+        catch {
+        }
+    }
+}
+
 function Append-ProjectLogEntry {
     param([string]$Line)
 
     $stream = $null
     $writer = $null
     try {
+        Invoke-ProjectLogRollover
         $stream = [System.IO.File]::Open($projectLogPath, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
         $writer = [System.IO.StreamWriter]::new($stream, [System.Text.UTF8Encoding]::new($false))
         $writer.WriteLine($Line)

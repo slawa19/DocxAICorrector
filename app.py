@@ -32,6 +32,7 @@ from processing_runtime import (
     get_current_result_bundle,
     resolve_uploaded_filename,
 )
+from runtime_artifacts import AppReadyMarkerWriter
 from state import (
     init_session_state,
     push_activity,
@@ -56,8 +57,14 @@ from ui import (
 from workflow_state import IdleViewState, ProcessingOutcome, has_restartable_outcome
 
 PERSISTED_SOURCE_TTL_SECONDS = 12 * 60 * 60
+APP_READY_FRESHNESS_WINDOW_SECONDS = 15.0
 _CLEANUP_THREAD_LOCK = threading.Lock()
 _CLEANUP_THREAD_STARTED = False
+_APP_READY_MARKER_WRITER = AppReadyMarkerWriter(
+    path=APP_READY_PATH,
+    freshness_window_seconds=APP_READY_FRESHNESS_WINDOW_SECONDS,
+    time_fn=time.monotonic,
+)
 
 
 @st.cache_resource
@@ -89,8 +96,7 @@ def _schedule_stale_persisted_sources_cleanup() -> None:
 
 
 def _mark_app_ready() -> None:
-    APP_READY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    APP_READY_PATH.write_text(f"{time.time():.6f}\n", encoding="utf-8")
+    _APP_READY_MARKER_WRITER.mark_ready()
 
 
 def _finalize_app_frame(*, add_section_gap: bool = False) -> None:
@@ -187,8 +193,9 @@ def _render_processing_controls(*, can_start: bool, is_processing: bool, emphasi
     stop_requested = bool(st.session_state.get("processing_stop_requested", False))
     start_col, stop_col = st.columns(2)
 
+    start_label = "Обработка запущена" if is_processing else ("Начать обработку" if emphasize_start else "Обработать повторно")
     if start_col.button(
-        "Обработка запущена" if is_processing else "Начать обработку",
+        start_label,
         type="primary" if emphasize_start else "secondary",
         use_container_width=True,
         disabled=(not can_start) or is_processing,

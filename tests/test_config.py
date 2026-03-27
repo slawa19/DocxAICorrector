@@ -19,6 +19,9 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     assert app_config["chunk_size"] == 12000
     assert app_config["max_retries"] == 1
     assert app_config["enable_paragraph_markers"] is False
+    assert app_config["paragraph_boundary_normalization_enabled"] is True
+    assert app_config["paragraph_boundary_normalization_mode"] == "high_only"
+    assert app_config["paragraph_boundary_normalization_save_debug_artifacts"] is True
 
 
 def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
@@ -27,6 +30,9 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     app_config = config.load_app_config()
 
     assert app_config["enable_paragraph_markers"] is True
+    assert app_config["paragraph_boundary_normalization_enabled"] is True
+    assert app_config["paragraph_boundary_normalization_mode"] == "high_only"
+    assert app_config["paragraph_boundary_normalization_save_debug_artifacts"] is True
     assert app_config["image_mode_default"] == "no_change"
     assert app_config["semantic_validation_policy"] == "advisory"
     assert app_config["keep_all_image_variants"] is False
@@ -141,6 +147,30 @@ def test_load_app_config_rejects_invalid_image_output_size_list_override(monkeyp
     monkeypatch.setenv("DOCX_AI_IMAGE_OUTPUT_GENERATE_CANDIDATE_SIZES", "2048x2048")
 
     with pytest.raises(RuntimeError, match="DOCX_AI_IMAGE_OUTPUT_GENERATE_CANDIDATE_SIZES"):
+        config.load_app_config()
+
+
+def test_load_app_config_rejects_invalid_paragraph_boundary_mode(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[paragraph_boundary_normalization]\nmode = "aggressive"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+
+    with pytest.raises(RuntimeError, match="mode"):
+        config.load_app_config()
+
+
+def test_load_app_config_rejects_phase3_paragraph_boundary_mode_until_implemented(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[paragraph_boundary_normalization]\nmode = "high_and_medium"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+
+    with pytest.raises(RuntimeError, match="Phase 3"):
         config.load_app_config()
 
 

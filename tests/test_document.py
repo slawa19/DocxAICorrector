@@ -1,11 +1,14 @@
 import base64
 import json
+import os
 import zipfile
 from io import BytesIO
+from pathlib import Path
 from typing import Any, cast
 
 import document
 import formatting_transfer
+import formatting_diagnostics_retention
 import image_reinsertion
 from docx import Document
 from docx.enum.style import WD_STYLE_TYPE
@@ -299,6 +302,25 @@ def test_build_marker_wrapped_block_text_preserves_paragraph_ids_and_boundaries(
     result = build_marker_wrapped_block_text(paragraphs)
 
     assert result == "[[DOCX_PARA_p0001]]\n# Глава\n\n[[DOCX_PARA_p0002]]\nОсновной текст"
+
+
+def test_extract_document_content_from_docx_merges_false_body_boundary_in_public_api():
+    doc = Document()
+    doc.add_paragraph("архетипами: повторяющимися моделями")
+    doc.add_paragraph("поведения во времени, наблюдаемыми в разных системах.")
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert len(paragraphs) == 1
+    assert paragraphs[0].text == "архетипами: повторяющимися моделями поведения во времени, наблюдаемыми в разных системах."
+    assert paragraphs[0].origin_raw_indexes == [0, 1]
+    assert build_marker_wrapped_block_text(paragraphs) == (
+        f"[[DOCX_PARA_{paragraphs[0].paragraph_id}]]\n"
+        "архетипами: повторяющимися моделями поведения во времени, наблюдаемыми в разных системах."
+    )
 
 
 def test_extract_document_content_from_docx_inserts_image_placeholders(tmp_path):
@@ -1079,6 +1101,58 @@ def test_preserve_source_paragraph_properties_artifact_records_restored_list_dec
     payload = json.loads(artifacts[0].read_text(encoding="utf-8"))
     assert len(payload["list_restoration_decisions"]) == 1
     assert payload["list_restoration_decisions"][0]["action"] == "restored"
+
+
+def test_prune_formatting_diagnostics_removes_oldest_and_preserves_newest(tmp_path):
+    diagnostics_dir = tmp_path / "formatting_diagnostics"
+    diagnostics_dir.mkdir()
+    timestamps = [1000, 2000, 3000, 4000]
+    paths = []
+    for timestamp in timestamps:
+        path = diagnostics_dir / f"restore_{timestamp}.json"
+        path.write_text("{}", encoding="utf-8")
+        paths.append(path)
+
+    for offset, path in enumerate(paths, start=1):
+        mtime = float(offset)
+        path.touch()
+        os.utime(path, (mtime, mtime))
+
+    pruned = formatting_diagnostics_retention.prune_formatting_diagnostics(
+        diagnostics_dir=diagnostics_dir,
+        now_epoch_seconds=10.0,
+        max_age_seconds=100,
+        max_count=2,
+    )
+
+    remaining = sorted(path.name for path in diagnostics_dir.glob("*.json"))
+    assert remaining == ["restore_3000.json", "restore_4000.json"]
+    assert sorted(Path(path).name for path in pruned) == ["restore_1000.json", "restore_2000.json"]
+
+
+def test_write_formatting_diagnostics_artifact_prunes_expired_runtime_files_only(tmp_path):
+    runtime_dir = tmp_path / ".run" / "formatting_diagnostics"
+    tests_dir = tmp_path / "tests" / "artifacts" / "formatting_diagnostics"
+    runtime_dir.mkdir(parents=True)
+    tests_dir.mkdir(parents=True)
+    old_runtime = runtime_dir / "restore_old.json"
+    old_runtime.write_text("{}", encoding="utf-8")
+    test_artifact = tests_dir / "keep.json"
+    test_artifact.write_text("{}", encoding="utf-8")
+
+    import os
+    os.utime(old_runtime, (1.0, 1.0))
+
+    artifact_path = formatting_diagnostics_retention.write_formatting_diagnostics_artifact(
+        stage="restore",
+        diagnostics={"mapped_count": 1},
+        diagnostics_dir=runtime_dir,
+        now_epoch_ms=200_000,
+    )
+
+    assert artifact_path is not None
+    assert sorted(path.name for path in runtime_dir.glob("*.json")) == [Path(artifact_path).name]
+    assert test_artifact.exists()
 
 
 def test_replace_xml_element_with_sequence_empty_replacements_is_noop():
