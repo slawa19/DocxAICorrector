@@ -386,6 +386,10 @@ def test_render_live_status_shows_cache_source_for_preparation(monkeypatch):
             "image_count": 2,
             "source_chars": 5000,
             "block_count": 4,
+            "raw_paragraph_count": 15,
+            "logical_paragraph_count": 12,
+            "merged_group_count": 2,
+            "merged_raw_paragraph_count": 5,
             "cached": True,
             "progress": 0.9,
             "started_at": None,
@@ -410,6 +414,7 @@ def test_render_live_status_shows_cache_source_for_preparation(monkeypatch):
     assert any("Прогресс: 90%" in text for text in captions)
     assert any("Размер: 1.00 MB" in text for text in captions)
     assert any("Источник: cache" in text for text in captions)
+    assert any("Нормализация абзацев: сырьевых 15 -> логических 12 | слияний: 2 групп, 5 абзацев" in text for text in captions)
     assert progress_calls == [0.9]
 
 
@@ -435,6 +440,10 @@ def test_render_preparation_summary_uses_stage_and_detail(monkeypatch):
             "block_count": 4,
             "cached": True,
             "elapsed": "1.2 c",
+            "raw_paragraph_count": 15,
+            "logical_paragraph_count": 12,
+            "merged_group_count": 2,
+            "merged_raw_paragraph_count": 5,
         },
         FakeTarget(),
     )
@@ -443,6 +452,7 @@ def test_render_preparation_summary_uses_stage_and_detail(monkeypatch):
     assert writes == ["Можно запускать обработку."]
     assert any("Источник: cache | Подготовка: 1.2 c" in text for text in captions)
     assert any("1.00 MB | 12 абзацев | 2 изображений | 5000 символов | 4 блоков" in text for text in captions)
+    assert any("Нормализация абзацев: сырьевых 15 -> логических 12 | слияний: 2 групп, 5 абзацев" in text for text in captions)
 
 
 def test_render_live_status_shows_preparation_failure_title(monkeypatch):

@@ -1,4 +1,5 @@
 from io import BytesIO
+from typing import cast
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -244,7 +245,7 @@ def test_mapping_accepts_split_heading_target_for_merged_source_paragraph():
     ]
     assert diagnostics["unmapped_source_ids"] == []
     assert diagnostics["unmapped_target_indexes"] == []
-    assert len(diagnostics["accepted_split_targets"]) == 1
+    assert len(list(diagnostics["accepted_split_targets"])) == 1
     accepted_target = diagnostics["accepted_split_targets"][0]
     assert accepted_target["target_index"] == 0
     assert accepted_target["derived_from_source_index"] == 0
@@ -293,7 +294,7 @@ def test_build_output_formatting_diagnostics_uses_real_mapping_instead_of_tail_c
     assert diagnostics["mapped_count"] == 1
     assert diagnostics["unmapped_source_ids"] == []
     assert diagnostics["unmapped_target_indexes"] == []
-    assert len(diagnostics["accepted_split_targets"]) == 1
+    assert len(cast(list[dict[str, object]], diagnostics["accepted_split_targets"])) == 1
 
 
 def test_mapping_reports_accepted_merged_sources_in_diagnostics():
@@ -318,17 +319,79 @@ def test_mapping_reports_accepted_merged_sources_in_diagnostics():
 
     assert diagnostics["unmapped_source_ids"] == []
     assert diagnostics["unmapped_target_indexes"] == []
+    assert diagnostics["accepted_merged_sources_count"] == 1
+    assert diagnostics["max_accepted_merged_sources"] == 2
     assert diagnostics["accepted_merged_sources"] == [
         {
             "logical_paragraph_id": "p0010",
             "origin_raw_indexes": [10, 11],
+            "accepted_merged_sources_count": 2,
             "dominant_raw_index": 10,
             "kind": "normalized_merge",
+            "boundary_confidence": "high",
+            "boundary_rationale": None,
             "target_index": 0,
             "target_text_preview": "Это один логический абзац после нормализации.",
             "source_text_preview": "Это один логический абзац после нормализации.",
         }
     ]
+
+
+def test_formatting_diagnostics_propagate_boundary_rationale_for_merged_source():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0012",
+            text="Это один логический абзац после нормализации.",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+            origin_raw_indexes=[12, 13, 14],
+            origin_raw_texts=["Это один", "логический абзац", "после нормализации."],
+            boundary_source="normalized_merge",
+            boundary_confidence="high",
+            boundary_rationale=(
+                "same_body_style, compatible_alignment, left_not_terminal, "
+                "right_starts_continuation, left_incomplete, combined_sentence_plausible"
+            ),
+        )
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("Это один логический абзац после нормализации.")
+
+    diagnostics = _build_output_formatting_diagnostics(source_paragraphs, list(target_doc.paragraphs), document=target_doc)
+
+    source_entry = cast(list[dict[str, object]], diagnostics["source_registry"])[0]
+    assert source_entry["paragraph_id"] == "p0012"
+    assert source_entry["origin_raw_indexes"] == [12, 13, 14]
+    assert source_entry["origin_raw_text_count"] == 3
+    assert source_entry["boundary_source"] == "normalized_merge"
+    assert source_entry["boundary_confidence"] == "high"
+    assert source_entry["boundary_rationale"] == (
+        "same_body_style, compatible_alignment, left_not_terminal, "
+        "right_starts_continuation, left_incomplete, combined_sentence_plausible"
+    )
+    assert source_entry["mapped_target_index"] == 0
+    assert source_entry["mapping_strategy"] == "exact_text"
+
+    accepted_merged_source = cast(list[dict[str, object]], diagnostics["accepted_merged_sources"])[0]
+    assert accepted_merged_source == {
+        "logical_paragraph_id": "p0012",
+        "origin_raw_indexes": [12, 13, 14],
+        "accepted_merged_sources_count": 3,
+        "dominant_raw_index": 12,
+        "kind": "normalized_merge",
+        "boundary_confidence": "high",
+        "boundary_rationale": (
+            "same_body_style, compatible_alignment, left_not_terminal, "
+            "right_starts_continuation, left_incomplete, combined_sentence_plausible"
+        ),
+        "target_index": 0,
+        "target_text_preview": "Это один логический абзац после нормализации.",
+        "source_text_preview": "Это один логический абзац после нормализации.",
+    }
+    assert diagnostics["accepted_merged_sources_count"] == 1
+    assert diagnostics["max_accepted_merged_sources"] == 3
 
 
 def test_restore_source_formatting_normalizes_split_heading_prefix_to_heading_2():

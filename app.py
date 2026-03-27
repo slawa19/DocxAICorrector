@@ -175,6 +175,9 @@ def _start_background_preparation(
 def _store_preparation_summary(*, prepared_run_context) -> None:
     elapsed_seconds = float(getattr(prepared_run_context, "preparation_elapsed_seconds", 0.0) or 0.0)
     elapsed = f"{elapsed_seconds:.1f} c" if elapsed_seconds > 0 else ""
+    normalization_metrics = application_flow.flatten_normalization_metrics(
+        getattr(prepared_run_context, "normalization_report", None)
+    )
     st.session_state.latest_preparation_summary = {
         "stage": str(getattr(prepared_run_context, "preparation_stage", "Документ подготовлен")),
         "detail": str(getattr(prepared_run_context, "preparation_detail", "Анализ завершён. Можно запускать обработку.")),
@@ -186,6 +189,7 @@ def _store_preparation_summary(*, prepared_run_context) -> None:
         "cached": bool(getattr(prepared_run_context, "preparation_cached", False)),
         "elapsed": elapsed,
         "progress": 1.0,
+        **normalization_metrics,
     }
 
 
@@ -432,6 +436,9 @@ def main() -> None:
 
     _store_preparation_summary(prepared_run_context=prepared_run_context)
     if not processing_active and not restartable_outcome:
+        normalization_metrics = application_flow.flatten_normalization_metrics(
+            getattr(prepared_run_context, "normalization_report", None)
+        )
         set_processing_status(
             stage="Документ подготовлен",
             detail=f"Собрано {len(jobs)} блоков. Можно запускать обработку.",
@@ -446,6 +453,7 @@ def main() -> None:
             is_running=False,
             phase="preparing",
             terminal_kind="completed",
+            **normalization_metrics,
         )
     if not st.session_state.activity_feed and not restartable_outcome:
         push_activity(f"Документ разобран на {len(jobs)} блоков.")

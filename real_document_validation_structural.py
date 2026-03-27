@@ -149,6 +149,8 @@ def run_structural_passthrough_validation(
             "formatting_diagnostics_count": len(formatting_diagnostics),
             "max_unmapped_source_paragraphs": _max_payload_length(formatting_diagnostics, "unmapped_source_ids"),
             "max_unmapped_target_paragraphs": _max_payload_length(formatting_diagnostics, "unmapped_target_indexes"),
+            "accepted_merged_sources_count": _count_payload_items(formatting_diagnostics, "accepted_merged_sources"),
+            "max_accepted_merged_sources": _max_accepted_merged_sources(formatting_diagnostics),
             "text_similarity": _calculate_text_similarity(source_paragraphs, output_paragraphs),
             "heading_level_drift": _calculate_heading_level_drift(source_paragraphs, output_paragraphs),
             "heading_only_output_detected": _is_heading_only_markdown(latest_markdown),
@@ -433,6 +435,45 @@ def _max_payload_length(payloads: Sequence[Mapping[str, object]], key: str) -> i
         values = payload.get(key) or []
         if isinstance(values, Sequence) and not isinstance(values, (str, bytes, bytearray)):
             maximum = max(maximum, len(values))
+    return maximum
+
+
+def _count_payload_items(payloads: Sequence[Mapping[str, object]], key: str) -> int:
+    total = 0
+    for payload in payloads:
+        values = payload.get(key) or []
+        if isinstance(values, Sequence) and not isinstance(values, (str, bytes, bytearray)):
+            total += len(values)
+    return total
+
+
+def _max_accepted_merged_sources(payloads: Sequence[Mapping[str, object]]) -> int:
+    maximum = 0
+    for payload in payloads:
+        explicit_value = payload.get("max_accepted_merged_sources")
+        if explicit_value is not None:
+            try:
+                maximum = max(maximum, int(explicit_value))
+                continue
+            except (TypeError, ValueError):
+                pass
+
+        accepted_sources = payload.get("accepted_merged_sources") or []
+        if not isinstance(accepted_sources, Sequence) or isinstance(accepted_sources, (str, bytes, bytearray)):
+            continue
+        for entry in accepted_sources:
+            if not isinstance(entry, Mapping):
+                continue
+            explicit_count = entry.get("accepted_merged_sources_count")
+            if explicit_count is not None:
+                try:
+                    maximum = max(maximum, int(explicit_count))
+                    continue
+                except (TypeError, ValueError):
+                    pass
+            raw_indexes = entry.get("origin_raw_indexes") or []
+            if isinstance(raw_indexes, Sequence) and not isinstance(raw_indexes, (str, bytes, bytearray)):
+                maximum = max(maximum, len(raw_indexes))
     return maximum
 
 

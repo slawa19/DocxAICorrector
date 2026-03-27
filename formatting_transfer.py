@@ -117,6 +117,7 @@ def _build_source_registry_entry(
         "origin_raw_text_count": len(paragraph.origin_raw_texts),
         "boundary_source": paragraph.boundary_source,
         "boundary_confidence": paragraph.boundary_confidence,
+        "boundary_rationale": paragraph.boundary_rationale,
         "mapped_target_index": mapped_target_index,
         "mapping_strategy": strategy,
         "text_preview": _paragraph_preview(_normalize_text_for_mapping(paragraph.text) or paragraph.text),
@@ -319,8 +320,11 @@ def _collect_accepted_merged_sources(
             {
                 "logical_paragraph_id": source_paragraph.paragraph_id or f"p{source_index:04d}",
                 "origin_raw_indexes": list(source_paragraph.origin_raw_indexes),
+                "accepted_merged_sources_count": len(source_paragraph.origin_raw_indexes),
                 "dominant_raw_index": source_paragraph.origin_raw_indexes[0],
                 "kind": source_paragraph.boundary_source or "false_paragraph_boundary_merge",
+                "boundary_confidence": source_paragraph.boundary_confidence,
+                "boundary_rationale": source_paragraph.boundary_rationale,
                 "target_index": target_index,
                 "target_text_preview": _paragraph_preview(target_paragraphs[target_index].text),
                 "source_text_preview": _paragraph_preview(source_paragraph.text),
@@ -580,6 +584,11 @@ def _map_source_target_paragraphs(
         ],
         "accepted_split_targets": accepted_split_targets,
         "accepted_merged_sources": accepted_merged_sources,
+        "accepted_merged_sources_count": len(accepted_merged_sources),
+        "max_accepted_merged_sources": max(
+            (int(entry.get("accepted_merged_sources_count", 0)) for entry in accepted_merged_sources),
+            default=0,
+        ),
         "caption_heading_conflicts": _build_caption_heading_conflicts(
             source_paragraphs,
             target_paragraphs,

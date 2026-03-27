@@ -76,6 +76,10 @@ def test_init_session_state_initializes_image_processing_summary(monkeypatch):
     assert session_state.prepared_source_key == ""
     assert session_state.preparation_cache == {}
     assert session_state.processing_status["cached"] is False
+    assert session_state.processing_status["raw_paragraph_count"] == 0
+    assert session_state.processing_status["logical_paragraph_count"] == 0
+    assert session_state.processing_status["merged_group_count"] == 0
+    assert session_state.processing_status["merged_raw_paragraph_count"] == 0
     assert session_state.processing_status["terminal_kind"] is None
     assert session_state.restart_source is None
     assert session_state.completed_source is None
@@ -96,6 +100,10 @@ def test_set_processing_status_updates_preparation_metrics(monkeypatch):
         paragraph_count=12,
         image_count=3,
         source_chars=5000,
+        raw_paragraph_count=14,
+        logical_paragraph_count=12,
+        merged_group_count=2,
+        merged_raw_paragraph_count=4,
         cached=True,
     )
 
@@ -104,6 +112,10 @@ def test_set_processing_status_updates_preparation_metrics(monkeypatch):
     assert session_state.processing_status["paragraph_count"] == 12
     assert session_state.processing_status["image_count"] == 3
     assert session_state.processing_status["source_chars"] == 5000
+    assert session_state.processing_status["raw_paragraph_count"] == 14
+    assert session_state.processing_status["logical_paragraph_count"] == 12
+    assert session_state.processing_status["merged_group_count"] == 2
+    assert session_state.processing_status["merged_raw_paragraph_count"] == 4
     assert session_state.processing_status["cached"] is True
 
 

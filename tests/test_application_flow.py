@@ -71,6 +71,12 @@ def test_prepare_run_context_updates_selected_token_and_prepared_key(monkeypatch
         image_assets=["img"],
         jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
         prepared_source_key="report.docx:hash:6000",
+        normalization_report=SimpleNamespace(
+            total_raw_paragraphs=3,
+            total_logical_paragraphs=2,
+            merged_group_count=1,
+            merged_raw_paragraph_count=2,
+        ),
         cached=False,
     )
 
@@ -95,6 +101,7 @@ def test_prepare_run_context_updates_selected_token_and_prepared_key(monkeypatch
     assert result.preparation_detail == "Анализ завершён. Можно запускать обработку."
     assert result.preparation_cached is False
     assert result.preparation_elapsed_seconds >= 0.0
+    assert result.normalization_report is prepared_document.normalization_report
     assert session_state.selected_source_token == result.uploaded_file_token
     assert session_state.prepared_source_key == "report.docx:hash:6000"
     assert session_state.completed_source is None
@@ -103,6 +110,14 @@ def test_prepare_run_context_updates_selected_token_and_prepared_key(monkeypatch
     assert progress_events[1]["metrics"]["file_size_bytes"] == 3
     assert progress_events[-1]["stage"] == "Документ подготовлен"
     assert progress_events[-1]["metrics"]["block_count"] == 1
+    assert progress_events[-1]["metrics"]["raw_paragraph_count"] == 3
+    assert progress_events[-1]["metrics"]["logical_paragraph_count"] == 2
+    assert progress_events[-1]["metrics"]["merged_group_count"] == 1
+    assert progress_events[-1]["metrics"]["merged_raw_paragraph_count"] == 2
+    assert logged[0][1]["raw_paragraph_count"] == 3
+    assert logged[0][1]["logical_paragraph_count"] == 2
+    assert logged[0][1]["merged_group_count"] == 1
+    assert logged[0][1]["merged_raw_paragraph_count"] == 2
 
 
 def test_prepare_run_context_raises_on_empty_job_target(monkeypatch):
@@ -460,9 +475,9 @@ def test_prepare_run_context_for_background_uses_real_cache(monkeypatch):
 
     def fake_extract(uploaded_file):
         calls["extract"] += 1
-        return ["paragraph"], []
+        return ["paragraph"], [], None
 
-    monkeypatch.setattr(preparation, "extract_document_content_from_docx", fake_extract)
+    monkeypatch.setattr(preparation, "extract_document_content_with_boundary_report", fake_extract)
     monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "text")
     monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars: ["block"])
     monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [{"target_text": "block", "target_chars": 5, "context_chars": 0}])

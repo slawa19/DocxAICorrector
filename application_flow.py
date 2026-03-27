@@ -38,6 +38,18 @@ class PreparedRunContext:
     preparation_detail: str
     preparation_cached: bool
     preparation_elapsed_seconds: float
+    normalization_report: object | None = None
+
+
+def flatten_normalization_metrics(normalization_report) -> dict[str, int]:
+    if normalization_report is None:
+        return {}
+    return {
+        "raw_paragraph_count": int(getattr(normalization_report, "total_raw_paragraphs", 0) or 0),
+        "logical_paragraph_count": int(getattr(normalization_report, "total_logical_paragraphs", 0) or 0),
+        "merged_group_count": int(getattr(normalization_report, "merged_group_count", 0) or 0),
+        "merged_raw_paragraph_count": int(getattr(normalization_report, "merged_raw_paragraph_count", 0) or 0),
+    }
 
 
 @dataclass(frozen=True)
@@ -235,6 +247,7 @@ def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: 
         preparation_detail="Анализ завершён. Можно запускать обработку.",
         preparation_cached=prepared_document.cached,
         preparation_elapsed_seconds=elapsed_seconds,
+        normalization_report=getattr(prepared_document, "normalization_report", None),
     )
 
 
@@ -343,6 +356,7 @@ def prepare_run_context(
             chunk_size=chunk_size,
             image_mode=image_mode,
             keep_all_image_variants=keep_all_image_variants,
+            **flatten_normalization_metrics(getattr(prepared_document, "normalization_report", None)),
         )
         session_state.prepared_source_key = prepared_document.prepared_source_key
     emit_preparation_progress(
@@ -357,6 +371,7 @@ def prepare_run_context(
             "source_chars": len(prepared_document.source_text),
             "block_count": len(prepared_document.jobs),
             "cached": prepared_document.cached,
+            **flatten_normalization_metrics(getattr(prepared_document, "normalization_report", None)),
         },
     )
     return _build_prepared_run_context(
@@ -400,6 +415,7 @@ def prepare_run_context_for_background(
             "source_chars": len(prepared_document.source_text),
             "block_count": len(prepared_document.jobs),
             "cached": prepared_document.cached,
+            **flatten_normalization_metrics(getattr(prepared_document, "normalization_report", None)),
         },
     )
     return _build_prepared_run_context(

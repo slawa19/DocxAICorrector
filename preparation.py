@@ -9,9 +9,10 @@ from document import (
     build_document_text,
     build_editing_jobs,
     build_semantic_blocks,
-    extract_document_content_from_docx,
+    extract_document_content_with_boundary_report,
 )
 from logger import log_event
+from models import ParagraphBoundaryNormalizationReport
 from models import clone_prepared_image_asset
 from processing_runtime import build_in_memory_uploaded_file
 
@@ -23,7 +24,21 @@ class PreparedDocumentData:
     image_assets: list
     jobs: list[dict[str, object]]
     prepared_source_key: str
+    normalization_report: ParagraphBoundaryNormalizationReport | None = None
     cached: bool = False
+
+
+def _build_normalization_metrics(
+    normalization_report: ParagraphBoundaryNormalizationReport | None,
+) -> dict[str, int]:
+    if normalization_report is None:
+        return {}
+    return {
+        "raw_paragraph_count": normalization_report.total_raw_paragraphs,
+        "logical_paragraph_count": normalization_report.total_logical_paragraphs,
+        "merged_group_count": normalization_report.merged_group_count,
+        "merged_raw_paragraph_count": normalization_report.merged_raw_paragraph_count,
+    }
 
 
 PREPARATION_CACHE_LIMIT = 2
@@ -55,7 +70,7 @@ def _prepare_document_for_processing(source_name: str, source_bytes: bytes, chun
         progress=0.3,
     )
     uploaded_file = build_in_memory_uploaded_file(source_name=source_name, source_bytes=source_bytes)
-    paragraphs, image_assets = extract_document_content_from_docx(uploaded_file)
+    paragraphs, image_assets, normalization_report = extract_document_content_with_boundary_report(uploaded_file)
     emit_preparation_progress(
         progress_callback,
         stage="Структура извлечена",
@@ -64,6 +79,7 @@ def _prepare_document_for_processing(source_name: str, source_bytes: bytes, chun
         metrics={
             "paragraph_count": len(paragraphs),
             "image_count": len(image_assets),
+            **_build_normalization_metrics(normalization_report),
         },
     )
     source_text = build_document_text(paragraphs)
@@ -76,6 +92,7 @@ def _prepare_document_for_processing(source_name: str, source_bytes: bytes, chun
             "paragraph_count": len(paragraphs),
             "image_count": len(image_assets),
             "source_chars": len(source_text),
+            **_build_normalization_metrics(normalization_report),
         },
     )
     blocks = build_semantic_blocks(paragraphs, max_chars=chunk_size)
@@ -89,6 +106,7 @@ def _prepare_document_for_processing(source_name: str, source_bytes: bytes, chun
             "image_count": len(image_assets),
             "source_chars": len(source_text),
             "block_count": len(blocks),
+            **_build_normalization_metrics(normalization_report),
         },
     )
     jobs = build_editing_jobs(blocks, max_chars=chunk_size)
@@ -102,6 +120,7 @@ def _prepare_document_for_processing(source_name: str, source_bytes: bytes, chun
             "image_count": len(image_assets),
             "source_chars": len(source_text),
             "block_count": len(jobs),
+            **_build_normalization_metrics(normalization_report),
         },
     )
     return PreparedDocumentData(
@@ -110,6 +129,7 @@ def _prepare_document_for_processing(source_name: str, source_bytes: bytes, chun
         image_assets=image_assets,
         jobs=jobs,
         prepared_source_key="",
+        normalization_report=normalization_report,
         cached=False,
     )
 
@@ -150,6 +170,7 @@ def _clone_prepared_document(data: PreparedDocumentData, prepared_source_key: st
         image_assets=[clone_prepared_image_asset(asset) for asset in data.image_assets],
         jobs=[dict(job) for job in data.jobs],
         prepared_source_key=prepared_source_key,
+        normalization_report=deepcopy(data.normalization_report),
         cached=cached,
     )
 
@@ -244,6 +265,7 @@ def prepare_document_for_processing(*, uploaded_filename: str, source_bytes: byt
                 "source_chars": len(cached.source_text),
                 "block_count": len(cached.jobs),
                 "cached": cached.cached,
+                **_build_normalization_metrics(cached.normalization_report),
             },
         )
         return cached

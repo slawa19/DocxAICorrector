@@ -43,6 +43,10 @@ def _default_processing_status() -> dict[str, object]:
         "paragraph_count": 0,
         "image_count": 0,
         "source_chars": 0,
+        "raw_paragraph_count": 0,
+        "logical_paragraph_count": 0,
+        "merged_group_count": 0,
+        "merged_raw_paragraph_count": 0,
         "cached": False,
         "started_at": None,
         "last_update_at": None,
@@ -157,6 +161,10 @@ def set_processing_status(
     paragraph_count: int | None = None,
     image_count: int | None = None,
     source_chars: int | None = None,
+    raw_paragraph_count: int | None = None,
+    logical_paragraph_count: int | None = None,
+    merged_group_count: int | None = None,
+    merged_raw_paragraph_count: int | None = None,
     cached: bool | None = None,
     progress: float = 0.0,
     is_running: bool | None = None,
@@ -189,6 +197,14 @@ def set_processing_status(
         status["image_count"] = image_count
     if source_chars is not None:
         status["source_chars"] = source_chars
+    if raw_paragraph_count is not None:
+        status["raw_paragraph_count"] = raw_paragraph_count
+    if logical_paragraph_count is not None:
+        status["logical_paragraph_count"] = logical_paragraph_count
+    if merged_group_count is not None:
+        status["merged_group_count"] = merged_group_count
+    if merged_raw_paragraph_count is not None:
+        status["merged_raw_paragraph_count"] = merged_raw_paragraph_count
     if cached is not None:
         status["cached"] = cached
     if status["is_running"] and not status.get("started_at"):

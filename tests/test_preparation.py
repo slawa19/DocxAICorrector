@@ -4,11 +4,21 @@ from threading import Event, Thread
 from docx import Document
 
 from models import ImageAsset, ImageVariantCandidate
+from models import ParagraphBoundaryNormalizationReport
 import preparation
 
 
 def setup_function():
     preparation.clear_preparation_cache(clear_shared=True)
+
+
+def _build_report(*, raw=0, logical=0, merged_groups=0, merged_raw=0):
+    return ParagraphBoundaryNormalizationReport(
+        total_raw_paragraphs=raw,
+        total_logical_paragraphs=logical,
+        merged_group_count=merged_groups,
+        merged_raw_paragraph_count=merged_raw,
+    )
 
 
 def _build_docx_bytes(paragraphs: list[str]) -> bytes:
@@ -27,9 +37,9 @@ def test_prepare_document_for_processing_uses_cache_for_identical_inputs(monkeyp
 
     def fake_extract(uploaded_file):
         calls["count"] += 1
-        return [], []
+        return [], [], None
 
-    monkeypatch.setattr(preparation, "extract_document_content_from_docx", fake_extract)
+    monkeypatch.setattr(preparation, "extract_document_content_with_boundary_report", fake_extract)
     monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "")
     monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars: [])
     monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [])
@@ -109,7 +119,7 @@ def test_prepare_document_for_processing_clones_attempt_variants_independently(m
         ],
     )
 
-    monkeypatch.setattr(preparation, "extract_document_content_from_docx", lambda uploaded_file: ([{"text": "p"}], [asset]))
+    monkeypatch.setattr(preparation, "extract_document_content_with_boundary_report", lambda uploaded_file: ([{"text": "p"}], [asset], None))
     monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "text")
     monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars: ["block"])
     monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [{"target_text": "text", "target_chars": 4, "context_chars": 0}])
@@ -156,7 +166,7 @@ def test_prepare_document_for_processing_clones_comparison_variants_independentl
         },
     )
 
-    monkeypatch.setattr(preparation, "extract_document_content_from_docx", lambda uploaded_file: ([{"text": "p"}], [asset]))
+    monkeypatch.setattr(preparation, "extract_document_content_with_boundary_report", lambda uploaded_file: ([{"text": "p"}], [asset], None))
     monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "text")
     monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars: ["block"])
     monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [{"target_text": "text", "target_chars": 4, "context_chars": 0}])
@@ -186,7 +196,7 @@ def test_prepare_document_for_processing_clones_comparison_variants_independentl
 def test_prepare_document_for_processing_limits_session_cache_size(monkeypatch):
     session_state = {"preparation_cache": {}}
 
-    monkeypatch.setattr(preparation, "extract_document_content_from_docx", lambda uploaded_file: ([], []))
+    monkeypatch.setattr(preparation, "extract_document_content_with_boundary_report", lambda uploaded_file: ([], [], None))
     monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "")
     monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars: [])
     monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [])
@@ -225,9 +235,9 @@ def test_prepare_document_for_processing_uses_shared_cache_without_session_state
 
     def fake_extract(uploaded_file):
         calls["count"] += 1
-        return [], []
+        return [], [], None
 
-    monkeypatch.setattr(preparation, "extract_document_content_from_docx", fake_extract)
+    monkeypatch.setattr(preparation, "extract_document_content_with_boundary_report", fake_extract)
     monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "")
     monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars: [])
     monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [])
@@ -266,9 +276,9 @@ def test_prepare_document_for_processing_uses_single_flight_for_shared_cache(mon
         calls["count"] += 1
         extract_started.set()
         assert release_extract.wait(timeout=5)
-        return [], []
+        return [], [], None
 
-    monkeypatch.setattr(preparation, "extract_document_content_from_docx", fake_extract)
+    monkeypatch.setattr(preparation, "extract_document_content_with_boundary_report", fake_extract)
     monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "")
     monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars: [])
     monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [])
@@ -309,9 +319,9 @@ def test_clear_preparation_cache_requires_explicit_shared_clear(monkeypatch):
 
     def fake_extract(uploaded_file):
         calls["count"] += 1
-        return [], []
+        return [], [], None
 
-    monkeypatch.setattr(preparation, "extract_document_content_from_docx", fake_extract)
+    monkeypatch.setattr(preparation, "extract_document_content_with_boundary_report", fake_extract)
     monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "")
     monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars: [])
     monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [])
@@ -355,7 +365,7 @@ def test_clear_preparation_cache_requires_explicit_shared_clear(monkeypatch):
 def test_prepare_document_for_processing_miss_returns_clone_separate_from_cached_entry(monkeypatch):
     session_state = {"preparation_cache": {}}
 
-    monkeypatch.setattr(preparation, "extract_document_content_from_docx", lambda uploaded_file: ([{"text": "p"}], [{"image": b"x"}]))
+    monkeypatch.setattr(preparation, "extract_document_content_with_boundary_report", lambda uploaded_file: ([{"text": "p"}], [{"image": b"x"}], None))
     monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "text")
     monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars: ["block"])
     monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [{"target_text": "text", "target_chars": 4, "context_chars": 0}])
@@ -381,7 +391,11 @@ def test_prepare_document_for_processing_reports_stage_metrics(monkeypatch):
     session_state = {"preparation_cache": {}}
     events = []
 
-    monkeypatch.setattr(preparation, "extract_document_content_from_docx", lambda uploaded_file: (["p1", "p2"], ["img"]))
+    monkeypatch.setattr(
+        preparation,
+        "extract_document_content_with_boundary_report",
+        lambda uploaded_file: (["p1", "p2"], ["img"], _build_report(raw=3, logical=2, merged_groups=1, merged_raw=2)),
+    )
     monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "text-value")
     monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars: ["block-a", "block-b"])
     monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [{"target_text": "a", "target_chars": 1, "context_chars": 0}, {"target_text": "b", "target_chars": 1, "context_chars": 0}])
@@ -404,6 +418,10 @@ def test_prepare_document_for_processing_reports_stage_metrics(monkeypatch):
     ]
     assert events[1]["metrics"]["paragraph_count"] == 2
     assert events[1]["metrics"]["image_count"] == 1
+    assert events[1]["metrics"]["raw_paragraph_count"] == 3
+    assert events[1]["metrics"]["logical_paragraph_count"] == 2
+    assert events[1]["metrics"]["merged_group_count"] == 1
+    assert events[1]["metrics"]["merged_raw_paragraph_count"] == 2
     assert events[2]["metrics"]["source_chars"] == len("text-value")
     assert events[3]["metrics"]["block_count"] == 2
 
@@ -412,7 +430,7 @@ def test_prepare_document_for_processing_logs_cache_miss_and_hit(monkeypatch):
     session_state = {"preparation_cache": {}}
     logged_events = []
 
-    monkeypatch.setattr(preparation, "extract_document_content_from_docx", lambda uploaded_file: ([], []))
+    monkeypatch.setattr(preparation, "extract_document_content_with_boundary_report", lambda uploaded_file: ([], [], None))
     monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "")
     monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars: [])
     monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [])
@@ -443,3 +461,104 @@ def test_prepare_document_for_processing_logs_cache_miss_and_hit(monkeypatch):
             {"prepared_source_key": "report.docx:10:hash:6000:high_only", "cache_level": "session"},
         ),
     ]
+
+
+def test_prepare_document_for_processing_retains_normalization_report_on_fresh_preparation(monkeypatch):
+    session_state = {"preparation_cache": {}}
+    report = _build_report(raw=4, logical=3, merged_groups=1, merged_raw=2)
+
+    monkeypatch.setattr(
+        preparation,
+        "extract_document_content_with_boundary_report",
+        lambda uploaded_file: ([{"text": "p"}], [], report),
+    )
+    monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "text")
+    monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars: ["block"])
+    monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [{"target_text": "text", "target_chars": 4, "context_chars": 0}])
+
+    result = preparation.prepare_document_for_processing(
+        uploaded_filename="report.docx",
+        source_bytes=b"docx-bytes",
+        uploaded_file_token="report.docx:10:hash",
+        chunk_size=6000,
+        session_state=session_state,
+    )
+
+    assert result.normalization_report == report
+    assert result.normalization_report is not report
+
+
+def test_prepare_document_for_processing_retains_normalization_report_across_cache_hit_clone(monkeypatch):
+    session_state = {"preparation_cache": {}}
+    extract_calls = {"count": 0}
+
+    def fake_extract(uploaded_file):
+        extract_calls["count"] += 1
+        return ([{"text": "p"}], [], _build_report(raw=4, logical=3, merged_groups=1, merged_raw=2))
+
+    monkeypatch.setattr(preparation, "extract_document_content_with_boundary_report", fake_extract)
+    monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "text")
+    monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars: ["block"])
+    monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [{"target_text": "text", "target_chars": 4, "context_chars": 0}])
+
+    first = preparation.prepare_document_for_processing(
+        uploaded_filename="report.docx",
+        source_bytes=b"docx-bytes",
+        uploaded_file_token="report.docx:10:hash",
+        chunk_size=6000,
+        session_state=session_state,
+    )
+    second = preparation.prepare_document_for_processing(
+        uploaded_filename="report.docx",
+        source_bytes=b"docx-bytes",
+        uploaded_file_token="report.docx:10:hash",
+        chunk_size=6000,
+        session_state=session_state,
+    )
+
+    assert first.normalization_report is not None
+    first.normalization_report.merged_group_count = 99
+
+    assert extract_calls["count"] == 1
+    assert second.cached is True
+    assert second.normalization_report is not None
+    assert second.normalization_report.merged_group_count == 1
+    assert second.normalization_report is not first.normalization_report
+
+
+def test_prepare_document_for_processing_reports_cache_hit_normalization_metrics(monkeypatch):
+    session_state = {"preparation_cache": {}}
+    events = []
+
+    monkeypatch.setattr(
+        preparation,
+        "extract_document_content_with_boundary_report",
+        lambda uploaded_file: (["p1", "p2"], ["img"], _build_report(raw=3, logical=2, merged_groups=1, merged_raw=2)),
+    )
+    monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "text-value")
+    monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars: ["block-a", "block-b"])
+    monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [{"target_text": "a", "target_chars": 1, "context_chars": 0}, {"target_text": "b", "target_chars": 1, "context_chars": 0}])
+
+    preparation.prepare_document_for_processing(
+        uploaded_filename="report.docx",
+        source_bytes=b"docx-bytes",
+        uploaded_file_token="report.docx:10:hash",
+        chunk_size=6000,
+        session_state=session_state,
+    )
+    preparation.prepare_document_for_processing(
+        uploaded_filename="report.docx",
+        source_bytes=b"docx-bytes",
+        uploaded_file_token="report.docx:10:hash",
+        chunk_size=6000,
+        session_state=session_state,
+        progress_callback=lambda **payload: events.append(payload),
+    )
+
+    assert len(events) == 1
+    assert events[0]["stage"] == "Подготовка документа"
+    assert events[0]["metrics"]["cached"] is True
+    assert events[0]["metrics"]["raw_paragraph_count"] == 3
+    assert events[0]["metrics"]["logical_paragraph_count"] == 2
+    assert events[0]["metrics"]["merged_group_count"] == 1
+    assert events[0]["metrics"]["merged_raw_paragraph_count"] == 2

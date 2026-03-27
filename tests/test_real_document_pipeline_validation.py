@@ -229,6 +229,59 @@ def test_evaluate_lietaer_acceptance_detects_known_false_split_in_runtime_markdo
     assert "known_false_split_absent_in_processed_markdown:lietaer_exchange_install_roof_split" in acceptance["failed_checks"]
 
 
+def test_evaluate_lietaer_acceptance_preserves_richer_formatting_diagnostics_payload() -> None:
+    validation = _load_validation_module()
+
+    source_doc = Document()
+    source_doc.add_paragraph("Это один логический абзац после нормализации.")
+    output_doc = Document()
+    output_doc.add_paragraph("Это один логический абзац после нормализации.")
+
+    formatting_payload = {
+        "accepted_merged_sources": [
+            {
+                "logical_paragraph_id": "p0012",
+                "origin_raw_indexes": [12, 13, 14],
+                "accepted_merged_sources_count": 3,
+                "target_index": 0,
+            }
+        ],
+        "accepted_merged_sources_count": 1,
+        "max_accepted_merged_sources": 3,
+        "unmapped_source_ids": [],
+        "unmapped_target_indexes": [],
+    }
+    report = {
+        "result": "succeeded",
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [formatting_payload],
+        "metrics": {
+            "accepted_merged_sources_count": 1,
+            "max_accepted_merged_sources": 3,
+        },
+        "runtime": {
+            "state": {
+                "latest_markdown": "Это один логический абзац после нормализации.",
+                "processed_block_markdowns": ["Это один логический абзац после нормализации."],
+            }
+        },
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+    )
+
+    assert acceptance["passed"] is True
+    assert report["formatting_diagnostics"] == [formatting_payload]
+    assert report["metrics"]["accepted_merged_sources_count"] == 1
+    assert report["metrics"]["max_accepted_merged_sources"] == 3
+
+
 def test_evaluate_lietaer_acceptance_allows_centered_text_edits_when_alignment_is_preserved() -> None:
     validation = _load_validation_module()
 

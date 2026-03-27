@@ -125,6 +125,12 @@ def test_store_preparation_summary_uses_preparation_context_not_processing_statu
         "preparation_detail": "Анализ завершён без фонового worker.",
         "preparation_cached": True,
         "preparation_elapsed_seconds": 1.25,
+        "normalization_report": type("NormalizationReportStub", (), {
+            "total_raw_paragraphs": 3,
+            "total_logical_paragraphs": 2,
+            "merged_group_count": 1,
+            "merged_raw_paragraph_count": 2,
+        })(),
     })()
 
     monkeypatch.setattr(app.st, "session_state", session_state)
@@ -142,6 +148,10 @@ def test_store_preparation_summary_uses_preparation_context_not_processing_statu
         "cached": True,
         "elapsed": "1.2 c",
         "progress": 1.0,
+        "raw_paragraph_count": 3,
+        "logical_paragraph_count": 2,
+        "merged_group_count": 1,
+        "merged_raw_paragraph_count": 2,
     }
 
 
@@ -432,6 +442,12 @@ def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):
             "preparation_detail": "Анализ завершён. Можно запускать обработку.",
             "preparation_cached": True,
             "preparation_elapsed_seconds": 1.4,
+            "normalization_report": type("NormalizationReportStub", (), {
+                "total_raw_paragraphs": 4,
+                "total_logical_paragraphs": 3,
+                "merged_group_count": 1,
+                "merged_raw_paragraph_count": 2,
+            })(),
         },
     )()
     uploaded_file = UploadedFileStub("report.docx", b"abc")
@@ -487,6 +503,10 @@ def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):
     assert summary_calls[0] == session_state.latest_preparation_summary
     assert summary_calls[0]["cached"] is True
     assert summary_calls[0]["block_count"] == 2
+    assert summary_calls[0]["raw_paragraph_count"] == 4
+    assert summary_calls[0]["logical_paragraph_count"] == 3
+    assert summary_calls[0]["merged_group_count"] == 1
+    assert summary_calls[0]["merged_raw_paragraph_count"] == 2
 
 
 def test_main_marks_prepared_status_with_completed_terminal_kind(monkeypatch):
@@ -505,6 +525,12 @@ def test_main_marks_prepared_status_with_completed_terminal_kind(monkeypatch):
             "preparation_detail": "Анализ завершён. Можно запускать обработку.",
             "preparation_cached": False,
             "preparation_elapsed_seconds": 1.4,
+            "normalization_report": type("NormalizationReportStub", (), {
+                "total_raw_paragraphs": 4,
+                "total_logical_paragraphs": 3,
+                "merged_group_count": 1,
+                "merged_raw_paragraph_count": 2,
+            })(),
         },
     )()
     uploaded_file = UploadedFileStub("report.docx", b"abc")
@@ -561,6 +587,10 @@ def test_main_marks_prepared_status_with_completed_terminal_kind(monkeypatch):
     assert status_calls[0]["stage"] == "Документ подготовлен"
     assert status_calls[0]["phase"] == "preparing"
     assert status_calls[0]["terminal_kind"] == "completed"
+    assert status_calls[0]["raw_paragraph_count"] == 4
+    assert status_calls[0]["logical_paragraph_count"] == 3
+    assert status_calls[0]["merged_group_count"] == 1
+    assert status_calls[0]["merged_raw_paragraph_count"] == 2
 
 
 @pytest.mark.parametrize("outcome", ["stopped", "failed"])

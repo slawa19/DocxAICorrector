@@ -7,6 +7,7 @@ from typing import Any
 
 import streamlit as st
 
+from application_flow import flatten_normalization_metrics
 from logger import format_elapsed
 from message_formatting import derive_live_status_title_and_severity, humanize_reason, humanize_variant
 from models import ImageMode
@@ -153,6 +154,28 @@ def _render_status_panel(*, sink, title: str, stage: str, detail: str, meta_line
         render_api.caption(meta_line)
 
 
+def _build_normalization_caption(metrics_source) -> str:
+    metrics = {
+        "raw_paragraph_count": _to_int(getattr(metrics_source, "raw_paragraph_count", None), default=_to_int(metrics_source.get("raw_paragraph_count") if isinstance(metrics_source, Mapping) else None, default=0)),
+        "logical_paragraph_count": _to_int(getattr(metrics_source, "logical_paragraph_count", None), default=_to_int(metrics_source.get("logical_paragraph_count") if isinstance(metrics_source, Mapping) else None, default=0)),
+        "merged_group_count": _to_int(getattr(metrics_source, "merged_group_count", None), default=_to_int(metrics_source.get("merged_group_count") if isinstance(metrics_source, Mapping) else None, default=0)),
+        "merged_raw_paragraph_count": _to_int(getattr(metrics_source, "merged_raw_paragraph_count", None), default=_to_int(metrics_source.get("merged_raw_paragraph_count") if isinstance(metrics_source, Mapping) else None, default=0)),
+    }
+    if not any(metrics.values()):
+        metrics = flatten_normalization_metrics(metrics_source)
+    merged_group_count = int(metrics.get("merged_group_count", 0) or 0)
+    merged_raw_paragraph_count = int(metrics.get("merged_raw_paragraph_count", 0) or 0)
+    if merged_group_count <= 0 and merged_raw_paragraph_count <= 0:
+        return ""
+    raw_paragraph_count = int(metrics.get("raw_paragraph_count", 0) or 0)
+    logical_paragraph_count = int(metrics.get("logical_paragraph_count", 0) or 0)
+    return (
+        "Нормализация абзацев: "
+        f"сырьевых {raw_paragraph_count} -> логических {logical_paragraph_count} | "
+        f"слияний: {merged_group_count} групп, {merged_raw_paragraph_count} абзацев"
+    )
+
+
 def render_sidebar_selectbox(
     label: str,
     options: list[str],
@@ -189,19 +212,23 @@ def render_live_status(target=None) -> None:
             progress_percent = int(progress_value * 100)
             stage = str(status.get("stage") or "Подготовка документа")
             detail = str(status.get("detail") or "Идет анализ файла.")
+            normalization_caption = _build_normalization_caption(status)
+            meta_lines = [
+                f"Прогресс: {progress_percent}% | Источник: {'cache' if cached else 'DOCX'} | Прошло: {elapsed}",
+                (
+                    f"Размер: {file_size_bytes / 1024 / 1024:.2f} MB | Абзацы: {paragraph_count} | "
+                    f"Изображения: {image_count} | Символы: {source_chars} | Блоки: {block_count}"
+                ),
+            ]
+            if normalization_caption:
+                meta_lines.append(normalization_caption)
             title, severity = derive_live_status_title_and_severity(status)
             _render_status_panel(
                 sink=sink,
                 title=title,
                 stage=stage,
                 detail=detail,
-                meta_lines=[
-                    f"Прогресс: {progress_percent}% | Источник: {'cache' if cached else 'DOCX'} | Прошло: {elapsed}",
-                    (
-                        f"Размер: {file_size_bytes / 1024 / 1024:.2f} MB | Абзацы: {paragraph_count} | "
-                        f"Изображения: {image_count} | Символы: {source_chars} | Блоки: {block_count}"
-                    ),
-                ],
+                meta_lines=meta_lines,
                 info_level=severity,
             )
             progress_api = _resolve_render_target(target, "progress")
@@ -242,21 +269,25 @@ def render_preparation_summary(summary: dict[str, object] | None, target=None) -
         image_count = _to_int(summary.get("image_count"), default=0)
         source_chars = _to_int(summary.get("source_chars"), default=0)
         block_count = _to_int(summary.get("block_count"), default=0)
+        normalization_caption = _build_normalization_caption(summary)
         elapsed_fragment = f" | Подготовка: {elapsed}" if elapsed else ""
         stage = str(summary.get("stage") or "Документ подготовлен")
         detail = str(summary.get("detail") or "")
+        meta_lines = [
+            f"Источник: {source_label}{elapsed_fragment}",
+            (
+                f"{file_size_bytes / 1024 / 1024:.2f} MB | {paragraph_count} абзацев | "
+                f"{image_count} изображений | {source_chars} символов | {block_count} блоков"
+            ),
+        ]
+        if normalization_caption:
+            meta_lines.append(normalization_caption)
         _render_status_panel(
             sink=sink,
             title=stage,
             stage="",
             detail=detail,
-            meta_lines=[
-                f"Источник: {source_label}{elapsed_fragment}",
-                (
-                    f"{file_size_bytes / 1024 / 1024:.2f} MB | {paragraph_count} абзацев | "
-                    f"{image_count} изображений | {source_chars} символов | {block_count} блоков"
-                ),
-            ],
+            meta_lines=meta_lines,
         )
 
 
