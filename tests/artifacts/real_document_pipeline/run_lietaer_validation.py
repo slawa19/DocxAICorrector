@@ -1116,7 +1116,17 @@ def is_heading_only_markdown(text: str) -> bool:
 def _normalize_structural_text(text: str) -> str:
     normalized = re.sub(r"\s+", " ", text).strip().lower()
     normalized = re.sub(r"^#{1,6}\s+", "", normalized)
+    normalized = re.sub(r"^([*_]{1,3})(.+)\1$", r"\2", normalized)
+    normalized = re.sub(r"^<[^>]+>(.+)</[^>]+>$", r"\1", normalized)
     return normalized
+
+
+def _is_meaningful_key_heading(text: str) -> bool:
+    normalized = _normalize_structural_text(text)
+    alnum_only = re.sub(r"[^0-9a-zа-яё]+", "", normalized, flags=re.IGNORECASE)
+    if len(alnum_only) < 3:
+        return False
+    return True
 
 
 def _find_child_by_local_name(element, local_name: str):
@@ -1474,11 +1484,14 @@ def evaluate_lietaer_acceptance(
             if paragraph.role == "heading"
             and _normalize_structural_text(paragraph.text)
             and len(_normalize_structural_text(paragraph.text).split()) <= 10
+            and _is_meaningful_key_heading(paragraph.text)
         }
         output_heading_texts = {
             _normalize_structural_text(paragraph.text)
             for paragraph in output_paragraphs
-            if paragraph.role == "heading" and _normalize_structural_text(paragraph.text)
+            if paragraph.role == "heading"
+            and _normalize_structural_text(paragraph.text)
+            and _is_meaningful_key_heading(paragraph.text)
         }
         missing_key_headings = sorted(source_heading_texts - output_heading_texts)
         add_check(

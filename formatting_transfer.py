@@ -22,6 +22,8 @@ from document import (
     IMAGE_PLACEHOLDER_PATTERN,
     INLINE_HTML_TAG_PATTERN,
     MARKDOWN_LINK_PATTERN,
+    build_paragraph_relations,
+    resolve_effective_relation_kinds,
     _is_image_only_text,
     _detect_explicit_list_kind,
     _find_child_element,
@@ -97,6 +99,7 @@ def _build_source_registry_entry(
     *,
     mapped_target_index: int | None,
     strategy: str | None,
+    relation_ids: Sequence[str],
 ) -> dict[str, object]:
     source_index = paragraph.source_index if paragraph.source_index >= 0 else fallback_index
     return {
@@ -118,6 +121,7 @@ def _build_source_registry_entry(
         "boundary_source": paragraph.boundary_source,
         "boundary_confidence": paragraph.boundary_confidence,
         "boundary_rationale": paragraph.boundary_rationale,
+        "relation_ids": list(relation_ids),
         "mapped_target_index": mapped_target_index,
         "mapping_strategy": strategy,
         "text_preview": _paragraph_preview(_normalize_text_for_mapping(paragraph.text) or paragraph.text),
@@ -324,6 +328,7 @@ def _collect_accepted_merged_sources(
                 "dominant_raw_index": source_paragraph.origin_raw_indexes[0],
                 "kind": source_paragraph.boundary_source or "false_paragraph_boundary_merge",
                 "boundary_confidence": source_paragraph.boundary_confidence,
+                "boundary_decision_class": "medium_accepted" if source_paragraph.boundary_confidence == "medium" else "high",
                 "boundary_rationale": source_paragraph.boundary_rationale,
                 "target_index": target_index,
                 "target_text_preview": _paragraph_preview(target_paragraphs[target_index].text),
@@ -549,6 +554,14 @@ def _map_source_target_paragraphs(
         target_paragraphs,
         mapped_target_by_source,
     )
+    accepted_relations, relation_report = build_paragraph_relations(
+        source_paragraphs,
+        enabled_relation_kinds=resolve_effective_relation_kinds(),
+    )
+    relation_ids_by_paragraph: dict[str, list[str]] = {}
+    for relation in accepted_relations:
+        for paragraph_id in relation.member_paragraph_ids:
+            relation_ids_by_paragraph.setdefault(paragraph_id, []).append(relation.relation_id)
     accepted_split_target_indexes = {entry["target_index"] for entry in accepted_split_targets}
 
     diagnostics = {
@@ -571,6 +584,7 @@ def _map_source_target_paragraphs(
                 index,
                 mapped_target_index=mapped_target_by_source.get(index),
                 strategy=strategy_by_source.get(index),
+                relation_ids=relation_ids_by_paragraph.get(paragraph.paragraph_id or f"p{index:04d}", []),
             )
             for index, paragraph in enumerate(source_paragraphs)
         ],
@@ -586,9 +600,39 @@ def _map_source_target_paragraphs(
         "accepted_merged_sources": accepted_merged_sources,
         "accepted_merged_sources_count": len(accepted_merged_sources),
         "max_accepted_merged_sources": max(
-            (int(entry.get("accepted_merged_sources_count", 0)) for entry in accepted_merged_sources),
+            (int(cast(int, entry.get("accepted_merged_sources_count", 0)) or 0) for entry in accepted_merged_sources),
             default=0,
         ),
+        "high_confidence_merge_count": sum(
+            1 for entry in accepted_merged_sources if entry.get("boundary_decision_class") == "high"
+        ),
+        "medium_accepted_merge_count": sum(
+            1 for entry in accepted_merged_sources if entry.get("boundary_decision_class") == "medium_accepted"
+        ),
+        "accepted_relations": [
+            {
+                "relation_id": relation.relation_id,
+                "relation_kind": relation.relation_kind,
+                "member_paragraph_ids": list(relation.member_paragraph_ids),
+                "anchor_asset_id": relation.anchor_asset_id,
+                "confidence": relation.confidence,
+                "rationale": list(relation.rationale),
+            }
+            for relation in accepted_relations
+        ],
+        "relation_decisions": [
+            {
+                "relation_kind": decision.relation_kind,
+                "decision": decision.decision,
+                "member_paragraph_ids": list(decision.member_paragraph_ids),
+                "anchor_asset_id": decision.anchor_asset_id,
+                "reasons": list(decision.reasons),
+            }
+            for decision in relation_report.decisions
+        ],
+        "relation_count": relation_report.total_relations,
+        "relation_counts": dict(relation_report.relation_counts),
+        "rejected_relation_candidate_count": relation_report.rejected_candidate_count,
         "caption_heading_conflicts": _build_caption_heading_conflicts(
             source_paragraphs,
             target_paragraphs,

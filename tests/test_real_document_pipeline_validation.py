@@ -195,6 +195,47 @@ def test_evaluate_lietaer_acceptance_passes_for_clean_structural_output(tmp_path
     assert acceptance["failed_checks"] == []
 
 
+def test_normalize_structural_text_strips_markdown_wrappers() -> None:
+    validation = _load_validation_module()
+
+    assert validation._normalize_structural_text("## **Религии безличного абсолюта**") == "религии безличного абсолюта"
+    assert validation._normalize_structural_text("<u>Дао</u>") == "дао"
+
+
+def test_evaluate_lietaer_acceptance_ignores_short_garbage_heading_and_markdown_wrapped_heading() -> None:
+    validation = _load_validation_module()
+
+    source_doc = Document()
+    source_doc.add_paragraph("ð¢", style="Heading 1")
+    source_doc.add_paragraph("**Религии безличного абсолюта**", style="Heading 2")
+
+    output_doc = Document()
+    output_doc.add_paragraph("Т", style="Heading 1")
+    output_doc.add_paragraph("Религии безличного абсолюта", style="Heading 2")
+
+    report = {
+        "result": "succeeded",
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [],
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+    )
+
+    heading_check = next(check for check in acceptance["checks"] if check["name"] == "key_headings_preserved")
+
+    assert heading_check["passed"] is True
+    assert heading_check["missing"] == []
+    assert heading_check["source_heading_count"] == 1
+    assert heading_check["output_heading_count"] == 1
+
+
 def test_evaluate_lietaer_acceptance_detects_known_false_split_in_runtime_markdown() -> None:
     validation = _load_validation_module()
 

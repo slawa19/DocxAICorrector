@@ -18,7 +18,14 @@ from constants import (
     SYSTEM_PROMPT_PATH,
 )
 from image_shared import clamp_score
-from models import IMAGE_MODE_VALUES, PARAGRAPH_BOUNDARY_NORMALIZATION_MODE_VALUES, ImageMode
+from models import (
+    IMAGE_MODE_VALUES,
+    PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES,
+    PARAGRAPH_BOUNDARY_NORMALIZATION_MODE_VALUES,
+    RELATION_NORMALIZATION_KIND_VALUES,
+    RELATION_NORMALIZATION_PROFILE_VALUES,
+    ImageMode,
+)
 
 OpenAI = None
 _CLIENT = None
@@ -39,6 +46,15 @@ class AppConfig(Mapping[str, object]):
     paragraph_boundary_normalization_enabled: bool
     paragraph_boundary_normalization_mode: str
     paragraph_boundary_normalization_save_debug_artifacts: bool
+    paragraph_boundary_ai_review_enabled: bool
+    paragraph_boundary_ai_review_mode: str
+    paragraph_boundary_ai_review_candidate_limit: int
+    paragraph_boundary_ai_review_timeout_seconds: int
+    paragraph_boundary_ai_review_max_tokens_per_candidate: int
+    relation_normalization_enabled: bool
+    relation_normalization_profile: str
+    relation_normalization_enabled_relation_kinds: tuple[str, ...]
+    relation_normalization_save_debug_artifacts: bool
     output_body_font: str | None
     output_heading_font: str | None
     image_mode_default: str
@@ -148,6 +164,15 @@ def parse_optional_str_env(name: str) -> str | None:
     return raw_value if raw_value else None
 
 
+def parse_choice_env(name: str, *, default: str, allowed_values: set[str]) -> str:
+    raw_value = os.getenv(name, "").strip().lower()
+    if not raw_value:
+        return default
+    if raw_value not in allowed_values:
+        raise RuntimeError(f"Некорректное значение в {name}: {raw_value}")
+    return raw_value
+
+
 def parse_optional_config_str(config_data: dict[str, object], field_name: str) -> str | None:
     value = config_data.get(field_name)
     if value is None:
@@ -232,6 +257,19 @@ def parse_image_output_size_list(value: object, *, source_name: str, default: tu
     return normalized
 
 
+def parse_string_list(value: object, *, source_name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    if value is None:
+        return default
+    if not isinstance(value, list):
+        raise RuntimeError(f"Некорректный список строк в {source_name}")
+    normalized = tuple(item.strip().lower() for item in value if isinstance(item, str) and item.strip())
+    if not normalized:
+        raise RuntimeError(f"Пустой список строк в {source_name}")
+    if len(normalized) != len(value):
+        raise RuntimeError(f"Некорректный список строк в {source_name}")
+    return normalized
+
+
 def parse_image_output_size_csv_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     raw_value = os.getenv(name, "").strip()
     if not raw_value:
@@ -289,6 +327,14 @@ def load_app_config() -> AppConfig:
         config_data,
         "paragraph_boundary_normalization",
     )
+    relation_normalization_config = parse_optional_config_section(
+        config_data,
+        "relation_normalization",
+    )
+    paragraph_boundary_ai_review_config = parse_optional_config_section(
+        config_data,
+        "paragraph_boundary_ai_review",
+    )
     paragraph_boundary_normalization_enabled = parse_config_bool(
         paragraph_boundary_normalization_config,
         "enabled",
@@ -300,12 +346,68 @@ def load_app_config() -> AppConfig:
         "high_only",
         set(PARAGRAPH_BOUNDARY_NORMALIZATION_MODE_VALUES),
     )
-    if paragraph_boundary_normalization_mode == "high_and_medium":
-        raise RuntimeError(
-            "Режим paragraph_boundary_normalization.mode=high_and_medium зарезервирован для Phase 3 и ещё не реализован"
-        )
+    paragraph_boundary_normalization_mode = parse_choice_env(
+        "DOCX_AI_PARAGRAPH_BOUNDARY_NORMALIZATION_MODE",
+        default=paragraph_boundary_normalization_mode,
+        allowed_values=set(PARAGRAPH_BOUNDARY_NORMALIZATION_MODE_VALUES),
+    )
     paragraph_boundary_normalization_save_debug_artifacts = parse_config_bool(
         paragraph_boundary_normalization_config,
+        "save_debug_artifacts",
+        True,
+    )
+    paragraph_boundary_ai_review_enabled = parse_config_bool(
+        paragraph_boundary_ai_review_config,
+        "enabled",
+        False,
+    )
+    paragraph_boundary_ai_review_mode = parse_choice_str(
+        paragraph_boundary_ai_review_config,
+        "mode",
+        "off",
+        set(PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES),
+    )
+    paragraph_boundary_ai_review_candidate_limit = parse_config_int(
+        paragraph_boundary_ai_review_config,
+        "candidate_limit",
+        200,
+    )
+    paragraph_boundary_ai_review_timeout_seconds = parse_config_int(
+        paragraph_boundary_ai_review_config,
+        "timeout_seconds",
+        30,
+    )
+    paragraph_boundary_ai_review_max_tokens_per_candidate = parse_config_int(
+        paragraph_boundary_ai_review_config,
+        "max_tokens_per_candidate",
+        120,
+    )
+    relation_normalization_enabled = parse_config_bool(
+        relation_normalization_config,
+        "enabled",
+        True,
+    )
+    relation_normalization_profile = parse_choice_str(
+        relation_normalization_config,
+        "profile",
+        "phase2_default",
+        set(RELATION_NORMALIZATION_PROFILE_VALUES),
+    )
+    relation_normalization_enabled_relation_kinds = parse_string_list(
+        relation_normalization_config.get("enabled_relation_kinds"),
+        source_name=f"{CONFIG_PATH}: relation_normalization.enabled_relation_kinds",
+        default=tuple(RELATION_NORMALIZATION_KIND_VALUES),
+    )
+    invalid_relation_kinds = sorted(
+        set(relation_normalization_enabled_relation_kinds) - set(RELATION_NORMALIZATION_KIND_VALUES)
+    )
+    if invalid_relation_kinds:
+        raise RuntimeError(
+            "Некорректные relation normalization kinds в "
+            f"{CONFIG_PATH}: {', '.join(invalid_relation_kinds)}"
+        )
+    relation_normalization_save_debug_artifacts = parse_config_bool(
+        relation_normalization_config,
         "save_debug_artifacts",
         True,
     )
@@ -412,6 +514,27 @@ def load_app_config() -> AppConfig:
     )
     output_body_font = parse_optional_str_env("DOCX_AI_OUTPUT_BODY_FONT") or output_body_font
     output_heading_font = parse_optional_str_env("DOCX_AI_OUTPUT_HEADING_FONT") or output_heading_font
+    paragraph_boundary_ai_review_enabled = parse_bool_env(
+        "DOCX_AI_PARAGRAPH_BOUNDARY_AI_REVIEW_ENABLED",
+        paragraph_boundary_ai_review_enabled,
+    )
+    paragraph_boundary_ai_review_mode = parse_choice_env(
+        "DOCX_AI_PARAGRAPH_BOUNDARY_AI_REVIEW_MODE",
+        default=paragraph_boundary_ai_review_mode,
+        allowed_values=set(PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES),
+    )
+    paragraph_boundary_ai_review_candidate_limit = parse_int_env(
+        "DOCX_AI_PARAGRAPH_BOUNDARY_AI_REVIEW_CANDIDATE_LIMIT",
+        paragraph_boundary_ai_review_candidate_limit,
+    )
+    paragraph_boundary_ai_review_timeout_seconds = parse_int_env(
+        "DOCX_AI_PARAGRAPH_BOUNDARY_AI_REVIEW_TIMEOUT_SECONDS",
+        paragraph_boundary_ai_review_timeout_seconds,
+    )
+    paragraph_boundary_ai_review_max_tokens_per_candidate = parse_int_env(
+        "DOCX_AI_PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_TOKENS_PER_CANDIDATE",
+        paragraph_boundary_ai_review_max_tokens_per_candidate,
+    )
     image_mode_default = _parse_image_mode(
         os.getenv("DOCX_AI_IMAGE_MODE_DEFAULT", image_mode_default).strip() or image_mode_default,
         source_name="DOCX_AI_IMAGE_MODE_DEFAULT",
@@ -552,6 +675,22 @@ def load_app_config() -> AppConfig:
         paragraph_boundary_normalization_enabled=paragraph_boundary_normalization_enabled,
         paragraph_boundary_normalization_mode=paragraph_boundary_normalization_mode,
         paragraph_boundary_normalization_save_debug_artifacts=paragraph_boundary_normalization_save_debug_artifacts,
+        paragraph_boundary_ai_review_enabled=paragraph_boundary_ai_review_enabled,
+        paragraph_boundary_ai_review_mode=(
+            "off"
+            if not paragraph_boundary_ai_review_enabled
+            else paragraph_boundary_ai_review_mode
+        ),
+        paragraph_boundary_ai_review_candidate_limit=max(1, min(paragraph_boundary_ai_review_candidate_limit, 500)),
+        paragraph_boundary_ai_review_timeout_seconds=max(1, min(paragraph_boundary_ai_review_timeout_seconds, 120)),
+        paragraph_boundary_ai_review_max_tokens_per_candidate=max(
+            32,
+            min(paragraph_boundary_ai_review_max_tokens_per_candidate, 512),
+        ),
+        relation_normalization_enabled=relation_normalization_enabled,
+        relation_normalization_profile=relation_normalization_profile,
+        relation_normalization_enabled_relation_kinds=relation_normalization_enabled_relation_kinds,
+        relation_normalization_save_debug_artifacts=relation_normalization_save_debug_artifacts,
         output_body_font=output_body_font,
         output_heading_font=output_heading_font,
         image_mode_default=image_mode_default,

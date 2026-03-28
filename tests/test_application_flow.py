@@ -475,11 +475,11 @@ def test_prepare_run_context_for_background_uses_real_cache(monkeypatch):
 
     def fake_extract(uploaded_file):
         calls["extract"] += 1
-        return ["paragraph"], [], None
+        return ["paragraph"], [], None, [], None
 
-    monkeypatch.setattr(preparation, "extract_document_content_with_boundary_report", fake_extract)
+    monkeypatch.setattr(preparation, "extract_document_content_with_normalization_reports", fake_extract)
     monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "text")
-    monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars: ["block"])
+    monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars, relations=None: ["block"])
     monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [{"target_text": "block", "target_chars": 5, "context_chars": 0}])
 
     uploaded_payload = _freeze_uploaded_file("report.docx", b"abc")
@@ -499,7 +499,7 @@ def test_prepare_run_context_for_background_uses_real_cache(monkeypatch):
     )
 
     assert calls["extract"] == 1
-    assert second.prepared_source_key.endswith(":6000:high_only")
+    assert second.prepared_source_key.endswith(":6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region")
     assert second.preparation_cached is True
     assert second.preparation_stage == "Документ подготовлен"
     assert progress_events[-1]["stage"] == "Документ подготовлен"

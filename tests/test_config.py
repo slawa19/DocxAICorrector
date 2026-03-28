@@ -22,6 +22,15 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     assert app_config["paragraph_boundary_normalization_enabled"] is True
     assert app_config["paragraph_boundary_normalization_mode"] == "high_only"
     assert app_config["paragraph_boundary_normalization_save_debug_artifacts"] is True
+    assert app_config["relation_normalization_enabled"] is True
+    assert app_config["relation_normalization_profile"] == "phase2_default"
+    assert app_config["relation_normalization_enabled_relation_kinds"] == (
+        "image_caption",
+        "table_caption",
+        "epigraph_attribution",
+        "toc_region",
+    )
+    assert app_config["relation_normalization_save_debug_artifacts"] is True
 
 
 def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
@@ -33,6 +42,15 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["paragraph_boundary_normalization_enabled"] is True
     assert app_config["paragraph_boundary_normalization_mode"] == "high_only"
     assert app_config["paragraph_boundary_normalization_save_debug_artifacts"] is True
+    assert app_config["relation_normalization_enabled"] is True
+    assert app_config["relation_normalization_profile"] == "phase2_default"
+    assert app_config["relation_normalization_enabled_relation_kinds"] == (
+        "image_caption",
+        "table_caption",
+        "epigraph_attribution",
+        "toc_region",
+    )
+    assert app_config["relation_normalization_save_debug_artifacts"] is True
     assert app_config["image_mode_default"] == "no_change"
     assert app_config["semantic_validation_policy"] == "advisory"
     assert app_config["keep_all_image_variants"] is False
@@ -162,7 +180,7 @@ def test_load_app_config_rejects_invalid_paragraph_boundary_mode(monkeypatch, tm
         config.load_app_config()
 
 
-def test_load_app_config_rejects_phase3_paragraph_boundary_mode_until_implemented(monkeypatch, tmp_path):
+def test_load_app_config_accepts_high_and_medium_paragraph_boundary_mode(monkeypatch, tmp_path):
     cfg = tmp_path / "config.toml"
     cfg.write_text(
         '[paragraph_boundary_normalization]\nmode = "high_and_medium"\n',
@@ -170,7 +188,59 @@ def test_load_app_config_rejects_phase3_paragraph_boundary_mode_until_implemente
     )
     monkeypatch.setattr(config, "CONFIG_PATH", cfg)
 
-    with pytest.raises(RuntimeError, match="Phase 3"):
+    app_config = config.load_app_config()
+
+    assert app_config["paragraph_boundary_normalization_mode"] == "high_and_medium"
+
+
+def test_load_app_config_applies_env_override_for_paragraph_boundary_mode(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[paragraph_boundary_normalization]\nmode = "high_only"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+    monkeypatch.setenv("DOCX_AI_PARAGRAPH_BOUNDARY_NORMALIZATION_MODE", "high_and_medium")
+
+    app_config = config.load_app_config()
+
+    assert app_config["paragraph_boundary_normalization_mode"] == "high_and_medium"
+
+
+def test_load_app_config_exposes_paragraph_boundary_ai_review_defaults(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH)
+
+    app_config = config.load_app_config()
+
+    assert app_config["paragraph_boundary_ai_review_enabled"] is False
+    assert app_config["paragraph_boundary_ai_review_mode"] == "off"
+    assert app_config["paragraph_boundary_ai_review_candidate_limit"] == 200
+    assert app_config["paragraph_boundary_ai_review_timeout_seconds"] == 30
+    assert app_config["paragraph_boundary_ai_review_max_tokens_per_candidate"] == 120
+
+
+def test_load_app_config_applies_paragraph_boundary_ai_review_env_overrides(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.setenv("DOCX_AI_PARAGRAPH_BOUNDARY_AI_REVIEW_ENABLED", "true")
+    monkeypatch.setenv("DOCX_AI_PARAGRAPH_BOUNDARY_AI_REVIEW_MODE", "review_only")
+    monkeypatch.setenv("DOCX_AI_PARAGRAPH_BOUNDARY_AI_REVIEW_CANDIDATE_LIMIT", "999")
+    monkeypatch.setenv("DOCX_AI_PARAGRAPH_BOUNDARY_AI_REVIEW_TIMEOUT_SECONDS", "0")
+    monkeypatch.setenv("DOCX_AI_PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_TOKENS_PER_CANDIDATE", "9999")
+
+    app_config = config.load_app_config()
+
+    assert app_config["paragraph_boundary_ai_review_enabled"] is True
+    assert app_config["paragraph_boundary_ai_review_mode"] == "review_only"
+    assert app_config["paragraph_boundary_ai_review_candidate_limit"] == 500
+    assert app_config["paragraph_boundary_ai_review_timeout_seconds"] == 1
+    assert app_config["paragraph_boundary_ai_review_max_tokens_per_candidate"] == 512
+
+
+def test_load_app_config_rejects_invalid_env_override_for_paragraph_boundary_mode(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.setenv("DOCX_AI_PARAGRAPH_BOUNDARY_NORMALIZATION_MODE", "aggressive")
+
+    with pytest.raises(RuntimeError, match="DOCX_AI_PARAGRAPH_BOUNDARY_NORMALIZATION_MODE"):
         config.load_app_config()
 
 

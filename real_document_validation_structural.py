@@ -17,8 +17,10 @@ from config import load_app_config
 from document import (
     build_document_text,
     extract_document_content_from_docx,
+    extract_document_content_with_normalization_reports,
     extract_document_content_with_boundary_report,
     inspect_placeholder_integrity,
+    summarize_boundary_normalization_metrics,
 )
 from formatting_transfer import normalize_semantic_output_docx, preserve_source_paragraph_properties
 from generation import convert_markdown_to_docx_bytes, ensure_pandoc_available
@@ -66,13 +68,14 @@ def evaluate_extraction_profile(document_profile: DocumentProfile) -> dict[str, 
     source_path = document_profile.resolved_source_path(PROJECT_ROOT)
     source_bytes = source_path.read_bytes()
     normalized_source = processing_runtime.normalize_uploaded_document(filename=source_path.name, source_bytes=source_bytes)
-    paragraphs, image_assets, normalization_report = extract_document_content_with_boundary_report(
+    paragraphs, image_assets, normalization_report, _, relation_report = extract_document_content_with_normalization_reports(
         BytesIO(normalized_source.content_bytes)
     )
     metrics = _build_structural_metrics(
         paragraphs=paragraphs,
         image_assets=image_assets,
         normalization_report=normalization_report,
+        relation_report=relation_report,
     )
     checks = _build_extraction_checks(document_profile, metrics)
     return _build_validation_result(
@@ -125,9 +128,13 @@ def run_structural_passthrough_validation(
         latest_docx_bytes = b""
     output_artifacts = _build_output_artifacts(bytes(latest_docx_bytes), latest_markdown)
 
-    source_paragraphs, source_image_assets, source_normalization_report = extract_document_content_with_boundary_report(
-        BytesIO(prepared.uploaded_file_bytes)
-    )
+    (
+        source_paragraphs,
+        source_image_assets,
+        source_normalization_report,
+        _,
+        source_relation_report,
+    ) = extract_document_content_with_normalization_reports(BytesIO(prepared.uploaded_file_bytes))
     output_paragraphs = []
     output_image_assets = []
     if output_artifacts["output_docx_openable"]:
@@ -151,6 +158,9 @@ def run_structural_passthrough_validation(
             "max_unmapped_target_paragraphs": _max_payload_length(formatting_diagnostics, "unmapped_target_indexes"),
             "accepted_merged_sources_count": _count_payload_items(formatting_diagnostics, "accepted_merged_sources"),
             "max_accepted_merged_sources": _max_accepted_merged_sources(formatting_diagnostics),
+            "relation_count": source_relation_report.total_relations,
+            "rejected_relation_candidate_count": source_relation_report.rejected_candidate_count,
+            "relation_counts": dict(source_relation_report.relation_counts),
             "text_similarity": _calculate_text_similarity(source_paragraphs, output_paragraphs),
             "heading_level_drift": _calculate_heading_level_drift(source_paragraphs, output_paragraphs),
             "heading_only_output_detected": _is_heading_only_markdown(latest_markdown),
@@ -273,6 +283,7 @@ def _build_structural_metrics(
     paragraphs: Sequence[object],
     image_assets: Sequence[object],
     normalization_report: ParagraphBoundaryNormalizationReport | None = None,
+    relation_report=None,
 ) -> dict[str, object]:
     paragraph_units = list(paragraphs)
     return {
@@ -289,6 +300,10 @@ def _build_structural_metrics(
         "logical_paragraph_count": 0 if normalization_report is None else normalization_report.total_logical_paragraphs,
         "merged_group_count": 0 if normalization_report is None else normalization_report.merged_group_count,
         "merged_raw_paragraph_count": 0 if normalization_report is None else normalization_report.merged_raw_paragraph_count,
+        **summarize_boundary_normalization_metrics(normalization_report),
+        "relation_count": 0 if relation_report is None else relation_report.total_relations,
+        "rejected_relation_candidate_count": 0 if relation_report is None else relation_report.rejected_candidate_count,
+        "relation_counts": {} if relation_report is None else dict(relation_report.relation_counts),
     }
 
 

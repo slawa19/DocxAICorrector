@@ -31,6 +31,14 @@ DOCX_COMPARE_VARIANT_MODE_VALUES = (
     ImageMode.SEMANTIC_REDRAW_STRUCTURED.value,
 )
 PARAGRAPH_BOUNDARY_NORMALIZATION_MODE_VALUES = ("off", "high_only", "high_and_medium")
+PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES = ("off", "review_only")
+RELATION_NORMALIZATION_PROFILE_VALUES = ("phase2_default",)
+RELATION_NORMALIZATION_KIND_VALUES = (
+    "image_caption",
+    "table_caption",
+    "epigraph_attribution",
+    "toc_region",
+)
 
 
 @dataclass(frozen=True)
@@ -86,6 +94,33 @@ class ParagraphBoundaryNormalizationReport:
     merged_group_count: int
     merged_raw_paragraph_count: int
     decisions: list[ParagraphBoundaryDecision] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ParagraphRelationDecision:
+    relation_kind: str
+    decision: str
+    member_paragraph_ids: tuple[str, ...]
+    anchor_asset_id: str | None = None
+    reasons: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ParagraphRelation:
+    relation_id: str
+    relation_kind: str
+    member_paragraph_ids: tuple[str, ...]
+    anchor_asset_id: str | None = None
+    confidence: str = "high"
+    rationale: tuple[str, ...] = ()
+
+
+@dataclass
+class RelationNormalizationReport:
+    total_relations: int
+    relation_counts: dict[str, int]
+    rejected_candidate_count: int
+    decisions: list[ParagraphRelationDecision] = field(default_factory=list)
 
 
 @dataclass

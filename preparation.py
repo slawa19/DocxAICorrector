@@ -9,10 +9,11 @@ from document import (
     build_document_text,
     build_editing_jobs,
     build_semantic_blocks,
-    extract_document_content_with_boundary_report,
+    extract_document_content_with_normalization_reports,
+    summarize_boundary_normalization_metrics,
 )
 from logger import log_event
-from models import ParagraphBoundaryNormalizationReport
+from models import ParagraphBoundaryNormalizationReport, ParagraphRelation, RelationNormalizationReport
 from models import clone_prepared_image_asset
 from processing_runtime import build_in_memory_uploaded_file
 
@@ -22,23 +23,39 @@ class PreparedDocumentData:
     source_text: str
     paragraphs: list
     image_assets: list
+    relations: list[ParagraphRelation]
     jobs: list[dict[str, object]]
     prepared_source_key: str
     normalization_report: ParagraphBoundaryNormalizationReport | None = None
+    relation_report: RelationNormalizationReport | None = None
     cached: bool = False
 
 
 def _build_normalization_metrics(
     normalization_report: ParagraphBoundaryNormalizationReport | None,
+    relation_report: RelationNormalizationReport | None = None,
 ) -> dict[str, int]:
-    if normalization_report is None:
-        return {}
-    return {
-        "raw_paragraph_count": normalization_report.total_raw_paragraphs,
-        "logical_paragraph_count": normalization_report.total_logical_paragraphs,
-        "merged_group_count": normalization_report.merged_group_count,
-        "merged_raw_paragraph_count": normalization_report.merged_raw_paragraph_count,
-    }
+    metrics: dict[str, int] = {}
+    if normalization_report is not None:
+        metrics.update(
+            {
+                "raw_paragraph_count": normalization_report.total_raw_paragraphs,
+                "logical_paragraph_count": normalization_report.total_logical_paragraphs,
+                "merged_group_count": normalization_report.merged_group_count,
+                "merged_raw_paragraph_count": normalization_report.merged_raw_paragraph_count,
+            }
+        )
+        metrics.update(summarize_boundary_normalization_metrics(normalization_report))
+    if relation_report is not None:
+        metrics.update(
+            {
+                "relation_count": relation_report.total_relations,
+                "rejected_relation_candidate_count": relation_report.rejected_candidate_count,
+            }
+        )
+        for relation_kind, count in relation_report.relation_counts.items():
+            metrics[f"relation_{relation_kind}_count"] = count
+    return metrics
 
 
 PREPARATION_CACHE_LIMIT = 2
@@ -58,8 +75,13 @@ def build_prepared_source_key(
     chunk_size: int,
     *,
     paragraph_boundary_normalization_mode: str = "high_only",
+    paragraph_boundary_ai_review_mode: str = "off",
+    relation_normalization_key: str = "phase2_default:epigraph_attribution,image_caption,table_caption,toc_region",
 ) -> str:
-    return f"{uploaded_file_token}:{chunk_size}:{paragraph_boundary_normalization_mode}"
+    return (
+        f"{uploaded_file_token}:{chunk_size}:{paragraph_boundary_normalization_mode}:"
+        f"{paragraph_boundary_ai_review_mode}:{relation_normalization_key}"
+    )
 
 
 def _prepare_document_for_processing(source_name: str, source_bytes: bytes, chunk_size: int, *, progress_callback=None):
@@ -70,7 +92,7 @@ def _prepare_document_for_processing(source_name: str, source_bytes: bytes, chun
         progress=0.3,
     )
     uploaded_file = build_in_memory_uploaded_file(source_name=source_name, source_bytes=source_bytes)
-    paragraphs, image_assets, normalization_report = extract_document_content_with_boundary_report(uploaded_file)
+    paragraphs, image_assets, normalization_report, relations, relation_report = extract_document_content_with_normalization_reports(uploaded_file)
     emit_preparation_progress(
         progress_callback,
         stage="Структура извлечена",
@@ -79,7 +101,7 @@ def _prepare_document_for_processing(source_name: str, source_bytes: bytes, chun
         metrics={
             "paragraph_count": len(paragraphs),
             "image_count": len(image_assets),
-            **_build_normalization_metrics(normalization_report),
+            **_build_normalization_metrics(normalization_report, relation_report),
         },
     )
     source_text = build_document_text(paragraphs)
@@ -92,10 +114,10 @@ def _prepare_document_for_processing(source_name: str, source_bytes: bytes, chun
             "paragraph_count": len(paragraphs),
             "image_count": len(image_assets),
             "source_chars": len(source_text),
-            **_build_normalization_metrics(normalization_report),
+            **_build_normalization_metrics(normalization_report, relation_report),
         },
     )
-    blocks = build_semantic_blocks(paragraphs, max_chars=chunk_size)
+    blocks = build_semantic_blocks(paragraphs, max_chars=chunk_size, relations=relations)
     emit_preparation_progress(
         progress_callback,
         stage="Смысловые блоки",
@@ -106,7 +128,7 @@ def _prepare_document_for_processing(source_name: str, source_bytes: bytes, chun
             "image_count": len(image_assets),
             "source_chars": len(source_text),
             "block_count": len(blocks),
-            **_build_normalization_metrics(normalization_report),
+            **_build_normalization_metrics(normalization_report, relation_report),
         },
     )
     jobs = build_editing_jobs(blocks, max_chars=chunk_size)
@@ -120,16 +142,18 @@ def _prepare_document_for_processing(source_name: str, source_bytes: bytes, chun
             "image_count": len(image_assets),
             "source_chars": len(source_text),
             "block_count": len(jobs),
-            **_build_normalization_metrics(normalization_report),
+            **_build_normalization_metrics(normalization_report, relation_report),
         },
     )
     return PreparedDocumentData(
         source_text=source_text,
         paragraphs=paragraphs,
         image_assets=image_assets,
+        relations=relations,
         jobs=jobs,
         prepared_source_key="",
         normalization_report=normalization_report,
+        relation_report=relation_report,
         cached=False,
     )
 
@@ -168,9 +192,11 @@ def _clone_prepared_document(data: PreparedDocumentData, prepared_source_key: st
         source_text=data.source_text,
         paragraphs=deepcopy(data.paragraphs),
         image_assets=[clone_prepared_image_asset(asset) for asset in data.image_assets],
+        relations=deepcopy(data.relations),
         jobs=[dict(job) for job in data.jobs],
         prepared_source_key=prepared_source_key,
         normalization_report=deepcopy(data.normalization_report),
+        relation_report=deepcopy(data.relation_report),
         cached=cached,
     )
 
@@ -237,10 +263,27 @@ def prepare_document_for_processing(*, uploaded_filename: str, source_bytes: byt
         if bool(app_config["paragraph_boundary_normalization_enabled"])
         else "off"
     )
+    ai_review_mode = (
+        str(app_config.get("paragraph_boundary_ai_review_mode", "off"))
+        if bool(app_config.get("paragraph_boundary_ai_review_enabled", False))
+        else "off"
+    )
+    relation_normalization_key = "off"
+    if bool(app_config.get("relation_normalization_enabled", True)):
+        relation_profile = str(app_config.get("relation_normalization_profile", "phase2_default"))
+        configured_relation_kinds = app_config.get("relation_normalization_enabled_relation_kinds", ())
+        if not isinstance(configured_relation_kinds, (list, tuple, set)):
+            configured_relation_kinds = ()
+        enabled_relation_kinds = ",".join(
+            sorted(str(kind) for kind in configured_relation_kinds)
+        )
+        relation_normalization_key = f"{relation_profile}:{enabled_relation_kinds}"
     prepared_source_key = build_prepared_source_key(
         uploaded_file_token,
         chunk_size,
         paragraph_boundary_normalization_mode=normalization_mode,
+        paragraph_boundary_ai_review_mode=ai_review_mode,
+        relation_normalization_key=relation_normalization_key,
     )
     cached, in_flight, cache_level = _read_or_reserve_cached_prepared_document(
         session_state=session_state,
@@ -265,7 +308,7 @@ def prepare_document_for_processing(*, uploaded_filename: str, source_bytes: byt
                 "source_chars": len(cached.source_text),
                 "block_count": len(cached.jobs),
                 "cached": cached.cached,
-                **_build_normalization_metrics(cached.normalization_report),
+                **_build_normalization_metrics(cached.normalization_report, cached.relation_report),
             },
         )
         return cached

@@ -47,6 +47,9 @@ def _default_processing_status() -> dict[str, object]:
         "logical_paragraph_count": 0,
         "merged_group_count": 0,
         "merged_raw_paragraph_count": 0,
+        "high_confidence_merge_count": 0,
+        "medium_accepted_merge_count": 0,
+        "medium_rejected_candidate_count": 0,
         "cached": False,
         "started_at": None,
         "last_update_at": None,
@@ -165,6 +168,9 @@ def set_processing_status(
     logical_paragraph_count: int | None = None,
     merged_group_count: int | None = None,
     merged_raw_paragraph_count: int | None = None,
+    high_confidence_merge_count: int | None = None,
+    medium_accepted_merge_count: int | None = None,
+    medium_rejected_candidate_count: int | None = None,
     cached: bool | None = None,
     progress: float = 0.0,
     is_running: bool | None = None,
@@ -205,6 +211,12 @@ def set_processing_status(
         status["merged_group_count"] = merged_group_count
     if merged_raw_paragraph_count is not None:
         status["merged_raw_paragraph_count"] = merged_raw_paragraph_count
+    if high_confidence_merge_count is not None:
+        status["high_confidence_merge_count"] = high_confidence_merge_count
+    if medium_accepted_merge_count is not None:
+        status["medium_accepted_merge_count"] = medium_accepted_merge_count
+    if medium_rejected_candidate_count is not None:
+        status["medium_rejected_candidate_count"] = medium_rejected_candidate_count
     if cached is not None:
         status["cached"] = cached
     if status["is_running"] and not status.get("started_at"):

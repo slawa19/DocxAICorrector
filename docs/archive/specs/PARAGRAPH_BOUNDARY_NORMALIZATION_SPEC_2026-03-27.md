@@ -1,13 +1,25 @@
 # Paragraph Boundary Normalization Spec
 
 Date: 2026-03-27
-Status: Proposed
+Status: Archived historical spec; Phases 1-4 implemented
+Archived: 2026-03-28
 Scope: New pre-processing stage for false DOCX paragraph break normalization, with an extensible normalization seam for related entity-boundary and attachment problems
 Primary trigger: real-document cases where one logical body paragraph is split across multiple physical Word paragraphs and therefore propagates as broken Markdown / broken entity boundaries through the pipeline
-Related specs:
-- `docs/AI_STRUCTURE_RECOGNITION_SPEC_2026-03-26.md`
+Related architecture docs:
 - `docs/ARCHITECTURE_REFACTORING_SPEC_2026-03-25.md`
 - `docs/archive/specs/DOCUMENT_ENTITY_ROUNDTRIP_REFACTOR_SPEC_2026-03-21.md`
+
+Adjacent but intentionally separate work:
+- `docs/AI_STRUCTURE_RECOGNITION_SPEC_2026-03-26.md`
+
+Informational only, non-authoritative after this update:
+- `docs/RELATION_NORMALIZATION_SPEC_2026-03-27.md`
+
+Archive note:
+
+1. this document was the active implementation contract while Phases 1-4 were being delivered;
+2. after completion it was moved to `docs/archive/specs/` as a historical implementation record;
+3. it should no longer be used as the default location for new active work.
 
 ## 1. Problem Statement
 
@@ -204,9 +216,19 @@ DOCX file
                      │
                      ▼
 ┌────────────────────────────────────────────┐
-│ Stage 2: Existing role classification      │
-│ / AI structure recognition                 │
+│ Stage 1C: Relation Normalization           │  ◄── NEW
 │ Input: canonical logical paragraphs        │
+│ Output: logical paragraphs + relations     │
+│   - caption attachment                     │
+│   - epigraph-attribution grouping          │
+│   - TOC region grouping                    │
+└────────────────────┬───────────────────────┘
+                     │
+                     ▼
+┌────────────────────────────────────────────┐
+│ Stage 2: Existing role classification      │
+│ / optional external AI enrichment          │
+│ Input: normalized logical paragraphs       │
 └────────────────────┬───────────────────────┘
                      │
                      ▼
@@ -240,7 +262,7 @@ Stage 1A is **boundary repair**:
 
 Stage 1B is **logical entity build** from already-repaired raw blocks.
 
-Later phases may add a narrowly scoped Stage 1C for relation normalization between already-built logical entities, for cases such as:
+Stage 1C is **relation normalization** between already-built logical entities, for cases such as:
 
 1. `caption_attachment_normalization`
 2. `epigraph_attribution_grouping`
@@ -252,7 +274,7 @@ The decision rule for the codebase is:
 1. if a problem is about repairing a false physical paragraph boundary, it belongs in Stage 1A;
 2. if a problem is about building canonical logical entities from repaired raw blocks, it belongs in Stage 1B;
 3. if a problem is about semantic relations between already-correct logical entities, it belongs in a later relation-normalization stage, not in boundary repair;
-4. if a problem is about semantic role classification of already-correct logical entities, it belongs in structure recognition;
+4. if a problem is about semantic role classification of already-correct logical entities, it belongs in a separate structure-recognition track and is not a prerequisite for this spec;
 5. if a problem is purely about final rendering policy, it belongs downstream in rendering/formatting.
 
 This separation prevents repeated one-off fixes in preview, semantic block builder, formatting transfer, or an overgrown catch-all normalization module.
@@ -346,23 +368,44 @@ Notes:
 1. In Phase 1 these fields should be added to `ParagraphUnit` rather than introducing a competing long-lived `LogicalParagraph` runtime model.
 2. Any future standalone logical-entity type would require a separate approved refactoring spec; it is not part of this change.
 
-### 7.3. Future Relation Metadata
+### 7.3. Relation Metadata
 
-To support future non-merge normalization families without another datamodel rewrite, relation metadata should be modeled explicitly as relations produced by a later relation-normalization stage, rather than as paragraph-only ownership fields.
-
-Suggested future shape:
+Phase 2 introduces first-class relation metadata under this same spec. The relation contract is part of the main normalization architecture and is not delegated to a separate authoritative specification.
 
 ```python
 @dataclass(frozen=True)
-class LogicalRelation:
-    relation_id: str
-    relation_kind: str          # "image_caption" | "epigraph_pair" | "toc_region"
-    source_logical_ids: tuple[str, ...]
-    target_logical_id: str | None = None
-    confidence: str = "high"
+class ParagraphRelationDecision:
+  relation_kind: str
+  decision: str               # "accept" | "reject"
+  member_paragraph_ids: tuple[str, ...]
+  anchor_asset_id: str | None = None
+  reasons: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ParagraphRelation:
+  relation_id: str
+  relation_kind: str          # "image_caption" | "table_caption" |
+                # "epigraph_attribution" | "toc_region"
+  member_paragraph_ids: tuple[str, ...]
+  anchor_asset_id: str | None = None
+  confidence: str = "high"
+  rationale: tuple[str, ...] = ()
+
+
+@dataclass
+class RelationNormalizationReport:
+  total_relations: int
+  relation_counts: dict[str, int]
+  rejected_candidate_count: int
+  decisions: list[ParagraphRelationDecision]
 ```
 
-Phase 1 does not implement relation normalization. The important design choice is to reserve a first-class relation model for later phases so grouping/attachment concerns do not get tunneled through paragraph-centric fields.
+Important constraints:
+
+1. `ParagraphUnit` remains the canonical paragraph entity.
+2. Relations complement paragraphs; they do not replace paragraph identities.
+3. Marker identity remains paragraph-level even when relations group multiple paragraphs.
 
 ### 7.4. Normalization Diagnostics
 
@@ -387,9 +430,9 @@ class ParagraphBoundaryNormalizationReport:
 
 This report should be saved in debug artifacts similarly to other processing diagnostics.
 
-### 7.5. Future Relation-Level Diagnostics
+### 7.5. Relation-Level Diagnostics
 
-When later relation-normalization families are implemented, the same reporting surface should expand to include non-merge decisions such as:
+The same reporting surface should include non-merge decisions such as:
 
 1. attachment established (`caption` -> `image` / `table`),
 2. grouped region established (`toc_header` + `toc_entry` sequence),
@@ -475,9 +518,9 @@ When two raw paragraphs are merged:
 4. inline markup and placeholders remain in source order;
 5. the merged logical paragraph inherits body-level metadata from the dominant raw paragraph, usually the first paragraph in the group.
 
-### 8.7. Future Relation-Normalization Rule Families
+### 8.7. Phase 2 Relation-Normalization Rule Families
 
-The following rule families are intentionally reserved for later phases after Phase 1 boundary repair is stable.
+Phase 2 implements deterministic **Attach** and **Group** operations under this spec. These rules are part of the current implementation contract.
 
 #### 8.7.1. Caption attachment normalization
 
@@ -493,7 +536,14 @@ Likely signals:
 3. short caption-like length;
 4. explicit caption style when available.
 
-Operation type: **Attach**, not Merge. Implementation belongs in a later relation-normalization stage, not in Phase 1 boundary repair.
+Operation type: **Attach**, not Merge.
+
+Deterministic implementation contract:
+
+1. if a caption paragraph is adjacent to an image or table asset and the existing caption heuristics accept the pairing, create one relation anchored to that asset;
+2. preserve `attached_to_asset_id` for compatibility, but derive it from the relation decision rather than treating it as the authoritative contract;
+3. do not attach across intervening body paragraphs or across multiple candidate assets without a deterministic winner;
+4. if the candidate is ambiguous, keep the paragraph standalone and record a rejected candidate in diagnostics.
 
 #### 8.7.2. Epigraph-attribution grouping
 
@@ -508,7 +558,15 @@ Likely signals:
 2. attribution markers such as dash prefix, all-caps author line, or author/source keywords;
 3. local proximity to heading or chapter start.
 
-Operation type: **Group**, not Merge. Implementation belongs in a later relation-normalization stage, not in Phase 1 boundary repair.
+Operation type: **Group**, not Merge.
+
+Deterministic implementation contract:
+
+1. if a paragraph recognized as an epigraph is immediately followed by a paragraph recognized as an attribution, create one `epigraph_attribution` relation;
+2. recognition must work without any AI dependency; allowed local signals are alignment, length, dash-prefix, style name, capitalization, and adjacency;
+3. if external AI enrichment has already populated stronger role hints, those hints may be consumed opportunistically but must never be required for correctness;
+4. do not group when intervening body/list/caption/image/table paragraphs break adjacency;
+5. do not merge text; both paragraphs remain distinct logical paragraphs.
 
 #### 8.7.3. TOC region grouping
 
@@ -517,7 +575,14 @@ Goal:
 1. treat `toc_header` plus contiguous `toc_entry` lines as one structured region;
 2. avoid treating them as ordinary body paragraphs during editing/block formation.
 
-Operation type: **Group**, not Merge. Implementation belongs in a later relation-normalization stage, not in Phase 1 boundary repair.
+Operation type: **Group**, not Merge.
+
+Deterministic implementation contract:
+
+1. a TOC header followed by one or more TOC entry paragraphs becomes one `toc_region` relation;
+2. a contiguous run of TOC entry paragraphs without an explicit header may still form one `toc_region` when run length and lexical pattern are high-confidence;
+3. any non-TOC paragraph breaks the region;
+4. TOC grouping affects chunking and diagnostics only in this spec; any later decision to suppress or specially rewrite TOC content remains outside scope.
 
 #### 8.7.4. List continuation normalization
 
@@ -526,7 +591,7 @@ Goal:
 1. distinguish genuine list entities from enumerated body content and accidental DOCX list metadata;
 2. preserve list region boundaries more deliberately.
 
-This family may involve both **Group** and reclassification behavior, but it should be specified separately from Phase 1 boundary repair and not silently accumulate inside the initial merge implementation.
+This family may involve both **Group** and reclassification behavior, but it remains out of scope for Phases 1-4 and must not silently accumulate inside boundary repair or Phase 2 relation grouping.
 
 ## 9. Integration Into Existing Pipeline
 
@@ -541,34 +606,46 @@ def extract_document_content_from_docx(uploaded_file):
     raw_blocks = extract_raw_document_blocks(uploaded_file)
     normalized_blocks, boundary_report = normalize_false_paragraph_breaks(raw_blocks)
     paragraphs, image_assets = build_logical_paragraph_units(normalized_blocks)
+    relations, relation_report = normalize_paragraph_relations(paragraphs, image_assets)
+    _apply_relation_side_effects(paragraphs, relations)
     _reclassify_adjacent_captions(paragraphs)
     _promote_short_standalone_headings(paragraphs, ...)
-    return paragraphs, image_assets, boundary_report
+    return paragraphs, image_assets, boundary_report, relation_report
 ```
 
 Implementation detail:
 
 1. `image_assets` collection can still happen during raw extraction.
 2. Caption reclassification and short-heading promotion should operate on normalized logical paragraphs, not raw physical paragraphs.
+3. Relation normalization must remain deterministic and fully functional even when no external AI stage runs.
 
 ### 9.2. Relationship To AI Structure Recognition
 
-Boundary normalization must happen before AI structure recognition.
+Paragraph normalization and relation normalization are architecturally independent from AI structure recognition.
 
-Correct order:
+The relationship is strictly one-way and non-blocking:
+
+1. this spec must be fully implementable and correct without any AI structure-recognition stage;
+2. if an external AI structure-recognition stage exists, it must consume already-normalized logical paragraphs rather than raw physical fragments;
+3. relation normalization under this spec may read externally supplied role hints only as optional inputs, never as required prerequisites;
+4. refactoring or replacing AI structure recognition remains a separate roadmap item and must not block Phases 2-4 here.
+
+Required order when both systems exist in the same runtime:
 
 1. extract raw physical paragraphs;
 2. normalize false paragraph boundaries into logical paragraphs;
 3. assign logical paragraph identities;
-4. run heuristic / AI structure recognition on logical paragraphs.
+4. run deterministic relation normalization;
+5. optionally run heuristic / AI structure recognition on logical paragraphs.
 
 Reason:
 
-- structure recognition should classify semantically valid paragraph units, not artifacts of broken segmentation.
+- structure recognition should classify semantically valid paragraph units, not artifacts caused by broken segmentation;
+- normalization correctness must not depend on AI availability, model quality, latency, or cost.
 
 ### 9.3. Cache Key Impact
 
-The preparation cache key must include the paragraph-boundary normalization mode because it changes the normalized paragraph set and therefore downstream outputs.
+The preparation cache key must include every normalization mode controlled by this spec because each one can change the paragraph graph, relation graph, or downstream outputs.
 
 Minimum extension:
 
@@ -577,12 +654,18 @@ build_prepared_source_key(
     uploaded_file_token,
     chunk_size,
     *,
-    structure_recognition_enabled=False,
-    paragraph_boundary_normalization_enabled=True,
+  paragraph_boundary_normalization_mode="high_only",
+  relation_normalization_enabled=True,
+  relation_normalization_profile="phase2_default",
+  paragraph_boundary_ai_review_mode="off",
 )
 ```
 
-If future phases add normalization policy levels (`off`, `high_only`, `high_and_medium`), the key must include the effective mode rather than a single bool.
+Rules:
+
+1. use the effective mode/profile string, not a single bool, for every configurable normalization stage;
+2. external AI structure-recognition cache dimensions belong to that separate spec and must not be tunneled through this one;
+3. changing enabled relation kinds must invalidate the preparation cache.
 
 ## 10. Impact On Marker Mode
 
@@ -659,28 +742,45 @@ This prevents merged-source normalization from appearing as mysterious dropped p
 
 ## 12. Configuration
 
-New config section:
+Config sections:
 
 ```toml
 [paragraph_boundary_normalization]
 enabled = true
 mode = "high_only"                 # "off" | "high_only" | "high_and_medium"
 save_debug_artifacts = true
+
+[relation_normalization]
+enabled = true
+profile = "phase2_default"
+enabled_relation_kinds = ["image_caption", "table_caption", "epigraph_attribution", "toc_region"]
+save_debug_artifacts = true
+
+[paragraph_boundary_ai_review]
+enabled = false
+mode = "off"                       # "off" | "review_only"
+candidate_limit = 200
+timeout_seconds = 30
+max_tokens_per_candidate = 120
 ```
 
-Phase 1 rollout recommendation:
+Config rules:
 
-1. default enabled in production config only after targeted validation;
-2. initial development default may be enabled with `high_only` because merges are conservative;
-3. `high_and_medium` remains future/experimental.
+1. `paragraph_boundary_normalization.mode="high_only"` is the Phase 1 stable default.
+2. `paragraph_boundary_normalization.mode="high_and_medium"` is the Phase 3 implemented optional mode.
+3. `relation_normalization.profile="phase2_default"` is the only Phase 2 stable profile.
+4. `paragraph_boundary_ai_review.mode="review_only"` is optional Phase 4 behavior and must never silently override deterministic blocked decisions.
+5. external AI structure-recognition config remains outside this spec.
 
-Future relation-normalization families must not introduce public config keys until at least one implemented behavior exists.
+Future relation-normalization families beyond the four relation kinds listed above must not introduce public config keys until at least one implemented behavior exists.
 
 ## 13. Diagnostics And Artifacts
 
 Save normalization diagnostics under:
 
 - `.run/paragraph_boundary_reports/<filename>_<hash8>.json`
+- `.run/relation_normalization_reports/<filename>_<hash8>.json`
+- `.run/paragraph_boundary_ai_review/<filename>_<hash8>.json`
 
 Artifact shape:
 
@@ -711,6 +811,57 @@ Artifact shape:
 }
 ```
 
+Relation artifact shape:
+
+```json
+{
+  "version": 1,
+  "source_file": "example.docx",
+  "source_hash": "a1b2c3d4",
+  "profile": "phase2_default",
+  "enabled_relation_kinds": ["image_caption", "table_caption", "epigraph_attribution", "toc_region"],
+  "total_relations": 7,
+  "relation_counts": {
+    "image_caption": 3,
+    "epigraph_attribution": 1,
+    "toc_region": 3
+  },
+  "rejected_candidate_count": 2,
+  "decisions": [
+    {
+      "relation_kind": "epigraph_attribution",
+      "decision": "accept",
+      "member_paragraph_ids": ["p0142", "p0143"],
+      "anchor_asset_id": null,
+      "reasons": ["adjacent_epigraph_attribution", "dash_prefixed_attribution"]
+    }
+  ]
+}
+```
+
+AI review artifact shape:
+
+```json
+{
+  "version": 1,
+  "source_file": "example.docx",
+  "source_hash": "a1b2c3d4",
+  "mode": "review_only",
+  "reviewed_candidate_count": 18,
+  "accepted_candidate_count": 0,
+  "decisions": [
+    {
+      "candidate_kind": "boundary_medium",
+      "candidate_id": "157:158",
+      "deterministic_decision": "keep",
+      "ai_recommendation": "merge",
+      "final_decision": "keep",
+      "reasons": ["review_only_mode", "deterministic_blocked_boundary"]
+    }
+  ]
+}
+```
+
 ## 14. Verification Criteria
 
 ### Must-pass before merge
@@ -733,6 +884,28 @@ Artifact shape:
 13. The known climate/example paragraph no longer appears as two Markdown paragraphs in preview or final Markdown.
 14. The Lietaer real document no longer shows spurious empty lines for known continuation cases.
 15. No regression in heading counts, list preservation, or caption handling on the protected real-document validation profile.
+
+### Phase 2 criteria
+
+16. Adjacent image/table captions are represented as explicit relations and remain grouped in semantic blocks.
+17. Epigraph-attribution fixtures stay grouped without text merge.
+18. TOC runs form deterministic regions without swallowing unrelated body paragraphs.
+19. Marker mode still emits one marker per paragraph after relation normalization.
+20. Formatting diagnostics and real-document structural validation expose relation counts and rejected-candidate counts.
+
+### Phase 3 criteria
+
+21. `high_and_medium` mode is non-default and selectable by config.
+22. Medium-confidence merges never override blocked boundaries.
+23. Medium-confidence diagnostics clearly distinguish `high`, `medium_accepted`, and `medium_rejected` outcomes.
+24. Protected real-document profiles remain within approved heading/list/caption regression thresholds when medium mode is enabled.
+
+### Phase 4 criteria
+
+25. AI review remains optional and disabled by default.
+26. In `review_only` mode, AI never becomes the sole deciding authority for a merge or grouping operation.
+27. AI review artifacts report recommendation vs final deterministic decision.
+28. A failed, timed-out, or malformed AI review path degrades to deterministic behavior with no pipeline breakage.
 
 ## 15. Test Plan
 
@@ -757,7 +930,37 @@ Update or extend:
 3. `tests/test_format_restoration.py` for `accepted_merged_sources` diagnostics.
 4. `tests/test_document_pipeline.py` for marker registry integrity after normalization.
 
-### 15.3. Integration tests
+### 15.3. Phase 2 tests
+
+Add or extend coverage for:
+
+1. `image_caption` and `table_caption` relation creation;
+2. epigraph-attribution grouping from deterministic heuristics without AI inputs;
+3. TOC region grouping with explicit header;
+4. TOC region grouping for contiguous entry run without header;
+5. relation-aware semantic block construction;
+6. formatting diagnostics serialization of relation ids and aggregate relation counts;
+7. structural real-document validation metrics for relation counts.
+
+### 15.4. Phase 3 tests
+
+Add coverage for:
+
+1. promotion of eligible medium-confidence candidates only in `high_and_medium` mode;
+2. preservation of blocked boundaries under all modes;
+3. cache-key invalidation when switching between `high_only` and `high_and_medium`;
+4. diagnostics payload differences between high-only and high-and-medium runs.
+
+### 15.5. Phase 4 tests
+
+Add coverage for:
+
+1. candidate packaging for AI review;
+2. graceful fallback on timeout, malformed response, or empty response;
+3. no-change behavior in `review_only` mode;
+4. artifact logging of deterministic vs AI recommendation deltas.
+
+### 15.6. Integration tests
 
 Add one synthetic DOCX fixture with an intentional false paragraph split and verify:
 
@@ -778,33 +981,36 @@ Add real-document targeted validation selector for known merged-boundary cases.
 4. Add diagnostics artifacts.
 5. Update formatting diagnostics to understand merged-source groups.
 
-### Phase 2: Relation-normalization spec and implementation
+### Phase 2: Deterministic relation normalization
 
-1. Write a separate approved spec for relation normalization over already-built logical entities.
-2. Add non-merge normalization operations for caption attachment, epigraph-attribution grouping, and TOC region grouping.
-3. Propagate relation metadata into semantic block formation and diagnostics.
+1. Add deterministic relation-normalization operations for caption attachment, epigraph-attribution grouping, and TOC region grouping.
+2. Add first-class relation metadata and reports.
+3. Propagate relation metadata into semantic block formation, diagnostics, and real-document structural validation.
 4. Keep marker identity paragraph-level while honoring relations in chunking/rendering decisions.
+5. Do not introduce any dependency on AI structure recognition.
 
 ### Phase 3: Configurable medium-confidence merge mode
 
 1. Add optional `high_and_medium` behavior behind config.
-2. Expand diagnostics review tooling if needed.
-3. Validate against multiple real-document profiles.
+2. Define deterministic admission rules for medium candidates and explicit exclusion rules.
+3. Expand diagnostics review tooling.
+4. Validate against multiple real-document profiles.
 
 ### Phase 4: Optional AI-assisted normalization review
 
-Only if deterministic normalization leaves too many unresolved cases:
+Only if deterministic normalization leaves too many unresolved cases and only as an optional overlay:
 
 1. feed ambiguous candidate boundaries to a small AI classifier;
 2. optionally feed ambiguous grouping candidates to a small AI classifier;
 3. never let AI override explicit structural boundaries;
 4. keep deterministic `high` rules as the default path.
+5. keep the AI review contract completely separate from the AI structure-recognition roadmap.
 
 This phase is explicitly optional and not required for the main architecture fix.
 
 ## 17. Implementation Plan
 
-This section is the implementation-ready execution plan for the Phase 1 scope only.
+This section is the implementation-ready execution plan for the full Phase 1-4 normalization roadmap covered by this spec.
 
 ### 17.1. Scope Guard
 
@@ -818,8 +1024,8 @@ Phase 1 implementation must stay inside these boundaries:
 
 If a change request goes beyond these constraints, it requires either:
 
-1. a follow-up Phase 2 task under this spec; or
-2. a new approved spec for relation normalization.
+1. a follow-up task under this spec if it still fits Phases 1-4 normalization scope; or
+2. a separate spec only if it changes public architecture outside normalization itself, such as AI structure recognition, full document IR redesign, or rendering policy redesign.
 
 ### 17.2. PR Slice 1 - Raw Extraction Boundary
 
@@ -890,6 +1096,88 @@ If a change request goes beyond these constraints, it requires either:
 - Acceptance:
   - known real-document false-split samples are repaired;
   - protected real-document validation remains green or within approved thresholds.
+
+### 17.8. PR Slice 7 - Relation Model And Detection Engine
+
+- Files: `models.py`, `document.py`, targeted tests
+- Tasks:
+  - add `ParagraphRelation`, `ParagraphRelationDecision`, and `RelationNormalizationReport`;
+  - implement deterministic relation detection helpers for captions, epigraph-attribution pairs, and TOC regions;
+  - keep compatibility fields such as `attached_to_asset_id` derived from relation outcomes.
+- Acceptance:
+  - accepted relations are explicit and deterministic;
+  - caption attachment continues to work without a new runtime paragraph model;
+  - Phase 1 merge behavior remains unchanged.
+
+### 17.9. PR Slice 8 - Relation-Aware Semantic Blocks
+
+- Files: `document.py`, `document_pipeline.py` if needed, targeted tests
+- Tasks:
+  - make semantic block formation relation-aware;
+  - keep relation clusters together unless protected hard limits force a split;
+  - preserve current behavior for documents with no accepted relations.
+- Acceptance:
+  - captions stay with their anchored image/table blocks;
+  - epigraph-attribution pairs stay together;
+  - TOC regions stay contiguous unless a documented hard-limit fallback applies.
+
+### 17.10. PR Slice 9 - Relation Diagnostics And Validation
+
+- Files: `formatting_transfer.py`, `real_document_validation_structural.py`, targeted tests
+- Tasks:
+  - serialize relation ids and aggregate relation counts into diagnostics;
+  - expose relation metrics in real-document structural validation;
+  - persist relation-normalization reports under `.run/relation_normalization_reports/`.
+- Acceptance:
+  - formatting diagnostics show relation membership per paragraph where applicable;
+  - real-document structural validation reports relation counts and rejected-candidate counts;
+  - reports stay stable and inspectable.
+
+### 17.11. PR Slice 10 - Medium-Confidence Merge Engine
+
+- Files: `document.py`, `config.py`, `config.toml`, tests
+- Tasks:
+  - define the exact medium-confidence admission rules;
+  - implement `high_and_medium` mode behind config;
+  - add diagnostics that distinguish high merges, medium accepted merges, and medium rejected candidates.
+- Acceptance:
+  - medium mode is fully disabled in default config;
+  - blocked boundaries remain blocked under all modes;
+  - cache invalidation and diagnostics are correct when the mode changes.
+
+### 17.12. PR Slice 11 - Corpus Gating For Medium Mode
+
+- Files: validation profiles/tests/artifacts as needed
+- Tasks:
+  - run protected profiles in both `high_only` and `high_and_medium` modes;
+  - define allowed regression thresholds for headings, lists, captions, and output similarity;
+  - document whether `high_and_medium` is promoted beyond experimental status.
+- Acceptance:
+  - medium mode has an explicit go/no-go decision backed by visible validation results;
+  - no silent promotion of experimental behavior into default mode.
+
+### 17.13. PR Slice 12 - Optional AI Review Overlay
+
+- Files: `document.py`, runtime/config wiring, tests
+- Tasks:
+  - package ambiguous boundary and relation candidates for optional AI review;
+  - implement `review_only` mode with strict fallback behavior;
+  - persist recommendation-vs-final-decision artifacts.
+- Acceptance:
+  - deterministic behavior remains the source of truth;
+  - timeout or malformed AI output causes no pipeline breakage;
+  - the feature remains opt-in and non-authoritative.
+
+### 17.14. PR Slice 13 - Final Hardening And Documentation Pass
+
+- Files: docs/config/tests as needed
+- Tasks:
+  - reconcile final config defaults;
+  - archive or mark non-authoritative extracted specs;
+  - ensure this document remains the single source of truth.
+- Acceptance:
+  - no conflicting active normalization spec remains authoritative;
+  - current runtime behavior can be implemented by following this document alone.
 
 ## 18. Implementation Checklist
 
@@ -990,9 +1278,11 @@ The current marker-mode contract correctly protects paragraph identity once the 
 
 ### 18.3. Should normalization happen before or after structure recognition?
 
-Before.
+Before, when both exist in one runtime.
 
-Structure recognition should classify normalized logical paragraphs, not artifacts caused by broken physical DOCX boundaries.
+But structure recognition is not a dependency of this spec.
+
+Structure recognition should classify normalized logical paragraphs, not artifacts caused by broken physical DOCX boundaries. At the same time, Phases 2-4 in this document must remain fully implementable with deterministic local signals only.
 
 ### 18.4. Is a full IR refactor required first?
 
@@ -1023,3 +1313,57 @@ Default decision rule for implementation:
 3. keep marker mode strict after normalization;
 4. teach formatting diagnostics to understand merged-source groups;
 5. do not patch preview/UI in place as a substitute for entity-contract repair.
+
+## 22. Phase Completion And Transition Rule
+
+Phase 1 is complete when all of the following are true:
+
+1. the Phase 1 checklist in this spec is fully checked;
+2. visible repository verification is green;
+3. protected real-document validation is green for the canonical Lietaer profile;
+4. there is no user-visible regression or unchecked requirement inside the approved Phase 1 scope.
+
+Once those conditions are satisfied, the agent must not invent additional Phase 1 hardening work.
+
+Allowed reasons to reopen Phase 1 after completion:
+
+1. the user explicitly asks for more Phase 1 work;
+2. a visible test or real-document validation run fails;
+3. an approved Phase 1 requirement was missed and can be cited directly in this spec.
+
+If none of those conditions apply, the next action is:
+
+1. declare Phase 1 complete;
+2. continue with the next planned phase from the rollout plan under this same spec;
+3. avoid creating a second active normalization spec unless scope leaves the Phases 1-4 normalization contract;
+4. keep any AI structure-recognition refactor on its own separate specification track.
+
+## 23. Latest Visible Verification Snapshot
+
+The latest current-tree verification pass for the implemented normalization scope is:
+
+1. `Run Full Pytest` -> `707 passed, 6 skipped`;
+2. `Run Lietaer Real Validation` with `paragraph_boundary_normalization.mode=high_only` -> `run_id=20260327T155329Z_28470_1`, `status=completed`, `acceptance_passed=True`;
+3. `Validate lietaer high_and_medium` -> `run_id=20260327T163001Z_30163_1`, `status=completed`, `acceptance_passed=True`;
+4. `Validate religion-wealth high_only` -> `run_id=20260327T172257Z_32602_real_doc`, `status=completed`, `acceptance_passed=True`;
+5. `Validate religion-wealth high_and_medium` -> `run_id=20260327T172610Z_32796_real_doc`, `status=completed`, `acceptance_passed=True`.
+
+## 24. Phase 3 Completion Decision
+
+Current decision for `paragraph_boundary_normalization.mode="high_and_medium"`:
+
+1. the mode is implemented and may be selected explicitly through config or environment override;
+2. the canonical protected profiles `lietaer-core` and `religion-wealth-core` now pass in both `high_only` and `high_and_medium` modes;
+3. the former `religion-wealth-core` blocker was resolved in the acceptance layer by canonicalizing markdown-wrapped headings and excluding short legacy-conversion garbage headings from `key_headings_preserved`;
+4. Phase 3 is therefore considered complete for the protected corpus defined in this repository;
+5. `high_only` remains the production default unless a separate default-change task explicitly promotes `high_and_medium`.
+
+## 25. Phase 4 Completion Decision
+
+Current decision for optional `paragraph_boundary_ai_review`:
+
+1. the config surface is implemented with `enabled=false` and `mode="off"` by default;
+2. `review_only` now packages medium-confidence boundary candidates and rejected relation candidates into a dedicated AI review request path;
+3. the AI review artifact is written to `.run/paragraph_boundary_ai_review/<filename>_<hash8>.json` and records deterministic decision, AI recommendation, final decision, and fallback reason when review fails;
+4. failed, timed-out, empty, or malformed AI review responses degrade to deterministic behavior without pipeline breakage;
+5. because `review_only` is explicitly non-authoritative, deterministic normalization remains the final authority for merges and relation grouping decisions.

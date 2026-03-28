@@ -38,6 +38,7 @@
 
 ## Archived Specs And Plans
 
+- `docs/archive/specs/PARAGRAPH_BOUNDARY_NORMALIZATION_SPEC_2026-03-27.md` — implemented and archived 2026-03-28
 - `docs/archive/specs/DOCX_FORMATTING_HARDENING_SPEC_2026-03-13.md` — implemented 2026-03-13
 - `docs/archive/specs/USER_MESSAGE_AND_PROCESSING_JOURNAL_SPEC_2026-03-24.md` — implemented 2026-03-24
 - `docs/archive/specs/DOCUMENT_ENTITY_ROUNDTRIP_REFACTOR_SPEC_2026-03-21.md`

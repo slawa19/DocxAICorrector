@@ -178,6 +178,9 @@ def _store_preparation_summary(*, prepared_run_context) -> None:
     normalization_metrics = application_flow.flatten_normalization_metrics(
         getattr(prepared_run_context, "normalization_report", None)
     )
+    relation_metrics = application_flow.flatten_relation_metrics(
+        getattr(prepared_run_context, "relation_report", None)
+    )
     st.session_state.latest_preparation_summary = {
         "stage": str(getattr(prepared_run_context, "preparation_stage", "Документ подготовлен")),
         "detail": str(getattr(prepared_run_context, "preparation_detail", "Анализ завершён. Можно запускать обработку.")),
@@ -190,6 +193,7 @@ def _store_preparation_summary(*, prepared_run_context) -> None:
         "elapsed": elapsed,
         "progress": 1.0,
         **normalization_metrics,
+        **relation_metrics,
     }
 
 

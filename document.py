@@ -5,7 +5,7 @@ import re
 import zipfile
 from io import BytesIO
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from docx import Document
 from docx.table import Table
@@ -18,16 +18,28 @@ from constants import (
     MAX_DOCX_ENTRY_COUNT,
     MAX_DOCX_UNCOMPRESSED_SIZE_BYTES,
 )
+from image_shared import (
+    call_responses_create_with_retry,
+    extract_model_response_error_code,
+    extract_response_text,
+    is_retryable_error,
+    parse_json_object,
+)
 from models import (
+    PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES,
     PARAGRAPH_BOUNDARY_NORMALIZATION_MODE_VALUES,
+    RELATION_NORMALIZATION_KIND_VALUES,
     DocumentBlock,
     ImageAsset,
     ParagraphBoundaryDecision,
     ParagraphBoundaryNormalizationReport,
+    ParagraphRelation,
+    ParagraphRelationDecision,
     ParagraphUnit,
     RawBlock,
     RawParagraph,
     RawTable,
+    RelationNormalizationReport,
 )
 from processing_runtime import normalize_uploaded_document, read_uploaded_file_bytes, resolve_uploaded_filename
 
@@ -96,6 +108,8 @@ MARKDOWN_LINK_PATTERN = re.compile(r"\[([^\]]+)\]\([^\)]+\)")
 STRONG_PARAGRAPH_TERMINATOR_PATTERN = re.compile(r"[.!?…]\s*$")
 TOC_ENTRY_PATTERN = re.compile(r"^.{1,120}(?:\.{2,}|\s{2,})\d+\s*$")
 PARAGRAPH_BOUNDARY_REPORTS_DIR = Path(".run") / "paragraph_boundary_reports"
+RELATION_NORMALIZATION_REPORTS_DIR = Path(".run") / "relation_normalization_reports"
+PARAGRAPH_BOUNDARY_AI_REVIEW_DIR = Path(".run") / "paragraph_boundary_ai_review"
 
 
 def classify_paragraph_role(text: str, style_name: str, *, heading_level: int | None = None) -> str:
@@ -165,33 +179,88 @@ def extract_inline_images(uploaded_file) -> list[ImageAsset]:
 
 
 def extract_document_content_from_docx(uploaded_file) -> tuple[list[ParagraphUnit], list[ImageAsset]]:
-    paragraphs, image_assets, _ = extract_document_content_with_boundary_report(uploaded_file)
+    paragraphs, image_assets, _, _, _ = extract_document_content_with_normalization_reports(uploaded_file)
     return paragraphs, image_assets
 
 
-def extract_document_content_with_boundary_report(
+def extract_document_content_with_normalization_reports(
     uploaded_file,
-) -> tuple[list[ParagraphUnit], list[ImageAsset], ParagraphBoundaryNormalizationReport]:
+) -> tuple[
+    list[ParagraphUnit],
+    list[ImageAsset],
+    ParagraphBoundaryNormalizationReport,
+    list[ParagraphRelation],
+    RelationNormalizationReport,
+]:
     source_bytes = _read_uploaded_docx_bytes(uploaded_file)
     validate_docx_source_bytes(source_bytes)
     document = Document(BytesIO(source_bytes))
     raw_blocks, image_assets = _build_raw_document_blocks(document)
-    normalization_mode, save_debug_artifacts = _resolve_paragraph_boundary_normalization_settings()
+    normalization_mode, save_boundary_debug_artifacts = _resolve_paragraph_boundary_normalization_settings()
     normalized_blocks, boundary_report = _normalize_paragraph_boundaries(raw_blocks, mode=normalization_mode)
     paragraphs = _build_logical_paragraph_units(normalized_blocks)
-    _reclassify_adjacent_captions(paragraphs)
     _promote_short_standalone_headings(paragraphs)
+    (
+        relation_enabled,
+        relation_profile,
+        enabled_relation_kinds,
+        save_relation_debug_artifacts,
+    ) = _resolve_relation_normalization_settings()
+    (
+        ai_review_enabled,
+        ai_review_mode,
+        ai_review_candidate_limit,
+        ai_review_timeout_seconds,
+        ai_review_max_tokens_per_candidate,
+        ai_review_model,
+    ) = _resolve_paragraph_boundary_ai_review_settings()
+    relations, relation_report = build_paragraph_relations(
+        paragraphs,
+        enabled_relation_kinds=enabled_relation_kinds if relation_enabled else (),
+    )
+    _apply_relation_side_effects(paragraphs, relations)
+    _reclassify_adjacent_captions(paragraphs)
 
-    if save_debug_artifacts:
+    if ai_review_enabled and ai_review_mode != "off":
+        _run_paragraph_boundary_ai_review(
+            source_name=resolve_uploaded_filename(uploaded_file),
+            source_bytes=source_bytes,
+            mode=ai_review_mode,
+            model=ai_review_model,
+            raw_blocks=raw_blocks,
+            paragraphs=paragraphs,
+            boundary_report=boundary_report,
+            relation_report=relation_report,
+            candidate_limit=ai_review_candidate_limit,
+            timeout_seconds=ai_review_timeout_seconds,
+            max_tokens_per_candidate=ai_review_max_tokens_per_candidate,
+        )
+
+    if save_boundary_debug_artifacts:
         _write_paragraph_boundary_report_artifact(
             source_name=resolve_uploaded_filename(uploaded_file),
             source_bytes=source_bytes,
             mode=normalization_mode,
             report=boundary_report,
         )
+    if relation_enabled and save_relation_debug_artifacts:
+        _write_relation_normalization_report_artifact(
+            source_name=resolve_uploaded_filename(uploaded_file),
+            source_bytes=source_bytes,
+            profile=relation_profile,
+            enabled_relation_kinds=enabled_relation_kinds,
+            report=relation_report,
+        )
 
     if not paragraphs:
         raise ValueError("В документе не найден текст для обработки.")
+    return paragraphs, image_assets, boundary_report, relations, relation_report
+
+
+def extract_document_content_with_boundary_report(
+    uploaded_file,
+) -> tuple[list[ParagraphUnit], list[ImageAsset], ParagraphBoundaryNormalizationReport]:
+    paragraphs, image_assets, boundary_report, _, _ = extract_document_content_with_normalization_reports(uploaded_file)
     return paragraphs, image_assets, boundary_report
 
 
@@ -231,10 +300,22 @@ def inspect_placeholder_integrity(markdown_text: str, image_assets: list[ImageAs
     return status_map
 
 
-def build_semantic_blocks(paragraphs: list[ParagraphUnit], max_chars: int = 6000) -> list[DocumentBlock]:
+def build_semantic_blocks(
+    paragraphs: list[ParagraphUnit],
+    max_chars: int = 6000,
+    *,
+    relations: list[ParagraphRelation] | None = None,
+) -> list[DocumentBlock]:
     if not paragraphs:
         return []
 
+    resolved_relations = relations
+    if resolved_relations is None:
+        resolved_relations, _ = build_paragraph_relations(
+            paragraphs,
+            enabled_relation_kinds=resolve_effective_relation_kinds(),
+        )
+    paragraph_units = _build_semantic_block_units(paragraphs, resolved_relations)
     soft_limit = max(1200, min(max_chars, int(max_chars * 0.7)))
     blocks: list[DocumentBlock] = []
     current: list[ParagraphUnit] = []
@@ -247,78 +328,388 @@ def build_semantic_blocks(paragraphs: list[ParagraphUnit], max_chars: int = 6000
             current = []
             current_size = 0
 
-    def append_paragraph(paragraph: ParagraphUnit) -> None:
+    def append_unit(unit_paragraphs: list[ParagraphUnit]) -> None:
         nonlocal current_size
         separator_size = 2 if current else 0
-        current.append(paragraph)
-        current_size += separator_size + len(paragraph.rendered_text)
+        current.extend(unit_paragraphs)
+        unit_text = "\n\n".join(paragraph.rendered_text for paragraph in unit_paragraphs)
+        current_size += separator_size + len(unit_text)
 
-    for paragraph in paragraphs:
+    for unit_paragraphs in paragraph_units:
+        unit_text = "\n\n".join(paragraph.rendered_text for paragraph in unit_paragraphs)
+        unit_contains_atomic_block = any(paragraph.role in {"image", "table"} for paragraph in unit_paragraphs)
+        unit_all_headings = all(paragraph.role == "heading" for paragraph in unit_paragraphs)
+        unit_is_list = all(paragraph.role == "list" for paragraph in unit_paragraphs)
         if not current:
-            append_paragraph(paragraph)
+            append_unit(unit_paragraphs)
             continue
 
         current_contains_atomic_block = any(item.role in {"image", "table"} for item in current)
         if current_contains_atomic_block:
-            if current[-1].role in {"image", "table"} and paragraph.role == "caption":
-                append_paragraph(paragraph)
-                continue
             flush_current()
-            append_paragraph(paragraph)
+            append_unit(unit_paragraphs)
             continue
 
-        if paragraph.role in {"image", "table"}:
+        if unit_contains_atomic_block:
             flush_current()
-            append_paragraph(paragraph)
+            append_unit(unit_paragraphs)
             continue
 
-        projected_size = current_size + 2 + len(paragraph.rendered_text)
+        projected_size = current_size + 2 + len(unit_text)
         current_all_headings = all(item.role == "heading" for item in current)
         current_is_list = all(item.role == "list" for item in current)
 
-        if paragraph.role == "heading":
+        if unit_all_headings:
             if current_all_headings:
-                append_paragraph(paragraph)
+                append_unit(unit_paragraphs)
                 continue
             flush_current()
-            append_paragraph(paragraph)
+            append_unit(unit_paragraphs)
             continue
 
         if current_all_headings:
-            append_paragraph(paragraph)
+            append_unit(unit_paragraphs)
             continue
 
-        if current[-1].role == "heading" and paragraph.role == "caption":
-            append_paragraph(paragraph)
+        if current[-1].role == "heading" and all(paragraph.role == "caption" for paragraph in unit_paragraphs):
+            append_unit(unit_paragraphs)
             continue
 
-        if current_is_list and paragraph.role == "list":
+        if current_is_list and unit_is_list:
             if projected_size <= max_chars or current_size < soft_limit:
-                append_paragraph(paragraph)
+                append_unit(unit_paragraphs)
             else:
                 flush_current()
-                append_paragraph(paragraph)
+                append_unit(unit_paragraphs)
             continue
 
-        if current_is_list and paragraph.role != "list":
+        if current_is_list and not unit_is_list:
             if current_size >= max(600, soft_limit // 2) or len(current) > 1:
                 flush_current()
-                append_paragraph(paragraph)
+                append_unit(unit_paragraphs)
                 continue
 
         if projected_size <= max_chars and current_size < soft_limit:
-            append_paragraph(paragraph)
+            append_unit(unit_paragraphs)
             continue
 
-        if projected_size <= max_chars and len(paragraph.rendered_text) <= max(500, max_chars // 4) and current_size < int(max_chars * 0.9):
-            append_paragraph(paragraph)
+        if projected_size <= max_chars and len(unit_text) <= max(500, max_chars // 4) and current_size < int(max_chars * 0.9):
+            append_unit(unit_paragraphs)
             continue
 
         flush_current()
-        append_paragraph(paragraph)
+        append_unit(unit_paragraphs)
 
     flush_current()
     return blocks
+
+
+def build_paragraph_relations(
+    paragraphs: list[ParagraphUnit],
+    *,
+    enabled_relation_kinds: tuple[str, ...] | list[str] | set[str] | None = None,
+) -> tuple[list[ParagraphRelation], RelationNormalizationReport]:
+    relations: list[ParagraphRelation] = []
+    decisions: list[ParagraphRelationDecision] = []
+    relation_counts: dict[str, int] = {}
+    rejected_candidate_count = 0
+    next_relation_id = 1
+    enabled_kinds = set(enabled_relation_kinds or RELATION_NORMALIZATION_KIND_VALUES)
+
+    def append_relation(
+        *,
+        relation_kind: str,
+        member_paragraph_ids: tuple[str, ...],
+        anchor_asset_id: str | None = None,
+        rationale: tuple[str, ...] = (),
+    ) -> None:
+        nonlocal next_relation_id
+        relation_id = f"rel_{next_relation_id:04d}"
+        next_relation_id += 1
+        relations.append(
+            ParagraphRelation(
+                relation_id=relation_id,
+                relation_kind=relation_kind,
+                member_paragraph_ids=member_paragraph_ids,
+                anchor_asset_id=anchor_asset_id,
+                confidence="high",
+                rationale=rationale,
+            )
+        )
+        relation_counts[relation_kind] = relation_counts.get(relation_kind, 0) + 1
+        decisions.append(
+            ParagraphRelationDecision(
+                relation_kind=relation_kind,
+                decision="accept",
+                member_paragraph_ids=member_paragraph_ids,
+                anchor_asset_id=anchor_asset_id,
+                reasons=rationale,
+            )
+        )
+
+    def append_rejection(
+        *,
+        relation_kind: str,
+        member_paragraph_ids: tuple[str, ...],
+        reasons: tuple[str, ...],
+        anchor_asset_id: str | None = None,
+    ) -> None:
+        nonlocal rejected_candidate_count
+        rejected_candidate_count += 1
+        decisions.append(
+            ParagraphRelationDecision(
+                relation_kind=relation_kind,
+                decision="reject",
+                member_paragraph_ids=member_paragraph_ids,
+                anchor_asset_id=anchor_asset_id,
+                reasons=reasons,
+            )
+        )
+
+    for index, paragraph in enumerate(paragraphs):
+        paragraph_role = getattr(paragraph, "role", None)
+        paragraph_id = getattr(paragraph, "paragraph_id", None)
+        is_caption_candidate = paragraph_role == "caption"
+        if not is_caption_candidate and index > 0:
+            previous_paragraph = paragraphs[index - 1]
+            if previous_paragraph.role in {"image", "table"} and _is_likely_caption_candidate_for_relation(paragraph):
+                is_caption_candidate = True
+        if not is_caption_candidate:
+            continue
+        if index == 0:
+            append_rejection(
+                relation_kind="caption_attachment",
+                member_paragraph_ids=((paragraph_id or f"p{index:04d}"),),
+                reasons=("caption_without_preceding_asset",),
+            )
+            continue
+        previous_paragraph = paragraphs[index - 1]
+        previous_role = getattr(previous_paragraph, "role", None)
+        previous_paragraph_id = getattr(previous_paragraph, "paragraph_id", None)
+        relation_kind = f"{previous_role}_caption" if previous_role in {"image", "table"} else "caption_attachment"
+        if previous_role not in {"image", "table"}:
+            append_rejection(
+                relation_kind="caption_attachment",
+                member_paragraph_ids=((paragraph_id or f"p{index:04d}"),),
+                reasons=("caption_not_adjacent_to_asset",),
+            )
+            continue
+        if relation_kind not in enabled_kinds:
+            continue
+        if not previous_paragraph_id or not paragraph_id or getattr(previous_paragraph, "asset_id", None) is None:
+            append_rejection(
+                relation_kind=relation_kind,
+                member_paragraph_ids=tuple(
+                    paragraph_key
+                    for paragraph_key in (previous_paragraph_id, paragraph_id)
+                    if paragraph_key
+                ) or ((paragraph_id or f"p{index:04d}"),),
+                reasons=("missing_caption_anchor_identity",),
+                anchor_asset_id=getattr(previous_paragraph, "asset_id", None),
+            )
+            continue
+        append_relation(
+            relation_kind=relation_kind,
+            member_paragraph_ids=(previous_paragraph_id, paragraph_id),
+            anchor_asset_id=getattr(previous_paragraph, "asset_id", None),
+            rationale=("adjacent_asset_caption",),
+        )
+
+    if "epigraph_attribution" in enabled_kinds:
+        for index in range(len(paragraphs) - 1):
+            left = paragraphs[index]
+            right = paragraphs[index + 1]
+            left_paragraph_id = getattr(left, "paragraph_id", None)
+            right_paragraph_id = getattr(right, "paragraph_id", None)
+            if not left_paragraph_id or not right_paragraph_id:
+                continue
+            if not _is_epigraph_relation_candidate(left, right):
+                rejection_reasons = _epigraph_relation_rejection_reasons(left, right)
+                if rejection_reasons:
+                    append_rejection(
+                        relation_kind="epigraph_attribution",
+                        member_paragraph_ids=(left_paragraph_id, right_paragraph_id),
+                        reasons=rejection_reasons,
+                    )
+                continue
+            append_relation(
+                relation_kind="epigraph_attribution",
+                member_paragraph_ids=(left_paragraph_id, right_paragraph_id),
+                rationale=("adjacent_epigraph_attribution",),
+            )
+
+    index = 0
+    while index < len(paragraphs):
+        paragraph = paragraphs[index]
+        if _is_toc_header_paragraph(paragraph):
+            member_indexes = [index]
+            look_ahead = index + 1
+            while look_ahead < len(paragraphs) and _is_toc_entry_paragraph(paragraphs[look_ahead]):
+                member_indexes.append(look_ahead)
+                look_ahead += 1
+            if len(member_indexes) >= 2:
+                if "toc_region" in enabled_kinds:
+                    append_relation(
+                        relation_kind="toc_region",
+                        member_paragraph_ids=tuple(
+                            paragraphs[member_index].paragraph_id or f"p{member_index:04d}" for member_index in member_indexes
+                        ),
+                        rationale=("toc_header_with_entries",),
+                    )
+                index = look_ahead
+                continue
+            append_rejection(
+                relation_kind="toc_region",
+                member_paragraph_ids=((paragraph.paragraph_id or f"p{index:04d}"),),
+                reasons=("toc_header_without_entries",),
+            )
+
+        if _is_toc_entry_paragraph(paragraph):
+            member_indexes = [index]
+            look_ahead = index + 1
+            while look_ahead < len(paragraphs) and _is_toc_entry_paragraph(paragraphs[look_ahead]):
+                member_indexes.append(look_ahead)
+                look_ahead += 1
+            if len(member_indexes) >= 2:
+                if "toc_region" in enabled_kinds:
+                    append_relation(
+                        relation_kind="toc_region",
+                        member_paragraph_ids=tuple(
+                            paragraphs[member_index].paragraph_id or f"p{member_index:04d}" for member_index in member_indexes
+                        ),
+                        rationale=("contiguous_toc_entries",),
+                    )
+                index = look_ahead
+                continue
+            append_rejection(
+                relation_kind="toc_region",
+                member_paragraph_ids=((paragraph.paragraph_id or f"p{index:04d}"),),
+                reasons=("isolated_toc_entry",),
+            )
+        index += 1
+
+    report = RelationNormalizationReport(
+        total_relations=len(relations),
+        relation_counts=relation_counts,
+        rejected_candidate_count=rejected_candidate_count,
+        decisions=decisions,
+    )
+    return relations, report
+
+
+def _is_likely_caption_candidate_for_relation(paragraph: ParagraphUnit) -> bool:
+    if paragraph.role == "heading" and paragraph.heading_source != "heuristic":
+        return False
+    return _is_likely_caption_text(paragraph.text)
+
+
+def _apply_relation_side_effects(paragraphs: list[ParagraphUnit], relations: list[ParagraphRelation]) -> None:
+    paragraph_by_id = {paragraph.paragraph_id: paragraph for paragraph in paragraphs if paragraph.paragraph_id}
+    for paragraph in paragraphs:
+        if paragraph.role == "caption":
+            paragraph.attached_to_asset_id = None
+
+    for relation in relations:
+        if relation.relation_kind not in {"image_caption", "table_caption"}:
+            continue
+        if len(relation.member_paragraph_ids) < 2:
+            continue
+        caption_paragraph = paragraph_by_id.get(relation.member_paragraph_ids[-1])
+        if caption_paragraph is not None:
+            caption_paragraph.attached_to_asset_id = relation.anchor_asset_id
+
+
+def _build_semantic_block_units(
+    paragraphs: list[ParagraphUnit],
+    relations: list[ParagraphRelation],
+) -> list[list[ParagraphUnit]]:
+    index_by_paragraph_id = {
+        paragraph.paragraph_id: index for index, paragraph in enumerate(paragraphs) if paragraph.paragraph_id
+    }
+    parent = list(range(len(paragraphs)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left_index: int, right_index: int) -> None:
+        left_root = find(left_index)
+        right_root = find(right_index)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    for relation in relations:
+        member_indexes = [index_by_paragraph_id[paragraph_id] for paragraph_id in relation.member_paragraph_ids if paragraph_id in index_by_paragraph_id]
+        if len(member_indexes) < 2:
+            continue
+        for member_index in member_indexes[1:]:
+            union(member_indexes[0], member_index)
+
+    grouped_indexes: dict[int, list[int]] = {}
+    for index in range(len(paragraphs)):
+        grouped_indexes.setdefault(find(index), []).append(index)
+
+    clusters = sorted((sorted(indexes) for indexes in grouped_indexes.values()), key=lambda indexes: indexes[0])
+    units: list[list[ParagraphUnit]] = []
+    for indexes in clusters:
+        if indexes != list(range(indexes[0], indexes[-1] + 1)):
+            for index in indexes:
+                units.append([paragraphs[index]])
+            continue
+        units.append([paragraphs[index] for index in indexes])
+    return units
+
+
+def _is_epigraph_relation_candidate(left: ParagraphUnit, right: ParagraphUnit) -> bool:
+    left_role = getattr(left, "role", None)
+    right_role = getattr(right, "role", None)
+    if left_role in {"image", "table", "caption", "list"} or right_role in {"image", "table", "caption", "list"}:
+        return False
+    left_structural = str(getattr(left, "structural_role", None) or left_role or "").strip().lower()
+    right_structural = str(getattr(right, "structural_role", None) or right_role or "").strip().lower()
+    if left_structural == "epigraph" and right_structural == "attribution":
+        return True
+    if left_structural == "epigraph" and _is_likely_attribution_text(str(getattr(right, "text", ""))):
+        return True
+    if right_structural == "attribution" and getattr(left, "paragraph_alignment", None) == "center":
+        return True
+    return False
+
+
+def _epigraph_relation_rejection_reasons(left: ParagraphUnit, right: ParagraphUnit) -> tuple[str, ...]:
+    left_role = getattr(left, "role", None)
+    right_role = getattr(right, "role", None)
+    left_structural = str(getattr(left, "structural_role", None) or left_role or "").strip().lower()
+    right_structural = str(getattr(right, "structural_role", None) or right_role or "").strip().lower()
+    right_text = str(getattr(right, "text", ""))
+    reasons: list[str] = []
+
+    if left_structural == "epigraph" and right_structural != "attribution":
+        reasons.append("epigraph_without_attribution")
+    elif right_structural == "attribution" and left_structural != "epigraph":
+        reasons.append("attribution_without_epigraph")
+    elif left_structural == "epigraph" and _is_likely_attribution_text(right_text):
+        reasons.append("epigraph_candidate_rejected")
+    elif right_structural == "attribution" and getattr(left, "paragraph_alignment", None) != "center":
+        reasons.append("attribution_alignment_mismatch")
+
+    return tuple(reasons)
+
+
+def _is_toc_header_paragraph(paragraph: ParagraphUnit) -> bool:
+    structural = str(getattr(paragraph, "structural_role", None) or getattr(paragraph, "role", None) or "").strip().lower()
+    if structural == "toc_header":
+        return True
+    return str(getattr(paragraph, "text", "")).strip().lower() in {"содержание", "contents"}
+
+
+def _is_toc_entry_paragraph(paragraph: ParagraphUnit) -> bool:
+    structural = str(getattr(paragraph, "structural_role", None) or getattr(paragraph, "role", None) or "").strip().lower()
+    if structural == "toc_entry":
+        return True
+    return _is_likely_toc_entry_text(str(getattr(paragraph, "text", "")))
 
 
 def build_context_excerpt(blocks: list[DocumentBlock], block_index: int, limit_chars: int, *, reverse: bool) -> str:
@@ -545,6 +936,382 @@ def _resolve_paragraph_boundary_normalization_settings() -> tuple[str, bool]:
     return mode, bool(app_config.get("paragraph_boundary_normalization_save_debug_artifacts", True))
 
 
+def _resolve_relation_normalization_settings() -> tuple[bool, str, tuple[str, ...], bool]:
+    from config import load_app_config
+
+    app_config = load_app_config()
+    enabled = bool(app_config.get("relation_normalization_enabled", True))
+    profile = str(app_config.get("relation_normalization_profile", "phase2_default") or "phase2_default")
+    configured_relation_kinds = app_config.get(
+        "relation_normalization_enabled_relation_kinds",
+        RELATION_NORMALIZATION_KIND_VALUES,
+    )
+    if not isinstance(configured_relation_kinds, (list, tuple, set)):
+        configured_relation_kinds = RELATION_NORMALIZATION_KIND_VALUES
+    enabled_relation_kinds = tuple(
+        kind
+        for kind in configured_relation_kinds
+        if kind in RELATION_NORMALIZATION_KIND_VALUES
+    )
+    if not enabled:
+        enabled_relation_kinds = ()
+    return (
+        enabled,
+        profile,
+        enabled_relation_kinds,
+        bool(app_config.get("relation_normalization_save_debug_artifacts", True)),
+    )
+
+
+def _resolve_paragraph_boundary_ai_review_settings() -> tuple[bool, str, int, int, int, str]:
+    from config import load_app_config
+
+    app_config = load_app_config()
+    enabled = bool(app_config.get("paragraph_boundary_ai_review_enabled", False))
+    mode = str(app_config.get("paragraph_boundary_ai_review_mode", "off") or "off")
+    if mode not in PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES:
+        mode = "off"
+    if not enabled:
+        mode = "off"
+    return (
+        enabled and mode != "off",
+        mode,
+        _coerce_int_config_value(app_config.get("paragraph_boundary_ai_review_candidate_limit"), 200),
+        _coerce_int_config_value(app_config.get("paragraph_boundary_ai_review_timeout_seconds"), 30),
+        _coerce_int_config_value(app_config.get("paragraph_boundary_ai_review_max_tokens_per_candidate"), 120),
+        str(app_config.get("default_model", "gpt-5-mini") or "gpt-5-mini"),
+    )
+
+
+def _coerce_int_config_value(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return int(value.strip())
+        except ValueError:
+            return default
+    return default
+
+
+def _build_ai_review_candidates(
+    *,
+    raw_blocks: list[RawBlock],
+    paragraphs: list[ParagraphUnit],
+    boundary_report: ParagraphBoundaryNormalizationReport,
+    relation_report: RelationNormalizationReport,
+    candidate_limit: int,
+) -> list[dict[str, object]]:
+    raw_paragraphs_by_index = {
+        block.raw_index: block
+        for block in raw_blocks
+        if isinstance(block, RawParagraph)
+    }
+    paragraph_text_by_id = {
+        paragraph.paragraph_id: paragraph.text
+        for paragraph in paragraphs
+        if paragraph.paragraph_id
+    }
+
+    candidates: list[dict[str, object]] = []
+    for decision in boundary_report.decisions:
+        if decision.confidence != "medium":
+            continue
+        left = raw_paragraphs_by_index.get(decision.left_raw_index)
+        right = raw_paragraphs_by_index.get(decision.right_raw_index)
+        candidates.append(
+            {
+                "candidate_kind": "boundary_medium",
+                "candidate_id": f"{decision.left_raw_index}:{decision.right_raw_index}",
+                "deterministic_decision": decision.decision,
+                "confidence": decision.confidence,
+                "left_raw_index": decision.left_raw_index,
+                "right_raw_index": decision.right_raw_index,
+                "left_text": None if left is None else left.text,
+                "right_text": None if right is None else right.text,
+                "reasons": list(decision.reasons),
+            }
+        )
+
+    for decision in relation_report.decisions:
+        if decision.decision == "accept":
+            continue
+        candidates.append(
+            {
+                "candidate_kind": "relation_rejected",
+                "candidate_id": f"{decision.relation_kind}:{'|'.join(decision.member_paragraph_ids)}",
+                "deterministic_decision": decision.decision,
+                "relation_kind": decision.relation_kind,
+                "member_paragraph_ids": list(decision.member_paragraph_ids),
+                "member_texts": [paragraph_text_by_id.get(paragraph_id, "") for paragraph_id in decision.member_paragraph_ids],
+                "anchor_asset_id": decision.anchor_asset_id,
+                "reasons": list(decision.reasons),
+            }
+        )
+
+    return candidates[: max(0, candidate_limit)]
+
+
+def _build_ai_review_request_payload(
+    *,
+    model: str,
+    candidates: list[dict[str, object]],
+    timeout_seconds: int,
+    max_tokens_per_candidate: int,
+) -> dict[str, object]:
+    system_prompt = (
+        "You review ambiguous DOCX paragraph-boundary and grouping candidates. "
+        "Return only JSON with a top-level recommendations array. "
+        "For boundary candidates use recommendation merge or keep. "
+        "For relation candidates use recommendation accept or reject."
+    )
+    user_prompt = json.dumps(
+        {
+            "instructions": {
+                "review_scope": "ambiguous normalization candidates",
+                "required_output_shape": {
+                    "recommendations": [
+                        {
+                            "candidate_id": "string",
+                            "recommendation": "merge|keep|accept|reject",
+                            "reasons": ["string"],
+                        }
+                    ]
+                },
+            },
+            "candidates": candidates,
+        },
+        ensure_ascii=False,
+    )
+    return {
+        "model": model,
+        "input": [
+            {
+                "role": "system",
+                "content": [{"type": "input_text", "text": system_prompt}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": user_prompt}],
+            },
+        ],
+        "max_output_tokens": max(256, min(len(candidates) * max_tokens_per_candidate, 8192)),
+        "timeout": timeout_seconds,
+    }
+
+
+def _request_ai_review_recommendations(
+    *,
+    model: str,
+    candidates: list[dict[str, object]],
+    timeout_seconds: int,
+    max_tokens_per_candidate: int,
+) -> dict[str, dict[str, object]]:
+    from config import get_client
+
+    response = call_responses_create_with_retry(
+        get_client(),
+        _build_ai_review_request_payload(
+            model=model,
+            candidates=candidates,
+            timeout_seconds=timeout_seconds,
+            max_tokens_per_candidate=max_tokens_per_candidate,
+        ),
+        max_retries=2,
+        retryable_error_predicate=is_retryable_error,
+    )
+    raw_text = extract_response_text(
+        response,
+        empty_message="AI review did not return text.",
+        incomplete_message="AI review returned incomplete response.",
+        unsupported_message="AI review returned unsupported response shape.",
+    )
+    payload = parse_json_object(
+        raw_text,
+        empty_message="AI review returned empty output.",
+        no_json_message="AI review did not return JSON.",
+    )
+    recommendations = payload.get("recommendations", [])
+    if not isinstance(recommendations, list):
+        raise RuntimeError("AI review returned invalid recommendations payload.")
+
+    result: dict[str, dict[str, object]] = {}
+    for entry in recommendations:
+        if not isinstance(entry, dict):
+            continue
+        candidate_id = entry.get("candidate_id")
+        recommendation = entry.get("recommendation")
+        reasons = entry.get("reasons", [])
+        if not isinstance(candidate_id, str) or not candidate_id.strip():
+            continue
+        if not isinstance(recommendation, str) or not recommendation.strip():
+            continue
+        if not isinstance(reasons, list):
+            reasons = []
+        result[candidate_id] = {
+            "recommendation": recommendation.strip().lower(),
+            "reasons": [str(reason) for reason in reasons if str(reason).strip()],
+        }
+    return result
+
+
+def _build_ai_review_decision_records(
+    *,
+    candidates: list[dict[str, object]],
+    recommendations: dict[str, dict[str, object]],
+    mode: str,
+    error_code: str | None,
+) -> list[dict[str, object]]:
+    decisions: list[dict[str, object]] = []
+    for candidate in candidates:
+        candidate_id = str(candidate.get("candidate_id") or "")
+        deterministic_decision = str(candidate.get("deterministic_decision") or "keep")
+        recommendation_payload = recommendations.get(candidate_id, {})
+        ai_recommendation = recommendation_payload.get("recommendation")
+        reasons = [f"{mode}_mode"]
+        if error_code is not None:
+            reasons.append(f"ai_review_unavailable:{error_code}")
+        elif ai_recommendation is None:
+            reasons.append("ai_review_no_recommendation")
+        elif ai_recommendation != deterministic_decision:
+            reasons.append("deterministic_decision_retained")
+        else:
+            reasons.append("ai_agreed_with_deterministic")
+
+        decisions.append(
+            {
+                "candidate_kind": candidate.get("candidate_kind"),
+                "candidate_id": candidate_id,
+                "deterministic_decision": deterministic_decision,
+                "ai_recommendation": ai_recommendation,
+                "final_decision": deterministic_decision,
+                "reasons": reasons,
+            }
+        )
+    return decisions
+
+
+def _write_paragraph_boundary_ai_review_artifact(
+    *,
+    source_name: str,
+    source_bytes: bytes,
+    mode: str,
+    decisions: list[dict[str, object]],
+    error_code: str | None = None,
+) -> str | None:
+    try:
+        PARAGRAPH_BOUNDARY_AI_REVIEW_DIR.mkdir(parents=True, exist_ok=True)
+        source_hash = hashlib.sha1(source_bytes).hexdigest()[:8]
+        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", source_name or "document.docx").strip("_") or "document.docx"
+        artifact_path = PARAGRAPH_BOUNDARY_AI_REVIEW_DIR / f"{safe_name}_{source_hash}.json"
+        payload: dict[str, object] = {
+            "version": 1,
+            "source_file": source_name,
+            "source_hash": source_hash,
+            "mode": mode,
+            "reviewed_candidate_count": len(decisions),
+            "accepted_candidate_count": sum(
+                1 for decision in decisions if decision.get("final_decision") in {"merge", "accept", "group"}
+            ),
+            "decisions": decisions,
+        }
+        if error_code is not None:
+            payload["error_code"] = error_code
+        artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return str(artifact_path)
+    except Exception:
+        return None
+
+
+def _run_paragraph_boundary_ai_review(
+    *,
+    source_name: str,
+    source_bytes: bytes,
+    mode: str,
+    model: str,
+    raw_blocks: list[RawBlock],
+    paragraphs: list[ParagraphUnit],
+    boundary_report: ParagraphBoundaryNormalizationReport,
+    relation_report: RelationNormalizationReport,
+    candidate_limit: int,
+    timeout_seconds: int,
+    max_tokens_per_candidate: int,
+) -> str | None:
+    candidates = _build_ai_review_candidates(
+        raw_blocks=raw_blocks,
+        paragraphs=paragraphs,
+        boundary_report=boundary_report,
+        relation_report=relation_report,
+        candidate_limit=candidate_limit,
+    )
+    if not candidates:
+        return None
+
+    recommendations: dict[str, dict[str, object]] = {}
+    error_code: str | None = None
+    try:
+        recommendations = _request_ai_review_recommendations(
+            model=model,
+            candidates=candidates,
+            timeout_seconds=timeout_seconds,
+            max_tokens_per_candidate=max_tokens_per_candidate,
+        )
+    except Exception as exc:
+        error_code = extract_model_response_error_code(exc)
+        if error_code is None and "timeout" in str(exc).lower():
+            error_code = "timeout"
+        if error_code is None:
+            error_code = "review_failed"
+
+    decisions = _build_ai_review_decision_records(
+        candidates=candidates,
+        recommendations=recommendations,
+        mode=mode,
+        error_code=error_code,
+    )
+    return _write_paragraph_boundary_ai_review_artifact(
+        source_name=source_name,
+        source_bytes=source_bytes,
+        mode=mode,
+        decisions=decisions,
+        error_code=error_code,
+    )
+
+
+def resolve_effective_relation_kinds() -> tuple[str, ...]:
+    enabled, _, enabled_relation_kinds, _ = _resolve_relation_normalization_settings()
+    if not enabled:
+        return ()
+    return enabled_relation_kinds
+
+
+def summarize_boundary_normalization_metrics(
+    report: ParagraphBoundaryNormalizationReport | None,
+) -> dict[str, int]:
+    if report is None:
+        return {}
+    high_confidence_merge_count = 0
+    medium_accepted_merge_count = 0
+    medium_rejected_candidate_count = 0
+    decisions = getattr(report, "decisions", ()) or ()
+    for decision in decisions:
+        if decision.decision == "merge" and decision.confidence == "high":
+            high_confidence_merge_count += 1
+        elif decision.decision == "merge" and decision.confidence == "medium":
+            medium_accepted_merge_count += 1
+        elif decision.decision == "keep" and decision.confidence == "medium":
+            medium_rejected_candidate_count += 1
+    return {
+        "high_confidence_merge_count": high_confidence_merge_count,
+        "medium_accepted_merge_count": medium_accepted_merge_count,
+        "medium_rejected_candidate_count": medium_rejected_candidate_count,
+    }
+
+
 def _normalize_paragraph_boundaries(
     raw_blocks: list[RawBlock],
     *,
@@ -576,17 +1343,26 @@ def _normalize_paragraph_boundaries(
 
         group = [block]
         group_reasons: list[str] = []
+        group_confidences: list[str] = []
         look_ahead = index
         while look_ahead + 1 < len(raw_blocks) and isinstance(raw_blocks[look_ahead + 1], RawParagraph):
             next_block = cast(RawParagraph, raw_blocks[look_ahead + 1])
             decision = _evaluate_paragraph_boundary(group[-1], next_block)
-            decisions.append(decision)
-            if decision.decision != "merge":
-                break
-            if decision.confidence == "medium" and mode != "high_and_medium":
+            effective_decision = decision
+            if decision.decision == "merge" and decision.confidence == "medium" and mode != "high_and_medium":
+                effective_decision = ParagraphBoundaryDecision(
+                    left_raw_index=decision.left_raw_index,
+                    right_raw_index=decision.right_raw_index,
+                    decision="keep",
+                    confidence="medium",
+                    reasons=tuple((*decision.reasons, "medium_mode_disabled")),
+                )
+            decisions.append(effective_decision)
+            if effective_decision.decision != "merge":
                 break
             group.append(next_block)
-            group_reasons.extend(decision.reasons)
+            group_reasons.extend(effective_decision.reasons)
+            group_confidences.append(effective_decision.confidence)
             look_ahead += 1
 
         if len(group) == 1:
@@ -596,7 +1372,7 @@ def _normalize_paragraph_boundaries(
 
         merged_group_count += 1
         merged_raw_paragraph_count += len(group)
-        normalized_blocks.append(_merge_raw_paragraph_group(group, group_reasons))
+        normalized_blocks.append(_merge_raw_paragraph_group(group, group_reasons, group_confidences))
         index += len(group)
 
     report = ParagraphBoundaryNormalizationReport(
@@ -665,6 +1441,15 @@ def _evaluate_paragraph_boundary(left: RawParagraph, right: RawParagraph) -> Par
             reasons=tuple(positive_reasons),
         )
 
+    if _should_promote_medium_merge(positive_reasons):
+        return ParagraphBoundaryDecision(
+            left_raw_index=left.raw_index,
+            right_raw_index=right.raw_index,
+            decision="merge",
+            confidence="medium",
+            reasons=tuple(positive_reasons),
+        )
+
     return ParagraphBoundaryDecision(
         left_raw_index=left.raw_index,
         right_raw_index=right.raw_index,
@@ -674,12 +1459,13 @@ def _evaluate_paragraph_boundary(left: RawParagraph, right: RawParagraph) -> Par
     )
 
 
-def _merge_raw_paragraph_group(group: list[RawParagraph], reasons: list[str]) -> RawParagraph:
+def _merge_raw_paragraph_group(group: list[RawParagraph], reasons: list[str], confidences: list[str]) -> RawParagraph:
     dominant = group[0]
     merged_text = _join_merged_paragraph_text(group)
     merged_indexes = tuple(index for paragraph in group for index in paragraph.origin_raw_indexes)
     merged_texts = tuple(text for paragraph in group for text in paragraph.origin_raw_texts)
     rationale = ", ".join(dict.fromkeys(reasons)) or None
+    boundary_confidence = "medium" if "medium" in confidences else "high"
     return RawParagraph(
         raw_index=dominant.raw_index,
         text=merged_text,
@@ -702,7 +1488,7 @@ def _merge_raw_paragraph_group(group: list[RawParagraph], reasons: list[str]) ->
         origin_raw_indexes=merged_indexes,
         origin_raw_texts=merged_texts,
         boundary_source="normalized_merge",
-        boundary_confidence="high",
+        boundary_confidence=boundary_confidence,
         boundary_rationale=rationale,
     )
 
@@ -795,6 +1581,19 @@ def _combined_text_reads_as_continuation(left_text: str, right_text: str) -> boo
     return _left_paragraph_looks_incomplete(left_text) and _starts_with_continuation_signal(right_text)
 
 
+def _should_promote_medium_merge(positive_reasons: list[str]) -> bool:
+    positive_reason_set = set(positive_reasons)
+    if not {"same_body_style", "compatible_alignment"}.issubset(positive_reason_set):
+        return False
+    supporting_signals = {
+        "left_not_terminal",
+        "left_incomplete",
+        "right_starts_continuation",
+        "combined_sentence_plausible",
+    }
+    return len(positive_reason_set & supporting_signals) >= 2
+
+
 def _is_likely_attribution_text(text: str) -> bool:
     stripped = text.strip()
     return bool(stripped) and len(stripped) <= 120 and stripped.startswith(("-", "—", "–"))
@@ -833,12 +1632,52 @@ def _write_paragraph_boundary_report_artifact(
             "total_logical_paragraphs": report.total_logical_paragraphs,
             "merged_group_count": report.merged_group_count,
             "merged_raw_paragraph_count": report.merged_raw_paragraph_count,
+            **summarize_boundary_normalization_metrics(report),
             "decisions": [
                 {
                     "left_raw_index": decision.left_raw_index,
                     "right_raw_index": decision.right_raw_index,
                     "decision": decision.decision,
                     "confidence": decision.confidence,
+                    "reasons": list(decision.reasons),
+                }
+                for decision in report.decisions
+            ],
+        }
+        artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return str(artifact_path)
+    except Exception:
+        return None
+
+
+def _write_relation_normalization_report_artifact(
+    *,
+    source_name: str,
+    source_bytes: bytes,
+    profile: str,
+    enabled_relation_kinds: tuple[str, ...],
+    report: RelationNormalizationReport,
+) -> str | None:
+    try:
+        RELATION_NORMALIZATION_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        source_hash = hashlib.sha1(source_bytes).hexdigest()[:8]
+        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", source_name or "document.docx").strip("_") or "document.docx"
+        artifact_path = RELATION_NORMALIZATION_REPORTS_DIR / f"{safe_name}_{source_hash}.json"
+        payload = {
+            "version": 1,
+            "source_file": source_name,
+            "source_hash": source_hash,
+            "profile": profile,
+            "enabled_relation_kinds": list(enabled_relation_kinds),
+            "total_relations": report.total_relations,
+            "relation_counts": dict(report.relation_counts),
+            "rejected_candidate_count": report.rejected_candidate_count,
+            "decisions": [
+                {
+                    "relation_kind": decision.relation_kind,
+                    "decision": decision.decision,
+                    "member_paragraph_ids": list(decision.member_paragraph_ids),
+                    "anchor_asset_id": decision.anchor_asset_id,
                     "reasons": list(decision.reasons),
                 }
                 for decision in report.decisions
@@ -1339,7 +2178,6 @@ def _reclassify_adjacent_captions(paragraphs: list[ParagraphUnit]) -> None:
         if previous_paragraph.role not in {"image", "table"}:
             continue
         if paragraph.role == "caption":
-            paragraph.attached_to_asset_id = previous_paragraph.asset_id
             continue
         if _is_likely_caption_text(paragraph.text):
             if paragraph.role == "heading" and paragraph.heading_source != "heuristic":
@@ -1347,7 +2185,6 @@ def _reclassify_adjacent_captions(paragraphs: list[ParagraphUnit]) -> None:
             paragraph.role = "caption"
             paragraph.structural_role = "caption"
             paragraph.role_confidence = "adjacent"
-            paragraph.attached_to_asset_id = previous_paragraph.asset_id
             paragraph.heading_level = None
             paragraph.heading_source = None
 

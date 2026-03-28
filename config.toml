@@ -60,6 +60,19 @@ enabled = true
 mode = "high_only"
 save_debug_artifacts = true
 
+[relation_normalization]
+enabled = true
+profile = "phase2_default"
+enabled_relation_kinds = ["image_caption", "table_caption", "epigraph_attribution", "toc_region"]
+save_debug_artifacts = true
+
+[paragraph_boundary_ai_review]
+enabled = false
+mode = "off"
+candidate_limit = 200
+timeout_seconds = 30
+max_tokens_per_candidate = 120
+
 [image_output]
 generate_candidate_sizes = ["1536x1024", "1024x1536", "1024x1024"]
 edit_candidate_sizes = ["1536x1024", "1024x1536", "1024x1024", "512x512", "256x256"]

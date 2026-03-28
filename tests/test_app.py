@@ -152,6 +152,9 @@ def test_store_preparation_summary_uses_preparation_context_not_processing_statu
         "logical_paragraph_count": 2,
         "merged_group_count": 1,
         "merged_raw_paragraph_count": 2,
+        "high_confidence_merge_count": 0,
+        "medium_accepted_merge_count": 0,
+        "medium_rejected_candidate_count": 0,
     }
 
 
@@ -507,6 +510,9 @@ def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):
     assert summary_calls[0]["logical_paragraph_count"] == 3
     assert summary_calls[0]["merged_group_count"] == 1
     assert summary_calls[0]["merged_raw_paragraph_count"] == 2
+    assert summary_calls[0]["high_confidence_merge_count"] == 0
+    assert summary_calls[0]["medium_accepted_merge_count"] == 0
+    assert summary_calls[0]["medium_rejected_candidate_count"] == 0
 
 
 def test_main_marks_prepared_status_with_completed_terminal_kind(monkeypatch):

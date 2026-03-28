@@ -1,6 +1,7 @@
 from io import BytesIO
 from typing import cast
 
+import config
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
@@ -329,12 +330,15 @@ def test_mapping_reports_accepted_merged_sources_in_diagnostics():
             "dominant_raw_index": 10,
             "kind": "normalized_merge",
             "boundary_confidence": "high",
+            "boundary_decision_class": "high",
             "boundary_rationale": None,
             "target_index": 0,
             "target_text_preview": "Это один логический абзац после нормализации.",
             "source_text_preview": "Это один логический абзац после нормализации.",
         }
     ]
+    assert diagnostics["high_confidence_merge_count"] == 1
+    assert diagnostics["medium_accepted_merge_count"] == 0
 
 
 def test_formatting_diagnostics_propagate_boundary_rationale_for_merged_source():
@@ -382,6 +386,7 @@ def test_formatting_diagnostics_propagate_boundary_rationale_for_merged_source()
         "dominant_raw_index": 12,
         "kind": "normalized_merge",
         "boundary_confidence": "high",
+        "boundary_decision_class": "high",
         "boundary_rationale": (
             "same_body_style, compatible_alignment, left_not_terminal, "
             "right_starts_continuation, left_incomplete, combined_sentence_plausible"
@@ -392,6 +397,171 @@ def test_formatting_diagnostics_propagate_boundary_rationale_for_merged_source()
     }
     assert diagnostics["accepted_merged_sources_count"] == 1
     assert diagnostics["max_accepted_merged_sources"] == 3
+
+
+def test_mapping_reports_medium_accepted_merged_sources_in_diagnostics():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0015",
+            text="Это важное наблюдение: Следующий шаг требует дополнительной проверки.",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+            origin_raw_indexes=[15, 16],
+            origin_raw_texts=["Это важное наблюдение:", "Следующий шаг требует дополнительной проверки."],
+            boundary_source="normalized_merge",
+            boundary_confidence="medium",
+            boundary_rationale="same_body_style, compatible_alignment, left_not_terminal",
+        )
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("Это важное наблюдение: Следующий шаг требует дополнительной проверки.")
+
+    _, diagnostics = _map_source_target_paragraphs(source_paragraphs, target_doc.paragraphs)
+
+    assert diagnostics["high_confidence_merge_count"] == 0
+    assert diagnostics["medium_accepted_merge_count"] == 1
+    assert diagnostics["accepted_merged_sources"] == [
+        {
+            "logical_paragraph_id": "p0015",
+            "origin_raw_indexes": [15, 16],
+            "accepted_merged_sources_count": 2,
+            "dominant_raw_index": 15,
+            "kind": "normalized_merge",
+            "boundary_confidence": "medium",
+            "boundary_decision_class": "medium_accepted",
+            "boundary_rationale": "same_body_style, compatible_alignment, left_not_terminal",
+            "target_index": 0,
+            "target_text_preview": "Это важное наблюдение: Следующий шаг требует дополнительной проверки.",
+            "source_text_preview": "Это важное наблюдение: Следующий шаг требует дополнительной проверки.",
+        }
+    ]
+
+
+def test_formatting_diagnostics_include_relation_metadata_and_registry_membership():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0000",
+            text="[[DOCX_IMAGE_img_001]]",
+            role="image",
+            structural_role="image",
+            asset_id="img_001",
+            role_confidence="explicit",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="Рис. 1. Подпись",
+            role="caption",
+            structural_role="caption",
+            attached_to_asset_id="img_001",
+            role_confidence="adjacent",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0002",
+            text="Богатство заключается в свободе желаний.",
+            role="body",
+            structural_role="epigraph",
+            paragraph_alignment="center",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0003",
+            text="— Эпиктет",
+            role="body",
+            structural_role="attribution",
+        ),
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("[[DOCX_IMAGE_img_001]]")
+    target_doc.add_paragraph("Рис. 1. Подпись")
+    target_doc.add_paragraph("Богатство заключается в свободе желаний.")
+    target_doc.add_paragraph("— Эпиктет")
+
+    diagnostics = _build_output_formatting_diagnostics(source_paragraphs, list(target_doc.paragraphs), document=target_doc)
+
+    assert diagnostics["relation_count"] == 2
+    assert diagnostics["relation_counts"] == {
+        "image_caption": 1,
+        "epigraph_attribution": 1,
+    }
+    assert [relation["relation_kind"] for relation in cast(list[dict[str, object]], diagnostics["accepted_relations"])] == [
+        "image_caption",
+        "epigraph_attribution",
+    ]
+    source_registry = cast(list[dict[str, object]], diagnostics["source_registry"])
+    assert source_registry[0]["relation_ids"] == ["rel_0001"]
+    assert source_registry[1]["relation_ids"] == ["rel_0001"]
+    assert source_registry[2]["relation_ids"] == ["rel_0002"]
+    assert source_registry[3]["relation_ids"] == ["rel_0002"]
+
+
+def test_formatting_diagnostics_use_effective_relation_config(monkeypatch):
+    monkeypatch.setattr(
+        config,
+        "load_app_config",
+        lambda: {
+            "relation_normalization_enabled": True,
+            "relation_normalization_profile": "phase2_default",
+            "relation_normalization_enabled_relation_kinds": ("image_caption",),
+            "relation_normalization_save_debug_artifacts": True,
+        },
+    )
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0000",
+            text="[[DOCX_IMAGE_img_001]]",
+            role="image",
+            structural_role="image",
+            asset_id="img_001",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="Рис. 1. Подпись",
+            role="caption",
+            structural_role="caption",
+            attached_to_asset_id="img_001",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0002",
+            text="Богатство заключается в свободе желаний.",
+            role="body",
+            structural_role="epigraph",
+            paragraph_alignment="center",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0003",
+            text="— Эпиктет",
+            role="body",
+            structural_role="attribution",
+        ),
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("[[DOCX_IMAGE_img_001]]")
+    target_doc.add_paragraph("Рис. 1. Подпись")
+    target_doc.add_paragraph("Богатство заключается в свободе желаний.")
+    target_doc.add_paragraph("— Эпиктет")
+
+    diagnostics = _build_output_formatting_diagnostics(source_paragraphs, list(target_doc.paragraphs), document=target_doc)
+
+    assert diagnostics["relation_count"] == 1
+    assert diagnostics["relation_counts"] == {"image_caption": 1}
+    assert [relation["relation_kind"] for relation in cast(list[dict[str, object]], diagnostics["accepted_relations"])] == [
+        "image_caption",
+    ]
+    source_registry = cast(list[dict[str, object]], diagnostics["source_registry"])
+    assert source_registry[0]["relation_ids"] == ["rel_0001"]
+    assert source_registry[1]["relation_ids"] == ["rel_0001"]
+    assert source_registry[2]["relation_ids"] == []
+    assert source_registry[3]["relation_ids"] == []
+
+    rejected_kinds = [
+        decision["relation_kind"]
+        for decision in cast(list[dict[str, object]], diagnostics.get("relation_decisions", []))
+        if decision.get("decision") == "reject"
+    ]
+    assert rejected_kinds == []
 
 
 def test_restore_source_formatting_normalizes_split_heading_prefix_to_heading_2():

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from document import validate_docx_source_bytes
+from document import summarize_boundary_normalization_metrics, validate_docx_source_bytes
 from preparation import emit_preparation_progress, prepare_document_for_processing
 from processing_runtime import (
     FrozenUploadPayload,
@@ -39,17 +39,33 @@ class PreparedRunContext:
     preparation_cached: bool
     preparation_elapsed_seconds: float
     normalization_report: object | None = None
+    relation_report: object | None = None
 
 
 def flatten_normalization_metrics(normalization_report) -> dict[str, int]:
     if normalization_report is None:
         return {}
-    return {
+    metrics = {
         "raw_paragraph_count": int(getattr(normalization_report, "total_raw_paragraphs", 0) or 0),
         "logical_paragraph_count": int(getattr(normalization_report, "total_logical_paragraphs", 0) or 0),
         "merged_group_count": int(getattr(normalization_report, "merged_group_count", 0) or 0),
         "merged_raw_paragraph_count": int(getattr(normalization_report, "merged_raw_paragraph_count", 0) or 0),
     }
+    metrics.update(summarize_boundary_normalization_metrics(normalization_report))
+    return metrics
+
+
+def flatten_relation_metrics(relation_report) -> dict[str, int]:
+    if relation_report is None:
+        return {}
+    metrics = {
+        "relation_count": int(getattr(relation_report, "total_relations", 0) or 0),
+        "rejected_relation_candidate_count": int(getattr(relation_report, "rejected_candidate_count", 0) or 0),
+    }
+    relation_counts = getattr(relation_report, "relation_counts", {}) or {}
+    for relation_kind, count in relation_counts.items():
+        metrics[f"relation_{relation_kind}_count"] = int(count or 0)
+    return metrics
 
 
 @dataclass(frozen=True)
@@ -248,6 +264,7 @@ def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: 
         preparation_cached=prepared_document.cached,
         preparation_elapsed_seconds=elapsed_seconds,
         normalization_report=getattr(prepared_document, "normalization_report", None),
+        relation_report=getattr(prepared_document, "relation_report", None),
     )
 
 
@@ -357,6 +374,7 @@ def prepare_run_context(
             image_mode=image_mode,
             keep_all_image_variants=keep_all_image_variants,
             **flatten_normalization_metrics(getattr(prepared_document, "normalization_report", None)),
+            **flatten_relation_metrics(getattr(prepared_document, "relation_report", None)),
         )
         session_state.prepared_source_key = prepared_document.prepared_source_key
     emit_preparation_progress(
@@ -372,6 +390,7 @@ def prepare_run_context(
             "block_count": len(prepared_document.jobs),
             "cached": prepared_document.cached,
             **flatten_normalization_metrics(getattr(prepared_document, "normalization_report", None)),
+            **flatten_relation_metrics(getattr(prepared_document, "relation_report", None)),
         },
     )
     return _build_prepared_run_context(
@@ -416,6 +435,7 @@ def prepare_run_context_for_background(
             "block_count": len(prepared_document.jobs),
             "cached": prepared_document.cached,
             **flatten_normalization_metrics(getattr(prepared_document, "normalization_report", None)),
+            **flatten_relation_metrics(getattr(prepared_document, "relation_report", None)),
         },
     )
     return _build_prepared_run_context(

@@ -37,6 +37,13 @@ _DOCX_ZIP_MAGIC = b"PK\x03\x04"
 _LEGACY_DOC_MAGIC = bytes.fromhex("D0CF11E0A1B11AE1")
 _DEFAULT_UPLOADED_FILENAME = "document.docx"
 _DOC_CONVERSION_TIMEOUT_SECONDS = 120
+
+
+def _looks_like_runtime_object_repr(value: str) -> bool:
+    normalized = value.strip().lower()
+    return normalized.startswith("<") and " object at 0x" in normalized and normalized.endswith(">")
+
+
 def _reset_image_state() -> None:
     st.session_state.image_assets = []
     st.session_state.image_validation_failures = []
@@ -555,7 +562,14 @@ def should_stop_processing(runtime: BackgroundRuntime | None) -> bool:
 def resolve_uploaded_filename(uploaded_file) -> str:
     if isinstance(uploaded_file, FrozenUploadPayload):
         return uploaded_file.filename
-    return getattr(uploaded_file, "name", str(uploaded_file))
+    explicit_name = getattr(uploaded_file, "name", None)
+    if isinstance(explicit_name, str) and explicit_name.strip():
+        return explicit_name
+
+    fallback_name = str(uploaded_file).strip()
+    if not fallback_name or _looks_like_runtime_object_repr(fallback_name):
+        return _DEFAULT_UPLOADED_FILENAME
+    return fallback_name
 
 
 def drain_processing_events(*, set_processing_status, finalize_processing_status, push_activity, append_log, append_image_log) -> None:
