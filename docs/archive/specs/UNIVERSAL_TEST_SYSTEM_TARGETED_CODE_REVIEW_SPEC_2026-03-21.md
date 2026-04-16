@@ -57,7 +57,7 @@ Primary code surfaces:
 
 Supporting contract docs:
 
-1. `docs/UNIVERSAL_REAL_DOCUMENT_VALIDATION_SPEC_2026-03-21.md`
+1. `docs/archive/specs/UNIVERSAL_REAL_DOCUMENT_VALIDATION_SPEC_2026-03-21.md`
 2. `docs/WORKFLOW_AND_IMAGE_MODES.md`
 3. `docs/testing/UNIVERSAL_TEST_SYSTEM_MAINTENANCE_GUIDE_2026-03-21.md`
 

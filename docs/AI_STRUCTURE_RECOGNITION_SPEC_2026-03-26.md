@@ -5,6 +5,24 @@ Status: Proposed
 Scope: New pre-processing stage — AI-driven document structure classification
 Test document: `tests/sources/bernardlietaer-creatingwealthpdffromepub-160516072739 ru.docx`
 
+## 0. Current Implementation Status
+
+As of 2026-04-16, this spec remains **not started in the codebase**.
+
+Review-validated current state:
+
+1. there is no `structure_recognition.py` module in the repository;
+2. there is no `structure_recognition` config surface in `config.py` or `config.toml`;
+3. `preparation.py` still runs extraction directly into semantic-block construction with no AI structure-recognition insertion point;
+4. paragraph-role enrichment still depends on existing heuristic classification in `document.py`;
+5. no dedicated `tests/test_structure_recognition.py` exists yet.
+
+Planning implication:
+
+1. treat this document as an active design target, not as an implementation snapshot;
+2. do not read later sections as evidence that Phase 1 work already landed;
+3. preferred sequencing is to close the prepared-upload/runtime cleanup from `docs/ARCHITECTURE_REFACTORING_SPEC_2026-03-25.md` first, then land structure recognition on top of the simplified preparation boundary.
+
 ## 1. Problem Statement
 
 The current document structure recognition in `document.py` relies on ~200 lines of cascading heuristics (regex patterns, font-size deltas, bold/center detection, text-signal keywords) that attempt to classify paragraph roles (`heading`, `body`, `caption`, `list`, `epigraph`, etc.) from DOCX metadata alone.

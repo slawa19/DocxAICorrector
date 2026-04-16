@@ -22,9 +22,8 @@
 - `docs/ARCHIVE_INDEX.md`
 - `docs/WORKFLOW_AND_IMAGE_MODES.md`
 - `docs/STARTUP_PERFORMANCE_CONTRACT.md`
-- `docs/UNIVERSAL_REAL_DOCUMENT_VALIDATION_SPEC_2026-03-21.md`
-- `docs/CODEBASE_MAINTAINABILITY_IMPLEMENTATION_SPEC_2026-03-24.md`
-- `docs/DOCX_IMAGE_REINSERTION_HARDENING_SPEC_2026-03-24.md`
+- `docs/ARCHITECTURE_REFACTORING_SPEC_2026-03-25.md`
+- `docs/AI_STRUCTURE_RECOGNITION_SPEC_2026-03-26.md`
 - `docs/AI_AGENT_DEVELOPMENT_RULES.md`
 - `docs/testing/REAL_DOCUMENT_VALIDATION_WORKFLOW.md`
 - `docs/testing/UNIVERSAL_TEST_SYSTEM_MAINTENANCE_GUIDE_2026-03-21.md`
@@ -38,6 +37,8 @@
 
 ## Archived Specs And Plans
 
+- `docs/archive/specs/UNIVERSAL_REAL_DOCUMENT_VALIDATION_SPEC_2026-03-21.md` — archived 2026-04-16 after the architecture landed; kept as historical design and review context
+- `docs/archive/specs/RELATION_NORMALIZATION_SPEC_2026-03-27.md` — archived 2026-04-16 because the maintained relation-normalization implementation lives in code/tests and the root copy was no longer an active source of truth
 - `docs/archive/specs/PARAGRAPH_BOUNDARY_NORMALIZATION_SPEC_2026-03-27.md` — implemented and archived 2026-03-28
 - `docs/archive/specs/DOCX_FORMATTING_HARDENING_SPEC_2026-03-13.md` — implemented 2026-03-13
 - `docs/archive/specs/USER_MESSAGE_AND_PROCESSING_JOURNAL_SPEC_2026-03-24.md` — implemented 2026-03-24

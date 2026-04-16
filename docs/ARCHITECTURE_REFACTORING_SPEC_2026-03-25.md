@@ -5,6 +5,27 @@ Status: Proposed
 Scope type: next-wave monolith boundary cleanup and contract hardening
 Primary inputs: `docs/archive/specs/CODEBASE_MAINTAINABILITY_IMPLEMENTATION_SPEC_2026-03-24.md`, `docs/STARTUP_PERFORMANCE_CONTRACT.md`, `docs/WORKFLOW_AND_IMAGE_MODES.md`, `docs/architecture/normal_processing_call_graph.md`
 
+## 0. Review-Validated Current State
+
+This spec is still active, but parts of the baseline have already shifted in code.
+
+Confirmed in the current repository state as of 2026-04-16:
+
+1. upload-contract vocabulary already exists in code via `NormalizedUploadedDocument`, `ResolvedUploadContract`, and `FrozenUploadPayload`;
+2. `app_runtime.py` is already a materially thin Streamlit-facing adapter rather than a second orchestration center;
+3. validation registry and structural-tier architecture have already landed far enough that this spec should treat them as maintained seams to tighten, not as greenfield architecture to invent.
+
+Still open and still relevant from this spec:
+
+1. `document.py:_read_uploaded_docx_bytes()` still performs a redundant `normalize_uploaded_document()` call instead of consuming the canonical resolved upload boundary;
+2. `processing_runtime.py:_reset_image_state()` still directly mutates session state owned conceptually by `state.py`;
+3. runtime/session ownership is still spread across `processing_runtime.py`, `state.py`, `application_flow.py`, and `app.py` enough to justify the P0 workstreams.
+
+Reading rule for this document:
+
+1. keep the P0 ownership fixes as the immediate priority;
+2. read the later validation and adapter sections as cleanup and convergence work on top of an already-improved baseline, not as evidence that those areas remain wholly unimplemented.
+
 ## 1. Problem Statement
 
 The repository is now materially cleaner than the earlier refactor waves, but the remaining maintenance cost is still architectural rather than purely local.

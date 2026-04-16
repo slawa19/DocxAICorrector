@@ -12,14 +12,14 @@ This guide defines how the project maintains and extends the universal test syst
 
 This document complements, but does not replace:
 
-1. `docs/UNIVERSAL_REAL_DOCUMENT_VALIDATION_SPEC_2026-03-21.md` for architecture and implementation status;
+1. `docs/archive/specs/UNIVERSAL_REAL_DOCUMENT_VALIDATION_SPEC_2026-03-21.md` for historical architecture context and the original implementation target;
 2. `docs/WORKFLOW_AND_IMAGE_MODES.md` for workflow and runtime source-of-truth contracts;
 3. `.github/copilot-instructions.md` for AI-agent workflow and visible test execution rules.
 
 If these documents disagree:
 
 1. visible VS Code task execution contract follows `.github/copilot-instructions.md` and `docs/WORKFLOW_AND_IMAGE_MODES.md`;
-2. runtime and artifact architecture follows `docs/UNIVERSAL_REAL_DOCUMENT_VALIDATION_SPEC_2026-03-21.md`;
+2. runtime and artifact architecture follows the maintained code, `docs/testing/REAL_DOCUMENT_VALIDATION_WORKFLOW.md`, and `docs/WORKFLOW_AND_IMAGE_MODES.md`; the archived universal spec is historical context only;
 3. this document defines maintenance procedure and extension rules for the test system.
 
 ---

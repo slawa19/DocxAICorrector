@@ -13,7 +13,7 @@ Adjacent but intentionally separate work:
 - `docs/AI_STRUCTURE_RECOGNITION_SPEC_2026-03-26.md`
 
 Informational only, non-authoritative after this update:
-- `docs/RELATION_NORMALIZATION_SPEC_2026-03-27.md`
+- `docs/archive/specs/RELATION_NORMALIZATION_SPEC_2026-03-27.md`
 
 Archive note:
 
