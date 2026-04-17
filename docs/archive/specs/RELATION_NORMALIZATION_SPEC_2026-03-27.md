@@ -6,8 +6,8 @@ Scope: Phase 2 relation normalization over already-built logical paragraphs and 
 Primary trigger: Phase 1 fixed false body-paragraph merges, but the pipeline still lacks a first-class way to represent non-merge semantic adjacency such as caption attachment, epigraph-attribution pairs, and TOC regions
 Related specs:
 - `docs/archive/specs/PARAGRAPH_BOUNDARY_NORMALIZATION_SPEC_2026-03-27.md`
-- `docs/AI_STRUCTURE_RECOGNITION_SPEC_2026-03-26.md`
-- `docs/ARCHITECTURE_REFACTORING_SPEC_2026-03-25.md`
+- `docs/archive/specs/AI_STRUCTURE_RECOGNITION_SPEC_2026-03-26.md`
+- `docs/archive/specs/ARCHITECTURE_REFACTORING_SPEC_2026-03-25.md`
 
 This document remains useful as a focused extract for Phase 2 discussion, but it is no longer the repository's authoritative source of truth for normalization implementation order, contracts, or acceptance criteria.
 

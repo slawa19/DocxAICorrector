@@ -1,13 +1,19 @@
 # AI Structure Recognition Spec
 
 Date: 2026-03-26
-Status: Proposed
+Status: Implemented on 2026-04-17; archived historical design record
 Scope: New pre-processing stage — AI-driven document structure classification
 Test document: `tests/sources/bernardlietaer-creatingwealthpdffromepub-160516072739 ru.docx`
 
-## 0. Current Implementation Status
+Archive note:
 
-As of 2026-04-16, this spec remains **not started in the codebase**.
+1. Phase 1 implementation and the scoped Phase 2/3 follow-up work described by this spec landed on 2026-04-17.
+2. The remaining heuristic-only heading reduction item was explicitly deferred pending broader multi-document validation and is no longer treated as an active part of this completed workstream.
+3. This document is preserved as historical design context rather than an active implementation target.
+
+## 0. Historical Baseline Snapshot
+
+The section below reflects the pre-implementation baseline that this spec was written against. It is retained for historical context only.
 
 Review-validated current state:
 
@@ -19,9 +25,9 @@ Review-validated current state:
 
 Planning implication:
 
-1. treat this document as an active design target, not as an implementation snapshot;
-2. do not read later sections as evidence that Phase 1 work already landed;
-3. preferred sequencing is to close the prepared-upload/runtime cleanup from `docs/ARCHITECTURE_REFACTORING_SPEC_2026-03-25.md` first, then land structure recognition on top of the simplified preparation boundary.
+1. treat this document as a historical design target, not as a current implementation snapshot;
+2. do not read the later sections as claims about the present repository state;
+3. the sequencing reference below is preserved for design history and points at the archived architecture spec: `docs/archive/specs/ARCHITECTURE_REFACTORING_SPEC_2026-03-25.md`.
 
 ## 1. Problem Statement
 

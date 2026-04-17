@@ -1,9 +1,15 @@
 # Architecture Refactoring Spec
 
 Date: 2026-03-25
-Status: Proposed
+Status: Implemented on 2026-04-17; archived historical design record
 Scope type: next-wave monolith boundary cleanup and contract hardening
 Primary inputs: `docs/archive/specs/CODEBASE_MAINTAINABILITY_IMPLEMENTATION_SPEC_2026-03-24.md`, `docs/STARTUP_PERFORMANCE_CONTRACT.md`, `docs/WORKFLOW_AND_IMAGE_MODES.md`, `docs/architecture/normal_processing_call_graph.md`
+
+Archive note:
+
+1. The implementation described by this spec landed and was verified on 2026-04-17.
+2. This document remains useful as design history, but is no longer an active source of truth.
+3. The maintained contracts now live in code, tests, and the canonical runtime/testing docs.
 
 ## 0. Review-Validated Current State
 

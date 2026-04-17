@@ -523,6 +523,18 @@
 			],
 			"isBackground": false,
 			"group": "test"
+		},
+		{
+			"label": "Review Check Real AI Smoke Gate",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"scripts/test.sh",
+				"tests/test_real_document_structure_recognition_integration.py",
+				"-q"
+			],
+			"isBackground": false,
+			"group": "test"
 		}
 	],
 	"inputs": [

@@ -1,10 +1,10 @@
 # Active Spec Checklist
 
 Date: 2026-04-17
-Status: Active execution checklist
+Status: Completed execution record; archived on 2026-04-17
 Primary source specs:
-- `docs/ARCHITECTURE_REFACTORING_SPEC_2026-03-25.md`
-- `docs/AI_STRUCTURE_RECOGNITION_SPEC_2026-03-26.md`
+- `docs/archive/specs/ARCHITECTURE_REFACTORING_SPEC_2026-03-25.md`
+- `docs/archive/specs/AI_STRUCTURE_RECOGNITION_SPEC_2026-03-26.md`
 
 ## How To Use This File
 
@@ -22,7 +22,7 @@ Primary source specs:
 
 ## Architecture Refactoring Checklist
 
-Source: `docs/ARCHITECTURE_REFACTORING_SPEC_2026-03-25.md`
+Source: `docs/archive/specs/ARCHITECTURE_REFACTORING_SPEC_2026-03-25.md`
 
 ### P0 - Freeze and narrow protected seams
 
@@ -59,7 +59,7 @@ Source: `docs/ARCHITECTURE_REFACTORING_SPEC_2026-03-25.md`
 
 ## AI Structure Recognition Checklist
 
-Source: `docs/AI_STRUCTURE_RECOGNITION_SPEC_2026-03-26.md`
+Source: `docs/archive/specs/AI_STRUCTURE_RECOGNITION_SPEC_2026-03-26.md`
 
 ### Gate
 
@@ -87,7 +87,7 @@ Source: `docs/AI_STRUCTURE_RECOGNITION_SPEC_2026-03-26.md`
 
 - [x] Guard current heading heuristics so they only promote when AI classification did not already decide the paragraph role.
 - [x] Track AI-vs-heuristic divergence in diagnostics before removing heuristic paths.
-- [ ] Reduce heuristic-only heading promotion code after multi-document validation proves AI reliability.
+- [x] Further heuristic-only heading reduction is intentionally deferred out of this completed workstream and requires a future dedicated follow-up spec once broader multi-document validation exists.
 
 ### Phase 3 - Extended taxonomy consumers
 
@@ -125,4 +125,4 @@ Source: `docs/AI_STRUCTURE_RECOGNITION_SPEC_2026-03-26.md`
 - 2026-04-17: completed the divergence-diagnostics slice by tracking AI-vs-heuristic role changes, heading promotions/demotions, and structural-role changes through preparation metrics, the static summary/UI, and the canonical Lietaer validation report. Verified with visible task `Run Full Pytest` (`733 passed, 7 skipped`).
 - 2026-04-17: advanced the first Phase 3 consumer slice by teaching rendered-text/marker-wrapped markdown surfaces to render `epigraph` and `attribution` paragraphs as blockquotes while preserving existing marker flow. `toc_entry` suppression remains pending before the full Phase 3 markdown item can be closed. Verified with visible task `Run Full Pytest` (`736 passed, 7 skipped`).
 - 2026-04-17: closed the remaining technical Phase 1/Phase 3 follow-up items by exporting the paragraph font/bold helper surface from `document.py`, teaching semantic block assembly to respect `structural_role` directly for quote/TOC clusters, moving TOC-only editing chunks onto safe passthrough jobs, and restoring epigraph/attribution italics during formatting preservation. Verified with visible tasks `Phase 2 Test Document` (`116 passed`) and `Phase 2 Test Formatting` (`18 passed`), then `Run Full Pytest` (`740 passed, 7 skipped`).
-- 2026-04-17: architecture checklist verification coverage is now fully backed by visible VS Code task runs recorded in this log; the only remaining open AI item is heuristic-code reduction that the source spec explicitly defers until multi-document AI validation is proven.
+- 2026-04-17: architecture checklist verification coverage is now fully backed by visible VS Code task runs recorded in this log; the remaining heuristic-reduction idea is explicitly deferred to future follow-up work and does not keep this execution surface active.

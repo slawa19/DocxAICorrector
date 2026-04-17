@@ -6,11 +6,11 @@ Archived: 2026-03-28
 Scope: New pre-processing stage for false DOCX paragraph break normalization, with an extensible normalization seam for related entity-boundary and attachment problems
 Primary trigger: real-document cases where one logical body paragraph is split across multiple physical Word paragraphs and therefore propagates as broken Markdown / broken entity boundaries through the pipeline
 Related architecture docs:
-- `docs/ARCHITECTURE_REFACTORING_SPEC_2026-03-25.md`
+- `docs/archive/specs/ARCHITECTURE_REFACTORING_SPEC_2026-03-25.md`
 - `docs/archive/specs/DOCUMENT_ENTITY_ROUNDTRIP_REFACTOR_SPEC_2026-03-21.md`
 
 Adjacent but intentionally separate work:
-- `docs/AI_STRUCTURE_RECOGNITION_SPEC_2026-03-26.md`
+- `docs/archive/specs/AI_STRUCTURE_RECOGNITION_SPEC_2026-03-26.md`
 
 Informational only, non-authoritative after this update:
 - `docs/archive/specs/RELATION_NORMALIZATION_SPEC_2026-03-27.md`

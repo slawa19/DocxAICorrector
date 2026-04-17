@@ -14,6 +14,7 @@ pytestmark = [pytest.mark.integration]
 
 
 AI_RUN_PROFILE_ID = "ui-parity-ai-default"
+AI_SMOKE_OPT_IN_ENV = "DOCXAI_RUN_REAL_DOCUMENT_STRUCTURE_RECOGNITION"
 
 
 def _load_json(path: Path) -> dict:
@@ -27,6 +28,11 @@ def test_lietaer_real_validation_uses_canonical_ai_profile() -> None:
 
     if not source_path.exists():
         pytest.skip(f"missing real-document source: {source_path}")
+    if os.environ.get(AI_SMOKE_OPT_IN_ENV, "").strip() != "1":
+        pytest.skip(
+            "real AI structure-recognition smoke is opt-in; set "
+            f"{AI_SMOKE_OPT_IN_ENV}=1 to run it explicitly"
+        )
     load_project_dotenv()
     if not os.environ.get("OPENAI_API_KEY", "").strip():
         pytest.skip("OPENAI_API_KEY is required for real AI structure-recognition smoke")

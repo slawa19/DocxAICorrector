@@ -3,7 +3,7 @@
 Date: 2026-03-27
 Status: Proposed
 Scope: runtime log-volume reduction, disk-write minimization, retention hardening, and `.run` hygiene within the existing monolith
-Primary inputs: `docs/ARCHITECTURE_REFACTORING_SPEC_2026-03-25.md`, `docs/AI_STRUCTURE_RECOGNITION_SPEC_2026-03-26.md`, `README.md`, `AGENTS.md`
+Primary inputs: `docs/archive/specs/ARCHITECTURE_REFACTORING_SPEC_2026-03-25.md`, `docs/archive/specs/AI_STRUCTURE_RECOGNITION_SPEC_2026-03-26.md`, `README.md`, `AGENTS.md`
 
 ## 1. Problem Statement
 

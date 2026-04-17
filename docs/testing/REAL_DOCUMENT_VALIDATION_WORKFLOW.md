@@ -8,7 +8,7 @@ Current default mapping:
 
 - document profile: `lietaer-core`
 - additional document profile: `religion-wealth-core`
-- full run profile: `ui-parity-default`
+- full run profile: `ui-parity-ai-default`
 - soak run profile: `ui-parity-soak-3x`
 - structural run profile: `structural-passthrough-default`
 
@@ -61,6 +61,38 @@ The repository now distinguishes three reusable real-document validation tiers:
 3. `full` — model-backed UI-parity execution used by the Lietaer validator and the exceptional quality gate.
 
 Ordinary pytest coverage is expected to exercise `extraction` and `structural`. The dedicated task/script path remains the user-visible path for `full` validation.
+
+## AI Structure Recognition Smoke
+
+The repository also has a real-document AI structure-recognition smoke test in
+`tests/test_real_document_structure_recognition_integration.py`.
+
+This test is intentionally opt-in and is excluded from the ordinary `Run Full Pytest`
+path even when `OPENAI_API_KEY` is present. It only runs when both conditions hold:
+
+1. `OPENAI_API_KEY` is available after loading the project `.env`.
+2. `DOCXAI_RUN_REAL_DOCUMENT_STRUCTURE_RECOGNITION=1` is set explicitly.
+
+Run it only when a change touches one of these surfaces:
+
+1. `structure_recognition.py` prompt/request/response parsing logic.
+2. `preparation.py` integration of the structure-recognition stage.
+3. runtime/profile wiring that decides whether AI structure recognition is enabled.
+4. real-document validation/reporting logic for AI counters or AI-enabled profiles.
+
+Preferred user-visible execution paths:
+
+```text
+Tasks: Run Task -> Run Lietaer Real Validation
+Tasks: Run Task -> Run Lietaer Real Validation AI
+```
+
+Ad-hoc pytest path when an explicit smoke assertion is needed:
+
+```bash
+DOCXAI_RUN_REAL_DOCUMENT_STRUCTURE_RECOGNITION=1 \
+bash scripts/test.sh tests/test_real_document_structure_recognition_integration.py -vv
+```
 
 ## Environment Contract
 
@@ -173,7 +205,7 @@ Current Phase 1 output contract behind those checks:
 
 The centered-paragraph acceptance check is therefore expected to pass through mapped direct-alignment restoration rather than through a validator-side exception or broad paragraph-XML replay.
 
-The exceptional quality gate is intentionally excluded from the normal full-suite path. It is available only through the dedicated task/script so expensive real-document validation does not contaminate ordinary regression runs.
+The exceptional quality gate and the real-document AI structure-recognition smoke are intentionally excluded from the normal full-suite path. They are available only through dedicated task/script or explicit opt-in env selection so expensive real-document validation does not contaminate ordinary regression runs.
 
 ## Corpus Workflow
 
