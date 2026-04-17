@@ -113,16 +113,43 @@ def test_build_structure_map_returns_empty_map_on_classifier_failure(monkeypatch
         lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
     )
 
-    try:
-        structure_recognition.build_structure_map(
-            paragraphs,
-            client=object(),
-            model="gpt-4o-mini",
-        )
-    except RuntimeError as exc:
-        assert str(exc) == "boom"
-    else:
-        raise AssertionError("Expected RuntimeError when structure-recognition window classification fails")
+    structure_map = structure_recognition.build_structure_map(
+        paragraphs,
+        client=object(),
+        model="gpt-4o-mini",
+    )
+
+    assert structure_map.classifications == {}
+    assert structure_map.window_count == 1
+
+
+def test_build_structure_map_keeps_successful_windows_when_later_window_fails(monkeypatch):
+    paragraphs = [
+        _paragraph(source_index=0, text="ГЛАВА 1"),
+        _paragraph(source_index=1, text="Основной текст"),
+        _paragraph(source_index=2, text="Подзаголовок"),
+    ]
+    calls = {"count": 0}
+
+    def _classify(**kwargs):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise RuntimeError("boom")
+        return ([ParagraphClassification(index=0, role="heading", heading_level=1, confidence="high")], 11)
+
+    monkeypatch.setattr(structure_recognition, "_classify_descriptor_window", _classify)
+
+    structure_map = structure_recognition.build_structure_map(
+        paragraphs,
+        client=object(),
+        model="gpt-4o-mini",
+        max_window_paragraphs=2,
+        overlap_paragraphs=1,
+    )
+
+    assert structure_map.window_count == 2
+    assert structure_map.total_tokens_used == 11
+    assert structure_map.get(0) == ParagraphClassification(index=0, role="heading", heading_level=1, confidence="high")
 
 
 def test_classify_descriptor_window_normalizes_fenced_json_output(monkeypatch):
@@ -162,4 +189,31 @@ def test_parse_classification_payload_accepts_compact_json_array():
     assert classifications == [
         ParagraphClassification(index=3, role="heading", heading_level=2, confidence="high", rationale=None),
         ParagraphClassification(index=4, role="body", heading_level=None, confidence="medium", rationale=None),
+    ]
+
+
+def test_parse_classification_payload_rejects_invalid_role_and_confidence():
+    try:
+        structure_recognition._parse_classification_payload('[{"i": 1, "r": "__del__", "l": null, "c": "high"}]')
+    except ValueError as exc:
+        assert "role" in str(exc)
+    else:
+        raise AssertionError("Expected invalid AI role to be rejected")
+
+    try:
+        structure_recognition._parse_classification_payload('[{"i": 1, "r": "body", "l": null, "c": "wild"}]')
+    except ValueError as exc:
+        assert "confidence" in str(exc)
+    else:
+        raise AssertionError("Expected invalid AI confidence to be rejected")
+
+
+def test_parse_classification_payload_clamps_heading_level():
+    classifications = structure_recognition._parse_classification_payload(
+        '[{"i": 3, "r": "heading", "l": 99, "c": "high"}, {"i": 4, "r": "heading", "l": -3, "c": "medium"}]'
+    )
+
+    assert classifications == [
+        ParagraphClassification(index=3, role="heading", heading_level=6, confidence="high", rationale=None),
+        ParagraphClassification(index=4, role="heading", heading_level=1, confidence="medium", rationale=None),
     ]

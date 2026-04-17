@@ -511,6 +511,8 @@ def test_prepare_document_for_processing_runs_structure_recognition_when_enabled
             "structure_recognition_overlap_paragraphs": 50,
             "structure_recognition_timeout_seconds": 60,
             "structure_recognition_min_confidence": "medium",
+            "structure_recognition_cache_enabled": False,
+            "structure_recognition_save_debug_artifacts": False,
         },
     )
 
@@ -588,6 +590,8 @@ def test_prepare_document_for_processing_tracks_ai_heading_demotions_against_heu
             "structure_recognition_overlap_paragraphs": 50,
             "structure_recognition_timeout_seconds": 60,
             "structure_recognition_min_confidence": "medium",
+            "structure_recognition_cache_enabled": False,
+            "structure_recognition_save_debug_artifacts": False,
         },
     )
 
@@ -634,6 +638,8 @@ def test_prepare_document_for_processing_falls_back_to_heuristics_when_structure
             "structure_recognition_overlap_paragraphs": 50,
             "structure_recognition_timeout_seconds": 60,
             "structure_recognition_min_confidence": "medium",
+            "structure_recognition_cache_enabled": False,
+            "structure_recognition_save_debug_artifacts": False,
         },
     )
     logged_events = []

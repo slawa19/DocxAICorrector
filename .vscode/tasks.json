@@ -499,6 +499,30 @@
 			},
 			"isBackground": false,
 			"group": "test"
+		},
+		{
+			"label": "Review Check Structure Recognition",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"scripts/test.sh",
+				"tests/test_structure_recognition.py",
+				"-q"
+			],
+			"isBackground": false,
+			"group": "test"
+		},
+		{
+			"label": "Review Check Preparation",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"scripts/test.sh",
+				"tests/test_preparation.py",
+				"-q"
+			],
+			"isBackground": false,
+			"group": "test"
 		}
 	],
 	"inputs": [

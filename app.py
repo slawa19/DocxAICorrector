@@ -181,6 +181,7 @@ def _start_background_preparation(
 def _store_preparation_summary(*, prepared_run_context) -> None:
     elapsed_seconds = float(getattr(prepared_run_context, "preparation_elapsed_seconds", 0.0) or 0.0)
     elapsed = f"{elapsed_seconds:.1f} c" if elapsed_seconds > 0 else ""
+    structure_summary = application_flow.resolve_structure_recognition_summary(prepared_run_context)
     normalization_metrics = application_flow.flatten_normalization_metrics(
         getattr(prepared_run_context, "normalization_report", None)
     )
@@ -196,12 +197,7 @@ def _store_preparation_summary(*, prepared_run_context) -> None:
         "source_chars": len(prepared_run_context.source_text),
         "block_count": len(prepared_run_context.jobs),
         "cached": bool(getattr(prepared_run_context, "preparation_cached", False)),
-        "ai_classified": int(getattr(prepared_run_context, "ai_classified_count", 0) or 0),
-        "ai_headings": int(getattr(prepared_run_context, "ai_heading_count", 0) or 0),
-        "ai_role_changes": int(getattr(prepared_run_context, "ai_role_change_count", 0) or 0),
-        "ai_heading_promotions": int(getattr(prepared_run_context, "ai_heading_promotion_count", 0) or 0),
-        "ai_heading_demotions": int(getattr(prepared_run_context, "ai_heading_demotion_count", 0) or 0),
-        "ai_structural_role_changes": int(getattr(prepared_run_context, "ai_structural_role_change_count", 0) or 0),
+        **structure_summary.as_preparation_summary_metrics(),
         "elapsed": elapsed,
         "progress": 1.0,
         **normalization_metrics,

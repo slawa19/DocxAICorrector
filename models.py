@@ -212,6 +212,57 @@ class ParagraphClassification:
     rationale: str | None = None
 
 
+@dataclass(frozen=True)
+class StructureRecognitionSummary:
+    ai_classified_count: int = 0
+    ai_heading_count: int = 0
+    ai_role_change_count: int = 0
+    ai_heading_promotion_count: int = 0
+    ai_heading_demotion_count: int = 0
+    ai_structural_role_change_count: int = 0
+
+    @classmethod
+    def from_source(cls, source: object | None) -> "StructureRecognitionSummary":
+        if isinstance(source, cls):
+            return source
+        return cls(
+            ai_classified_count=int(getattr(source, "ai_classified_count", 0) or 0),
+            ai_heading_count=int(getattr(source, "ai_heading_count", 0) or 0),
+            ai_role_change_count=int(getattr(source, "ai_role_change_count", 0) or 0),
+            ai_heading_promotion_count=int(getattr(source, "ai_heading_promotion_count", 0) or 0),
+            ai_heading_demotion_count=int(getattr(source, "ai_heading_demotion_count", 0) or 0),
+            ai_structural_role_change_count=int(getattr(source, "ai_structural_role_change_count", 0) or 0),
+        )
+
+    def as_progress_metrics(self, *, structure_map: "StructureMap | None" = None) -> dict[str, int]:
+        metrics: dict[str, int] = {}
+        if structure_map is not None:
+            metrics["structure_window_count"] = structure_map.window_count
+        if self.ai_classified_count:
+            metrics["ai_classified"] = self.ai_classified_count
+        if self.ai_heading_count:
+            metrics["ai_headings"] = self.ai_heading_count
+        if self.ai_role_change_count:
+            metrics["ai_role_changes"] = self.ai_role_change_count
+        if self.ai_heading_promotion_count:
+            metrics["ai_heading_promotions"] = self.ai_heading_promotion_count
+        if self.ai_heading_demotion_count:
+            metrics["ai_heading_demotions"] = self.ai_heading_demotion_count
+        if self.ai_structural_role_change_count:
+            metrics["ai_structural_role_changes"] = self.ai_structural_role_change_count
+        return metrics
+
+    def as_preparation_summary_metrics(self) -> dict[str, int]:
+        return {
+            "ai_classified": self.ai_classified_count,
+            "ai_headings": self.ai_heading_count,
+            "ai_role_changes": self.ai_role_change_count,
+            "ai_heading_promotions": self.ai_heading_promotion_count,
+            "ai_heading_demotions": self.ai_heading_demotion_count,
+            "ai_structural_role_changes": self.ai_structural_role_change_count,
+        }
+
+
 @dataclass
 class StructureMap:
     classifications: dict[int, ParagraphClassification]

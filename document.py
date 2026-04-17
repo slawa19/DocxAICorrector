@@ -285,7 +285,7 @@ def build_marker_wrapped_block_text(paragraphs: list[ParagraphUnit], *, paragrap
 
 
 def _paragraph_structural_kind(paragraph: ParagraphUnit) -> str:
-    return str(getattr(paragraph, "structural_role", None) or getattr(paragraph, "role", None) or "").strip().lower()
+    return str(paragraph.structural_role or paragraph.role or "").strip().lower()
 
 
 def _is_quote_structural_role(paragraph: ParagraphUnit) -> bool:
@@ -1905,6 +1905,8 @@ def _read_uploaded_docx_bytes(uploaded_file) -> bytes:
         raise ValueError("Не удалось прочитать содержимое DOCX-файла.") from exc
     if zipfile.is_zipfile(BytesIO(source_bytes)):
         return source_bytes
+    # Legacy compatibility path: some low-level DOCX-oriented helpers still receive raw
+    # .doc uploads here. The authoritative upload normalization boundary lives earlier.
     normalized_document = normalize_uploaded_document(
         filename=resolve_uploaded_filename(uploaded_file),
         source_bytes=source_bytes,

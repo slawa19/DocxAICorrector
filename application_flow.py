@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from document import summarize_boundary_normalization_metrics, validate_docx_source_bytes
+from models import StructureRecognitionSummary
 from preparation import emit_preparation_progress, prepare_document_for_processing
 from processing_runtime import (
     FrozenUploadPayload,
@@ -41,12 +42,36 @@ class PreparedRunContext:
     normalization_report: object | None = None
     relation_report: object | None = None
     structure_map: object | None = None
-    ai_classified_count: int = 0
-    ai_heading_count: int = 0
-    ai_role_change_count: int = 0
-    ai_heading_promotion_count: int = 0
-    ai_heading_demotion_count: int = 0
-    ai_structural_role_change_count: int = 0
+    structure_recognition_summary: StructureRecognitionSummary = StructureRecognitionSummary()
+
+    @property
+    def ai_classified_count(self) -> int:
+        return self.structure_recognition_summary.ai_classified_count
+
+    @property
+    def ai_heading_count(self) -> int:
+        return self.structure_recognition_summary.ai_heading_count
+
+    @property
+    def ai_role_change_count(self) -> int:
+        return self.structure_recognition_summary.ai_role_change_count
+
+    @property
+    def ai_heading_promotion_count(self) -> int:
+        return self.structure_recognition_summary.ai_heading_promotion_count
+
+    @property
+    def ai_heading_demotion_count(self) -> int:
+        return self.structure_recognition_summary.ai_heading_demotion_count
+
+    @property
+    def ai_structural_role_change_count(self) -> int:
+        return self.structure_recognition_summary.ai_structural_role_change_count
+
+
+def resolve_structure_recognition_summary(source: object | None) -> StructureRecognitionSummary:
+    summary = getattr(source, "structure_recognition_summary", source)
+    return StructureRecognitionSummary.from_source(summary)
 
 
 def flatten_normalization_metrics(normalization_report) -> dict[str, int]:
@@ -257,6 +282,7 @@ def _raise_or_fail_preparation(*, prepared_document, uploaded_filename: str, fai
 
 
 def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: bytes, uploaded_file_token: str, prepared_document, elapsed_seconds: float) -> PreparedRunContext:
+    structure_summary = resolve_structure_recognition_summary(prepared_document)
     return PreparedRunContext(
         uploaded_filename=uploaded_filename,
         uploaded_file_bytes=uploaded_file_bytes,
@@ -273,12 +299,7 @@ def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: 
         normalization_report=getattr(prepared_document, "normalization_report", None),
         relation_report=getattr(prepared_document, "relation_report", None),
         structure_map=getattr(prepared_document, "structure_map", None),
-        ai_classified_count=int(getattr(prepared_document, "ai_classified_count", 0) or 0),
-        ai_heading_count=int(getattr(prepared_document, "ai_heading_count", 0) or 0),
-        ai_role_change_count=int(getattr(prepared_document, "ai_role_change_count", 0) or 0),
-        ai_heading_promotion_count=int(getattr(prepared_document, "ai_heading_promotion_count", 0) or 0),
-        ai_heading_demotion_count=int(getattr(prepared_document, "ai_heading_demotion_count", 0) or 0),
-        ai_structural_role_change_count=int(getattr(prepared_document, "ai_structural_role_change_count", 0) or 0),
+        structure_recognition_summary=structure_summary,
     )
 
 

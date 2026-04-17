@@ -1,7 +1,10 @@
 from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass
+import hashlib
+import json
 import logging
+from pathlib import Path
 from threading import Event, Lock
 
 from config import get_client, load_app_config
@@ -14,6 +17,7 @@ from document import (
 )
 from logger import log_event
 from models import ParagraphBoundaryNormalizationReport, ParagraphRelation, RelationNormalizationReport
+from models import StructureRecognitionSummary
 from models import clone_prepared_image_asset
 from models import StructureMap
 from processing_runtime import FrozenUploadPayload, build_in_memory_uploaded_file
@@ -31,13 +35,32 @@ class PreparedDocumentData:
     normalization_report: ParagraphBoundaryNormalizationReport | None = None
     relation_report: RelationNormalizationReport | None = None
     structure_map: StructureMap | None = None
-    ai_classified_count: int = 0
-    ai_heading_count: int = 0
-    ai_role_change_count: int = 0
-    ai_heading_promotion_count: int = 0
-    ai_heading_demotion_count: int = 0
-    ai_structural_role_change_count: int = 0
+    structure_recognition_summary: StructureRecognitionSummary = StructureRecognitionSummary()
     cached: bool = False
+
+    @property
+    def ai_classified_count(self) -> int:
+        return self.structure_recognition_summary.ai_classified_count
+
+    @property
+    def ai_heading_count(self) -> int:
+        return self.structure_recognition_summary.ai_heading_count
+
+    @property
+    def ai_role_change_count(self) -> int:
+        return self.structure_recognition_summary.ai_role_change_count
+
+    @property
+    def ai_heading_promotion_count(self) -> int:
+        return self.structure_recognition_summary.ai_heading_promotion_count
+
+    @property
+    def ai_heading_demotion_count(self) -> int:
+        return self.structure_recognition_summary.ai_heading_demotion_count
+
+    @property
+    def ai_structural_role_change_count(self) -> int:
+        return self.structure_recognition_summary.ai_structural_role_change_count
 
 
 def _build_normalization_metrics(
@@ -67,31 +90,28 @@ def _build_normalization_metrics(
     return metrics
 
 
-def _build_structure_metrics(
+def _build_preparation_stage_metrics(
     *,
-    structure_map: StructureMap | None,
-    ai_classified_count: int = 0,
-    ai_heading_count: int = 0,
-    ai_role_change_count: int = 0,
-    ai_heading_promotion_count: int = 0,
-    ai_heading_demotion_count: int = 0,
-    ai_structural_role_change_count: int = 0,
+    paragraph_count: int,
+    image_count: int,
+    normalization_report: ParagraphBoundaryNormalizationReport | None,
+    relation_report: RelationNormalizationReport | None,
+    structure_map: StructureMap | None = None,
+    structure_summary: StructureRecognitionSummary | None = None,
+    source_text: str | None = None,
+    block_count: int | None = None,
 ) -> dict[str, int]:
-    metrics: dict[str, int] = {}
-    if structure_map is not None:
-        metrics["structure_window_count"] = structure_map.window_count
-    if ai_classified_count:
-        metrics["ai_classified"] = ai_classified_count
-    if ai_heading_count:
-        metrics["ai_headings"] = ai_heading_count
-    if ai_role_change_count:
-        metrics["ai_role_changes"] = ai_role_change_count
-    if ai_heading_promotion_count:
-        metrics["ai_heading_promotions"] = ai_heading_promotion_count
-    if ai_heading_demotion_count:
-        metrics["ai_heading_demotions"] = ai_heading_demotion_count
-    if ai_structural_role_change_count:
-        metrics["ai_structural_role_changes"] = ai_structural_role_change_count
+    metrics = {
+        "paragraph_count": paragraph_count,
+        "image_count": image_count,
+        **_build_normalization_metrics(normalization_report, relation_report),
+    }
+    if source_text is not None:
+        metrics["source_chars"] = len(source_text)
+    if block_count is not None:
+        metrics["block_count"] = block_count
+    if structure_summary is not None:
+        metrics.update(structure_summary.as_progress_metrics(structure_map=structure_map))
     return metrics
 
 
@@ -127,15 +147,103 @@ def _build_structure_divergence_metrics(*, baseline: dict[int, tuple[str, str]],
     return metrics
 
 
-def _run_structure_recognition(*, paragraphs: list, image_assets: list, app_config: dict[str, object], progress_callback, normalization_report, relation_report) -> tuple[StructureMap | None, int, int, dict[str, int]]:
-    if not bool(app_config.get("structure_recognition_enabled", False)):
-        return None, 0, 0, {}
+_STRUCTURE_MAP_CACHE_LIMIT = 8
+_structure_map_cache: OrderedDict[str, StructureMap] = OrderedDict()
+_structure_map_cache_lock = Lock()
+_STRUCTURE_MAP_DEBUG_DIR = Path(__file__).resolve().parent / ".run" / "structure_maps"
 
-    base_metrics = {
-        "paragraph_count": len(paragraphs),
-        "image_count": len(image_assets),
-        **_build_normalization_metrics(normalization_report, relation_report),
+
+def _build_structure_recognition_summary(*, applied_metrics: dict[str, int], divergence_metrics: dict[str, int]) -> StructureRecognitionSummary:
+    return StructureRecognitionSummary(
+        ai_classified_count=int(applied_metrics.get("ai_classified", 0) or 0),
+        ai_heading_count=int(applied_metrics.get("ai_headings", 0) or 0),
+        ai_role_change_count=int(divergence_metrics.get("ai_role_changes", 0) or 0),
+        ai_heading_promotion_count=int(divergence_metrics.get("ai_heading_promotions", 0) or 0),
+        ai_heading_demotion_count=int(divergence_metrics.get("ai_heading_demotions", 0) or 0),
+        ai_structural_role_change_count=int(divergence_metrics.get("ai_structural_role_changes", 0) or 0),
+    )
+
+
+def _build_structure_map_cache_key(*, paragraphs: list, app_config: dict[str, object]) -> str:
+    payload = {
+        "model": str(app_config.get("structure_recognition_model", "gpt-4o-mini")),
+        "max_window_paragraphs": int(app_config.get("structure_recognition_max_window_paragraphs", 1800) or 1800),
+        "overlap_paragraphs": int(app_config.get("structure_recognition_overlap_paragraphs", 50) or 50),
+        "paragraphs": [
+            {
+                "index": int(paragraph.source_index),
+                "text": str(paragraph.text or ""),
+                "style_name": str(paragraph.style_name or ""),
+                "is_bold": bool(paragraph.is_bold),
+                "paragraph_alignment": paragraph.paragraph_alignment,
+                "font_size_pt": paragraph.font_size_pt,
+                "list_kind": paragraph.list_kind,
+                "heading_level": paragraph.heading_level if paragraph.heading_source == "explicit" else None,
+            }
+            for paragraph in paragraphs
+        ],
     }
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _read_cached_structure_map(cache_key: str) -> StructureMap | None:
+    with _structure_map_cache_lock:
+        cached = _structure_map_cache.get(cache_key)
+        if cached is None:
+            return None
+        _structure_map_cache.move_to_end(cache_key)
+        return deepcopy(cached)
+
+
+def _store_cached_structure_map(cache_key: str, structure_map: StructureMap) -> None:
+    with _structure_map_cache_lock:
+        _structure_map_cache[cache_key] = deepcopy(structure_map)
+        _structure_map_cache.move_to_end(cache_key)
+        while len(_structure_map_cache) > _STRUCTURE_MAP_CACHE_LIMIT:
+            _structure_map_cache.popitem(last=False)
+
+
+def _write_structure_map_debug_artifact(*, cache_key: str, structure_map: StructureMap, app_config: dict[str, object]) -> str:
+    _STRUCTURE_MAP_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    artifact_path = _STRUCTURE_MAP_DEBUG_DIR / f"{cache_key}.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "cache_key": cache_key,
+                "model": str(app_config.get("structure_recognition_model", "gpt-4o-mini")),
+                "window_count": structure_map.window_count,
+                "classified_count": structure_map.classified_count,
+                "heading_count": structure_map.heading_count,
+                "total_tokens_used": structure_map.total_tokens_used,
+                "processing_time_seconds": structure_map.processing_time_seconds,
+                "classifications": [
+                    {
+                        "index": classification.index,
+                        "role": classification.role,
+                        "heading_level": classification.heading_level,
+                        "confidence": classification.confidence,
+                    }
+                    for classification in structure_map.classifications.values()
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return str(artifact_path)
+
+
+def _run_structure_recognition(*, paragraphs: list, image_assets: list, app_config: dict[str, object], progress_callback, normalization_report, relation_report) -> tuple[StructureMap | None, StructureRecognitionSummary]:
+    if not bool(app_config.get("structure_recognition_enabled", False)):
+        return None, StructureRecognitionSummary()
+
+    base_metrics = _build_preparation_stage_metrics(
+        paragraph_count=len(paragraphs),
+        image_count=len(image_assets),
+        normalization_report=normalization_report,
+        relation_report=relation_report,
+    )
     emit_preparation_progress(
         progress_callback,
         stage="Распознавание структуры…",
@@ -146,14 +254,29 @@ def _run_structure_recognition(*, paragraphs: list, image_assets: list, app_conf
 
     try:
         baseline = _capture_structure_baseline(paragraphs)
-        structure_map = build_structure_map(
-            paragraphs,
-            client=get_client(),
-            model=str(app_config.get("structure_recognition_model", "gpt-4o-mini")),
-            max_window_paragraphs=int(app_config.get("structure_recognition_max_window_paragraphs", 1800) or 1800),
-            overlap_paragraphs=int(app_config.get("structure_recognition_overlap_paragraphs", 50) or 50),
-            timeout=float(app_config.get("structure_recognition_timeout_seconds", 60) or 60),
-        )
+        cache_key = _build_structure_map_cache_key(paragraphs=paragraphs, app_config=app_config)
+        structure_map = None
+        if bool(app_config.get("structure_recognition_cache_enabled", True)):
+            structure_map = _read_cached_structure_map(cache_key)
+        if structure_map is None:
+            structure_map = build_structure_map(
+                paragraphs,
+                client=get_client(),
+                model=str(app_config.get("structure_recognition_model", "gpt-4o-mini")),
+                max_window_paragraphs=int(app_config.get("structure_recognition_max_window_paragraphs", 1800) or 1800),
+                overlap_paragraphs=int(app_config.get("structure_recognition_overlap_paragraphs", 50) or 50),
+                timeout=float(app_config.get("structure_recognition_timeout_seconds", 60) or 60),
+            )
+            if bool(app_config.get("structure_recognition_cache_enabled", True)):
+                _store_cached_structure_map(cache_key, structure_map)
+        if bool(app_config.get("structure_recognition_save_debug_artifacts", True)):
+            artifact_path = _write_structure_map_debug_artifact(cache_key=cache_key, structure_map=structure_map, app_config=app_config)
+            log_event(
+                logging.INFO,
+                "structure_recognition_debug_artifact_saved",
+                "Сохранён debug artifact распознанной структуры.",
+                artifact_path=artifact_path,
+            )
         applied_metrics = apply_structure_map(
             paragraphs,
             structure_map,
@@ -174,12 +297,17 @@ def _run_structure_recognition(*, paragraphs: list, image_assets: list, app_conf
             progress=0.55,
             metrics=base_metrics,
         )
-        return None, 0, 0, {}
+        return None, StructureRecognitionSummary()
 
-    ai_classified_count = int(applied_metrics.get("ai_classified", 0) or 0)
-    ai_heading_count = int(applied_metrics.get("ai_headings", 0) or 0)
-    if ai_classified_count > 0:
-        detail = f"Классифицировано {ai_classified_count} абзацев, найдено {ai_heading_count} заголовков."
+    structure_summary = _build_structure_recognition_summary(
+        applied_metrics=applied_metrics,
+        divergence_metrics=divergence_metrics,
+    )
+    if structure_summary.ai_classified_count > 0:
+        detail = (
+            f"Классифицировано {structure_summary.ai_classified_count} абзацев, "
+            f"найдено {structure_summary.ai_heading_count} заголовков."
+        )
         stage = "Структура распознана"
     else:
         detail = "AI не внёс изменений. Используются текущие правила."
@@ -189,20 +317,9 @@ def _run_structure_recognition(*, paragraphs: list, image_assets: list, app_conf
         stage=stage,
         detail=detail,
         progress=0.55,
-        metrics={
-            **base_metrics,
-            **_build_structure_metrics(
-                structure_map=structure_map,
-                ai_classified_count=ai_classified_count,
-                ai_heading_count=ai_heading_count,
-                ai_role_change_count=int(divergence_metrics.get("ai_role_changes", 0) or 0),
-                ai_heading_promotion_count=int(divergence_metrics.get("ai_heading_promotions", 0) or 0),
-                ai_heading_demotion_count=int(divergence_metrics.get("ai_heading_demotions", 0) or 0),
-                ai_structural_role_change_count=int(divergence_metrics.get("ai_structural_role_changes", 0) or 0),
-            ),
-        },
+        metrics={**base_metrics, **structure_summary.as_progress_metrics(structure_map=structure_map)},
     )
-    return structure_map, ai_classified_count, ai_heading_count, divergence_metrics
+    return structure_map, structure_summary
 
 
 PREPARATION_CACHE_LIMIT = 2
@@ -260,7 +377,7 @@ def _prepare_document_for_processing(
             **_build_normalization_metrics(normalization_report, relation_report),
         },
     )
-    structure_map, ai_classified_count, ai_heading_count, divergence_metrics = _run_structure_recognition(
+    structure_map, structure_summary = _run_structure_recognition(
         paragraphs=paragraphs,
         image_assets=image_assets,
         app_config=app_config,
@@ -274,21 +391,15 @@ def _prepare_document_for_processing(
         stage="Текст собран",
         detail="Формирую цельный текст документа и считаю объём.",
         progress=0.6,
-        metrics={
-            "paragraph_count": len(paragraphs),
-            "image_count": len(image_assets),
-            "source_chars": len(source_text),
-            **_build_normalization_metrics(normalization_report, relation_report),
-            **_build_structure_metrics(
-                structure_map=structure_map,
-                ai_classified_count=ai_classified_count,
-                ai_heading_count=ai_heading_count,
-                ai_role_change_count=int(divergence_metrics.get("ai_role_changes", 0) or 0),
-                ai_heading_promotion_count=int(divergence_metrics.get("ai_heading_promotions", 0) or 0),
-                ai_heading_demotion_count=int(divergence_metrics.get("ai_heading_demotions", 0) or 0),
-                ai_structural_role_change_count=int(divergence_metrics.get("ai_structural_role_changes", 0) or 0),
-            ),
-        },
+        metrics=_build_preparation_stage_metrics(
+            paragraph_count=len(paragraphs),
+            image_count=len(image_assets),
+            normalization_report=normalization_report,
+            relation_report=relation_report,
+            structure_map=structure_map,
+            structure_summary=structure_summary,
+            source_text=source_text,
+        ),
     )
     blocks = build_semantic_blocks(paragraphs, max_chars=chunk_size, relations=relations)
     emit_preparation_progress(
@@ -296,22 +407,16 @@ def _prepare_document_for_processing(
         stage="Смысловые блоки",
         detail="Группирую абзацы в блоки для модели.",
         progress=0.75,
-        metrics={
-            "paragraph_count": len(paragraphs),
-            "image_count": len(image_assets),
-            "source_chars": len(source_text),
-            "block_count": len(blocks),
-            **_build_normalization_metrics(normalization_report, relation_report),
-            **_build_structure_metrics(
-                structure_map=structure_map,
-                ai_classified_count=ai_classified_count,
-                ai_heading_count=ai_heading_count,
-                ai_role_change_count=int(divergence_metrics.get("ai_role_changes", 0) or 0),
-                ai_heading_promotion_count=int(divergence_metrics.get("ai_heading_promotions", 0) or 0),
-                ai_heading_demotion_count=int(divergence_metrics.get("ai_heading_demotions", 0) or 0),
-                ai_structural_role_change_count=int(divergence_metrics.get("ai_structural_role_changes", 0) or 0),
-            ),
-        },
+        metrics=_build_preparation_stage_metrics(
+            paragraph_count=len(paragraphs),
+            image_count=len(image_assets),
+            normalization_report=normalization_report,
+            relation_report=relation_report,
+            structure_map=structure_map,
+            structure_summary=structure_summary,
+            source_text=source_text,
+            block_count=len(blocks),
+        ),
     )
     jobs = build_editing_jobs(blocks, max_chars=chunk_size)
     emit_preparation_progress(
@@ -319,22 +424,16 @@ def _prepare_document_for_processing(
         stage="Задания собраны",
         detail="Готовлю финальный набор задач для обработки.",
         progress=0.9,
-        metrics={
-            "paragraph_count": len(paragraphs),
-            "image_count": len(image_assets),
-            "source_chars": len(source_text),
-            "block_count": len(jobs),
-            **_build_normalization_metrics(normalization_report, relation_report),
-            **_build_structure_metrics(
-                structure_map=structure_map,
-                ai_classified_count=ai_classified_count,
-                ai_heading_count=ai_heading_count,
-                ai_role_change_count=int(divergence_metrics.get("ai_role_changes", 0) or 0),
-                ai_heading_promotion_count=int(divergence_metrics.get("ai_heading_promotions", 0) or 0),
-                ai_heading_demotion_count=int(divergence_metrics.get("ai_heading_demotions", 0) or 0),
-                ai_structural_role_change_count=int(divergence_metrics.get("ai_structural_role_changes", 0) or 0),
-            ),
-        },
+        metrics=_build_preparation_stage_metrics(
+            paragraph_count=len(paragraphs),
+            image_count=len(image_assets),
+            normalization_report=normalization_report,
+            relation_report=relation_report,
+            structure_map=structure_map,
+            structure_summary=structure_summary,
+            source_text=source_text,
+            block_count=len(jobs),
+        ),
     )
     return PreparedDocumentData(
         source_text=source_text,
@@ -346,12 +445,7 @@ def _prepare_document_for_processing(
         normalization_report=normalization_report,
         relation_report=relation_report,
         structure_map=structure_map,
-        ai_classified_count=ai_classified_count,
-        ai_heading_count=ai_heading_count,
-        ai_role_change_count=int(divergence_metrics.get("ai_role_changes", 0) or 0),
-        ai_heading_promotion_count=int(divergence_metrics.get("ai_heading_promotions", 0) or 0),
-        ai_heading_demotion_count=int(divergence_metrics.get("ai_heading_demotions", 0) or 0),
-        ai_structural_role_change_count=int(divergence_metrics.get("ai_structural_role_changes", 0) or 0),
+        structure_recognition_summary=structure_summary,
         cached=False,
     )
 
@@ -396,12 +490,7 @@ def _clone_prepared_document(data: PreparedDocumentData, prepared_source_key: st
         normalization_report=deepcopy(data.normalization_report),
         relation_report=deepcopy(data.relation_report),
         structure_map=deepcopy(data.structure_map),
-        ai_classified_count=data.ai_classified_count,
-        ai_heading_count=data.ai_heading_count,
-        ai_role_change_count=data.ai_role_change_count,
-        ai_heading_promotion_count=data.ai_heading_promotion_count,
-        ai_heading_demotion_count=data.ai_heading_demotion_count,
-        ai_structural_role_change_count=data.ai_structural_role_change_count,
+        structure_recognition_summary=data.structure_recognition_summary,
         cached=cached,
     )
 
@@ -522,15 +611,7 @@ def prepare_document_for_processing(
                 "block_count": len(cached.jobs),
                 "cached": cached.cached,
                 **_build_normalization_metrics(cached.normalization_report, cached.relation_report),
-                **_build_structure_metrics(
-                    structure_map=cached.structure_map,
-                    ai_classified_count=cached.ai_classified_count,
-                    ai_heading_count=cached.ai_heading_count,
-                    ai_role_change_count=cached.ai_role_change_count,
-                    ai_heading_promotion_count=cached.ai_heading_promotion_count,
-                    ai_heading_demotion_count=cached.ai_heading_demotion_count,
-                    ai_structural_role_change_count=cached.ai_structural_role_change_count,
-                ),
+                **cached.structure_recognition_summary.as_progress_metrics(structure_map=cached.structure_map),
             },
         )
         return cached

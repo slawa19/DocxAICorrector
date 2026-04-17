@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from collections.abc import Iterable, Sequence
 import json
 from pathlib import Path
@@ -13,6 +14,8 @@ from openai_response_utils import collect_response_text_traversal
 
 SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "structure_recognition_system.txt"
 _PIPELINE_BODY_STRUCTURAL_ROLES = {"epigraph", "attribution", "toc_entry", "toc_header", "dedication"}
+_VALID_AI_ROLES = {"heading", "body", "caption", "epigraph", "attribution", "toc_entry", "toc_header", "dedication", "list"}
+_VALID_AI_CONFIDENCES = {"high", "medium", "low"}
 
 
 class _ResponsesApi(Protocol):
@@ -22,6 +25,11 @@ class _ResponsesApi(Protocol):
 
 class _StructureRecognitionClient(Protocol):
     responses: _ResponsesApi
+
+
+@lru_cache(maxsize=1)
+def _load_system_prompt() -> str:
+    return SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
 
 
 def build_paragraph_descriptors(paragraphs: list[ParagraphUnit]) -> list[ParagraphDescriptor]:
@@ -98,12 +106,15 @@ def build_structure_map(
     total_tokens_used = 0
     for window in _iter_descriptor_windows(descriptors, max_window_paragraphs=max_window_paragraphs, overlap_paragraphs=overlap_paragraphs):
         window_count += 1
-        window_classifications, window_tokens = _classify_descriptor_window(
-            client=cast(_StructureRecognitionClient, client),
-            model=model,
-            descriptors=window,
-            timeout=timeout,
-        )
+        try:
+            window_classifications, window_tokens = _classify_descriptor_window(
+                client=cast(_StructureRecognitionClient, client),
+                model=model,
+                descriptors=window,
+                timeout=timeout,
+            )
+        except Exception:
+            continue
         total_tokens_used += window_tokens
         _merge_window_classifications(merged_classifications, window_classifications, window=window)
     return StructureMap(
@@ -122,7 +133,7 @@ def _classify_descriptor_window(
     descriptors: Sequence[ParagraphDescriptor],
     timeout: float,
 ) -> tuple[list[ParagraphClassification], int]:
-    system_prompt = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
+    system_prompt = _load_system_prompt()
     descriptor_payload = [descriptor.to_prompt_dict() for descriptor in descriptors]
     if not hasattr(client, "responses") or not hasattr(client.responses, "create"):
         raise RuntimeError("Unsupported structure recognition client")
@@ -131,7 +142,10 @@ def _classify_descriptor_window(
         model=model,
         input=[
             {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
-            {"role": "user", "content": [{"type": "input_text", "text": json.dumps(descriptor_payload, ensure_ascii=False)}]},
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": _build_user_prompt(descriptor_payload)}],
+            },
         ],
         timeout=timeout,
     )
@@ -153,16 +167,40 @@ def _parse_classification_payload(payload: str | Sequence[object]) -> list[Parag
     for item in parsed:
         if not isinstance(item, dict):
             raise ValueError("Structure recognition item must be an object")
+        role = str(item["r"]).strip().lower()
+        if role not in _VALID_AI_ROLES:
+            raise ValueError(f"Unsupported structure recognition role: {role}")
+        confidence = str(item["c"]).strip().lower()
+        if confidence not in _VALID_AI_CONFIDENCES:
+            raise ValueError(f"Unsupported structure recognition confidence: {confidence}")
+        heading_level = _normalize_heading_level(item.get("l"), role=role)
         classifications.append(
             ParagraphClassification(
                 index=int(item["i"]),
-                role=str(item["r"]),
-                heading_level=(None if item.get("l") is None else int(item["l"])),
-                confidence=str(item["c"]),
+                role=role,
+                heading_level=heading_level,
+                confidence=confidence,
                 rationale=None if item.get("reason") is None else str(item.get("reason")),
             )
         )
     return classifications
+
+
+def _normalize_heading_level(raw_level: object, *, role: str) -> int | None:
+    if role != "heading" or raw_level is None:
+        return None
+    return min(max(int(raw_level), 1), 6)
+
+
+def _build_user_prompt(descriptor_payload: Sequence[dict[str, object]]) -> str:
+    return (
+        "Classify each paragraph. Metadata format:\n"
+        '{"i": index, "t": "text preview (first 60 chars)", "len": full_length, '
+        '"s": "DOCX style", "b": bold, "ctr": centered, "caps": all_caps, '
+        '"pt": font_size, "num": has_numbering, "hl": explicit_heading_level_or_null}\n\n'
+        "Paragraphs:\n"
+        f"{json.dumps(list(descriptor_payload), ensure_ascii=False)}"
+    )
 
 
 def _iter_descriptor_windows(
