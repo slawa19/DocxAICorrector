@@ -15,7 +15,13 @@ import streamlit as st
 
 from logger import log_event
 from restart_store import clear_restart_source, load_restart_source_bytes, store_completed_source, store_restart_source
-from state import build_default_image_processing_summary
+from state import (
+    apply_preparation_complete,
+    apply_preparation_failure,
+    apply_processing_completion,
+    mark_preparation_started,
+    reset_image_state,
+)
 from runtime_events import (
     AppendImageLogEvent,
     AppendLogEvent,
@@ -37,17 +43,63 @@ _DOCX_ZIP_MAGIC = b"PK\x03\x04"
 _LEGACY_DOC_MAGIC = bytes.fromhex("D0CF11E0A1B11AE1")
 _DEFAULT_UPLOADED_FILENAME = "document.docx"
 _DOC_CONVERSION_TIMEOUT_SECONDS = 120
+_ALLOWED_SET_STATE_EVENT_KEYS = {
+    "image_assets",
+    "last_background_error",
+    "last_error",
+    "latest_docx_bytes",
+    "latest_markdown",
+    "latest_marker_diagnostics_artifact",
+    "latest_result_notice",
+    "processed_block_markdowns",
+    "processed_paragraph_registry",
+}
+
+__all__ = [
+    "BackgroundRuntime",
+    "FrozenUploadPayload",
+    "NormalizedUploadedDocument",
+    "UploadSourceIdentity",
+    "ResolvedUploadContract",
+    "InMemoryUploadedFile",
+    "RuntimeEventEmitterDependencies",
+    "RuntimeEventEmitters",
+    "read_uploaded_file_bytes",
+    "normalize_uploaded_document",
+    "resolve_upload_contract",
+    "freeze_resolved_upload",
+    "freeze_uploaded_file",
+    "build_uploaded_file_token",
+    "build_in_memory_uploaded_file",
+    "build_uploaded_file_selection_marker",
+    "build_preparation_request_marker",
+    "normalize_background_error",
+    "build_result_bundle",
+    "should_cache_completed_source",
+    "get_current_result_bundle",
+    "emit_or_apply_state",
+    "emit_or_apply_image_reset",
+    "emit_or_apply_status",
+    "emit_or_apply_finalize",
+    "emit_or_apply_activity",
+    "emit_or_apply_log",
+    "emit_or_apply_image_log",
+    "build_runtime_event_emitters",
+    "should_stop_processing",
+    "resolve_uploaded_filename",
+    "drain_processing_events",
+    "drain_preparation_events",
+    "preparation_worker_is_active",
+    "processing_worker_is_active",
+    "request_processing_stop",
+    "start_background_processing",
+    "start_background_preparation",
+]
 
 
 def _looks_like_runtime_object_repr(value: str) -> bool:
     normalized = value.strip().lower()
     return normalized.startswith("<") and " object at 0x" in normalized and normalized.endswith(">")
-
-
-def _reset_image_state() -> None:
-    st.session_state.image_assets = []
-    st.session_state.image_validation_failures = []
-    st.session_state.image_processing_summary = build_default_image_processing_summary()
 
 
 class BackgroundRuntime:
@@ -449,6 +501,18 @@ def set_session_values(**values) -> None:
         st.session_state[key] = value
 
 
+def _filter_allowed_set_state_values(values: dict[str, object]) -> dict[str, object]:
+    unknown_keys = sorted(key for key in values if key not in _ALLOWED_SET_STATE_EVENT_KEYS)
+    if unknown_keys:
+        log_event(
+            logging.WARNING,
+            "state_event_unknown_keys",
+            "SetStateEvent попытался записать ключи вне разрешённого allowlist.",
+            unknown_keys=unknown_keys,
+        )
+    return {key: value for key, value in values.items() if key in _ALLOWED_SET_STATE_EVENT_KEYS}
+
+
 def emit_or_apply_state(runtime: BackgroundRuntime | None, **values) -> None:
     if runtime is None:
         set_session_values(**values)
@@ -458,7 +522,7 @@ def emit_or_apply_state(runtime: BackgroundRuntime | None, **values) -> None:
 
 def emit_or_apply_image_reset(runtime: BackgroundRuntime | None) -> None:
     if runtime is None:
-        _reset_image_state()
+        reset_image_state()
         return
     runtime.emit(ResetImageStateEvent())
 
@@ -583,9 +647,11 @@ def drain_processing_events(*, set_processing_status, finalize_processing_status
             break
 
         if isinstance(event, SetStateEvent):
-            set_session_values(**event.values)
+            allowed_values = _filter_allowed_set_state_values(event.values)
+            if allowed_values:
+                set_session_values(**allowed_values)
         elif isinstance(event, ResetImageStateEvent):
-            _reset_image_state()
+            reset_image_state()
         elif isinstance(event, SetProcessingStatusEvent):
             set_processing_status(**event.payload)
         elif isinstance(event, FinalizeProcessingStatusEvent):
@@ -597,49 +663,15 @@ def drain_processing_events(*, set_processing_status, finalize_processing_status
         elif isinstance(event, AppendImageLogEvent):
             append_image_log(**event.payload)
         elif isinstance(event, WorkerCompleteEvent):
-            restart_source = st.session_state.get("restart_source")
-            previous_completed_source = st.session_state.get("completed_source")
-            if event.outcome == ProcessingOutcome.SUCCEEDED.value and restart_source:
-                source_bytes = load_restart_source_bytes(restart_source)
-                if source_bytes:
-                    if should_cache_completed_source(source_bytes=source_bytes):
-                        try:
-                            st.session_state.completed_source = store_completed_source(
-                                session_id=str(restart_source.get("session_id", st.session_state.get("restart_session_id", ""))),
-                                source_name=str(restart_source.get("filename", "")),
-                                source_token=str(restart_source.get("token", "")),
-                                source_bytes=source_bytes,
-                                previous_completed_source=previous_completed_source,
-                            )
-                        except OSError as exc:
-                            if previous_completed_source:
-                                clear_restart_source(previous_completed_source)
-                            st.session_state.completed_source = None
-                            log_event(
-                                logging.WARNING,
-                                "completed_source_store_failed",
-                                "Не удалось сохранить completed source во временное файловое хранилище.",
-                                filename=str(restart_source.get("filename", "")),
-                                source_token=str(restart_source.get("token", "")),
-                                error_message=str(exc),
-                            )
-                            push_activity(
-                                "Не удалось сохранить исходный DOCX для повторного запуска после завершения. Для нового запуска загрузите файл заново."
-                            )
-                    else:
-                        if previous_completed_source:
-                            clear_restart_source(previous_completed_source)
-                        st.session_state.completed_source = None
-                        push_activity(
-                            "Исходный файл слишком большой для повторного запуска из памяти. Для нового запуска загрузите DOCX заново."
-                        )
-                clear_restart_source(restart_source)
-                st.session_state.restart_source = None
-            st.session_state.processing_outcome = event.outcome
-            st.session_state.processing_worker = None
-            st.session_state.processing_event_queue = None
-            st.session_state.processing_stop_event = None
-            st.session_state.processing_stop_requested = False
+            apply_processing_completion(
+                outcome=event.outcome,
+                push_activity=push_activity,
+                load_restart_source_bytes_fn=load_restart_source_bytes,
+                clear_restart_source_fn=clear_restart_source,
+                store_completed_source_fn=store_completed_source,
+                should_cache_completed_source_fn=should_cache_completed_source,
+                log_event_fn=log_event,
+            )
 
 
 def drain_preparation_events(*, reset_run_state, set_processing_status, finalize_processing_status, push_activity) -> None:
@@ -659,19 +691,11 @@ def drain_preparation_events(*, reset_run_state, set_processing_status, finalize
         elif isinstance(event, PushActivityEvent):
             push_activity(event.message)
         elif isinstance(event, PreparationCompleteEvent):
-            prepared_run_context = event.prepared_run_context
-            previous_token = str(st.session_state.get("selected_source_token", ""))
-            uploaded_token = str(getattr(prepared_run_context, "uploaded_file_token", ""))
-            if previous_token and uploaded_token and previous_token != uploaded_token:
-                reset_run_state(keep_restart_source=False)
-            st.session_state.prepared_run_context = prepared_run_context
-            st.session_state.preparation_input_marker = event.upload_marker
-            st.session_state.preparation_failed_marker = ""
-            st.session_state.selected_source_token = uploaded_token
-            st.session_state.prepared_source_key = str(getattr(prepared_run_context, "prepared_source_key", ""))
-            st.session_state.preparation_worker = None
-            st.session_state.preparation_event_queue = None
-            st.session_state.processing_outcome = ProcessingOutcome.IDLE.value
+            apply_preparation_complete(
+                prepared_run_context=event.prepared_run_context,
+                upload_marker=event.upload_marker,
+                reset_run_state_fn=reset_run_state,
+            )
             finalize_processing_status(
                 "Документ подготовлен",
                 "Анализ файла завершён. Можно запускать обработку.",
@@ -679,14 +703,11 @@ def drain_preparation_events(*, reset_run_state, set_processing_status, finalize
                 "completed",
             )
         elif isinstance(event, PreparationFailedEvent):
-            st.session_state.prepared_run_context = None
-            st.session_state.preparation_input_marker = event.upload_marker
-            st.session_state.preparation_failed_marker = event.upload_marker
-            st.session_state.preparation_worker = None
-            st.session_state.preparation_event_queue = None
-            st.session_state.last_background_error = event.error_details
-            st.session_state.last_error = event.error_message
-            st.session_state.processing_outcome = ProcessingOutcome.FAILED.value
+            apply_preparation_failure(
+                upload_marker=event.upload_marker,
+                error_message=event.error_message,
+                error_details=event.error_details,
+            )
             finalize_processing_status(
                 "Ошибка подготовки",
                 event.error_message,
@@ -806,9 +827,7 @@ def start_background_preparation(
     keep_all_image_variants: bool,
 ) -> None:
     reset_run_state(keep_restart_source=False)
-    st.session_state.preparation_input_marker = upload_marker
-    st.session_state.preparation_failed_marker = ""
-    st.session_state.prepared_run_context = None
+    mark_preparation_started(upload_marker)
 
     preparation_events = queue.Queue()
     runtime = BackgroundRuntime(preparation_events, threading.Event())

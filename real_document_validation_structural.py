@@ -27,6 +27,7 @@ from generation import convert_markdown_to_docx_bytes, ensure_pandoc_available
 from image_reinsertion import reinsert_inline_images
 from models import ParagraphBoundaryNormalizationReport
 from processing_service import clone_processing_service
+from real_document_validation_common import build_validation_event_logger, build_validation_runtime_config
 from real_document_validation_profiles import DocumentProfile, RunProfile, apply_runtime_resolution_to_app_config, resolve_runtime_resolution
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -184,11 +185,7 @@ def run_structural_passthrough_validation(
         result=result,
         metrics=metrics,
         checks=checks,
-        runtime_config={
-            "effective": runtime_resolution.effective.to_dict(),
-            "ui_defaults": runtime_resolution.ui_defaults.to_dict(),
-            "overrides": runtime_resolution.overrides,
-        },
+        runtime_config=build_validation_runtime_config(runtime_resolution),
         output_artifacts=output_artifacts,
         formatting_diagnostics=formatting_diagnostics,
         event_log=event_log,
@@ -256,14 +253,7 @@ def _build_validation_processing_service(event_log: list[dict[str, object]]):
         reinsert_inline_images_fn=_reinsert_inline_images_adapter,
         run_document_processing_impl_fn=_run_document_processing_impl,
         present_error_fn=lambda code, exc, title, **context: f"{title}: {exc}",
-        log_event_fn=lambda level, event_id, message, **context: event_log.append(
-            {
-                "level": level,
-                "event_id": event_id,
-                "message": message,
-                "context": context,
-            }
-        ),
+        log_event_fn=build_validation_event_logger(event_log),
         emit_state_fn=_emit_state,
         emit_finalize_fn=_emit_finalize,
         emit_activity_fn=_emit_activity,

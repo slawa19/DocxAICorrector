@@ -39,6 +39,7 @@ def test_corpus_structural_passthrough(document_profile) -> None:
     assert result["validation_tier"] == "structural"
     assert result["run_profile_id"] == STRUCTURAL_RUN_PROFILE.id
     assert result["runtime_config"]["effective"]["image_mode"] == STRUCTURAL_RUN_PROFILE.image_mode
+    assert "source_file" not in result
     assert "runtime_configuration" not in result
     assert result["passed"] is True, json.dumps(result, ensure_ascii=False, indent=2)
 
@@ -141,6 +142,7 @@ def test_structural_passthrough_uses_original_legacy_doc_bytes_for_prepared_faca
     assert captured["uploaded_filename"] == "legacy.doc"
     assert captured["uploaded_bytes"] == source_bytes
     assert result["result"] == "succeeded"
+    assert "source_file" not in result
     assert "runtime_configuration" not in result
 
 

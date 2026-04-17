@@ -137,6 +137,52 @@ def test_restore_source_formatting_preserves_existing_heading_semantics():
     assert updated_doc.paragraphs[0].style.name == "Heading 2"
 
 
+
+    def test_preserve_source_paragraph_properties_restores_epigraph_italics_and_alignment_from_semantics():
+        source_paragraphs = [
+            ParagraphUnit(
+                text="Богатство заключается в свободе желаний.",
+                role="body",
+                structural_role="epigraph",
+                paragraph_id="p0001",
+                paragraph_alignment="center",
+                is_italic=True,
+            ),
+            ParagraphUnit(
+                text="— Эпиктет",
+                role="body",
+                structural_role="attribution",
+                paragraph_id="p0002",
+                paragraph_alignment="center",
+                is_italic=True,
+            ),
+        ]
+        generated_registry = [
+            {"paragraph_id": "p0001", "text": "Богатство заключается в свободе желаний."},
+            {"paragraph_id": "p0002", "text": "— Эпиктет"},
+        ]
+
+        target_doc = Document()
+        target_doc.add_paragraph("Богатство заключается в свободе желаний.")
+        target_doc.add_paragraph("— Эпиктет")
+        target_buffer = BytesIO()
+        target_doc.save(target_buffer)
+
+        updated_doc = Document(
+            BytesIO(
+                restore_source_formatting(
+                    target_buffer.getvalue(),
+                    source_paragraphs,
+                    generated_paragraph_registry=generated_registry,
+                )
+            )
+        )
+
+        assert updated_doc.paragraphs[0].alignment == WD_ALIGN_PARAGRAPH.CENTER
+        assert updated_doc.paragraphs[1].alignment == WD_ALIGN_PARAGRAPH.CENTER
+        assert all(run.italic for run in updated_doc.paragraphs[0].runs if run.text.strip())
+        assert all(run.italic for run in updated_doc.paragraphs[1].runs if run.text.strip())
+
 def test_restore_source_formatting_does_not_inject_source_numbering_xml():
     source_doc = Document()
     source_doc.add_paragraph("Первый пункт", style="List Number")

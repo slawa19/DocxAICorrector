@@ -11,6 +11,15 @@ from application_flow import flatten_normalization_metrics
 from logger import format_elapsed
 from message_formatting import derive_live_status_title_and_severity, humanize_reason, humanize_variant
 from models import ImageMode
+from state import (
+    get_activity_feed,
+    get_image_assets,
+    get_image_processing_summary,
+    get_latest_docx_bytes,
+    get_processed_block_markdowns,
+    get_processing_status,
+    get_run_log,
+)
 
 
 IMAGE_MODE_LABELS = {
@@ -188,8 +197,8 @@ def render_sidebar_selectbox(
 
 
 def render_live_status(target=None) -> None:
-    status = st.session_state.processing_status
-    activity_feed = st.session_state.activity_feed
+    status = get_processing_status()
+    activity_feed = get_activity_feed()
     if not status and not activity_feed:
         return
 
@@ -269,6 +278,12 @@ def render_preparation_summary(summary: dict[str, object] | None, target=None) -
         image_count = _to_int(summary.get("image_count"), default=0)
         source_chars = _to_int(summary.get("source_chars"), default=0)
         block_count = _to_int(summary.get("block_count"), default=0)
+        ai_classified = _to_int(summary.get("ai_classified"), default=0)
+        ai_headings = _to_int(summary.get("ai_headings"), default=0)
+        ai_role_changes = _to_int(summary.get("ai_role_changes"), default=0)
+        ai_heading_promotions = _to_int(summary.get("ai_heading_promotions"), default=0)
+        ai_heading_demotions = _to_int(summary.get("ai_heading_demotions"), default=0)
+        ai_structural_role_changes = _to_int(summary.get("ai_structural_role_changes"), default=0)
         normalization_caption = _build_normalization_caption(summary)
         elapsed_fragment = f" | Подготовка: {elapsed}" if elapsed else ""
         stage = str(summary.get("stage") or "Документ подготовлен")
@@ -280,6 +295,14 @@ def render_preparation_summary(summary: dict[str, object] | None, target=None) -
                 f"{image_count} изображений | {source_chars} символов | {block_count} блоков"
             ),
         ]
+        if ai_classified:
+            meta_lines.append(f"Распознано AI: {ai_classified} | Заголовков: {ai_headings}")
+        if ai_role_changes or ai_heading_promotions or ai_heading_demotions or ai_structural_role_changes:
+            meta_lines.append(
+                "Расхождения с эвристикой: "
+                f"ролей {ai_role_changes} | +заголовков {ai_heading_promotions} | "
+                f"-заголовков {ai_heading_demotions} | структурных ролей {ai_structural_role_changes}"
+            )
         if normalization_caption:
             meta_lines.append(normalization_caption)
         _render_status_panel(
@@ -317,7 +340,7 @@ def _get_list_of_str(config: Mapping[str, object], key: str) -> list[str]:
 
 
 def render_run_log(target=None) -> None:
-    run_log = list(st.session_state.get("run_log", []))
+    run_log = get_run_log()
 
     if not run_log:
         return
@@ -342,8 +365,8 @@ def render_run_log(target=None) -> None:
 
 
 def render_image_validation_summary(target=None) -> None:
-    summary = st.session_state.get("image_processing_summary", st.session_state.get("image_validation_summary", {}))
-    image_assets = list(st.session_state.get("image_assets", []))
+    summary = get_image_processing_summary()
+    image_assets = get_image_assets()
     if not summary.get("total_images") and not image_assets:
         return
 
@@ -442,7 +465,7 @@ def render_markdown_preview(
     title: str,
     focus_latest: bool = False,
 ) -> None:
-    blocks = _meaningful_markdown_blocks(list(st.session_state.get("processed_block_markdowns", [])))
+    blocks = _meaningful_markdown_blocks(get_processed_block_markdowns())
     if not blocks:
         return
 
@@ -531,10 +554,10 @@ def render_result_bundle(
 
 
 def render_partial_result() -> None:
-    if st.session_state.latest_docx_bytes is not None:
+    if get_latest_docx_bytes() is not None:
         return
 
-    if not _meaningful_markdown_blocks(list(st.session_state.get("processed_block_markdowns", []))):
+    if not _meaningful_markdown_blocks(get_processed_block_markdowns()):
         return
 
     st.warning("Доступен промежуточный Markdown-результат последнего запуска.")

@@ -265,6 +265,37 @@
 			"group": "test"
 		},
 		{
+			"label": "Run Lietaer Real Validation AI",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"export DOCXAI_REAL_DOCUMENT_PROFILE=lietaer-core; export DOCXAI_REAL_DOCUMENT_RUN_PROFILE=ui-parity-ai-default; bash scripts/run-real-document-validation.sh"
+			],
+			"options": {
+				"shell": {
+					"executable": "wsl.exe",
+					"args": [
+						"-d",
+						"Debian",
+						"--cd",
+						"${workspaceFolder}",
+						"--"
+					]
+				}
+			},
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated",
+				"focus": true,
+				"clear": true,
+				"showReuseMessage": false,
+				"close": false
+			},
+			"group": "test"
+		},
+		{
 			"label": "Run Real Document Validation Profile",
 			"type": "shell",
 			"command": "bash",

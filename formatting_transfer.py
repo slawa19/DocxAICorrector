@@ -23,15 +23,15 @@ from document import (
     INLINE_HTML_TAG_PATTERN,
     MARKDOWN_LINK_PATTERN,
     build_paragraph_relations,
+    detect_explicit_list_kind,
+    find_child_element,
+    get_xml_attribute,
+    infer_heuristic_heading_level,
+    is_image_only_text,
+    is_likely_caption_text,
     resolve_effective_relation_kinds,
-    _is_image_only_text,
-    _detect_explicit_list_kind,
-    _find_child_element,
-    _get_xml_attribute,
-    _infer_heuristic_heading_level,
-    _is_likely_caption_text,
-    _resolve_paragraph_outline_level,
-    _xml_local_name,
+    resolve_paragraph_outline_level,
+    xml_local_name,
 )
 from logger import log_event
 from models import ParagraphUnit
@@ -154,7 +154,7 @@ def _extract_target_heading_level(paragraph) -> int | None:
                 return 1
         return 1
 
-    outline_level = _resolve_paragraph_outline_level(paragraph)
+    outline_level = resolve_paragraph_outline_level(paragraph)
     if outline_level is not None:
         return outline_level
     return None
@@ -202,10 +202,10 @@ def _mapping_similarity_score(source_paragraph: ParagraphUnit, target_text: str)
         return 0.0
 
     score = SequenceMatcher(None, source_text, normalized_target).ratio()
-    if source_paragraph.role == "caption" and _is_likely_caption_text(target_text):
+    if source_paragraph.role == "caption" and is_likely_caption_text(target_text):
         score += 0.08
     if source_paragraph.role == "list":
-        target_list_kind = _detect_explicit_list_kind(target_text)
+        target_list_kind = detect_explicit_list_kind(target_text)
         if target_list_kind is not None and target_list_kind == source_paragraph.list_kind:
             score += 0.05
     if source_paragraph.role == "heading" and len(target_text.split()) <= 18:
@@ -454,7 +454,7 @@ def _map_source_target_paragraphs(
             continue
         candidate_text = target_paragraphs[candidate_index].text.strip()
         if candidate_text and (
-            _is_likely_caption_text(candidate_text)
+            is_likely_caption_text(candidate_text)
             or _normalize_text_for_mapping(source_paragraph.text) == _normalize_text_for_mapping(candidate_text)
         ):
             _register_mapping(
@@ -729,6 +729,7 @@ def apply_output_formatting(
         generated_paragraph_registry=generated_paragraph_registry,
     )
     _restore_direct_paragraph_alignment_for_mapped_pairs(mapping_pairs)
+    _restore_semantic_quote_formatting_for_mapped_pairs(mapping_pairs)
 
     mismatch_detected = bool(unmapped_source_ids or unmapped_target_indexes)
     if not mismatch_detected:
@@ -804,7 +805,7 @@ def _build_output_formatting_diagnostics(
 
 def _apply_minimal_image_formatting(document) -> None:
     for paragraph in document.paragraphs:
-        if _is_image_only_text(paragraph.text):
+        if is_image_only_text(paragraph.text):
             paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
 
@@ -865,7 +866,7 @@ def _is_caption_candidate(
 
     if normalized_text in source_caption_texts or normalized_text in generated_caption_texts:
         return True
-    return _is_likely_caption_text(text)
+    return is_likely_caption_text(text)
 
 
 def _has_caption_anchor_context(document, paragraph) -> bool:
@@ -886,14 +887,14 @@ def _is_caption_anchor_block(block_element) -> bool:
     if block_element is None:
         return False
 
-    local_name = _xml_local_name(block_element.tag)
+    local_name = xml_local_name(block_element.tag)
     if local_name == "tbl":
         return True
     if local_name != "p":
         return False
 
     text_content = "".join(block_element.itertext())
-    return _is_image_only_text(text_content)
+    return is_image_only_text(text_content)
 
 
 # ---------------------------------------------------------------------------
@@ -926,17 +927,17 @@ def _apply_accepted_split_heading_styles(
         normalized_source = _normalize_text_for_mapping(source_paragraph.text)
         if not normalized_target or not normalized_source.startswith(normalized_target):
             continue
-        inferred_level = _infer_heuristic_heading_level(paragraph.text)
+        inferred_level = infer_heuristic_heading_level(paragraph.text)
         heading_style = f"Heading {min(max(inferred_level, 1), 6)}"
         if _style_exists(document, heading_style):
             paragraph.style = document.styles[heading_style]
 
 
 def _extract_paragraph_num_id(paragraph) -> str | None:
-    paragraph_properties = _find_child_element(paragraph._element, "pPr")
-    num_pr = _find_child_element(paragraph_properties, "numPr")
-    num_id = _find_child_element(num_pr, "numId")
-    return _get_xml_attribute(num_id, "val") if num_id is not None else None
+    paragraph_properties = find_child_element(paragraph._element, "pPr")
+    num_pr = find_child_element(paragraph_properties, "numPr")
+    num_id = find_child_element(num_pr, "numId")
+    return get_xml_attribute(num_id, "val") if num_id is not None else None
 
 
 def _restore_list_numbering_for_mapped_paragraphs(document, mapping_pairs: list[tuple[ParagraphUnit, Paragraph]]) -> list[dict[str, object]]:
@@ -1037,9 +1038,9 @@ def _get_target_numbering_root(document):
 def _next_numbering_identifier(numbering_root, tag_name: str, attribute_name: str) -> int:
     max_identifier = 0
     for child in numbering_root:
-        if _xml_local_name(child.tag) != tag_name:
+        if xml_local_name(child.tag) != tag_name:
             continue
-        value = _get_xml_attribute(child, attribute_name)
+        value = get_xml_attribute(child, attribute_name)
         try:
             max_identifier = max(max_identifier, int(value or "0"))
         except ValueError:
@@ -1057,7 +1058,7 @@ def _append_numbering_definition(numbering_root, source_paragraph: ParagraphUnit
     abstract_num_element.set(qn("w:abstractNumId"), str(abstract_num_id))
     num_element.set(qn("w:numId"), str(num_id))
 
-    abstract_num_id_element = _find_child_element(num_element, "abstractNumId")
+    abstract_num_id_element = find_child_element(num_element, "abstractNumId")
     if abstract_num_id_element is None:
         abstract_num_id_element = OxmlElement("w:abstractNumId")
         num_element.insert(0, abstract_num_id_element)
@@ -1070,7 +1071,7 @@ def _append_numbering_definition(numbering_root, source_paragraph: ParagraphUnit
 
 def _apply_list_numbering_to_paragraph(paragraph, *, list_level: int, num_id: int) -> None:
     paragraph_properties = _ensure_paragraph_properties(paragraph)
-    existing_num_pr = _find_child_element(paragraph_properties, "numPr")
+    existing_num_pr = find_child_element(paragraph_properties, "numPr")
     if existing_num_pr is not None:
         paragraph_properties.remove(existing_num_pr)
 
@@ -1094,7 +1095,7 @@ def _style_exists(document, style_name: str) -> bool:
 
 def _set_direct_paragraph_alignment(paragraph, alignment_value: str | None) -> None:
     paragraph_properties = _ensure_paragraph_properties(paragraph)
-    existing_alignment = _find_child_element(paragraph_properties, "jc")
+    existing_alignment = find_child_element(paragraph_properties, "jc")
     if alignment_value is None:
         if existing_alignment is not None:
             paragraph_properties.remove(existing_alignment)
@@ -1112,8 +1113,18 @@ def _restore_direct_paragraph_alignment_for_mapped_pairs(mapping_pairs: list[tup
         _set_direct_paragraph_alignment(target_paragraph, source_paragraph.paragraph_alignment)
 
 
+def _restore_semantic_quote_formatting_for_mapped_pairs(mapping_pairs: list[tuple[ParagraphUnit, Paragraph]]) -> None:
+    for source_paragraph, target_paragraph in mapping_pairs:
+        if source_paragraph.structural_role not in {"epigraph", "attribution", "dedication"}:
+            continue
+        if source_paragraph.is_italic:
+            for run in target_paragraph.runs:
+                if run.text and run.text.strip():
+                    run.italic = True
+
+
 def _ensure_paragraph_properties(paragraph):
-    paragraph_properties = _find_child_element(paragraph._element, "pPr")
+    paragraph_properties = find_child_element(paragraph._element, "pPr")
     if paragraph_properties is not None:
         return paragraph_properties
 

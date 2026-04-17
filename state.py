@@ -1,5 +1,7 @@
 import time
+import logging
 from uuid import uuid4
+from dataclasses import dataclass
 from datetime import datetime
 
 import streamlit as st
@@ -19,6 +21,194 @@ def build_default_image_processing_summary() -> dict[str, object]:
         "fallbacks_applied": 0,
         "validation_errors": [],
     }
+
+
+def reset_image_state() -> None:
+    st.session_state.image_assets = []
+    st.session_state.image_validation_failures = []
+    st.session_state.image_processing_summary = build_default_image_processing_summary()
+
+
+@dataclass(frozen=True)
+class PreparationStateSnapshot:
+    input_marker: str
+    failed_marker: str
+    prepared_run_context: object | None
+
+
+def get_preparation_state() -> PreparationStateSnapshot:
+    return PreparationStateSnapshot(
+        input_marker=str(st.session_state.get("preparation_input_marker", "")),
+        failed_marker=str(st.session_state.get("preparation_failed_marker", "")),
+        prepared_run_context=st.session_state.get("prepared_run_context"),
+    )
+
+
+def get_processing_outcome() -> str:
+    return str(st.session_state.get("processing_outcome") or ProcessingOutcome.IDLE.value)
+
+
+def get_processing_status() -> dict[str, object]:
+    status = st.session_state.get("processing_status")
+    return status if isinstance(status, dict) else {}
+
+
+def get_run_log() -> list[dict[str, object]]:
+    run_log = st.session_state.get("run_log")
+    return list(run_log) if isinstance(run_log, list) else []
+
+
+def get_activity_feed() -> list[dict[str, object]]:
+    activity_feed = st.session_state.get("activity_feed")
+    return list(activity_feed) if isinstance(activity_feed, list) else []
+
+
+def get_image_assets() -> list[object]:
+    image_assets = st.session_state.get("image_assets")
+    return list(image_assets) if isinstance(image_assets, list) else []
+
+
+def get_image_processing_summary() -> dict[str, object]:
+    summary = st.session_state.get("image_processing_summary")
+    if isinstance(summary, dict):
+        return summary
+    legacy_summary = st.session_state.get("image_validation_summary")
+    return legacy_summary if isinstance(legacy_summary, dict) else {}
+
+
+def get_processed_block_markdowns() -> list[str]:
+    blocks = st.session_state.get("processed_block_markdowns")
+    return [str(block) for block in blocks] if isinstance(blocks, list) else []
+
+
+def get_latest_docx_bytes():
+    return st.session_state.get("latest_docx_bytes")
+
+
+def is_processing_stop_requested() -> bool:
+    return bool(st.session_state.get("processing_stop_requested", False))
+
+
+def get_restart_source() -> dict[str, object]:
+    restart_source = st.session_state.get("restart_source")
+    return restart_source if isinstance(restart_source, dict) else {}
+
+
+def get_completed_source() -> dict[str, object]:
+    completed_source = st.session_state.get("completed_source")
+    return completed_source if isinstance(completed_source, dict) else {}
+
+
+def has_persisted_source() -> bool:
+    return bool(get_restart_source() or get_completed_source())
+
+
+def get_restart_source_filename() -> str:
+    return str(get_restart_source().get("filename", ""))
+
+
+def should_start_preparation_for_marker(upload_marker: str) -> bool:
+    snapshot = get_preparation_state()
+    return (snapshot.input_marker != upload_marker or snapshot.prepared_run_context is None) and snapshot.failed_marker != upload_marker
+
+
+def is_preparation_failed_for_marker(upload_marker: str) -> bool:
+    snapshot = get_preparation_state()
+    return snapshot.failed_marker == upload_marker and snapshot.prepared_run_context is None
+
+
+def get_prepared_run_context_for_marker(upload_marker: str):
+    snapshot = get_preparation_state()
+    if snapshot.input_marker == upload_marker and snapshot.failed_marker != upload_marker:
+        return snapshot.prepared_run_context
+    return None
+
+
+def mark_preparation_started(upload_marker: str) -> None:
+    st.session_state.preparation_input_marker = upload_marker
+    st.session_state.preparation_failed_marker = ""
+    st.session_state.prepared_run_context = None
+
+
+def apply_preparation_complete(*, prepared_run_context, upload_marker: str, reset_run_state_fn) -> None:
+    previous_token = str(st.session_state.get("selected_source_token", ""))
+    uploaded_token = str(getattr(prepared_run_context, "uploaded_file_token", ""))
+    if previous_token and uploaded_token and previous_token != uploaded_token:
+        reset_run_state_fn(keep_restart_source=False)
+    st.session_state.prepared_run_context = prepared_run_context
+    st.session_state.preparation_input_marker = upload_marker
+    st.session_state.preparation_failed_marker = ""
+    st.session_state.selected_source_token = uploaded_token
+    st.session_state.prepared_source_key = str(getattr(prepared_run_context, "prepared_source_key", ""))
+    st.session_state.preparation_worker = None
+    st.session_state.preparation_event_queue = None
+    st.session_state.processing_outcome = ProcessingOutcome.IDLE.value
+
+
+def apply_preparation_failure(*, upload_marker: str, error_message: str, error_details: dict[str, object]) -> None:
+    st.session_state.prepared_run_context = None
+    st.session_state.preparation_input_marker = upload_marker
+    st.session_state.preparation_failed_marker = upload_marker
+    st.session_state.preparation_worker = None
+    st.session_state.preparation_event_queue = None
+    st.session_state.last_background_error = error_details
+    st.session_state.last_error = error_message
+    st.session_state.processing_outcome = ProcessingOutcome.FAILED.value
+
+
+def apply_processing_completion(
+    *,
+    outcome: str,
+    push_activity,
+    load_restart_source_bytes_fn,
+    clear_restart_source_fn,
+    store_completed_source_fn,
+    should_cache_completed_source_fn,
+    log_event_fn,
+) -> None:
+    restart_source = st.session_state.get("restart_source")
+    previous_completed_source = st.session_state.get("completed_source")
+    if outcome == ProcessingOutcome.SUCCEEDED.value and restart_source:
+        source_bytes = load_restart_source_bytes_fn(restart_source)
+        if source_bytes:
+            if should_cache_completed_source_fn(source_bytes=source_bytes):
+                try:
+                    st.session_state.completed_source = store_completed_source_fn(
+                        session_id=str(restart_source.get("session_id", st.session_state.get("restart_session_id", ""))),
+                        source_name=str(restart_source.get("filename", "")),
+                        source_token=str(restart_source.get("token", "")),
+                        source_bytes=source_bytes,
+                        previous_completed_source=previous_completed_source,
+                    )
+                except OSError as exc:
+                    if previous_completed_source:
+                        clear_restart_source_fn(previous_completed_source)
+                    st.session_state.completed_source = None
+                    log_event_fn(
+                        logging.WARNING,
+                        "completed_source_store_failed",
+                        "Не удалось сохранить completed source во временное файловое хранилище.",
+                        filename=str(restart_source.get("filename", "")),
+                        source_token=str(restart_source.get("token", "")),
+                        error_message=str(exc),
+                    )
+                    push_activity(
+                        "Не удалось сохранить исходный DOCX для повторного запуска после завершения. Для нового запуска загрузите файл заново."
+                    )
+            else:
+                if previous_completed_source:
+                    clear_restart_source_fn(previous_completed_source)
+                st.session_state.completed_source = None
+                push_activity(
+                    "Исходный файл слишком большой для повторного запуска из памяти. Для нового запуска загрузите DOCX заново."
+                )
+        clear_restart_source_fn(restart_source)
+        st.session_state.restart_source = None
+    st.session_state.processing_outcome = outcome
+    st.session_state.processing_worker = None
+    st.session_state.processing_event_queue = None
+    st.session_state.processing_stop_event = None
+    st.session_state.processing_stop_requested = False
 
 
 def _current_unix_timestamp() -> float:
@@ -116,9 +306,7 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
     st.session_state.latest_source_token = ""
     st.session_state.last_error = ""
     st.session_state.last_background_error = None
-    st.session_state.image_assets = []
-    st.session_state.image_validation_failures = []
-    st.session_state.image_processing_summary = build_default_image_processing_summary()
+    reset_image_state()
     st.session_state.processing_status = _default_processing_status()
     st.session_state.processing_stop_requested = False
     st.session_state.processing_worker = None

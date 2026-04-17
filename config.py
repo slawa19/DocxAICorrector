@@ -24,6 +24,7 @@ from models import (
     PARAGRAPH_BOUNDARY_NORMALIZATION_MODE_VALUES,
     RELATION_NORMALIZATION_KIND_VALUES,
     RELATION_NORMALIZATION_PROFILE_VALUES,
+    STRUCTURE_RECOGNITION_MIN_CONFIDENCE_VALUES,
     ImageMode,
 )
 
@@ -55,6 +56,14 @@ class AppConfig(Mapping[str, object]):
     relation_normalization_profile: str
     relation_normalization_enabled_relation_kinds: tuple[str, ...]
     relation_normalization_save_debug_artifacts: bool
+    structure_recognition_enabled: bool
+    structure_recognition_model: str
+    structure_recognition_max_window_paragraphs: int
+    structure_recognition_overlap_paragraphs: int
+    structure_recognition_timeout_seconds: int
+    structure_recognition_min_confidence: str
+    structure_recognition_cache_enabled: bool
+    structure_recognition_save_debug_artifacts: bool
     output_body_font: str | None
     output_heading_font: str | None
     image_mode_default: str
@@ -335,6 +344,10 @@ def load_app_config() -> AppConfig:
         config_data,
         "paragraph_boundary_ai_review",
     )
+    structure_recognition_config = parse_optional_config_section(
+        config_data,
+        "structure_recognition",
+    )
     paragraph_boundary_normalization_enabled = parse_config_bool(
         paragraph_boundary_normalization_config,
         "enabled",
@@ -408,6 +421,47 @@ def load_app_config() -> AppConfig:
         )
     relation_normalization_save_debug_artifacts = parse_config_bool(
         relation_normalization_config,
+        "save_debug_artifacts",
+        True,
+    )
+    structure_recognition_enabled = parse_config_bool(
+        structure_recognition_config,
+        "enabled",
+        False,
+    )
+    structure_recognition_model = parse_config_str(
+        structure_recognition_config,
+        "model",
+        "gpt-4o-mini",
+    )
+    structure_recognition_max_window_paragraphs = parse_config_int(
+        structure_recognition_config,
+        "max_window_paragraphs",
+        1800,
+    )
+    structure_recognition_overlap_paragraphs = parse_config_int(
+        structure_recognition_config,
+        "overlap_paragraphs",
+        50,
+    )
+    structure_recognition_timeout_seconds = parse_config_int(
+        structure_recognition_config,
+        "timeout_seconds",
+        60,
+    )
+    structure_recognition_min_confidence = parse_choice_str(
+        structure_recognition_config,
+        "min_confidence",
+        "medium",
+        set(STRUCTURE_RECOGNITION_MIN_CONFIDENCE_VALUES),
+    )
+    structure_recognition_cache_enabled = parse_config_bool(
+        structure_recognition_config,
+        "cache_enabled",
+        True,
+    )
+    structure_recognition_save_debug_artifacts = parse_config_bool(
+        structure_recognition_config,
         "save_debug_artifacts",
         True,
     )
@@ -534,6 +588,39 @@ def load_app_config() -> AppConfig:
     paragraph_boundary_ai_review_max_tokens_per_candidate = parse_int_env(
         "DOCX_AI_PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_TOKENS_PER_CANDIDATE",
         paragraph_boundary_ai_review_max_tokens_per_candidate,
+    )
+    structure_recognition_enabled = parse_bool_env(
+        "DOCX_AI_STRUCTURE_RECOGNITION_ENABLED",
+        structure_recognition_enabled,
+    )
+    structure_recognition_model = (
+        os.getenv("DOCX_AI_STRUCTURE_RECOGNITION_MODEL", structure_recognition_model).strip()
+        or structure_recognition_model
+    )
+    structure_recognition_max_window_paragraphs = parse_int_env(
+        "DOCX_AI_STRUCTURE_RECOGNITION_MAX_WINDOW_PARAGRAPHS",
+        structure_recognition_max_window_paragraphs,
+    )
+    structure_recognition_overlap_paragraphs = parse_int_env(
+        "DOCX_AI_STRUCTURE_RECOGNITION_OVERLAP_PARAGRAPHS",
+        structure_recognition_overlap_paragraphs,
+    )
+    structure_recognition_timeout_seconds = parse_int_env(
+        "DOCX_AI_STRUCTURE_RECOGNITION_TIMEOUT_SECONDS",
+        structure_recognition_timeout_seconds,
+    )
+    structure_recognition_min_confidence = parse_choice_env(
+        "DOCX_AI_STRUCTURE_RECOGNITION_MIN_CONFIDENCE",
+        default=structure_recognition_min_confidence,
+        allowed_values=set(STRUCTURE_RECOGNITION_MIN_CONFIDENCE_VALUES),
+    )
+    structure_recognition_cache_enabled = parse_bool_env(
+        "DOCX_AI_STRUCTURE_RECOGNITION_CACHE_ENABLED",
+        structure_recognition_cache_enabled,
+    )
+    structure_recognition_save_debug_artifacts = parse_bool_env(
+        "DOCX_AI_STRUCTURE_RECOGNITION_SAVE_DEBUG_ARTIFACTS",
+        structure_recognition_save_debug_artifacts,
     )
     image_mode_default = _parse_image_mode(
         os.getenv("DOCX_AI_IMAGE_MODE_DEFAULT", image_mode_default).strip() or image_mode_default,
@@ -691,6 +778,14 @@ def load_app_config() -> AppConfig:
         relation_normalization_profile=relation_normalization_profile,
         relation_normalization_enabled_relation_kinds=relation_normalization_enabled_relation_kinds,
         relation_normalization_save_debug_artifacts=relation_normalization_save_debug_artifacts,
+        structure_recognition_enabled=structure_recognition_enabled,
+        structure_recognition_model=structure_recognition_model,
+        structure_recognition_max_window_paragraphs=max(100, min(structure_recognition_max_window_paragraphs, 4000)),
+        structure_recognition_overlap_paragraphs=max(0, min(structure_recognition_overlap_paragraphs, 200)),
+        structure_recognition_timeout_seconds=max(1, min(structure_recognition_timeout_seconds, 300)),
+        structure_recognition_min_confidence=structure_recognition_min_confidence,
+        structure_recognition_cache_enabled=structure_recognition_cache_enabled,
+        structure_recognition_save_debug_artifacts=structure_recognition_save_debug_artifacts,
         output_body_font=output_body_font,
         output_heading_font=output_heading_font,
         image_mode_default=image_mode_default,

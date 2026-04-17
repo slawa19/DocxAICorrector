@@ -22,6 +22,14 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     assert app_config["paragraph_boundary_normalization_enabled"] is True
     assert app_config["paragraph_boundary_normalization_mode"] == "high_only"
     assert app_config["paragraph_boundary_normalization_save_debug_artifacts"] is True
+    assert app_config["structure_recognition_enabled"] is False
+    assert app_config["structure_recognition_model"] == "gpt-4o-mini"
+    assert app_config["structure_recognition_max_window_paragraphs"] == 1800
+    assert app_config["structure_recognition_overlap_paragraphs"] == 50
+    assert app_config["structure_recognition_timeout_seconds"] == 60
+    assert app_config["structure_recognition_min_confidence"] == "medium"
+    assert app_config["structure_recognition_cache_enabled"] is True
+    assert app_config["structure_recognition_save_debug_artifacts"] is True
     assert app_config["relation_normalization_enabled"] is True
     assert app_config["relation_normalization_profile"] == "phase2_default"
     assert app_config["relation_normalization_enabled_relation_kinds"] == (
@@ -42,6 +50,14 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["paragraph_boundary_normalization_enabled"] is True
     assert app_config["paragraph_boundary_normalization_mode"] == "high_only"
     assert app_config["paragraph_boundary_normalization_save_debug_artifacts"] is True
+    assert app_config["structure_recognition_enabled"] is False
+    assert app_config["structure_recognition_model"] == "gpt-4o-mini"
+    assert app_config["structure_recognition_max_window_paragraphs"] == 1800
+    assert app_config["structure_recognition_overlap_paragraphs"] == 50
+    assert app_config["structure_recognition_timeout_seconds"] == 60
+    assert app_config["structure_recognition_min_confidence"] == "medium"
+    assert app_config["structure_recognition_cache_enabled"] is True
+    assert app_config["structure_recognition_save_debug_artifacts"] is True
     assert app_config["relation_normalization_enabled"] is True
     assert app_config["relation_normalization_profile"] == "phase2_default"
     assert app_config["relation_normalization_enabled_relation_kinds"] == (
@@ -234,6 +250,29 @@ def test_load_app_config_applies_paragraph_boundary_ai_review_env_overrides(monk
     assert app_config["paragraph_boundary_ai_review_candidate_limit"] == 500
     assert app_config["paragraph_boundary_ai_review_timeout_seconds"] == 1
     assert app_config["paragraph_boundary_ai_review_max_tokens_per_candidate"] == 512
+
+
+def test_load_app_config_applies_structure_recognition_env_overrides(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_ENABLED", "true")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_MODEL", "gpt-5.4")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_MAX_WINDOW_PARAGRAPHS", "9999")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_OVERLAP_PARAGRAPHS", "999")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_TIMEOUT_SECONDS", "999")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_MIN_CONFIDENCE", "high")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_CACHE_ENABLED", "false")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_SAVE_DEBUG_ARTIFACTS", "false")
+
+    app_config = config.load_app_config()
+
+    assert app_config["structure_recognition_enabled"] is True
+    assert app_config["structure_recognition_model"] == "gpt-5.4"
+    assert app_config["structure_recognition_max_window_paragraphs"] == 4000
+    assert app_config["structure_recognition_overlap_paragraphs"] == 200
+    assert app_config["structure_recognition_timeout_seconds"] == 300
+    assert app_config["structure_recognition_min_confidence"] == "high"
+    assert app_config["structure_recognition_cache_enabled"] is False
+    assert app_config["structure_recognition_save_debug_artifacts"] is False
 
 
 def test_load_app_config_rejects_invalid_env_override_for_paragraph_boundary_mode(monkeypatch):

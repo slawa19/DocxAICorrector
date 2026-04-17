@@ -91,6 +91,37 @@ def test_drain_processing_events_applies_typed_runtime_events(monkeypatch):
     assert session_state.processing_stop_requested is False
 
 
+def test_drain_processing_events_warns_and_ignores_unknown_set_state_keys(monkeypatch):
+    session_state = SessionState(
+        processing_event_queue=queue.Queue(),
+        processing_worker=object(),
+        processing_stop_event=object(),
+        processing_stop_requested=True,
+    )
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    log_calls = []
+    monkeypatch.setattr(processing_runtime, "log_event", lambda *args, **kwargs: log_calls.append((args, kwargs)))
+
+    session_state.processing_event_queue.put(
+        SetStateEvent(values={"last_error": "boom", "unexpected_key": "nope"})
+    )
+    session_state.processing_event_queue.put(WorkerCompleteEvent(outcome="failed"))
+
+    processing_runtime.drain_processing_events(
+        set_processing_status=lambda **payload: None,
+        finalize_processing_status=lambda stage, detail, progress, terminal_kind=None: None,
+        push_activity=lambda message: None,
+        append_log=lambda **payload: None,
+        append_image_log=lambda **payload: None,
+    )
+
+    assert session_state.last_error == "boom"
+    assert "unexpected_key" not in session_state
+    assert len(log_calls) == 1
+    assert log_calls[0][0][1] == "state_event_unknown_keys"
+    assert log_calls[0][1]["unknown_keys"] == ["unexpected_key"]
+
+
 def test_build_runtime_event_emitters_emits_typed_events_for_background_runtime():
     emitted_events = []
 

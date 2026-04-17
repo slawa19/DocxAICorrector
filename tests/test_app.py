@@ -121,6 +121,12 @@ def test_store_preparation_summary_uses_preparation_context_not_processing_statu
         "image_assets": ["img"],
         "source_text": "text-value",
         "jobs": [{"target_text": "block"}],
+        "ai_classified_count": 4,
+        "ai_heading_count": 2,
+        "ai_role_change_count": 1,
+        "ai_heading_promotion_count": 1,
+        "ai_heading_demotion_count": 0,
+        "ai_structural_role_change_count": 1,
         "preparation_stage": "Документ подготовлен",
         "preparation_detail": "Анализ завершён без фонового worker.",
         "preparation_cached": True,
@@ -146,6 +152,12 @@ def test_store_preparation_summary_uses_preparation_context_not_processing_statu
         "source_chars": len("text-value"),
         "block_count": 1,
         "cached": True,
+        "ai_classified": 4,
+        "ai_headings": 2,
+        "ai_role_changes": 1,
+        "ai_heading_promotions": 1,
+        "ai_heading_demotions": 0,
+        "ai_structural_role_changes": 1,
         "elapsed": "1.2 c",
         "progress": 1.0,
         "raw_paragraph_count": 3,
@@ -361,9 +373,65 @@ def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatc
     assert start_calls[0]["chunk_size"] == 7000
     assert start_calls[0]["image_mode"] == "safe"
     assert start_calls[0]["keep_all_image_variants"] is True
+    assert isinstance(start_calls[0]["uploaded_payload"], processing_runtime.FrozenUploadPayload)
     assert start_calls[0]["uploaded_payload"].filename == "report.docx"
     assert start_calls[0]["uploaded_payload"].content_bytes == b"abc"
     assert start_calls[0]["uploaded_payload"].file_token == "report.docx:3:ba7816bf8f01cfea"
+
+
+def test_main_normalizes_legacy_doc_before_starting_background_preparation(monkeypatch):
+    session_state = SessionState(
+        app_start_logged=True,
+        processing_status={},
+        activity_feed=[],
+    )
+    uploaded_file = UploadedFileStub("legacy.doc", bytes.fromhex("D0CF11E0A1B11AE1") + b"legacy")
+    start_calls = []
+
+    class RerunRequested(Exception):
+        pass
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app, "init_session_state", lambda: None)
+    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", True))
+    monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
+    monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
+    monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
+    monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "error", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "fragment", lambda **kw: (lambda fn: fn))
+    monkeypatch.setattr(app, "render_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        processing_runtime,
+        "_convert_legacy_doc_to_docx",
+        lambda **kwargs: (b"converted-docx", "antiword+pandoc"),
+    )
+    monkeypatch.setattr(app, "_start_background_preparation", lambda **kwargs: start_calls.append(kwargs))
+    monkeypatch.setattr(app.st, "rerun", lambda: (_ for _ in ()).throw(RerunRequested()))
+
+    try:
+        app.main()
+    except RerunRequested:
+        pass
+    else:
+        raise AssertionError("Expected rerun after starting background preparation")
+
+    assert len(start_calls) == 1
+    assert isinstance(start_calls[0]["uploaded_payload"], processing_runtime.FrozenUploadPayload)
+    assert start_calls[0]["uploaded_payload"].filename == "legacy.docx"
+    assert start_calls[0]["uploaded_payload"].content_bytes == b"converted-docx"
+    assert start_calls[0]["uploaded_payload"].file_token.startswith("legacy.docx:")
+    assert start_calls[0]["upload_marker"].startswith("legacy.docx:")
 
 
 def test_main_renders_live_status_during_active_preparation(monkeypatch):
@@ -506,6 +574,8 @@ def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):
     assert summary_calls[0] == session_state.latest_preparation_summary
     assert summary_calls[0]["cached"] is True
     assert summary_calls[0]["block_count"] == 2
+    assert summary_calls[0]["ai_classified"] == 0
+    assert summary_calls[0]["ai_headings"] == 0
     assert summary_calls[0]["raw_paragraph_count"] == 4
     assert summary_calls[0]["logical_paragraph_count"] == 3
     assert summary_calls[0]["merged_group_count"] == 1

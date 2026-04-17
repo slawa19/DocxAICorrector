@@ -71,6 +71,13 @@ def test_prepare_run_context_updates_selected_token_and_prepared_key(monkeypatch
         image_assets=["img"],
         jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
         prepared_source_key="report.docx:hash:6000",
+        structure_map={"kind": "structure-map"},
+        ai_classified_count=3,
+        ai_heading_count=2,
+        ai_role_change_count=1,
+        ai_heading_promotion_count=1,
+        ai_heading_demotion_count=0,
+        ai_structural_role_change_count=1,
         normalization_report=SimpleNamespace(
             total_raw_paragraphs=3,
             total_logical_paragraphs=2,
@@ -102,6 +109,13 @@ def test_prepare_run_context_updates_selected_token_and_prepared_key(monkeypatch
     assert result.preparation_cached is False
     assert result.preparation_elapsed_seconds >= 0.0
     assert result.normalization_report is prepared_document.normalization_report
+    assert result.structure_map == {"kind": "structure-map"}
+    assert result.ai_classified_count == 3
+    assert result.ai_heading_count == 2
+    assert result.ai_role_change_count == 1
+    assert result.ai_heading_promotion_count == 1
+    assert result.ai_heading_demotion_count == 0
+    assert result.ai_structural_role_change_count == 1
     assert session_state.selected_source_token == result.uploaded_file_token
     assert session_state.prepared_source_key == "report.docx:hash:6000"
     assert session_state.completed_source is None
@@ -319,8 +333,9 @@ def test_prepare_run_context_normalizes_legacy_doc_before_validation(monkeypatch
 
     assert freeze_calls == ["legacy.doc"]
     assert validated == [b"converted-docx"]
-    assert received["uploaded_filename"] == "legacy.docx"
-    assert received["source_bytes"] == b"converted-docx"
+    assert received["uploaded_payload"].filename == "legacy.docx"
+    assert received["uploaded_payload"].content_bytes == b"converted-docx"
+    assert received["uploaded_payload"].file_token == "legacy.docx:6:mocked"
     assert result.uploaded_filename == "legacy.docx"
     assert result.uploaded_file_bytes == b"converted-docx"
     assert result.uploaded_file_token == "legacy.docx:6:mocked"
@@ -444,6 +459,7 @@ def test_restart_flow_restores_uploaded_file_from_run_store_and_cleans_up(tmp_pa
 
 def test_prepare_run_context_for_background_uses_frozen_upload_payload(monkeypatch):
     monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: None)
+    captured = {}
     prepared_document = SimpleNamespace(
         source_text="text",
         paragraphs=["p1"],
@@ -459,12 +475,14 @@ def test_prepare_run_context_for_background_uses_frozen_upload_payload(monkeypat
         chunk_size=6000,
         image_mode="safe",
         keep_all_image_variants=True,
-        prepare_document_for_processing_fn=lambda **kwargs: prepared_document,
+        app_config={"structure_recognition_enabled": True},
+        prepare_document_for_processing_fn=lambda **kwargs: (captured.setdefault("prepare", kwargs), prepared_document)[1],
     )
 
     assert result.uploaded_filename == "report.docx"
     assert result.uploaded_file_bytes == b"abc"
     assert result.uploaded_file_token == payload.file_token
+    assert captured["prepare"]["app_config"] == {"structure_recognition_enabled": True}
 
 
 def test_prepare_run_context_for_background_uses_real_cache(monkeypatch):
@@ -607,9 +625,9 @@ def test_prepare_run_context_sync_and_background_share_same_upload_contract(monk
         prepare_document_for_processing_fn=prepare_background,
     )
 
-    assert sync_calls[0]["uploaded_filename"] == background_calls[0]["uploaded_filename"] == "report.docx"
-    assert sync_calls[0]["source_bytes"] == background_calls[0]["source_bytes"] == b"abc"
-    assert sync_calls[0]["uploaded_file_token"] == background_calls[0]["uploaded_file_token"] == payload.file_token
+    assert sync_calls[0]["uploaded_payload"].filename == background_calls[0]["uploaded_payload"].filename == "report.docx"
+    assert sync_calls[0]["uploaded_payload"].content_bytes == background_calls[0]["uploaded_payload"].content_bytes == b"abc"
+    assert sync_calls[0]["uploaded_payload"].file_token == background_calls[0]["uploaded_payload"].file_token == payload.file_token
     assert sync_result.uploaded_filename == background_result.uploaded_filename
     assert sync_result.uploaded_file_bytes == background_result.uploaded_file_bytes
     assert sync_result.uploaded_file_token == background_result.uploaded_file_token

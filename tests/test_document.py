@@ -25,6 +25,8 @@ from document import (
     build_document_text,
     build_editing_jobs,
     build_semantic_blocks,
+    paragraph_has_strong_heading_format,
+    resolve_effective_paragraph_font_size,
     extract_document_content_from_docx,
     extract_document_content_with_normalization_reports,
     inspect_placeholder_integrity,
@@ -296,6 +298,62 @@ def test_build_editing_jobs_marks_image_only_blocks_as_passthrough():
     assert str(jobs[1]["target_text_with_markers"]).startswith("[[DOCX_PARA_p0001]]")
 
 
+def test_build_semantic_blocks_keeps_heading_with_following_epigraph_cluster_even_over_soft_limit():
+    paragraphs = [
+        ParagraphUnit(text="Глава 1", role="heading", paragraph_id="p0000", heading_level=1),
+        ParagraphUnit(
+            text="Богатство заключается не в количестве имущества, а в свободе желаний.",
+            role="body",
+            structural_role="epigraph",
+            paragraph_id="p0001",
+        ),
+        ParagraphUnit(text="— Эпиктет", role="body", structural_role="attribution", paragraph_id="p0002"),
+        ParagraphUnit(text="Следующий обычный абзац.", role="body", paragraph_id="p0003"),
+    ]
+
+    blocks = build_semantic_blocks(paragraphs, max_chars=65, relations=[])
+
+    assert len(blocks) == 2
+    assert [paragraph.text for paragraph in blocks[0].paragraphs] == [
+        "Глава 1",
+        "Богатство заключается не в количестве имущества, а в свободе желаний.",
+        "— Эпиктет",
+    ]
+
+
+def test_build_semantic_blocks_uses_structural_roles_for_toc_grouping_without_relations():
+    paragraphs = [
+        ParagraphUnit(text="Содержание", role="body", structural_role="toc_header", paragraph_id="p0000"),
+        ParagraphUnit(text="Глава 1........ 12", role="body", structural_role="toc_entry", paragraph_id="p0001"),
+        ParagraphUnit(text="Глава 2........ 18", role="body", structural_role="toc_entry", paragraph_id="p0002"),
+        ParagraphUnit(text="Первый обычный абзац после содержания.", role="body", paragraph_id="p0003"),
+    ]
+
+    blocks = build_semantic_blocks(paragraphs, max_chars=60, relations=[])
+
+    assert len(blocks) == 2
+    assert [paragraph.text for paragraph in blocks[0].paragraphs] == [
+        "Содержание",
+        "Глава 1........ 12",
+        "Глава 2........ 18",
+    ]
+
+
+def test_build_editing_jobs_marks_toc_only_blocks_as_passthrough():
+    paragraphs = [
+        ParagraphUnit(text="Содержание", role="body", structural_role="toc_header", paragraph_id="p0000"),
+        ParagraphUnit(text="Глава 1........ 12", role="body", structural_role="toc_entry", paragraph_id="p0001"),
+        ParagraphUnit(text="Глава 2........ 18", role="body", structural_role="toc_entry", paragraph_id="p0002"),
+        ParagraphUnit(text="Первый обычный абзац.", role="body", paragraph_id="p0003"),
+    ]
+
+    blocks = build_semantic_blocks(paragraphs, max_chars=80, relations=[])
+    jobs = build_editing_jobs(blocks, max_chars=3000)
+
+    assert [job["job_kind"] for job in jobs] == ["passthrough", "llm"]
+    assert jobs[0]["paragraph_ids"] == ["p0000", "p0001", "p0002"]
+
+
 def test_build_paragraph_relations_detects_caption_epigraph_and_toc_groups():
     paragraphs = [
         ParagraphUnit(text="[[DOCX_IMAGE_img_001]]", role="image", structural_role="image", paragraph_id="p0000", asset_id="img_001"),
@@ -368,7 +426,7 @@ def test_build_semantic_blocks_keeps_toc_region_together():
     ]
 
 
-def test_build_semantic_blocks_fallback_uses_effective_relation_config(monkeypatch):
+def test_build_semantic_blocks_keeps_epigraph_pair_via_structural_role_even_when_relation_config_excludes_it(monkeypatch):
     monkeypatch.setattr(
         config,
         "load_app_config",
@@ -392,11 +450,12 @@ def test_build_semantic_blocks_fallback_uses_effective_relation_config(monkeypat
 
     blocks = build_semantic_blocks(paragraphs, max_chars=55)
 
-    assert len(blocks) == 3
+    assert len(blocks) == 2
     assert [paragraph.text for paragraph in blocks[0].paragraphs] == [
         "Богатство заключается не в накоплении вещей, а в свободе от лишнего.",
+        "— Эпиктет",
     ]
-    assert [paragraph.text for paragraph in blocks[1].paragraphs] == ["— Эпиктет"]
+    assert [paragraph.text for paragraph in blocks[1].paragraphs] == ["Следующий обычный абзац должен остаться отдельным блоком."]
 
 
 def test_build_paragraph_relations_records_epigraph_and_isolated_toc_rejections():
@@ -641,6 +700,51 @@ def test_build_document_text_does_not_duplicate_existing_list_markers():
     ]
 
     assert build_document_text(paragraphs) == "1. Уже размеченный пункт\n\n- Уже размеченный маркер"
+
+
+def test_public_paragraph_helper_exports_match_heading_and_font_detection():
+    doc = Document()
+    paragraph = doc.add_paragraph("Ключевой раздел")
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    paragraph.runs[0].font.size = Pt(15)
+
+    assert paragraph_has_strong_heading_format(paragraph) is True
+    assert resolve_effective_paragraph_font_size(paragraph) == 15.0
+
+
+def test_build_document_text_renders_epigraph_and_attribution_as_blockquotes():
+    paragraphs = [
+        ParagraphUnit(text="Богатство заключается в свободе желаний.", role="body", structural_role="epigraph"),
+        ParagraphUnit(text="— Эпиктет", role="body", structural_role="attribution"),
+        ParagraphUnit(text="Обычный абзац.", role="body", structural_role="body"),
+    ]
+
+    assert build_document_text(paragraphs) == (
+        "> Богатство заключается в свободе желаний.\n\n"
+        "> — Эпиктет\n\n"
+        "Обычный абзац."
+    )
+
+
+def test_build_document_text_does_not_duplicate_existing_blockquote_prefixes_for_epigraph_roles():
+    paragraphs = [
+        ParagraphUnit(text="> Уже оформленная цитата", role="body", structural_role="epigraph"),
+        ParagraphUnit(text="> — Уже оформленный автор", role="body", structural_role="attribution"),
+    ]
+
+    assert build_document_text(paragraphs) == "> Уже оформленная цитата\n\n> — Уже оформленный автор"
+
+
+def test_build_marker_wrapped_block_text_preserves_blockquote_rendering_for_epigraph_roles():
+    paragraphs = [
+        ParagraphUnit(text="Богатство заключается в свободе желаний.", role="body", structural_role="epigraph", paragraph_id="p0001"),
+        ParagraphUnit(text="— Эпиктет", role="body", structural_role="attribution", paragraph_id="p0002"),
+    ]
+
+    assert build_marker_wrapped_block_text(paragraphs) == (
+        "[[DOCX_PARA_p0001]]\n> Богатство заключается в свободе желаний.\n\n"
+        "[[DOCX_PARA_p0002]]\n> — Эпиктет"
+    )
 
 
 def _make_docx_with_emdash_bullet_numbering(texts: list[str]) -> BytesIO:
@@ -1098,6 +1202,70 @@ def test_extract_document_content_from_docx_does_not_promote_very_short_sentence
     paragraphs, _ = extract_document_content_from_docx(buffer)
 
     assert [paragraph.role for paragraph in paragraphs] == ["body", "body", "body"]
+
+
+def test_promote_short_standalone_headings_does_not_override_ai_classified_body_heading_candidate():
+    paragraphs = [
+        ParagraphUnit(
+            text="Привлекательность лотерейных билетов с крупными призами объясняется мечтами о переменах и доступе к новым возможностям.",
+            role="body",
+            source_index=0,
+            font_size_pt=11.0,
+        ),
+        ParagraphUnit(
+            text="Переосмысление богатства",
+            role="body",
+            structural_role="body",
+            role_confidence="ai",
+            source_index=1,
+            font_size_pt=14.0,
+        ),
+        ParagraphUnit(
+            text="Богатство зависит не только от денег, но и от устойчивости, свободы выбора и качества связей.",
+            role="body",
+            source_index=2,
+            font_size_pt=11.0,
+        ),
+    ]
+
+    document._promote_short_standalone_headings(paragraphs)
+
+    assert [paragraph.role for paragraph in paragraphs] == ["body", "body", "body"]
+    assert paragraphs[1].role_confidence == "ai"
+    assert paragraphs[1].heading_source is None
+    assert paragraphs[1].heading_level is None
+
+
+def test_promote_short_standalone_headings_does_not_override_ai_structural_attribution():
+    paragraphs = [
+        ParagraphUnit(
+            text="Богатство может означать деньги, свободу выбора и доступ к возможностям.",
+            role="body",
+            source_index=0,
+            font_size_pt=11.0,
+        ),
+        ParagraphUnit(
+            text="ЭПИКТЕТ",
+            role="body",
+            structural_role="attribution",
+            role_confidence="ai",
+            source_index=1,
+            font_size_pt=16.0,
+        ),
+        ParagraphUnit(
+            text="Следующий абзац продолжает мысль и даёт обычный текстовый контекст для эвристического паттерна.",
+            role="body",
+            source_index=2,
+            font_size_pt=11.0,
+        ),
+    ]
+
+    document._promote_short_standalone_headings(paragraphs)
+
+    assert paragraphs[1].role == "body"
+    assert paragraphs[1].structural_role == "attribution"
+    assert paragraphs[1].role_confidence == "ai"
+    assert paragraphs[1].heading_source is None
 
 
 def test_extract_document_content_from_docx_keeps_inherited_centered_caption_after_table():
@@ -2819,6 +2987,22 @@ def test_read_uploaded_docx_bytes_preserves_original_cause(monkeypatch):
         assert exc.__cause__ is failing_error
     else:
         raise AssertionError("Expected ValueError when uploaded DOCX bytes cannot be read")
+
+
+def test_read_uploaded_docx_bytes_reuses_existing_docx_bytes_without_renormalizing(monkeypatch):
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, mode="w") as archive:
+        archive.writestr("word/document.xml", "<w:document />")
+    docx_bytes = buffer.getvalue()
+
+    monkeypatch.setattr(document, "read_uploaded_file_bytes", lambda uploaded_file: docx_bytes)
+    monkeypatch.setattr(
+        document,
+        "normalize_uploaded_document",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("normalize_uploaded_document should not be called for DOCX bytes")),
+    )
+
+    assert document._read_uploaded_docx_bytes(object()) == docx_bytes
 
 
 def test_read_uploaded_docx_bytes_normalizes_legacy_doc_upload(monkeypatch):

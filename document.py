@@ -284,6 +284,18 @@ def build_marker_wrapped_block_text(paragraphs: list[ParagraphUnit], *, paragrap
     return "\n\n".join(parts).strip()
 
 
+def _paragraph_structural_kind(paragraph: ParagraphUnit) -> str:
+    return str(getattr(paragraph, "structural_role", None) or getattr(paragraph, "role", None) or "").strip().lower()
+
+
+def _is_quote_structural_role(paragraph: ParagraphUnit) -> bool:
+    return _paragraph_structural_kind(paragraph) in {"epigraph", "attribution", "dedication"}
+
+
+def _is_toc_structural_role(paragraph: ParagraphUnit) -> bool:
+    return _paragraph_structural_kind(paragraph) in {"toc_header", "toc_entry"}
+
+
 def inspect_placeholder_integrity(markdown_text: str, image_assets: list[ImageAsset]) -> dict[str, str]:
     status_map: dict[str, str] = {}
     expected_placeholders = {asset.placeholder for asset in image_assets}
@@ -340,6 +352,8 @@ def build_semantic_blocks(
         unit_contains_atomic_block = any(paragraph.role in {"image", "table"} for paragraph in unit_paragraphs)
         unit_all_headings = all(paragraph.role == "heading" for paragraph in unit_paragraphs)
         unit_is_list = all(paragraph.role == "list" for paragraph in unit_paragraphs)
+        unit_is_quote_cluster = bool(unit_paragraphs) and all(_is_quote_structural_role(paragraph) for paragraph in unit_paragraphs)
+        unit_is_toc_cluster = bool(unit_paragraphs) and all(_is_toc_structural_role(paragraph) for paragraph in unit_paragraphs)
         if not current:
             append_unit(unit_paragraphs)
             continue
@@ -358,6 +372,17 @@ def build_semantic_blocks(
         projected_size = current_size + 2 + len(unit_text)
         current_all_headings = all(item.role == "heading" for item in current)
         current_is_list = all(item.role == "list" for item in current)
+        current_is_toc_cluster = bool(current) and all(_is_toc_structural_role(item) for item in current)
+
+        if unit_is_toc_cluster and not current_is_toc_cluster:
+            flush_current()
+            append_unit(unit_paragraphs)
+            continue
+
+        if current_is_toc_cluster and not unit_is_toc_cluster:
+            flush_current()
+            append_unit(unit_paragraphs)
+            continue
 
         if unit_all_headings:
             if current_all_headings:
@@ -368,6 +393,10 @@ def build_semantic_blocks(
             continue
 
         if current_all_headings:
+            append_unit(unit_paragraphs)
+            continue
+
+        if current[-1].role == "heading" and unit_is_quote_cluster:
             append_unit(unit_paragraphs)
             continue
 
@@ -647,6 +676,15 @@ def _build_semantic_block_units(
         for member_index in member_indexes[1:]:
             union(member_indexes[0], member_index)
 
+    for index in range(len(paragraphs) - 1):
+        left = paragraphs[index]
+        right = paragraphs[index + 1]
+        if _is_quote_structural_role(left) and _is_quote_structural_role(right):
+            union(index, index + 1)
+            continue
+        if _is_toc_structural_role(left) and _is_toc_structural_role(right):
+            union(index, index + 1)
+
     grouped_indexes: dict[int, list[int]] = {}
     for index in range(len(paragraphs)):
         grouped_indexes.setdefault(find(index), []).append(index)
@@ -754,7 +792,15 @@ def build_editing_jobs(blocks: list[DocumentBlock], max_chars: int) -> list[dict
     for index, block in enumerate(blocks):
         context_before = build_context_excerpt(blocks, index, context_before_chars, reverse=True)
         context_after = build_context_excerpt(blocks, index, context_after_chars, reverse=False)
-        job_kind = "passthrough" if block.paragraphs and all(paragraph.role == "image" for paragraph in block.paragraphs) else "llm"
+        job_kind = (
+            "passthrough"
+            if block.paragraphs
+            and (
+                all(paragraph.role == "image" for paragraph in block.paragraphs)
+                or all(_is_toc_structural_role(paragraph) for paragraph in block.paragraphs)
+            )
+            else "llm"
+        )
         paragraph_ids = [
             _resolve_marker_paragraph_id(paragraph, fallback_paragraph_index + paragraph_index)
             for paragraph_index, paragraph in enumerate(block.paragraphs)
@@ -846,6 +892,7 @@ def _build_raw_paragraph(paragraph, image_assets: list[ImageAsset], *, raw_index
         style_name=style_name,
         paragraph_alignment=_resolve_paragraph_alignment(paragraph),
         is_bold=_paragraph_is_effectively_bold(paragraph),
+        is_italic=_paragraph_is_effectively_italic(paragraph),
         font_size_pt=_resolve_effective_paragraph_font_size(paragraph),
         explicit_heading_level=explicit_heading_level,
         heading_level=heading_level,
@@ -901,6 +948,7 @@ def _build_logical_paragraph_units(raw_blocks: list[RawBlock]) -> list[Paragraph
                 ),
                 style_name=block.style_name,
                 is_bold=block.is_bold,
+                is_italic=block.is_italic,
                 font_size_pt=block.font_size_pt,
                 origin_raw_indexes=list(block.origin_raw_indexes or (block.raw_index,)),
                 origin_raw_texts=list(block.origin_raw_texts or (block.text,)),
@@ -1472,6 +1520,7 @@ def _merge_raw_paragraph_group(group: list[RawParagraph], reasons: list[str], co
         style_name=dominant.style_name,
         paragraph_alignment=dominant.paragraph_alignment,
         is_bold=dominant.is_bold,
+        is_italic=dominant.is_italic,
         font_size_pt=dominant.font_size_pt,
         explicit_heading_level=dominant.explicit_heading_level,
         heading_level=dominant.heading_level,
@@ -1854,6 +1903,8 @@ def _read_uploaded_docx_bytes(uploaded_file) -> bytes:
         source_bytes = read_uploaded_file_bytes(uploaded_file)
     except ValueError as exc:
         raise ValueError("Не удалось прочитать содержимое DOCX-файла.") from exc
+    if zipfile.is_zipfile(BytesIO(source_bytes)):
+        return source_bytes
     normalized_document = normalize_uploaded_document(
         filename=resolve_uploaded_filename(uploaded_file),
         source_bytes=source_bytes,
@@ -1994,11 +2045,15 @@ def _paragraph_is_effectively_bold(paragraph) -> bool:
     return bool(bold_runs) and visible_chars > 0 and (bold_chars / visible_chars) >= 0.5
 
 
-def _paragraph_has_strong_heading_format(paragraph) -> bool:
+def paragraph_has_strong_heading_format(paragraph) -> bool:
     alignment_value = _resolve_paragraph_alignment(paragraph)
     if alignment_value == "center":
         return True
     return _paragraph_is_effectively_bold(paragraph)
+
+
+def _paragraph_has_strong_heading_format(paragraph) -> bool:
+    return paragraph_has_strong_heading_format(paragraph)
 
 
 def _paragraph_unit_has_strong_heading_format(paragraph: ParagraphUnit) -> bool:
@@ -2089,7 +2144,7 @@ def _resolve_style_font_size(style) -> float | None:
     return None
 
 
-def _resolve_effective_paragraph_font_size(paragraph) -> float | None:
+def resolve_effective_paragraph_font_size(paragraph) -> float | None:
     weighted_sizes: dict[float, int] = {}
     for run in paragraph.runs:
         text = run.text.strip()
@@ -2106,6 +2161,24 @@ def _resolve_effective_paragraph_font_size(paragraph) -> float | None:
     if weighted_sizes:
         return max(weighted_sizes.items(), key=lambda item: (item[1], item[0]))[0]
     return _resolve_style_font_size(getattr(paragraph, "style", None))
+
+
+def _resolve_effective_paragraph_font_size(paragraph) -> float | None:
+    return resolve_effective_paragraph_font_size(paragraph)
+
+
+def _paragraph_is_effectively_italic(paragraph) -> bool:
+    visible_runs = [run for run in paragraph.runs if run.text and run.text.strip()]
+    if not visible_runs:
+        return False
+
+    italic_runs = [run for run in visible_runs if bool(run.italic)]
+    if len(italic_runs) == len(visible_runs):
+        return True
+
+    visible_chars = sum(len(run.text.strip()) for run in visible_runs)
+    italic_chars = sum(len(run.text.strip()) for run in italic_runs)
+    return bool(italic_runs) and visible_chars > 0 and (italic_chars / visible_chars) >= 0.5
 
 
 def _infer_contextual_heading_level(paragraphs: list[ParagraphUnit], index: int) -> int:
@@ -2126,6 +2199,8 @@ def _promote_short_standalone_headings(paragraphs: list[ParagraphUnit]) -> None:
     for index in range(1, len(paragraphs) - 1):
         paragraph = paragraphs[index]
         if paragraph.role != "body":
+            continue
+        if paragraph.role_confidence == "ai":
             continue
         if not _is_short_standalone_heading_text(paragraph.text):
             continue
@@ -2528,6 +2603,16 @@ def _get_xml_attribute(element, attribute_name: str) -> str | None:
         if _xml_local_name(key) == attribute_name:
             return value
     return None
+
+
+xml_local_name = _xml_local_name
+resolve_paragraph_outline_level = _resolve_paragraph_outline_level
+infer_heuristic_heading_level = _infer_heuristic_heading_level
+is_image_only_text = _is_image_only_text
+is_likely_caption_text = _is_likely_caption_text
+detect_explicit_list_kind = _detect_explicit_list_kind
+find_child_element = _find_child_element
+get_xml_attribute = _get_xml_attribute
 
 
 def _validate_docx_archive(source_bytes: bytes) -> None:

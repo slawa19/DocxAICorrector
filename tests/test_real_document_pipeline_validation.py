@@ -527,7 +527,7 @@ def test_write_latest_alias_artifacts_preserves_stable_manifest_schema(tmp_path)
 def test_full_tier_runtime_contract_is_nested_only() -> None:
     validation = _load_validation_module()
 
-    runtime_config = validation._build_report_runtime_config(None)
+    runtime_config = validation.build_validation_runtime_config(None)
 
     assert set(runtime_config.keys()) == {"effective", "ui_defaults", "overrides"}
 
@@ -613,6 +613,12 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
                 source_text="source text",
                 preparation_cached=False,
                 preparation_elapsed_seconds=0.1,
+                ai_classified_count=7,
+                ai_heading_count=3,
+                ai_role_change_count=2,
+                ai_heading_promotion_count=1,
+                ai_heading_demotion_count=1,
+                ai_structural_role_change_count=1,
                 uploaded_file_token="token-1",
             )
 
@@ -674,9 +680,16 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
     assert captured["uploaded_filename"] == "legacy.doc"
     assert captured["uploaded_bytes"] == source_bytes
     assert report["runtime_config"]["effective"]["image_mode"] == "safe"
+    assert report["preparation"]["ai_classified_count"] == 7
+    assert report["preparation"]["ai_heading_count"] == 3
+    assert report["preparation"]["ai_role_change_count"] == 2
+    assert report["preparation"]["ai_heading_promotion_count"] == 1
+    assert report["preparation"]["ai_heading_demotion_count"] == 1
+    assert report["preparation"]["ai_structural_role_change_count"] == 1
     assert report["image_forensics"]["prepared_assets"][0]["source"]["source_forensics"]["drawing_container"] == "inline"
     assert report["image_forensics"]["prepared_assets"][0]["source"]["source_sha256"]
     assert report["image_forensics"]["processed_assets"][0]["final_selection"]["final_variant"] == "redrawn"
+    assert "source_file" not in report
     assert "runtime_configuration" not in report
 
 

@@ -23,7 +23,7 @@ min_merged_raw_paragraphs = 2
 require_numbered_lists_preserved = true
 require_nonempty_output = true
 forbid_heading_only_collapse = true
-default_run_profile = "ui-parity-default"
+default_run_profile = "ui-parity-ai-default"
 tags = ["headings", "formatting", "manual-regression"]
 provenance = "Canonical real document regression sample"
 
@@ -60,6 +60,14 @@ id = "ui-parity-default"
 tier = "full"
 mode = "regression"
 enable_paragraph_markers = true
+repeat_count = 1
+
+[[run_profiles]]
+id = "ui-parity-ai-default"
+tier = "full"
+mode = "regression"
+enable_paragraph_markers = true
+structure_recognition_enabled = true
 repeat_count = 1
 
 [[run_profiles]]

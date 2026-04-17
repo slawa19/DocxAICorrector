@@ -39,6 +39,7 @@ RELATION_NORMALIZATION_KIND_VALUES = (
     "epigraph_attribution",
     "toc_region",
 )
+STRUCTURE_RECOGNITION_MIN_CONFIDENCE_VALUES = ("medium", "high")
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,7 @@ class RawParagraph:
     style_name: str
     paragraph_alignment: str | None = None
     is_bold: bool = False
+    is_italic: bool = False
     font_size_pt: float | None = None
     explicit_heading_level: int | None = None
     heading_level: int | None = None
@@ -145,6 +147,7 @@ class ParagraphUnit:
     role_confidence: str = "heuristic"
     style_name: str = ""
     is_bold: bool = False
+    is_italic: bool = False
     font_size_pt: float | None = None
     origin_raw_indexes: list[int] = field(default_factory=list)
     origin_raw_texts: list[str] = field(default_factory=list)
@@ -158,12 +161,75 @@ class ParagraphUnit:
             level = min(max(self.heading_level, 1), 6)
             return f"{'#' * level} {self.text}"
 
+        if self.structural_role in {"epigraph", "attribution", "dedication"}:
+            lines = self.text.splitlines() or [self.text]
+            if all(line.lstrip().startswith(">") for line in lines if line.strip()):
+                return self.text
+            return "\n".join(">" if not line.strip() else f"> {line}" for line in lines)
+
         if self.role != "list" or EXPLICIT_LIST_MARKER_PATTERN.match(self.text):
             return self.text
 
         indent = "  " * max(0, self.list_level)
         marker = "1." if self.list_kind == "ordered" else "-"
         return f"{indent}{marker} {self.text}"
+
+
+@dataclass(frozen=True)
+class ParagraphDescriptor:
+    index: int
+    text_preview: str
+    text_length: int
+    style_name: str
+    is_bold: bool
+    is_centered: bool
+    is_all_caps: bool
+    font_size_pt: float | None
+    has_numbering: bool
+    explicit_heading_level: int | None
+
+    def to_prompt_dict(self) -> dict[str, object]:
+        return {
+            "i": self.index,
+            "t": self.text_preview,
+            "len": self.text_length,
+            "s": self.style_name,
+            "b": self.is_bold,
+            "ctr": self.is_centered,
+            "caps": self.is_all_caps,
+            "pt": self.font_size_pt,
+            "num": self.has_numbering,
+            "hl": self.explicit_heading_level,
+        }
+
+
+@dataclass(frozen=True)
+class ParagraphClassification:
+    index: int
+    role: str
+    heading_level: int | None
+    confidence: str
+    rationale: str | None = None
+
+
+@dataclass
+class StructureMap:
+    classifications: dict[int, ParagraphClassification]
+    model_used: str
+    total_tokens_used: int
+    processing_time_seconds: float
+    window_count: int
+
+    def get(self, index: int) -> ParagraphClassification | None:
+        return self.classifications.get(index)
+
+    @property
+    def classified_count(self) -> int:
+        return len(self.classifications)
+
+    @property
+    def heading_count(self) -> int:
+        return sum(1 for classification in self.classifications.values() if classification.role == "heading")
 
 
 @dataclass

@@ -455,6 +455,73 @@ def test_render_preparation_summary_uses_stage_and_detail(monkeypatch):
     assert any("Нормализация абзацев: сырьевых 15 -> логических 12 | слияний: 2 групп, 5 абзацев" in text for text in captions)
 
 
+def test_render_preparation_summary_adds_ai_classification_line_when_available(monkeypatch):
+    session_state = SessionState()
+    info_calls = []
+    writes = []
+    captions = []
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "info", lambda text: info_calls.append(text))
+    monkeypatch.setattr(ui.st, "write", lambda text: writes.append(text))
+    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
+
+    ui.render_preparation_summary(
+        {
+            "stage": "Документ подготовлен",
+            "detail": "Можно запускать обработку.",
+            "file_size_bytes": 1024,
+            "paragraph_count": 5,
+            "image_count": 0,
+            "source_chars": 120,
+            "block_count": 2,
+            "cached": False,
+            "ai_classified": 3,
+            "ai_headings": 1,
+        },
+        FakeTarget(),
+    )
+
+    assert info_calls == ["Документ подготовлен"]
+    assert writes == ["Можно запускать обработку."]
+    assert any("Распознано AI: 3 | Заголовков: 1" in text for text in captions)
+
+
+def test_render_preparation_summary_adds_divergence_line_when_available(monkeypatch):
+    session_state = SessionState()
+    captions = []
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "info", lambda text: None)
+    monkeypatch.setattr(ui.st, "write", lambda text: None)
+    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
+
+    ui.render_preparation_summary(
+        {
+            "stage": "Документ подготовлен",
+            "detail": "Можно запускать обработку.",
+            "file_size_bytes": 1024,
+            "paragraph_count": 5,
+            "image_count": 0,
+            "source_chars": 120,
+            "block_count": 2,
+            "cached": False,
+            "ai_classified": 3,
+            "ai_headings": 1,
+            "ai_role_changes": 2,
+            "ai_heading_promotions": 1,
+            "ai_heading_demotions": 1,
+            "ai_structural_role_changes": 1,
+        },
+        FakeTarget(),
+    )
+
+    assert any(
+        "Расхождения с эвристикой: ролей 2 | +заголовков 1 | -заголовков 1 | структурных ролей 1" in text
+        for text in captions
+    )
+
+
 def test_render_live_status_shows_preparation_failure_title(monkeypatch):
     session_state = SessionState(
         processing_status={

@@ -85,6 +85,28 @@ def test_init_session_state_initializes_image_processing_summary(monkeypatch):
     assert session_state.completed_source is None
 
 
+def test_reset_image_state_restores_image_defaults(monkeypatch):
+    session_state = SessionState(
+        image_assets=["stale"],
+        image_validation_failures=["boom"],
+        image_processing_summary={"total_images": 9, "validation_errors": ["boom"]},
+    )
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    state.reset_image_state()
+
+    assert session_state.image_assets == []
+    assert session_state.image_validation_failures == []
+    assert session_state.image_processing_summary == {
+        "total_images": 0,
+        "processed_images": 0,
+        "images_validated": 0,
+        "validation_passed": 0,
+        "fallbacks_applied": 0,
+        "validation_errors": [],
+    }
+
+
 def test_set_processing_status_updates_preparation_metrics(monkeypatch):
     session_state = SessionState()
     monkeypatch.setattr(state.st, "session_state", session_state)
@@ -168,6 +190,198 @@ def test_reset_run_state_can_preserve_preparation_state(monkeypatch):
     assert session_state.latest_markdown == ""
     assert session_state.run_log == []
     assert session_state.activity_feed == []
+
+
+def test_preparation_marker_helpers_track_request_state(monkeypatch):
+    prepared_run_context = object()
+    session_state = SessionState(
+        preparation_input_marker="report.docx:3:token:6000",
+        preparation_failed_marker="",
+        prepared_run_context=prepared_run_context,
+    )
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    assert state.should_start_preparation_for_marker("report.docx:3:token:6000") is False
+    assert state.get_prepared_run_context_for_marker("report.docx:3:token:6000") is prepared_run_context
+    assert state.is_preparation_failed_for_marker("report.docx:3:token:6000") is False
+
+
+def test_mark_preparation_started_clears_previous_failure_and_context(monkeypatch):
+    session_state = SessionState(
+        preparation_input_marker="old",
+        preparation_failed_marker="old",
+        prepared_run_context=object(),
+    )
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    state.mark_preparation_started("new")
+
+    assert session_state.preparation_input_marker == "new"
+    assert session_state.preparation_failed_marker == ""
+    assert session_state.prepared_run_context is None
+
+
+def test_state_read_helpers_expose_processing_and_persisted_source_state(monkeypatch):
+    session_state = SessionState(
+        processing_outcome="stopped",
+        processing_status={"stage": "run"},
+        run_log=[{"message": "entry"}],
+        activity_feed=[{"message": "activity"}],
+        restart_source={"filename": "restart.docx", "storage_path": "restart.bin"},
+        completed_source={"filename": "completed.docx", "storage_path": "completed.bin"},
+        image_assets=["img-1"],
+        image_processing_summary={"total_images": 1},
+        processed_block_markdowns=["block-1"],
+        latest_docx_bytes=b"docx",
+        processing_stop_requested=True,
+    )
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    assert state.get_processing_outcome() == "stopped"
+    assert state.get_processing_status() == {"stage": "run"}
+    assert state.get_run_log() == [{"message": "entry"}]
+    assert state.get_activity_feed() == [{"message": "activity"}]
+    assert state.get_restart_source() == {"filename": "restart.docx", "storage_path": "restart.bin"}
+    assert state.get_completed_source() == {"filename": "completed.docx", "storage_path": "completed.bin"}
+    assert state.get_image_assets() == ["img-1"]
+    assert state.get_image_processing_summary() == {"total_images": 1}
+    assert state.get_processed_block_markdowns() == ["block-1"]
+    assert state.get_latest_docx_bytes() == b"docx"
+    assert state.is_processing_stop_requested() is True
+    assert state.get_restart_source_filename() == "restart.docx"
+    assert state.has_persisted_source() is True
+
+
+def test_apply_preparation_complete_updates_owned_session_keys(monkeypatch):
+    prepared_run_context = type("PreparedRunContextStub", (), {
+        "uploaded_file_token": "report.docx:3:abc",
+        "prepared_source_key": "report.docx:3:abc:6000",
+    })()
+    session_state = SessionState(
+        selected_source_token="",
+        processing_outcome="running",
+        preparation_worker=object(),
+        preparation_event_queue=object(),
+    )
+    monkeypatch.setattr(state.st, "session_state", session_state)
+    reset_calls = []
+
+    state.apply_preparation_complete(
+        prepared_run_context=prepared_run_context,
+        upload_marker="report.docx:3:ba7816bf8f01cfea:6000",
+        reset_run_state_fn=lambda **kwargs: reset_calls.append(kwargs),
+    )
+
+    assert reset_calls == []
+    assert session_state.prepared_run_context is prepared_run_context
+    assert session_state.preparation_input_marker == "report.docx:3:ba7816bf8f01cfea:6000"
+    assert session_state.preparation_failed_marker == ""
+    assert session_state.selected_source_token == "report.docx:3:abc"
+    assert session_state.prepared_source_key == "report.docx:3:abc:6000"
+    assert session_state.preparation_worker is None
+    assert session_state.preparation_event_queue is None
+    assert session_state.processing_outcome == "idle"
+
+
+def test_apply_preparation_failure_updates_owned_session_keys(monkeypatch):
+    session_state = SessionState(
+        prepared_run_context=object(),
+        preparation_worker=object(),
+        preparation_event_queue=object(),
+        last_error="",
+        processing_outcome="running",
+    )
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    state.apply_preparation_failure(
+        upload_marker="report.docx:3:ba7816bf8f01cfea:6000",
+        error_message="boom",
+        error_details={"stage": "preparation", "error_type": "RuntimeError"},
+    )
+
+    assert session_state.prepared_run_context is None
+    assert session_state.preparation_input_marker == "report.docx:3:ba7816bf8f01cfea:6000"
+    assert session_state.preparation_failed_marker == "report.docx:3:ba7816bf8f01cfea:6000"
+    assert session_state.preparation_worker is None
+    assert session_state.preparation_event_queue is None
+    assert session_state.last_error == "boom"
+    assert session_state.last_background_error == {"stage": "preparation", "error_type": "RuntimeError"}
+    assert session_state.processing_outcome == "failed"
+
+
+def test_apply_processing_completion_moves_restart_source_to_completed_cache(monkeypatch):
+    session_state = SessionState(
+        restart_source={"filename": "report.docx", "token": "report.docx:3:abc", "storage_path": "restart.bin", "session_id": "session-a"},
+        processing_worker=object(),
+        processing_event_queue=object(),
+        processing_stop_event=object(),
+        processing_stop_requested=True,
+        restart_session_id="session-a",
+    )
+    monkeypatch.setattr(state.st, "session_state", session_state)
+    cleared = []
+
+    state.apply_processing_completion(
+        outcome="succeeded",
+        push_activity=lambda message: None,
+        load_restart_source_bytes_fn=lambda restart_source: b"abc",
+        clear_restart_source_fn=lambda restart_source: cleared.append(restart_source),
+        store_completed_source_fn=lambda **kwargs: {
+            "filename": kwargs["source_name"],
+            "token": kwargs["source_token"],
+            "storage_path": "completed.bin",
+            "size": len(kwargs["source_bytes"]),
+            "session_id": kwargs["session_id"],
+            "storage_kind": "completed",
+        },
+        should_cache_completed_source_fn=lambda **kwargs: True,
+        log_event_fn=lambda *args, **kwargs: None,
+    )
+
+    assert session_state.completed_source == {
+        "filename": "report.docx",
+        "token": "report.docx:3:abc",
+        "storage_path": "completed.bin",
+        "size": 3,
+        "session_id": "session-a",
+        "storage_kind": "completed",
+    }
+    assert session_state.restart_source is None
+    assert session_state.processing_outcome == "succeeded"
+    assert session_state.processing_worker is None
+    assert session_state.processing_event_queue is None
+    assert session_state.processing_stop_event is None
+    assert session_state.processing_stop_requested is False
+    assert cleared == [{"filename": "report.docx", "token": "report.docx:3:abc", "storage_path": "restart.bin", "session_id": "session-a"}]
+
+
+def test_apply_processing_completion_reports_large_restart_source_without_completed_cache(monkeypatch):
+    session_state = SessionState(
+        restart_source={"filename": "report.docx", "token": "report.docx:12:abc", "storage_path": "restart.bin", "session_id": "session-a"},
+        processing_worker=object(),
+        processing_event_queue=object(),
+        processing_stop_event=object(),
+        processing_stop_requested=True,
+    )
+    monkeypatch.setattr(state.st, "session_state", session_state)
+    activities = []
+    cleared = []
+
+    state.apply_processing_completion(
+        outcome="succeeded",
+        push_activity=lambda message: activities.append(message),
+        load_restart_source_bytes_fn=lambda restart_source: b"abcdef",
+        clear_restart_source_fn=lambda restart_source: cleared.append(restart_source),
+        store_completed_source_fn=lambda **kwargs: (_ for _ in ()).throw(AssertionError("completed cache should not be written")),
+        should_cache_completed_source_fn=lambda **kwargs: False,
+        log_event_fn=lambda *args, **kwargs: None,
+    )
+
+    assert session_state.completed_source is None
+    assert session_state.restart_source is None
+    assert len(activities) == 1
+    assert "слишком большой" in activities[0].lower()
+    assert cleared == [{"filename": "report.docx", "token": "report.docx:12:abc", "storage_path": "restart.bin", "session_id": "session-a"}]
 
 
 def test_append_image_log_updates_summary_and_run_log(monkeypatch):

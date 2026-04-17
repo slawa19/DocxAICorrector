@@ -40,6 +40,13 @@ class PreparedRunContext:
     preparation_elapsed_seconds: float
     normalization_report: object | None = None
     relation_report: object | None = None
+    structure_map: object | None = None
+    ai_classified_count: int = 0
+    ai_heading_count: int = 0
+    ai_role_change_count: int = 0
+    ai_heading_promotion_count: int = 0
+    ai_heading_demotion_count: int = 0
+    ai_structural_role_change_count: int = 0
 
 
 def flatten_normalization_metrics(normalization_report) -> dict[str, int]:
@@ -177,6 +184,7 @@ def _prepare_run_context_core(
     uploaded_file=None,
     uploaded_payload: FrozenUploadPayload | None = None,
     chunk_size: int,
+    app_config: dict[str, object] | None,
     session_state,
     progress_callback,
     prepare_document_for_processing_fn,
@@ -227,10 +235,9 @@ def _prepare_run_context_core(
             uploaded_file_token=uploaded_file_token,
         )
     prepared_document = prepare_document_for_processing_fn(
-        uploaded_filename=uploaded_filename,
-        source_bytes=uploaded_file_bytes,
-        uploaded_file_token=uploaded_file_token,
+        uploaded_payload=resolved_upload.uploaded_payload,
         chunk_size=chunk_size,
+        app_config=app_config,
         session_state=session_state,
         progress_callback=progress_callback,
     )
@@ -265,6 +272,13 @@ def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: 
         preparation_elapsed_seconds=elapsed_seconds,
         normalization_report=getattr(prepared_document, "normalization_report", None),
         relation_report=getattr(prepared_document, "relation_report", None),
+        structure_map=getattr(prepared_document, "structure_map", None),
+        ai_classified_count=int(getattr(prepared_document, "ai_classified_count", 0) or 0),
+        ai_heading_count=int(getattr(prepared_document, "ai_heading_count", 0) or 0),
+        ai_role_change_count=int(getattr(prepared_document, "ai_role_change_count", 0) or 0),
+        ai_heading_promotion_count=int(getattr(prepared_document, "ai_heading_promotion_count", 0) or 0),
+        ai_heading_demotion_count=int(getattr(prepared_document, "ai_heading_demotion_count", 0) or 0),
+        ai_structural_role_change_count=int(getattr(prepared_document, "ai_structural_role_change_count", 0) or 0),
     )
 
 
@@ -340,6 +354,7 @@ def prepare_run_context(
     chunk_size: int,
     image_mode: str,
     keep_all_image_variants: bool,
+    app_config: dict[str, object] | None = None,
     session_state,
     reset_run_state_fn,
     fail_critical_fn,
@@ -351,6 +366,7 @@ def prepare_run_context(
     uploaded_filename, uploaded_file_bytes, uploaded_file_token, prepared_document, elapsed_seconds = _prepare_run_context_core(
         uploaded_file=uploaded_file,
         chunk_size=chunk_size,
+        app_config=app_config,
         session_state=session_state,
         progress_callback=progress_callback,
         prepare_document_for_processing_fn=prepare_document_for_processing_fn,
@@ -408,6 +424,7 @@ def prepare_run_context_for_background(
     chunk_size: int,
     image_mode: str,
     keep_all_image_variants: bool,
+    app_config: dict[str, object] | None = None,
     prepare_document_for_processing_fn=None,
     resolve_uploaded_filename_fn=None,
     progress_callback=None,
@@ -415,6 +432,7 @@ def prepare_run_context_for_background(
     uploaded_filename, uploaded_file_bytes, uploaded_file_token, prepared_document, elapsed_seconds = _prepare_run_context_core(
         uploaded_payload=uploaded_payload,
         chunk_size=chunk_size,
+        app_config=app_config,
         session_state=None,
         progress_callback=progress_callback,
         prepare_document_for_processing_fn=prepare_document_for_processing_fn,

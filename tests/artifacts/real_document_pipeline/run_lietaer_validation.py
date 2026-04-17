@@ -30,7 +30,6 @@ from docx import Document
 from docx.document import Document as DocxDocument
 from docx.oxml.ns import qn
 
-import app_runtime
 import application_flow
 import document_pipeline
 import logger as app_logger
@@ -40,19 +39,12 @@ from config import get_client, load_app_config, load_system_prompt
 from document import (
     ORDERED_LIST_FORMATS,
     extract_document_content_from_docx,
-    inspect_placeholder_integrity,
 )
-from formatting_transfer import (
-    normalize_semantic_output_docx,
-    preserve_source_paragraph_properties,
-)
-from image_reinsertion import reinsert_inline_images
 from generation import (
     convert_markdown_to_docx_bytes,
     ensure_pandoc_available,
-    generate_markdown_block,
 )
-from logger import present_error
+from real_document_validation_common import build_validation_event_logger, build_validation_runtime_config
 from real_document_validation_profiles import (
     apply_runtime_resolution_to_app_config,
     load_validation_registry,
@@ -68,8 +60,6 @@ from runtime_events import (
     SetStateEvent,
 )
 
-
-service = processing_service.get_processing_service()
 REAL_DOCUMENT_ARTIFACT_ROOT = PROJECT_ROOT / "tests" / "artifacts" / "real_document_pipeline"
 FORMATTING_DIAGNOSTICS_DIR = PROJECT_ROOT / ".run" / "formatting_diagnostics"
 HEARTBEAT_INTERVAL_SECONDS = 15.0
@@ -289,7 +279,7 @@ class ValidationProgressTracker:
             "run_profile_id": run_profile_id,
             "validation_tier": validation_tier,
             "status": "in_progress",
-            "source_file": _path_for_report(source_path),
+            "source_document_path": _path_for_report(source_path),
             "run_dir": _path_for_report(run_dir),
             "artifact_root": _path_for_report(artifact_root),
             "progress_json": _path_for_report(progress_path),
@@ -432,7 +422,7 @@ class ValidationProgressTracker:
             "run_profile_id": self.state.get("run_profile_id"),
             "validation_tier": self.state.get("validation_tier"),
             "status": self.state.get("status"),
-            "source_file": self.state.get("source_file"),
+            "source_document_path": self.state.get("source_document_path"),
             "run_dir": self.state.get("run_dir"),
             "progress_json": self.state.get("progress_json"),
             "latest_progress_json": self.state.get("latest_progress_json"),
@@ -828,15 +818,10 @@ def _run_repeat_validation(
             "run_profile_id": run_profile.id,
             "validation_tier": run_profile.tier,
             "source_document_path": _path_for_report(source_path),
-            "source_file": _path_for_report(source_path),
             "artifact_dir": _path_for_report(artifact_dir),
             "progress_path": _path_for_report(progress_path),
             "result": result,
-            "runtime_config": {
-                "effective": runtime_resolution.effective.to_dict(),
-                "ui_defaults": runtime_resolution.ui_defaults.to_dict(),
-                "overrides": runtime_resolution.overrides,
-            },
+            "runtime_config": build_validation_runtime_config(runtime_resolution),
             "failure_classification": failure_classification,
             "signals": {
                 "intermittent_failure_detected": repeat_summary["intermittent_failure_detected"],
@@ -925,110 +910,6 @@ def _run_repeat_validation(
             raise SystemExit(1)
     finally:
         tracker.stop()
-
-
-def present_error_adapter(code: str, exc: Exception, title: str, **context: object) -> str:
-    return present_error(code, exc, title, **context)
-
-
-def emit_state_adapter(runtime: object, **values: object) -> None:
-    app_runtime.emit_state(cast(Any, runtime), **values)
-
-
-def emit_finalize_adapter(runtime: object, stage: str, detail: str, progress: float) -> None:
-    app_runtime.emit_finalize(cast(Any, runtime), stage, detail, progress)
-
-
-def emit_activity_adapter(runtime: object, message: str) -> None:
-    app_runtime.emit_activity(cast(Any, runtime), message)
-
-
-def emit_log_adapter(runtime: object, **payload: object) -> None:
-    app_runtime.emit_log(cast(Any, runtime), **payload)
-
-
-def emit_status_adapter(runtime: object, **payload: object) -> None:
-    app_runtime.emit_status(cast(Any, runtime), **payload)
-
-
-def should_stop_processing_adapter(runtime: object) -> bool:
-    return processing_runtime.should_stop_processing(cast(Any, runtime))
-
-
-def generate_markdown_block_adapter(
-    *,
-    client: object,
-    model: str,
-    system_prompt: str,
-    target_text: str,
-    context_before: str,
-    context_after: str,
-    max_retries: int,
-    expected_paragraph_ids=None,
-    marker_mode: bool = False,
-) -> str:
-    return generate_markdown_block(
-        client=cast(Any, client),
-        model=model,
-        system_prompt=system_prompt,
-        target_text=target_text,
-        context_before=context_before,
-        context_after=context_after,
-        max_retries=max_retries,
-        expected_paragraph_ids=expected_paragraph_ids,
-        marker_mode=marker_mode,
-    )
-
-
-def process_document_images_adapter(
-    *,
-    image_assets: Sequence[object],
-    image_mode: str,
-    config: Mapping[str, object],
-    on_progress,
-    runtime: object,
-    client: object,
-):
-    return service.process_document_images(
-        image_assets=cast(Any, image_assets),
-        image_mode=image_mode,
-        config=dict(config),
-        on_progress=on_progress,
-        runtime=cast(Any, runtime),
-        client=cast(Any, client),
-    )
-
-
-def inspect_placeholder_integrity_adapter(markdown_text: str, image_assets: Sequence[object]) -> Mapping[str, str]:
-    return inspect_placeholder_integrity(markdown_text, cast(Any, list(image_assets)))
-
-
-def preserve_source_paragraph_properties_adapter(
-    docx_bytes: bytes,
-    paragraphs: Sequence[object],
-    generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
-) -> bytes:
-    return preserve_source_paragraph_properties(
-        docx_bytes,
-        cast(Any, list(paragraphs)),
-        generated_paragraph_registry=generated_paragraph_registry,
-    )
-
-
-def normalize_semantic_output_docx_adapter(
-    docx_bytes: bytes,
-    paragraphs: Sequence[object],
-    generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
-) -> bytes:
-    return normalize_semantic_output_docx(
-        docx_bytes,
-        cast(Any, list(paragraphs)),
-        generated_paragraph_registry=generated_paragraph_registry,
-    )
-
-
-def reinsert_inline_images_adapter(docx_bytes: bytes, image_assets: Sequence[object]) -> bytes:
-    return reinsert_inline_images(docx_bytes, cast(Any, list(image_assets)))
 
 
 def _apply_runtime_event(event: object, runtime_snapshot: dict) -> None:
@@ -1554,14 +1435,6 @@ def _apply_repeat_count_override(run_profile, repeat_count_override: str):
     return replace(run_profile, repeat_count=repeat_count)
 
 
-def _build_report_runtime_config(runtime_resolution) -> dict[str, object]:
-    return {
-        "effective": runtime_resolution.effective.to_dict() if runtime_resolution is not None else None,
-        "ui_defaults": runtime_resolution.ui_defaults.to_dict() if runtime_resolution is not None else None,
-        "overrides": runtime_resolution.overrides if runtime_resolution is not None else {},
-    }
-
-
 def _serialize_image_asset_forensics(image_assets: Sequence[object]) -> list[dict[str, object]]:
     payload: list[dict[str, object]] = []
     for asset in image_assets:
@@ -1767,15 +1640,10 @@ def main() -> None:
     result = "not_started"
     exception_payload = None
 
-    def log_event_capture(level, event_id, message, **context):
-        event_log.append(
-            {
-                "level": level,
-                "event_id": event_id,
-                "message": message,
-                "context": context,
-            }
-        )
+    def _handle_logged_event(event_payload: Mapping[str, object]) -> None:
+        event_id = str(event_payload.get("event_id") or "")
+        message = str(event_payload.get("message") or "")
+        context = cast(Mapping[str, object], event_payload.get("context") or {})
         if event_id == "block_completed":
             block_index = context.get("block_index")
             block_count = context.get("block_count")
@@ -1813,6 +1681,8 @@ def main() -> None:
                 detail="Сохранены formatting diagnostics artifacts для текущего прогона.",
                 metrics={"job_count": len(list(context.get("artifact_paths") or []))},
             )
+
+    log_event_capture = build_validation_event_logger(event_log, on_event=_handle_logged_event)
 
     try:
         source_bytes = source_path.read_bytes()
@@ -1977,6 +1847,12 @@ def main() -> None:
         "paragraph_count": len(prepared.paragraphs) if prepared is not None else None,
         "image_count": len(prepared.image_assets) if prepared is not None else None,
         "job_count": len(prepared.jobs) if prepared is not None else None,
+        "ai_classified_count": int(getattr(prepared, "ai_classified_count", 0) or 0) if prepared is not None else 0,
+        "ai_heading_count": int(getattr(prepared, "ai_heading_count", 0) or 0) if prepared is not None else 0,
+        "ai_role_change_count": int(getattr(prepared, "ai_role_change_count", 0) or 0) if prepared is not None else 0,
+        "ai_heading_promotion_count": int(getattr(prepared, "ai_heading_promotion_count", 0) or 0) if prepared is not None else 0,
+        "ai_heading_demotion_count": int(getattr(prepared, "ai_heading_demotion_count", 0) or 0) if prepared is not None else 0,
+        "ai_structural_role_change_count": int(getattr(prepared, "ai_structural_role_change_count", 0) or 0) if prepared is not None else 0,
         "source_chars": source_chars,
         "cached": prepared.preparation_cached if prepared is not None else None,
         "elapsed_seconds": round(prepared.preparation_elapsed_seconds, 3) if prepared is not None else None,
@@ -2000,11 +1876,10 @@ def main() -> None:
         "run_profile_id": run_profile.id,
         "validation_tier": run_profile.tier,
         "source_document_path": _path_for_report(source_path),
-        "source_file": _path_for_report(source_path),
         "artifact_dir": _path_for_report(artifact_dir),
         "progress_path": _path_for_report(progress_path),
         "result": result,
-        "runtime_config": _build_report_runtime_config(runtime_resolution),
+        "runtime_config": build_validation_runtime_config(runtime_resolution),
         "preparation": preparation_payload,
         "runtime": runtime_snapshot,
         "image_forensics": _build_image_forensics_report(prepared, runtime_snapshot),
@@ -2077,6 +1952,12 @@ def main() -> None:
         f"paragraph_count={report['preparation']['paragraph_count']}",
         f"image_count={report['preparation']['image_count']}",
         f"job_count={report['preparation']['job_count']}",
+        f"ai_classified_count={report['preparation']['ai_classified_count']}",
+        f"ai_heading_count={report['preparation']['ai_heading_count']}",
+        f"ai_role_change_count={report['preparation']['ai_role_change_count']}",
+        f"ai_heading_promotion_count={report['preparation']['ai_heading_promotion_count']}",
+        f"ai_heading_demotion_count={report['preparation']['ai_heading_demotion_count']}",
+        f"ai_structural_role_change_count={report['preparation']['ai_structural_role_change_count']}",
         f"source_chars={report['preparation']['source_chars']}",
         f"final_markdown_chars={final_markdown_chars}",
         f"output_ratio_vs_source_text={report['signals']['output_ratio_vs_source_text']}",

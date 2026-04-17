@@ -34,10 +34,16 @@ from processing_runtime import (
 )
 from runtime_artifacts import AppReadyMarkerWriter
 from state import (
+    get_processing_outcome,
+    get_prepared_run_context_for_marker,
+    get_restart_source_filename,
+    has_persisted_source,
     init_session_state,
+    is_preparation_failed_for_marker,
     push_activity,
     reset_run_state,
     set_processing_status,
+    should_start_preparation_for_marker,
 )
 from ui import (
     inject_ui_styles,
@@ -190,6 +196,12 @@ def _store_preparation_summary(*, prepared_run_context) -> None:
         "source_chars": len(prepared_run_context.source_text),
         "block_count": len(prepared_run_context.jobs),
         "cached": bool(getattr(prepared_run_context, "preparation_cached", False)),
+        "ai_classified": int(getattr(prepared_run_context, "ai_classified_count", 0) or 0),
+        "ai_headings": int(getattr(prepared_run_context, "ai_heading_count", 0) or 0),
+        "ai_role_changes": int(getattr(prepared_run_context, "ai_role_change_count", 0) or 0),
+        "ai_heading_promotions": int(getattr(prepared_run_context, "ai_heading_promotion_count", 0) or 0),
+        "ai_heading_demotions": int(getattr(prepared_run_context, "ai_heading_demotion_count", 0) or 0),
+        "ai_structural_role_changes": int(getattr(prepared_run_context, "ai_structural_role_change_count", 0) or 0),
         "elapsed": elapsed,
         "progress": 1.0,
         **normalization_metrics,
@@ -243,7 +255,7 @@ def main() -> None:
     app_config["keep_all_image_variants"] = keep_all_image_variants
 
     processing_active = _processing_worker_is_active()
-    processing_outcome = str(st.session_state.get("processing_outcome") or ProcessingOutcome.IDLE.value)
+    processing_outcome = get_processing_outcome()
     processing_in_progress = processing_active or processing_outcome == ProcessingOutcome.RUNNING.value
     preparation_active = _preparation_worker_is_active()
     current_result = get_current_result_bundle()
@@ -269,7 +281,7 @@ def main() -> None:
             render_partial_result()
             _finalize_app_frame(add_section_gap=True)
 
-            still_running = str(st.session_state.get("processing_outcome") or ProcessingOutcome.IDLE.value) == ProcessingOutcome.RUNNING.value
+            still_running = get_processing_outcome() == ProcessingOutcome.RUNNING.value
             action = _render_processing_controls(can_start=False, is_processing=still_running)
             if action == "stop":
                 push_activity("Остановлено. Завершение текущего шага...")
@@ -306,8 +318,7 @@ def main() -> None:
     if (
         uploaded_widget_file is None
         and current_result is None
-        and not st.session_state.get("restart_source")
-        and not st.session_state.get("completed_source")
+        and not has_persisted_source()
     ):
         render_run_log()
         render_image_validation_summary()
@@ -319,10 +330,8 @@ def main() -> None:
     if uploaded_widget_file is not None:
         uploaded_widget_payload = freeze_uploaded_file(uploaded_widget_file)
         preparation_request_marker = build_preparation_request_marker(uploaded_widget_payload, chunk_size=chunk_size)
-        prepared_request_marker = str(st.session_state.get("preparation_input_marker", ""))
-        preparation_failed_marker = str(st.session_state.get("preparation_failed_marker", ""))
-        prepared_run_context = st.session_state.get("prepared_run_context")
-        if (preparation_request_marker != prepared_request_marker or prepared_run_context is None) and preparation_failed_marker != preparation_request_marker:
+        prepared_run_context = get_prepared_run_context_for_marker(preparation_request_marker)
+        if should_start_preparation_for_marker(preparation_request_marker):
             _start_background_preparation(
                 uploaded_payload=uploaded_widget_payload,
                 upload_marker=preparation_request_marker,
@@ -332,7 +341,7 @@ def main() -> None:
             )
             render_preparation_panel()
             return
-        if preparation_failed_marker == preparation_request_marker and prepared_run_context is None:
+        if is_preparation_failed_for_marker(preparation_request_marker):
             if st.session_state.last_error:
                 st.error(st.session_state.last_error)
             render_live_status()
@@ -351,8 +360,7 @@ def main() -> None:
     prepared_run_context = None
     if uploaded_widget_payload is not None:
         current_preparation_request_marker = build_preparation_request_marker(uploaded_widget_payload, chunk_size=chunk_size)
-        if str(st.session_state.get("preparation_input_marker", "")) == current_preparation_request_marker:
-            prepared_run_context = st.session_state.get("prepared_run_context")
+        prepared_run_context = get_prepared_run_context_for_marker(current_preparation_request_marker)
         if prepared_run_context is None:
             st.warning(get_preparation_state_unavailable_message())
             render_live_status()
@@ -386,9 +394,8 @@ def main() -> None:
                 original_filename=str(completed_result["source_name"]),
             )
         elif idle_view_state == IdleViewState.RESTARTABLE:
-            processing_outcome = str(st.session_state.get("processing_outcome") or ProcessingOutcome.IDLE.value)
-            restart_source = st.session_state.get("restart_source") or {}
-            restart_filename = str(restart_source.get("filename", ""))
+            processing_outcome = get_processing_outcome()
+            restart_filename = get_restart_source_filename()
             outcome_notice = get_restartable_outcome_notice(processing_outcome, restart_filename)
             if outcome_notice is not None:
                 notice_level, notice_message = outcome_notice
@@ -430,7 +437,7 @@ def main() -> None:
     image_assets = prepared_run_context.image_assets
     jobs = prepared_run_context.jobs
     source_text = prepared_run_context.source_text
-    processing_outcome = str(st.session_state.get("processing_outcome") or ProcessingOutcome.IDLE.value)
+    processing_outcome = get_processing_outcome()
     restartable_outcome = has_restartable_outcome(processing_outcome)
 
     outcome_notice = get_restartable_outcome_notice(processing_outcome, uploaded_filename)

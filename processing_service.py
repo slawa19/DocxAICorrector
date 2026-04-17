@@ -51,8 +51,8 @@ from runtime_events import AppendLogEvent, FinalizeProcessingStatusEvent, PushAc
 from state import append_image_log, append_log, finalize_processing_status, push_activity, set_processing_status
 
 
-@dataclass
-class ProcessingService:
+@dataclass(frozen=True)
+class ProcessingServiceDependencies:
     get_client_fn: ClientFactory
     load_system_prompt_fn: SystemPromptLoader
     ensure_pandoc_available_fn: Callable[[], None]
@@ -82,6 +82,14 @@ class ProcessingService:
     image_model_call_budget_cls: type
     image_model_call_budget_exceeded_cls: type
 
+
+@dataclass
+class ProcessingService:
+    dependencies: ProcessingServiceDependencies
+
+    def clone(self, **dependency_overrides: object) -> "ProcessingService":
+        return ProcessingService(dependencies=replace(self.dependencies, **dependency_overrides))
+
     def process_document_images(
         self,
         *,
@@ -92,28 +100,29 @@ class ProcessingService:
         runtime=None,
         client=None,
     ) -> list:
+        deps = self.dependencies
         pipeline_context = ImageProcessingContext(
             config=config,
             on_progress=on_progress,
             runtime=runtime,
             client=client,
-            emit_state=self.emit_state_fn,
-            emit_image_reset=self.emit_image_reset_fn,
-            emit_finalize=self.emit_finalize_fn,
-            emit_activity=self.emit_activity_fn,
-            emit_status=self.emit_status_fn,
-            emit_image_log=self.emit_image_log_fn,
-            should_stop=self.should_stop_processing_fn,
-            analyze_image_fn=self.analyze_image_fn,
-            generate_image_candidate_fn=self.generate_image_candidate_fn,
-            validate_redraw_result_fn=self.validate_redraw_result_fn,
-            get_client_fn=self.get_client_fn,
-            log_event_fn=self.log_event_fn,
-            detect_image_mime_type_fn=self.detect_image_mime_type_fn,
-            image_model_call_budget_cls=self.image_model_call_budget_cls,
-            image_model_call_budget_exceeded_cls=self.image_model_call_budget_exceeded_cls,
+            emit_state=deps.emit_state_fn,
+            emit_image_reset=deps.emit_image_reset_fn,
+            emit_finalize=deps.emit_finalize_fn,
+            emit_activity=deps.emit_activity_fn,
+            emit_status=deps.emit_status_fn,
+            emit_image_log=deps.emit_image_log_fn,
+            should_stop=deps.should_stop_processing_fn,
+            analyze_image_fn=deps.analyze_image_fn,
+            generate_image_candidate_fn=deps.generate_image_candidate_fn,
+            validate_redraw_result_fn=deps.validate_redraw_result_fn,
+            get_client_fn=deps.get_client_fn,
+            log_event_fn=deps.log_event_fn,
+            detect_image_mime_type_fn=deps.detect_image_mime_type_fn,
+            image_model_call_budget_cls=deps.image_model_call_budget_cls,
+            image_model_call_budget_exceeded_cls=deps.image_model_call_budget_exceeded_cls,
         )
-        return self.process_document_images_impl_fn(
+        return deps.process_document_images_impl_fn(
             image_assets=image_assets,
             image_mode=image_mode,
             context=pipeline_context,
@@ -133,7 +142,8 @@ class ProcessingService:
         on_progress,
         runtime=None,
     ) -> str:
-        return self.run_document_processing_impl_fn(
+        deps = self.dependencies
+        return deps.run_document_processing_impl_fn(
             uploaded_file=uploaded_file,
             jobs=cast(list[dict[str, str | int]], list(jobs)),
             source_paragraphs=source_paragraphs,
@@ -144,25 +154,25 @@ class ProcessingService:
             max_retries=max_retries,
             on_progress=on_progress,
             runtime=runtime,
-            resolve_uploaded_filename=self.resolve_uploaded_filename_fn,
-            get_client=self.get_client_fn,
-            ensure_pandoc_available=self.ensure_pandoc_available_fn,
-            load_system_prompt=self.load_system_prompt_fn,
-            log_event=self.log_event_fn,
-            present_error=self.present_error_fn,
-            emit_state=self.emit_state_fn,
-            emit_finalize=self.emit_finalize_fn,
-            emit_activity=self.emit_activity_fn,
-            emit_log=self.emit_log_fn,
-            emit_status=self.emit_status_fn,
-            should_stop_processing=self.should_stop_processing_fn,
-            generate_markdown_block=self.generate_markdown_block_fn,
+            resolve_uploaded_filename=deps.resolve_uploaded_filename_fn,
+            get_client=deps.get_client_fn,
+            ensure_pandoc_available=deps.ensure_pandoc_available_fn,
+            load_system_prompt=deps.load_system_prompt_fn,
+            log_event=deps.log_event_fn,
+            present_error=deps.present_error_fn,
+            emit_state=deps.emit_state_fn,
+            emit_finalize=deps.emit_finalize_fn,
+            emit_activity=deps.emit_activity_fn,
+            emit_log=deps.emit_log_fn,
+            emit_status=deps.emit_status_fn,
+            should_stop_processing=deps.should_stop_processing_fn,
+            generate_markdown_block=deps.generate_markdown_block_fn,
             process_document_images=self.process_document_images,
-            inspect_placeholder_integrity=self.inspect_placeholder_integrity_fn,
-            convert_markdown_to_docx_bytes=self.convert_markdown_to_docx_bytes_fn,
-            preserve_source_paragraph_properties=self.preserve_source_paragraph_properties_fn,
-            normalize_semantic_output_docx=self.normalize_semantic_output_docx_fn,
-            reinsert_inline_images=self.reinsert_inline_images_fn,
+            inspect_placeholder_integrity=deps.inspect_placeholder_integrity_fn,
+            convert_markdown_to_docx_bytes=deps.convert_markdown_to_docx_bytes_fn,
+            preserve_source_paragraph_properties=deps.preserve_source_paragraph_properties_fn,
+            normalize_semantic_output_docx=deps.normalize_semantic_output_docx_fn,
+            reinsert_inline_images=deps.reinsert_inline_images_fn,
         )
 
     def run_processing_worker(
@@ -179,6 +189,7 @@ class ProcessingService:
         max_retries: int,
     ) -> None:
         outcome = "failed"
+        deps = self.dependencies
         try:
             outcome = self.run_document_processing(
                 uploaded_file=uploaded_filename,
@@ -193,7 +204,7 @@ class ProcessingService:
                 runtime=runtime,
             )
         except Exception as exc:
-            error_message = self.present_error_fn(
+            error_message = deps.present_error_fn(
                 "processing_worker_crashed",
                 exc,
                 "Критическая ошибка фоновой обработки",
@@ -247,6 +258,7 @@ class ProcessingService:
             chunk_size=chunk_size,
             image_mode=image_mode,
             keep_all_image_variants=keep_all_image_variants,
+            app_config=app_config,
             progress_callback=resolved_prepare_progress_callback,
         )
         jobs = _mutate_processing_jobs(prepared.jobs, job_mutator=job_mutator)
@@ -275,7 +287,11 @@ def _mutate_processing_jobs(
     return [job_mutator(job) for job in jobs]
 
 
-def build_processing_service() -> ProcessingService:
+def build_processing_service_dependencies(**overrides: object) -> ProcessingServiceDependencies:
+    return ProcessingServiceDependencies(**overrides)
+
+
+def build_default_processing_service_dependencies() -> ProcessingServiceDependencies:
     from config import load_app_config as _load_app_config
 
     _cfg = _load_app_config()
@@ -331,7 +347,7 @@ def build_processing_service() -> ProcessingService:
         )
     )
 
-    return ProcessingService(
+    return build_processing_service_dependencies(
         get_client_fn=get_client,
         load_system_prompt_fn=load_system_prompt,
         ensure_pandoc_available_fn=ensure_pandoc_available,
@@ -363,6 +379,10 @@ def build_processing_service() -> ProcessingService:
     )
 
 
+def build_processing_service() -> ProcessingService:
+    return ProcessingService(dependencies=build_default_processing_service_dependencies())
+
+
 _DEFAULT_PROCESSING_SERVICE: ProcessingService | None = None
 _DEFAULT_PROCESSING_SERVICE_LOCK = Lock()
 
@@ -383,4 +403,16 @@ def reset_processing_service() -> None:
 
 
 def clone_processing_service(**overrides: object) -> ProcessingService:
-    return replace(get_processing_service(), **overrides)
+    return get_processing_service().clone(**overrides)
+
+
+__all__ = [
+    "ProcessingServiceDependencies",
+    "ProcessingService",
+    "build_processing_service_dependencies",
+    "build_default_processing_service_dependencies",
+    "build_processing_service",
+    "get_processing_service",
+    "reset_processing_service",
+    "clone_processing_service",
+]

@@ -36,7 +36,7 @@ def _build_service(**overrides):
         "image_model_call_budget_exceeded_cls": RuntimeError,
     }
     defaults.update(overrides)
-    return ProcessingService(**defaults)
+    return ProcessingService(dependencies=processing_service.build_processing_service_dependencies(**defaults))
 
 
 def test_run_document_processing_fails_on_placeholder_integrity_mismatch():
@@ -227,13 +227,14 @@ def test_build_processing_service_builds_runtime_emitters_from_processing_runtim
     assert captured["dependencies"].push_activity is processing_service.push_activity
     assert captured["dependencies"].append_log is processing_service.append_log
     assert captured["dependencies"].append_image_log is processing_service.append_image_log
-    assert captured["kwargs"]["emit_state_fn"] is emit_state
-    assert captured["kwargs"]["emit_finalize_fn"] is emit_finalize
-    assert captured["kwargs"]["emit_activity_fn"] is emit_activity
-    assert captured["kwargs"]["emit_log_fn"] is emit_log
-    assert captured["kwargs"]["emit_status_fn"] is emit_status
-    assert captured["kwargs"]["emit_image_log_fn"] is emit_image_log
-    assert captured["kwargs"]["emit_image_reset_fn"] is emit_image_reset
+    service_dependencies = captured["kwargs"]["dependencies"]
+    assert service_dependencies.emit_state_fn is emit_state
+    assert service_dependencies.emit_finalize_fn is emit_finalize
+    assert service_dependencies.emit_activity_fn is emit_activity
+    assert service_dependencies.emit_log_fn is emit_log
+    assert service_dependencies.emit_status_fn is emit_status
+    assert service_dependencies.emit_image_log_fn is emit_image_log
+    assert service_dependencies.emit_image_reset_fn is emit_image_reset
 
 
 def test_run_prepared_background_document_uses_preparation_and_job_mutator(monkeypatch):
@@ -272,6 +273,7 @@ def test_run_prepared_background_document_uses_preparation_and_job_mutator(monke
 
     assert captured["prepare"]["uploaded_payload"] == {"frozen": "report.docx"}
     assert captured["prepare"]["chunk_size"] == 123
+    assert captured["prepare"]["app_config"] == {"x": 1}
     assert result == "succeeded"
     assert returned_prepared is prepared
 
@@ -378,7 +380,7 @@ def test_clone_processing_service_returns_overridden_copy_without_mutating_singl
     cloned_service = processing_service.clone_processing_service(load_system_prompt_fn=lambda: "override")
 
     assert cloned_service is not default_service
-    assert cloned_service.load_system_prompt_fn() == "override"
-    assert default_service.load_system_prompt_fn() == "system"
+    assert cloned_service.dependencies.load_system_prompt_fn() == "override"
+    assert default_service.dependencies.load_system_prompt_fn() == "system"
 
     processing_service.reset_processing_service()
