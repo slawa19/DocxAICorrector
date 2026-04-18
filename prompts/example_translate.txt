@@ -1,0 +1,7 @@
+Пример принципа работы:
+
+Источник ({source_language}):
+"[sentence in the source language]"
+
+Результат ({target_language}):
+"[natural literary translation of the same sentence in the target language]"

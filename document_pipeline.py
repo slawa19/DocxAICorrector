@@ -1,5 +1,6 @@
 import logging
 import json
+import inspect
 import re
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Sized
@@ -44,7 +45,7 @@ class ClientFactory(Protocol):
 
 
 class SystemPromptLoader(Protocol):
-    def __call__(self) -> str: ...
+    def __call__(self, *, operation: str = "edit", source_language: str = "en", target_language: str = "ru") -> str: ...
 
 
 class EventLogger(Protocol):
@@ -191,6 +192,44 @@ def _coerce_job_kind(job: ProcessingJob) -> str:
     if normalized not in {"llm", "passthrough"}:
         raise ValueError(f"Unsupported job_kind: {normalized}")
     return normalized
+
+
+def _resolve_system_prompt(
+    load_system_prompt: SystemPromptLoader,
+    *,
+    operation: str,
+    source_language: str,
+    target_language: str,
+) -> str:
+    try:
+        signature = inspect.signature(load_system_prompt)
+    except (TypeError, ValueError):
+        signature = None
+
+    if signature is None:
+        return load_system_prompt(
+            operation=operation,
+            source_language=source_language,
+            target_language=target_language,
+        )
+
+    parameters = signature.parameters.values()
+    if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters):
+        return load_system_prompt(
+            operation=operation,
+            source_language=source_language,
+            target_language=target_language,
+        )
+
+    parameter_names = {parameter.name for parameter in parameters}
+    if {"operation", "source_language", "target_language"}.issubset(parameter_names):
+        return load_system_prompt(
+            operation=operation,
+            source_language=source_language,
+            target_language=target_language,
+        )
+
+    return load_system_prompt()
 
 
 def _iter_nonempty_markdown_lines(text: str) -> list[str]:
@@ -508,6 +547,9 @@ def run_document_processing(
     app_config: Mapping[str, object],
     model: str,
     max_retries: int,
+    processing_operation: str = "edit",
+    source_language: str = "en",
+    target_language: str = "ru",
     on_progress: ProgressCallback,
     runtime: object,
     resolve_uploaded_filename: FilenameResolver,
@@ -746,7 +788,12 @@ def run_document_processing(
             else:
                 marker_mode_enabled = bool(app_config.get("enable_paragraph_markers", False)) and bool(paragraph_ids)
                 if system_prompt is None:
-                    system_prompt = load_system_prompt()
+                    system_prompt = _resolve_system_prompt(
+                        load_system_prompt,
+                        operation=processing_operation,
+                        source_language=source_language,
+                        target_language=target_language,
+                    )
                 emit_status(
                     runtime,
                     stage="Ожидание ответа OpenAI",

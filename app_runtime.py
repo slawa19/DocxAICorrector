@@ -140,7 +140,7 @@ def start_background_preparation(*, worker_target, uploaded_payload, upload_mark
     )
 
 
-def start_background_processing(*, worker_target, uploaded_filename: str, uploaded_token: str, source_bytes: bytes, jobs, source_paragraphs=None, image_assets=None, image_mode: str, app_config: dict[str, object], model: str, max_retries: int) -> None:
+def start_background_processing(*, worker_target, uploaded_filename: str, uploaded_token: str, source_bytes: bytes, jobs, source_paragraphs=None, image_assets=None, image_mode: str, app_config: dict[str, object], model: str, max_retries: int, processing_operation: str = "edit", source_language: str = "en", target_language: str = "ru") -> None:
     """Start processing with the canonical state owners pre-bound for UI code."""
     start_background_processing_impl(
         worker_target=worker_target,
@@ -157,4 +157,7 @@ def start_background_processing(*, worker_target, uploaded_filename: str, upload
         app_config=app_config,
         model=model,
         max_retries=max_retries,
+        processing_operation=processing_operation,
+        source_language=source_language,
+        target_language=target_language,
     )

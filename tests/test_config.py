@@ -18,6 +18,11 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     assert app_config["model_options"] == ["gpt-5.1", "gpt-5.4", "custom-model"]
     assert app_config["chunk_size"] == 12000
     assert app_config["max_retries"] == 1
+    assert app_config["processing_operation_default"] == "edit"
+    assert app_config["source_language_default"] == "en"
+    assert app_config["target_language_default"] == "ru"
+    assert app_config["editorial_intensity_default"] == "literary"
+    assert app_config["supported_languages"][0].code == "ru"
     assert app_config["enable_paragraph_markers"] is False
     assert app_config["paragraph_boundary_normalization_enabled"] is True
     assert app_config["paragraph_boundary_normalization_mode"] == "high_only"
@@ -47,6 +52,11 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     app_config = config.load_app_config()
 
     assert app_config["enable_paragraph_markers"] is True
+    assert app_config["processing_operation_default"] == "edit"
+    assert app_config["source_language_default"] == "en"
+    assert app_config["target_language_default"] == "ru"
+    assert app_config["editorial_intensity_default"] == "literary"
+    assert [language.code for language in app_config["supported_languages"]] == ["ru", "en", "de", "fr", "es", "it", "pl", "zh", "ja"]
     assert app_config["paragraph_boundary_normalization_enabled"] is True
     assert app_config["paragraph_boundary_normalization_mode"] == "high_only"
     assert app_config["paragraph_boundary_normalization_save_debug_artifacts"] is True
@@ -207,6 +217,27 @@ def test_load_app_config_accepts_high_and_medium_paragraph_boundary_mode(monkeyp
     app_config = config.load_app_config()
 
     assert app_config["paragraph_boundary_normalization_mode"] == "high_and_medium"
+
+
+def test_load_app_config_rejects_auto_source_language_default_for_edit_mode(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        'processing_operation_default = "edit"\nsource_language_default = "auto"\ntarget_language_default = "ru"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+
+    with pytest.raises(RuntimeError, match="source_language='auto'"):
+        config.load_app_config()
+
+
+def test_load_system_prompt_rejects_auto_source_language_for_edit_mode():
+    config.load_system_prompt.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match="source_language='auto'"):
+            config.load_system_prompt(operation="edit", source_language="auto", target_language="ru")
+    finally:
+        config.load_system_prompt.cache_clear()
 
 
 def test_load_app_config_applies_env_override_for_paragraph_boundary_mode(monkeypatch, tmp_path):

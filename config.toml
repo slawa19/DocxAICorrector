@@ -30,6 +30,21 @@ model_options = [
 ]
 chunk_size = 6000
 max_retries = 3
+processing_operation_default = "edit"
+source_language_default = "en"
+target_language_default = "ru"
+editorial_intensity_default = "literary"
+supported_languages = [
+  { code = "ru", label = "Русский" },
+  { code = "en", label = "English" },
+  { code = "de", label = "Deutsch" },
+  { code = "fr", label = "Français" },
+  { code = "es", label = "Español" },
+  { code = "it", label = "Italiano" },
+  { code = "pl", label = "Polski" },
+  { code = "zh", label = "中文" },
+  { code = "ja", label = "日本語" },
+]
 enable_paragraph_markers = true
 image_mode_default = "no_change"
 semantic_validation_policy = "advisory"

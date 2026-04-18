@@ -24,26 +24,32 @@ def test_streamlit_config_disables_costly_file_watching() -> None:
 
 def test_load_system_prompt_reads_from_disk_once(monkeypatch, tmp_path) -> None:
     prompt_path = tmp_path / "system_prompt.txt"
-    prompt_path.write_text("system prompt", encoding="utf-8")
+    prompt_path.write_text("system prompt {operation_instructions} {example_block}", encoding="utf-8")
+    operation_edit_path = tmp_path / "operation_edit.txt"
+    operation_edit_path.write_text("edit in {target_language}", encoding="utf-8")
+    example_edit_path = tmp_path / "example_edit.txt"
+    example_edit_path.write_text("example", encoding="utf-8")
     calls: list[Path] = []
     original_read_text = Path.read_text
 
     def counting_read_text(self: Path, *args, **kwargs) -> str:
-        if self == prompt_path:
+        if self in {prompt_path, operation_edit_path, example_edit_path}:
             calls.append(self)
         return original_read_text(self, *args, **kwargs)
 
     monkeypatch.setattr(config, "SYSTEM_PROMPT_PATH", prompt_path)
+    monkeypatch.setitem(config._PROMPT_OPERATION_PATHS, "edit", operation_edit_path)
+    monkeypatch.setitem(config._PROMPT_EXAMPLE_PATHS, "edit", example_edit_path)
     monkeypatch.setattr(Path, "read_text", counting_read_text)
     config.load_system_prompt.cache_clear()
 
     try:
-        assert config.load_system_prompt() == "system prompt"
-        assert config.load_system_prompt() == "system prompt"
+        assert config.load_system_prompt() == "system prompt edit in Русский example"
+        assert config.load_system_prompt() == "system prompt edit in Русский example"
     finally:
         config.load_system_prompt.cache_clear()
 
-    assert calls == [prompt_path]
+    assert calls == [operation_edit_path, example_edit_path, prompt_path]
 
 
 def test_get_client_reuses_singleton_instance(monkeypatch, tmp_path) -> None:

@@ -44,6 +44,18 @@ def test_main_logs_app_start_only_once(monkeypatch):
     assert session_state.app_start_logged is True
 
 
+def test_resolve_sidebar_settings_accepts_new_text_transform_tuple():
+    result = app._resolve_sidebar_settings(("gpt-5.4", 6000, 3, "safe", True, "translate", "auto", "de"))
+
+    assert result == ("gpt-5.4", 6000, 3, "safe", True, "translate", "auto", "de")
+
+
+def test_resolve_sidebar_settings_keeps_legacy_tuple_compatible():
+    result = app._resolve_sidebar_settings(("gpt-5.4", 6000, 3, "safe", True))
+
+    assert result == ("gpt-5.4", 6000, 3, "safe", True, "edit", "en", "ru")
+
+
 class UploadedFileStub:
     def __init__(self, name: str, content: bytes):
         self.name = name
@@ -377,6 +389,33 @@ def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatc
     assert start_calls[0]["uploaded_payload"].filename == "report.docx"
     assert start_calls[0]["uploaded_payload"].content_bytes == b"abc"
     assert start_calls[0]["uploaded_payload"].file_token == "report.docx:3:ba7816bf8f01cfea"
+
+
+def test_start_background_processing_passes_translate_context_to_runtime(monkeypatch):
+    start_calls = []
+
+    monkeypatch.setattr(app, "start_background_processing", lambda **kwargs: start_calls.append(kwargs))
+
+    app._start_background_processing(
+        uploaded_filename="report.docx",
+        uploaded_token="report.docx:3:token",
+        source_bytes=b"abc",
+        jobs=[{"target_text": "block"}],
+        source_paragraphs=["p1"],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=3,
+        processing_operation="translate",
+        source_language="auto",
+        target_language="de",
+    )
+
+    assert len(start_calls) == 1
+    assert start_calls[0]["processing_operation"] == "translate"
+    assert start_calls[0]["source_language"] == "auto"
+    assert start_calls[0]["target_language"] == "de"
 
 
 def test_main_normalizes_legacy_doc_before_starting_background_preparation(monkeypatch):

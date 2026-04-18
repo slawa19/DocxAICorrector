@@ -4,6 +4,8 @@ import logging
 from io import BytesIO
 from pathlib import Path
 
+import pytest
+
 import document_pipeline
 from docx import Document
 
@@ -163,6 +165,66 @@ def test_run_document_processing_happy_path_updates_runtime_state():
     assert runtime["finalize"][-1] == ("Обработка завершена", runtime["finalize"][-1][1], 1.0, "completed")
     assert runtime["log"][-1]["status"] == "DONE"
     assert len(progress_calls) == 3
+
+
+def test_run_document_processing_passes_text_transform_context_to_system_prompt_loader():
+    runtime = _build_runtime_capture()
+    captured = {}
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="translate",
+        source_language="en",
+        target_language="de",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **kwargs: captured.setdefault("prompt", dict(kwargs)) or "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "Обработанный блок",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
+    )
+
+    assert result == "succeeded"
+    assert captured["prompt"] == {
+        "operation": "translate",
+        "source_language": "en",
+        "target_language": "de",
+    }
+
+
+def test_resolve_system_prompt_does_not_mask_internal_type_errors():
+    def broken_loader(*, operation: str = "edit", source_language: str = "en", target_language: str = "ru"):
+        raise TypeError("broken template")
+
+    with pytest.raises(TypeError, match="broken template"):
+        document_pipeline._resolve_system_prompt(
+            broken_loader,
+            operation="translate",
+            source_language="en",
+            target_language="de",
+        )
 
 
 def test_run_document_processing_applies_semantic_output_normalization_before_image_reinsertion():

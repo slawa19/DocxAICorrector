@@ -30,8 +30,8 @@ _WORD_TOKEN_PATTERN = re.compile(r"\w+(?:[-']\w+)*", re.UNICODE)
 _INCOMPLETE_RESPONSE_RETRY_MIN_OUTPUT_TOKENS = 1024
 _INCOMPLETE_RESPONSE_RECOVERY_MIN_OUTPUT_TOKENS = 1536
 _CONTEXT_LEAKAGE_RETRY_WARNING = (
-    "ВАЖНО: Ваш предыдущий ответ содержал текст из контекста. "
-    "Используйте ТОЛЬКО текст из [TARGET BLOCK]."
+    "IMPORTANT: Your previous answer included text from the surrounding context. "
+    "Use ONLY the text that belongs to [TARGET BLOCK]."
 )
 
 
@@ -65,9 +65,9 @@ def normalize_model_output(text: str) -> str:
 
 def _normalize_context_text(text: str | None) -> str:
     if text is None:
-        return "[контекст отсутствует]"
+        return "[no context]"
     cleaned = text.strip()
-    return cleaned or "[контекст отсутствует]"
+    return cleaned or "[no context]"
 
 
 _CONTEXT_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_IMAGE_img_\d+\]\]")
@@ -117,9 +117,9 @@ def _validate_prompt_inputs(target_text: str, context_before: str, context_after
 
 def _build_standard_user_prompt(*, target_text: str, context_before: str, context_after: str) -> str:
     return (
-        "Ниже передан целевой блок документа и соседний контекст.\n"
-        "Используй соседний контекст только для понимания смысла, терминологии и связности.\n"
-        "Редактируй только целевой блок и верни только его итоговый текст.\n\n"
+        "Below is a target document block and surrounding context.\n"
+        "Use the surrounding context only to understand meaning, terminology, and continuity.\n"
+        "Process only the target block according to the system instructions and return only its final text.\n\n"
         f"[CONTEXT BEFORE]\n{context_before}\n\n"
         f"[TARGET BLOCK]\n{target_text}\n\n"
         f"[CONTEXT AFTER]\n{context_after}"
@@ -128,12 +128,12 @@ def _build_standard_user_prompt(*, target_text: str, context_before: str, contex
 
 def _build_marker_preserving_user_prompt(*, target_text: str, context_before: str, context_after: str) -> str:
     return (
-        "Ниже передан целевой блок документа с обязательными маркерами абзацев вида [[DOCX_PARA_...]].\n"
-        "Сохрани каждый marker в точности, в том же количестве и порядке.\n"
-        "Не удаляй, не дублируй и не переименовывай markers.\n"
-        "Не объединяй абзацы между markers и не дели один marker на несколько абзацев.\n"
-        "Редактируй только текст после каждого marker и верни весь блок целиком вместе с markers.\n"
-        "Используй соседний контекст только для смысла и терминологии.\n\n"
+        "Below is a target document block with required paragraph markers of the form [[DOCX_PARA_...]].\n"
+        "Preserve every marker exactly, in the same quantity and order.\n"
+        "Do not delete, duplicate, rename, or reorder markers.\n"
+        "Do not merge paragraphs across markers and do not split one marker into multiple paragraphs.\n"
+        "Process only the text after each marker according to the system instructions and return the whole block together with the markers.\n"
+        "Use the surrounding context only for meaning and terminology.\n\n"
         f"[CONTEXT BEFORE]\n{context_before}\n\n"
         f"[TARGET BLOCK WITH MARKERS]\n{target_text}\n\n"
         f"[CONTEXT AFTER]\n{context_after}"
@@ -142,22 +142,22 @@ def _build_marker_preserving_user_prompt(*, target_text: str, context_before: st
 
 def _build_empty_response_recovery_user_prompt(*, target_text: str) -> str:
     return (
-        "Предыдущая попытка вернула пустой ответ.\n"
-        "Повтори обработку, но игнорируй любой внешний контекст и работай только с целевым блоком ниже.\n"
-        "Сохрани весь смысл, структуру и факты блока.\n"
-        "Верни только итоговый отредактированный текст блока без пояснений, без Markdown-обрамления и без пустого ответа.\n\n"
+        "The previous attempt returned an empty answer.\n"
+        "Repeat the processing, ignore all external context, and work only with the target block below.\n"
+        "Preserve the full meaning, structure, and facts of the block.\n"
+        "Return only the final processed block text with no explanation, no Markdown fence, and no empty answer.\n\n"
         f"[TARGET BLOCK ONLY]\n{target_text}"
     )
 
 
 def _build_marker_recovery_user_prompt(*, target_text: str) -> str:
     return (
-        "Предыдущая попытка нарушила контракт paragraph markers.\n"
-        "Повтори обработку строго по правилам ниже.\n"
-        "Сохрани каждый marker [[DOCX_PARA_...]] в исходном виде и порядке.\n"
-        "Не удаляй markers, не добавляй новые, не меняй их местами.\n"
-        "Каждому marker должен соответствовать ровно один абзац текста после него.\n"
-        "Верни только итоговый блок целиком вместе с markers, без пояснений.\n\n"
+        "The previous attempt violated the paragraph marker contract.\n"
+        "Repeat the processing strictly according to the rules below.\n"
+        "Preserve every marker [[DOCX_PARA_...]] exactly as it appears and in the same order.\n"
+        "Do not delete markers, add new ones, or reorder them.\n"
+        "Each marker must correspond to exactly one paragraph of text after it.\n"
+        "Return only the final full block together with the markers, with no explanation.\n\n"
         f"[TARGET BLOCK WITH MARKERS ONLY]\n{target_text}"
     )
 

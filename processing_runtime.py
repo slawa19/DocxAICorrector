@@ -750,6 +750,9 @@ def start_background_processing(
     app_config: dict[str, object],
     model: str,
     max_retries: int,
+    processing_operation: str = "edit",
+    source_language: str = "en",
+    target_language: str = "ru",
 ) -> None:
     previous_restart_source = st.session_state.get("restart_source")
     restart_session_id = str(st.session_state.get("restart_session_id", ""))
@@ -805,6 +808,9 @@ def start_background_processing(
             "app_config": app_config,
             "model": model,
             "max_retries": max_retries,
+            "processing_operation": processing_operation,
+            "source_language": source_language,
+            "target_language": target_language,
         },
         daemon=True,
     )

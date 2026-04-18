@@ -232,6 +232,13 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
         "default_model": "gpt-5-mini",
         "chunk_size": 6000,
         "max_retries": 3,
+        "processing_operation_default": "edit",
+        "source_language_default": "en",
+        "target_language_default": "ru",
+        "supported_languages": [
+            type("Lang", (), {"code": "ru", "label": "Русский"})(),
+            type("Lang", (), {"code": "en", "label": "English"})(),
+        ],
         "image_mode_default": "semantic_redraw_direct",
         "keep_all_image_variants": False,
     }
@@ -258,9 +265,23 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
 
     result = ui.render_sidebar(config)
 
-    assert result == ("gpt-5-mini", 6000, 3, "semantic_redraw_direct", False)
+    assert result == ("gpt-5-mini", 6000, 3, "semantic_redraw_direct", False, "edit", "en", "ru")
     assert sidebar_calls == [
         ("header", "Настройки"),
+        (
+            "selectbox",
+            "Режим обработки текста",
+            None,
+            tuple(ui.TEXT_OPERATION_LABELS.values()),
+            None,
+        ),
+        (
+            "selectbox",
+            "Целевой язык",
+            None,
+            ("Русский", "English"),
+            None,
+        ),
         ("selectbox", "Модель", None, ("gpt-5.4", "gpt-5-mini", "custom"), None),
         (
             "selectbox",

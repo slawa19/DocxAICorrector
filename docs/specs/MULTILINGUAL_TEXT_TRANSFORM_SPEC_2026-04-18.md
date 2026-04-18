@@ -492,71 +492,71 @@ Implementation will be considered complete for Phase 1 when all of the following
 
 ### Priority 0: Lock the runtime contract
 
-1. Confirm the Phase 1 UI exposes exactly two modes: `edit` and `translate`.
-2. Confirm that Phase 1 `translate` means translation with literary polishing in the target language.
-3. Confirm the initial supported language list and stable language codes.
-4. Confirm the `supported_languages` config shape as `{ code, label }` entries.
-5. Confirm whether the existing `prompts/system_prompt.txt` will be converted in place or replaced by a new main template file.
-6. Confirm that Phase 1 prompt rendering uses Python `str.format(...)` rather than introducing a templating dependency.
-7. Confirm that prompt caching will use `@lru_cache(maxsize=32)`.
+- [x] Confirm the Phase 1 UI exposes exactly two modes: `edit` and `translate`.
+- [x] Confirm that Phase 1 `translate` means translation with literary polishing in the target language.
+- [x] Confirm the initial supported language list and stable language codes.
+- [x] Confirm the `supported_languages` config shape as `{ code, label }` entries.
+- [x] Confirm whether the existing `prompts/system_prompt.txt` will be converted in place or replaced by a new main template file.
+- [x] Confirm that Phase 1 prompt rendering uses Python `str.format(...)` rather than introducing a templating dependency.
+- [x] Confirm that prompt caching will use `@lru_cache(maxsize=32)`.
 
 ### Priority 1: Add the configuration and prompt-loading foundation
 
-1. Add `processing_operation_default`, `source_language_default`, `target_language_default`, and `supported_languages` to config.
-2. Implement a stable language registry shape in `config.py` using codes plus labels.
-3. Replace the zero-argument system prompt loader with a parameterized loader.
-4. Add caching keyed by operation, source language, and target language.
-5. Implement the main template plus operation fragment loading path.
-6. Add optional target-language overlay or example fragment loading hooks, even if only one or two are used initially.
+- [x] Add `processing_operation_default`, `source_language_default`, `target_language_default`, and `supported_languages` to config.
+- [x] Implement a stable language registry shape in `config.py` using codes plus labels.
+- [x] Replace the zero-argument system prompt loader with a parameterized loader.
+- [x] Add caching keyed by operation, source language, and target language.
+- [x] Implement the main template plus operation fragment loading path.
+- [x] Add optional target-language overlay or example fragment loading hooks, even if only one or two are used initially.
 
 ### Priority 2: Thread the processing context through the runtime
 
-1. Expand the sidebar return contract in `ui.py`.
-2. Update `app.py` to receive and pass the selected operation and languages.
-3. Update `app.py` `_start_background_processing(...)` and `worker_entrypoint(...)`.
-4. Update `processing_service.py` `run_processing_worker(...)`.
-5. Update `processing_service.py` `run_document_processing(...)`.
-6. Update `processing_service.py` `run_prepared_background_document(...)`.
-7. Update `processing_service.py` dependency typing and forwarding.
-8. Update `document_pipeline.py` protocol typing for the prompt loader.
-9. Ensure the system prompt is loaded once per processing run with the selected context.
+- [x] Expand the sidebar return contract in `ui.py`.
+- [x] Update `app.py` to receive and pass the selected operation and languages.
+- [x] Update `app.py` `_start_background_processing(...)` and `worker_entrypoint(...)`.
+- [x] Update `processing_service.py` `run_processing_worker(...)`.
+- [x] Update `processing_service.py` `run_document_processing(...)`.
+- [x] Update `processing_service.py` `run_prepared_background_document(...)`.
+- [x] Update `processing_service.py` dependency typing and forwarding.
+- [x] Update `document_pipeline.py` protocol typing for the prompt loader.
+- [x] Ensure the system prompt is loaded once per processing run with the selected context.
 
 ### Priority 3: Remove semantic prompt drift in generation
 
-1. Neutralize the standard user prompt builder in `generation.py`.
-2. Neutralize the marker-preserving prompt builder in `generation.py`.
-3. Neutralize empty-response recovery prompts.
-4. Neutralize marker-recovery prompts.
-5. Replace editing-specific retry-warning wording with operation-neutral wording.
-6. Replace language-specific missing-context placeholders with neutral wording.
-7. Explicitly update `_normalize_context_text(...)` to return a neutral placeholder.
+- [x] Neutralize the standard user prompt builder in `generation.py`.
+- [x] Neutralize the marker-preserving prompt builder in `generation.py`.
+- [x] Neutralize empty-response recovery prompts.
+- [x] Neutralize marker-recovery prompts.
+- [x] Replace editing-specific retry-warning wording with operation-neutral wording.
+- [x] Replace language-specific missing-context placeholders with neutral wording.
+- [x] Explicitly update `_normalize_context_text(...)` to return a neutral placeholder.
 
 ### Priority 4: Add the Phase 1 prompt assets
 
-1. Create or convert the shared system-prompt template.
-2. Add the `edit` operation fragment.
-3. Add the `translate` operation fragment.
-4. Add at least one target-language-aware example or overlay for the initial target languages.
-5. Verify that prompt composition does not duplicate common formatting, safety, and context rules.
+- [x] Create or convert the shared system-prompt template.
+- [x] Add the `edit` operation fragment.
+- [x] Add the `translate` operation fragment.
+- [x] Add at least one target-language-aware example or overlay for the initial target languages.
+- [x] Verify that prompt composition does not duplicate common formatting, safety, and context rules.
 
 ### Priority 5: Test the contract changes
 
-1. Update config tests for language registry and defaults.
-2. Update UI tests for the expanded sidebar contract.
-3. Update pipeline tests for the parameterized prompt-loader signature.
-4. Add tests that confirm prompt loading uses operation and language parameters.
-5. Add tests that confirm `generation.py` prompt builders no longer contain editing-only wording.
-6. Update tests that assert the exact context-leakage retry warning text, including `test_generate_markdown_block_retries_on_context_leakage_and_reinforces_prompt`.
-7. Verify existing document-processing tests still pass where behavior should remain unchanged.
+- [x] Update config tests for language registry and defaults.
+- [x] Update UI tests for the expanded sidebar contract.
+- [x] Update pipeline tests for the parameterized prompt-loader signature.
+- [x] Add tests that confirm prompt loading uses operation and language parameters.
+- [x] Add tests that confirm `generation.py` prompt builders no longer contain editing-only wording.
+- [x] Update tests that assert the exact context-leakage retry warning text, including `test_generate_markdown_block_retries_on_context_leakage_and_reinforces_prompt`.
+- [x] Verify existing document-processing tests still pass where behavior should remain unchanged.
 
 ### Priority 6: Manual verification before broader rollout
 
-1. Verify literary editing on a same-language document.
-2. Verify translation on a multi-page English document.
-3. Verify `source_language=auto` behavior on a clean single-language document.
-4. Verify marker-preserving mode still works under translation.
-5. Verify formatting, lists, headings, tables, and image placeholders remain intact.
-6. Verify the result is still assembled into DOCX correctly.
+- [ ] Verify literary editing on a same-language document.
+- [ ] Verify translation on a multi-page English document.
+- [ ] Verify `source_language=auto` behavior on a clean single-language document.
+- [ ] Verify marker-preserving mode still works under translation.
+- [ ] Verify formatting, lists, headings, tables, and image placeholders remain intact.
+- [ ] Verify the result is still assembled into DOCX correctly.
 
 ## Phase 2 Follow-Ups
 

@@ -39,6 +39,11 @@ IMAGE_MODE_DESCRIPTIONS = {
 }
 
 IMAGE_MODE_VALUES_BY_LABEL = {label: value for value, label in IMAGE_MODE_LABELS.items()}
+TEXT_OPERATION_LABELS = {
+    "edit": "Литературное редактирование",
+    "translate": "Перевод",
+}
+TEXT_OPERATION_VALUES_BY_LABEL = {label: value for value, label in TEXT_OPERATION_LABELS.items()}
 _FEED_ID_SANITIZER = re.compile(r"[^a-zA-Z0-9_-]+")
 _DOCX_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_IMAGE_img_\d+\]\]")
 
@@ -194,6 +199,11 @@ def render_sidebar_selectbox(
     key: str | None = None,
 ) -> str:
     return st.sidebar.selectbox(label, options, index=index, help=help, key=key)
+
+
+def _supported_language_options(config: Mapping[str, object]) -> list[object]:
+    raw_languages = config.get("supported_languages", ())
+    return [language for language in raw_languages if hasattr(language, "code") and hasattr(language, "label")]
 
 
 def render_live_status(target=None) -> None:
@@ -414,8 +424,48 @@ def _asset_value(asset, field_name: str, default=None):
     return getattr(asset, field_name, default)
 
 
-def render_sidebar(config: Mapping[str, object]) -> tuple[str, int, int, str, bool]:
+def render_sidebar(config: Mapping[str, object]) -> tuple[str, int, int, str, bool, str, str, str]:
     st.sidebar.header("Настройки")
+    operation_default = str(config.get("processing_operation_default", "edit"))
+    operation_options = list(TEXT_OPERATION_LABELS.values())
+    operation_default_label = TEXT_OPERATION_LABELS.get(operation_default, TEXT_OPERATION_LABELS["edit"])
+    operation_index = operation_options.index(operation_default_label) if operation_default_label in operation_options else 0
+    selected_operation_label = render_sidebar_selectbox(
+        "Режим обработки текста",
+        operation_options,
+        index=operation_index,
+        key="sidebar_text_operation",
+    )
+    processing_operation = TEXT_OPERATION_VALUES_BY_LABEL.get(selected_operation_label, "edit")
+
+    language_options = _supported_language_options(config)
+    language_labels = [language.label for language in language_options]
+    code_by_label = {language.label: language.code for language in language_options}
+    label_by_code = {language.code: language.label for language in language_options}
+    default_target_code = str(config.get("target_language_default", "ru"))
+    default_target_label = label_by_code.get(default_target_code, language_labels[0] if language_labels else default_target_code)
+    target_index = language_labels.index(default_target_label) if default_target_label in language_labels else 0
+    selected_target_label = render_sidebar_selectbox(
+        "Целевой язык",
+        language_labels,
+        index=target_index,
+        key="sidebar_target_language",
+    )
+    target_language = code_by_label.get(selected_target_label, default_target_code)
+
+    source_language = str(config.get("source_language_default", "en"))
+    if processing_operation == "translate":
+        source_options = ["Авто", *language_labels]
+        source_default_label = "Авто" if source_language == "auto" else label_by_code.get(source_language, source_options[0])
+        source_index = source_options.index(source_default_label) if source_default_label in source_options else 0
+        selected_source_label = render_sidebar_selectbox(
+            "Язык оригинала",
+            source_options,
+            index=source_index,
+            key="sidebar_source_language",
+        )
+        source_language = "auto" if selected_source_label == "Авто" else code_by_label.get(selected_source_label, source_language)
+
     model_options = [*_get_list_of_str(config, "model_options"), "custom"]
     default_model = str(config["default_model"])
     default_index = model_options.index(default_model) if default_model in model_options else 0
@@ -456,7 +506,16 @@ def render_sidebar(config: Mapping[str, object]) -> tuple[str, int, int, str, bo
         help="Сохраняет все сгенерированные варианты изображений для последующего сравнения.",
         key="sidebar_keep_all_image_variants",
     )
-    return model, chunk_size, max_retries, image_mode, keep_all_image_variants
+    return (
+        model,
+        chunk_size,
+        max_retries,
+        image_mode,
+        keep_all_image_variants,
+        processing_operation,
+        source_language,
+        target_language,
+    )
 
 
 def render_markdown_preview(

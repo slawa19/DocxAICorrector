@@ -3,6 +3,7 @@ import tomllib
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 from threading import Lock
 from typing import TYPE_CHECKING
 
@@ -15,6 +16,7 @@ from constants import (
     DEFAULT_MODEL,
     DEFAULT_MODEL_OPTIONS,
     ENV_PATH,
+    PROMPTS_DIR,
     SYSTEM_PROMPT_PATH,
 )
 from image_shared import clamp_score
@@ -32,6 +34,36 @@ OpenAI = None
 _CLIENT = None
 _CLIENT_LOCK = Lock()
 _IMAGE_OUTPUT_SIZE_VALUES = {"256x256", "512x512", "1024x1024", "1024x1536", "1536x1024", "1024x1792", "1792x1024"}
+PROCESSING_OPERATION_VALUES = ("edit", "translate")
+
+
+@dataclass(frozen=True)
+class LanguageOption:
+    code: str
+    label: str
+
+
+DEFAULT_SUPPORTED_LANGUAGES = (
+    LanguageOption(code="ru", label="Русский"),
+    LanguageOption(code="en", label="English"),
+    LanguageOption(code="de", label="Deutsch"),
+    LanguageOption(code="fr", label="Français"),
+    LanguageOption(code="es", label="Español"),
+    LanguageOption(code="it", label="Italiano"),
+    LanguageOption(code="pl", label="Polski"),
+    LanguageOption(code="zh", label="中文"),
+    LanguageOption(code="ja", label="日本語"),
+)
+
+_PROMPT_OPERATION_PATHS = {
+    "edit": PROMPTS_DIR / "operation_edit.txt",
+    "translate": PROMPTS_DIR / "operation_translate.txt",
+}
+
+_PROMPT_EXAMPLE_PATHS = {
+    "edit": PROMPTS_DIR / "example_edit.txt",
+    "translate": PROMPTS_DIR / "example_translate.txt",
+}
 
 if TYPE_CHECKING:
     from openai import OpenAI as OpenAIClient
@@ -43,6 +75,11 @@ class AppConfig(Mapping[str, object]):
     model_options: list[str]
     chunk_size: int
     max_retries: int
+    processing_operation_default: str
+    source_language_default: str
+    target_language_default: str
+    editorial_intensity_default: str
+    supported_languages: tuple[LanguageOption, ...]
     enable_paragraph_markers: bool
     paragraph_boundary_normalization_enabled: bool
     paragraph_boundary_normalization_mode: str
@@ -180,6 +217,52 @@ def parse_choice_env(name: str, *, default: str, allowed_values: set[str]) -> st
     if raw_value not in allowed_values:
         raise RuntimeError(f"Некорректное значение в {name}: {raw_value}")
     return raw_value
+
+
+def parse_supported_languages(
+    value: object,
+    *,
+    source_name: str,
+    default: tuple[LanguageOption, ...] = DEFAULT_SUPPORTED_LANGUAGES,
+) -> tuple[LanguageOption, ...]:
+    if value is None:
+        return default
+    if not isinstance(value, list) or not value:
+        raise RuntimeError(f"Некорректный список языков в {source_name}")
+
+    parsed: list[LanguageOption] = []
+    seen_codes: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise RuntimeError(f"Некорректная запись языка в {source_name}[{index}]")
+        code = str(item.get("code", "")).strip().lower()
+        label = str(item.get("label", "")).strip()
+        if not code or not label:
+            raise RuntimeError(f"Некорректная запись языка в {source_name}[{index}]")
+        if code in seen_codes:
+            raise RuntimeError(f"Дублирующийся код языка в {source_name}: {code}")
+        seen_codes.add(code)
+        parsed.append(LanguageOption(code=code, label=label))
+    return tuple(parsed)
+
+
+def _validate_text_transform_context(
+    *,
+    operation: str,
+    source_language: str,
+    target_language: str,
+    supported_language_codes: set[str],
+) -> None:
+    if operation not in PROCESSING_OPERATION_VALUES:
+        raise RuntimeError(f"Некорректный режим текстовой обработки: {operation}")
+    if target_language not in supported_language_codes:
+        raise RuntimeError(f"Некорректный целевой язык: {target_language}")
+    if source_language == "auto":
+        if operation != "translate":
+            raise RuntimeError("source_language='auto' поддерживается только для режима translate")
+        return
+    if source_language not in supported_language_codes:
+        raise RuntimeError(f"Некорректный язык оригинала: {source_language}")
 
 
 def parse_optional_config_str(config_data: dict[str, object], field_name: str) -> str | None:
@@ -325,6 +408,26 @@ def load_app_config() -> AppConfig:
     max_retries = config_data.get("max_retries", DEFAULT_MAX_RETRIES)
     if not isinstance(max_retries, int):
         raise RuntimeError(f"Некорректное поле max_retries в {CONFIG_PATH}")
+    supported_languages = parse_supported_languages(
+        config_data.get("supported_languages"),
+        source_name=f"{CONFIG_PATH}: supported_languages",
+    )
+    supported_language_codes = {language.code for language in supported_languages}
+    processing_operation_default = parse_choice_str(
+        config_data,
+        "processing_operation_default",
+        "edit",
+        set(PROCESSING_OPERATION_VALUES),
+    )
+    source_language_default = parse_config_str(config_data, "source_language_default", "en").strip().lower()
+    target_language_default = parse_config_str(config_data, "target_language_default", "ru").strip().lower()
+    editorial_intensity_default = parse_config_str(config_data, "editorial_intensity_default", "literary").strip().lower()
+    _validate_text_transform_context(
+        operation=processing_operation_default,
+        source_language=source_language_default,
+        target_language=target_language_default,
+        supported_language_codes=supported_language_codes,
+    )
     enable_paragraph_markers = parse_config_bool(config_data, "enable_paragraph_markers", False)
 
     output_config = parse_optional_config_section(config_data, "output")
@@ -562,6 +665,20 @@ def load_app_config() -> AppConfig:
     default_model = os.getenv("DOCX_AI_DEFAULT_MODEL", default_model).strip() or default_model
     chunk_size = parse_int_env("DOCX_AI_CHUNK_SIZE", chunk_size)
     max_retries = parse_int_env("DOCX_AI_MAX_RETRIES", max_retries)
+    processing_operation_default = parse_choice_env(
+        "DOCX_AI_PROCESSING_OPERATION_DEFAULT",
+        default=processing_operation_default,
+        allowed_values=set(PROCESSING_OPERATION_VALUES),
+    )
+    source_language_default = (os.getenv("DOCX_AI_SOURCE_LANGUAGE_DEFAULT", source_language_default).strip().lower() or source_language_default)
+    target_language_default = (os.getenv("DOCX_AI_TARGET_LANGUAGE_DEFAULT", target_language_default).strip().lower() or target_language_default)
+    editorial_intensity_default = (os.getenv("DOCX_AI_EDITORIAL_INTENSITY_DEFAULT", editorial_intensity_default).strip().lower() or editorial_intensity_default)
+    _validate_text_transform_context(
+        operation=processing_operation_default,
+        source_language=source_language_default,
+        target_language=target_language_default,
+        supported_language_codes=supported_language_codes,
+    )
     enable_paragraph_markers = parse_bool_env(
         "DOCX_AI_ENABLE_PARAGRAPH_MARKERS",
         enable_paragraph_markers,
@@ -758,6 +875,11 @@ def load_app_config() -> AppConfig:
         model_options=model_options,
         chunk_size=max(3000, min(chunk_size, 12000)),
         max_retries=max(1, min(max_retries, 5)),
+        processing_operation_default=processing_operation_default,
+        source_language_default=source_language_default,
+        target_language_default=target_language_default,
+        editorial_intensity_default=editorial_intensity_default,
+        supported_languages=supported_languages,
         enable_paragraph_markers=enable_paragraph_markers,
         paragraph_boundary_normalization_enabled=paragraph_boundary_normalization_enabled,
         paragraph_boundary_normalization_mode=paragraph_boundary_normalization_mode,
@@ -824,17 +946,58 @@ def load_app_config() -> AppConfig:
     )
 
 
-@lru_cache(maxsize=1)
-def load_system_prompt() -> str:
+def _read_prompt_file(path: Path) -> str:
     try:
-        prompt_text = SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
+        prompt_text = path.read_text(encoding="utf-8").strip()
     except FileNotFoundError as exc:
-        raise RuntimeError(f"Не найден файл системного промпта: {SYSTEM_PROMPT_PATH}") from exc
-
+        raise RuntimeError(f"Не найден файл системного промпта: {path}") from exc
     if not prompt_text:
-        raise RuntimeError(f"Файл системного промпта пуст: {SYSTEM_PROMPT_PATH}")
-
+        raise RuntimeError(f"Файл системного промпта пуст: {path}")
     return prompt_text
+
+
+def _resolve_language_label(language_code: str) -> str:
+    normalized = language_code.strip().lower()
+    if normalized == "auto":
+        return "определи автоматически по тексту"
+    for language in DEFAULT_SUPPORTED_LANGUAGES:
+        if language.code == normalized:
+            return language.label
+    return normalized
+
+
+@lru_cache(maxsize=32)
+def load_system_prompt(
+    *,
+    operation: str = "edit",
+    source_language: str = "en",
+    target_language: str = "ru",
+    editorial_intensity: str = "literary",
+) -> str:
+    normalized_operation = operation.strip().lower() or "edit"
+    normalized_source_language = source_language.strip().lower() or "en"
+    normalized_target_language = target_language.strip().lower() or "ru"
+    _validate_text_transform_context(
+        operation=normalized_operation,
+        source_language=normalized_source_language,
+        target_language=normalized_target_language,
+        supported_language_codes={language.code for language in DEFAULT_SUPPORTED_LANGUAGES},
+    )
+    operation_instructions = _read_prompt_file(_PROMPT_OPERATION_PATHS[normalized_operation]).format(
+        source_language=_resolve_language_label(normalized_source_language),
+        target_language=_resolve_language_label(normalized_target_language),
+    )
+    example_block = _read_prompt_file(_PROMPT_EXAMPLE_PATHS[normalized_operation]).format(
+        source_language=_resolve_language_label(normalized_source_language),
+        target_language=_resolve_language_label(normalized_target_language),
+    )
+    prompt_template = _read_prompt_file(SYSTEM_PROMPT_PATH)
+    return prompt_template.format(
+        source_language=_resolve_language_label(normalized_source_language),
+        target_language=_resolve_language_label(normalized_target_language),
+        operation_instructions=operation_instructions,
+        example_block=example_block,
+    )
 
 
 def get_client() -> "OpenAIClient":

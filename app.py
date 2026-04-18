@@ -129,8 +129,25 @@ def _start_background_processing(
     app_config: dict[str, object],
     model: str,
     max_retries: int,
+    processing_operation: str = "edit",
+    source_language: str = "en",
+    target_language: str = "ru",
 ) -> None:
-    def worker_entrypoint(*, runtime, uploaded_filename, jobs, source_paragraphs, image_assets, image_mode, app_config, model, max_retries) -> None:
+    def worker_entrypoint(
+        *,
+        runtime,
+        uploaded_filename,
+        jobs,
+        source_paragraphs,
+        image_assets,
+        image_mode,
+        app_config,
+        model,
+        max_retries,
+        processing_operation,
+        source_language,
+        target_language,
+    ) -> None:
         from processing_service import get_processing_service
 
         get_processing_service().run_processing_worker(
@@ -143,6 +160,9 @@ def _start_background_processing(
             app_config=app_config,
             model=model,
             max_retries=max_retries,
+            processing_operation=processing_operation,
+            source_language=source_language,
+            target_language=target_language,
         )
 
     start_background_processing(
@@ -157,7 +177,19 @@ def _start_background_processing(
         app_config=app_config,
         model=model,
         max_retries=max_retries,
+        processing_operation=processing_operation,
+        source_language=source_language,
+        target_language=target_language,
     )
+
+
+def _resolve_sidebar_settings(sidebar_result):
+    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 8:
+        return sidebar_result
+    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 5:
+        model, chunk_size, max_retries, image_mode, keep_all_image_variants = sidebar_result
+        return model, chunk_size, max_retries, image_mode, keep_all_image_variants, "edit", "en", "ru"
+    raise RuntimeError("Некорректный контракт render_sidebar().")
 
 
 def _start_background_preparation(
@@ -246,9 +278,21 @@ def main() -> None:
         st.error(f"Ошибка загрузки конфигурации: {user_message}")
         return
 
-    model, chunk_size, max_retries, image_mode, keep_all_image_variants = render_sidebar(app_config)
+    (
+        model,
+        chunk_size,
+        max_retries,
+        image_mode,
+        keep_all_image_variants,
+        processing_operation,
+        source_language,
+        target_language,
+    ) = _resolve_sidebar_settings(render_sidebar(app_config))
     app_config = dict(app_config)
     app_config["keep_all_image_variants"] = keep_all_image_variants
+    app_config["processing_operation"] = processing_operation
+    app_config["source_language"] = source_language
+    app_config["target_language"] = target_language
 
     processing_active = _processing_worker_is_active()
     processing_outcome = get_processing_outcome()
@@ -509,6 +553,9 @@ def main() -> None:
             app_config=app_config,
             model=model,
             max_retries=max_retries,
+            processing_operation=processing_operation,
+            source_language=source_language,
+            target_language=target_language,
         )
         st.rerun()
 

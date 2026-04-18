@@ -139,6 +139,9 @@ class ProcessingService:
         app_config: dict[str, object],
         model: str,
         max_retries: int,
+        processing_operation: str = "edit",
+        source_language: str = "en",
+        target_language: str = "ru",
         on_progress,
         runtime=None,
     ) -> str:
@@ -152,6 +155,9 @@ class ProcessingService:
             app_config=app_config,
             model=model,
             max_retries=max_retries,
+            processing_operation=processing_operation,
+            source_language=source_language,
+            target_language=target_language,
             on_progress=on_progress,
             runtime=runtime,
             resolve_uploaded_filename=deps.resolve_uploaded_filename_fn,
@@ -187,6 +193,9 @@ class ProcessingService:
         app_config: dict[str, object],
         model: str,
         max_retries: int,
+        processing_operation: str = "edit",
+        source_language: str = "en",
+        target_language: str = "ru",
     ) -> None:
         outcome = "failed"
         deps = self.dependencies
@@ -200,6 +209,9 @@ class ProcessingService:
                 app_config=app_config,
                 model=model,
                 max_retries=max_retries,
+                processing_operation=processing_operation,
+                source_language=source_language,
+                target_language=target_language,
                 on_progress=lambda **kwargs: None,
                 runtime=runtime,
             )
@@ -244,6 +256,9 @@ class ProcessingService:
         app_config: dict[str, object],
         model: str,
         max_retries: int,
+        processing_operation: str = "edit",
+        source_language: str = "en",
+        target_language: str = "ru",
         job_mutator: Callable[[Mapping[str, object]], dict[str, object]] | None = None,
         progress_callback=None,
         prepare_progress_callback=None,
@@ -271,6 +286,9 @@ class ProcessingService:
             app_config=app_config,
             model=model,
             max_retries=max_retries,
+            processing_operation=processing_operation,
+            source_language=source_language,
+            target_language=target_language,
             on_progress=resolved_processing_progress_callback,
             runtime=runtime,
         )

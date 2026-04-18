@@ -177,9 +177,9 @@ def test_generate_markdown_block_retries_once_then_returns(monkeypatch):
     assert len(attempts) == 2
     assert sleep_calls == [1]
     user_payload = attempts[0]["input"][1]["content"][0]["text"]
-    assert "[CONTEXT BEFORE]\n[контекст отсутствует]" in user_payload
+    assert "[CONTEXT BEFORE]\n[no context]" in user_payload
     assert "[TARGET BLOCK]\ntarget" in user_payload
-    assert "[CONTEXT AFTER]\n[контекст отсутствует]" in user_payload
+    assert "[CONTEXT AFTER]\n[no context]" in user_payload
     assert attempts[0]["max_output_tokens"] >= 512
 
 
@@ -1063,7 +1063,7 @@ def test_generate_markdown_block_marker_mode_preserves_markers_and_returns_clean
     assert result == "Исправленный заголовок\n\nИсправленный абзац"
     prompt_text = captured_inputs[0][1]["content"][0]["text"]
     assert "[TARGET BLOCK WITH MARKERS]" in prompt_text
-    assert "Сохрани каждый marker" in prompt_text
+    assert "Preserve every marker exactly" in prompt_text
 
 
 def test_generate_markdown_block_marker_mode_retries_and_recovers_when_markers_are_lost(monkeypatch):
