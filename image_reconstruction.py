@@ -689,12 +689,12 @@ def _wrap_text_lines(
 
 def _text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont | ImageFont.FreeTypeFont) -> int:
     bbox = draw.textbbox((0, 0), text, font=font)
-    return bbox[2] - bbox[0]
+    return int(bbox[2] - bbox[0])
 
 
 def _line_height(draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont | ImageFont.FreeTypeFont) -> int:
     bbox = draw.textbbox((0, 0), "Ag", font=font)
-    return max(1, bbox[3] - bbox[1])
+    return max(1, int(bbox[3] - bbox[1]))
 
 
 def _measure_wrapped_text_height(
@@ -780,7 +780,7 @@ def _safe_stroke(el: dict[str, Any]) -> str | None:
     return None
 
 
-def _resolve_render_config(render_config: dict[str, object] | None) -> dict[str, float]:
+def _resolve_render_config(render_config: dict[str, Any] | None) -> dict[str, float]:
     config = dict(render_config or {})
     return {
         "min_canvas_short_side_px": float(

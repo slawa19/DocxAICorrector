@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import cast
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -40,10 +41,10 @@ def test_log_event_initializes_logger_lazily(monkeypatch):
 
 def test_extract_exception_message_prefers_structured_body_and_response():
     body_exc = SimpleNamespace(body={"error": {"message": "body message"}})
-    assert logger.extract_exception_message(body_exc) == "body message"
+    assert logger.extract_exception_message(cast(Exception, body_exc)) == "body message"
 
     response_exc = SimpleNamespace(response=SimpleNamespace(json=lambda: {"error": {"message": "response message"}}))
-    assert logger.extract_exception_message(response_exc) == "response message"
+    assert logger.extract_exception_message(cast(Exception, response_exc)) == "response message"
 
 
 def test_format_user_error_maps_status_code_and_runtime_errors():
@@ -51,7 +52,7 @@ def test_format_user_error_maps_status_code_and_runtime_errors():
         pass
 
     rate_exc = RateLimitedError("slow down")
-    rate_exc.status_code = 429
+    object.__setattr__(rate_exc, "status_code", 429)
     assert "ограничил запросы" in logger.format_user_error(rate_exc)
 
     runtime_exc = RuntimeError("custom runtime")

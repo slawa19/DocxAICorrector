@@ -1,7 +1,13 @@
+from __future__ import annotations
+
 import time
 import logging
+from typing import Any, TYPE_CHECKING
 from uuid import uuid4
 from dataclasses import dataclass
+
+if TYPE_CHECKING:
+    from application_flow import PreparedRunContext
 from datetime import datetime
 
 import streamlit as st
@@ -12,7 +18,7 @@ from restart_store import clear_restart_source
 from workflow_state import ProcessingOutcome
 
 
-def build_default_image_processing_summary() -> dict[str, object]:
+def build_default_image_processing_summary() -> dict[str, Any]:
     return {
         "total_images": 0,
         "processed_images": 0,
@@ -48,27 +54,27 @@ def get_processing_outcome() -> str:
     return str(st.session_state.get("processing_outcome") or ProcessingOutcome.IDLE.value)
 
 
-def get_processing_status() -> dict[str, object]:
+def get_processing_status() -> dict[str, Any]:
     status = st.session_state.get("processing_status")
     return status if isinstance(status, dict) else {}
 
 
-def get_run_log() -> list[dict[str, object]]:
+def get_run_log() -> list[dict[str, Any]]:
     run_log = st.session_state.get("run_log")
     return list(run_log) if isinstance(run_log, list) else []
 
 
-def get_activity_feed() -> list[dict[str, object]]:
+def get_activity_feed() -> list[dict[str, Any]]:
     activity_feed = st.session_state.get("activity_feed")
     return list(activity_feed) if isinstance(activity_feed, list) else []
 
 
-def get_image_assets() -> list[object]:
+def get_image_assets() -> list[Any]:
     image_assets = st.session_state.get("image_assets")
     return list(image_assets) if isinstance(image_assets, list) else []
 
 
-def get_image_processing_summary() -> dict[str, object]:
+def get_image_processing_summary() -> dict[str, Any]:
     summary = st.session_state.get("image_processing_summary")
     if isinstance(summary, dict):
         return summary
@@ -117,7 +123,7 @@ def is_preparation_failed_for_marker(upload_marker: str) -> bool:
     return snapshot.failed_marker == upload_marker and snapshot.prepared_run_context is None
 
 
-def get_prepared_run_context_for_marker(upload_marker: str):
+def get_prepared_run_context_for_marker(upload_marker: str) -> PreparedRunContext | None:
     snapshot = get_preparation_state()
     if snapshot.input_marker == upload_marker and snapshot.failed_marker != upload_marker:
         return snapshot.prepared_run_context

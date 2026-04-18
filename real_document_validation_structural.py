@@ -231,7 +231,7 @@ def _build_passthrough_job(job: Mapping[str, object]) -> dict[str, object]:
 
 
 def _build_validation_processing_service(event_log: list[dict[str, object]]):
-    def _run_document_processing_impl(**kwargs: object) -> str:
+    def _run_document_processing_impl(**kwargs: Any) -> str:
         from document_pipeline import run_document_processing
 
         return cast(str, run_document_processing(**kwargs))
@@ -458,7 +458,7 @@ def _max_accepted_merged_sources(payloads: Sequence[Mapping[str, object]]) -> in
         explicit_value = payload.get("max_accepted_merged_sources")
         if explicit_value is not None:
             try:
-                maximum = max(maximum, int(explicit_value))
+                maximum = max(maximum, int(cast(Any, explicit_value)))
                 continue
             except (TypeError, ValueError):
                 pass

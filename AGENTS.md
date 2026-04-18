@@ -46,21 +46,26 @@ Bash tool (инструмент агента) по умолчанию запус
 ### Единственный корректный способ запустить тесты из Bash tool
 
 ```bash
-wsl -- bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate && pytest tests/ -q --tb=short'
+echo START && wsl.exe -d Debian bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate && pytest tests/ -q --tb=short 2>&1" && echo DONE
 ```
 
 Конкретные варианты:
 
 ```bash
 # Весь suite
-wsl -- bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate && pytest tests/ -q --tb=short'
+echo START && wsl.exe -d Debian bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate && pytest tests/ -q --tb=short 2>&1" && echo DONE
 
 # Один файл
-wsl -- bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate && pytest tests/test_file.py -vv --tb=short'
+echo START && wsl.exe -d Debian bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate && pytest tests/test_file.py -vv --tb=short 2>&1" && echo DONE
 
 # Один тест
-wsl -- bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate && pytest tests/test_file.py::test_name -vv -x --tb=short'
+echo START && wsl.exe -d Debian bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate && pytest tests/test_file.py::test_name -vv -x --tb=short 2>&1" && echo DONE
 ```
+
+Обязательные правила:
+- Всегда `wsl.exe`, не `wsl` (MSYS может не иметь `wsl` в PATH).
+- Всегда `echo START && ... && echo DONE` — без этого вывод теряется.
+- Всегда `2>&1` — stderr тоже буферизуется отдельно.
 
 `scripts/test.sh` НЕ работает из Bash tool напрямую — скрипт вызывает `exec pytest`, и `pytest` не находится в PATH MSYS окружения.
 
@@ -69,7 +74,37 @@ wsl -- bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/acti
 - `py -m pytest` из Windows shell.
 - Запуск `pytest` через PowerShell bridge / PowerShell wrapper.
 - Создание Windows virtualenv в `.venv`.
-- Запуск `bash scripts/test.sh ...` или `source .venv/bin/activate && pytest` напрямую из Bash tool без `wsl -- bash -lc '...'`.
+- Запуск `bash scripts/test.sh ...` или `source .venv/bin/activate && pytest` напрямую из Bash tool без `wsl.exe -d Debian bash -c '...'`.
+- Голое `wsl` вместо `wsl.exe` из агентского терминала.
+- WSL-команды без echo-маркеров (вывод теряется).
+
+## Надёжный вызов WSL из агентского терминала
+
+Агентский терминал по умолчанию — MSYS/Git Bash или PowerShell, **не WSL**.
+
+### Синтаксис вызова
+
+- Используйте **`wsl.exe`** (не `wsl`) — голое `wsl` может не быть в PATH MSYS.
+- Предпочтительная форма: `wsl.exe -d Debian bash -c "..."`.
+- `wsl.exe -- bash -lc '...'` тоже работает, но с одинарными кавычками сложнее вкладывать переменные.
+
+### Проблема потери вывода
+
+WSL-команды, запущенные через агентский терминал, часто возвращают пустой вывод. Причина: буферизация stdout при пересечении WSL→MSYS boundary.
+
+Обязательный workaround — обернуть команду echo-маркерами:
+
+```bash
+echo START && wsl.exe -d Debian bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector; source .venv/bin/activate; <COMMAND> 2>&1" && echo DONE
+```
+
+Без `echo START` в начале агент часто не видит никакого вывода вообще.
+
+### Долгие команды
+
+- Pyright, mypy и другие type-checkers работают 40–120 секунд.
+- Используйте `mode=async` и `get_terminal_output` с ожиданием; не считайте пустой вывод признаком зависания.
+- При `mode=sync` ставьте `timeout` не менее 180000 мс для type-checking команд.
 
 ## Extended Canonical Docs
 

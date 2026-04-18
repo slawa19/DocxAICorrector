@@ -4,15 +4,18 @@ import re
 import time
 from io import BytesIO
 from types import SimpleNamespace
+from typing import Any
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageOps
 from PIL import ImageChops
 
 from image_output_policy import resolve_image_output_policy, select_nearest_fallback_size, select_nearest_size
 from image_shared import (
+    call_responses_create_with_retry,
     detect_image_mime_type as shared_detect_image_mime_type,
     extract_model_response_error_code,
     extract_response_text,
+    extract_unsupported_parameter_name,
     is_retryable_error,
     is_supported_image_bytes,
 )
@@ -63,8 +66,8 @@ def generate_image_candidate(
     mode: str,
     prefer_deterministic_reconstruction: bool = True,
     reconstruction_model: str | None = None,
-    reconstruction_render_config: dict[str, object] | None = None,
-    image_output_config: dict[str, object] | None = None,
+    reconstruction_render_config: dict[str, Any] | None = None,
+    image_output_config: dict[str, Any] | None = None,
     client=None,
     budget: ImageModelCallBudget | None = None,
 ) -> bytes:
@@ -147,7 +150,7 @@ def _generate_safe_candidate(image_bytes: bytes) -> bytes:
             enhanced_image = _enhance_image_conservatively(source_image)
             output = BytesIO()
             output_format = _select_pillow_output_format(source_image.format)
-            save_kwargs = {"format": output_format}
+            save_kwargs: dict[str, Any] = {"format": output_format}
             if output_format == "PNG":
                 save_kwargs["optimize"] = True
             elif output_format == "JPEG":
@@ -174,7 +177,7 @@ def _generate_reconstructed_candidate(
     client=None,
     budget: ImageModelCallBudget | None = None,
     reconstruction_model: str | None = None,
-    reconstruction_render_config: dict[str, object] | None = None,
+    reconstruction_render_config: dict[str, Any] | None = None,
     image_output_policy=None,
 ) -> bytes:
     """Deterministic reconstruction via VLM scene-graph extraction + PIL rendering.
@@ -247,7 +250,7 @@ def _generate_semantic_candidate(
     prompt_profile: dict[str, str],
     prefer_deterministic_reconstruction: bool,
     reconstruction_model: str | None = None,
-    reconstruction_render_config: dict[str, object] | None = None,
+    reconstruction_render_config: dict[str, Any] | None = None,
     image_output_policy=None,
     client=None,
     budget: ImageModelCallBudget | None = None,
@@ -384,6 +387,7 @@ def _generate_creative_candidate(
         "output_format": "png",
         "response_format": "b64_json",
     }
+    assert image_output_policy is not None
     response = _call_images_generate(
         client,
         request_payload,
@@ -422,6 +426,7 @@ def _generate_direct_semantic_candidate(
     use_high_fidelity = _uses_high_fidelity_semantic_edit(analysis, requested_mode)
     semantic_upload, restore_context = _prepare_semantic_edit_image(image_bytes)
     original_size = restore_context["original_size"]
+    assert isinstance(original_size, tuple)
     request_payload = {
         "model": IMAGE_EDIT_MODEL,
         "image": [_build_edit_file_like(semantic_upload)],
@@ -432,6 +437,7 @@ def _generate_direct_semantic_candidate(
         "size": _select_generate_size(original_size, image_output_policy),
         "response_format": "b64_json",
     }
+    assert image_output_policy is not None
     response = _call_images_edit(
         client,
         request_payload,
@@ -508,6 +514,7 @@ def _generate_structured_candidate(
         "output_format": "png",
         "response_format": "b64_json",
     }
+    assert image_output_policy is not None
     response = _call_images_generate(
         client,
         request_payload,
@@ -535,7 +542,7 @@ def _generate_structured_candidate(
 
 def _call_images_edit(
     client,
-    request_payload: dict[str, object],
+    request_payload: dict[str, Any],
     *,
     fallback_sizes: tuple[str, ...] | None = None,
     budget: ImageModelCallBudget | None = None,
@@ -639,7 +646,7 @@ def _call_images_edit(
 
 def _call_images_generate(
     client,
-    request_payload: dict[str, object],
+    request_payload: dict[str, Any],
     *,
     fallback_sizes: tuple[str, ...] | None = None,
     budget: ImageModelCallBudget | None = None,
@@ -733,60 +740,62 @@ def _call_images_generate(
             return result
 
 
-def _call_responses_create(client, request_payload: dict[str, object], *, budget: ImageModelCallBudget | None = None):
-    retryable_optional_params = {"timeout"}
+def _call_responses_create(client, request_payload: dict[str, Any], *, budget: ImageModelCallBudget | None = None):
     current_payload = _with_timeout(dict(request_payload))
-    attempt = 1
-    while True:
-        try:
-            _ensure_budget_available(budget, "responses.create")
-            result = client.responses.create(**current_payload)
-        except TypeError as exc:
-            unsupported_param = _extract_unsupported_parameter_name(str(exc))
-            if unsupported_param not in retryable_optional_params or unsupported_param not in current_payload:
+    logged_removed_params: set[str] = set()
+
+    def _retryable_error_with_logging(exc: Exception) -> bool:
+        if not _is_retryable_api_error(exc):
+            return False
+        log_event(
+            logging.WARNING,
+            "structured_layout_retry_after_transient_error",
+            "Transient ошибка Responses API, повторяю Vision-запрос с backoff.",
+            error_type=exc.__class__.__name__,
+            error_message=str(exc),
+        )
+        return True
+
+    class LoggingResponsesClient:
+        def __init__(self, wrapped_client):
+            self.responses = _LoggingResponsesApi(wrapped_client.responses, logged_removed_params)
+
+    class _LoggingResponsesApi:
+        def __init__(self, wrapped_responses, logged_removed_params: set[str]):
+            self._wrapped_responses = wrapped_responses
+            self._logged_removed_params = logged_removed_params
+
+        def create(self, **kwargs):
+            try:
+                return self._wrapped_responses.create(**kwargs)
+            except Exception as exc:
+                unsupported_param = extract_unsupported_parameter_name(str(exc))
+                if unsupported_param in {"timeout", "temperature"} and unsupported_param not in self._logged_removed_params:
+                    self._logged_removed_params.add(unsupported_param)
+                    log_event(
+                        logging.DEBUG,
+                        "structured_layout_retry_without_optional_param",
+                        "Responses API отклонил optional param, повторяю запрос без него.",
+                        removed_param=unsupported_param,
+                    )
                 raise
-            current_payload.pop(unsupported_param, None)
-            log_event(
-                logging.DEBUG,
-                "structured_layout_retry_without_optional_param",
-                "OpenAI SDK не поддерживает optional param для Responses API, повторяю запрос без него.",
-                removed_param=unsupported_param,
-            )
-            continue
-        except Exception as exc:
-            unsupported_param = _extract_unsupported_parameter_name(str(exc))
-            if unsupported_param in retryable_optional_params and unsupported_param in current_payload:
-                current_payload.pop(unsupported_param, None)
-                log_event(
-                    logging.DEBUG,
-                    "structured_layout_retry_without_optional_param",
-                    "Responses API отклонил optional param, повторяю запрос без него.",
-                    removed_param=unsupported_param,
-                )
-                continue
-            if attempt < IMAGE_API_MAX_RETRIES and _is_retryable_api_error(exc):
-                _ensure_budget_available(budget, "responses.create")
-                retry_delay = _compute_retry_delay(attempt)
-                log_event(
-                    logging.WARNING,
-                    "structured_layout_retry_after_transient_error",
-                    "Transient ошибка Responses API, повторяю Vision-запрос с backoff.",
-                    attempt=attempt,
-                    retry_delay_seconds=retry_delay,
-                    error_type=exc.__class__.__name__,
-                    error_message=str(exc),
-                )
-                time.sleep(retry_delay)
-                attempt += 1
-                continue
-            _consume_budget(budget, "responses.create")
-            raise
-        else:
-            _consume_budget(budget, "responses.create")
-            return result
+
+    return call_responses_create_with_retry(
+        LoggingResponsesClient(client),
+        current_payload,
+        max_retries=IMAGE_API_MAX_RETRIES,
+        retryable_error_predicate=_retryable_error_with_logging,
+        max_backoff_seconds=IMAGE_API_MAX_BACKOFF_SECONDS,
+        budget=budget,
+        retryable_optional_params={"timeout", "temperature"},
+    )
 
 
-def _with_timeout(request_payload: dict[str, object]) -> dict[str, object]:
+def _extract_unsupported_parameter_name(error_message: str) -> str | None:
+    return extract_unsupported_parameter_name(error_message)
+
+
+def _with_timeout(request_payload: dict[str, Any]) -> dict[str, Any]:
     payload_with_timeout = dict(request_payload)
     payload_with_timeout.setdefault("timeout", IMAGE_API_TIMEOUT_SECONDS)
     return payload_with_timeout
@@ -810,18 +819,6 @@ def _consume_budget(budget: ImageModelCallBudget | None, operation_name: str) ->
     if budget is None:
         return
     budget.consume(operation_name)
-
-
-def _extract_unsupported_parameter_name(error_message: str) -> str | None:
-    marker = "Unknown parameter: '"
-    if marker in error_message:
-        tail = error_message.split(marker, 1)[1]
-        return tail.split("'", 1)[0]
-    marker = "unexpected keyword argument '"
-    if marker in error_message:
-        tail = error_message.split(marker, 1)[1]
-        return tail.split("'", 1)[0]
-    return None
 
 
 def _extract_prompt_limit(error_message: str) -> int | None:
@@ -1008,7 +1005,7 @@ def _restore_semantic_output(
 
             output = BytesIO()
             output_format = _select_pillow_output_format(semantic_image.format)
-            save_kwargs = {"format": output_format}
+            save_kwargs: dict[str, Any] = {"format": output_format}
             if output_format == "PNG":
                 save_kwargs["optimize"] = True
             elif output_format == "JPEG":
@@ -1286,7 +1283,7 @@ def _restore_generated_output(
 
             output = BytesIO()
             output_format = _select_pillow_output_format(generated_image.format)
-            save_kwargs = {"format": output_format}
+            save_kwargs: dict[str, Any] = {"format": output_format}
             if output_format == "PNG":
                 save_kwargs["optimize"] = True
             elif output_format == "JPEG":
@@ -1333,7 +1330,7 @@ def _trim_generated_outer_padding(image: Image.Image, image_output_policy=None) 
     background_rgb = _pick_generated_background_color(rgb_image)
     background = Image.new("RGB", rgb_image.size, background_rgb)
     difference = ImageChops.difference(rgb_image, background)
-    mask = difference.convert("L").point(lambda value: 255 if value > policy.trim_tolerance else 0)
+    mask = difference.convert("L").point(lambda value: 255 if value > policy.trim_tolerance else 0)  # type: ignore[operator]
     bbox = mask.getbbox()
     if bbox is None:
         return image
@@ -1398,7 +1395,7 @@ def _build_connected_background_mask(image: Image.Image, background_rgba: tuple[
         ),
         ImageChops.difference(work_image.getchannel("B"), Image.new("L", work_image.size, background_rgb[2])),
     )
-    candidate_mask = distance.point(lambda value: 255 if value <= 48 else 0, mode="L")
+    candidate_mask = distance.point(lambda value: 255 if value <= 48 else 0, mode="L")  # type: ignore[operator]
     flood_mask = candidate_mask.copy()
     work_width, work_height = work_image.size
 
@@ -1464,7 +1461,7 @@ def _pick_generated_background_color(image: Image.Image) -> tuple[int, ...]:
                 pixel = region.getpixel((x_coord, y_coord))
                 if isinstance(pixel, int):
                     samples.append((pixel, pixel, pixel))
-                else:
+                elif isinstance(pixel, tuple):
                     samples.append((int(pixel[0]), int(pixel[1]), int(pixel[2])))
 
     if not samples:

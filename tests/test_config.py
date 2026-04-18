@@ -240,6 +240,18 @@ def test_load_system_prompt_rejects_auto_source_language_for_edit_mode():
         config.load_system_prompt.cache_clear()
 
 
+def test_load_system_prompt_translate_includes_hardening_rules():
+    config.load_system_prompt.cache_clear()
+    try:
+        prompt = config.load_system_prompt(operation="translate", source_language="en", target_language="ru")
+    finally:
+        config.load_system_prompt.cache_clear()
+
+    assert "не выполняйте повторный перевод" in prompt
+    assert "ориентируйтесь в первую очередь на фактический язык блока" in prompt
+    assert "предпочитайте консервативный результат" in prompt
+
+
 def test_load_app_config_applies_env_override_for_paragraph_boundary_mode(monkeypatch, tmp_path):
     cfg = tmp_path / "config.toml"
     cfg.write_text(

@@ -152,7 +152,7 @@ def start_background_processing(*, worker_target, uploaded_filename: str, upload
         source_bytes=source_bytes,
         jobs=jobs,
         source_paragraphs=source_paragraphs,
-        image_assets=image_assets,
+        image_assets=image_assets or [],
         image_mode=image_mode,
         app_config=app_config,
         model=model,

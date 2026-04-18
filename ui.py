@@ -201,7 +201,7 @@ def render_sidebar_selectbox(
     return st.sidebar.selectbox(label, options, index=index, help=help, key=key)
 
 
-def _supported_language_options(config: Mapping[str, object]) -> list[object]:
+def _supported_language_options(config: Mapping[str, Any]) -> list[Any]:
     raw_languages = config.get("supported_languages", ())
     return [language for language in raw_languages if hasattr(language, "code") and hasattr(language, "label")]
 
@@ -275,7 +275,7 @@ def render_live_status(target=None) -> None:
             progress_api.progress(progress_value)
 
 
-def render_preparation_summary(summary: dict[str, object] | None, target=None) -> None:
+def render_preparation_summary(summary: dict[str, Any] | None, target=None) -> None:
     if not summary:
         return
 
@@ -342,7 +342,7 @@ def _to_float(value: Any, *, default: float) -> float:
     return default
 
 
-def _get_list_of_str(config: Mapping[str, object], key: str) -> list[str]:
+def _get_list_of_str(config: Mapping[str, Any], key: str) -> list[str]:
     value = config[key]
     if isinstance(value, list):
         return [str(item) for item in value]
@@ -424,7 +424,7 @@ def _asset_value(asset, field_name: str, default=None):
     return getattr(asset, field_name, default)
 
 
-def render_sidebar(config: Mapping[str, object]) -> tuple[str, int, int, str, bool, str, str, str]:
+def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool, str, str, str]:
     st.sidebar.header("Настройки")
     operation_default = str(config.get("processing_operation_default", "edit"))
     operation_options = list(TEXT_OPERATION_LABELS.values())
@@ -434,6 +434,7 @@ def render_sidebar(config: Mapping[str, object]) -> tuple[str, int, int, str, bo
         "Режим обработки текста",
         operation_options,
         index=operation_index,
+        help="Литературное редактирование улучшает уже готовый текст на выбранном языке. Перевод используйте для текста, который ещё не на целевом языке.",
         key="sidebar_text_operation",
     )
     processing_operation = TEXT_OPERATION_VALUES_BY_LABEL.get(selected_operation_label, "edit")
@@ -455,6 +456,7 @@ def render_sidebar(config: Mapping[str, object]) -> tuple[str, int, int, str, bo
 
     source_language = str(config.get("source_language_default", "en"))
     if processing_operation == "translate":
+        st.sidebar.caption("Перевод предназначен для текста, который ещё не на целевом языке. Если текст уже переведён, обычно лучше выбрать литературное редактирование.")
         source_options = ["Авто", *language_labels]
         source_default_label = "Авто" if source_language == "auto" else label_by_code.get(source_language, source_options[0])
         source_index = source_options.index(source_default_label) if source_default_label in source_options else 0
@@ -462,6 +464,7 @@ def render_sidebar(config: Mapping[str, object]) -> tuple[str, int, int, str, bo
             "Язык оригинала",
             source_options,
             index=source_index,
+            help="Используйте 'Авто' только как best-effort режим. Для уже переведённого текста обычно лучше выбрать литературное редактирование.",
             key="sidebar_source_language",
         )
         source_language = "auto" if selected_source_label == "Авто" else code_by_label.get(selected_source_label, source_language)

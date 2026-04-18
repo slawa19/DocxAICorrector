@@ -1,6 +1,7 @@
 import re
 import time
 from pathlib import Path
+from typing import Any
 
 from constants import RUN_DIR
 
@@ -27,8 +28,8 @@ def _store_persisted_source(
     source_name: str,
     source_token: str,
     source_bytes: bytes,
-    previous_source: dict[str, object] | None = None,
-) -> dict[str, object]:
+    previous_source: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     RUN_DIR.mkdir(parents=True, exist_ok=True)
     storage_path = _build_persisted_source_path(prefix, session_id, source_token, source_name)
     previous_storage_path = previous_source.get("storage_path") if isinstance(previous_source, dict) else None
@@ -49,7 +50,7 @@ def _build_restart_source_path(session_id: str, source_token: str, source_name: 
     return _build_persisted_source_path("restart", session_id, source_token, source_name)
 
 
-def store_restart_source(*, session_id: str, source_name: str, source_token: str, source_bytes: bytes, previous_restart_source: dict[str, object] | None = None) -> dict[str, object]:
+def store_restart_source(*, session_id: str, source_name: str, source_token: str, source_bytes: bytes, previous_restart_source: dict[str, Any] | None = None) -> dict[str, Any]:
     return _store_persisted_source(
         prefix="restart",
         session_id=session_id,
@@ -60,7 +61,7 @@ def store_restart_source(*, session_id: str, source_name: str, source_token: str
     )
 
 
-def store_completed_source(*, session_id: str, source_name: str, source_token: str, source_bytes: bytes, previous_completed_source: dict[str, object] | None = None) -> dict[str, object]:
+def store_completed_source(*, session_id: str, source_name: str, source_token: str, source_bytes: bytes, previous_completed_source: dict[str, Any] | None = None) -> dict[str, Any]:
     return _store_persisted_source(
         prefix="completed",
         session_id=session_id,
@@ -71,7 +72,7 @@ def store_completed_source(*, session_id: str, source_name: str, source_token: s
     )
 
 
-def load_restart_source_bytes(restart_source: dict[str, object] | None) -> bytes | None:
+def load_restart_source_bytes(restart_source: dict[str, Any] | None) -> bytes | None:
     if not restart_source:
         return None
     storage_path = restart_source.get("storage_path")
@@ -86,7 +87,7 @@ def load_restart_source_bytes(restart_source: dict[str, object] | None) -> bytes
     return source_bytes
 
 
-def clear_restart_source(restart_source: dict[str, object] | None) -> None:
+def clear_restart_source(restart_source: dict[str, Any] | None) -> None:
     if not restart_source:
         return
     storage_path = restart_source.get("storage_path")

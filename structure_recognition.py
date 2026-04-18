@@ -8,6 +8,7 @@ import time
 from typing import Any, Protocol, cast
 
 from generation import normalize_model_output
+from image_shared import call_responses_create_with_retry
 from models import ParagraphClassification, ParagraphDescriptor, ParagraphUnit, StructureMap
 from openai_response_utils import collect_response_text_traversal
 
@@ -138,16 +139,21 @@ def _classify_descriptor_window(
     if not hasattr(client, "responses") or not hasattr(client.responses, "create"):
         raise RuntimeError("Unsupported structure recognition client")
 
-    response = client.responses.create(
-        model=model,
-        input=[
-            {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
-            {
-                "role": "user",
-                "content": [{"type": "input_text", "text": _build_user_prompt(descriptor_payload)}],
-            },
-        ],
-        timeout=timeout,
+    response = call_responses_create_with_retry(
+        client,
+        {
+            "model": model,
+            "input": [
+                {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": _build_user_prompt(descriptor_payload)}],
+                },
+            ],
+            "timeout": timeout,
+        },
+        max_retries=1,
+        retryable_error_predicate=lambda exc: False,
     )
     traversal = collect_response_text_traversal(
         response,
@@ -189,7 +195,7 @@ def _parse_classification_payload(payload: str | Sequence[object]) -> list[Parag
 def _normalize_heading_level(raw_level: object, *, role: str) -> int | None:
     if role != "heading" or raw_level is None:
         return None
-    return min(max(int(raw_level), 1), 6)
+    return min(max(int(cast(Any, raw_level)), 1), 6)
 
 
 def _build_user_prompt(descriptor_payload: Sequence[dict[str, object]]) -> str:

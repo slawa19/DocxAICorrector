@@ -9,8 +9,7 @@ import processing_runtime
 from runtime_artifacts import AppReadyMarkerWriter
 from constants import MAX_DOCX_ARCHIVE_SIZE_BYTES
 from models import ImageAsset
-
-SessionState = dict[str, Any]
+from conftest import SessionState as SessionState
 
 
 @pytest.fixture(autouse=True)
@@ -416,6 +415,21 @@ def test_start_background_processing_passes_translate_context_to_runtime(monkeyp
     assert start_calls[0]["processing_operation"] == "translate"
     assert start_calls[0]["source_language"] == "auto"
     assert start_calls[0]["target_language"] == "de"
+
+
+def test_assess_text_transform_stores_assessment_in_session_state(monkeypatch):
+    session_state = SessionState()
+    monkeypatch.setattr(app.st, "session_state", session_state)
+
+    assessment = app._assess_text_transform(
+        source_text="Привет, это уже русский текст.",
+        target_language="ru",
+    )
+
+    assert assessment == session_state.text_transform_assessment
+    assert assessment["dominant_language"] == "ru"
+    assert assessment["dominant_script"] == "cyrillic"
+    assert assessment["target_language_script_match"] is True
 
 
 def test_main_normalizes_legacy_doc_before_starting_background_preparation(monkeypatch):
@@ -893,11 +907,11 @@ def test_has_resettable_state_depends_on_restartable_source(tmp_path):
     restart_path.write_bytes(b"abc")
     session_state = SessionState(processing_outcome="stopped", restart_source={"filename": "report.docx", "storage_path": str(restart_path)})
 
-    assert application_flow.has_resettable_state(current_result=None, session_state=session_state) is True
+    assert application_flow.has_resettable_state(current_result=None, session_state=session_state) is True  # type: ignore[arg-type]
 
     session_state.processing_outcome = "idle"
 
-    assert application_flow.has_resettable_state(current_result=None, session_state=session_state) is False
+    assert application_flow.has_resettable_state(current_result=None, session_state=session_state) is False  # type: ignore[arg-type]
 
 
 def test_derive_idle_view_state_covers_idle_paths(tmp_path):
@@ -918,7 +932,7 @@ def test_get_cached_restart_file_returns_none_when_storage_missing(monkeypatch):
     session_state = SessionState(restart_source={"filename": "report.docx", "storage_path": "missing.bin"})
     monkeypatch.setattr(application_flow, "load_restart_source_bytes", lambda restart_source: None)
 
-    assert application_flow.get_cached_restart_file(session_state=session_state) is None
+    assert application_flow.get_cached_restart_file(session_state=session_state) is None  # type: ignore[arg-type]
 
 
 def test_resolve_effective_uploaded_file_uses_completed_source_after_success():
@@ -975,7 +989,7 @@ def test_has_restartable_source_does_not_materialize_restart_bytes(tmp_path, mon
     load_calls = []
     monkeypatch.setattr(application_flow, "load_restart_source_bytes", lambda restart_source: load_calls.append(restart_source) or b"abc")
 
-    assert application_flow.has_restartable_source(session_state=session_state) is True
+    assert application_flow.has_restartable_source(session_state=session_state) is True  # type: ignore[arg-type]
     assert load_calls == []
 
 
@@ -985,7 +999,7 @@ def test_has_restartable_source_returns_false_when_restart_file_was_removed(tmp_
     session_state = SessionState(processing_outcome="stopped", restart_source={"filename": "report.docx", "storage_path": str(restart_path)})
     restart_path.unlink()
 
-    assert application_flow.has_restartable_source(session_state=session_state) is False
+    assert application_flow.has_restartable_source(session_state=session_state) is False  # type: ignore[arg-type]
 def test_compare_panel_is_noop_for_completed_compare_assets(monkeypatch):
     calls = []
 

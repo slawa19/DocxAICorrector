@@ -45,6 +45,7 @@ from state import (
     set_processing_status,
     should_start_preparation_for_marker,
 )
+from text_transform_assessment import TextTransformAssessment, assess_text_transform_excerpt, build_text_transform_warnings
 from ui import (
     inject_ui_styles,
     render_image_validation_summary,
@@ -235,6 +236,12 @@ def _store_preparation_summary(*, prepared_run_context) -> None:
         **normalization_metrics,
         **relation_metrics,
     }
+
+
+def _assess_text_transform(*, source_text: str, target_language: str) -> TextTransformAssessment:
+    assessment = assess_text_transform_excerpt(source_text, target_language=target_language)
+    st.session_state.text_transform_assessment = assessment
+    return assessment
 
 
 def _render_processing_controls(*, can_start: bool, is_processing: bool, emphasize_start: bool = True) -> str | None:
@@ -477,6 +484,10 @@ def main() -> None:
     image_assets = prepared_run_context.image_assets
     jobs = prepared_run_context.jobs
     source_text = prepared_run_context.source_text
+    assessment = _assess_text_transform(
+        source_text=source_text,
+        target_language=target_language,
+    )
     processing_outcome = get_processing_outcome()
     restartable_outcome = has_restartable_outcome(processing_outcome)
 
@@ -511,6 +522,14 @@ def main() -> None:
 
     if len(jobs) == 1:
         st.info("Документ помещается в один блок. Для длинных файлов обработка пойдет по блокам с соседним контекстом.")
+
+    for warning_message in build_text_transform_warnings(
+        operation=processing_operation,
+        source_language=source_language,
+        target_language=target_language,
+        assessment=assessment,
+    ):
+        st.warning(warning_message)
 
     if st.session_state.last_error:
         st.error(st.session_state.last_error)

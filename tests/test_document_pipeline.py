@@ -92,7 +92,7 @@ def _run_processing(runtime, **overrides):
         "resolve_uploaded_filename": lambda uploaded_file: str(uploaded_file),
         "get_client": lambda: object(),
         "ensure_pandoc_available": lambda: None,
-        "load_system_prompt": lambda: "system",
+        "load_system_prompt": lambda **_kw: "system",
         "log_event": lambda *args, **kwargs: None,
         "present_error": lambda code, exc, title, **kwargs: f"{title}: {exc}",
         "emit_state": _emit_state,
@@ -105,8 +105,8 @@ def _run_processing(runtime, **overrides):
         "process_document_images": lambda **kwargs: [],
         "inspect_placeholder_integrity": _inspect_placeholder_integrity,
         "convert_markdown_to_docx_bytes": _convert_markdown_to_docx_bytes,
-        "preserve_source_paragraph_properties": lambda docx_bytes, paragraphs: docx_bytes,
-        "normalize_semantic_output_docx": lambda docx_bytes, paragraphs: docx_bytes,
+        "preserve_source_paragraph_properties": lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        "normalize_semantic_output_docx": lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         "reinsert_inline_images": _reinsert_inline_images,
     }
     params.update(overrides)
@@ -141,7 +141,7 @@ def test_run_document_processing_happy_path_updates_runtime_state():
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -154,8 +154,8 @@ def test_run_document_processing_happy_path_updates_runtime_state():
         process_document_images=lambda **kwargs: image_assets,
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
     )
 
@@ -201,8 +201,8 @@ def test_run_document_processing_passes_text_transform_context_to_system_prompt_
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
     )
 
@@ -246,7 +246,7 @@ def test_run_document_processing_applies_semantic_output_normalization_before_im
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -259,8 +259,8 @@ def test_run_document_processing_applies_semantic_output_normalization_before_im
         process_document_images=lambda **kwargs: image_assets,
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=lambda markdown_text: call_order.append("convert") or b"docx-bytes",
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: call_order.append("preserve") or docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: call_order.append("normalize") or docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: call_order.append("preserve") or docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: call_order.append("normalize") or docx_bytes,
         reinsert_inline_images=lambda docx_bytes, image_assets: call_order.append("reinsert") or docx_bytes,
     )
 
@@ -306,7 +306,7 @@ def test_run_document_processing_surfaces_formatting_diagnostics_artifacts(tmp_p
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -320,7 +320,7 @@ def test_run_document_processing_surfaces_formatting_diagnostics_artifacts(tmp_p
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=lambda markdown_text: b"docx-bytes",
         preserve_source_paragraph_properties=preserve_with_artifact,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
     )
 
@@ -378,7 +378,7 @@ def test_run_document_processing_warns_user_only_for_conflicting_formatting_diag
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -392,7 +392,7 @@ def test_run_document_processing_warns_user_only_for_conflicting_formatting_diag
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=lambda markdown_text: b"docx-bytes",
         preserve_source_paragraph_properties=preserve_with_conflict_artifact,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
     )
 
@@ -486,7 +486,7 @@ def test_run_document_processing_passes_marker_wrapped_text_only_when_marker_mod
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -499,8 +499,8 @@ def test_run_document_processing_passes_marker_wrapped_text_only_when_marker_mod
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -541,7 +541,7 @@ def test_run_document_processing_passes_generated_paragraph_registry_into_docx_r
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -601,7 +601,7 @@ def test_run_document_processing_registry_uses_logical_marker_for_merged_source_
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -653,7 +653,7 @@ def test_run_document_processing_writes_marker_generation_diagnostics_artifact_o
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -666,8 +666,8 @@ def test_run_document_processing_writes_marker_generation_diagnostics_artifact_o
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -708,7 +708,7 @@ def test_run_document_processing_writes_marker_registry_diagnostics_artifact_on_
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -721,8 +721,8 @@ def test_run_document_processing_writes_marker_registry_diagnostics_artifact_on_
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -761,7 +761,7 @@ def test_run_document_processing_stops_before_second_block():
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -774,8 +774,8 @@ def test_run_document_processing_stops_before_second_block():
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -802,7 +802,7 @@ def test_run_document_processing_fails_on_empty_processed_block():
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -815,8 +815,8 @@ def test_run_document_processing_fails_on_empty_processed_block():
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -850,7 +850,7 @@ def test_run_document_processing_rejects_heading_only_output_for_body_heavy_inpu
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -863,8 +863,8 @@ def test_run_document_processing_rejects_heading_only_output_for_body_heavy_inpu
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -894,7 +894,7 @@ def test_run_document_processing_accepts_heading_only_output_for_legitimate_head
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -907,8 +907,8 @@ def test_run_document_processing_accepts_heading_only_output_for_legitimate_head
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -942,7 +942,7 @@ def test_run_document_processing_accepts_heading_only_output_for_uppercase_title
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -955,8 +955,8 @@ def test_run_document_processing_accepts_heading_only_output_for_uppercase_title
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -990,7 +990,7 @@ def test_run_document_processing_accepts_heading_only_output_for_table_of_conten
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -1003,8 +1003,8 @@ def test_run_document_processing_accepts_heading_only_output_for_table_of_conten
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -1038,7 +1038,7 @@ def test_run_document_processing_accepts_heading_only_output_for_colon_section_t
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -1051,8 +1051,8 @@ def test_run_document_processing_accepts_heading_only_output_for_colon_section_t
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -1086,7 +1086,7 @@ def test_run_document_processing_accepts_heading_only_output_for_plaintext_banne
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -1099,8 +1099,8 @@ def test_run_document_processing_accepts_heading_only_output_for_plaintext_banne
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -1129,7 +1129,7 @@ def test_run_document_processing_fails_on_empty_processing_plan():
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -1142,8 +1142,8 @@ def test_run_document_processing_fails_on_empty_processing_plan():
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -1186,8 +1186,8 @@ def test_run_document_processing_fails_on_initialization_and_clears_stale_runtim
         runtime=runtime,
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
-        ensure_pandoc_available=lambda: (_ for _ in ()).throw(RuntimeError("pandoc is unavailable")),
-        load_system_prompt=lambda: "system",
+        ensure_pandoc_available=lambda **_kw: (_ for _ in ()).throw(RuntimeError("pandoc is unavailable")),
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -1200,8 +1200,8 @@ def test_run_document_processing_fails_on_initialization_and_clears_stale_runtim
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -1236,7 +1236,7 @@ def test_run_document_processing_fails_when_process_document_images_raises():
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -1249,8 +1249,8 @@ def test_run_document_processing_fails_when_process_document_images_raises():
         process_document_images=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("image pipeline exploded")),
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -1286,7 +1286,7 @@ def test_run_document_processing_fails_when_process_document_images_returns_none
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -1299,8 +1299,8 @@ def test_run_document_processing_fails_when_process_document_images_returns_none
         process_document_images=lambda **kwargs: None,
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -1329,7 +1329,7 @@ def test_run_document_processing_fails_when_placeholder_integrity_check_raises()
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -1342,8 +1342,8 @@ def test_run_document_processing_fails_when_placeholder_integrity_check_raises()
         process_document_images=lambda **kwargs: [AssetStub("img_001")],
         inspect_placeholder_integrity=lambda markdown_text, image_assets: (_ for _ in ()).throw(RuntimeError("placeholder integrity exploded")),
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -1372,7 +1372,7 @@ def test_run_document_processing_fails_on_invalid_job_shape():
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -1385,8 +1385,8 @@ def test_run_document_processing_fails_on_invalid_job_shape():
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -1421,7 +1421,7 @@ def test_run_document_processing_fails_on_none_target_text_without_stringifying_
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -1434,8 +1434,8 @@ def test_run_document_processing_fails_on_none_target_text_without_stringifying_
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -1461,7 +1461,7 @@ def test_run_document_processing_fails_on_missing_placeholder_status_entries():
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -1474,8 +1474,8 @@ def test_run_document_processing_fails_on_missing_placeholder_status_entries():
         process_document_images=lambda **kwargs: image_assets,
         inspect_placeholder_integrity=lambda markdown_text, image_assets: {},
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -1507,7 +1507,7 @@ def test_run_document_processing_preserves_passthrough_image_block_without_opena
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -1520,8 +1520,8 @@ def test_run_document_processing_preserves_passthrough_image_block_without_opena
         process_document_images=lambda **kwargs: image_assets,
         inspect_placeholder_integrity=lambda markdown_text, image_assets: inspected_markdowns.append(markdown_text) or {asset.image_id: "ok" for asset in image_assets},
         convert_markdown_to_docx_bytes=lambda markdown_text: b"docx-bytes",
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -1552,7 +1552,7 @@ def test_run_document_processing_passthrough_only_does_not_require_system_prompt
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: (_ for _ in ()).throw(RuntimeError("prompt exploded")),
+        load_system_prompt=lambda **_kw: (_ for _ in ()).throw(RuntimeError("prompt exploded")),
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -1565,8 +1565,8 @@ def test_run_document_processing_passthrough_only_does_not_require_system_prompt
         process_document_images=lambda **kwargs: image_assets,
         inspect_placeholder_integrity=lambda markdown_text, image_assets: {asset.image_id: "ok" for asset in image_assets},
         convert_markdown_to_docx_bytes=lambda markdown_text: b"docx-bytes",
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -1596,7 +1596,7 @@ def test_run_document_processing_detects_processed_block_count_mismatch():
         resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
         get_client=lambda: object(),
         ensure_pandoc_available=lambda: None,
-        load_system_prompt=lambda: "system",
+        load_system_prompt=lambda **_kw: "system",
         log_event=lambda *args, **kwargs: None,
         present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
         emit_state=_emit_state,
@@ -1609,8 +1609,8 @@ def test_run_document_processing_detects_processed_block_count_mismatch():
         process_document_images=lambda **kwargs: [],
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -1642,7 +1642,7 @@ def test_run_document_processing_fails_when_preserve_source_paragraph_properties
     result = _run_processing(
         runtime,
         source_paragraphs=[ParagraphStub()],
-        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs: (_ for _ in ()).throw(RuntimeError("preserve exploded")),
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, **_kw: (_ for _ in ()).throw(RuntimeError("preserve exploded")),
     )
 
     assert result == "failed"
@@ -1660,7 +1660,7 @@ def test_run_document_processing_fails_when_normalize_semantic_output_docx_raise
     result = _run_processing(
         runtime,
         source_paragraphs=[ParagraphStub()],
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs: (_ for _ in ()).throw(RuntimeError("normalize exploded")),
+        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, **_kw: (_ for _ in ()).throw(RuntimeError("normalize exploded")),
     )
 
     assert result == "failed"

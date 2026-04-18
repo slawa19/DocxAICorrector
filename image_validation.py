@@ -1,7 +1,7 @@
 import logging
 import base64
 import re
-from typing import Mapping
+from typing import Any, Mapping
 
 from image_shared import (
     call_responses_create_with_retry,
@@ -16,7 +16,7 @@ from image_shared import (
 from logger import log_event
 from models import ImageAnalysisResult, ImageValidationResult
 
-DEFAULT_VALIDATION_CONFIG: dict[str, object] = {
+DEFAULT_VALIDATION_CONFIG: dict[str, Any] = {
     "min_semantic_match_score": 0.75,
     "min_text_match_score": 0.80,
     "min_structure_match_score": 0.70,
@@ -32,11 +32,11 @@ _TEXT_TOKEN_PATTERN = re.compile(r"[0-9A-Za-zА-Яа-яІіЇїЄєҐґ]+")
 def validate_redraw_result(
     original_image: bytes,
     candidate_image: bytes,
-    analysis_before: ImageAnalysisResult | dict[str, object],
+    analysis_before: ImageAnalysisResult | dict[str, Any],
     *,
-    candidate_analysis: ImageAnalysisResult | dict[str, object] | None = None,
-    config: Mapping[str, object] | None = None,
-    image_context: Mapping[str, object] | None = None,
+    candidate_analysis: ImageAnalysisResult | dict[str, Any] | None = None,
+    config: Mapping[str, Any] | None = None,
+    image_context: Mapping[str, Any] | None = None,
     client=None,
     enable_vision_validation: bool = True,
     validation_model: str | None = None,
@@ -121,9 +121,9 @@ def _validate_redraw_result(
     candidate_image: bytes,
     analysis_before: ImageAnalysisResult,
     *,
-    candidate_analysis: ImageAnalysisResult | dict[str, object] | None,
-    config: Mapping[str, object] | None,
-    vision_assessment: dict[str, object] | None = None,
+    candidate_analysis: ImageAnalysisResult | dict[str, Any] | None,
+    config: Mapping[str, Any] | None,
+    vision_assessment: dict[str, Any] | None = None,
 ) -> ImageValidationResult:
     resolved_config = {**DEFAULT_VALIDATION_CONFIG, **dict(config or {})}
 
@@ -238,7 +238,7 @@ def _validate_redraw_result(
     )
 
 
-def _coerce_analysis_result(value: ImageAnalysisResult | dict[str, object] | None) -> ImageAnalysisResult:
+def _coerce_analysis_result(value: ImageAnalysisResult | dict[str, Any] | None) -> ImageAnalysisResult:
     if isinstance(value, ImageAnalysisResult):
         return value
     if isinstance(value, dict):
@@ -340,7 +340,7 @@ def _clamp_score(value: float) -> float:
     return clamp_score(value)
 
 
-def _safe_image_type(analysis_before: ImageAnalysisResult | dict[str, object]) -> str:
+def _safe_image_type(analysis_before: ImageAnalysisResult | dict[str, Any]) -> str:
     if isinstance(analysis_before, ImageAnalysisResult):
         return analysis_before.image_type
     if isinstance(analysis_before, dict):
@@ -357,7 +357,7 @@ def _build_vision_validation_assessment(
     client,
     model: str,
     budget=None,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     original_mime = detect_image_mime_type(original_image)
     candidate_mime = detect_image_mime_type(candidate_image)
     if original_mime is None or candidate_mime is None:
@@ -431,7 +431,7 @@ def _maybe_build_vision_validation_assessment(
     model: str,
     enable_vision_validation: bool,
     budget=None,
-) -> dict[str, object] | None:
+) -> dict[str, Any] | None:
     if not enable_vision_validation or not _supports_responses_client(client):
         return None
     try:
@@ -465,8 +465,8 @@ def _merge_with_vision_assessment(
     heuristic_result: ImageValidationResult,
     analysis_before: ImageAnalysisResult,
     candidate_analysis: ImageAnalysisResult,
-    resolved_config: Mapping[str, object],
-    vision_assessment: dict[str, object],
+    resolved_config: Mapping[str, Any],
+    vision_assessment: dict[str, Any],
 ) -> ImageValidationResult:
     type_match_score = _type_match_score(analysis_before.image_type, candidate_analysis.image_type)
     missing_labels = sorted(set(heuristic_result.missing_labels) | set(_normalize_labels_list(vision_assessment.get("missing_labels", []))))

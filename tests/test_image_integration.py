@@ -5,6 +5,7 @@ from PIL import Image, ImageDraw
 from models import ImageAnalysisResult, ImageAsset, ImageValidationResult
 import processing_service
 import state
+from conftest import SessionState as SessionState  # noqa: F811
 
 
 @pytest.fixture(autouse=True)

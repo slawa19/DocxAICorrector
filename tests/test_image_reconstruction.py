@@ -4,6 +4,7 @@ import image_reconstruction
 import json
 import math
 from io import BytesIO
+from typing import cast
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -174,6 +175,7 @@ class TestRenderSceneGraph:
         png_bytes = render_scene_graph(sg)
         with Image.open(BytesIO(png_bytes)) as img:
             pixel = img.getpixel((50, 30))
+            assert isinstance(pixel, tuple)
             assert pixel[2] > 200
 
     def test_renders_text_element(self):
@@ -220,7 +222,7 @@ class TestRenderSceneGraph:
             dark_columns = [
                 x_coord
                 for x_coord in range(img.width)
-                if any(img.getpixel((x_coord, y_coord))[:3] != (255, 255, 255) for y_coord in range(img.height))
+                if any(cast(tuple, img.getpixel((x_coord, y_coord)))[:3] != (255, 255, 255) for y_coord in range(img.height))
             ]
             assert min(dark_columns) < 40
 
@@ -244,6 +246,7 @@ class TestRenderSceneGraph:
         png_bytes = render_scene_graph(sg)
         with Image.open(BytesIO(png_bytes)) as img:
             pixel = img.getpixel((100, 50))
+            assert isinstance(pixel, tuple)
             assert pixel[0] < 50
 
     def test_renders_table_element(self):
@@ -494,7 +497,9 @@ class TestRenderSceneGraph:
 
         with Image.open(BytesIO(png_bytes)) as img:
             assert img.getpixel((0, 0)) == (255, 255, 255, 255)
-            assert img.getpixel((1, 1))[0] < 32
+            pixel_11 = img.getpixel((1, 1))
+            assert isinstance(pixel_11, tuple)
+            assert pixel_11[0] < 32
 
     def test_upscales_low_resolution_scene_for_text_legibility(self):
         sg = _build_minimal_scene_graph(
@@ -538,6 +543,7 @@ class TestRenderSceneGraph:
         png_bytes = render_scene_graph(sg)
         with Image.open(BytesIO(png_bytes)) as img:
             pixel = img.getpixel((100, 50))
+            assert isinstance(pixel, tuple)
             assert pixel[0] > 200
 
     def test_renders_icon_placeholder(self):

@@ -17,16 +17,17 @@ def fake_png_bytes() -> bytes:
     )
 
 
+class SessionState(dict):
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+    def __setattr__(self, name, value):
+        self[name] = value
+
+
 @pytest.fixture
 def make_session_state():
-    class SessionState(dict):
-        def __getattr__(self, name):
-            try:
-                return self[name]
-            except KeyError as exc:
-                raise AttributeError(name) from exc
-
-        def __setattr__(self, name, value):
-            self[name] = value
-
     return SessionState

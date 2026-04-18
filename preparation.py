@@ -6,6 +6,8 @@ import json
 import logging
 from pathlib import Path
 from threading import Event, Lock
+from collections.abc import Mapping
+from typing import Any
 
 from config import get_client, load_app_config
 from document import (
@@ -30,7 +32,7 @@ class PreparedDocumentData:
     paragraphs: list
     image_assets: list
     relations: list[ParagraphRelation]
-    jobs: list[dict[str, object]]
+    jobs: list[dict[str, Any]]
     prepared_source_key: str
     normalization_report: ParagraphBoundaryNormalizationReport | None = None
     relation_report: RelationNormalizationReport | None = None
@@ -164,7 +166,7 @@ def _build_structure_recognition_summary(*, applied_metrics: dict[str, int], div
     )
 
 
-def _build_structure_map_cache_key(*, paragraphs: list, app_config: dict[str, object]) -> str:
+def _build_structure_map_cache_key(*, paragraphs: list, app_config: dict[str, Any]) -> str:
     payload = {
         "model": str(app_config.get("structure_recognition_model", "gpt-4o-mini")),
         "max_window_paragraphs": int(app_config.get("structure_recognition_max_window_paragraphs", 1800) or 1800),
@@ -203,7 +205,7 @@ def _store_cached_structure_map(cache_key: str, structure_map: StructureMap) -> 
             _structure_map_cache.popitem(last=False)
 
 
-def _write_structure_map_debug_artifact(*, cache_key: str, structure_map: StructureMap, app_config: dict[str, object]) -> str:
+def _write_structure_map_debug_artifact(*, cache_key: str, structure_map: StructureMap, app_config: dict[str, Any]) -> str:
     _STRUCTURE_MAP_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
     artifact_path = _STRUCTURE_MAP_DEBUG_DIR / f"{cache_key}.json"
     artifact_path.write_text(
@@ -234,7 +236,7 @@ def _write_structure_map_debug_artifact(*, cache_key: str, structure_map: Struct
     return str(artifact_path)
 
 
-def _run_structure_recognition(*, paragraphs: list, image_assets: list, app_config: dict[str, object], progress_callback, normalization_report, relation_report) -> tuple[StructureMap | None, StructureRecognitionSummary]:
+def _run_structure_recognition(*, paragraphs: list, image_assets: list, app_config: Mapping[str, Any], progress_callback, normalization_report, relation_report) -> tuple[StructureMap | None, StructureRecognitionSummary]:
     if not bool(app_config.get("structure_recognition_enabled", False)):
         return None, StructureRecognitionSummary()
 
@@ -328,7 +330,7 @@ _shared_preparation_cache_lock = Lock()
 _shared_preparation_inflight: dict[str, Event] = {}
 
 
-def emit_preparation_progress(progress_callback, *, stage: str, detail: str, progress: float, metrics: dict[str, object] | None = None) -> None:
+def emit_preparation_progress(progress_callback, *, stage: str, detail: str, progress: float, metrics: dict[str, Any] | None = None) -> None:
     if progress_callback is None:
         return
     progress_callback(stage=stage, detail=detail, progress=progress, metrics=metrics or {})
@@ -355,7 +357,7 @@ def _prepare_document_for_processing(
     source_bytes: bytes,
     chunk_size: int,
     *,
-    app_config: dict[str, object],
+    app_config: Mapping[str, Any],
     progress_callback=None,
 ):
     emit_preparation_progress(
@@ -554,25 +556,25 @@ def prepare_document_for_processing(
     *,
     uploaded_payload: FrozenUploadPayload,
     chunk_size: int,
-    app_config: dict[str, object] | None = None,
+    app_config: dict[str, Any] | None = None,
     session_state=None,
     progress_callback=None,
 ) -> PreparedDocumentData:
-    app_config = load_app_config() if app_config is None else app_config
+    resolved_config = load_app_config() if app_config is None else app_config
     normalization_mode = (
-        str(app_config["paragraph_boundary_normalization_mode"])
-        if bool(app_config["paragraph_boundary_normalization_enabled"])
+        str(resolved_config["paragraph_boundary_normalization_mode"])
+        if bool(resolved_config["paragraph_boundary_normalization_enabled"])
         else "off"
     )
     ai_review_mode = (
-        str(app_config.get("paragraph_boundary_ai_review_mode", "off"))
-        if bool(app_config.get("paragraph_boundary_ai_review_enabled", False))
+        str(resolved_config.get("paragraph_boundary_ai_review_mode", "off"))
+        if bool(resolved_config.get("paragraph_boundary_ai_review_enabled", False))
         else "off"
     )
     relation_normalization_key = "off"
-    if bool(app_config.get("relation_normalization_enabled", True)):
-        relation_profile = str(app_config.get("relation_normalization_profile", "phase2_default"))
-        configured_relation_kinds = app_config.get("relation_normalization_enabled_relation_kinds", ())
+    if bool(resolved_config.get("relation_normalization_enabled", True)):
+        relation_profile = str(resolved_config.get("relation_normalization_profile", "phase2_default"))
+        configured_relation_kinds = resolved_config.get("relation_normalization_enabled_relation_kinds", ())
         if not isinstance(configured_relation_kinds, (list, tuple, set)):
             configured_relation_kinds = ()
         enabled_relation_kinds = ",".join(
@@ -585,7 +587,7 @@ def prepare_document_for_processing(
         paragraph_boundary_normalization_mode=normalization_mode,
         paragraph_boundary_ai_review_mode=ai_review_mode,
         relation_normalization_key=relation_normalization_key,
-        structure_recognition_enabled=bool(app_config.get("structure_recognition_enabled", False)),
+        structure_recognition_enabled=bool(resolved_config.get("structure_recognition_enabled", False)),
     )
     cached, in_flight, cache_level = _read_or_reserve_cached_prepared_document(
         session_state=session_state,
@@ -628,7 +630,7 @@ def prepare_document_for_processing(
             uploaded_payload.filename,
             uploaded_payload.content_bytes,
             chunk_size,
-            app_config=app_config,
+            app_config=resolved_config,
             progress_callback=progress_callback,
         )
         _store_cached_prepared_document(

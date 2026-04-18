@@ -1,3 +1,4 @@
+from typing import cast
 from types import SimpleNamespace
 
 from models import ParagraphClassification, ParagraphUnit, StructureMap
@@ -93,7 +94,7 @@ def test_iter_descriptor_windows_uses_overlap_for_large_inputs():
 
     windows = list(
         structure_recognition._iter_descriptor_windows(
-            descriptors,
+            cast(list, descriptors),
             max_window_paragraphs=4,
             overlap_paragraphs=1,
         )
@@ -167,9 +168,9 @@ def test_classify_descriptor_window_normalizes_fenced_json_output(monkeypatch):
                 )
 
     classifications, total_tokens = structure_recognition._classify_descriptor_window(
-        client=_FakeClient(),
+        client=cast(structure_recognition._StructureRecognitionClient, _FakeClient()),
         model="gpt-5.4",
-        descriptors=[SimpleNamespace(to_prompt_dict=lambda: {"i": 3})],
+        descriptors=cast(list, [SimpleNamespace(to_prompt_dict=lambda: {"i": 3})]),
         timeout=12.0,
     )
 

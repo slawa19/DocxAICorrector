@@ -56,6 +56,20 @@ def is_retryable_error(exc: Exception) -> bool:
     return exc.__class__.__name__ in {"APIConnectionError", "APITimeoutError", "RateLimitError", "InternalServerError"}
 
 
+def extract_unsupported_parameter_name(error_message: str) -> str | None:
+    markers = (
+        "Unsupported parameter: '",
+        "Unknown parameter: '",
+        "unexpected keyword argument '",
+    )
+    for marker in markers:
+        if marker not in error_message:
+            continue
+        tail = error_message.split(marker, 1)[1]
+        return tail.split("'", 1)[0]
+    return None
+
+
 def parse_json_object(raw_text: str, *, empty_message: str, no_json_message: str) -> dict[str, object]:
     text = raw_text.strip()
     if not text:
@@ -133,6 +147,7 @@ def call_responses_create_with_retry(
     retryable_error_predicate,
     max_backoff_seconds: float = 4.0,
     budget=None,
+    retryable_optional_params: set[str] | None = None,
 ):
     def ensure_budget_available() -> None:
         if budget is None:
@@ -147,29 +162,30 @@ def call_responses_create_with_retry(
         budget.consume("responses.create")
 
     current_payload = dict(request_payload)
-    timeout_removed = False
+    removable_optional_params = set(retryable_optional_params or {"timeout", "temperature"})
     for attempt in range(1, max_retries + 1):
-        try:
-            ensure_budget_available()
-            response = client.responses.create(**current_payload)
-        except TypeError as exc:
-            if "timeout" in str(exc) and "timeout" in current_payload:
-                current_payload.pop("timeout", None)
-                timeout_removed = True
-                continue
-            raise
-        except Exception as exc:
-            should_retry = attempt < max_retries and retryable_error_predicate(exc)
-            if not should_retry:
-                consume_budget()
+        while True:
+            try:
+                ensure_budget_available()
+                response = client.responses.create(**current_payload)
+            except TypeError as exc:
+                unsupported_param = extract_unsupported_parameter_name(str(exc))
+                if unsupported_param in removable_optional_params and unsupported_param in current_payload:
+                    current_payload.pop(unsupported_param, None)
+                    continue
                 raise
-            time.sleep(min(2 ** (attempt - 1), max_backoff_seconds))
-        else:
-            consume_budget()
-            return response
-    if timeout_removed:
-        ensure_budget_available()
-        response = client.responses.create(**current_payload)
-        consume_budget()
-        return response
+            except Exception as exc:
+                unsupported_param = extract_unsupported_parameter_name(str(exc))
+                if unsupported_param in removable_optional_params and unsupported_param in current_payload:
+                    current_payload.pop(unsupported_param, None)
+                    continue
+                should_retry = attempt < max_retries and retryable_error_predicate(exc)
+                if not should_retry:
+                    consume_budget()
+                    raise
+                time.sleep(min(2 ** (attempt - 1), max_backoff_seconds))
+                break
+            else:
+                consume_budget()
+                return response
     raise RuntimeError("Responses retry loop exhausted unexpectedly.")

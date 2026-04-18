@@ -3,6 +3,7 @@ from contextlib import nullcontext
 import pytest
 
 import ui
+from conftest import SessionState as SessionState  # noqa: F811
 
 
 @pytest.fixture(autouse=True)
@@ -244,8 +245,10 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
     }
 
     sidebar_calls = []
+    sidebar_warnings = []
     monkeypatch.setattr(ui.st.sidebar, "header", lambda text: sidebar_calls.append(("header", text)))
     monkeypatch.setattr(ui.st.sidebar, "caption", lambda text: sidebar_calls.append(("caption", text)))
+    monkeypatch.setattr(ui.st.sidebar, "warning", lambda text: sidebar_warnings.append(text))
 
     def fake_selectbox(label, options, index=0, format_func=None, help=None, key=None):
         sidebar_calls.append(("selectbox", label, help, tuple(options), format_func))
@@ -271,7 +274,7 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
         (
             "selectbox",
             "Режим обработки текста",
-            None,
+            "Литературное редактирование улучшает уже готовый текст на выбранном языке. Перевод используйте для текста, который ещё не на целевом языке.",
             tuple(ui.TEXT_OPERATION_LABELS.values()),
             None,
         ),
@@ -299,6 +302,53 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
             "sidebar_keep_all_image_variants",
             "Сохраняет все сгенерированные варианты изображений для последующего сравнения.",
         )
+    ]
+    assert sidebar_warnings == []
+
+
+def test_render_sidebar_warns_when_translate_source_matches_target(monkeypatch):
+    config = {
+        "model_options": ["gpt-5.4", "gpt-5-mini"],
+        "default_model": "gpt-5-mini",
+        "chunk_size": 6000,
+        "max_retries": 3,
+        "processing_operation_default": "translate",
+        "source_language_default": "en",
+        "target_language_default": "en",
+        "supported_languages": [
+            type("Lang", (), {"code": "ru", "label": "Русский"})(),
+            type("Lang", (), {"code": "en", "label": "English"})(),
+        ],
+        "image_mode_default": "semantic_redraw_direct",
+        "keep_all_image_variants": False,
+    }
+
+    monkeypatch.setattr(ui.st.sidebar, "header", lambda text: None)
+    monkeypatch.setattr(ui.st.sidebar, "caption", lambda text: None)
+    warnings = []
+    monkeypatch.setattr(ui.st.sidebar, "warning", lambda text: warnings.append(text))
+
+    def fake_selectbox(label, options, index=0, format_func=None, help=None, key=None):
+        if label == "Режим обработки текста":
+            return ui.TEXT_OPERATION_LABELS["translate"]
+        if label == "Целевой язык":
+            return "English"
+        if label == "Язык оригинала":
+            return "English"
+        if label == "Режим обработки изображений":
+            return ui.IMAGE_MODE_LABELS["semantic_redraw_direct"]
+        return options[index]
+
+    monkeypatch.setattr(ui.st.sidebar, "selectbox", fake_selectbox)
+    monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
+    monkeypatch.setattr(ui.st.sidebar, "slider", lambda label, **kwargs: kwargs["value"])
+    monkeypatch.setattr(ui.st.sidebar, "checkbox", lambda label, value, key=None, help=None: value)
+
+    result = ui.render_sidebar(config)
+
+    assert result == ("gpt-5-mini", 6000, 3, "semantic_redraw_direct", False, "translate", "en", "en")
+    assert warnings == [
+        "Исходный и целевой язык совпадают. Если нужен только стилистический апгрейд, обычно лучше выбрать литературное редактирование."
     ]
 
 

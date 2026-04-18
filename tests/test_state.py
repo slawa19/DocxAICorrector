@@ -1,6 +1,7 @@
 import pytest
 
 import state
+from conftest import SessionState as SessionState  # noqa: F811
 
 
 @pytest.fixture(autouse=True)

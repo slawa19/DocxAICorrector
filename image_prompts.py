@@ -1,12 +1,13 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 import tomllib
 
 from constants import PROMPTS_DIR
 
 
 @lru_cache(maxsize=1)
-def load_image_prompt_registry() -> dict[str, object]:
+def load_image_prompt_registry() -> dict[str, Any]:
     registry_path = PROMPTS_DIR / "image_prompt_registry.toml"
     try:
         registry = tomllib.loads(registry_path.read_text(encoding="utf-8"))
@@ -33,6 +34,7 @@ def get_image_prompt_profile(prompt_key: str) -> dict[str, str]:
     if not all(isinstance(value, str) and value.strip() for value in (path, preferred_strategy, description)):
         raise RuntimeError(f"Некорректное описание image prompt profile: {prompt_key}")
 
+    assert isinstance(path, str) and isinstance(preferred_strategy, str) and isinstance(description, str)
     prompt_path = PROMPTS_DIR / path
     if not prompt_path.exists():
         raise RuntimeError(f"Не найден image prompt file для {prompt_key}: {prompt_path}")

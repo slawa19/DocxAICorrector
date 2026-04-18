@@ -1,6 +1,7 @@
 import base64
 from io import BytesIO
 from types import SimpleNamespace
+from typing import Any, cast
 
 import image_generation
 from PIL import Image, ImageDraw
@@ -133,7 +134,7 @@ def test_generate_image_candidate_safe_enhances_image_bytes():
 
 
 def test_generate_image_candidate_structured_uses_vision_and_images_generate(monkeypatch):
-    captured = {"vision": None, "generate": None}
+    captured: dict[str, Any] = {"vision": None, "generate": None}
 
     class FakeResponsesClient:
         def create(self, **kwargs):
@@ -163,6 +164,8 @@ def test_generate_image_candidate_structured_uses_vision_and_images_generate(mon
     )
 
     assert candidate
+    assert captured["vision"] is not None
+    assert captured["generate"] is not None
     assert captured["vision"]["model"] == image_generation.IMAGE_STRUCTURE_VISION_MODEL
     assert captured["generate"]["model"] == image_generation.IMAGE_GENERATE_MODEL
     assert captured["generate"]["response_format"] == "b64_json"
@@ -214,7 +217,7 @@ def test_generate_image_candidate_structured_preserves_generated_resolution_with
 
 
 def test_generate_image_candidate_structured_edit_preserves_edge_content_without_generate_fallback(monkeypatch):
-    captured = {"edit": None}
+    captured: dict[str, Any] = {"edit": None}
 
     class FakeImagesClient:
         def edit(self, **kwargs):
@@ -284,6 +287,7 @@ def test_generate_image_candidate_structured_trims_large_generated_margins_befor
         for y_coord in range(restored_image.height):
             for x_coord in range(restored_image.width):
                 pixel = restored_image.getpixel((x_coord, y_coord))
+                assert isinstance(pixel, tuple)
                 if pixel[2] > pixel[0] + 60 and pixel[2] > pixel[1] + 60:
                     leftmost_blue = min(leftmost_blue, x_coord)
                     rightmost_blue = max(rightmost_blue, x_coord)
@@ -293,7 +297,7 @@ def test_generate_image_candidate_structured_trims_large_generated_margins_befor
 
 
 def test_generate_image_candidate_direct_uses_creative_vision_and_images_generate(monkeypatch):
-    captured = {"vision": None, "generate": None}
+    captured: dict[str, Any] = {"vision": None, "generate": None}
 
     class FakeResponsesClient:
         def create(self, **kwargs):
@@ -324,6 +328,8 @@ def test_generate_image_candidate_direct_uses_creative_vision_and_images_generat
     )
 
     assert candidate
+    assert captured["vision"] is not None
+    assert captured["generate"] is not None
     assert captured["vision"]["model"] == image_generation.IMAGE_STRUCTURE_VISION_MODEL
     assert captured["generate"]["model"] == image_generation.IMAGE_GENERATE_MODEL
     assert captured["generate"]["response_format"] == "b64_json"
@@ -350,8 +356,12 @@ def test_generate_image_candidate_direct_normalizes_dark_outer_background_to_whi
     restored = image_generation._restore_generated_output(buffer.getvalue(), (24, 24), prefer_light_background=True)
 
     with Image.open(BytesIO(restored)).convert("RGBA") as normalized_image:
-        assert normalized_image.getpixel((0, 0))[:3] == (255, 255, 255)
-        assert normalized_image.getpixel((23, 23))[:3] == (255, 255, 255)
+        px0 = normalized_image.getpixel((0, 0))
+        px23 = normalized_image.getpixel((23, 23))
+        assert isinstance(px0, tuple)
+        assert isinstance(px23, tuple)
+        assert px0[:3] == (255, 255, 255)
+        assert px23[:3] == (255, 255, 255)
 
 
 def test_trim_generated_outer_padding_skips_trim_when_loss_ratio_is_too_large():
@@ -457,7 +467,7 @@ def test_generate_image_candidate_uses_provided_client(monkeypatch):
 
 
 def test_generate_image_candidate_direct_passes_source_image_to_vision_for_jpeg_input(monkeypatch):
-    captured = {"vision": None}
+    captured: dict[str, Any] = {"vision": None}
 
     class FakeResponsesClient:
         def create(self, **kwargs):
@@ -486,6 +496,7 @@ def test_generate_image_candidate_direct_passes_source_image_to_vision_for_jpeg_
     )
 
     assert candidate
+    assert captured["vision"] is not None
     image_payload = captured["vision"]["input"][1]["content"][1]["image_url"]
     assert image_payload.startswith("data:image/jpeg;base64,")
 
@@ -703,7 +714,7 @@ def test_call_images_edit_consumes_budget_once_after_adaptation_retry():
     result = image_generation._call_images_edit(
         SimpleNamespace(images=FakeImagesClient()),
         {"model": "gpt-image-1", "image": [b"x"], "prompt": "p", "input_fidelity": "high"},
-        budget=budget,
+        budget=cast(image_generation.ImageModelCallBudget, budget),
     )
 
     assert isinstance(result, SimpleNamespace)
@@ -737,7 +748,7 @@ def test_call_images_generate_consumes_budget_once_after_adaptation_retry():
     result = image_generation._call_images_generate(
         SimpleNamespace(images=FakeImagesClient()),
         {"model": "gpt-image-1", "prompt": "p", "quality": "high"},
-        budget=budget,
+        budget=cast(image_generation.ImageModelCallBudget, budget),
     )
 
     assert isinstance(result, SimpleNamespace)
@@ -771,7 +782,7 @@ def test_call_responses_create_consumes_budget_once_after_timeout_adaptation():
     result = image_generation._call_responses_create(
         SimpleNamespace(responses=FakeResponsesClient()),
         {"model": "gpt-4.1", "input": []},
-        budget=budget,
+        budget=cast(image_generation.ImageModelCallBudget, budget),
     )
 
     assert result.output_text == "ok"
@@ -779,6 +790,36 @@ def test_call_responses_create_consumes_budget_once_after_timeout_adaptation():
     assert "timeout" in calls[0]
     assert "timeout" not in calls[1]
     assert budget.used_calls == 1
+
+
+def test_call_responses_create_retries_without_temperature_and_logs_once(monkeypatch):
+    calls = []
+    log_calls = []
+
+    class UnsupportedTemperatureError(Exception):
+        status_code = 400
+
+    class FakeResponsesClient:
+        def create(self, **kwargs):
+            calls.append(dict(kwargs))
+            if len(calls) == 1:
+                raise UnsupportedTemperatureError("Unsupported parameter: 'temperature' is not supported with this model.")
+            return SimpleNamespace(output_text="ok")
+
+    monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: log_calls.append((args, kwargs)))
+
+    result = image_generation._call_responses_create(
+        SimpleNamespace(responses=FakeResponsesClient()),
+        {"model": "gpt-4.1", "input": [], "temperature": 0.0},
+    )
+
+    assert result.output_text == "ok"
+    assert calls == [
+        {"model": "gpt-4.1", "input": [], "temperature": 0.0, "timeout": image_generation.IMAGE_API_TIMEOUT_SECONDS},
+        {"model": "gpt-4.1", "input": [], "timeout": image_generation.IMAGE_API_TIMEOUT_SECONDS},
+    ]
+    removed_param_logs = [entry for entry in log_calls if entry[1].get("removed_param") == "temperature"]
+    assert len(removed_param_logs) == 1
 
 
 

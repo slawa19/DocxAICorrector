@@ -1,7 +1,7 @@
 from dataclasses import dataclass, replace
 from collections.abc import Callable, Mapping, Sequence
 from threading import Lock
-from typing import cast
+from typing import Any, cast
 
 from config import get_client, load_system_prompt
 from document import inspect_placeholder_integrity
@@ -59,9 +59,9 @@ class ProcessingServiceDependencies:
     generate_markdown_block_fn: MarkdownGenerator
     convert_markdown_to_docx_bytes_fn: MarkdownToDocxConverter
     process_document_images_impl_fn: Callable[..., list]
-    analyze_image_fn: Callable[..., object]
-    generate_image_candidate_fn: Callable[..., object]
-    validate_redraw_result_fn: Callable[..., object]
+    analyze_image_fn: Callable[..., Any]
+    generate_image_candidate_fn: Callable[..., Any]
+    validate_redraw_result_fn: Callable[..., Any]
     detect_image_mime_type_fn: Callable[..., str | None]
     inspect_placeholder_integrity_fn: PlaceholderInspector
     preserve_source_paragraph_properties_fn: ParagraphPropertiesPreserver
@@ -87,7 +87,7 @@ class ProcessingServiceDependencies:
 class ProcessingService:
     dependencies: ProcessingServiceDependencies
 
-    def clone(self, **dependency_overrides: object) -> "ProcessingService":
+    def clone(self, **dependency_overrides: Any) -> "ProcessingService":
         return ProcessingService(dependencies=replace(self.dependencies, **dependency_overrides))
 
     def process_document_images(
@@ -305,7 +305,7 @@ def _mutate_processing_jobs(
     return [job_mutator(job) for job in jobs]
 
 
-def build_processing_service_dependencies(**overrides: object) -> ProcessingServiceDependencies:
+def build_processing_service_dependencies(**overrides: Any) -> ProcessingServiceDependencies:
     return ProcessingServiceDependencies(**overrides)
 
 
@@ -323,7 +323,7 @@ def build_default_processing_service_dependencies() -> ProcessingServiceDependen
             heading_font=_heading_font,
         )
 
-    def _generate_markdown_block(**kwargs: object) -> str:
+    def _generate_markdown_block(**kwargs: Any) -> str:
         return generate_markdown_block(**kwargs)
 
     def _inspect_placeholder_integrity(markdown_text: str, image_assets) -> Mapping[str, str]:
@@ -352,8 +352,8 @@ def build_default_processing_service_dependencies() -> ProcessingServiceDependen
     def _log_event(level: int, event_id: str, message: str, **context: object) -> None:
         log_event(level, event_id, message, **context)
 
-    def _should_stop_processing(runtime: object) -> bool:
-        return should_stop_processing(cast(object, runtime))
+    def _should_stop_processing(runtime: Any) -> bool:
+        return should_stop_processing(runtime)
 
     runtime_emitters = build_runtime_event_emitters(
         dependencies=RuntimeEventEmitterDependencies(
@@ -420,7 +420,7 @@ def reset_processing_service() -> None:
         _DEFAULT_PROCESSING_SERVICE = None
 
 
-def clone_processing_service(**overrides: object) -> ProcessingService:
+def clone_processing_service(**overrides: Any) -> ProcessingService:
     return get_processing_service().clone(**overrides)
 
 

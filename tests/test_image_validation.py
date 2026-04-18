@@ -2,6 +2,7 @@ import image_validation
 from image_pipeline import _apply_validation_result_to_asset
 from image_pipeline_policy import resolve_validation_delivery_outcome
 from models import ImageAnalysisResult, ImageAsset, ImageValidationResult
+from typing import Any
 
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"test-image-payload"
@@ -50,7 +51,7 @@ def _apply_validation_for_asset(
     validation_result = image_validation.validate_redraw_result(
         asset.original_bytes,
         asset.redrawn_bytes or b"",
-        asset.analysis_result,
+        asset.analysis_result or build_analysis_result(),
         candidate_analysis=candidate_analysis,
         config=config,
     )
@@ -87,7 +88,7 @@ def test_image_validation_result_and_asset_log_context_are_serializable():
         final_variant="redrawn",
     )
 
-    context = asset.to_log_context()
+    context: dict[str, Any] = asset.to_log_context()  # type: ignore[assignment]
 
     assert context["image_id"] == "img-1"
     assert "original_bytes" not in context

@@ -10,6 +10,7 @@ import preparation
 import processing_runtime
 import restart_store
 import state
+from conftest import SessionState as SessionState  # noqa: F811
 from docx import Document
 
 

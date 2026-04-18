@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from threading import Lock
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from dotenv import load_dotenv
 
@@ -70,7 +70,7 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class AppConfig(Mapping[str, object]):
+class AppConfig(Mapping[str, Any]):
     default_model: str
     model_options: list[str]
     chunk_size: int

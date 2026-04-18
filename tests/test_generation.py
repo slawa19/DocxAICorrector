@@ -385,6 +385,35 @@ def test_generate_markdown_block_retries_without_max_output_tokens_when_sdk_reje
     assert "max_output_tokens" not in calls[1]
 
 
+def test_generate_markdown_block_retries_without_temperature_when_model_rejects_it():
+    calls = []
+
+    class UnsupportedTemperatureError(Exception):
+        status_code = 400
+
+    def create_response(**kwargs):
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            raise UnsupportedTemperatureError("Unsupported parameter: 'temperature' is not supported with this model.")
+        return SimpleNamespace(output_text="ok")
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5-mini",
+        system_prompt="system",
+        target_text="target",
+        context_before="before",
+        context_after="after",
+        max_retries=1,
+    )
+
+    assert result == "ok"
+    assert "temperature" in calls[0]
+    assert "temperature" not in calls[1]
+
+
 def test_generate_markdown_block_raises_after_persistent_empty_response(monkeypatch):
     attempts = []
     sleep_calls = []
@@ -991,6 +1020,36 @@ def test_call_responses_create_with_retry_consumes_budget_only_after_retryable_s
     assert result.output_text == "ok"
     assert len(calls) == 2
     assert budget.used_calls == 1
+
+
+def test_call_responses_create_with_retry_retries_without_temperature_on_bad_request():
+    calls = []
+
+    class UnsupportedTemperatureError(Exception):
+        status_code = 400
+
+    class Client:
+        class Responses:
+            def create(self, **kwargs):
+                calls.append(dict(kwargs))
+                if len(calls) == 1:
+                    raise UnsupportedTemperatureError("Unsupported parameter: 'temperature' is not supported with this model.")
+                return SimpleNamespace(output_text="ok")
+
+        responses = Responses()
+
+    result = image_shared.call_responses_create_with_retry(
+        Client(),
+        {"model": "gpt-5-mini", "input": [], "temperature": 0.4},
+        max_retries=1,
+        retryable_error_predicate=lambda exc: False,
+    )
+
+    assert result.output_text == "ok"
+    assert calls == [
+        {"model": "gpt-5-mini", "input": [], "temperature": 0.4},
+        {"model": "gpt-5-mini", "input": []},
+    ]
 
 
 def test_normalize_generated_document_background_whitens_dark_border_only():

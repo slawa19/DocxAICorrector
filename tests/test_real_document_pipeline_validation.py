@@ -28,13 +28,13 @@ def _load_validation_module():
     return module
 
 
-def _docx_bytes(document: Document) -> bytes:
+def _docx_bytes(document: Document) -> bytes:  # type: ignore[reportGeneralTypeIssues]
     buffer = BytesIO()
     document.save(buffer)
     return buffer.getvalue()
 
 
-def _append_numbering_level(level: str, fmt: str) -> OxmlElement:
+def _append_numbering_level(level: str, fmt: str) -> OxmlElement:  # type: ignore[reportGeneralTypeIssues]
     lvl = OxmlElement("w:lvl")
     lvl.set(qn("w:ilvl"), level)
 
@@ -55,7 +55,7 @@ def _append_numbering_level(level: str, fmt: str) -> OxmlElement:
     return lvl
 
 
-def _append_multilevel_numbering_definition(document: Document, *, num_id: str, abstract_num_id: str) -> None:
+def _append_multilevel_numbering_definition(document: Document, *, num_id: str, abstract_num_id: str) -> None:  # type: ignore[reportGeneralTypeIssues]
     numbering_root = document.part.numbering_part.element
 
     abstract_num = OxmlElement("w:abstractNum")

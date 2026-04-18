@@ -1,3 +1,4 @@
+from typing import Any
 from pathlib import Path
 
 from config import load_app_config
@@ -52,7 +53,7 @@ def test_build_validation_runtime_config_keeps_canonical_nested_shape() -> None:
     app_config = load_app_config()
     run_profile = registry.get_run_profile("ui-parity-ai-default")
 
-    runtime_config = build_validation_runtime_config(resolve_runtime_resolution(app_config, run_profile))
+    runtime_config: dict[str, Any] = build_validation_runtime_config(resolve_runtime_resolution(app_config, run_profile))  # type: ignore[assignment]
 
     assert set(runtime_config.keys()) == {"effective", "ui_defaults", "overrides"}
     assert runtime_config["effective"]["image_mode"] == runtime_config["ui_defaults"]["image_mode"]

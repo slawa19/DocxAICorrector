@@ -28,7 +28,7 @@ This hardening specification adds:
 1. graceful fallback behavior when the selected mode conflicts with the actual text
 2. warning and assessment layers for likely user mistakes
 3. conservative handling for mixed-language and ambiguous text
-4. a lightweight preflight assessment model that informs UI and prompt behavior without changing the block pipeline
+4. a lightweight preflight assessment model that informs UI warnings without changing the block pipeline or prompt cache model
 
 ## Problem Statement
 
@@ -183,17 +183,37 @@ This is not a second pipeline and not a document-level rewrite phase.
 
 It should inspect a short excerpt of the prepared document and infer a small set of runtime hints.
 
-Recommended assessment output shape:
+Phase 1 assessment strategy is explicitly fixed as deterministic and dependency-free.
+
+Phase 1 must not use:
+
+1. an additional LLM call
+2. a new language-detection library dependency
+3. a network service or remote detector
+
+Phase 1 assessment may use only:
+
+1. trivial deterministic checks such as `source_language == target_language`
+2. Unicode script analysis sufficient to distinguish broad script families such as Latin, Cyrillic, CJK, or mixed
+3. simple excerpt-level counts derived from the already prepared text
+
+This means Phase 1 assessment is intentionally advisory and limited. Reliable identification between Latin-script languages such as `en`, `de`, `fr`, `es`, `it`, and `pl` is explicitly deferred.
+
+Recommended Phase 1 assessment output shape:
 
 1. `dominant_language`
-2. `target_language_match`
-3. `source_language_mismatch`
-4. `mixed_language_detected`
-5. `confidence`
-6. `recommended_mode_hint`
-7. `recommended_source_language`
+2. `dominant_script`
+3. `target_language_script_match`
+4. `mixed_script_detected`
 
-This assessment should be best-effort and low-cost.
+Where:
+
+1. `dominant_language` may be populated only for trivially knowable values or remain `None`
+2. `dominant_script` should be one of a narrow fixed set such as `latin`, `cyrillic`, `cjk`, `mixed`, or `unknown`
+3. `target_language_script_match` is a cheap advisory boolean
+4. `mixed_script_detected` is a cheap advisory boolean
+
+The assessment should remain best-effort and low-cost.
 
 ### 4. Warnings instead of hard failures
 
@@ -202,24 +222,13 @@ When the preflight assessment suggests a likely user mistake, the product should
 Recommended warnings:
 
 1. “The text already appears to be in the target language; literary editing may be more appropriate than translation.”
-2. “The selected source language does not match the detected dominant language of the document excerpt.”
+2. “The selected source and target languages are identical; literary editing may be more appropriate than translation.”
 3. “The document appears to contain multiple languages; translation quality may vary across segments.”
-4. “Source and target languages are identical; if you want style improvement only, use literary editing mode.”
+4. “The dominant script of the excerpt does not match the expected script of the target language; review the selected mode and languages.”
 
-### 5. Prompt overlays informed by assessment
+Warnings derived from assessment are UI-only in Phase 1 hardening.
 
-Prompt behavior should adapt based on assessment hints, but only through small overlays.
-
-Do not create a new prompt system.
-
-Instead, allow one optional hardening overlay fragment to be injected when needed.
-
-Example intent of such an overlay:
-
-1. if the target block already appears to be in `target_language`, do not perform repeated translation
-2. preserve already-correct target-language segments
-3. if the configured source language appears wrong, rely primarily on the factual language of the block
-4. prefer conservative editing when confidence is low
+Assessment output must not be injected into prompt composition and must not implicitly auto-switch the selected mode.
 
 ## Detailed Changes
 
@@ -244,9 +253,10 @@ Update `prompts/system_prompt.txt` with a short, shared fallback section that ap
 Required additions:
 
 1. When the selected mode conflicts with the actual block language, choose the least destructive valid transformation.
-2. Do not perform repeated translation of text already in `target_language`.
-3. For mixed-language content, preserve already-correct `target_language` segments and transform only what clearly requires it.
-4. When language confidence is low, prefer conservative output over aggressive rewriting.
+2. When language confidence is low, prefer conservative output over aggressive rewriting.
+3. Do not treat user-provided language metadata as more authoritative than the visible text itself when the contradiction is obvious.
+
+Translation-specific fallback rules such as “do not retranslate already translated target-language segments” belong only in `prompts/operation_translate.txt`, not in the shared system prompt.
 
 This must remain concise. The shared system prompt should not become a long taxonomy of every edge case.
 
@@ -259,12 +269,9 @@ Recommended shape:
 ```python
 {
     "dominant_language": str | None,
-    "target_language_match": bool | None,
-    "source_language_mismatch": bool | None,
-    "mixed_language_detected": bool,
-    "confidence": str | None,
-    "recommended_mode_hint": str | None,
-    "recommended_source_language": str | None,
+   "dominant_script": str,
+   "target_language_script_match": bool | None,
+   "mixed_script_detected": bool,
 }
 ```
 
@@ -277,12 +284,14 @@ Add a narrow preflight step after prepared document context exists and before fu
 Recommended behavior:
 
 1. build a short excerpt from prepared source text
-2. assess likely dominant language and ambiguity
-3. compare selected source and target languages against the excerpt
+2. derive dominant script and obvious ambiguity signals
+3. compare the excerpt script against the selected target language script and trivial mode contradictions
 4. populate assessment metadata
 5. surface user-visible warnings when relevant
 
 This step must not mutate the prepared document and must not introduce a second long-running stage.
+
+Phase 1 preflight assessment must live in a thin utility or helper module, not inside `processing_service.py`.
 
 ### 5. Add UI warnings and help text
 
@@ -294,7 +303,9 @@ Required UI improvements:
 2. if `source_language == target_language` in `translate`, show a warning recommending `edit`
 3. if preflight indicates the excerpt already matches `target_language`, show a warning recommending `edit`
 4. if preflight indicates mixed-language content, show an advisory warning rather than blocking processing
-5. if preflight indicates likely source-language mismatch, show a warning before starting processing
+5. if preflight indicates an obvious target-script mismatch, show a warning before starting processing
+
+Phase 1 should not warn for “edit selected on foreign-language text” unless the mismatch is trivially detectable through script analysis. All richer language-identification warnings are deferred.
 
 ### 6. Preserve Phase 1 simplicity
 
@@ -314,14 +325,12 @@ The preferred UX is:
    Gains resilience rules for wrong mode, wrong source language, and mixed-language input.
 2. `prompts/system_prompt.txt`
    Gains concise cross-mode safe-fallback rules.
-3. `config.py`
-   May gain optional loading hooks for a hardening overlay if implemented through prompt composition.
-4. `ui.py`
+3. `ui.py`
    Gains warning/help presentation for likely misconfiguration.
-5. `app.py`
+4. `app.py`
    Gains preflight warning surfacing during startup.
-6. `processing_service.py` or adjacent orchestration layer
-   Gains a lightweight preflight assessment invocation.
+5. A new thin assessment helper module or utility function
+   Computes advisory excerpt-level script and mismatch signals.
 
 ### Modules that must not change in role
 
@@ -329,17 +338,19 @@ The preferred UX is:
 2. `preparation.py`
 3. `formatting_transfer.py`
 4. image pipeline modules
-5. block execution semantics in `document_pipeline.py`, except for optional prompt-context consumption
+5. `processing_service.py`
+6. block execution semantics in `document_pipeline.py`
 
 ## Recommended Assessment Strategy
 
 The assessment implementation should follow these rules:
 
 1. Use a short excerpt from the prepared document, not per-block routing.
-2. Use a simple, cheap heuristic or lightweight detector.
-3. Avoid introducing external infrastructure or a remote language-detection dependency.
+2. Use only deterministic trivial checks and Unicode script analysis in Phase 1.
+3. Avoid external infrastructure, remote language-detection services, and new language-detection dependencies.
 4. Return low-confidence/unknown rather than pretending certainty.
 5. Keep the assessment advisory, not authoritative.
+6. Do not attempt reliable differentiation between Latin-script languages in Phase 1.
 
 ## Error-Handling Matrix
 
@@ -355,15 +366,16 @@ Expected behavior:
 
 Expected behavior:
 
-1. show a warning that the text may still require translation
-2. do not auto-switch the mode in Phase 1 hardening
-3. keep user control explicit
+1. show a warning only if there is a trivial script mismatch against the selected target language
+2. otherwise do not warn in Phase 1
+3. do not auto-switch the mode in Phase 1 hardening
+4. keep user control explicit
 
 ### Case 3: wrong `source_language`
 
 Expected behavior:
 
-1. show mismatch warning
+1. show mismatch warning only when the contradiction is trivially detectable
 2. prompt prioritizes factual block language over configured source language
 3. processing continues conservatively
 
@@ -432,11 +444,11 @@ Implementation will be considered complete for this hardening phase when all of 
 
 1. `translate` prompt no longer blindly assumes the text always still needs translation.
 2. already translated text is handled conservatively in translation mode.
-3. likely source-language mismatch produces a warning rather than silent failure.
+3. trivially detectable source-language or script mismatch produces a warning rather than silent failure.
 4. mixed-language input is handled conservatively and does not force normalization of already correct target-language segments.
 5. `source_language == target_language` in translation mode produces a warning recommending `edit`.
 6. low-confidence `auto` does not lead to aggressive transform behavior.
-7. the implementation does not introduce a second translation pipeline or per-block routing layer.
+7. the implementation does not introduce a second translation pipeline, per-block routing layer, or assessment-dependent prompt cache invalidation.
 
 ## Suggested Implementation Order
 
@@ -445,52 +457,55 @@ Implementation will be considered complete for this hardening phase when all of 
 3. Add UI help text and static warnings for obvious user mistakes.
 4. Introduce lightweight preflight assessment metadata.
 5. Surface dynamic warnings from assessment.
-6. Optionally inject a small hardening overlay into prompt composition.
-7. Add targeted tests for warnings, mismatch handling, and conservative translation fallback.
+6. Add targeted tests for warnings, mismatch handling, and conservative translation fallback.
 
 ## Implementation Checklist
 
 ### Priority 0: Lock the hardening contract
 
-- [ ] Confirm that wrong user settings should trigger warnings rather than hard blocking in most cases.
-- [ ] Confirm that translation mode should gracefully degrade to light editing when the text is already in `target_language`.
-- [ ] Confirm that the system should prioritize the factual block language over an obviously incorrect configured source language.
-- [ ] Confirm that mixed-language handling should be conservative and segment-preserving.
+- [x] Confirm that wrong user settings should trigger warnings rather than hard blocking in most cases.
+- [x] Confirm that translation mode should gracefully degrade to light editing when the text is already in `target_language`.
+- [x] Confirm that the system should prioritize the factual block language over an obviously incorrect configured source language.
+- [x] Confirm that mixed-language handling should be conservative and segment-preserving.
+- [x] Confirm that Phase 1 assessment uses only deterministic trivial checks and Unicode script analysis, with no extra LLM call and no new dependency.
+- [x] Confirm that assessment results are UI-only and do not affect prompt composition or implicitly switch modes.
 
 ### Priority 1: Prompt hardening
 
-- [ ] Update `prompts/operation_translate.txt` with safe fallback rules for already translated, wrong-source, and mixed-language cases.
-- [ ] Add concise safe-fallback language to `prompts/system_prompt.txt`.
-- [ ] Keep prompt additions short enough to avoid prompt bloat.
+- [x] Update `prompts/operation_translate.txt` with safe fallback rules for already translated, wrong-source, and mixed-language cases.
+- [x] Add concise safe-fallback language to `prompts/system_prompt.txt`.
+- [x] Keep prompt additions short enough to avoid prompt bloat.
 
 ### Priority 2: UI warnings
 
-- [ ] Add help text clarifying when `translate` should be used.
-- [ ] Add warning for `source_language == target_language` in translation mode.
-- [ ] Add startup warning for likely already-translated input.
-- [ ] Add startup warning for likely source-language mismatch.
-- [ ] Add advisory warning for mixed-language input.
+- [x] Add help text clarifying when `translate` should be used.
+- [x] Add warning for `source_language == target_language` in translation mode.
+- [x] Add startup warning for likely already-translated input.
+- [x] Add startup warning for trivially detectable source/target script mismatch.
+- [x] Add advisory warning for mixed-language input.
+- [x] Do not add non-trivial language-identification warnings for Latin-script ambiguity in Phase 1.
 
 ### Priority 3: Runtime assessment
 
-- [ ] Define a lightweight `text_transform_assessment` shape.
-- [ ] Compute assessment from a short prepared-text excerpt.
-- [ ] Carry assessment through processing startup as advisory metadata.
-- [ ] Avoid per-block routing and avoid mutating prepared document data.
+- [x] Define a lightweight `text_transform_assessment` shape.
+- [x] Compute assessment from a short prepared-text excerpt.
+- [x] Carry assessment through processing startup as advisory metadata.
+- [x] Avoid per-block routing and avoid mutating prepared document data.
+- [x] Keep assessment implementation in a thin helper module or utility, not in `processing_service.py`.
 
-### Priority 4: Prompt-context adaptation
+### Priority 4: Prompt hardening boundaries
 
-- [ ] Decide whether hardening hints are injected through system prompt overlay, operation fragment text, or both.
-- [ ] If overlay is used, keep it optional and narrow.
-- [ ] Ensure low-confidence assessment results bias toward conservative output.
+- [x] Keep translation-specific hardening rules in `prompts/operation_translate.txt` only.
+- [x] Keep universal conservative-when-uncertain rules in `prompts/system_prompt.txt` only.
+- [x] Do not add runtime prompt overlays derived from assessment.
 
 ### Priority 5: Tests
 
-- [ ] Add tests for translation-mode fallback wording.
-- [ ] Add tests for UI warnings on obvious mismatches.
-- [ ] Add tests for conservative handling when source and target match.
-- [ ] Add tests for assessment behavior on ambiguous input.
-- [ ] Add tests that confirm no new pipeline branch was introduced.
+- [x] Add tests for translation-mode fallback wording.
+- [x] Add tests for UI warnings on obvious mismatches.
+- [x] Add tests for conservative handling when source and target match.
+- [x] Add tests for assessment behavior on script ambiguity and mixed-script input.
+- [x] Add tests that confirm no new pipeline branch or assessment-dependent prompt variant was introduced.
 
 ### Priority 6: Manual verification
 

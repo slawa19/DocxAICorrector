@@ -15,7 +15,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
 
-from image_shared import is_retryable_error
+from image_shared import call_responses_create_with_retry, is_retryable_error
 from logger import log_event
 from openai_response_utils import collect_response_text_traversal, read_response_field
 
@@ -405,7 +405,13 @@ def _extract_normalized_markdown(response: object) -> str:
 
 
 def _call_responses_create(client: "OpenAI", request_kwargs: dict[str, Any]) -> object:
-    return cast(Any, client.responses).create(**request_kwargs)
+    return call_responses_create_with_retry(
+        client,
+        request_kwargs,
+        max_retries=1,
+        retryable_error_predicate=lambda exc: False,
+        retryable_optional_params={"temperature", "max_output_tokens"},
+    )
 
 
 def _estimate_max_output_tokens(target_text: str) -> int:
@@ -447,18 +453,8 @@ def _boost_request_output_budget(
 
 
 def _call_markdown_request_with_sdk_fallback(client: "OpenAI", request_kwargs: dict[str, object]) -> tuple[str, bool]:
-    max_output_tokens_removed = False
-    try:
-        response = _call_responses_create(client, cast(dict[str, Any], request_kwargs))
-        return _extract_normalized_markdown(response), max_output_tokens_removed
-    except TypeError as exc:
-        if "max_output_tokens" not in str(exc) or "max_output_tokens" not in request_kwargs:
-            raise
-        request_kwargs = dict(request_kwargs)
-        request_kwargs.pop("max_output_tokens", None)
-        max_output_tokens_removed = True
-        response = _call_responses_create(client, cast(dict[str, Any], request_kwargs))
-        return _extract_normalized_markdown(response), max_output_tokens_removed
+    response = _call_responses_create(client, cast(dict[str, Any], request_kwargs))
+    return _extract_normalized_markdown(response), False
 
 
 def _recover_from_persistent_empty_response(
