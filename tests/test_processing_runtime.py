@@ -191,7 +191,7 @@ def test_drain_preparation_events_stores_prepared_context(monkeypatch):
     assert session_state.selected_source_token == "report.docx:3:abc"
     assert session_state.preparation_worker is None
     assert session_state.preparation_event_queue is None
-    assert finalized == [("Документ подготовлен", "Анализ файла завершён. Можно запускать обработку.", 1.0, "completed")]
+    assert finalized == [("Документ подготовлен", "", 1.0, "completed")]
 
 
 def test_drain_preparation_events_marks_failure(monkeypatch):

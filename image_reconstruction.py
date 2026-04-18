@@ -25,7 +25,6 @@ from image_shared import call_responses_create_with_retry, detect_image_mime_typ
 from logger import log_event
 
 SCENE_GRAPH_PROMPT_PATH = PROMPTS_DIR / "scene_graph_extraction.txt"
-DEFAULT_RECONSTRUCTION_MODEL = "gpt-4.1"
 DEFAULT_RECONSTRUCTION_MIN_CANVAS_SHORT_SIDE_PX = 900
 DEFAULT_RECONSTRUCTION_TARGET_MIN_FONT_PX = 18
 DEFAULT_RECONSTRUCTION_MAX_UPSCALE_FACTOR = 3.0
@@ -81,7 +80,7 @@ COMMON_SANS_FONTS = {
 def reconstruct_image(
     image_bytes: bytes,
     *,
-    model: str = DEFAULT_RECONSTRUCTION_MODEL,
+    model: str | None = None,
     mime_type: str | None = None,
     client=None,
     render_config: dict[str, object] | None = None,
@@ -92,7 +91,10 @@ def reconstruct_image(
     Returns ``(png_bytes, scene_graph_dict)``.  Raises on unrecoverable
     errors so that callers can fall back to safe mode.
     """
-    scene_graph = extract_scene_graph(image_bytes, model=model, mime_type=mime_type, client=client, budget=budget)
+    resolved_model = model
+    if not resolved_model:
+        raise RuntimeError("Image reconstruction model is not configured.")
+    scene_graph = extract_scene_graph(image_bytes, model=resolved_model, mime_type=mime_type, client=client, budget=budget)
     original_size = _get_image_size(image_bytes)
     rendered_bytes = render_scene_graph(
         scene_graph,
@@ -118,7 +120,7 @@ def reconstruct_image(
 def extract_scene_graph(
     image_bytes: bytes,
     *,
-    model: str = DEFAULT_RECONSTRUCTION_MODEL,
+    model: str | None = None,
     mime_type: str | None = None,
     client=None,
     budget=None,
@@ -127,13 +129,16 @@ def extract_scene_graph(
     if client is None:
         raise RuntimeError("Scene graph extraction requires an explicit client.")
 
+    resolved_model = model
+    if not resolved_model:
+        raise RuntimeError("Image reconstruction model is not configured.")
     prompt_text = _load_scene_graph_prompt()
     data_uri = _image_bytes_to_data_uri(image_bytes, mime_type)
 
     response = call_responses_create_with_retry(
         client,
         {
-            "model": model,
+            "model": resolved_model,
             "input": [
                 {
                     "role": "user",
@@ -164,7 +169,7 @@ def extract_scene_graph(
         logging.INFO,
         "scene_graph_extracted",
         "Извлечен scene graph из изображения через VLM.",
-        model=model,
+        model=resolved_model,
         element_count=len(scene_graph.get("elements", [])),
     )
     return scene_graph

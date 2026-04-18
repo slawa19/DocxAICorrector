@@ -3,6 +3,7 @@ import base64
 import re
 from typing import Any, Mapping
 
+from config import get_model_role_value
 from image_shared import (
     call_responses_create_with_retry,
     clamp_score,
@@ -41,7 +42,7 @@ def validate_redraw_result(
     enable_vision_validation: bool = True,
     validation_model: str | None = None,
     budget=None,
-) -> ImageValidationResult:
+    ) -> ImageValidationResult:
     normalized_context = dict(image_context or {})
     try:
         normalized_analysis = _coerce_analysis_result(analysis_before)
@@ -53,6 +54,11 @@ def validate_redraw_result(
             render_strategy=normalized_analysis.render_strategy,
             **normalized_context,
         )
+        resolved_validation_model: str | None = None
+        if enable_vision_validation and _supports_responses_client(client):
+            resolved_validation_model = validation_model or get_model_role_value(config, "image_validation")
+            if not resolved_validation_model:
+                raise RuntimeError("Image validation model is not configured.")
         result = _validate_redraw_result(
             original_image,
             candidate_image,
@@ -65,7 +71,7 @@ def validate_redraw_result(
                 analysis_before=normalized_analysis,
                 candidate_analysis=_coerce_analysis_result(candidate_analysis) if candidate_analysis else None,
                 client=client,
-                model=validation_model or str((config or {}).get("validation_model", "gpt-4.1")),
+                model=resolved_validation_model or "",
                 enable_vision_validation=enable_vision_validation,
                 budget=budget,
             ),
@@ -366,7 +372,7 @@ def _build_vision_validation_assessment(
     response = call_responses_create_with_retry(
         client,
         {
-            "model": model or "gpt-4.1",
+            "model": model,
             "input": [
                 {
                     "role": "system",

@@ -35,6 +35,10 @@
 
 ## Archived Specs And Plans
 
+- `docs/archive/specs/MULTILINGUAL_TEXT_TRANSFORM_SPEC_2026-04-18.md` — implemented and archived 2026-04-18 after multilingual text transform rollout and targeted regression verification completed
+- `docs/archive/specs/MULTILINGUAL_TEXT_TRANSFORM_HARDENING_SPEC_2026-04-18.md` — implemented and archived 2026-04-18 after multilingual guardrails and restartable-state warning behavior were verified
+- `docs/archive/specs/CENTRALIZED_MODEL_REGISTRY_REFACTOR_SPEC_2026-04-18.md` — implemented and archived 2026-04-18 after the centralized role-based model registry landed across config loading, runtime consumers, docs, and regression coverage
+- `docs/archive/specs/TEST_SUITE_HARDENING_SPEC_2026-04-18.md` — implemented and archived 2026-04-18 after regression-suite hardening, follow-up fixes, pyright cleanup, and final full-suite verification completed
 - `docs/archive/specs/ARCHITECTURE_REFACTORING_SPEC_2026-03-25.md` — implemented and archived 2026-04-17 after the architecture refactoring wave completed and was re-verified through visible task runs
 - `docs/archive/specs/AI_STRUCTURE_RECOGNITION_SPEC_2026-03-26.md` — implemented and archived 2026-04-17 after Phase 1 plus the scoped Phase 2/3 follow-up landed; remaining heuristic-only reduction is future follow-up work, not an active blocking item
 - `docs/archive/specs/ACTIVE_SPEC_CHECKLIST_2026-04-17.md` — archived 2026-04-17 as the completion record for the paired architecture and AI implementation wave

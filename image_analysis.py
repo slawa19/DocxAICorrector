@@ -216,7 +216,7 @@ def _extract_vision_analysis(
     response = call_responses_create_with_retry(
         client,
         {
-            "model": model or "gpt-4.1",
+            "model": model,
             "input": [
                 {
                     "role": "system",
@@ -465,14 +465,15 @@ def _normalize_render_strategy(route_hint: object, fallback_strategy: str) -> tu
         return "deterministic_reconstruction", False
     if fallback_strategy == "deterministic_reconstruction" and route in {
         "deterministic_reconstruction",
-        "gpt-image-1",
         "semantic_redraw_direct",
         "semantic_redraw_structured",
     }:
         return "deterministic_reconstruction", False
-    if route == "gpt-image-1":
+    if route.startswith("gpt-"):
         if fallback_strategy in {"semantic_redraw_direct", "semantic_redraw_structured"}:
             return fallback_strategy, False
+        if fallback_strategy == "deterministic_reconstruction":
+            return "deterministic_reconstruction", False
         return "semantic_redraw_structured", False
     return str(route_hint).strip() or fallback_strategy, False
 

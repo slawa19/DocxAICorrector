@@ -20,14 +20,6 @@
 # heading = "Aptos Display"  # Heading 1–6
 # ---------------------------------------------------------------------------
 
-default_model = "gpt-5-mini"
-model_options = [
-  "gpt-5.4",
-  "gpt-5.4-pro",
-  "gpt-5.2",
-  "gpt-5.1",
-  "gpt-5-mini",
-]
 chunk_size = 6000
 max_retries = 3
 processing_operation_default = "edit"
@@ -49,14 +41,12 @@ enable_paragraph_markers = true
 image_mode_default = "no_change"
 semantic_validation_policy = "advisory"
 keep_all_image_variants = false
-validation_model = "gpt-4.1"
 min_semantic_match_score = 0.75
 min_text_match_score = 0.80
 min_structure_match_score = 0.70
 validator_confidence_threshold = 0.75
 allow_accept_with_partial_text_loss = false
 prefer_deterministic_reconstruction = true
-reconstruction_model = "gpt-4.1"
 enable_vision_image_analysis = true
 enable_vision_image_validation = true
 semantic_redraw_max_attempts = 2
@@ -69,6 +59,35 @@ reconstruction_max_upscale_factor = 3.0
 reconstruction_background_sample_ratio = 0.04
 reconstruction_background_color_distance_threshold = 48.0
 reconstruction_background_uniformity_threshold = 10.0
+
+[models.text]
+default = "gpt-5.4-mini"
+options = [
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5-mini",
+]
+
+[models.structure_recognition]
+default = "gpt-5-mini"
+
+[models.image_analysis]
+default = "gpt-5.4-mini"
+
+[models.image_validation]
+default = "gpt-5.4-mini"
+
+[models.image_reconstruction]
+default = "gpt-5.4-mini"
+
+[models.image_generation]
+default = "gpt-image-1.5"
+
+[models.image_edit]
+default = "gpt-image-1.5"
+
+[models.image_generation_vision]
+default = "gpt-5.4-mini"
 
 [paragraph_boundary_normalization]
 enabled = true
@@ -90,7 +109,8 @@ max_tokens_per_candidate = 120
 
 [structure_recognition]
 enabled = false
-model = "gpt-4o-mini"
+# DEPRECATED: use [models.structure_recognition].default instead.
+# model = "gpt-5-mini"
 max_window_paragraphs = 1800
 overlap_paragraphs = 50
 timeout_seconds = 60

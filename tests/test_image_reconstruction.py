@@ -30,7 +30,6 @@ DEFAULT_TEST_RENDER_CONFIG = {
     "max_upscale_factor": 1.0,
 }
 
-
 def render_scene_graph(*args, **kwargs):
     kwargs.setdefault("render_config", DEFAULT_TEST_RENDER_CONFIG)
     return _render_scene_graph_impl(*args, **kwargs)
@@ -717,7 +716,7 @@ def _build_photo_like_jpeg():
 
 
 class TestGenerationReconstructionPath:
-    def test_reconstruction_strategy_triggers_reconstruction(self):
+    def test_reconstruction_strategy_triggers_reconstruction(self, resolved_test_model_registry):
         """When render_strategy is deterministic_reconstruction, the generation
         function should attempt reconstruction instead of DALL-E semantic redraw."""
         analysis = ImageAnalysisResult(
@@ -745,12 +744,17 @@ class TestGenerationReconstructionPath:
         with patch("image_generation._generate_reconstructed_candidate", return_value=rendered_png) as mock_recon:
             from image_generation import generate_image_candidate
 
-            result = generate_image_candidate(png_bytes, analysis, mode="semantic_redraw_structured")
+            result = generate_image_candidate(
+                png_bytes,
+                analysis,
+                mode="semantic_redraw_structured",
+                model_config=resolved_test_model_registry,
+            )
             mock_recon.assert_called_once()
             with Image.open(BytesIO(result)) as img:
                 assert img.size == (100, 80)
 
-    def test_reconstruction_fallback_to_safe_on_error(self):
+    def test_reconstruction_fallback_to_safe_on_error(self, resolved_test_model_registry):
         """If reconstruction fails, safe fallback should be used."""
         analysis = ImageAnalysisResult(
             image_type="table",
@@ -772,13 +776,18 @@ class TestGenerationReconstructionPath:
         ):
             from image_generation import generate_image_candidate
 
-            result = generate_image_candidate(png_bytes, analysis, mode="semantic_redraw_structured")
+            result = generate_image_candidate(
+                png_bytes,
+                analysis,
+                mode="semantic_redraw_structured",
+                model_config=resolved_test_model_registry,
+            )
             assert result is not None
             assert len(result) > 0
             with Image.open(BytesIO(result)) as img:
                 assert img.size == (100, 80)
 
-    def test_safe_mode_bypasses_reconstruction(self):
+    def test_safe_mode_bypasses_reconstruction(self, resolved_test_model_registry):
         """Safe mode should never trigger reconstruction."""
         analysis = ImageAnalysisResult(
             image_type="diagram",
@@ -797,6 +806,6 @@ class TestGenerationReconstructionPath:
         with patch("image_generation._generate_reconstructed_candidate") as mock_recon:
             from image_generation import generate_image_candidate
 
-            result = generate_image_candidate(png_bytes, analysis, mode="safe")
+            result = generate_image_candidate(png_bytes, analysis, mode="safe", model_config=resolved_test_model_registry)
             mock_recon.assert_not_called()
             assert result is not None

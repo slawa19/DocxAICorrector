@@ -19,7 +19,7 @@ from pathlib import Path
 import platform
 import re
 import time
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 SCRIPT_PATH = Path(__file__).resolve()
 PROJECT_ROOT = SCRIPT_PATH.parents[3]
@@ -1435,16 +1435,23 @@ def _apply_repeat_count_override(run_profile, repeat_count_override: str):
     return replace(run_profile, repeat_count=repeat_count)
 
 
+class _SnapshotWithToDict(Protocol):
+    def to_dict(self) -> dict[str, object]: ...
+
+
 def _serialize_image_asset_forensics(image_assets: Sequence[object]) -> list[dict[str, object]]:
     payload: list[dict[str, object]] = []
     for asset in image_assets:
-        if not hasattr(asset, "source_identity_snapshot"):
+        source_identity_snapshot = getattr(asset, "source_identity_snapshot", None)
+        if not callable(source_identity_snapshot):
             continue
-        source_snapshot = asset.source_identity_snapshot()
-        runtime_snapshot = asset.runtime_state_snapshot() if hasattr(asset, "runtime_state_snapshot") else None
-        final_snapshot = asset.final_selection_snapshot() if hasattr(asset, "final_selection_snapshot") else None
+        runtime_state_snapshot = getattr(asset, "runtime_state_snapshot", None)
+        final_selection_snapshot = getattr(asset, "final_selection_snapshot", None)
+        source_snapshot = source_identity_snapshot()
+        runtime_snapshot = runtime_state_snapshot() if callable(runtime_state_snapshot) else None
+        final_snapshot = final_selection_snapshot() if callable(final_selection_snapshot) else None
 
-        source_payload = source_snapshot.to_dict() if hasattr(source_snapshot, "to_dict") else {}
+        source_payload = cast(_SnapshotWithToDict, source_snapshot).to_dict() if hasattr(source_snapshot, "to_dict") else {}
         source_bytes = getattr(asset, "original_bytes", None)
         if isinstance(source_bytes, (bytes, bytearray)):
             source_payload["source_sha256"] = hashlib.sha256(bytes(source_bytes)).hexdigest()
@@ -1453,8 +1460,8 @@ def _serialize_image_asset_forensics(image_assets: Sequence[object]) -> list[dic
         payload.append(
             {
                 "source": source_payload,
-                "runtime": runtime_snapshot.to_dict() if hasattr(runtime_snapshot, "to_dict") else None,
-                "final_selection": final_snapshot.to_dict() if hasattr(final_snapshot, "to_dict") else None,
+                "runtime": cast(_SnapshotWithToDict, runtime_snapshot).to_dict() if runtime_snapshot is not None and hasattr(runtime_snapshot, "to_dict") else None,
+                "final_selection": cast(_SnapshotWithToDict, final_snapshot).to_dict() if final_snapshot is not None and hasattr(final_snapshot, "to_dict") else None,
             }
         )
     return payload
@@ -1679,7 +1686,14 @@ def main() -> None:
                 phase="assemble",
                 stage="Formatting diagnostics",
                 detail="Сохранены formatting diagnostics artifacts для текущего прогона.",
-                metrics={"job_count": len(list(context.get("artifact_paths") or []))},
+                metrics={
+                    "job_count": len(
+                        cast(
+                            Sequence[object],
+                            context.get("artifact_paths") if isinstance(context.get("artifact_paths"), Sequence) else [],
+                        )
+                    )
+                },
             )
 
     log_event_capture = build_validation_event_logger(event_log, on_event=_handle_logged_event)

@@ -14,6 +14,18 @@ st.set_page_config(
 from constants import APP_READY_PATH, MAX_DOCX_ARCHIVE_SIZE_BYTES
 import application_flow
 import compare_panel
+from recommended_text_settings import (
+    ManualTextSettingsOverride,
+    RecommendedTextSettings,
+    TEXT_SETTINGS_FIELDS,
+    build_empty_manual_text_settings_override,
+    derive_recommended_text_settings,
+    mark_manual_overrides_from_baseline,
+    mark_manual_overrides_from_recommendation,
+    mark_manual_overrides_from_snapshot,
+    normalize_manual_text_settings_override,
+    normalize_recommendation_snapshot,
+)
 from config import load_app_config
 from app_runtime import (
     build_preparation_request_marker,
@@ -47,6 +59,10 @@ from state import (
 )
 from text_transform_assessment import TextTransformAssessment, assess_text_transform_excerpt, build_text_transform_warnings
 from ui import (
+    get_source_language_widget_value,
+    get_target_language_label,
+    get_text_operation_label,
+    get_text_setting_widget_keys,
     inject_ui_styles,
     render_image_validation_summary,
     render_file_uploader_state_styles,
@@ -223,7 +239,7 @@ def _store_preparation_summary(*, prepared_run_context) -> None:
     )
     st.session_state.latest_preparation_summary = {
         "stage": str(getattr(prepared_run_context, "preparation_stage", "Документ подготовлен")),
-        "detail": str(getattr(prepared_run_context, "preparation_detail", "Анализ завершён. Можно запускать обработку.")),
+        "detail": str(getattr(prepared_run_context, "preparation_detail", "")),
         "file_size_bytes": len(prepared_run_context.uploaded_file_bytes),
         "paragraph_count": len(prepared_run_context.paragraphs),
         "image_count": len(prepared_run_context.image_assets),
@@ -242,6 +258,232 @@ def _assess_text_transform(*, source_text: str, target_language: str) -> TextTra
     assessment = assess_text_transform_excerpt(source_text, target_language=target_language)
     st.session_state.text_transform_assessment = assessment
     return assessment
+
+
+def _current_text_settings(*, processing_operation: str, source_language: str, target_language: str) -> dict[str, str]:
+    return {
+        "processing_operation": processing_operation,
+        "source_language": source_language,
+        "target_language": target_language,
+    }
+
+
+def _default_text_settings(config: dict[str, object]) -> dict[str, str]:
+    return {
+        "processing_operation": str(config.get("processing_operation_default", "edit")),
+        "source_language": str(config.get("source_language_default", "en")),
+        "target_language": str(config.get("target_language_default", "ru")),
+    }
+
+
+def _text_setting_display_value(*, config: dict[str, object], field: str, value: str) -> str:
+    if field == "processing_operation":
+        return get_text_operation_label(value)
+    if field == "source_language":
+        return get_source_language_widget_value(config, value)
+    if field == "target_language":
+        return get_target_language_label(config, value)
+    return value
+
+
+def _describe_recommended_text_setting_changes(
+    *,
+    config: dict[str, object],
+    current_settings: dict[str, str],
+    recommendation: RecommendedTextSettings,
+    manual_override: ManualTextSettingsOverride,
+) -> list[str]:
+    field_labels = {
+        "processing_operation": "режим",
+        "source_language": "язык оригинала",
+        "target_language": "целевой язык",
+    }
+    changes: list[str] = []
+    for field in TEXT_SETTINGS_FIELDS:
+        if bool(manual_override.get(field, False)):
+            continue
+        current_value = str(current_settings[field])
+        recommended_value = str(recommendation[field])
+        if current_value == recommended_value:
+            continue
+        from_value = _text_setting_display_value(config=config, field=field, value=current_value)
+        to_value = _text_setting_display_value(config=config, field=field, value=recommended_value)
+        changes.append(f"{field_labels[field]}: {from_value} -> {to_value}")
+    return changes
+
+
+def _build_recommended_text_settings_notice(uploaded_file_token: str) -> str | None:
+    if not _should_render_recommended_text_settings_notice(uploaded_file_token):
+        return None
+    notice_details = st.session_state.get("recommended_text_settings_notice_details")
+    if not isinstance(notice_details, dict) or str(notice_details.get("file_token", "")) != uploaded_file_token:
+        return "После анализа файла приложение скорректировало текстовые настройки до рекомендуемых для этого документа."
+    changes = notice_details.get("changes")
+    if not isinstance(changes, list):
+        return "После анализа файла приложение скорректировало текстовые настройки до рекомендуемых для этого документа."
+    normalized_changes = [str(change).strip() for change in changes if str(change).strip()]
+    if not normalized_changes:
+        return "После анализа файла приложение скорректировало текстовые настройки до рекомендуемых для этого документа."
+    return (
+        "После анализа файла приложение скорректировало текстовые настройки: "
+        + "; ".join(normalized_changes)
+        + "."
+    )
+
+
+def _apply_recommended_widget_state(
+    *,
+    config: dict[str, object],
+    recommendation: RecommendedTextSettings,
+    manual_override: ManualTextSettingsOverride,
+) -> dict[str, str]:
+    widget_keys = get_text_setting_widget_keys()
+    updates: dict[str, str] = {}
+    if not bool(manual_override.get("processing_operation", False)):
+        operation_label = get_text_operation_label(str(recommendation["processing_operation"]))
+        if st.session_state.get(widget_keys["processing_operation"]) != operation_label:
+            updates[widget_keys["processing_operation"]] = operation_label
+    if not bool(manual_override.get("target_language", False)):
+        target_label = get_target_language_label(config, str(recommendation["target_language"]))
+        if st.session_state.get(widget_keys["target_language"]) != target_label:
+            updates[widget_keys["target_language"]] = target_label
+    if not bool(manual_override.get("source_language", False)):
+        source_widget_value = get_source_language_widget_value(config, str(recommendation["source_language"]))
+        if st.session_state.get(widget_keys["source_language"]) != source_widget_value:
+            updates[widget_keys["source_language"]] = source_widget_value
+    return updates
+
+
+def _apply_pending_recommended_widget_state() -> None:
+    pending_state = st.session_state.get("recommended_text_settings_pending_widget_state")
+    if not isinstance(pending_state, dict):
+        return
+    widget_state = pending_state.get("widget_state")
+    if not isinstance(widget_state, dict):
+        st.session_state.recommended_text_settings_pending_widget_state = None
+        return
+    for widget_key, widget_value in widget_state.items():
+        if isinstance(widget_key, str):
+            st.session_state[widget_key] = widget_value
+    st.session_state.recommended_text_settings_pending_widget_state = None
+
+
+def _maybe_apply_file_recommendations(
+    *,
+    app_config: dict[str, object],
+    prepared_run_context,
+    assessment: TextTransformAssessment,
+    processing_operation: str,
+    source_language: str,
+    target_language: str,
+) -> None:
+    file_token = str(getattr(prepared_run_context, "uploaded_file_token", ""))
+    if not file_token:
+        return
+
+    current_settings = _current_text_settings(
+        processing_operation=processing_operation,
+        source_language=source_language,
+        target_language=target_language,
+    )
+    source_visible = processing_operation == "translate"
+    manual_override = normalize_manual_text_settings_override(
+        st.session_state.get("manual_text_settings_override_for_token"),
+        file_token=file_token,
+    )
+    applied_for_token = str(st.session_state.get("recommended_text_settings_applied_for_token") or "")
+    notice_token = str(st.session_state.get("recommended_text_settings_notice_token") or "")
+    applied_snapshot = normalize_recommendation_snapshot(
+        st.session_state.get("recommended_text_settings_applied_snapshot"),
+        file_token=file_token,
+    )
+
+    if notice_token and notice_token != file_token and applied_for_token != file_token:
+        st.session_state.recommended_text_settings_notice_token = None
+
+    if applied_for_token != file_token:
+        manual_override = mark_manual_overrides_from_baseline(
+            manual_override,
+            current_settings=current_settings,
+            baseline_settings=_default_text_settings(app_config),
+            source_visible=source_visible,
+        )
+
+    recommendation = derive_recommended_text_settings(
+        file_token=file_token,
+        assessment=assessment,
+        current_settings=current_settings,
+    )
+    st.session_state.recommended_text_settings = recommendation
+
+    if applied_for_token == file_token:
+        manual_override_before_recommendation = dict(manual_override)
+        if applied_snapshot is not None:
+            manual_override = mark_manual_overrides_from_snapshot(
+                manual_override,
+                current_settings=current_settings,
+                applied_snapshot=applied_snapshot,
+            )
+        else:
+            manual_override = mark_manual_overrides_from_recommendation(
+                manual_override,
+                current_settings=current_settings,
+                recommended_settings=recommendation,
+                source_visible=source_visible,
+            )
+        st.session_state.manual_text_settings_override_for_token = manual_override
+        if any(
+            not bool(manual_override_before_recommendation.get(field, False))
+            and bool(manual_override.get(field, False))
+            for field in TEXT_SETTINGS_FIELDS
+        ):
+            st.session_state.recommended_text_settings_notice_token = None
+        return
+
+    st.session_state.manual_text_settings_override_for_token = manual_override
+    widget_state_updates = _apply_recommended_widget_state(
+        config=app_config,
+        recommendation=recommendation,
+        manual_override=manual_override,
+    )
+    st.session_state.recommended_text_settings_applied_for_token = file_token
+    st.session_state.recommended_text_settings_applied_snapshot = {
+        "file_token": file_token,
+        "processing_operation": str(recommendation["processing_operation"]),
+        "source_language": str(recommendation["source_language"]),
+        "target_language": str(recommendation["target_language"]),
+    }
+    did_change = bool(widget_state_updates)
+    notice_changes = _describe_recommended_text_setting_changes(
+        config=app_config,
+        current_settings=current_settings,
+        recommendation=recommendation,
+        manual_override=manual_override,
+    )
+    st.session_state.recommended_text_settings_pending_widget_state = (
+        {
+            "file_token": file_token,
+            "widget_state": widget_state_updates,
+        }
+        if did_change
+        else None
+    )
+    st.session_state.recommended_text_settings_notice_details = (
+        {
+            "file_token": file_token,
+            "changes": notice_changes,
+        }
+        if did_change
+        else None
+    )
+    st.session_state.recommended_text_settings_notice_token = file_token if did_change else None
+    if did_change:
+        st.rerun()
+
+
+def _should_render_recommended_text_settings_notice(uploaded_file_token: str) -> bool:
+    notice_token = str(st.session_state.get("recommended_text_settings_notice_token") or "")
+    return bool(uploaded_file_token) and notice_token == uploaded_file_token
 
 
 def _render_processing_controls(*, can_start: bool, is_processing: bool, emphasize_start: bool = True) -> str | None:
@@ -284,6 +526,8 @@ def main() -> None:
         user_message = present_error("config_load_failed", exc, "Ошибка загрузки конфигурации")
         st.error(f"Ошибка загрузки конфигурации: {user_message}")
         return
+
+    _apply_pending_recommended_widget_state()
 
     (
         model,
@@ -488,6 +732,14 @@ def main() -> None:
         source_text=source_text,
         target_language=target_language,
     )
+    _maybe_apply_file_recommendations(
+        app_config=app_config,
+        prepared_run_context=prepared_run_context,
+        assessment=assessment,
+        processing_operation=processing_operation,
+        source_language=source_language,
+        target_language=target_language,
+    )
     processing_outcome = get_processing_outcome()
     restartable_outcome = has_restartable_outcome(processing_outcome)
 
@@ -503,7 +755,7 @@ def main() -> None:
         )
         set_processing_status(
             stage="Документ подготовлен",
-            detail=f"Собрано {len(jobs)} блоков. Можно запускать обработку.",
+            detail="",
             current_block=0,
             block_count=len(jobs),
             file_size_bytes=len(uploaded_file_bytes),
@@ -523,13 +775,16 @@ def main() -> None:
     if len(jobs) == 1:
         st.info("Документ помещается в один блок. Для длинных файлов обработка пойдет по блокам с соседним контекстом.")
 
-    for warning_message in build_text_transform_warnings(
-        operation=processing_operation,
-        source_language=source_language,
-        target_language=target_language,
-        assessment=assessment,
-    ):
-        st.warning(warning_message)
+    notice_message = None
+    if not restartable_outcome:
+        for warning_message in build_text_transform_warnings(
+            operation=processing_operation,
+            source_language=source_language,
+            target_language=target_language,
+            assessment=assessment,
+        ):
+            st.warning(warning_message)
+        notice_message = _build_recommended_text_settings_notice(uploaded_file_token)
 
     if st.session_state.last_error:
         st.error(st.session_state.last_error)
@@ -539,7 +794,13 @@ def main() -> None:
         st.session_state.latest_docx_bytes and st.session_state.latest_source_token == uploaded_file_token
     )
     if not restartable_outcome:
-        render_preparation_summary(st.session_state.get("latest_preparation_summary"))
+        preparation_summary = st.session_state.get("latest_preparation_summary")
+        if isinstance(preparation_summary, dict) and notice_message is not None:
+            preparation_summary = {
+                **preparation_summary,
+                "secondary_stage_line": notice_message,
+            }
+        render_preparation_summary(preparation_summary)
     render_run_log()
     render_image_validation_summary()
     render_partial_result()

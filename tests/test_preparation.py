@@ -3,6 +3,7 @@ from threading import Event, Thread
 
 from docx import Document
 
+from config import ModelRegistry, TextModelConfig
 from models import ImageAsset, ImageVariantCandidate
 from models import ParagraphBoundaryNormalizationReport
 from models import ParagraphClassification, ParagraphUnit, StructureMap
@@ -46,6 +47,19 @@ def _build_uploaded_payload(filename: str, content_bytes: bytes, file_token: str
 
 def _build_paragraph(*, source_index: int, text: str, role: str = "body") -> ParagraphUnit:
     return ParagraphUnit(text=text, role=role, source_index=source_index)
+
+
+def _build_runtime_model_registry(*, structure_recognition_model: str = "gpt-4o-mini") -> ModelRegistry:
+    return ModelRegistry(
+        text=TextModelConfig(default="gpt-5.4-mini", options=("gpt-5.4-mini",)),
+        structure_recognition=structure_recognition_model,
+        image_analysis="gpt-5.4-mini",
+        image_validation="gpt-5.4-mini",
+        image_reconstruction="gpt-5.4-mini",
+        image_generation="gpt-image-1.5",
+        image_edit="gpt-image-1.5",
+        image_generation_vision="gpt-5.4-mini",
+    )
 
 
 def test_prepare_document_for_processing_uses_cache_for_identical_inputs(monkeypatch):
@@ -507,6 +521,7 @@ def test_prepare_document_for_processing_runs_structure_recognition_when_enabled
             "relation_normalization_enabled_relation_kinds": ("epigraph_attribution", "image_caption", "table_caption", "toc_region"),
             "structure_recognition_enabled": True,
             "structure_recognition_model": "gpt-4o-mini",
+            "models": _build_runtime_model_registry(structure_recognition_model="gpt-4o-mini"),
             "structure_recognition_max_window_paragraphs": 1800,
             "structure_recognition_overlap_paragraphs": 50,
             "structure_recognition_timeout_seconds": 60,
@@ -586,6 +601,7 @@ def test_prepare_document_for_processing_tracks_ai_heading_demotions_against_heu
             "relation_normalization_enabled_relation_kinds": ("epigraph_attribution", "image_caption", "table_caption", "toc_region"),
             "structure_recognition_enabled": True,
             "structure_recognition_model": "gpt-4o-mini",
+            "models": _build_runtime_model_registry(structure_recognition_model="gpt-4o-mini"),
             "structure_recognition_max_window_paragraphs": 1800,
             "structure_recognition_overlap_paragraphs": 50,
             "structure_recognition_timeout_seconds": 60,

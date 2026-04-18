@@ -28,6 +28,14 @@ source .venv/bin/activate
 pytest tests/ -q
 ```
 
+## Финальная верификация для агентов
+
+- Для финальной верификации внутри VS Code предпочитайте user-visible task path, а не agent-side shell capture.
+- Если подходящий existing task есть, используйте именно его как финальный proof path: `Run Full Pytest`, `Run Current Test File`, `Run Current Test Node` или другой repo task того же класса.
+- Не считайте вывод из agent terminal, даже если он корректный, эквивалентом user-visible verification в VS Code terminal panel.
+- Если shell capture на отдельных pytest node-ах нестабилен или неполон, не упирайтесь в него как в финальный источник истины; переходите на user-visible task path.
+- Shell/Python reruns можно использовать для debugging, но финальное утверждение о результате должно опираться на user-visible task path, когда для этого есть подходящий task.
+
 ## КРИТИЧЕСКИ ВАЖНО: shell identity для Bash tool
 
 Bash tool (инструмент агента) по умолчанию запускает **MSYS/Git Bash**, а **не WSL bash**.

@@ -134,11 +134,6 @@ def build_text_transform_warnings(
             "Исходный и целевой язык совпадают. Если нужен только стилистический апгрейд текста, обычно лучше выбрать литературное редактирование."
         )
 
-    if operation == "translate" and dominant_language == target_language:
-        append_warning(
-            "Текст уже выглядит как текст на целевом языке. Режим перевода может привести к лишней переработке; обычно лучше выбрать литературное редактирование."
-        )
-
     if (
         source_language != "auto"
         and source_script is not None
@@ -147,11 +142,6 @@ def build_text_transform_warnings(
     ):
         append_warning(
             "Указанный язык оригинала, вероятно, не совпадает со скриптом текста. Проверьте выбор языка перед запуском."
-        )
-
-    if target_language_script_match is False and dominant_script not in {"unknown", "mixed"}:
-        append_warning(
-            "Скрипт текста не похож на скрипт выбранного целевого языка. Проверьте режим и выбранные языки перед запуском."
         )
 
     if mixed_script_detected:

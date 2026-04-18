@@ -1,7 +1,7 @@
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -106,7 +106,7 @@ def test_prepare_run_context_updates_selected_token_and_prepared_key(monkeypatch
     assert result.uploaded_file_token.startswith("report.docx:3:")
     assert result.jobs == prepared_document.jobs
     assert result.preparation_stage == "Документ подготовлен"
-    assert result.preparation_detail == "Анализ завершён. Можно запускать обработку."
+    assert result.preparation_detail == ""
     assert result.preparation_cached is False
     assert result.preparation_elapsed_seconds >= 0.0
     assert result.normalization_report is prepared_document.normalization_report
@@ -247,7 +247,7 @@ def test_get_cached_completed_file_loads_bytes_from_store():
     session_state = SessionState(completed_source={"filename": "report.docx", "token": "report.docx:3:abc", "storage_path": "completed.bin"})
 
     uploaded_file = application_flow.get_cached_completed_file(
-        session_state=session_state,
+        session_state=cast(application_flow.SessionStateLike, session_state),
         load_completed_source_bytes_fn=lambda source: b"abc",
     )
 

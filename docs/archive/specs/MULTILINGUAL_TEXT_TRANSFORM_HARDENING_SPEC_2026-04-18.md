@@ -1,6 +1,13 @@
 # Multilingual Text Transform Hardening Spec
 
 Date: 2026-04-18
+Status: Implemented on 2026-04-18; archived historical design record
+
+Archive note:
+
+1. The guardrails in this hardening spec are implemented and verified through targeted regression coverage.
+2. The maintained source of truth now lives in code, tests, and active repository docs rather than in this execution spec.
+3. This document is preserved as historical implementation context and should not be treated as an active work target.
 
 ## Goal
 
@@ -14,7 +21,7 @@ The implementation must preserve the current document-processing architecture an
 
 This specification depends on and extends:
 
-1. `docs/specs/MULTILINGUAL_TEXT_TRANSFORM_SPEC_2026-04-18.md`
+1. `docs/archive/specs/MULTILINGUAL_TEXT_TRANSFORM_SPEC_2026-04-18.md`
 
 That base specification introduced:
 

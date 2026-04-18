@@ -9,7 +9,7 @@ from threading import Event, Lock
 from collections.abc import Mapping
 from typing import Any
 
-from config import get_client, load_app_config
+from config import get_client, get_model_role_value, load_app_config
 from document import (
     build_document_text,
     build_editing_jobs,
@@ -166,9 +166,9 @@ def _build_structure_recognition_summary(*, applied_metrics: dict[str, int], div
     )
 
 
-def _build_structure_map_cache_key(*, paragraphs: list, app_config: dict[str, Any]) -> str:
+def _build_structure_map_cache_key(*, paragraphs: list, app_config: Mapping[str, Any]) -> str:
     payload = {
-        "model": str(app_config.get("structure_recognition_model", "gpt-4o-mini")),
+        "model": get_model_role_value(app_config, "structure_recognition"),
         "max_window_paragraphs": int(app_config.get("structure_recognition_max_window_paragraphs", 1800) or 1800),
         "overlap_paragraphs": int(app_config.get("structure_recognition_overlap_paragraphs", 50) or 50),
         "paragraphs": [
@@ -205,14 +205,14 @@ def _store_cached_structure_map(cache_key: str, structure_map: StructureMap) -> 
             _structure_map_cache.popitem(last=False)
 
 
-def _write_structure_map_debug_artifact(*, cache_key: str, structure_map: StructureMap, app_config: dict[str, Any]) -> str:
+def _write_structure_map_debug_artifact(*, cache_key: str, structure_map: StructureMap, app_config: Mapping[str, Any]) -> str:
     _STRUCTURE_MAP_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
     artifact_path = _STRUCTURE_MAP_DEBUG_DIR / f"{cache_key}.json"
     artifact_path.write_text(
         json.dumps(
             {
                 "cache_key": cache_key,
-                "model": str(app_config.get("structure_recognition_model", "gpt-4o-mini")),
+                "model": get_model_role_value(app_config, "structure_recognition"),
                 "window_count": structure_map.window_count,
                 "classified_count": structure_map.classified_count,
                 "heading_count": structure_map.heading_count,
@@ -264,7 +264,7 @@ def _run_structure_recognition(*, paragraphs: list, image_assets: list, app_conf
             structure_map = build_structure_map(
                 paragraphs,
                 client=get_client(),
-                model=str(app_config.get("structure_recognition_model", "gpt-4o-mini")),
+                model=get_model_role_value(app_config, "structure_recognition"),
                 max_window_paragraphs=int(app_config.get("structure_recognition_max_window_paragraphs", 1800) or 1800),
                 overlap_paragraphs=int(app_config.get("structure_recognition_overlap_paragraphs", 50) or 50),
                 timeout=float(app_config.get("structure_recognition_timeout_seconds", 60) or 60),

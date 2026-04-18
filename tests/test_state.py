@@ -1,5 +1,7 @@
 import pytest
 
+from application_flow import PreparedRunContext
+from models import StructureRecognitionSummary
 import state
 from conftest import SessionState as SessionState  # noqa: F811
 
@@ -84,6 +86,9 @@ def test_init_session_state_initializes_image_processing_summary(monkeypatch):
     assert session_state.processing_status["terminal_kind"] is None
     assert session_state.restart_source is None
     assert session_state.completed_source is None
+    assert session_state.recommended_text_settings is None
+    assert session_state.recommended_text_settings_applied_for_token is None
+    assert session_state.manual_text_settings_override_for_token is None
 
 
 def test_reset_image_state_restores_image_defaults(monkeypatch):
@@ -165,7 +170,7 @@ def test_reset_run_state_can_clear_restart_source(monkeypatch):
 
 
 def test_reset_run_state_can_preserve_preparation_state(monkeypatch):
-    prepared_run_context = object()
+    prepared_run_context = type("PreparedRunContextStub", (), {"uploaded_file_token": "report.docx:3:abc"})()
     session_state = SessionState(
         prepared_run_context=prepared_run_context,
         latest_preparation_summary={"stage": "Документ подготовлен"},
@@ -173,6 +178,34 @@ def test_reset_run_state_can_preserve_preparation_state(monkeypatch):
         preparation_failed_marker="",
         prepared_source_key="report.docx:3:token:6000",
         preparation_cache={"report.docx:3:token:6000": {"cached": True}},
+        recommended_text_settings={
+            "file_token": "report.docx:3:abc",
+            "processing_operation": "edit",
+            "source_language": "en",
+            "target_language": "ru",
+            "reason_summary": None,
+        },
+        recommended_text_settings_applied_for_token="report.docx:3:abc",
+        recommended_text_settings_applied_snapshot={
+            "file_token": "report.docx:3:abc",
+            "processing_operation": "edit",
+            "source_language": "en",
+            "target_language": "ru",
+        },
+        recommended_text_settings_pending_widget_state={
+            "file_token": "report.docx:3:abc",
+            "widget_state": {"sidebar_text_operation": "Перевод"},
+        },
+        recommended_text_settings_notice_details={
+            "file_token": "report.docx:3:abc",
+            "changes": ["режим: Литературное редактирование -> Перевод"],
+        },
+        manual_text_settings_override_for_token={
+            "file_token": "report.docx:3:abc",
+            "processing_operation": True,
+            "source_language": False,
+            "target_language": False,
+        },
         latest_markdown="stale",
         run_log=[{"message": "stale"}],
         activity_feed=[{"message": "stale"}],
@@ -188,13 +221,80 @@ def test_reset_run_state_can_preserve_preparation_state(monkeypatch):
     assert session_state.preparation_input_marker == "report.docx:3:token:6000"
     assert session_state.prepared_source_key == "report.docx:3:token:6000"
     assert session_state.preparation_cache == {"report.docx:3:token:6000": {"cached": True}}
+    assert session_state.recommended_text_settings["file_token"] == "report.docx:3:abc"
+    assert session_state.recommended_text_settings_applied_for_token == "report.docx:3:abc"
+    assert session_state.recommended_text_settings_applied_snapshot["file_token"] == "report.docx:3:abc"
+    assert session_state.recommended_text_settings_pending_widget_state["file_token"] == "report.docx:3:abc"
+    assert session_state.recommended_text_settings_notice_details["file_token"] == "report.docx:3:abc"
+    assert session_state.manual_text_settings_override_for_token["file_token"] == "report.docx:3:abc"
     assert session_state.latest_markdown == ""
     assert session_state.run_log == []
     assert session_state.activity_feed == []
 
 
+def test_reset_run_state_drops_recommendation_state_for_different_preserved_file(monkeypatch):
+    prepared_run_context = type("PreparedRunContextStub", (), {"uploaded_file_token": "new.docx:3:def"})()
+    session_state = SessionState(
+        prepared_run_context=prepared_run_context,
+        recommended_text_settings={
+            "file_token": "old.docx:3:abc",
+            "processing_operation": "edit",
+            "source_language": "en",
+            "target_language": "ru",
+            "reason_summary": None,
+        },
+        recommended_text_settings_applied_for_token="old.docx:3:abc",
+        recommended_text_settings_applied_snapshot={
+            "file_token": "old.docx:3:abc",
+            "processing_operation": "edit",
+            "source_language": "en",
+            "target_language": "ru",
+        },
+        recommended_text_settings_pending_widget_state={
+            "file_token": "old.docx:3:abc",
+            "widget_state": {"sidebar_text_operation": "Перевод"},
+        },
+        recommended_text_settings_notice_details={
+            "file_token": "old.docx:3:abc",
+            "changes": ["режим: Литературное редактирование -> Перевод"],
+        },
+        manual_text_settings_override_for_token={
+            "file_token": "old.docx:3:abc",
+            "processing_operation": True,
+            "source_language": False,
+            "target_language": False,
+        },
+    )
+    monkeypatch.setattr(state.st, "session_state", session_state)
+    monkeypatch.setattr(state, "clear_restart_source", lambda restart_source: None)
+
+    state.init_session_state()
+    state.reset_run_state(preserve_preparation=True)
+
+    assert session_state.recommended_text_settings is None
+    assert session_state.recommended_text_settings_applied_for_token is None
+    assert session_state.recommended_text_settings_applied_snapshot is None
+    assert session_state.recommended_text_settings_pending_widget_state is None
+    assert session_state.recommended_text_settings_notice_details is None
+    assert session_state.manual_text_settings_override_for_token is None
+
+
 def test_preparation_marker_helpers_track_request_state(monkeypatch):
-    prepared_run_context = object()
+    prepared_run_context = PreparedRunContext(
+        uploaded_filename="report.docx",
+        uploaded_file_bytes=b"abc",
+        uploaded_file_token="report.docx:3:token",
+        source_text="source-text",
+        paragraphs=[],
+        image_assets=[],
+        jobs=[],
+        prepared_source_key="report.docx:3:token:6000",
+        preparation_stage="Документ подготовлен",
+        preparation_detail="Анализ завершён.",
+        preparation_cached=False,
+        preparation_elapsed_seconds=0.1,
+        structure_recognition_summary=StructureRecognitionSummary(),
+    )
     session_state = SessionState(
         preparation_input_marker="report.docx:3:token:6000",
         preparation_failed_marker="",

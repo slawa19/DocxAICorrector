@@ -1012,7 +1012,7 @@ def _resolve_relation_normalization_settings() -> tuple[bool, str, tuple[str, ..
 
 
 def _resolve_paragraph_boundary_ai_review_settings() -> tuple[bool, str, int, int, int, str]:
-    from config import load_app_config
+    from config import get_text_model_default, load_app_config
 
     app_config = load_app_config()
     enabled = bool(app_config.get("paragraph_boundary_ai_review_enabled", False))
@@ -1021,13 +1021,15 @@ def _resolve_paragraph_boundary_ai_review_settings() -> tuple[bool, str, int, in
         mode = "off"
     if not enabled:
         mode = "off"
+    effective_enabled = enabled and mode != "off"
+    model = get_text_model_default(app_config) if effective_enabled else ""
     return (
-        enabled and mode != "off",
+        effective_enabled,
         mode,
         _coerce_int_config_value(app_config.get("paragraph_boundary_ai_review_candidate_limit"), 200),
         _coerce_int_config_value(app_config.get("paragraph_boundary_ai_review_timeout_seconds"), 30),
         _coerce_int_config_value(app_config.get("paragraph_boundary_ai_review_max_tokens_per_candidate"), 120),
-        str(app_config.get("default_model", "gpt-5-mini") or "gpt-5-mini"),
+        model,
     )
 
 

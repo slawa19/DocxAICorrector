@@ -95,7 +95,7 @@ class ProcessingService:
         *,
         image_assets,
         image_mode: str,
-        config: dict[str, object],
+        config: Mapping[str, Any],
         on_progress,
         runtime=None,
         client=None,

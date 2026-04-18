@@ -1,6 +1,13 @@
 # Multilingual Text Transform Spec
 
 Date: 2026-04-18
+Status: Implemented on 2026-04-18; archived historical design record
+
+Archive note:
+
+1. The multilingual text-transform rollout described by this spec is implemented and verified through targeted regression coverage.
+2. The maintained source of truth now lives in code, tests, and active repository docs rather than in this execution spec.
+3. This document is preserved as historical implementation context and should not be treated as an active work target.
 
 ## Goal
 

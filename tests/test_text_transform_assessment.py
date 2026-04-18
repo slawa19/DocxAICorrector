@@ -67,7 +67,7 @@ def test_build_text_transform_warnings_warns_on_matching_source_and_target():
     assert any("Исходный и целевой язык совпадают" in warning for warning in warnings)
 
 
-def test_build_text_transform_warnings_warns_when_text_already_matches_target_language():
+def test_build_text_transform_warnings_does_not_warn_when_text_already_matches_target_language():
     warnings = text_transform_assessment.build_text_transform_warnings(
         operation="translate",
         source_language="en",
@@ -80,7 +80,7 @@ def test_build_text_transform_warnings_warns_when_text_already_matches_target_la
         },
     )
 
-    assert any("Текст уже выглядит как текст на целевом языке" in warning for warning in warnings)
+    assert not any("Текст уже выглядит как текст на целевом языке" in warning for warning in warnings)
 
 
 def test_build_text_transform_warnings_warns_on_obvious_source_script_mismatch():
@@ -99,7 +99,7 @@ def test_build_text_transform_warnings_warns_on_obvious_source_script_mismatch()
     assert any("язык оригинала" in warning for warning in warnings)
 
 
-def test_build_text_transform_warnings_warns_on_target_script_mismatch():
+def test_build_text_transform_warnings_does_not_warn_on_target_script_mismatch():
     warnings = text_transform_assessment.build_text_transform_warnings(
         operation="translate",
         source_language="auto",
@@ -112,7 +112,7 @@ def test_build_text_transform_warnings_warns_on_target_script_mismatch():
         },
     )
 
-    assert any("Скрипт текста не похож" in warning for warning in warnings)
+    assert not any("Скрипт текста не похож" in warning for warning in warnings)
 
 
 def test_build_text_transform_warnings_warns_on_mixed_scripts():

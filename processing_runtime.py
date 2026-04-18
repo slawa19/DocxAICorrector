@@ -698,7 +698,7 @@ def drain_preparation_events(*, reset_run_state, set_processing_status, finalize
             )
             finalize_processing_status(
                 "Документ подготовлен",
-                "Анализ файла завершён. Можно запускать обработку.",
+                "",
                 1.0,
                 "completed",
             )

@@ -9,6 +9,7 @@ from typing import Any
 from PIL import Image, ImageDraw, ImageEnhance, ImageOps
 from PIL import ImageChops
 
+from config import get_model_role_value
 from image_output_policy import resolve_image_output_policy, select_nearest_fallback_size, select_nearest_size
 from image_shared import (
     call_responses_create_with_retry,
@@ -24,9 +25,6 @@ from image_reconstruction import reconstruct_image
 from logger import log_event
 from models import ImageAnalysisResult, ImageMode, SEMANTIC_IMAGE_MODE_VALUES
 
-IMAGE_EDIT_MODEL = "gpt-image-1"
-IMAGE_GENERATE_MODEL = "gpt-image-1"
-IMAGE_STRUCTURE_VISION_MODEL = "gpt-4.1"
 IMAGE_API_TIMEOUT_SECONDS = 90.0
 IMAGE_API_MAX_RETRIES = 3
 IMAGE_API_MAX_BACKOFF_SECONDS = 8.0
@@ -68,6 +66,7 @@ def generate_image_candidate(
     reconstruction_model: str | None = None,
     reconstruction_render_config: dict[str, Any] | None = None,
     image_output_config: dict[str, Any] | None = None,
+    model_config: object | None = None,
     client=None,
     budget: ImageModelCallBudget | None = None,
 ) -> bytes:
@@ -95,6 +94,7 @@ def generate_image_candidate(
             budget=budget,
             reconstruction_model=reconstruction_model,
             reconstruction_render_config=reconstruction_render_config,
+            model_config=model_config,
         )
     else:
         candidate_bytes = _generate_semantic_candidate(
@@ -107,6 +107,7 @@ def generate_image_candidate(
             reconstruction_model=reconstruction_model,
             reconstruction_render_config=reconstruction_render_config,
             image_output_policy=image_output_policy,
+            model_config=model_config,
             client=client,
             budget=budget,
         )
@@ -179,12 +180,15 @@ def _generate_reconstructed_candidate(
     reconstruction_model: str | None = None,
     reconstruction_render_config: dict[str, Any] | None = None,
     image_output_policy=None,
+    model_config: object | None = None,
 ) -> bytes:
     """Deterministic reconstruction via VLM scene-graph extraction + PIL rendering.
 
     Falls back to safe candidate if reconstruction fails.
     """
-    model = reconstruction_model or "gpt-4.1"
+    model = reconstruction_model or get_model_role_value(model_config, "image_reconstruction")
+    if not model:
+        raise RuntimeError("Image reconstruction model is not configured.")
     try:
         candidate_bytes, scene_graph = reconstruct_image(
             image_bytes,
@@ -252,6 +256,7 @@ def _generate_semantic_candidate(
     reconstruction_model: str | None = None,
     reconstruction_render_config: dict[str, Any] | None = None,
     image_output_policy=None,
+    model_config: object | None = None,
     client=None,
     budget: ImageModelCallBudget | None = None,
 ) -> bytes:
@@ -276,6 +281,7 @@ def _generate_semantic_candidate(
                 prompt_profile=prompt_profile,
                 prompt=prompt,
                 image_output_policy=image_output_policy,
+                model_config=model_config,
                 budget=budget,
             )
         except Exception as exc:
@@ -299,6 +305,7 @@ def _generate_semantic_candidate(
                     reconstruction_model=reconstruction_model,
                     reconstruction_render_config=reconstruction_render_config,
                     image_output_policy=image_output_policy,
+                    model_config=model_config,
                 )
             raise
 
@@ -311,6 +318,7 @@ def _generate_semantic_candidate(
             prompt_profile=prompt_profile,
             prompt=prompt,
             image_output_policy=image_output_policy,
+            model_config=model_config,
             budget=budget,
         )
     except Exception as exc:
@@ -353,6 +361,7 @@ def _generate_semantic_candidate(
                 prompt_profile=prompt_profile,
                 prompt=prompt,
                 image_output_policy=image_output_policy,
+                model_config=model_config,
                 budget=budget,
             )
 
@@ -366,10 +375,17 @@ def _generate_creative_candidate(
     prompt_profile: dict[str, str],
     prompt: str,
     image_output_policy=None,
+    model_config: object | None = None,
     budget: ImageModelCallBudget | None = None,
 ) -> bytes:
     original_size = _read_image_size(image_bytes)
-    creative_brief = _extract_creative_redraw_brief(client, image_bytes, analysis, budget=budget)
+    creative_brief = _extract_creative_redraw_brief(
+        client,
+        image_bytes,
+        analysis,
+        model_config=model_config,
+        budget=budget,
+    )
     generate_prompt = _build_creative_generate_prompt(
         analysis,
         prompt_text=prompt_text,
@@ -379,7 +395,7 @@ def _generate_creative_candidate(
         source_size=original_size,
     )
     request_payload = {
-        "model": IMAGE_GENERATE_MODEL,
+        "model": get_model_role_value(model_config, "image_generation"),
         "prompt": generate_prompt,
         "size": _select_generate_size(original_size, image_output_policy),
         "quality": "high",
@@ -421,6 +437,7 @@ def _generate_direct_semantic_candidate(
     prompt: str,
     requested_mode: str = "semantic_redraw_direct",
     image_output_policy=None,
+    model_config: object | None = None,
     budget: ImageModelCallBudget | None = None,
 ) -> bytes:
     use_high_fidelity = _uses_high_fidelity_semantic_edit(analysis, requested_mode)
@@ -428,7 +445,7 @@ def _generate_direct_semantic_candidate(
     original_size = restore_context["original_size"]
     assert isinstance(original_size, tuple)
     request_payload = {
-        "model": IMAGE_EDIT_MODEL,
+        "model": get_model_role_value(model_config, "image_edit"),
         "image": [_build_edit_file_like(semantic_upload)],
         "prompt": prompt,
         "quality": "high" if use_high_fidelity else "medium",
@@ -472,6 +489,7 @@ def _generate_structured_candidate(
     prompt_profile: dict[str, str],
     prompt: str,
     image_output_policy=None,
+    model_config: object | None = None,
     budget: ImageModelCallBudget | None = None,
 ) -> bytes:
     try:
@@ -482,6 +500,7 @@ def _generate_structured_candidate(
             prompt=prompt,
             requested_mode="semantic_redraw_structured",
             image_output_policy=image_output_policy,
+            model_config=model_config,
             budget=budget,
         )
     except Exception as exc:
@@ -496,7 +515,13 @@ def _generate_structured_candidate(
         )
 
     original_size = _read_image_size(image_bytes)
-    layout_description = _extract_structured_layout_description(client, image_bytes, analysis, budget=budget)
+    layout_description = _extract_structured_layout_description(
+        client,
+        image_bytes,
+        analysis,
+        model_config=model_config,
+        budget=budget,
+    )
     generate_prompt = _build_structured_generate_prompt(
         analysis,
         prompt_text=prompt_text,
@@ -506,7 +531,7 @@ def _generate_structured_candidate(
         source_size=original_size,
     )
     request_payload = {
-        "model": IMAGE_GENERATE_MODEL,
+        "model": get_model_role_value(model_config, "image_generation"),
         "prompt": generate_prompt,
         "size": _select_generate_size(original_size, image_output_policy),
         "quality": "high",
@@ -1128,6 +1153,7 @@ def _extract_structured_layout_description(
     image_bytes: bytes,
     analysis: ImageAnalysisResult,
     *,
+    model_config: object | None = None,
     budget: ImageModelCallBudget | None = None,
 ) -> str:
     mime_type = _detect_mime_type(image_bytes)
@@ -1138,7 +1164,7 @@ def _extract_structured_layout_description(
     response = _call_responses_create(
         client,
         {
-            "model": IMAGE_STRUCTURE_VISION_MODEL,
+            "model": get_model_role_value(model_config, "image_generation_vision"),
             "input": [
                 {
                     "role": "system",
@@ -1187,6 +1213,7 @@ def _extract_creative_redraw_brief(
     image_bytes: bytes,
     analysis: ImageAnalysisResult,
     *,
+    model_config: object | None = None,
     budget: ImageModelCallBudget | None = None,
 ) -> str:
     mime_type = _detect_mime_type(image_bytes)
@@ -1197,7 +1224,7 @@ def _extract_creative_redraw_brief(
     response = _call_responses_create(
         client,
         {
-            "model": IMAGE_STRUCTURE_VISION_MODEL,
+            "model": get_model_role_value(model_config, "image_generation_vision"),
             "input": [
                 {
                     "role": "system",

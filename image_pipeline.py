@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Protocol, TypeAlias, cast
 
+from config import get_model_role_value
 from image_pipeline_policy import build_generation_analysis, is_hard_validation_failure, resolve_validation_delivery_outcome, should_attempt_semantic_redraw
 from models import ImageAnalysisResult, ImageMode, ImageValidationResult, ImageVariantCandidate
 
@@ -92,7 +93,7 @@ class ImageProcessingContext:
     ) -> ImageAnalysisResult:
         return self.analyze_image_fn(
             image_bytes,
-            model=_config_str(self.config, "validation_model", ""),
+            model=get_model_role_value(self.config, "image_analysis"),
             mime_type=mime_type,
             client=client,
             enable_vision=_config_bool(self.config, "enable_vision_image_analysis", True),
@@ -115,9 +116,10 @@ class ImageProcessingContext:
             analysis,
             mode=mode,
             prefer_deterministic_reconstruction=_config_bool(self.config, "prefer_deterministic_reconstruction", True),
-            reconstruction_model=_config_optional_str(self.config.get("reconstruction_model")),
+            reconstruction_model=get_model_role_value(self.config, "image_reconstruction"),
             reconstruction_render_config=_build_reconstruction_render_config(self.config),
             image_output_config=_build_image_output_config(self.config),
+            model_config=self.config,
             client=client,
             budget=budget,
         )
@@ -142,7 +144,7 @@ class ImageProcessingContext:
             image_context=image_context,
             client=client,
             enable_vision_validation=_config_bool(self.config, "enable_vision_image_validation", True),
-            validation_model=_config_str(self.config, "validation_model", "gpt-4.1"),
+            validation_model=get_model_role_value(self.config, "image_validation"),
             budget=budget,
         )
 

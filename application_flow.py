@@ -124,6 +124,9 @@ def sync_selected_file_context(*, session_state, reset_run_state_fn, uploaded_fi
         return
 
     reset_run_state_fn(keep_restart_source=False)
+    for widget_key in ("sidebar_text_operation", "sidebar_source_language", "sidebar_target_language"):
+        if widget_key in session_state:
+            del session_state[widget_key]
     session_state.selected_source_token = uploaded_file_token
 
 
@@ -293,7 +296,7 @@ def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: 
         jobs=prepared_document.jobs,
         prepared_source_key=prepared_document.prepared_source_key,
         preparation_stage="Документ подготовлен",
-        preparation_detail="Анализ завершён. Можно запускать обработку.",
+        preparation_detail="",
         preparation_cached=prepared_document.cached,
         preparation_elapsed_seconds=elapsed_seconds,
         normalization_report=getattr(prepared_document, "normalization_report", None),
@@ -417,7 +420,7 @@ def prepare_run_context(
     emit_preparation_progress(
         progress_callback,
         stage="Документ подготовлен",
-        detail="Анализ завершён. Можно запускать обработку.",
+        detail="",
         progress=1.0,
         metrics={
             "file_size_bytes": len(uploaded_file_bytes),
@@ -464,7 +467,7 @@ def prepare_run_context_for_background(
     emit_preparation_progress(
         progress_callback,
         stage="Документ подготовлен",
-        detail="Анализ завершён. Можно запускать обработку.",
+        detail="",
         progress=1.0,
         metrics={
             "file_size_bytes": len(uploaded_file_bytes),

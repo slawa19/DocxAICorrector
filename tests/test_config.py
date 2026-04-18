@@ -1,8 +1,19 @@
 import threading
+from typing import cast
 
 import pytest
 
 import config
+from tests.conftest import (
+    TEST_IMAGE_ANALYSIS_MODEL,
+    TEST_IMAGE_EDIT_MODEL,
+    TEST_IMAGE_GENERATION_MODEL,
+    TEST_IMAGE_GENERATION_VISION_MODEL,
+    TEST_IMAGE_RECONSTRUCTION_MODEL,
+    TEST_IMAGE_VALIDATION_MODEL,
+    TEST_STRUCTURE_RECOGNITION_MODEL,
+    TEST_TEXT_MODEL_DEFAULT,
+)
 
 
 def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
@@ -13,22 +24,27 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     monkeypatch.setenv("DOCX_AI_MAX_RETRIES", "0")
 
     app_config = config.load_app_config()
+    models = cast(config.ModelRegistry, app_config["models"])
 
     assert app_config["default_model"] == "gpt-5.1"
     assert app_config["model_options"] == ["gpt-5.1", "gpt-5.4", "custom-model"]
+    assert models.text.default == "gpt-5.1"
+    assert models.text.options == ("gpt-5.1", "gpt-5.4", "custom-model")
     assert app_config["chunk_size"] == 12000
     assert app_config["max_retries"] == 1
     assert app_config["processing_operation_default"] == "edit"
     assert app_config["source_language_default"] == "en"
     assert app_config["target_language_default"] == "ru"
     assert app_config["editorial_intensity_default"] == "literary"
-    assert app_config["supported_languages"][0].code == "ru"
+    supported_languages = cast(list[config.LanguageOption], app_config["supported_languages"])
+    assert supported_languages[0].code == "ru"
     assert app_config["enable_paragraph_markers"] is False
     assert app_config["paragraph_boundary_normalization_enabled"] is True
     assert app_config["paragraph_boundary_normalization_mode"] == "high_only"
     assert app_config["paragraph_boundary_normalization_save_debug_artifacts"] is True
     assert app_config["structure_recognition_enabled"] is False
-    assert app_config["structure_recognition_model"] == "gpt-4o-mini"
+    assert app_config["structure_recognition_model"] == TEST_STRUCTURE_RECOGNITION_MODEL
+    assert models.structure_recognition == TEST_STRUCTURE_RECOGNITION_MODEL
     assert app_config["structure_recognition_max_window_paragraphs"] == 1800
     assert app_config["structure_recognition_overlap_paragraphs"] == 50
     assert app_config["structure_recognition_timeout_seconds"] == 60
@@ -50,18 +66,23 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH)
 
     app_config = config.load_app_config()
+    models = cast(config.ModelRegistry, app_config["models"])
 
     assert app_config["enable_paragraph_markers"] is True
     assert app_config["processing_operation_default"] == "edit"
     assert app_config["source_language_default"] == "en"
     assert app_config["target_language_default"] == "ru"
     assert app_config["editorial_intensity_default"] == "literary"
-    assert [language.code for language in app_config["supported_languages"]] == ["ru", "en", "de", "fr", "es", "it", "pl", "zh", "ja"]
+    supported_languages = cast(list[config.LanguageOption], app_config["supported_languages"])
+    assert [language.code for language in supported_languages] == ["ru", "en", "de", "fr", "es", "it", "pl", "zh", "ja"]
     assert app_config["paragraph_boundary_normalization_enabled"] is True
     assert app_config["paragraph_boundary_normalization_mode"] == "high_only"
     assert app_config["paragraph_boundary_normalization_save_debug_artifacts"] is True
     assert app_config["structure_recognition_enabled"] is False
-    assert app_config["structure_recognition_model"] == "gpt-4o-mini"
+    assert app_config["structure_recognition_model"] == TEST_STRUCTURE_RECOGNITION_MODEL
+    assert models.text.default == TEST_TEXT_MODEL_DEFAULT
+    assert models.text.options == ("gpt-5.4", "gpt-5.4-mini", "gpt-5-mini")
+    assert models.structure_recognition == TEST_STRUCTURE_RECOGNITION_MODEL
     assert app_config["structure_recognition_max_window_paragraphs"] == 1800
     assert app_config["structure_recognition_overlap_paragraphs"] == 50
     assert app_config["structure_recognition_timeout_seconds"] == 60
@@ -80,14 +101,20 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["image_mode_default"] == "no_change"
     assert app_config["semantic_validation_policy"] == "advisory"
     assert app_config["keep_all_image_variants"] is False
-    assert app_config["validation_model"] == "gpt-4.1"
+    assert app_config["validation_model"] == TEST_IMAGE_VALIDATION_MODEL
+    assert models.image_analysis == TEST_IMAGE_ANALYSIS_MODEL
+    assert models.image_validation == TEST_IMAGE_VALIDATION_MODEL
     assert app_config["min_semantic_match_score"] == 0.75
     assert app_config["min_text_match_score"] == 0.8
     assert app_config["min_structure_match_score"] == 0.7
     assert app_config["validator_confidence_threshold"] == 0.75
     assert app_config["allow_accept_with_partial_text_loss"] is False
     assert app_config["prefer_deterministic_reconstruction"] is True
-    assert app_config["reconstruction_model"] == "gpt-4.1"
+    assert app_config["reconstruction_model"] == TEST_IMAGE_RECONSTRUCTION_MODEL
+    assert models.image_reconstruction == TEST_IMAGE_RECONSTRUCTION_MODEL
+    assert models.image_generation == TEST_IMAGE_GENERATION_MODEL
+    assert models.image_edit == TEST_IMAGE_EDIT_MODEL
+    assert models.image_generation_vision == TEST_IMAGE_GENERATION_VISION_MODEL
     assert app_config["enable_vision_image_analysis"] is True
     assert app_config["enable_vision_image_validation"] is True
     assert app_config["semantic_redraw_max_attempts"] == 2
@@ -122,7 +149,7 @@ def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
     monkeypatch.setenv("DOCX_AI_ALLOW_ACCEPT_WITH_PARTIAL_TEXT_LOSS", "yes")
     monkeypatch.setenv("DOCX_AI_PREFER_DETERMINISTIC_RECONSTRUCTION", "false")
     monkeypatch.setenv("DOCX_AI_ENABLE_PARAGRAPH_MARKERS", "true")
-    monkeypatch.setenv("DOCX_AI_RECONSTRUCTION_MODEL", "gpt-4.1-mini")
+    monkeypatch.setenv("DOCX_AI_RECONSTRUCTION_MODEL", "gpt-5-mini")
     monkeypatch.setenv("DOCX_AI_ENABLE_VISION_IMAGE_ANALYSIS", "false")
     monkeypatch.setenv("DOCX_AI_ENABLE_VISION_IMAGE_VALIDATION", "false")
     monkeypatch.setenv("DOCX_AI_SEMANTIC_REDRAW_MAX_ATTEMPTS", "9")
@@ -144,11 +171,14 @@ def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
     monkeypatch.setenv("DOCX_AI_IMAGE_OUTPUT_TRIM_MAX_LOSS_RATIO", "9")
 
     app_config = config.load_app_config()
+    models = cast(config.ModelRegistry, app_config["models"])
 
     assert app_config["image_mode_default"] == "semantic_redraw_direct"
     assert app_config["semantic_validation_policy"] == "strict"
     assert app_config["keep_all_image_variants"] is True
     assert app_config["validation_model"] == "gpt-5.4"
+    assert models.image_analysis == "gpt-5.4"
+    assert models.image_validation == "gpt-5.4"
     assert app_config["min_semantic_match_score"] == 1.0
     assert app_config["min_text_match_score"] == 0.0
     assert app_config["min_structure_match_score"] == 0.91
@@ -156,7 +186,8 @@ def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
     assert app_config["allow_accept_with_partial_text_loss"] is True
     assert app_config["prefer_deterministic_reconstruction"] is False
     assert app_config["enable_paragraph_markers"] is True
-    assert app_config["reconstruction_model"] == "gpt-4.1-mini"
+    assert app_config["reconstruction_model"] == "gpt-5-mini"
+    assert models.image_reconstruction == "gpt-5-mini"
     assert app_config["enable_vision_image_analysis"] is False
     assert app_config["enable_vision_image_validation"] is False
     assert app_config["semantic_redraw_max_attempts"] == 2
@@ -307,9 +338,11 @@ def test_load_app_config_applies_structure_recognition_env_overrides(monkeypatch
     monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_SAVE_DEBUG_ARTIFACTS", "false")
 
     app_config = config.load_app_config()
+    models = cast(config.ModelRegistry, app_config["models"])
 
     assert app_config["structure_recognition_enabled"] is True
     assert app_config["structure_recognition_model"] == "gpt-5.4"
+    assert models.structure_recognition == "gpt-5.4"
     assert app_config["structure_recognition_max_window_paragraphs"] == 4000
     assert app_config["structure_recognition_overlap_paragraphs"] == 200
     assert app_config["structure_recognition_timeout_seconds"] == 300
@@ -326,6 +359,28 @@ def test_load_app_config_rejects_invalid_env_override_for_paragraph_boundary_mod
         config.load_app_config()
 
 
+def test_load_app_config_emits_legacy_model_warnings_only_once(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        'default_model = "legacy-text"\n'
+        'model_options = ["legacy-text", "legacy-alt"]\n'
+        'validation_model = "legacy-validation"\n'
+        '[structure_recognition]\nmodel = "legacy-structure"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+    monkeypatch.setattr(config, "_EMITTED_MODEL_REGISTRY_LOG_KEYS", set())
+    log_calls = []
+    monkeypatch.setattr(config, "log_event", lambda level, event, message, **context: log_calls.append((event, context)))
+
+    config.load_app_config()
+    first_call_count = len(log_calls)
+    config.load_app_config()
+
+    assert first_call_count > 0
+    assert len(log_calls) == first_call_count
+
+
 def test_parse_csv_env_rejects_empty_effective_list(monkeypatch):
     monkeypatch.setenv("DOCX_AI_MODEL_OPTIONS", " , , ")
 
@@ -335,6 +390,102 @@ def test_parse_csv_env_rejects_empty_effective_list(monkeypatch):
         assert "список моделей пуст" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError for an empty CSV env override")
+
+
+def test_load_app_config_rejects_duplicate_canonical_text_model_options(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[models.text]\ndefault = "gpt-5.4-mini"\noptions = ["gpt-5.4-mini", "gpt-5.4-mini", "gpt-5.4"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+
+    with pytest.raises(RuntimeError, match=r"models\.text\.options"):
+        config.load_app_config()
+
+
+def test_get_model_role_value_rejects_runtime_legacy_role_aliases() -> None:
+    with pytest.raises(RuntimeError, match="image_validation"):
+        config.get_model_role_value({"validation_model": "legacy-validation"}, "image_validation")
+
+
+def test_get_text_model_helpers_require_runtime_model_registry_shape() -> None:
+    with pytest.raises(RuntimeError, match="Text default model"):
+        config.get_text_model_default(
+            {
+                "default_model": "legacy-text",
+                "model_options": ["legacy-text", "legacy-alt"],
+            }
+        )
+
+
+def test_get_model_registry_rejects_legacy_only_runtime_shape() -> None:
+    with pytest.raises(RuntimeError, match="Text default model"):
+        config.get_model_registry(
+            {
+                "default_model": "legacy-text",
+                "model_options": ["legacy-text", "legacy-alt"],
+                "validation_model": "legacy-validation",
+                "reconstruction_model": "legacy-reconstruction",
+            }
+        )
+
+
+def test_load_app_config_prefers_canonical_model_registry_over_legacy_env(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[models.text]\ndefault = "gpt-5.4-mini"\noptions = ["gpt-5.4-mini", "gpt-5.4"]\n\n'
+        '[models.image_validation]\ndefault = "gpt-5.4-mini"\n\n'
+        '[models.image_analysis]\ndefault = "gpt-5-mini"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+    monkeypatch.setenv("DOCX_AI_DEFAULT_MODEL", "legacy-model")
+    monkeypatch.setenv("DOCX_AI_VALIDATION_MODEL", "legacy-validation")
+
+    app_config = config.load_app_config()
+    models = cast(config.ModelRegistry, app_config["models"])
+
+    assert models.text.default == "gpt-5.4-mini"
+    assert app_config["default_model"] == "gpt-5.4-mini"
+    assert models.image_validation == "gpt-5.4-mini"
+    assert app_config["validation_model"] == "gpt-5.4-mini"
+    assert models.image_analysis == "gpt-5-mini"
+
+
+def test_load_app_config_new_env_overrides_legacy_toml_models(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        'default_model = "legacy-text"\n'
+        'model_options = ["legacy-text", "legacy-alt"]\n'
+        'validation_model = "legacy-validation"\n'
+        'reconstruction_model = "legacy-reconstruction"\n'
+        '[structure_recognition]\nmodel = "legacy-structure"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+    monkeypatch.setenv("DOCX_AI_MODELS_TEXT_DEFAULT", "gpt-5.4")
+    monkeypatch.setenv("DOCX_AI_MODELS_TEXT_OPTIONS", "gpt-5.4,gpt-5.4-mini")
+    monkeypatch.setenv("DOCX_AI_MODELS_STRUCTURE_RECOGNITION_DEFAULT", "gpt-5-mini")
+    monkeypatch.setenv("DOCX_AI_MODELS_IMAGE_ANALYSIS_DEFAULT", "gpt-5.4-mini")
+    monkeypatch.setenv("DOCX_AI_MODELS_IMAGE_VALIDATION_DEFAULT", "gpt-5-mini")
+    monkeypatch.setenv("DOCX_AI_MODELS_IMAGE_RECONSTRUCTION_DEFAULT", "gpt-5.4-mini")
+    monkeypatch.setenv("DOCX_AI_MODELS_IMAGE_GENERATION_DEFAULT", "gpt-image-1.5")
+    monkeypatch.setenv("DOCX_AI_MODELS_IMAGE_EDIT_DEFAULT", "gpt-image-1.5")
+    monkeypatch.setenv("DOCX_AI_MODELS_IMAGE_GENERATION_VISION_DEFAULT", "gpt-5.4-mini")
+
+    app_config = config.load_app_config()
+    models = cast(config.ModelRegistry, app_config["models"])
+
+    assert models.text.default == "gpt-5.4"
+    assert models.text.options == ("gpt-5.4", "gpt-5.4-mini")
+    assert models.structure_recognition == "gpt-5-mini"
+    assert models.image_analysis == "gpt-5.4-mini"
+    assert models.image_validation == "gpt-5-mini"
+    assert models.image_reconstruction == "gpt-5.4-mini"
+    assert models.image_generation == "gpt-image-1.5"
+    assert models.image_edit == "gpt-image-1.5"
+    assert models.image_generation_vision == "gpt-5.4-mini"
 
 
 def test_load_app_config_rejects_invalid_image_env_value(monkeypatch):

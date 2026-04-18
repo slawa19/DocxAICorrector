@@ -13,7 +13,7 @@ from PIL import Image
 
 import image_generation
 import real_image_manifest
-from config import get_client
+from config import get_client, load_app_config
 from constants import ENV_PATH
 from image_analysis import analyze_image
 from image_reconstruction import reconstruct_image
@@ -155,10 +155,11 @@ def _get_live_client():
 
 
 def _generate_live_candidate(image_bytes: bytes, analysis_result, requested_mode: str, client) -> bytes:
+    app_config = load_app_config()
     if analysis_result.render_strategy == "deterministic_reconstruction":
         candidate, _ = reconstruct_image(
             image_bytes,
-            model="gpt-4.1",
+            model=app_config.models.image_reconstruction,
             client=client,
         )
         return candidate
@@ -166,6 +167,7 @@ def _generate_live_candidate(image_bytes: bytes, analysis_result, requested_mode
         image_bytes,
         analysis_result,
         mode=requested_mode,
+        model_config=app_config,
         client=client,
     )
 
@@ -252,23 +254,30 @@ class TestRedrawRoutingRealInputs:
         monkeypatch.setattr(image_generation, "log_event", lambda *args, **kwargs: None)
 
         started_at = time.perf_counter()
-        candidate = image_generation.generate_image_candidate(image_bytes, analysis_result, mode=requested_mode, client=fake_client)
+        candidate = image_generation.generate_image_candidate(
+            image_bytes,
+            analysis_result,
+            mode=requested_mode,
+            model_config=load_app_config(),
+            client=fake_client,
+        )
         elapsed_seconds = time.perf_counter() - started_at
 
         assert candidate
         with Image.open(BytesIO(image_bytes)) as original_image, Image.open(BytesIO(candidate)) as candidate_image:
             assert candidate_image.size == original_image.size
+        model_registry = load_app_config().models
         if requested_mode == "semantic_redraw_structured":
             if "edit" in captured:
-                assert captured["edit"]["model"] == image_generation.IMAGE_EDIT_MODEL
+                assert captured["edit"]["model"] == model_registry.image_edit
                 assert captured["edit"]["response_format"] == "b64_json"
                 assert captured["edit"]["input_fidelity"] == "high"
             else:
-                assert captured["vision"]["model"] == image_generation.IMAGE_STRUCTURE_VISION_MODEL
-                assert captured["generate"]["model"] == image_generation.IMAGE_GENERATE_MODEL
+                assert captured["vision"]["model"] == model_registry.image_generation_vision
+                assert captured["generate"]["model"] == model_registry.image_generation
                 assert captured["generate"]["response_format"] == "b64_json"
         else:
-            assert captured["edit"]["model"] == image_generation.IMAGE_EDIT_MODEL
+            assert captured["edit"]["model"] == model_registry.image_edit
             assert captured["edit"]["response_format"] == "b64_json"
         assert elapsed_seconds < 4.0
 

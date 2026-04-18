@@ -8,6 +8,7 @@ from typing import Any
 import streamlit as st
 
 from application_flow import flatten_normalization_metrics
+from config import get_text_model_default, get_text_model_options
 from logger import format_elapsed
 from message_formatting import derive_live_status_title_and_severity, humanize_reason, humanize_variant
 from models import ImageMode
@@ -44,6 +45,11 @@ TEXT_OPERATION_LABELS = {
     "translate": "Перевод",
 }
 TEXT_OPERATION_VALUES_BY_LABEL = {label: value for value, label in TEXT_OPERATION_LABELS.items()}
+TEXT_SETTING_WIDGET_KEYS = {
+    "processing_operation": "sidebar_text_operation",
+    "source_language": "sidebar_source_language",
+    "target_language": "sidebar_target_language",
+}
 _FEED_ID_SANITIZER = re.compile(r"[^a-zA-Z0-9_-]+")
 _DOCX_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_IMAGE_img_\d+\]\]")
 
@@ -201,9 +207,51 @@ def render_sidebar_selectbox(
     return st.sidebar.selectbox(label, options, index=index, help=help, key=key)
 
 
+def get_text_setting_widget_keys() -> dict[str, str]:
+    return dict(TEXT_SETTING_WIDGET_KEYS)
+
+
 def _supported_language_options(config: Mapping[str, Any]) -> list[Any]:
     raw_languages = config.get("supported_languages", ())
     return [language for language in raw_languages if hasattr(language, "code") and hasattr(language, "label")]
+
+
+def get_language_label_maps(config: Mapping[str, Any]) -> tuple[list[str], dict[str, str], dict[str, str]]:
+    language_options = _supported_language_options(config)
+    language_labels = [language.label for language in language_options]
+    code_by_label = {language.label: language.code for language in language_options}
+    label_by_code = {language.code: language.label for language in language_options}
+    return language_labels, code_by_label, label_by_code
+
+
+def get_text_operation_label(operation_code: str) -> str:
+    return TEXT_OPERATION_LABELS.get(operation_code, TEXT_OPERATION_LABELS["edit"])
+
+
+def get_target_language_label(config: Mapping[str, Any], language_code: str) -> str:
+    language_labels, _, label_by_code = get_language_label_maps(config)
+    if not language_labels:
+        return language_code
+    return label_by_code.get(language_code, language_labels[0])
+
+
+def get_source_language_widget_value(config: Mapping[str, Any], language_code: str) -> str:
+    language_labels, _, label_by_code = get_language_label_maps(config)
+    if language_code == "auto":
+        return "Авто"
+    if not language_labels:
+        return language_code
+    return label_by_code.get(language_code, language_labels[0])
+
+
+def resolve_source_language_from_widget_state(config: Mapping[str, Any]) -> str:
+    widget_value = st.session_state.get(TEXT_SETTING_WIDGET_KEYS["source_language"])
+    if widget_value == "Авто":
+        return "auto"
+    _, code_by_label, _ = get_language_label_maps(config)
+    if isinstance(widget_value, str) and widget_value in code_by_label:
+        return code_by_label[widget_value]
+    return str(config.get("source_language_default", "en"))
 
 
 def render_live_status(target=None) -> None:
@@ -297,6 +345,7 @@ def render_preparation_summary(summary: dict[str, Any] | None, target=None) -> N
         normalization_caption = _build_normalization_caption(summary)
         elapsed_fragment = f" | Подготовка: {elapsed}" if elapsed else ""
         stage = str(summary.get("stage") or "Документ подготовлен")
+        secondary_stage_line = str(summary.get("secondary_stage_line") or "").strip()
         detail = str(summary.get("detail") or "")
         meta_lines = [
             f"Источник: {source_label}{elapsed_fragment}",
@@ -320,7 +369,7 @@ def render_preparation_summary(summary: dict[str, Any] | None, target=None) -> N
             title=stage,
             stage="",
             detail=detail,
-            meta_lines=meta_lines,
+            meta_lines=([secondary_stage_line] if secondary_stage_line else []) + meta_lines,
         )
 
 
@@ -434,15 +483,16 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
         "Режим обработки текста",
         operation_options,
         index=operation_index,
-        help="Литературное редактирование улучшает уже готовый текст на выбранном языке. Перевод используйте для текста, который ещё не на целевом языке.",
+        help=(
+            "Литературное редактирование улучшает уже готовый текст на выбранном языке. "
+            "Перевод используйте для текста, который ещё не на целевом языке. "
+            "Если текст уже переведён, обычно лучше выбрать литературное редактирование."
+        ),
         key="sidebar_text_operation",
     )
     processing_operation = TEXT_OPERATION_VALUES_BY_LABEL.get(selected_operation_label, "edit")
 
-    language_options = _supported_language_options(config)
-    language_labels = [language.label for language in language_options]
-    code_by_label = {language.label: language.code for language in language_options}
-    label_by_code = {language.code: language.label for language in language_options}
+    language_labels, code_by_label, label_by_code = get_language_label_maps(config)
     default_target_code = str(config.get("target_language_default", "ru"))
     default_target_label = label_by_code.get(default_target_code, language_labels[0] if language_labels else default_target_code)
     target_index = language_labels.index(default_target_label) if default_target_label in language_labels else 0
@@ -454,9 +504,8 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
     )
     target_language = code_by_label.get(selected_target_label, default_target_code)
 
-    source_language = str(config.get("source_language_default", "en"))
+    source_language = resolve_source_language_from_widget_state(config)
     if processing_operation == "translate":
-        st.sidebar.caption("Перевод предназначен для текста, который ещё не на целевом языке. Если текст уже переведён, обычно лучше выбрать литературное редактирование.")
         source_options = ["Авто", *language_labels]
         source_default_label = "Авто" if source_language == "auto" else label_by_code.get(source_language, source_options[0])
         source_index = source_options.index(source_default_label) if source_default_label in source_options else 0
@@ -468,9 +517,13 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
             key="sidebar_source_language",
         )
         source_language = "auto" if selected_source_label == "Авто" else code_by_label.get(selected_source_label, source_language)
+        if source_language != "auto" and source_language == target_language:
+            st.sidebar.warning(
+                "Исходный и целевой язык совпадают. Если нужен только стилистический апгрейд, обычно лучше выбрать литературное редактирование."
+            )
 
-    model_options = [*_get_list_of_str(config, "model_options"), "custom"]
-    default_model = str(config["default_model"])
+    model_options = [*get_text_model_options(config), "custom"]
+    default_model = get_text_model_default(config)
     default_index = model_options.index(default_model) if default_model in model_options else 0
     selected_model = render_sidebar_selectbox("Модель", model_options, index=default_index, key="sidebar_model")
     custom_model = ""

@@ -13,7 +13,7 @@ SOURCE_IMAGE = TESTS_DIR / "pic1_lietaer.jpg"
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from config import get_client, load_app_config
+from config import get_client, get_model_role_value, load_app_config
 from image_analysis import analyze_image
 from image_generation import detect_image_mime_type, generate_image_candidate
 from models import ImageAsset, get_image_variant_bytes
@@ -91,7 +91,7 @@ def main() -> None:
     image_bytes = SOURCE_IMAGE.read_bytes()
 
     analysis_started = time.perf_counter()
-    analysis = analyze_image(image_bytes, model="gpt-4.1", client=client)
+    analysis = analyze_image(image_bytes, model=get_model_role_value(config, "image_analysis"), client=client)
     analysis_elapsed = time.perf_counter() - analysis_started
 
     summary: dict[str, Any] = {
@@ -114,8 +114,9 @@ def main() -> None:
             mode=mode,
             client=client,
             prefer_deterministic_reconstruction=bool(config.get("prefer_deterministic_reconstruction", True)),
-            reconstruction_model=str(config.get("reconstruction_model", "")) or None,
+            reconstruction_model=get_model_role_value(config, "image_reconstruction"),
             reconstruction_render_config=_build_reconstruction_render_config(config),
+            model_config=config,
         )
         elapsed = time.perf_counter() - started
         summary["modes"][mode] = {

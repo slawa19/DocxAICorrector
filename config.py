@@ -1,3 +1,4 @@
+import logging
 import os
 import tomllib
 from collections.abc import Iterator, Mapping
@@ -13,13 +14,12 @@ from constants import (
     CONFIG_PATH,
     DEFAULT_CHUNK_SIZE,
     DEFAULT_MAX_RETRIES,
-    DEFAULT_MODEL,
-    DEFAULT_MODEL_OPTIONS,
     ENV_PATH,
     PROMPTS_DIR,
     SYSTEM_PROMPT_PATH,
 )
 from image_shared import clamp_score
+from logger import log_event
 from models import (
     IMAGE_MODE_VALUES,
     PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES,
@@ -35,12 +35,53 @@ _CLIENT = None
 _CLIENT_LOCK = Lock()
 _IMAGE_OUTPUT_SIZE_VALUES = {"256x256", "512x512", "1024x1024", "1024x1536", "1536x1024", "1024x1792", "1792x1024"}
 PROCESSING_OPERATION_VALUES = ("edit", "translate")
+_MIGRATION_DEFAULT_TEXT_MODEL = "gpt-5.4-mini"
+_MIGRATION_DEFAULT_TEXT_MODEL_OPTIONS = (
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5-mini",
+)
+_MIGRATION_DEFAULT_MODEL_ROLES = {
+    "structure_recognition": "gpt-5-mini",
+    "image_analysis": "gpt-5.4-mini",
+    "image_validation": "gpt-5.4-mini",
+    "image_reconstruction": "gpt-5.4-mini",
+    "image_generation": "gpt-image-1.5",
+    "image_edit": "gpt-image-1.5",
+    "image_generation_vision": "gpt-5.4-mini",
+}
+_LEGACY_TOML_MODEL_KEYS = (
+    "default_model",
+    "model_options",
+    "validation_model",
+    "reconstruction_model",
+)
+_EMITTED_MODEL_REGISTRY_LOG_KEYS: set[str] = set()
+
 
 
 @dataclass(frozen=True)
 class LanguageOption:
     code: str
     label: str
+
+
+@dataclass(frozen=True)
+class TextModelConfig:
+    default: str
+    options: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ModelRegistry:
+    text: TextModelConfig
+    structure_recognition: str
+    image_analysis: str
+    image_validation: str
+    image_reconstruction: str
+    image_generation: str
+    image_edit: str
+    image_generation_vision: str
 
 
 DEFAULT_SUPPORTED_LANGUAGES = (
@@ -71,6 +112,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class AppConfig(Mapping[str, Any]):
+    models: ModelRegistry
     default_model: str
     model_options: list[str]
     chunk_size: int
@@ -372,6 +414,311 @@ def parse_image_output_size_csv_env(name: str, default: tuple[str, ...]) -> tupl
     return tuple(parse_image_output_size(item, source_name=name) for item in items)
 
 
+def _coerce_model_name(value: object, *, source_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError(f"Некорректное значение модели в {source_name}: ожидается непустая строка")
+    return value.strip()
+
+
+def _parse_model_options_value(value: object, *, source_name: str) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise RuntimeError(f"Некорректный список моделей в {source_name}")
+    parsed = tuple(_coerce_model_name(item, source_name=source_name) for item in value)
+    if not parsed:
+        raise RuntimeError(f"Пустой список моделей в {source_name}")
+    return parsed
+
+
+def _dedupe_preserving_order(values: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(values))
+
+
+def _build_text_model_config(default_model: str, options: tuple[str, ...]) -> TextModelConfig:
+    unique_options = _dedupe_preserving_order(options)
+    if not unique_options:
+        raise RuntimeError("Не задан ни один доступный text model в models.text.options")
+    if len(unique_options) != len(options):
+        raise RuntimeError("models.text.options содержит дублирующиеся значения моделей")
+    if default_model not in unique_options:
+        unique_options = (default_model, *tuple(item for item in unique_options if item != default_model))
+    return TextModelConfig(default=default_model, options=unique_options)
+
+
+def _resolve_config_value(container: object | None, key: str) -> object | None:
+    if container is None:
+        return None
+    if isinstance(container, Mapping):
+        return container.get(key)
+    return getattr(container, key, None)
+
+
+def _resolve_model_registry_value(container: object | None, role_name: str) -> str | None:
+    value = _resolve_config_value(container, role_name)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, Mapping):
+        nested_default = value.get("default")
+        if isinstance(nested_default, str) and nested_default.strip():
+            return nested_default.strip()
+    return None
+
+
+def _resolve_text_model_config_runtime(config_like: object | None) -> TextModelConfig:
+    if config_like is None:
+        raise RuntimeError("Text model config is not available without resolved application config.")
+    if isinstance(config_like, AppConfig):
+        return config_like.models.text
+    if isinstance(config_like, ModelRegistry):
+        return config_like.text
+
+    models_value = _resolve_config_value(config_like, "models")
+    text_value = _resolve_config_value(models_value, "text")
+    if isinstance(text_value, TextModelConfig):
+        return text_value
+
+    text_default = _resolve_model_registry_value(text_value, "default")
+    if text_default is None:
+        raise RuntimeError("Text default model is not configured in runtime config.")
+
+    text_options_value = _resolve_config_value(text_value, "options")
+    if text_options_value is None:
+        raise RuntimeError("Text model options are not configured in runtime config.")
+    if not isinstance(text_options_value, (list, tuple)):
+        raise RuntimeError("Некорректное значение models.text.options в runtime config")
+    text_options = tuple(
+        str(item).strip()
+        for item in text_options_value
+        if isinstance(item, str) and str(item).strip()
+    )
+    if not text_options:
+        raise RuntimeError("Text model options are empty in runtime config.")
+    return _build_text_model_config(text_default, text_options)
+
+
+def _resolve_model_role_runtime(config_like: object | None, role_name: str) -> str:
+    if config_like is None:
+        raise RuntimeError(f"Model role '{role_name}' is not available without resolved application config.")
+    if isinstance(config_like, AppConfig):
+        return getattr(config_like.models, role_name)
+    if isinstance(config_like, ModelRegistry):
+        return getattr(config_like, role_name)
+
+    models_value = _resolve_config_value(config_like, "models")
+    if isinstance(models_value, ModelRegistry):
+        return getattr(models_value, role_name)
+
+    resolved = _resolve_model_registry_value(models_value, role_name)
+    if resolved is not None:
+        return resolved
+
+    raise RuntimeError(f"Model role '{role_name}' is not configured in runtime config.")
+
+
+def get_model_registry(config_like: object | None = None) -> ModelRegistry:
+    if config_like is None:
+        raise RuntimeError("Model registry is not available without resolved application config.")
+
+    if isinstance(config_like, AppConfig):
+        return config_like.models
+    if isinstance(config_like, ModelRegistry):
+        return config_like
+
+    models_value = _resolve_config_value(config_like, "models")
+    if isinstance(models_value, ModelRegistry):
+        return models_value
+
+    return ModelRegistry(
+        text=_resolve_text_model_config_runtime(config_like),
+        structure_recognition=_resolve_model_role_runtime(config_like, "structure_recognition"),
+        image_analysis=_resolve_model_role_runtime(config_like, "image_analysis"),
+        image_validation=_resolve_model_role_runtime(config_like, "image_validation"),
+        image_reconstruction=_resolve_model_role_runtime(config_like, "image_reconstruction"),
+        image_generation=_resolve_model_role_runtime(config_like, "image_generation"),
+        image_edit=_resolve_model_role_runtime(config_like, "image_edit"),
+        image_generation_vision=_resolve_model_role_runtime(config_like, "image_generation_vision"),
+    )
+
+
+def get_model_role_value(config_like: object | None, role_name: str) -> str:
+    return _resolve_model_role_runtime(config_like, role_name)
+
+
+def get_text_model_config(config_like: object | None) -> TextModelConfig:
+    return _resolve_text_model_config_runtime(config_like)
+
+
+def get_text_model_default(config_like: object | None) -> str:
+    return get_text_model_config(config_like).default
+
+
+def get_text_model_options(config_like: object | None) -> tuple[str, ...]:
+    return get_text_model_config(config_like).options
+
+
+def _resolve_text_model_options(
+    *,
+    config_data: dict[str, object],
+    models_text_config: dict[str, object],
+) -> tuple[tuple[str, ...], str]:
+    new_env_options = parse_csv_env("DOCX_AI_MODELS_TEXT_OPTIONS")
+    if new_env_options is not None:
+        return tuple(new_env_options), "env:canonical:DOCX_AI_MODELS_TEXT_OPTIONS"
+    if "options" in models_text_config:
+        return _parse_model_options_value(
+            models_text_config.get("options"),
+            source_name=f"{CONFIG_PATH}: models.text.options",
+        ), "toml:canonical:models.text.options"
+    legacy_env_options = parse_csv_env("DOCX_AI_MODEL_OPTIONS")
+    if legacy_env_options is not None:
+        return tuple(legacy_env_options), "env:legacy:DOCX_AI_MODEL_OPTIONS"
+    if "model_options" in config_data:
+        return _parse_model_options_value(
+            config_data.get("model_options"),
+            source_name=f"{CONFIG_PATH}: model_options",
+        ), "toml:legacy:model_options"
+    return _MIGRATION_DEFAULT_TEXT_MODEL_OPTIONS, "default:migration:text.options"
+
+
+def _resolve_text_default_model(
+    *,
+    config_data: dict[str, object],
+    models_text_config: dict[str, object],
+) -> tuple[str, str]:
+    new_env_value = os.getenv("DOCX_AI_MODELS_TEXT_DEFAULT", "").strip()
+    if new_env_value:
+        return new_env_value, "env:canonical:DOCX_AI_MODELS_TEXT_DEFAULT"
+    if "default" in models_text_config:
+        return _coerce_model_name(
+            models_text_config.get("default"),
+            source_name=f"{CONFIG_PATH}: models.text.default",
+        ), "toml:canonical:models.text.default"
+    legacy_env_value = os.getenv("DOCX_AI_DEFAULT_MODEL", "").strip()
+    if legacy_env_value:
+        return legacy_env_value, "env:legacy:DOCX_AI_DEFAULT_MODEL"
+    if "default_model" in config_data:
+        return _coerce_model_name(
+            config_data.get("default_model"),
+            source_name=f"{CONFIG_PATH}: default_model",
+        ), "toml:legacy:default_model"
+    return _MIGRATION_DEFAULT_TEXT_MODEL, "default:migration:text.default"
+
+
+def _resolve_model_role_assignment(
+    *,
+    role_name: str,
+    config_path_suffix: str,
+    new_env_name: str,
+    new_role_config: dict[str, object],
+    fallback_value: str,
+    legacy_env_name: str | None = None,
+    legacy_config_data: dict[str, object] | None = None,
+    legacy_config_label: str | None = None,
+    legacy_value_key: str | None = None,
+) -> tuple[str, str]:
+    new_env_value = os.getenv(new_env_name, "").strip()
+    if new_env_value:
+        return new_env_value, f"env:canonical:{new_env_name}"
+    if "default" in new_role_config:
+        return _coerce_model_name(
+            new_role_config.get("default"),
+            source_name=f"{CONFIG_PATH}: {config_path_suffix}.default",
+        ), f"toml:canonical:{config_path_suffix}.default"
+    if legacy_env_name:
+        legacy_env_value = os.getenv(legacy_env_name, "").strip()
+        if legacy_env_value:
+            return legacy_env_value, f"env:legacy:{legacy_env_name}"
+    if legacy_config_data is not None and legacy_value_key is not None:
+        if legacy_value_key in legacy_config_data:
+            source_name = legacy_config_label or legacy_value_key
+            return _coerce_model_name(
+                legacy_config_data.get(legacy_value_key),
+                source_name=f"{CONFIG_PATH}: {source_name}",
+            ), f"toml:legacy:{source_name}"
+    return fallback_value, f"default:migration:{role_name}"
+
+
+def _log_resolved_model_registry(models: ModelRegistry, model_sources: Mapping[str, str]) -> None:
+    dedupe_key = repr(
+        (
+            models,
+            tuple(sorted(model_sources.items())),
+        )
+    )
+    if dedupe_key in _EMITTED_MODEL_REGISTRY_LOG_KEYS:
+        return
+    _EMITTED_MODEL_REGISTRY_LOG_KEYS.add(dedupe_key)
+    log_event(
+        logging.INFO,
+        "model_registry_resolved",
+        "Разрешён централизованный registry моделей.",
+        resolved_models={
+            "text.default": models.text.default,
+            "text.options": list(models.text.options),
+            "structure_recognition": models.structure_recognition,
+            "image_analysis": models.image_analysis,
+            "image_validation": models.image_validation,
+            "image_reconstruction": models.image_reconstruction,
+            "image_generation": models.image_generation,
+            "image_edit": models.image_edit,
+            "image_generation_vision": models.image_generation_vision,
+        },
+        model_sources=dict(model_sources),
+    )
+
+
+def _emit_legacy_model_config_warnings(config_data: Mapping[str, object], model_sources: Mapping[str, str]) -> None:
+    for legacy_key in _LEGACY_TOML_MODEL_KEYS:
+        if legacy_key in config_data:
+            dedupe_key = f"legacy-key:{legacy_key}"
+            if dedupe_key in _EMITTED_MODEL_REGISTRY_LOG_KEYS:
+                continue
+            _EMITTED_MODEL_REGISTRY_LOG_KEYS.add(dedupe_key)
+            log_event(
+                logging.WARNING,
+                "legacy_model_config_key_detected",
+                "Обнаружен deprecated legacy model key в config.toml; используйте секцию [models.*].",
+                legacy_key=legacy_key,
+                replacement="models.text" if legacy_key in {"default_model", "model_options"} else f"models.{legacy_key.removesuffix('_model')}",
+            )
+
+    structure_recognition_config = config_data.get("structure_recognition")
+    if isinstance(structure_recognition_config, Mapping) and "model" in structure_recognition_config:
+        dedupe_key = "legacy-key:structure_recognition.model"
+        if dedupe_key not in _EMITTED_MODEL_REGISTRY_LOG_KEYS:
+            _EMITTED_MODEL_REGISTRY_LOG_KEYS.add(dedupe_key)
+            log_event(
+                logging.WARNING,
+                "legacy_model_config_key_detected",
+                "Обнаружен deprecated legacy model key в config.toml; используйте секцию [models.*].",
+                legacy_key="structure_recognition.model",
+                replacement="models.structure_recognition.default",
+            )
+
+    for role_name, source_name in model_sources.items():
+        if ":legacy:" not in source_name:
+            continue
+        dedupe_key = f"legacy-source:{role_name}:{source_name}"
+        if dedupe_key in _EMITTED_MODEL_REGISTRY_LOG_KEYS:
+            continue
+        _EMITTED_MODEL_REGISTRY_LOG_KEYS.add(dedupe_key)
+        warning_message = "Использован deprecated legacy model source; перейдите на canonical registry keys."
+        if role_name == "image_analysis" and source_name in {
+            "env:legacy:DOCX_AI_VALIDATION_MODEL",
+            "toml:legacy:validation_model",
+        }:
+            warning_message = (
+                "Использован deprecated legacy validation model source. Во время миграции он переводится в обе роли: "
+                "image_analysis и image_validation. Перейдите на models.image_analysis/default и models.image_validation/default."
+            )
+        log_event(
+            logging.WARNING,
+            "legacy_model_config_source_used",
+            warning_message,
+            role_name=role_name,
+            source_name=source_name,
+        )
+
+
 def _reject_legacy_manual_review_aliases(config_data: dict[str, object]) -> None:
     if "enable_post_redraw_validation" in config_data:
         raise RuntimeError(
@@ -393,13 +740,133 @@ def load_app_config() -> AppConfig:
             config_data = tomllib.load(file_handle)
     _reject_legacy_manual_review_aliases(config_data)
 
-    model_options = config_data.get("model_options", DEFAULT_MODEL_OPTIONS)
-    if not isinstance(model_options, list) or not all(isinstance(item, str) and item.strip() for item in model_options):
-        raise RuntimeError(f"Некорректное поле model_options в {CONFIG_PATH}")
+    models_config = parse_optional_config_section(config_data, "models")
+    models_text_config = parse_optional_config_section(models_config, "text", parent_name="models")
+    models_structure_recognition_config = parse_optional_config_section(
+        models_config,
+        "structure_recognition",
+        parent_name="models",
+    )
+    models_image_analysis_config = parse_optional_config_section(models_config, "image_analysis", parent_name="models")
+    models_image_validation_config = parse_optional_config_section(models_config, "image_validation", parent_name="models")
+    models_image_reconstruction_config = parse_optional_config_section(
+        models_config,
+        "image_reconstruction",
+        parent_name="models",
+    )
+    models_image_generation_config = parse_optional_config_section(
+        models_config,
+        "image_generation",
+        parent_name="models",
+    )
+    models_image_edit_config = parse_optional_config_section(models_config, "image_edit", parent_name="models")
+    models_image_generation_vision_config = parse_optional_config_section(
+        models_config,
+        "image_generation_vision",
+        parent_name="models",
+    )
 
-    default_model = config_data.get("default_model", DEFAULT_MODEL)
-    if not isinstance(default_model, str) or not default_model.strip():
-        raise RuntimeError(f"Некорректное поле default_model в {CONFIG_PATH}")
+    model_options, text_options_source = _resolve_text_model_options(
+        config_data=config_data,
+        models_text_config=models_text_config,
+    )
+    default_model, text_default_source = _resolve_text_default_model(
+        config_data=config_data,
+        models_text_config=models_text_config,
+    )
+    text_model_config = _build_text_model_config(default_model, model_options)
+
+    structure_recognition_config = parse_optional_config_section(
+        config_data,
+        "structure_recognition",
+    )
+    structure_recognition_model, structure_recognition_model_source = _resolve_model_role_assignment(
+        role_name="structure_recognition",
+        config_path_suffix="models.structure_recognition",
+        new_env_name="DOCX_AI_MODELS_STRUCTURE_RECOGNITION_DEFAULT",
+        new_role_config=models_structure_recognition_config,
+        fallback_value=_MIGRATION_DEFAULT_MODEL_ROLES["structure_recognition"],
+        legacy_env_name="DOCX_AI_STRUCTURE_RECOGNITION_MODEL",
+        legacy_config_data=structure_recognition_config,
+        legacy_config_label="structure_recognition.model",
+        legacy_value_key="model",
+    )
+    image_analysis_model, image_analysis_model_source = _resolve_model_role_assignment(
+        role_name="image_analysis",
+        config_path_suffix="models.image_analysis",
+        new_env_name="DOCX_AI_MODELS_IMAGE_ANALYSIS_DEFAULT",
+        new_role_config=models_image_analysis_config,
+        fallback_value=_MIGRATION_DEFAULT_MODEL_ROLES["image_analysis"],
+        legacy_env_name="DOCX_AI_VALIDATION_MODEL",
+        legacy_config_data=config_data,
+        legacy_config_label="validation_model",
+        legacy_value_key="validation_model",
+    )
+    image_validation_model, image_validation_model_source = _resolve_model_role_assignment(
+        role_name="image_validation",
+        config_path_suffix="models.image_validation",
+        new_env_name="DOCX_AI_MODELS_IMAGE_VALIDATION_DEFAULT",
+        new_role_config=models_image_validation_config,
+        fallback_value=_MIGRATION_DEFAULT_MODEL_ROLES["image_validation"],
+        legacy_env_name="DOCX_AI_VALIDATION_MODEL",
+        legacy_config_data=config_data,
+        legacy_config_label="validation_model",
+        legacy_value_key="validation_model",
+    )
+    image_reconstruction_model, image_reconstruction_model_source = _resolve_model_role_assignment(
+        role_name="image_reconstruction",
+        config_path_suffix="models.image_reconstruction",
+        new_env_name="DOCX_AI_MODELS_IMAGE_RECONSTRUCTION_DEFAULT",
+        new_role_config=models_image_reconstruction_config,
+        fallback_value=_MIGRATION_DEFAULT_MODEL_ROLES["image_reconstruction"],
+        legacy_env_name="DOCX_AI_RECONSTRUCTION_MODEL",
+        legacy_config_data=config_data,
+        legacy_config_label="reconstruction_model",
+        legacy_value_key="reconstruction_model",
+    )
+    image_generation_model, image_generation_model_source = _resolve_model_role_assignment(
+        role_name="image_generation",
+        config_path_suffix="models.image_generation",
+        new_env_name="DOCX_AI_MODELS_IMAGE_GENERATION_DEFAULT",
+        new_role_config=models_image_generation_config,
+        fallback_value=_MIGRATION_DEFAULT_MODEL_ROLES["image_generation"],
+    )
+    image_edit_model, image_edit_model_source = _resolve_model_role_assignment(
+        role_name="image_edit",
+        config_path_suffix="models.image_edit",
+        new_env_name="DOCX_AI_MODELS_IMAGE_EDIT_DEFAULT",
+        new_role_config=models_image_edit_config,
+        fallback_value=_MIGRATION_DEFAULT_MODEL_ROLES["image_edit"],
+    )
+    image_generation_vision_model, image_generation_vision_model_source = _resolve_model_role_assignment(
+        role_name="image_generation_vision",
+        config_path_suffix="models.image_generation_vision",
+        new_env_name="DOCX_AI_MODELS_IMAGE_GENERATION_VISION_DEFAULT",
+        new_role_config=models_image_generation_vision_config,
+        fallback_value=_MIGRATION_DEFAULT_MODEL_ROLES["image_generation_vision"],
+    )
+    models = ModelRegistry(
+        text=text_model_config,
+        structure_recognition=structure_recognition_model,
+        image_analysis=image_analysis_model,
+        image_validation=image_validation_model,
+        image_reconstruction=image_reconstruction_model,
+        image_generation=image_generation_model,
+        image_edit=image_edit_model,
+        image_generation_vision=image_generation_vision_model,
+    )
+    model_sources = {
+        "text.default": text_default_source,
+        "text.options": text_options_source,
+        "structure_recognition": structure_recognition_model_source,
+        "image_analysis": image_analysis_model_source,
+        "image_validation": image_validation_model_source,
+        "image_reconstruction": image_reconstruction_model_source,
+        "image_generation": image_generation_model_source,
+        "image_edit": image_edit_model_source,
+        "image_generation_vision": image_generation_vision_model_source,
+    }
+    _emit_legacy_model_config_warnings(config_data, model_sources)
 
     chunk_size = config_data.get("chunk_size", DEFAULT_CHUNK_SIZE)
     if not isinstance(chunk_size, int):
@@ -446,10 +913,6 @@ def load_app_config() -> AppConfig:
     paragraph_boundary_ai_review_config = parse_optional_config_section(
         config_data,
         "paragraph_boundary_ai_review",
-    )
-    structure_recognition_config = parse_optional_config_section(
-        config_data,
-        "structure_recognition",
     )
     paragraph_boundary_normalization_enabled = parse_config_bool(
         paragraph_boundary_normalization_config,
@@ -532,11 +995,6 @@ def load_app_config() -> AppConfig:
         "enabled",
         False,
     )
-    structure_recognition_model = parse_config_str(
-        structure_recognition_config,
-        "model",
-        "gpt-4o-mini",
-    )
     structure_recognition_max_window_paragraphs = parse_config_int(
         structure_recognition_config,
         "max_window_paragraphs",
@@ -580,7 +1038,6 @@ def load_app_config() -> AppConfig:
         {"advisory", "strict"},
     )
     keep_all_image_variants = parse_config_bool(config_data, "keep_all_image_variants", False)
-    validation_model = parse_config_str(config_data, "validation_model", "gpt-4.1")
     min_semantic_match_score = parse_config_score(config_data, "min_semantic_match_score", 0.75)
     min_text_match_score = parse_config_score(config_data, "min_text_match_score", 0.80)
     min_structure_match_score = parse_config_score(config_data, "min_structure_match_score", 0.70)
@@ -593,7 +1050,6 @@ def load_app_config() -> AppConfig:
     prefer_deterministic_reconstruction = parse_config_bool(
         config_data, "prefer_deterministic_reconstruction", True
     )
-    reconstruction_model = parse_config_str(config_data, "reconstruction_model", "gpt-4.1")
     enable_vision_image_analysis = parse_config_bool(config_data, "enable_vision_image_analysis", True)
     enable_vision_image_validation = parse_config_bool(config_data, "enable_vision_image_validation", True)
     semantic_redraw_max_attempts = parse_config_int(config_data, "semantic_redraw_max_attempts", 2)
@@ -658,11 +1114,6 @@ def load_app_config() -> AppConfig:
     image_output_trim_padding_min_px = parse_config_int(image_output_config, "trim_padding_min_px", 4)
     image_output_trim_max_loss_ratio = parse_config_float(image_output_config, "trim_max_loss_ratio", 0.15)
 
-    env_model_options = parse_csv_env("DOCX_AI_MODEL_OPTIONS")
-    if env_model_options is not None:
-        model_options = env_model_options
-
-    default_model = os.getenv("DOCX_AI_DEFAULT_MODEL", default_model).strip() or default_model
     chunk_size = parse_int_env("DOCX_AI_CHUNK_SIZE", chunk_size)
     max_retries = parse_int_env("DOCX_AI_MAX_RETRIES", max_retries)
     processing_operation_default = parse_choice_env(
@@ -710,10 +1161,6 @@ def load_app_config() -> AppConfig:
         "DOCX_AI_STRUCTURE_RECOGNITION_ENABLED",
         structure_recognition_enabled,
     )
-    structure_recognition_model = (
-        os.getenv("DOCX_AI_STRUCTURE_RECOGNITION_MODEL", structure_recognition_model).strip()
-        or structure_recognition_model
-    )
     structure_recognition_max_window_paragraphs = parse_int_env(
         "DOCX_AI_STRUCTURE_RECOGNITION_MAX_WINDOW_PARAGRAPHS",
         structure_recognition_max_window_paragraphs,
@@ -755,7 +1202,6 @@ def load_app_config() -> AppConfig:
         raise RuntimeError(
             f"Некорректное значение в DOCX_AI_SEMANTIC_VALIDATION_POLICY: {semantic_validation_policy}"
         )
-    validation_model = os.getenv("DOCX_AI_VALIDATION_MODEL", validation_model).strip() or validation_model
     min_semantic_match_score = clamp_score(
         parse_float_env("DOCX_AI_MIN_SEMANTIC_MATCH_SCORE", min_semantic_match_score)
     )
@@ -774,7 +1220,6 @@ def load_app_config() -> AppConfig:
         "DOCX_AI_PREFER_DETERMINISTIC_RECONSTRUCTION",
         prefer_deterministic_reconstruction,
     )
-    reconstruction_model = os.getenv("DOCX_AI_RECONSTRUCTION_MODEL", reconstruction_model).strip() or reconstruction_model
     enable_vision_image_analysis = parse_bool_env(
         "DOCX_AI_ENABLE_VISION_IMAGE_ANALYSIS",
         enable_vision_image_analysis,
@@ -867,12 +1312,12 @@ def load_app_config() -> AppConfig:
         image_output_trim_max_loss_ratio,
     )
 
-    if default_model not in model_options:
-        model_options = [default_model, *[item for item in model_options if item != default_model]]
+    _log_resolved_model_registry(models, model_sources)
 
     return AppConfig(
+        models=models,
         default_model=default_model,
-        model_options=model_options,
+        model_options=list(models.text.options),
         chunk_size=max(3000, min(chunk_size, 12000)),
         max_retries=max(1, min(max_retries, 5)),
         processing_operation_default=processing_operation_default,
@@ -901,7 +1346,7 @@ def load_app_config() -> AppConfig:
         relation_normalization_enabled_relation_kinds=relation_normalization_enabled_relation_kinds,
         relation_normalization_save_debug_artifacts=relation_normalization_save_debug_artifacts,
         structure_recognition_enabled=structure_recognition_enabled,
-        structure_recognition_model=structure_recognition_model,
+        structure_recognition_model=models.structure_recognition,
         structure_recognition_max_window_paragraphs=max(100, min(structure_recognition_max_window_paragraphs, 4000)),
         structure_recognition_overlap_paragraphs=max(0, min(structure_recognition_overlap_paragraphs, 200)),
         structure_recognition_timeout_seconds=max(1, min(structure_recognition_timeout_seconds, 300)),
@@ -913,14 +1358,14 @@ def load_app_config() -> AppConfig:
         image_mode_default=image_mode_default,
         semantic_validation_policy=semantic_validation_policy,
         keep_all_image_variants=keep_all_image_variants,
-        validation_model=validation_model,
+        validation_model=models.image_validation,
         min_semantic_match_score=min_semantic_match_score,
         min_text_match_score=min_text_match_score,
         min_structure_match_score=min_structure_match_score,
         validator_confidence_threshold=validator_confidence_threshold,
         allow_accept_with_partial_text_loss=allow_accept_with_partial_text_loss,
         prefer_deterministic_reconstruction=prefer_deterministic_reconstruction,
-        reconstruction_model=reconstruction_model,
+        reconstruction_model=models.image_reconstruction,
         enable_vision_image_analysis=enable_vision_image_analysis,
         enable_vision_image_validation=enable_vision_image_validation,
         semantic_redraw_max_attempts=max(1, min(semantic_redraw_max_attempts, 2)),

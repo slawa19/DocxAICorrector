@@ -124,9 +124,12 @@ def is_preparation_failed_for_marker(upload_marker: str) -> bool:
 
 
 def get_prepared_run_context_for_marker(upload_marker: str) -> PreparedRunContext | None:
+    from application_flow import PreparedRunContext as _PRC
     snapshot = get_preparation_state()
     if snapshot.input_marker == upload_marker and snapshot.failed_marker != upload_marker:
-        return snapshot.prepared_run_context
+        ctx = snapshot.prepared_run_context
+        if isinstance(ctx, _PRC):
+            return ctx
     return None
 
 
@@ -288,6 +291,13 @@ def init_session_state() -> None:
     st.session_state.setdefault("persisted_source_cleanup_done", False)
     st.session_state.setdefault("restart_session_id", uuid4().hex)
     st.session_state.setdefault("latest_image_mode", "no_change")
+    st.session_state.setdefault("recommended_text_settings", None)
+    st.session_state.setdefault("recommended_text_settings_applied_for_token", None)
+    st.session_state.setdefault("recommended_text_settings_applied_snapshot", None)
+    st.session_state.setdefault("recommended_text_settings_pending_widget_state", None)
+    st.session_state.setdefault("recommended_text_settings_notice_token", None)
+    st.session_state.setdefault("recommended_text_settings_notice_details", None)
+    st.session_state.setdefault("manual_text_settings_override_for_token", None)
 
 
 def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: bool = False) -> None:
@@ -299,6 +309,61 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
     preparation_failed_marker = str(st.session_state.get("preparation_failed_marker", "")) if preserve_preparation else ""
     prepared_source_key = str(st.session_state.get("prepared_source_key", "")) if preserve_preparation else ""
     preparation_cache = dict(st.session_state.get("preparation_cache", {})) if preserve_preparation else {}
+    recommended_text_settings = st.session_state.get("recommended_text_settings") if preserve_preparation else None
+    recommended_text_settings_applied_for_token = (
+        st.session_state.get("recommended_text_settings_applied_for_token") if preserve_preparation else None
+    )
+    recommended_text_settings_applied_snapshot = (
+        st.session_state.get("recommended_text_settings_applied_snapshot") if preserve_preparation else None
+    )
+    recommended_text_settings_pending_widget_state = (
+        st.session_state.get("recommended_text_settings_pending_widget_state") if preserve_preparation else None
+    )
+    recommended_text_settings_notice_token = (
+        st.session_state.get("recommended_text_settings_notice_token") if preserve_preparation else None
+    )
+    recommended_text_settings_notice_details = (
+        st.session_state.get("recommended_text_settings_notice_details") if preserve_preparation else None
+    )
+    manual_text_settings_override_for_token = (
+        st.session_state.get("manual_text_settings_override_for_token") if preserve_preparation else None
+    )
+    preserved_file_token = str(getattr(prepared_run_context, "uploaded_file_token", "")) if prepared_run_context is not None else ""
+    if preserved_file_token:
+        if not isinstance(recommended_text_settings, dict) or str(recommended_text_settings.get("file_token", "")) != preserved_file_token:
+            recommended_text_settings = None
+        if str(recommended_text_settings_applied_for_token or "") != preserved_file_token:
+            recommended_text_settings_applied_for_token = None
+        if (
+            not isinstance(recommended_text_settings_applied_snapshot, dict)
+            or str(recommended_text_settings_applied_snapshot.get("file_token", "")) != preserved_file_token
+        ):
+            recommended_text_settings_applied_snapshot = None
+        if (
+            not isinstance(recommended_text_settings_pending_widget_state, dict)
+            or str(recommended_text_settings_pending_widget_state.get("file_token", "")) != preserved_file_token
+        ):
+            recommended_text_settings_pending_widget_state = None
+        if str(recommended_text_settings_notice_token or "") != preserved_file_token:
+            recommended_text_settings_notice_token = None
+        if (
+            not isinstance(recommended_text_settings_notice_details, dict)
+            or str(recommended_text_settings_notice_details.get("file_token", "")) != preserved_file_token
+        ):
+            recommended_text_settings_notice_details = None
+        if (
+            not isinstance(manual_text_settings_override_for_token, dict)
+            or str(manual_text_settings_override_for_token.get("file_token", "")) != preserved_file_token
+        ):
+            manual_text_settings_override_for_token = None
+    else:
+        recommended_text_settings = None
+        recommended_text_settings_applied_for_token = None
+        recommended_text_settings_applied_snapshot = None
+        recommended_text_settings_pending_widget_state = None
+        recommended_text_settings_notice_token = None
+        recommended_text_settings_notice_details = None
+        manual_text_settings_override_for_token = None
     st.session_state.run_log = []
     st.session_state.activity_feed = []
     st.session_state.latest_markdown = ""
@@ -328,6 +393,13 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
     st.session_state.prepared_source_key = prepared_source_key
     st.session_state.preparation_cache = preparation_cache
     st.session_state.latest_image_mode = "no_change"
+    st.session_state.recommended_text_settings = recommended_text_settings
+    st.session_state.recommended_text_settings_applied_for_token = recommended_text_settings_applied_for_token
+    st.session_state.recommended_text_settings_applied_snapshot = recommended_text_settings_applied_snapshot
+    st.session_state.recommended_text_settings_pending_widget_state = recommended_text_settings_pending_widget_state
+    st.session_state.recommended_text_settings_notice_token = recommended_text_settings_notice_token
+    st.session_state.recommended_text_settings_notice_details = recommended_text_settings_notice_details
+    st.session_state.manual_text_settings_override_for_token = manual_text_settings_override_for_token
     clear_restart_source(completed_source)
     st.session_state.completed_source = None
     if not keep_restart_source:

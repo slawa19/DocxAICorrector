@@ -33,7 +33,7 @@ def test_resolve_runtime_resolution_reports_explicit_overrides() -> None:
 
     assert resolution.effective.enable_paragraph_markers is True
     assert resolution.effective.structure_recognition_enabled is True
-    assert resolution.ui_defaults.model == app_config.default_model
+    assert resolution.ui_defaults.model == app_config.models.text.default
     assert resolution.overrides["enable_paragraph_markers"] is True
     assert resolution.overrides["structure_recognition_enabled"] is True
 

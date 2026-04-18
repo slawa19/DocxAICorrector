@@ -229,8 +229,13 @@ def test_render_markdown_preview_hides_placeholder_only_content(monkeypatch):
 
 def test_render_sidebar_returns_image_settings(monkeypatch):
     config = {
-        "model_options": ["gpt-5.4", "gpt-5-mini"],
-        "default_model": "gpt-5-mini",
+        "models": type(
+            "Models",
+            (),
+            {
+                "text": type("TextModels", (), {"default": "gpt-5-mini", "options": ("gpt-5.4", "gpt-5-mini")})(),
+            },
+        )(),
         "chunk_size": 6000,
         "max_retries": 3,
         "processing_operation_default": "edit",
@@ -274,7 +279,7 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
         (
             "selectbox",
             "Режим обработки текста",
-            "Литературное редактирование улучшает уже готовый текст на выбранном языке. Перевод используйте для текста, который ещё не на целевом языке.",
+            "Литературное редактирование улучшает уже готовый текст на выбранном языке. Перевод используйте для текста, который ещё не на целевом языке. Если текст уже переведён, обычно лучше выбрать литературное редактирование.",
             tuple(ui.TEXT_OPERATION_LABELS.values()),
             None,
         ),
@@ -308,8 +313,13 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
 
 def test_render_sidebar_warns_when_translate_source_matches_target(monkeypatch):
     config = {
-        "model_options": ["gpt-5.4", "gpt-5-mini"],
-        "default_model": "gpt-5-mini",
+        "models": type(
+            "Models",
+            (),
+            {
+                "text": type("TextModels", (), {"default": "gpt-5-mini", "options": ("gpt-5.4", "gpt-5-mini")})(),
+            },
+        )(),
         "chunk_size": 6000,
         "max_retries": 3,
         "processing_operation_default": "translate",
@@ -350,6 +360,141 @@ def test_render_sidebar_warns_when_translate_source_matches_target(monkeypatch):
     assert warnings == [
         "Исходный и целевой язык совпадают. Если нужен только стилистический апгрейд, обычно лучше выбрать литературное редактирование."
     ]
+
+
+def test_render_sidebar_translate_mode_does_not_add_extra_caption(monkeypatch):
+    config = {
+        "models": type(
+            "Models",
+            (),
+            {
+                "text": type("TextModels", (), {"default": "gpt-5-mini", "options": ("gpt-5.4", "gpt-5-mini")})(),
+            },
+        )(),
+        "chunk_size": 6000,
+        "max_retries": 3,
+        "processing_operation_default": "translate",
+        "source_language_default": "en",
+        "target_language_default": "ru",
+        "supported_languages": [
+            type("Lang", (), {"code": "ru", "label": "Русский"})(),
+            type("Lang", (), {"code": "en", "label": "English"})(),
+        ],
+        "image_mode_default": "safe",
+        "keep_all_image_variants": False,
+    }
+
+    captions = []
+    selectbox_calls = []
+    monkeypatch.setattr(ui.st.sidebar, "header", lambda text: None)
+    monkeypatch.setattr(ui.st.sidebar, "caption", lambda text: captions.append(text))
+    monkeypatch.setattr(ui.st.sidebar, "warning", lambda text: None)
+
+    def fake_selectbox(label, options, index=0, format_func=None, help=None, key=None):
+        selectbox_calls.append((label, help))
+        if label == "Режим обработки текста":
+            return ui.TEXT_OPERATION_LABELS["translate"]
+        if label == "Целевой язык":
+            return "Русский"
+        if label == "Язык оригинала":
+            return "Авто"
+        return options[index]
+
+    monkeypatch.setattr(ui.st.sidebar, "selectbox", fake_selectbox)
+    monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
+    monkeypatch.setattr(ui.st.sidebar, "slider", lambda label, **kwargs: kwargs["value"])
+    monkeypatch.setattr(ui.st.sidebar, "checkbox", lambda label, value, key=None, help=None: value)
+
+    ui.render_sidebar(config)
+
+    assert captions == [ui.IMAGE_MODE_DESCRIPTIONS["safe"]]
+    assert selectbox_calls[0][1] == (
+        "Литературное редактирование улучшает уже готовый текст на выбранном языке. "
+        "Перевод используйте для текста, который ещё не на целевом языке. "
+        "Если текст уже переведён, обычно лучше выбрать литературное редактирование."
+    )
+
+
+def test_render_sidebar_preserves_hidden_source_language_value(monkeypatch):
+    config = {
+        "models": type(
+            "Models",
+            (),
+            {
+                "text": type("TextModels", (), {"default": "gpt-5-mini", "options": ("gpt-5.4", "gpt-5-mini")})(),
+            },
+        )(),
+        "chunk_size": 6000,
+        "max_retries": 3,
+        "processing_operation_default": "edit",
+        "source_language_default": "en",
+        "target_language_default": "ru",
+        "supported_languages": [
+            type("Lang", (), {"code": "ru", "label": "Русский"})(),
+            type("Lang", (), {"code": "en", "label": "English"})(),
+        ],
+        "image_mode_default": "safe",
+        "keep_all_image_variants": False,
+    }
+    session_state = SessionState(sidebar_source_language="Авто")
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st.sidebar, "header", lambda text: None)
+    monkeypatch.setattr(ui.st.sidebar, "caption", lambda text: None)
+    monkeypatch.setattr(ui.st.sidebar, "warning", lambda text: None)
+    monkeypatch.setattr(
+        ui.st.sidebar,
+        "selectbox",
+        lambda label, options, index=0, format_func=None, help=None, key=None: options[index],
+    )
+    monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
+    monkeypatch.setattr(ui.st.sidebar, "slider", lambda label, **kwargs: kwargs["value"])
+    monkeypatch.setattr(ui.st.sidebar, "checkbox", lambda label, value, key=None, help=None: value)
+
+    result = ui.render_sidebar(config)
+
+    assert result[6] == "auto"
+
+
+def test_render_sidebar_does_not_add_recommendation_apply_button(monkeypatch):
+    config = {
+        "models": type(
+            "Models",
+            (),
+            {
+                "text": type("TextModels", (), {"default": "gpt-5-mini", "options": ("gpt-5.4", "gpt-5-mini")})(),
+            },
+        )(),
+        "chunk_size": 6000,
+        "max_retries": 3,
+        "processing_operation_default": "edit",
+        "source_language_default": "en",
+        "target_language_default": "ru",
+        "supported_languages": [
+            type("Lang", (), {"code": "ru", "label": "Русский"})(),
+            type("Lang", (), {"code": "en", "label": "English"})(),
+        ],
+        "image_mode_default": "safe",
+        "keep_all_image_variants": False,
+    }
+    button_calls = []
+
+    monkeypatch.setattr(ui.st.sidebar, "header", lambda text: None)
+    monkeypatch.setattr(ui.st.sidebar, "caption", lambda text: None)
+    monkeypatch.setattr(ui.st.sidebar, "warning", lambda text: None)
+    monkeypatch.setattr(
+        ui.st.sidebar,
+        "selectbox",
+        lambda label, options, index=0, format_func=None, help=None, key=None: options[index],
+    )
+    monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
+    monkeypatch.setattr(ui.st.sidebar, "slider", lambda label, **kwargs: kwargs["value"])
+    monkeypatch.setattr(ui.st.sidebar, "checkbox", lambda label, value, key=None, help=None: value)
+    monkeypatch.setattr(ui.st.sidebar, "button", lambda *args, **kwargs: button_calls.append((args, kwargs)) or False)
+
+    ui.render_sidebar(config)
+
+    assert button_calls == []
 
 
 def test_inject_ui_styles_does_not_inject_custom_css(monkeypatch):
@@ -503,7 +648,7 @@ def test_render_preparation_summary_uses_stage_and_detail(monkeypatch):
     ui.render_preparation_summary(
         {
             "stage": "Документ подготовлен",
-            "detail": "Можно запускать обработку.",
+            "detail": "",
             "file_size_bytes": 1048576,
             "paragraph_count": 12,
             "image_count": 2,
@@ -520,7 +665,7 @@ def test_render_preparation_summary_uses_stage_and_detail(monkeypatch):
     )
 
     assert info_calls == ["Документ подготовлен"]
-    assert writes == ["Можно запускать обработку."]
+    assert writes == []
     assert any("Источник: cache | Подготовка: 1.2 c" in text for text in captions)
     assert any("1.00 MB | 12 абзацев | 2 изображений | 5000 символов | 4 блоков" in text for text in captions)
     assert any("Нормализация абзацев: сырьевых 15 -> логических 12 | слияний: 2 групп, 5 абзацев" in text for text in captions)
@@ -591,6 +736,42 @@ def test_render_preparation_summary_adds_divergence_line_when_available(monkeypa
         "Расхождения с эвристикой: ролей 2 | +заголовков 1 | -заголовков 1 | структурных ролей 1" in text
         for text in captions
     )
+
+
+def test_render_preparation_summary_places_secondary_stage_line_inside_info_block(monkeypatch):
+    session_state = SessionState()
+    info_calls = []
+    writes = []
+    captions = []
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "info", lambda text: info_calls.append(text))
+    monkeypatch.setattr(ui.st, "write", lambda text: writes.append(text))
+    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
+
+    ui.render_preparation_summary(
+        {
+            "stage": "Документ подготовлен",
+            "secondary_stage_line": "После анализа файла приложение скорректировало текстовые настройки: режим: Литературное редактирование -> Перевод.",
+            "detail": "Можно запускать обработку.",
+            "file_size_bytes": 1024,
+            "paragraph_count": 5,
+            "image_count": 0,
+            "source_chars": 120,
+            "block_count": 2,
+            "cached": False,
+        },
+        FakeTarget(),
+    )
+
+    assert info_calls == ["Документ подготовлен"]
+    assert writes == ["Можно запускать обработку."]
+    assert any(
+        "После анализа файла приложение скорректировало текстовые настройки: режим: Литературное редактирование -> Перевод."
+        in text
+        for text in captions
+    )
+    assert any("Источник: DOCX" in text for text in captions)
 
 
 def test_render_live_status_shows_preparation_failure_title(monkeypatch):

@@ -64,9 +64,9 @@ def _build_validation_result(**overrides) -> ImageValidationResult:
     return ImageValidationResult(**payload)
 
 
-def _build_context(**overrides) -> ImageProcessingContext:
+def _build_context(resolved_test_model_registry, **overrides) -> ImageProcessingContext:
     payload = {
-        "config": {},
+        "config": {"models": resolved_test_model_registry},
         "on_progress": lambda **kwargs: None,
         "runtime": None,
         "client": None,
@@ -99,10 +99,11 @@ def _build_context(**overrides) -> ImageProcessingContext:
     return ImageProcessingContext(**payload)
 
 
-def test_build_compare_variant_candidate_marks_safe_variant_without_validation():
+def test_build_compare_variant_candidate_marks_safe_variant_without_validation(resolved_test_model_registry):
     asset = _build_asset()
     analysis = _build_analysis()
     context = _build_context(
+        resolved_test_model_registry,
         analyze_image_fn=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("analyze should not run")),
         generate_image_candidate_fn=lambda image_bytes, analysis, **kwargs: PNG_BYTES,
         validate_redraw_result_fn=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("validation should not run")),
@@ -122,7 +123,7 @@ def test_build_compare_variant_candidate_marks_safe_variant_without_validation()
     assert asset.safe_bytes == PNG_BYTES
 
 
-def test_build_compare_variant_candidate_executes_shared_child_plan(monkeypatch):
+def test_build_compare_variant_candidate_executes_shared_child_plan(monkeypatch, resolved_test_model_registry):
     captured = []
 
     def fake_execute(asset, source_analysis, generation_analysis, plan, **kwargs):
@@ -153,7 +154,7 @@ def test_build_compare_variant_candidate_executes_shared_child_plan(monkeypatch)
         asset,
         analysis,
         "safe",
-        _build_context(),
+        _build_context(resolved_test_model_registry),
         client=object(),
     )
 
@@ -211,7 +212,7 @@ def test_build_image_processing_plan_for_structured_semantic_uses_semantic_strat
     assert plan.needs_safe_candidate is True
 
 
-def test_execute_image_processing_plan_dispatches_via_strategy_registry(monkeypatch):
+def test_execute_image_processing_plan_dispatches_via_strategy_registry(monkeypatch, resolved_test_model_registry):
     calls = []
 
     def fake_executor(asset, source_analysis, generation_analysis, plan, **kwargs):
@@ -242,7 +243,7 @@ def test_execute_image_processing_plan_dispatches_via_strategy_registry(monkeypa
         source_analysis,
         generation_analysis,
         plan,
-        pipeline_context=_build_context(),
+        pipeline_context=_build_context(resolved_test_model_registry),
         client=object(),
     )
 
@@ -257,7 +258,7 @@ def test_execute_image_processing_plan_dispatches_via_strategy_registry(monkeypa
     ]
 
 
-def test_execute_plan_selection_strategy_dispatches_via_selection_registry(monkeypatch):
+def test_execute_plan_selection_strategy_dispatches_via_selection_registry(monkeypatch, resolved_test_model_registry):
     calls = []
 
     def fake_selection_executor(asset, source_analysis, generation_analysis, plan, **kwargs):
@@ -288,7 +289,7 @@ def test_execute_plan_selection_strategy_dispatches_via_selection_registry(monke
         source_analysis,
         generation_analysis,
         plan,
-        pipeline_context=_build_context(),
+        pipeline_context=_build_context(resolved_test_model_registry),
         client=object(),
     )
 
@@ -303,7 +304,7 @@ def test_execute_plan_selection_strategy_dispatches_via_selection_registry(monke
     ]
 
 
-def test_execute_plan_delivery_strategy_dispatches_via_delivery_registry(monkeypatch):
+def test_execute_plan_delivery_strategy_dispatches_via_delivery_registry(monkeypatch, resolved_test_model_registry):
     calls = []
 
     def fake_delivery_executor(asset, source_analysis, generation_analysis, plan, **kwargs):
@@ -334,7 +335,7 @@ def test_execute_plan_delivery_strategy_dispatches_via_delivery_registry(monkeyp
         source_analysis,
         generation_analysis,
         plan,
-        pipeline_context=_build_context(),
+        pipeline_context=_build_context(resolved_test_model_registry),
         client=object(),
     )
 
@@ -349,7 +350,7 @@ def test_execute_plan_delivery_strategy_dispatches_via_delivery_registry(monkeyp
     ]
 
 
-def test_execute_image_processing_plan_runs_delivery_stage_after_generation(monkeypatch):
+def test_execute_image_processing_plan_runs_delivery_stage_after_generation(monkeypatch, resolved_test_model_registry):
     call_order = []
 
     def fake_executor(asset, source_analysis, generation_analysis, plan, **kwargs):
@@ -378,7 +379,7 @@ def test_execute_image_processing_plan_runs_delivery_stage_after_generation(monk
         source_analysis,
         generation_analysis,
         plan,
-        pipeline_context=_build_context(),
+        pipeline_context=_build_context(resolved_test_model_registry),
         client=object(),
     )
 
@@ -389,7 +390,7 @@ def test_execute_image_processing_plan_runs_delivery_stage_after_generation(monk
     ]
 
 
-def test_emit_asset_image_log_uses_resolved_delivery_payload_variant():
+def test_emit_asset_image_log_uses_resolved_delivery_payload_variant(resolved_test_model_registry):
     captured = []
     asset = _build_asset()
     asset.apply_final_selection_outcome(
@@ -405,7 +406,7 @@ def test_emit_asset_image_log_uses_resolved_delivery_payload_variant():
         final_decision="accept",
         final_reason="delivery_payload_authority",
     )
-    context = _build_context(emit_image_log=lambda runtime, **payload: captured.append(payload))
+    context = _build_context(resolved_test_model_registry, emit_image_log=lambda runtime, **payload: captured.append(payload))
 
     _emit_asset_image_log(context, asset, analysis=_build_analysis(confidence=0.42))
 
@@ -422,12 +423,13 @@ def test_emit_asset_image_log_uses_resolved_delivery_payload_variant():
     ]
 
 
-def test_build_compare_variant_candidate_uses_processed_semantic_outcome():
+def test_build_compare_variant_candidate_uses_processed_semantic_outcome(resolved_test_model_registry):
     asset = _build_asset()
     asset.safe_bytes = PNG_BYTES[:-1] + b"s"
     analysis = _build_analysis()
     context = _build_context(
-        config={"validation_model": "gpt-4.1"},
+        resolved_test_model_registry,
+        config={"models": resolved_test_model_registry},
         analyze_image_fn=lambda *args, **kwargs: _build_analysis(),
         generate_image_candidate_fn=lambda image_bytes, analysis, **kwargs: PNG_BYTES,
         validate_redraw_result_fn=lambda *args, **kwargs: _build_validation_result(
@@ -454,12 +456,13 @@ def test_build_compare_variant_candidate_uses_processed_semantic_outcome():
     assert variant.final_variant == "redrawn"
 
 
-def test_prepare_compare_variants_keeps_original_as_selected_default():
+def test_prepare_compare_variants_keeps_original_as_selected_default(resolved_test_model_registry):
     asset = _build_asset()
     analysis = _build_analysis()
     logged = []
     context = _build_context(
-        config={"validation_model": "gpt-4.1"},
+        resolved_test_model_registry,
+        config={"models": resolved_test_model_registry},
         analyze_image_fn=lambda *args, **kwargs: _build_analysis(),
         generate_image_candidate_fn=lambda image_bytes, analysis, *, mode, **kwargs: PNG_BYTES + mode.encode("ascii"),
         validate_redraw_result_fn=lambda *args, **kwargs: _build_validation_result(),
@@ -482,10 +485,11 @@ def test_prepare_compare_variants_keeps_original_as_selected_default():
     }
 
 
-def test_prepare_compare_variants_falls_back_to_safe_when_compare_all_is_incomplete():
+def test_prepare_compare_variants_falls_back_to_safe_when_compare_all_is_incomplete(resolved_test_model_registry):
     asset = _build_asset()
     analysis = _build_analysis(semantic_redraw_allowed=False, render_strategy="safe_mode")
     context = _build_context(
+        resolved_test_model_registry,
         analyze_image_fn=lambda *args, **kwargs: analysis,
         generate_image_candidate_fn=lambda image_bytes, analysis, *, mode, **kwargs: PNG_BYTES,
     )

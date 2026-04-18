@@ -196,32 +196,43 @@ OPENAI_API_KEY=sk-...
 Поддерживаемые переменные `.env`:
 
 - `OPENAI_API_KEY` — обязательный API-ключ OpenAI для текстовой и image-обработки.
-- `DOCX_AI_DEFAULT_MODEL` — модель редактирования текста по умолчанию.
-- `DOCX_AI_MODEL_OPTIONS` — список моделей для sidebar через запятую.
+- `DOCX_AI_MODELS_TEXT_DEFAULT` — модель редактирования текста по умолчанию.
+- `DOCX_AI_MODELS_TEXT_OPTIONS` — список моделей для sidebar через запятую.
 - `DOCX_AI_CHUNK_SIZE` — размер целевого блока документа.
 - `DOCX_AI_MAX_RETRIES` — число retry для текстовых вызовов.
 - `DOCX_AI_LOG_LEVEL` — уровень логирования приложения: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`; по умолчанию `INFO`, некорректное значение безопасно откатывается к `INFO` с warning-записью в лог.
 - `DOCX_AI_IMAGE_MODE_DEFAULT` — режим изображений по умолчанию: `no_change`, `safe`, `semantic_redraw_direct`, `semantic_redraw_structured`, `compare_all`.
 - `DOCX_AI_SEMANTIC_VALIDATION_POLICY` — политика post-check: `advisory` или `strict`.
 - `DOCX_AI_KEEP_ALL_IMAGE_VARIANTS` — сохраняет в итоговом DOCX `safe`, `candidate1` и `candidate2` для ручной проверки.
-- `DOCX_AI_VALIDATION_MODEL` — модель, используемая validator-веткой.
+- `DOCX_AI_MODELS_STRUCTURE_RECOGNITION_DEFAULT` — service-level модель optional structure recognition stage.
+- `DOCX_AI_MODELS_IMAGE_ANALYSIS_DEFAULT` — service-level модель для pipeline image analysis.
+- `DOCX_AI_MODELS_IMAGE_VALIDATION_DEFAULT` — service-level модель для image validator.
+- `DOCX_AI_MODELS_IMAGE_RECONSTRUCTION_DEFAULT` — service-level модель для deterministic image reconstruction.
+- `DOCX_AI_MODELS_IMAGE_GENERATION_DEFAULT` — service-level модель для `Images.generate`.
+- `DOCX_AI_MODELS_IMAGE_EDIT_DEFAULT` — service-level модель для `Images.edit`.
+- `DOCX_AI_MODELS_IMAGE_GENERATION_VISION_DEFAULT` — service-level vision model для generation-time image inspection.
 
 Пример полного `.env`:
 
 ```env
 OPENAI_API_KEY=sk-...
-DOCX_AI_DEFAULT_MODEL=gpt-5-mini
-DOCX_AI_MODEL_OPTIONS=gpt-5.4,gpt-5.4-pro,gpt-5.2,gpt-5.1,gpt-5-mini
+DOCX_AI_MODELS_TEXT_DEFAULT=gpt-5.4-mini
+DOCX_AI_MODELS_TEXT_OPTIONS=gpt-5.4,gpt-5.4-mini,gpt-5-mini
 DOCX_AI_CHUNK_SIZE=6000
 DOCX_AI_MAX_RETRIES=3
 DOCX_AI_STRUCTURE_RECOGNITION_ENABLED=false
-DOCX_AI_STRUCTURE_RECOGNITION_MODEL=gpt-4o-mini
+DOCX_AI_MODELS_STRUCTURE_RECOGNITION_DEFAULT=gpt-5-mini
 DOCX_AI_STRUCTURE_RECOGNITION_MIN_CONFIDENCE=medium
 DOCX_AI_LOG_LEVEL=INFO
 DOCX_AI_IMAGE_MODE_DEFAULT=no_change
 DOCX_AI_SEMANTIC_VALIDATION_POLICY=advisory
 DOCX_AI_KEEP_ALL_IMAGE_VARIANTS=false
-DOCX_AI_VALIDATION_MODEL=gpt-4.1
+DOCX_AI_MODELS_IMAGE_ANALYSIS_DEFAULT=gpt-5.4-mini
+DOCX_AI_MODELS_IMAGE_VALIDATION_DEFAULT=gpt-5.4-mini
+DOCX_AI_MODELS_IMAGE_RECONSTRUCTION_DEFAULT=gpt-5.4-mini
+DOCX_AI_MODELS_IMAGE_GENERATION_DEFAULT=gpt-image-1.5
+DOCX_AI_MODELS_IMAGE_EDIT_DEFAULT=gpt-image-1.5
+DOCX_AI_MODELS_IMAGE_GENERATION_VISION_DEFAULT=gpt-5.4-mini
 ```
 
 ### 5. Запустить приложение
@@ -242,17 +253,66 @@ streamlit run app.py
 
 ## Конфигурация
 
+Каноническая role-based спецификация моделей лежит в `docs/specs/MODEL_ROLE_AND_CONFIGURATION_SPEC_2026-04-18.md`.
+
+Архитектурная спецификация миграции на centralized registry реализована и сохранена как историческая запись в `docs/archive/specs/CENTRALIZED_MODEL_REGISTRY_REFACTOR_SPEC_2026-04-18.md`.
+
+Краткая текущая матрица ролей:
+
+| Роль | Текущая модель | Статус | Примечание |
+| --- | --- | --- | --- |
+| Main premium text transform | `gpt-5.4` | `recommended_high_quality` | Премиальный вариант для текстовой обработки через sidebar. |
+| Main default text transform policy | `gpt-5.4-mini` | `recommended_default` | Рекомендуемый modern mini-tier по policy из `models.text.default`. |
+| Budget text fallback | `gpt-5-mini` | `supported_fallback` | Текущий repository default и lower-cost fallback. |
+| Structure recognition | `gpt-5-mini` | `balanced_cost_quality` | Дешевле и современнее для optional structure stage без перехода на overly-cheap nano-tier. |
+| Pipeline image analysis | `gpt-5.4-mini` | `balanced_cost_quality` | Основной balanced multimodal default для routing и vision analysis. |
+| Image validation | `gpt-5.4-mini` | `balanced_cost_quality` | Quality gate для post-check без цены full-tier модели. |
+| Image reconstruction | `gpt-5.4-mini` | `balanced_cost_quality` | Лучший balanced choice для scene-graph extraction и text-sensitive reconstruction. |
+| Image generation/edit | `gpt-image-1.5` | `balanced_cost_quality` | Обновленный image-native baseline для generation/edit ветки. |
+| Generation-time image vision | `gpt-5.4-mini` | `balanced_cost_quality` | Unified vision tier для generation/edit orchestration. |
+
+Важно:
+
+- balanced refresh убирает `gpt-4.1-mini` из канонического sidebar shortlist; legacy compatibility может сохраняться только как временный migration input, но не как рекомендуемый новый baseline.
+- analysis, validation, reconstruction и generation-time vision теперь разведены по отдельным role keys даже если часть значений совпадает.
+- canonical baseline в `config.toml` теперь использует только `models.*`; legacy keys `default_model`, `model_options`, `validation_model`, `reconstruction_model` и `[structure_recognition].model` больше не являются допустимой формой для новых конфигов и примеров.
+- legacy source `DOCX_AI_VALIDATION_MODEL` и top-level `validation_model` во время миграции транслируются сразу в две роли: `models.image_analysis.default` и `models.image_validation.default`, потому что исторически один key обслуживал обе стадии.
+- до полного removal legacy aliases остаются только migration-compatible inputs внутри `config.py`; при их использовании loader пишет warning-события в лог, чтобы такие источники drift было легче убрать.
+- removal point для legacy aliases: после текущего migration window, когда registry-only config будет считаться стабильным контрактом, loader перестанет читать legacy model keys и env aliases. Новые конфиги и automation не должны зависеть от них уже сейчас.
+
 Базовые значения лежат в `config.toml`:
 
 ```toml
-default_model = "gpt-5-mini"
-model_options = ["gpt-5.4", "gpt-5.4-pro", "gpt-5.2", "gpt-5.1", "gpt-5-mini"]
+[models.text]
+default = "gpt-5.4-mini"
+options = ["gpt-5.4", "gpt-5.4-mini", "gpt-5-mini"]
+
+[models.structure_recognition]
+default = "gpt-5-mini"
+
+[models.image_analysis]
+default = "gpt-5.4-mini"
+
+[models.image_validation]
+default = "gpt-5.4-mini"
+
+[models.image_reconstruction]
+default = "gpt-5.4-mini"
+
+[models.image_generation]
+default = "gpt-image-1.5"
+
+[models.image_edit]
+default = "gpt-image-1.5"
+
+[models.image_generation_vision]
+default = "gpt-5.4-mini"
+
 chunk_size = 6000
 max_retries = 3
 image_mode_default = "no_change"
 semantic_validation_policy = "advisory"
 keep_all_image_variants = false
-validation_model = "gpt-4.1"
 enable_vision_image_analysis = true
 enable_vision_image_validation = true
 semantic_redraw_max_attempts = 2
@@ -260,7 +320,6 @@ semantic_redraw_max_model_calls_per_image = 9
 
 [structure_recognition]
 enabled = false
-model = "gpt-4o-mini"
 max_window_paragraphs = 1800
 overlap_paragraphs = 50
 timeout_seconds = 60
@@ -272,12 +331,12 @@ save_debug_artifacts = true
 Локальные override можно задавать через `.env`:
 
 ```env
-DOCX_AI_DEFAULT_MODEL=gpt-5-mini
-DOCX_AI_MODEL_OPTIONS=gpt-5.4,gpt-5.4-pro,gpt-5.2,gpt-5.1,gpt-5-mini
+DOCX_AI_MODELS_TEXT_DEFAULT=gpt-5.4-mini
+DOCX_AI_MODELS_TEXT_OPTIONS=gpt-5.4,gpt-5.4-mini,gpt-5-mini
 DOCX_AI_CHUNK_SIZE=6000
 DOCX_AI_MAX_RETRIES=3
 DOCX_AI_STRUCTURE_RECOGNITION_ENABLED=false
-DOCX_AI_STRUCTURE_RECOGNITION_MODEL=gpt-4o-mini
+DOCX_AI_MODELS_STRUCTURE_RECOGNITION_DEFAULT=gpt-5-mini
 DOCX_AI_STRUCTURE_RECOGNITION_MAX_WINDOW_PARAGRAPHS=1800
 DOCX_AI_STRUCTURE_RECOGNITION_OVERLAP_PARAGRAPHS=50
 DOCX_AI_STRUCTURE_RECOGNITION_TIMEOUT_SECONDS=60
@@ -288,7 +347,12 @@ DOCX_AI_LOG_LEVEL=INFO
 DOCX_AI_IMAGE_MODE_DEFAULT=no_change
 DOCX_AI_SEMANTIC_VALIDATION_POLICY=advisory
 DOCX_AI_KEEP_ALL_IMAGE_VARIANTS=false
-DOCX_AI_VALIDATION_MODEL=gpt-4.1
+DOCX_AI_MODELS_IMAGE_ANALYSIS_DEFAULT=gpt-5.4-mini
+DOCX_AI_MODELS_IMAGE_VALIDATION_DEFAULT=gpt-5.4-mini
+DOCX_AI_MODELS_IMAGE_RECONSTRUCTION_DEFAULT=gpt-5.4-mini
+DOCX_AI_MODELS_IMAGE_GENERATION_DEFAULT=gpt-image-1.5
+DOCX_AI_MODELS_IMAGE_EDIT_DEFAULT=gpt-image-1.5
+DOCX_AI_MODELS_IMAGE_GENERATION_VISION_DEFAULT=gpt-5.4-mini
 DOCX_AI_ENABLE_VISION_IMAGE_ANALYSIS=true
 DOCX_AI_ENABLE_VISION_IMAGE_VALIDATION=true
 DOCX_AI_SEMANTIC_REDRAW_MAX_ATTEMPTS=2

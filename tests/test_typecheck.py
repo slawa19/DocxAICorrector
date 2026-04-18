@@ -9,10 +9,10 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# Baseline: known pyright error count as of 2026-04-18.
+# Baseline: known pyright error count as of 2026-04-18 after test-suite hardening.
 # When you fix type errors across the project, lower this number.
 # The test fails if pyright finds MORE errors than the baseline (regression).
-_ERROR_BASELINE = 416
+_ERROR_BASELINE = 0
 
 
 def _run_pyright() -> dict:

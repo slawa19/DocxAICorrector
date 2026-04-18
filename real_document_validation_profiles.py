@@ -6,6 +6,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from config import get_text_model_default
+
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "corpus_registry.toml"
 _SUPPORTED_TIERS = {"extraction", "structural", "full"}
@@ -133,7 +135,7 @@ def load_validation_registry(registry_path: str | Path | None = None) -> Validat
 
 def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeResolution:
     ui_defaults = ResolvedRuntimeConfig(
-        model=str(app_config.default_model),
+        model=get_text_model_default(app_config),
         chunk_size=int(app_config.chunk_size),
         max_retries=int(app_config.max_retries),
         image_mode=str(app_config.image_mode_default),

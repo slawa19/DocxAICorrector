@@ -36,6 +36,18 @@ def build_analysis_result(**overrides):
     return ImageAnalysisResult(**payload)
 
 
+def _with_test_models(resolved_test_model_registry, kwargs: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = dict(kwargs or {})
+    payload.setdefault("model_config", resolved_test_model_registry)
+    return payload
+
+
+def test_model_registry_helper_injects_test_models(resolved_test_model_registry) -> None:
+    payload = _with_test_models(resolved_test_model_registry, {"client": object()})
+
+    assert payload["model_config"] is resolved_test_model_registry
+
+
 PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAIElEQVR4nGP8z/D/PwMDAwMDEwMDA8N/BoYGBgYGAABd8gT+olr0cQAAAABJRU5ErkJggg=="
 )
@@ -133,7 +145,7 @@ def test_generate_image_candidate_safe_enhances_image_bytes():
     assert candidate != original_bytes
 
 
-def test_generate_image_candidate_structured_uses_vision_and_images_generate(monkeypatch):
+def test_generate_image_candidate_structured_uses_vision_and_images_generate(monkeypatch, resolved_test_model_registry):
     captured: dict[str, Any] = {"vision": None, "generate": None}
 
     class FakeResponsesClient:
@@ -161,13 +173,14 @@ def test_generate_image_candidate_structured_uses_vision_and_images_generate(mon
         build_analysis_result(),
         mode="semantic_redraw_structured",
         client=client,
+        model_config=resolved_test_model_registry,
     )
 
     assert candidate
     assert captured["vision"] is not None
     assert captured["generate"] is not None
-    assert captured["vision"]["model"] == image_generation.IMAGE_STRUCTURE_VISION_MODEL
-    assert captured["generate"]["model"] == image_generation.IMAGE_GENERATE_MODEL
+    assert captured["vision"]["model"] == resolved_test_model_registry.image_generation_vision
+    assert captured["generate"]["model"] == resolved_test_model_registry.image_generation
     assert captured["generate"]["response_format"] == "b64_json"
     assert captured["generate"]["quality"] == "high"
     assert captured["generate"]["size"] == "1024x1024"
@@ -182,7 +195,7 @@ def test_generate_image_candidate_structured_uses_vision_and_images_generate(mon
         assert generated_image.width == generated_image.height
 
 
-def test_generate_image_candidate_structured_preserves_generated_resolution_without_cropping_edge_content(monkeypatch):
+def test_generate_image_candidate_structured_preserves_generated_resolution_without_cropping_edge_content(monkeypatch, resolved_test_model_registry):
     class FakeResponsesClient:
         def create(self, **kwargs):
             return SimpleNamespace(output_text="layout description")
@@ -206,6 +219,7 @@ def test_generate_image_candidate_structured_preserves_generated_resolution_with
         build_analysis_result(),
         mode="semantic_redraw_structured",
         client=client,
+        **_with_test_models(resolved_test_model_registry),
     )
 
     with Image.open(BytesIO(candidate)) as restored_image:
@@ -216,7 +230,7 @@ def test_generate_image_candidate_structured_preserves_generated_resolution_with
         assert bottom_band_detected
 
 
-def test_generate_image_candidate_structured_edit_preserves_edge_content_without_generate_fallback(monkeypatch):
+def test_generate_image_candidate_structured_edit_preserves_edge_content_without_generate_fallback(monkeypatch, resolved_test_model_registry):
     captured: dict[str, Any] = {"edit": None}
 
     class FakeImagesClient:
@@ -242,6 +256,7 @@ def test_generate_image_candidate_structured_edit_preserves_edge_content_without
         build_analysis_result(render_strategy="semantic_redraw_structured"),
         mode="semantic_redraw_structured",
         client=client,
+        **_with_test_models(resolved_test_model_registry),
     )
 
     assert captured["edit"] is not None
@@ -253,7 +268,7 @@ def test_generate_image_candidate_structured_edit_preserves_edge_content_without
         assert bottom_band_detected
 
 
-def test_generate_image_candidate_structured_trims_large_generated_margins_before_restore(monkeypatch):
+def test_generate_image_candidate_structured_trims_large_generated_margins_before_restore(monkeypatch, resolved_test_model_registry):
     class FakeResponsesClient:
         def create(self, **kwargs):
             return SimpleNamespace(output_text="layout description")
@@ -277,6 +292,7 @@ def test_generate_image_candidate_structured_trims_large_generated_margins_befor
         build_analysis_result(),
         mode="semantic_redraw_structured",
         client=client,
+        **_with_test_models(resolved_test_model_registry),
     )
 
     with Image.open(BytesIO(candidate)) as restored_image:
@@ -296,7 +312,7 @@ def test_generate_image_candidate_structured_trims_large_generated_margins_befor
         assert rightmost_blue >= restored_image.width - 7
 
 
-def test_generate_image_candidate_direct_uses_creative_vision_and_images_generate(monkeypatch):
+def test_generate_image_candidate_direct_uses_creative_vision_and_images_generate(monkeypatch, resolved_test_model_registry):
     captured: dict[str, Any] = {"vision": None, "generate": None}
 
     class FakeResponsesClient:
@@ -325,13 +341,14 @@ def test_generate_image_candidate_direct_uses_creative_vision_and_images_generat
         build_analysis_result(render_strategy="semantic_redraw_direct"),
         mode="semantic_redraw_direct",
         client=client,
+        model_config=resolved_test_model_registry,
     )
 
     assert candidate
     assert captured["vision"] is not None
     assert captured["generate"] is not None
-    assert captured["vision"]["model"] == image_generation.IMAGE_STRUCTURE_VISION_MODEL
-    assert captured["generate"]["model"] == image_generation.IMAGE_GENERATE_MODEL
+    assert captured["vision"]["model"] == resolved_test_model_registry.image_generation_vision
+    assert captured["generate"]["model"] == resolved_test_model_registry.image_generation
     assert captured["generate"]["response_format"] == "b64_json"
     assert captured["generate"]["quality"] == "high"
     assert captured["generate"]["size"] == "1024x1024"
@@ -437,7 +454,7 @@ def test_extract_supported_edit_size_fallback_prefers_nearest_supported_size():
     assert fallback == "1024x1024"
 
 
-def test_generate_image_candidate_uses_provided_client(monkeypatch):
+def test_generate_image_candidate_uses_provided_client(monkeypatch, resolved_test_model_registry):
     provided_client = SimpleNamespace(
         responses=SimpleNamespace(
             create=lambda **kwargs: SimpleNamespace(output_text="creative redraw brief")
@@ -461,12 +478,13 @@ def test_generate_image_candidate_uses_provided_client(monkeypatch):
         build_analysis_result(render_strategy="semantic_redraw_direct"),
         mode="semantic_redraw_direct",
         client=provided_client,
+        **_with_test_models(resolved_test_model_registry),
     )
 
     assert candidate
 
 
-def test_generate_image_candidate_direct_passes_source_image_to_vision_for_jpeg_input(monkeypatch):
+def test_generate_image_candidate_direct_passes_source_image_to_vision_for_jpeg_input(monkeypatch, resolved_test_model_registry):
     captured: dict[str, Any] = {"vision": None}
 
     class FakeResponsesClient:
@@ -493,6 +511,7 @@ def test_generate_image_candidate_direct_passes_source_image_to_vision_for_jpeg_
         build_analysis_result(render_strategy="semantic_redraw_direct"),
         mode="semantic_redraw_direct",
         client=client,
+        **_with_test_models(resolved_test_model_registry),
     )
 
     assert candidate
@@ -501,7 +520,7 @@ def test_generate_image_candidate_direct_passes_source_image_to_vision_for_jpeg_
     assert image_payload.startswith("data:image/jpeg;base64,")
 
 
-def test_generate_image_candidate_direct_falls_back_to_direct_edit_then_structured_generate(monkeypatch):
+def test_generate_image_candidate_direct_falls_back_to_direct_edit_then_structured_generate(monkeypatch, resolved_test_model_registry):
     captured = {}
 
     class FakeResponsesClient:
@@ -539,15 +558,16 @@ def test_generate_image_candidate_direct_falls_back_to_direct_edit_then_structur
         build_analysis_result(render_strategy="semantic_redraw_direct", contains_text=True),
         mode="semantic_redraw_direct",
         client=client,
+        model_config=resolved_test_model_registry,
     )
 
     assert candidate
-    assert captured["edit"]["model"] == image_generation.IMAGE_EDIT_MODEL
-    assert captured["generate_calls"][1]["model"] == image_generation.IMAGE_GENERATE_MODEL
+    assert captured["edit"]["model"] == resolved_test_model_registry.image_edit
+    assert captured["generate_calls"][1]["model"] == resolved_test_model_registry.image_generation
     assert "Fallback structured description" in captured["generate_calls"][1]["prompt"]
 
 
-def test_generate_image_candidate_direct_preserves_aspect_ratio_without_downscaling_back_to_source(monkeypatch):
+def test_generate_image_candidate_direct_preserves_aspect_ratio_without_downscaling_back_to_source(monkeypatch, resolved_test_model_registry):
     class FakeResponsesClient:
         def create(self, **kwargs):
             return SimpleNamespace(output_text="creative redraw brief")
@@ -572,6 +592,7 @@ def test_generate_image_candidate_direct_preserves_aspect_ratio_without_downscal
         build_analysis_result(render_strategy="semantic_redraw_direct"),
         mode="semantic_redraw_direct",
         client=client,
+        **_with_test_models(resolved_test_model_registry),
     )
 
     with Image.open(BytesIO(candidate)) as restored_image:
@@ -580,7 +601,7 @@ def test_generate_image_candidate_direct_preserves_aspect_ratio_without_downscal
         assert abs((restored_image.width / restored_image.height) - (18 / 10)) < 0.2
 
 
-def test_generate_image_candidate_direct_retries_without_unknown_optional_param(monkeypatch):
+def test_generate_image_candidate_direct_retries_without_unknown_optional_param(monkeypatch, resolved_test_model_registry):
     captured_calls = []
 
     class FakeResponsesClient:
@@ -609,6 +630,7 @@ def test_generate_image_candidate_direct_retries_without_unknown_optional_param(
         build_analysis_result(render_strategy="semantic_redraw_direct"),
         mode="semantic_redraw_direct",
         client=client,
+        **_with_test_models(resolved_test_model_registry),
     )
 
     assert candidate
@@ -617,7 +639,7 @@ def test_generate_image_candidate_direct_retries_without_unknown_optional_param(
     assert "quality" not in captured_calls[1]
 
 
-def test_generate_image_candidate_direct_retries_after_retryable_error(monkeypatch):
+def test_generate_image_candidate_direct_retries_after_retryable_error(monkeypatch, resolved_test_model_registry):
     captured_calls = []
     sleep_calls = []
 
@@ -648,6 +670,7 @@ def test_generate_image_candidate_direct_retries_after_retryable_error(monkeypat
         build_analysis_result(render_strategy="semantic_redraw_direct"),
         mode="semantic_redraw_direct",
         client=client,
+        **_with_test_models(resolved_test_model_registry),
     )
 
     assert candidate
@@ -656,7 +679,7 @@ def test_generate_image_candidate_direct_retries_after_retryable_error(monkeypat
     assert captured_calls[0]["timeout"] == image_generation.IMAGE_API_TIMEOUT_SECONDS
 
 
-def test_generate_image_candidate_direct_stops_when_model_call_budget_is_exhausted(monkeypatch):
+def test_generate_image_candidate_direct_stops_when_model_call_budget_is_exhausted(monkeypatch, resolved_test_model_registry):
     captured_calls = []
     sleep_calls = []
 
@@ -680,6 +703,7 @@ def test_generate_image_candidate_direct_stops_when_model_call_budget_is_exhaust
             mode="semantic_redraw_direct",
             client=client,
             budget=image_generation.ImageModelCallBudget(max_calls=1),
+            **_with_test_models(resolved_test_model_registry),
         )
     except image_generation.ImageModelCallBudgetExceeded as exc:
         assert "budget exhausted" in str(exc)
@@ -823,7 +847,7 @@ def test_call_responses_create_retries_without_temperature_and_logs_once(monkeyp
 
 
 
-def test_generate_image_candidate_direct_retries_with_shorter_prompt(monkeypatch):
+def test_generate_image_candidate_direct_retries_with_shorter_prompt(monkeypatch, resolved_test_model_registry):
     captured_calls = []
 
     class FakeResponsesClient:
@@ -858,6 +882,7 @@ def test_generate_image_candidate_direct_retries_with_shorter_prompt(monkeypatch
         build_analysis_result(render_strategy="semantic_redraw_direct", structure_summary="x" * 1500),
         mode="semantic_redraw_direct",
         client=client,
+        **_with_test_models(resolved_test_model_registry),
     )
 
     assert candidate
@@ -866,7 +891,7 @@ def test_generate_image_candidate_direct_retries_with_shorter_prompt(monkeypatch
     assert len(captured_calls[1]["prompt"]) <= 1000
 
 
-def test_generate_image_candidate_direct_does_not_force_reconstruction_for_direct_mode(monkeypatch):
+def test_generate_image_candidate_direct_does_not_force_reconstruction_for_direct_mode(monkeypatch, resolved_test_model_registry):
     calls = {"creative": 0, "reconstruct": 0}
 
     monkeypatch.setattr(
@@ -888,6 +913,7 @@ def test_generate_image_candidate_direct_does_not_force_reconstruction_for_direc
         build_analysis_result(render_strategy="deterministic_reconstruction"),
         mode="semantic_redraw_direct",
         client=client,
+        **_with_test_models(resolved_test_model_registry),
     )
 
     assert candidate == PNG_BYTES
@@ -895,7 +921,7 @@ def test_generate_image_candidate_direct_does_not_force_reconstruction_for_direc
     assert calls["reconstruct"] == 0
 
 
-def test_generate_image_candidate_structured_retries_with_shorter_prompt(monkeypatch):
+def test_generate_image_candidate_structured_retries_with_shorter_prompt(monkeypatch, resolved_test_model_registry):
     captured_calls = []
 
     class FakeResponsesClient:
@@ -928,6 +954,7 @@ def test_generate_image_candidate_structured_retries_with_shorter_prompt(monkeyp
         build_analysis_result(),
         mode="semantic_redraw_structured",
         client=client,
+        **_with_test_models(resolved_test_model_registry),
     )
 
     assert candidate
@@ -936,7 +963,7 @@ def test_generate_image_candidate_structured_retries_with_shorter_prompt(monkeyp
     assert len(captured_calls[1]["prompt"]) <= 1000
 
 
-def test_generate_image_candidate_structured_retries_vision_request_after_retryable_error(monkeypatch):
+def test_generate_image_candidate_structured_retries_vision_request_after_retryable_error(monkeypatch, resolved_test_model_registry):
     sleep_calls = []
     vision_calls = []
 
@@ -967,6 +994,7 @@ def test_generate_image_candidate_structured_retries_vision_request_after_retrya
         build_analysis_result(),
         mode="semantic_redraw_structured",
         client=client,
+        **_with_test_models(resolved_test_model_registry),
     )
 
     assert candidate
@@ -975,7 +1003,7 @@ def test_generate_image_candidate_structured_retries_vision_request_after_retrya
     assert vision_calls[0]["timeout"] == image_generation.IMAGE_API_TIMEOUT_SECONDS
 
 
-def test_generate_image_candidate_structured_reads_nested_vision_output(monkeypatch):
+def test_generate_image_candidate_structured_reads_nested_vision_output(monkeypatch, resolved_test_model_registry):
     class FakeResponsesClient:
         def create(self, **kwargs):
             return SimpleNamespace(
@@ -1005,12 +1033,13 @@ def test_generate_image_candidate_structured_reads_nested_vision_output(monkeypa
         build_analysis_result(),
         mode="semantic_redraw_structured",
         client=client,
+        **_with_test_models(resolved_test_model_registry),
     )
 
     assert candidate
 
 
-def test_generate_image_candidate_structured_falls_back_to_reconstruction_after_incomplete_vision_response(monkeypatch):
+def test_generate_image_candidate_structured_falls_back_to_reconstruction_after_incomplete_vision_response(monkeypatch, resolved_test_model_registry):
     class IncompleteResponsesClient:
         def create(self, **kwargs):
             return SimpleNamespace(status="incomplete", output=[SimpleNamespace(type="reasoning", status="incomplete")])
@@ -1034,13 +1063,14 @@ def test_generate_image_candidate_structured_falls_back_to_reconstruction_after_
         ),
         mode="semantic_redraw_structured",
         client=client,
+        **_with_test_models(resolved_test_model_registry),
     )
 
     assert candidate == build_square_semantic_output_bytes()
     assert len(reconstruction_calls) == 1
 
 
-def test_generate_image_candidate_structured_uses_fixed_generate_size_without_auto_retry(monkeypatch):
+def test_generate_image_candidate_structured_uses_fixed_generate_size_without_auto_retry(monkeypatch, resolved_test_model_registry):
     captured_calls = []
 
     class FakeResponsesClient:
@@ -1075,6 +1105,7 @@ def test_generate_image_candidate_structured_uses_fixed_generate_size_without_au
         build_analysis_result(structure_summary="x" * 1500),
         mode="semantic_redraw_structured",
         client=client,
+        **_with_test_models(resolved_test_model_registry),
     )
 
     assert candidate
@@ -1083,7 +1114,7 @@ def test_generate_image_candidate_structured_uses_fixed_generate_size_without_au
     assert captured_calls[1]["size"] == "1024x1024"
 
 
-def test_generate_image_candidate_structured_retries_generate_request_after_server_error(monkeypatch):
+def test_generate_image_candidate_structured_retries_generate_request_after_server_error(monkeypatch, resolved_test_model_registry):
     captured_calls = []
     sleep_calls = []
 
@@ -1114,6 +1145,7 @@ def test_generate_image_candidate_structured_retries_generate_request_after_serv
         build_analysis_result(),
         mode="semantic_redraw_structured",
         client=client,
+        **_with_test_models(resolved_test_model_registry),
     )
 
     assert candidate
@@ -1132,7 +1164,7 @@ def test_generate_image_candidate_semantic_falls_back_to_safe_when_redraw_is_for
     assert candidate.startswith(b"\x89PNG\r\n\x1a\n")
 
 
-def test_generate_image_candidate_uses_legacy_semantic_path_when_reconstruction_disabled(monkeypatch):
+def test_generate_image_candidate_uses_legacy_semantic_path_when_reconstruction_disabled(monkeypatch, resolved_test_model_registry):
     captured = {}
 
     class FakeResponsesClient:
@@ -1162,14 +1194,15 @@ def test_generate_image_candidate_uses_legacy_semantic_path_when_reconstruction_
         mode="semantic_redraw_structured",
         client=client,
         prefer_deterministic_reconstruction=False,
+        model_config=resolved_test_model_registry,
     )
 
     assert candidate
-    assert captured["vision"]["model"] == image_generation.IMAGE_STRUCTURE_VISION_MODEL
-    assert captured["generate"]["model"] == image_generation.IMAGE_GENERATE_MODEL
+    assert captured["vision"]["model"] == resolved_test_model_registry.image_generation_vision
+    assert captured["generate"]["model"] == resolved_test_model_registry.image_generation
 
 
-def test_generate_image_candidate_structured_prefers_high_fidelity_edit_before_generate(monkeypatch):
+def test_generate_image_candidate_structured_prefers_high_fidelity_edit_before_generate(monkeypatch, resolved_test_model_registry):
     captured = {}
 
     class FakeImagesClient:
@@ -1192,15 +1225,16 @@ def test_generate_image_candidate_structured_prefers_high_fidelity_edit_before_g
         build_analysis_result(render_strategy="semantic_redraw_structured"),
         mode="semantic_redraw_structured",
         client=client,
+        model_config=resolved_test_model_registry,
     )
 
     assert candidate
-    assert captured["edit"]["model"] == image_generation.IMAGE_EDIT_MODEL
+    assert captured["edit"]["model"] == resolved_test_model_registry.image_edit
     assert captured["edit"]["input_fidelity"] == "high"
     assert captured["edit"]["output_format"] == "png"
 
 
-def test_generate_image_candidate_direct_includes_extracted_text_in_prompt(monkeypatch):
+def test_generate_image_candidate_direct_includes_extracted_text_in_prompt(monkeypatch, resolved_test_model_registry):
     captured = {}
 
     class FakeImagesClient:
@@ -1223,6 +1257,7 @@ def test_generate_image_candidate_direct_includes_extracted_text_in_prompt(monke
         build_analysis_result(render_strategy="semantic_redraw_direct", extracted_text="Факты -> Анализ -> Вывод"),
         mode="semantic_redraw_direct",
         client=client,
+        **_with_test_models(resolved_test_model_registry),
     )
 
     assert candidate
