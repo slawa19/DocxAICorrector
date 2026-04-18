@@ -427,6 +427,7 @@ def _build_request_kwargs(*, model: str, system_prompt: str, user_prompt: str, t
     return {
         "model": model,
         "input": payload,
+        "temperature": 0.4,
         "max_output_tokens": _estimate_max_output_tokens(target_text),
     }
 
