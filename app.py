@@ -237,6 +237,7 @@ def _store_preparation_summary(*, prepared_run_context) -> None:
     relation_metrics = application_flow.flatten_relation_metrics(
         getattr(prepared_run_context, "relation_report", None)
     )
+    structure_status_note = application_flow.build_structure_processing_status_note(prepared_run_context)
     st.session_state.latest_preparation_summary = {
         "stage": str(getattr(prepared_run_context, "preparation_stage", "Документ подготовлен")),
         "detail": str(getattr(prepared_run_context, "preparation_detail", "")),
@@ -249,6 +250,7 @@ def _store_preparation_summary(*, prepared_run_context) -> None:
         **structure_summary.as_preparation_summary_metrics(),
         "elapsed": elapsed,
         "progress": 1.0,
+        "status_notes": [structure_status_note] if structure_status_note else [],
         **normalization_metrics,
         **relation_metrics,
     }
@@ -796,9 +798,11 @@ def main() -> None:
     if not restartable_outcome:
         preparation_summary = st.session_state.get("latest_preparation_summary")
         if isinstance(preparation_summary, dict) and notice_message is not None:
+            status_notes = [str(note).strip() for note in preparation_summary.get("status_notes", []) if str(note).strip()]
+            status_notes.append(notice_message)
             preparation_summary = {
                 **preparation_summary,
-                "secondary_stage_line": notice_message,
+                "status_notes": status_notes,
             }
         render_preparation_summary(preparation_summary)
     render_run_log()

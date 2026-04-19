@@ -23,7 +23,13 @@ from models import StructureRecognitionSummary
 from models import clone_prepared_image_asset
 from models import StructureMap
 from processing_runtime import FrozenUploadPayload, build_in_memory_uploaded_file
+from runtime_artifact_retention import (
+    STRUCTURE_MAPS_MAX_AGE_SECONDS,
+    STRUCTURE_MAPS_MAX_COUNT,
+    prune_artifact_dir,
+)
 from structure_recognition import apply_structure_map, build_structure_map
+from structure_validation import StructureValidationReport, validate_structure_quality, write_structure_validation_debug_artifact
 
 
 @dataclass
@@ -38,6 +44,9 @@ class PreparedDocumentData:
     relation_report: RelationNormalizationReport | None = None
     structure_map: StructureMap | None = None
     structure_recognition_summary: StructureRecognitionSummary = StructureRecognitionSummary()
+    structure_validation_report: StructureValidationReport | None = None
+    structure_recognition_mode: str = "off"
+    structure_ai_attempted: bool = False
     cached: bool = False
 
     @property
@@ -166,6 +175,60 @@ def _build_structure_recognition_summary(*, applied_metrics: dict[str, int], div
     )
 
 
+def _format_structure_escalation_reasons(report: StructureValidationReport | None) -> str:
+    if report is None or not report.escalation_reasons:
+        return ""
+    labels = {
+        "low_explicit_heading_density": "мало явных заголовков",
+        "high_suspicious_short_body_ratio": "много коротких body-абзацев",
+        "high_all_caps_or_centered_body_ratio": "много CAPS/центрированных body-абзацев",
+        "toc_like_sequence_detected": "обнаружен TOC-подобный фрагмент",
+        "heading_only_collapse_risk": "есть риск потери заголовочной структуры",
+    }
+    return ", ".join(labels.get(reason, reason) for reason in report.escalation_reasons)
+
+
+def build_structure_processing_status_note(source: object | None) -> str:
+    if source is None:
+        return ""
+
+    mode = str(getattr(source, "structure_recognition_mode", "off") or "off").strip().lower()
+    validation_report = getattr(source, "structure_validation_report", None)
+    structure_map = getattr(source, "structure_map", None)
+    structure_summary = StructureRecognitionSummary.from_source(getattr(source, "structure_recognition_summary", None))
+    ai_attempted = bool(getattr(source, "structure_ai_attempted", False))
+    escalation_reasons = _format_structure_escalation_reasons(validation_report)
+
+    if mode == "off":
+        return "Структура: AI выключен, использованы текущие правила."
+    if mode == "auto":
+        if validation_report is None:
+            return "Структура: auto-режим без gate-отчёта, использованы текущие правила."
+        if not bool(validation_report.escalation_recommended):
+            return "Структура: auto-режим, эскалация в AI не потребовалась; структурный риск не найден."
+        reason_suffix = f" Причины: {escalation_reasons}." if escalation_reasons else ""
+        if not ai_attempted or structure_map is None:
+            return f"Структура: auto-режим, выполнена эскалация в AI; AI недоступен, использованы текущие правила.{reason_suffix}"
+        if structure_summary.ai_classified_count > 0:
+            return (
+                "Структура: auto-режим, выполнена эскалация в AI; "
+                f"классифицировано {structure_summary.ai_classified_count} абзацев, "
+                f"найдено {structure_summary.ai_heading_count} заголовков.{reason_suffix}"
+            )
+        return f"Структура: auto-режим, выполнена эскалация в AI; AI не внёс изменений.{reason_suffix}"
+    if mode == "always":
+        if not ai_attempted or structure_map is None:
+            return "Структура: режим always, AI недоступен, использованы текущие правила."
+        if structure_summary.ai_classified_count > 0:
+            return (
+                "Структура: режим always, AI-распознавание выполнено; "
+                f"классифицировано {structure_summary.ai_classified_count} абзацев, "
+                f"найдено {structure_summary.ai_heading_count} заголовков."
+            )
+        return "Структура: режим always, AI-распознавание выполнено, но изменений не внесло."
+    return ""
+
+
 def _build_structure_map_cache_key(*, paragraphs: list, app_config: Mapping[str, Any]) -> str:
     payload = {
         "model": get_model_role_value(app_config, "structure_recognition"),
@@ -233,13 +296,15 @@ def _write_structure_map_debug_artifact(*, cache_key: str, structure_map: Struct
         ),
         encoding="utf-8",
     )
+    prune_artifact_dir(
+        target_dir=_STRUCTURE_MAP_DEBUG_DIR,
+        max_age_seconds=STRUCTURE_MAPS_MAX_AGE_SECONDS,
+        max_count=STRUCTURE_MAPS_MAX_COUNT,
+    )
     return str(artifact_path)
 
 
 def _run_structure_recognition(*, paragraphs: list, image_assets: list, app_config: Mapping[str, Any], progress_callback, normalization_report, relation_report) -> tuple[StructureMap | None, StructureRecognitionSummary]:
-    if not bool(app_config.get("structure_recognition_enabled", False)):
-        return None, StructureRecognitionSummary()
-
     base_metrics = _build_preparation_stage_metrics(
         paragraph_count=len(paragraphs),
         image_count=len(image_assets),
@@ -336,6 +401,48 @@ def emit_preparation_progress(progress_callback, *, stage: str, detail: str, pro
     progress_callback(stage=stage, detail=detail, progress=progress, metrics=metrics or {})
 
 
+def _resolve_structure_recognition_mode(app_config: Mapping[str, Any]) -> str:
+    mode = str(app_config.get("structure_recognition_mode", "")).strip().lower()
+    if mode in {"off", "auto", "always"}:
+        return mode
+    return "always" if bool(app_config.get("structure_recognition_enabled", False)) else "off"
+
+
+def _run_structure_validation(
+    *,
+    paragraphs: list,
+    image_assets: list,
+    app_config: Mapping[str, Any],
+    progress_callback,
+    normalization_report,
+    relation_report,
+) -> StructureValidationReport:
+    base_metrics = _build_preparation_stage_metrics(
+        paragraph_count=len(paragraphs),
+        image_count=len(image_assets),
+        normalization_report=normalization_report,
+        relation_report=relation_report,
+    )
+    emit_preparation_progress(
+        progress_callback,
+        stage="Структура: валидация",
+        detail="Оцениваю структурный риск документа детерминированно.",
+        progress=0.30,
+        metrics=base_metrics,
+    )
+    report = validate_structure_quality(paragraphs=paragraphs, app_config=app_config)
+    if bool(app_config.get("structure_validation_save_debug_artifacts", True)):
+        artifact_path = write_structure_validation_debug_artifact(report=report, app_config=app_config)
+        log_event(
+            logging.INFO,
+            "structure_validation_debug_artifact_saved",
+            "Сохранён debug artifact структурной валидации.",
+            artifact_path=artifact_path,
+            escalation_recommended=report.escalation_recommended,
+        )
+    return report
+
+
 def build_prepared_source_key(
     uploaded_file_token: str,
     chunk_size: int,
@@ -344,8 +451,13 @@ def build_prepared_source_key(
     paragraph_boundary_ai_review_mode: str = "off",
     relation_normalization_key: str = "phase2_default:epigraph_attribution,image_caption,table_caption,toc_region",
     structure_recognition_enabled: bool = False,
+    structure_recognition_mode: str | None = None,
+    structure_validation_enabled: bool = True,
 ) -> str:
-    structure_recognition_suffix = ":sr=1" if structure_recognition_enabled else ""
+    resolved_mode = (structure_recognition_mode or ("always" if structure_recognition_enabled else "off")).strip().lower()
+    structure_recognition_suffix = f":sr={resolved_mode}"
+    if resolved_mode == "auto":
+        structure_recognition_suffix += f":sv={1 if structure_validation_enabled else 0}"
     return (
         f"{uploaded_file_token}:{chunk_size}:{paragraph_boundary_normalization_mode}:"
         f"{paragraph_boundary_ai_review_mode}:{relation_normalization_key}{structure_recognition_suffix}"
@@ -379,13 +491,87 @@ def _prepare_document_for_processing(
             **_build_normalization_metrics(normalization_report, relation_report),
         },
     )
-    structure_map, structure_summary = _run_structure_recognition(
-        paragraphs=paragraphs,
-        image_assets=image_assets,
-        app_config=app_config,
-        progress_callback=progress_callback,
-        normalization_report=normalization_report,
-        relation_report=relation_report,
+    structure_validation_report = None
+    structure_mode = _resolve_structure_recognition_mode(app_config)
+    should_run_ai = False
+    structure_ai_attempted = False
+    if structure_mode == "always":
+        should_run_ai = True
+    elif structure_mode == "auto":
+        structure_validation_report = _run_structure_validation(
+            paragraphs=paragraphs,
+            image_assets=image_assets,
+            app_config=app_config,
+            progress_callback=progress_callback,
+            normalization_report=normalization_report,
+            relation_report=relation_report,
+        )
+        if not bool(app_config.get("structure_validation_enabled", True)):
+            emit_preparation_progress(
+                progress_callback,
+                stage="Структура: детерминированно",
+                detail="Структурная валидация отключена. Используются текущие правила.",
+                progress=0.35,
+                metrics=_build_preparation_stage_metrics(
+                    paragraph_count=len(paragraphs),
+                    image_count=len(image_assets),
+                    normalization_report=normalization_report,
+                    relation_report=relation_report,
+                ),
+            )
+        else:
+            should_run_ai = structure_validation_report.escalation_recommended
+            if not should_run_ai:
+                emit_preparation_progress(
+                    progress_callback,
+                    stage="Структура: детерминированно",
+                    detail="Структурный риск не найден. Используются текущие правила.",
+                    progress=0.35,
+                    metrics=_build_preparation_stage_metrics(
+                        paragraph_count=len(paragraphs),
+                        image_count=len(image_assets),
+                        normalization_report=normalization_report,
+                        relation_report=relation_report,
+                    ),
+                )
+    structure_ai_attempted = should_run_ai
+    structure_map, structure_summary = (
+        _run_structure_recognition(
+            paragraphs=paragraphs,
+            image_assets=image_assets,
+            app_config=app_config,
+            progress_callback=progress_callback,
+            normalization_report=normalization_report,
+            relation_report=relation_report,
+        )
+        if should_run_ai
+        else (None, StructureRecognitionSummary())
+    )
+    structure_status_note = build_structure_processing_status_note(
+        type(
+            "StructureProcessingStatusSource",
+            (),
+            {
+                "structure_recognition_mode": structure_mode,
+                "structure_validation_report": structure_validation_report,
+                "structure_map": structure_map,
+                "structure_recognition_summary": structure_summary,
+                "structure_ai_attempted": structure_ai_attempted,
+            },
+        )()
+    )
+    log_event(
+        logging.INFO,
+        "structure_processing_outcome",
+        "Определён итог обработки структуры документа.",
+        structure_recognition_mode=structure_mode,
+        structure_ai_attempted=structure_ai_attempted,
+        structure_ai_succeeded=structure_map is not None,
+        escalation_recommended=bool(getattr(structure_validation_report, "escalation_recommended", False)),
+        escalation_reasons=list(getattr(structure_validation_report, "escalation_reasons", ())),
+        ai_classified_count=structure_summary.ai_classified_count,
+        ai_heading_count=structure_summary.ai_heading_count,
+        structure_status_note=structure_status_note,
     )
     source_text = build_document_text(paragraphs)
     emit_preparation_progress(
@@ -448,6 +634,9 @@ def _prepare_document_for_processing(
         relation_report=relation_report,
         structure_map=structure_map,
         structure_recognition_summary=structure_summary,
+        structure_validation_report=structure_validation_report,
+        structure_recognition_mode=structure_mode,
+        structure_ai_attempted=structure_ai_attempted,
         cached=False,
     )
 
@@ -493,6 +682,9 @@ def _clone_prepared_document(data: PreparedDocumentData, prepared_source_key: st
         relation_report=deepcopy(data.relation_report),
         structure_map=deepcopy(data.structure_map),
         structure_recognition_summary=data.structure_recognition_summary,
+        structure_validation_report=deepcopy(data.structure_validation_report),
+        structure_recognition_mode=data.structure_recognition_mode,
+        structure_ai_attempted=data.structure_ai_attempted,
         cached=cached,
     )
 
@@ -588,18 +780,26 @@ def prepare_document_for_processing(
         paragraph_boundary_ai_review_mode=ai_review_mode,
         relation_normalization_key=relation_normalization_key,
         structure_recognition_enabled=bool(resolved_config.get("structure_recognition_enabled", False)),
+        structure_recognition_mode=str(resolved_config.get("structure_recognition_mode", "") or ""),
+        structure_validation_enabled=bool(resolved_config.get("structure_validation_enabled", True)),
     )
     cached, in_flight, cache_level = _read_or_reserve_cached_prepared_document(
         session_state=session_state,
         prepared_source_key=prepared_source_key,
     )
     if cached is not None:
+        structure_status_note = build_structure_processing_status_note(cached)
         log_event(
             logging.INFO,
             "preparation_cache_hit",
             "Использован кэш подготовки документа.",
             prepared_source_key=prepared_source_key,
             cache_level=cache_level,
+            structure_status_note=structure_status_note,
+            structure_recognition_mode=cached.structure_recognition_mode,
+            structure_ai_attempted=cached.structure_ai_attempted,
+            escalation_recommended=bool(getattr(cached.structure_validation_report, "escalation_recommended", False)),
+            escalation_reasons=list(getattr(cached.structure_validation_report, "escalation_reasons", ())),
         )
         emit_preparation_progress(
             progress_callback,

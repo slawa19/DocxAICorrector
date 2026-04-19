@@ -42,6 +42,7 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     assert app_config["paragraph_boundary_normalization_enabled"] is True
     assert app_config["paragraph_boundary_normalization_mode"] == "high_only"
     assert app_config["paragraph_boundary_normalization_save_debug_artifacts"] is True
+    assert app_config["structure_recognition_mode"] == "off"
     assert app_config["structure_recognition_enabled"] is False
     assert app_config["structure_recognition_model"] == TEST_STRUCTURE_RECOGNITION_MODEL
     assert models.structure_recognition == TEST_STRUCTURE_RECOGNITION_MODEL
@@ -51,6 +52,14 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     assert app_config["structure_recognition_min_confidence"] == "medium"
     assert app_config["structure_recognition_cache_enabled"] is True
     assert app_config["structure_recognition_save_debug_artifacts"] is True
+    assert app_config["structure_validation_enabled"] is True
+    assert app_config["structure_validation_min_paragraphs_for_auto_gate"] == 40
+    assert app_config["structure_validation_min_explicit_heading_density"] == 0.003
+    assert app_config["structure_validation_max_suspicious_short_body_ratio_without_escalation"] == 0.05
+    assert app_config["structure_validation_max_all_caps_or_centered_body_ratio_without_escalation"] == 0.03
+    assert app_config["structure_validation_toc_like_sequence_min_length"] == 4
+    assert app_config["structure_validation_forbid_heading_only_collapse"] is True
+    assert app_config["structure_validation_save_debug_artifacts"] is True
     assert app_config["relation_normalization_enabled"] is True
     assert app_config["relation_normalization_profile"] == "phase2_default"
     assert app_config["relation_normalization_enabled_relation_kinds"] == (
@@ -78,6 +87,7 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["paragraph_boundary_normalization_enabled"] is True
     assert app_config["paragraph_boundary_normalization_mode"] == "high_only"
     assert app_config["paragraph_boundary_normalization_save_debug_artifacts"] is True
+    assert app_config["structure_recognition_mode"] == "auto"
     assert app_config["structure_recognition_enabled"] is False
     assert app_config["structure_recognition_model"] == TEST_STRUCTURE_RECOGNITION_MODEL
     assert models.text.default == TEST_TEXT_MODEL_DEFAULT
@@ -341,6 +351,7 @@ def test_load_app_config_applies_structure_recognition_env_overrides(monkeypatch
     models = cast(config.ModelRegistry, app_config["models"])
 
     assert app_config["structure_recognition_enabled"] is True
+    assert app_config["structure_recognition_mode"] == "always"
     assert app_config["structure_recognition_model"] == "gpt-5.4"
     assert models.structure_recognition == "gpt-5.4"
     assert app_config["structure_recognition_max_window_paragraphs"] == 4000
@@ -349,6 +360,36 @@ def test_load_app_config_applies_structure_recognition_env_overrides(monkeypatch
     assert app_config["structure_recognition_min_confidence"] == "high"
     assert app_config["structure_recognition_cache_enabled"] is False
     assert app_config["structure_recognition_save_debug_artifacts"] is False
+
+
+def test_load_app_config_prefers_mode_over_legacy_enabled(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[structure_recognition]\nmode = "auto"\nenabled = true\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_ENABLED", "true")
+
+    app_config = config.load_app_config()
+
+    assert app_config["structure_recognition_mode"] == "auto"
+    assert app_config["structure_recognition_enabled"] is False
+
+
+def test_load_app_config_applies_structure_recognition_mode_env_override(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[structure_recognition]\nmode = "off"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_MODE", "always")
+
+    app_config = config.load_app_config()
+
+    assert app_config["structure_recognition_mode"] == "always"
+    assert app_config["structure_recognition_enabled"] is True
 
 
 def test_load_app_config_rejects_invalid_env_override_for_paragraph_boundary_mode(monkeypatch):
@@ -617,6 +658,7 @@ def test_get_client_loads_openai_api_key_from_dotenv(monkeypatch, tmp_path):
 
     monkeypatch.setattr(config, "ENV_PATH", dotenv_path)
     monkeypatch.setattr(config, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(config, "_CLIENT", None)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     config.get_client()

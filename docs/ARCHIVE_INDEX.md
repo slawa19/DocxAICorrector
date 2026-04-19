@@ -16,6 +16,18 @@
 2. Для общего пользовательского и архитектурного overview приоритет у `README.md`.
 3. Всё ниже считается archived, superseded или point-in-time материалом.
 
+## When An Active Spec Can Move To Archive
+
+Active spec из `docs/specs/` можно переносить в `docs/archive/specs/`, когда одновременно выполнены все условия ниже:
+
+1. описанное поведение реализовано в коде;
+2. канонические runtime/user-facing документы обновлены и больше не зависят от spec как от active source of truth;
+3. есть финальная user-visible verification по подходящему repo path, а не только agent-side shell capture;
+4. оставшиеся follow-up work items, если они есть, уже не блокируют основную цель spec и оформлены как отдельные future tasks, а не как незавершённость текущей spec;
+5. в архивном индексе можно коротко зафиксировать, что именно было реализовано и когда spec была перенесена.
+
+Если эти условия выполнены, spec считается realized historical context, а не active development surface.
+
 ## Current Sources Of Truth
 
 - `README.md`

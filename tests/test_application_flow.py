@@ -476,14 +476,14 @@ def test_prepare_run_context_for_background_uses_frozen_upload_payload(monkeypat
         chunk_size=6000,
         image_mode="safe",
         keep_all_image_variants=True,
-        app_config={"structure_recognition_enabled": True},
+        app_config={"structure_recognition_mode": "always", "structure_recognition_enabled": True},
         prepare_document_for_processing_fn=lambda **kwargs: (captured.setdefault("prepare", kwargs), prepared_document)[1],
     )
 
     assert result.uploaded_filename == "report.docx"
     assert result.uploaded_file_bytes == b"abc"
     assert result.uploaded_file_token == payload.file_token
-    assert captured["prepare"]["app_config"] == {"structure_recognition_enabled": True}
+    assert captured["prepare"]["app_config"] == {"structure_recognition_mode": "always", "structure_recognition_enabled": True}
 
 
 def test_prepare_run_context_for_background_uses_real_cache(monkeypatch):
@@ -518,7 +518,7 @@ def test_prepare_run_context_for_background_uses_real_cache(monkeypatch):
     )
 
     assert calls["extract"] == 1
-    assert second.prepared_source_key.endswith(":6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region")
+    assert second.prepared_source_key.endswith(":6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:sr=auto:sv=1")
     assert second.preparation_cached is True
     assert second.preparation_stage == "Документ подготовлен"
     assert progress_events[-1]["stage"] == "Документ подготовлен"

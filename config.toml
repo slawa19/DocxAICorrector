@@ -108,7 +108,7 @@ timeout_seconds = 30
 max_tokens_per_candidate = 120
 
 [structure_recognition]
-enabled = false
+mode = "auto"
 # DEPRECATED: use [models.structure_recognition].default instead.
 # model = "gpt-5-mini"
 max_window_paragraphs = 1800
@@ -116,6 +116,16 @@ overlap_paragraphs = 50
 timeout_seconds = 60
 min_confidence = "medium"
 cache_enabled = true
+save_debug_artifacts = true
+
+[structure_validation]
+enabled = true
+min_paragraphs_for_auto_gate = 40
+min_explicit_heading_density = 0.003
+max_suspicious_short_body_ratio_without_escalation = 0.05
+max_all_caps_or_centered_body_ratio_without_escalation = 0.03
+toc_like_sequence_min_length = 4
+forbid_heading_only_collapse = true
 save_debug_artifacts = true
 
 [image_output]

@@ -774,6 +774,38 @@ def test_render_preparation_summary_places_secondary_stage_line_inside_info_bloc
     assert any("Источник: DOCX" in text for text in captions)
 
 
+def test_render_preparation_summary_renders_all_status_notes_before_meta(monkeypatch):
+    session_state = SessionState()
+    captions = []
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "info", lambda text: None)
+    monkeypatch.setattr(ui.st, "write", lambda text: None)
+    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
+
+    ui.render_preparation_summary(
+        {
+            "stage": "Документ подготовлен",
+            "detail": "",
+            "file_size_bytes": 1024,
+            "paragraph_count": 5,
+            "image_count": 0,
+            "source_chars": 120,
+            "block_count": 2,
+            "cached": False,
+            "status_notes": [
+                "Структура: auto-режим, эскалация в AI не потребовалась; структурный риск не найден.",
+                "После анализа файла приложение скорректировало текстовые настройки.",
+            ],
+        },
+        FakeTarget(),
+    )
+
+    assert captions[0] == "Структура: auto-режим, эскалация в AI не потребовалась; структурный риск не найден."
+    assert captions[1] == "После анализа файла приложение скорректировало текстовые настройки."
+    assert any("Источник: DOCX" in text for text in captions)
+
+
 def test_render_live_status_shows_preparation_failure_title(monkeypatch):
     session_state = SessionState(
         processing_status={

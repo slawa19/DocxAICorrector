@@ -56,6 +56,7 @@ _LEGACY_TOML_MODEL_KEYS = (
     "validation_model",
     "reconstruction_model",
 )
+STRUCTURE_RECOGNITION_MODE_VALUES = ("off", "auto", "always")
 _EMITTED_MODEL_REGISTRY_LOG_KEYS: set[str] = set()
 
 
@@ -135,6 +136,7 @@ class AppConfig(Mapping[str, Any]):
     relation_normalization_profile: str
     relation_normalization_enabled_relation_kinds: tuple[str, ...]
     relation_normalization_save_debug_artifacts: bool
+    structure_recognition_mode: str
     structure_recognition_enabled: bool
     structure_recognition_model: str
     structure_recognition_max_window_paragraphs: int
@@ -143,6 +145,14 @@ class AppConfig(Mapping[str, Any]):
     structure_recognition_min_confidence: str
     structure_recognition_cache_enabled: bool
     structure_recognition_save_debug_artifacts: bool
+    structure_validation_enabled: bool
+    structure_validation_min_paragraphs_for_auto_gate: int
+    structure_validation_min_explicit_heading_density: float
+    structure_validation_max_suspicious_short_body_ratio_without_escalation: float
+    structure_validation_max_all_caps_or_centered_body_ratio_without_escalation: float
+    structure_validation_toc_like_sequence_min_length: int
+    structure_validation_forbid_heading_only_collapse: bool
+    structure_validation_save_debug_artifacts: bool
     output_body_font: str | None
     output_heading_font: str | None
     image_mode_default: str
@@ -914,6 +924,10 @@ def load_app_config() -> AppConfig:
         config_data,
         "paragraph_boundary_ai_review",
     )
+    structure_validation_config = parse_optional_config_section(
+        config_data,
+        "structure_validation",
+    )
     paragraph_boundary_normalization_enabled = parse_config_bool(
         paragraph_boundary_normalization_config,
         "enabled",
@@ -990,11 +1004,20 @@ def load_app_config() -> AppConfig:
         "save_debug_artifacts",
         True,
     )
-    structure_recognition_enabled = parse_config_bool(
+    legacy_structure_recognition_enabled = parse_config_bool(
         structure_recognition_config,
         "enabled",
         False,
     )
+    if "mode" in structure_recognition_config:
+        structure_recognition_mode = parse_choice_str(
+            structure_recognition_config,
+            "mode",
+            "off",
+            set(STRUCTURE_RECOGNITION_MODE_VALUES),
+        )
+    else:
+        structure_recognition_mode = "always" if legacy_structure_recognition_enabled else "off"
     structure_recognition_max_window_paragraphs = parse_config_int(
         structure_recognition_config,
         "max_window_paragraphs",
@@ -1023,6 +1046,46 @@ def load_app_config() -> AppConfig:
     )
     structure_recognition_save_debug_artifacts = parse_config_bool(
         structure_recognition_config,
+        "save_debug_artifacts",
+        True,
+    )
+    structure_validation_enabled = parse_config_bool(
+        structure_validation_config,
+        "enabled",
+        True,
+    )
+    structure_validation_min_paragraphs_for_auto_gate = parse_config_int(
+        structure_validation_config,
+        "min_paragraphs_for_auto_gate",
+        40,
+    )
+    structure_validation_min_explicit_heading_density = parse_config_float(
+        structure_validation_config,
+        "min_explicit_heading_density",
+        0.003,
+    )
+    structure_validation_max_suspicious_short_body_ratio_without_escalation = parse_config_float(
+        structure_validation_config,
+        "max_suspicious_short_body_ratio_without_escalation",
+        0.05,
+    )
+    structure_validation_max_all_caps_or_centered_body_ratio_without_escalation = parse_config_float(
+        structure_validation_config,
+        "max_all_caps_or_centered_body_ratio_without_escalation",
+        0.03,
+    )
+    structure_validation_toc_like_sequence_min_length = parse_config_int(
+        structure_validation_config,
+        "toc_like_sequence_min_length",
+        4,
+    )
+    structure_validation_forbid_heading_only_collapse = parse_config_bool(
+        structure_validation_config,
+        "forbid_heading_only_collapse",
+        True,
+    )
+    structure_validation_save_debug_artifacts = parse_config_bool(
+        structure_validation_config,
         "save_debug_artifacts",
         True,
     )
@@ -1157,9 +1220,50 @@ def load_app_config() -> AppConfig:
         "DOCX_AI_PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_TOKENS_PER_CANDIDATE",
         paragraph_boundary_ai_review_max_tokens_per_candidate,
     )
-    structure_recognition_enabled = parse_bool_env(
-        "DOCX_AI_STRUCTURE_RECOGNITION_ENABLED",
-        structure_recognition_enabled,
+    raw_structure_recognition_mode_env = os.getenv("DOCX_AI_STRUCTURE_RECOGNITION_MODE", "").strip().lower()
+    if raw_structure_recognition_mode_env:
+        if raw_structure_recognition_mode_env not in set(STRUCTURE_RECOGNITION_MODE_VALUES):
+            raise RuntimeError(
+                f"Некорректное значение в DOCX_AI_STRUCTURE_RECOGNITION_MODE: {raw_structure_recognition_mode_env}"
+            )
+        structure_recognition_mode = raw_structure_recognition_mode_env
+    elif "mode" not in structure_recognition_config:
+        legacy_structure_recognition_enabled = parse_bool_env(
+            "DOCX_AI_STRUCTURE_RECOGNITION_ENABLED",
+            legacy_structure_recognition_enabled,
+        )
+        structure_recognition_mode = "always" if legacy_structure_recognition_enabled else "off"
+    structure_validation_enabled = parse_bool_env(
+        "DOCX_AI_STRUCTURE_VALIDATION_ENABLED",
+        structure_validation_enabled,
+    )
+    structure_validation_min_paragraphs_for_auto_gate = parse_int_env(
+        "DOCX_AI_STRUCTURE_VALIDATION_MIN_PARAGRAPHS_FOR_AUTO_GATE",
+        structure_validation_min_paragraphs_for_auto_gate,
+    )
+    structure_validation_min_explicit_heading_density = parse_float_env(
+        "DOCX_AI_STRUCTURE_VALIDATION_MIN_EXPLICIT_HEADING_DENSITY",
+        structure_validation_min_explicit_heading_density,
+    )
+    structure_validation_max_suspicious_short_body_ratio_without_escalation = parse_float_env(
+        "DOCX_AI_STRUCTURE_VALIDATION_MAX_SUSPICIOUS_SHORT_BODY_RATIO_WITHOUT_ESCALATION",
+        structure_validation_max_suspicious_short_body_ratio_without_escalation,
+    )
+    structure_validation_max_all_caps_or_centered_body_ratio_without_escalation = parse_float_env(
+        "DOCX_AI_STRUCTURE_VALIDATION_MAX_ALL_CAPS_OR_CENTERED_BODY_RATIO_WITHOUT_ESCALATION",
+        structure_validation_max_all_caps_or_centered_body_ratio_without_escalation,
+    )
+    structure_validation_toc_like_sequence_min_length = parse_int_env(
+        "DOCX_AI_STRUCTURE_VALIDATION_TOC_LIKE_SEQUENCE_MIN_LENGTH",
+        structure_validation_toc_like_sequence_min_length,
+    )
+    structure_validation_forbid_heading_only_collapse = parse_bool_env(
+        "DOCX_AI_STRUCTURE_VALIDATION_FORBID_HEADING_ONLY_COLLAPSE",
+        structure_validation_forbid_heading_only_collapse,
+    )
+    structure_validation_save_debug_artifacts = parse_bool_env(
+        "DOCX_AI_STRUCTURE_VALIDATION_SAVE_DEBUG_ARTIFACTS",
+        structure_validation_save_debug_artifacts,
     )
     structure_recognition_max_window_paragraphs = parse_int_env(
         "DOCX_AI_STRUCTURE_RECOGNITION_MAX_WINDOW_PARAGRAPHS",
@@ -1312,6 +1416,8 @@ def load_app_config() -> AppConfig:
         image_output_trim_max_loss_ratio,
     )
 
+    structure_recognition_enabled = structure_recognition_mode == "always"
+
     _log_resolved_model_registry(models, model_sources)
 
     return AppConfig(
@@ -1345,6 +1451,7 @@ def load_app_config() -> AppConfig:
         relation_normalization_profile=relation_normalization_profile,
         relation_normalization_enabled_relation_kinds=relation_normalization_enabled_relation_kinds,
         relation_normalization_save_debug_artifacts=relation_normalization_save_debug_artifacts,
+        structure_recognition_mode=structure_recognition_mode,
         structure_recognition_enabled=structure_recognition_enabled,
         structure_recognition_model=models.structure_recognition,
         structure_recognition_max_window_paragraphs=max(100, min(structure_recognition_max_window_paragraphs, 4000)),
@@ -1353,6 +1460,20 @@ def load_app_config() -> AppConfig:
         structure_recognition_min_confidence=structure_recognition_min_confidence,
         structure_recognition_cache_enabled=structure_recognition_cache_enabled,
         structure_recognition_save_debug_artifacts=structure_recognition_save_debug_artifacts,
+        structure_validation_enabled=structure_validation_enabled,
+        structure_validation_min_paragraphs_for_auto_gate=max(1, min(structure_validation_min_paragraphs_for_auto_gate, 10000)),
+        structure_validation_min_explicit_heading_density=max(0.0, min(structure_validation_min_explicit_heading_density, 1.0)),
+        structure_validation_max_suspicious_short_body_ratio_without_escalation=max(
+            0.0,
+            min(structure_validation_max_suspicious_short_body_ratio_without_escalation, 1.0),
+        ),
+        structure_validation_max_all_caps_or_centered_body_ratio_without_escalation=max(
+            0.0,
+            min(structure_validation_max_all_caps_or_centered_body_ratio_without_escalation, 1.0),
+        ),
+        structure_validation_toc_like_sequence_min_length=max(1, min(structure_validation_toc_like_sequence_min_length, 100)),
+        structure_validation_forbid_heading_only_collapse=structure_validation_forbid_heading_only_collapse,
+        structure_validation_save_debug_artifacts=structure_validation_save_debug_artifacts,
         output_body_font=output_body_font,
         output_heading_font=output_heading_font,
         image_mode_default=image_mode_default,

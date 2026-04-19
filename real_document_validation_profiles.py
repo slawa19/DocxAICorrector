@@ -12,6 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "corpus_registry.toml"
 _SUPPORTED_TIERS = {"extraction", "structural", "full"}
 _SUPPORTED_STRUCTURAL_MODES = {"strict", "tolerant"}
+_STRUCTURE_RECOGNITION_MODES = {"off", "auto", "always"}
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,7 @@ class RunProfile:
     image_mode: str | None = None
     enable_paragraph_markers: bool | None = None
     keep_all_image_variants: bool | None = None
+    structure_recognition_mode: str | None = None
     structure_recognition_enabled: bool | None = None
     repeat_count: int = 1
 
@@ -98,6 +100,7 @@ class ResolvedRuntimeConfig:
     image_mode: str
     enable_paragraph_markers: bool
     keep_all_image_variants: bool
+    structure_recognition_mode: str
     structure_recognition_enabled: bool
 
     def to_dict(self) -> dict[str, object]:
@@ -108,6 +111,7 @@ class ResolvedRuntimeConfig:
             "image_mode": self.image_mode,
             "enable_paragraph_markers": self.enable_paragraph_markers,
             "keep_all_image_variants": self.keep_all_image_variants,
+            "structure_recognition_mode": self.structure_recognition_mode,
             "structure_recognition_enabled": self.structure_recognition_enabled,
         }
 
@@ -134,6 +138,9 @@ def load_validation_registry(registry_path: str | Path | None = None) -> Validat
 
 
 def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeResolution:
+    ui_default_mode = str(getattr(app_config, "structure_recognition_mode", "off") or "off")
+    if ui_default_mode not in _STRUCTURE_RECOGNITION_MODES:
+        ui_default_mode = "always" if bool(getattr(app_config, "structure_recognition_enabled", False)) else "off"
     ui_defaults = ResolvedRuntimeConfig(
         model=get_text_model_default(app_config),
         chunk_size=int(app_config.chunk_size),
@@ -141,7 +148,17 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         image_mode=str(app_config.image_mode_default),
         enable_paragraph_markers=bool(app_config.enable_paragraph_markers),
         keep_all_image_variants=bool(app_config.keep_all_image_variants),
-        structure_recognition_enabled=bool(app_config.structure_recognition_enabled),
+        structure_recognition_mode=ui_default_mode,
+        structure_recognition_enabled=ui_default_mode == "always",
+    )
+    effective_structure_mode = (
+        run_profile.structure_recognition_mode
+        if run_profile.structure_recognition_mode is not None
+        else (
+            "always"
+            if run_profile.structure_recognition_enabled is True
+            else ("off" if run_profile.structure_recognition_enabled is False else ui_defaults.structure_recognition_mode)
+        )
     )
     effective = ResolvedRuntimeConfig(
         model=run_profile.model or ui_defaults.model,
@@ -158,11 +175,8 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
             if run_profile.keep_all_image_variants is not None
             else ui_defaults.keep_all_image_variants
         ),
-        structure_recognition_enabled=(
-            run_profile.structure_recognition_enabled
-            if run_profile.structure_recognition_enabled is not None
-            else ui_defaults.structure_recognition_enabled
-        ),
+        structure_recognition_mode=effective_structure_mode,
+        structure_recognition_enabled=effective_structure_mode == "always",
     )
     explicit_profile_overrides = {
         "model": run_profile.model,
@@ -171,6 +185,7 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         "image_mode": run_profile.image_mode,
         "enable_paragraph_markers": run_profile.enable_paragraph_markers,
         "keep_all_image_variants": run_profile.keep_all_image_variants,
+        "structure_recognition_mode": run_profile.structure_recognition_mode,
         "structure_recognition_enabled": run_profile.structure_recognition_enabled,
     }
     overrides: dict[str, object] = {
@@ -253,6 +268,7 @@ def _build_run_profile(payload: Any) -> RunProfile:
         image_mode=_optional_str(payload, "image_mode"),
         enable_paragraph_markers=_optional_bool(payload, "enable_paragraph_markers"),
         keep_all_image_variants=_optional_bool(payload, "keep_all_image_variants"),
+        structure_recognition_mode=_optional_structure_recognition_mode(payload, "structure_recognition_mode"),
         structure_recognition_enabled=_optional_bool(payload, "structure_recognition_enabled"),
         repeat_count=repeat_count,
     )
@@ -311,6 +327,15 @@ def _optional_bool(payload: dict[str, Any], key: str) -> bool | None:
     if not isinstance(value, bool):
         raise RuntimeError(f"Registry field {key} must be a boolean when provided")
     return value
+
+
+def _optional_structure_recognition_mode(payload: dict[str, Any], key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or value.strip() not in _STRUCTURE_RECOGNITION_MODES:
+        raise RuntimeError(f"Registry field {key} must be one of: {', '.join(sorted(_STRUCTURE_RECOGNITION_MODES))}")
+    return value.strip()
 
 
 def _coerce_str_list(payload: dict[str, Any], key: str) -> list[str]:

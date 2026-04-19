@@ -67,7 +67,7 @@ id = "ui-parity-ai-default"
 tier = "full"
 mode = "regression"
 enable_paragraph_markers = true
-structure_recognition_enabled = true
+structure_recognition_mode = "always"
 repeat_count = 1
 
 [[run_profiles]]
@@ -76,6 +76,7 @@ tier = "structural"
 mode = "regression"
 image_mode = "safe"
 enable_paragraph_markers = false
+structure_recognition_mode = "off"
 repeat_count = 1
 
 [[run_profiles]]

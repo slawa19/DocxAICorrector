@@ -220,8 +220,16 @@ DOCX_AI_MODELS_TEXT_DEFAULT=gpt-5.4-mini
 DOCX_AI_MODELS_TEXT_OPTIONS=gpt-5.4,gpt-5.4-mini,gpt-5-mini
 DOCX_AI_CHUNK_SIZE=6000
 DOCX_AI_MAX_RETRIES=3
-DOCX_AI_STRUCTURE_RECOGNITION_ENABLED=false
 DOCX_AI_MODELS_STRUCTURE_RECOGNITION_DEFAULT=gpt-5-mini
+DOCX_AI_STRUCTURE_RECOGNITION_MODE=auto
+DOCX_AI_STRUCTURE_VALIDATION_ENABLED=true
+DOCX_AI_STRUCTURE_VALIDATION_MIN_PARAGRAPHS_FOR_AUTO_GATE=40
+DOCX_AI_STRUCTURE_VALIDATION_MIN_EXPLICIT_HEADING_DENSITY=0.003
+DOCX_AI_STRUCTURE_VALIDATION_MAX_SUSPICIOUS_SHORT_BODY_RATIO_WITHOUT_ESCALATION=0.05
+DOCX_AI_STRUCTURE_VALIDATION_MAX_ALL_CAPS_OR_CENTERED_BODY_RATIO_WITHOUT_ESCALATION=0.03
+DOCX_AI_STRUCTURE_VALIDATION_TOC_LIKE_SEQUENCE_MIN_LENGTH=4
+DOCX_AI_STRUCTURE_VALIDATION_FORBID_HEADING_ONLY_COLLAPSE=true
+DOCX_AI_STRUCTURE_VALIDATION_SAVE_DEBUG_ARTIFACTS=true
 DOCX_AI_STRUCTURE_RECOGNITION_MIN_CONFIDENCE=medium
 DOCX_AI_LOG_LEVEL=INFO
 DOCX_AI_IMAGE_MODE_DEFAULT=no_change
@@ -319,12 +327,22 @@ semantic_redraw_max_attempts = 2
 semantic_redraw_max_model_calls_per_image = 9
 
 [structure_recognition]
-enabled = false
+mode = "auto"
 max_window_paragraphs = 1800
 overlap_paragraphs = 50
 timeout_seconds = 60
 min_confidence = "medium"
 cache_enabled = true
+save_debug_artifacts = true
+
+[structure_validation]
+enabled = true
+min_paragraphs_for_auto_gate = 40
+min_explicit_heading_density = 0.003
+max_suspicious_short_body_ratio_without_escalation = 0.05
+max_all_caps_or_centered_body_ratio_without_escalation = 0.03
+toc_like_sequence_min_length = 4
+forbid_heading_only_collapse = true
 save_debug_artifacts = true
 ```
 
@@ -335,14 +353,22 @@ DOCX_AI_MODELS_TEXT_DEFAULT=gpt-5.4-mini
 DOCX_AI_MODELS_TEXT_OPTIONS=gpt-5.4,gpt-5.4-mini,gpt-5-mini
 DOCX_AI_CHUNK_SIZE=6000
 DOCX_AI_MAX_RETRIES=3
-DOCX_AI_STRUCTURE_RECOGNITION_ENABLED=false
 DOCX_AI_MODELS_STRUCTURE_RECOGNITION_DEFAULT=gpt-5-mini
+DOCX_AI_STRUCTURE_RECOGNITION_MODE=auto
 DOCX_AI_STRUCTURE_RECOGNITION_MAX_WINDOW_PARAGRAPHS=1800
 DOCX_AI_STRUCTURE_RECOGNITION_OVERLAP_PARAGRAPHS=50
 DOCX_AI_STRUCTURE_RECOGNITION_TIMEOUT_SECONDS=60
 DOCX_AI_STRUCTURE_RECOGNITION_MIN_CONFIDENCE=medium
 DOCX_AI_STRUCTURE_RECOGNITION_CACHE_ENABLED=true
 DOCX_AI_STRUCTURE_RECOGNITION_SAVE_DEBUG_ARTIFACTS=true
+DOCX_AI_STRUCTURE_VALIDATION_ENABLED=true
+DOCX_AI_STRUCTURE_VALIDATION_MIN_PARAGRAPHS_FOR_AUTO_GATE=40
+DOCX_AI_STRUCTURE_VALIDATION_MIN_EXPLICIT_HEADING_DENSITY=0.003
+DOCX_AI_STRUCTURE_VALIDATION_MAX_SUSPICIOUS_SHORT_BODY_RATIO_WITHOUT_ESCALATION=0.05
+DOCX_AI_STRUCTURE_VALIDATION_MAX_ALL_CAPS_OR_CENTERED_BODY_RATIO_WITHOUT_ESCALATION=0.03
+DOCX_AI_STRUCTURE_VALIDATION_TOC_LIKE_SEQUENCE_MIN_LENGTH=4
+DOCX_AI_STRUCTURE_VALIDATION_FORBID_HEADING_ONLY_COLLAPSE=true
+DOCX_AI_STRUCTURE_VALIDATION_SAVE_DEBUG_ARTIFACTS=true
 DOCX_AI_LOG_LEVEL=INFO
 DOCX_AI_IMAGE_MODE_DEFAULT=no_change
 DOCX_AI_SEMANTIC_VALIDATION_POLICY=advisory
@@ -358,6 +384,8 @@ DOCX_AI_ENABLE_VISION_IMAGE_VALIDATION=true
 DOCX_AI_SEMANTIC_REDRAW_MAX_ATTEMPTS=2
 DOCX_AI_SEMANTIC_REDRAW_MAX_MODEL_CALLS_PER_IMAGE=9
 ```
+
+`DOCX_AI_STRUCTURE_RECOGNITION_ENABLED` остаётся только как deprecated compatibility override. Для новых конфигов и automation канонический контракт: `structure_recognition.mode` и `DOCX_AI_STRUCTURE_RECOGNITION_MODE`.
 
 Системный промпт хранится в `prompts/system_prompt.txt`.
 Prompt registry для изображений хранится в `prompts/image_prompt_registry.toml`, а profile-файлы — в `prompts/image_profiles/`.
@@ -381,6 +409,8 @@ Prompt registry для изображений хранится в `prompts/image
 Если в UI отображается ошибка с `log: ...`, соответствующую техническую запись можно найти по этому идентификатору в `.run/app.log`.
 
 Для временной отладки с повышенной детализацией запускайте приложение с `DOCX_AI_LOG_LEVEL=DEBUG`; после диагностики возвращайте `INFO`, чтобы не раздувать `.run/app.log` без необходимости.
+
+Полный контракт по логированию, таксономия events и правила добавления новых log-event'ов для ИИ-агента зафиксированы в `docs/LOGGING_AND_ARTIFACT_RETENTION.md`. Там же каталогизированы все runtime-артефакты `.run/` и их retention-политики, включая выявленные гэпы (`paragraph_boundary_reports/`, `relation_normalization_reports/`, `paragraph_boundary_ai_review/`, `structure_maps/`, `structure_validation/`).
 
 ## Тесты
 

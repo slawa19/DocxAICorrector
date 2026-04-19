@@ -8,9 +8,16 @@ Current default mapping:
 
 - document profile: `lietaer-core`
 - additional document profile: `religion-wealth-core`
-- full run profile: `ui-parity-ai-default`
+- full run profile: `ui-parity-default`
+- full AI run profile: `ui-parity-ai-default`
 - soak run profile: `ui-parity-soak-3x`
 - structural run profile: `structural-passthrough-default`
+
+Current structure-recognition mode contract across run profiles:
+
+- `ui-parity-default` inherits the repository UI default, which is currently `structure_recognition_mode = "auto"`
+- `ui-parity-ai-default` forces `structure_recognition_mode = "always"`
+- `structural-passthrough-default` forces `structure_recognition_mode = "off"` so the structural tier remains deterministic and does not silently pick up AI escalation from UI defaults
 
 Current corpus notes:
 
@@ -77,7 +84,7 @@ Run it only when a change touches one of these surfaces:
 
 1. `structure_recognition.py` prompt/request/response parsing logic.
 2. `preparation.py` integration of the structure-recognition stage.
-3. runtime/profile wiring that decides whether AI structure recognition is enabled.
+3. runtime/profile wiring that decides whether AI structure recognition mode resolves to `off`, `auto`, or `always`.
 4. real-document validation/reporting logic for AI counters or AI-enabled profiles.
 
 Preferred user-visible execution paths:

@@ -2,6 +2,10 @@
 
 Date: 2026-04-18
 
+Status: Implemented and documentation-aligned as of 2026-04-19. Full visible regression verification completed via `Run Full Pytest`.
+
+Archive readiness: ready to move into `docs/archive/specs/` on the next documentation housekeeping pass. After transfer, runtime/source-of-truth should remain in code, tests, `README.md`, `docs/testing/REAL_DOCUMENT_VALIDATION_WORKFLOW.md`, and profile/config files.
+
 ## Goal
 
 Introduce a practical Phase 1 auto-gated structure recognition mode:
@@ -13,8 +17,8 @@ Introduce a practical Phase 1 auto-gated structure recognition mode:
 
 This change replaces the current binary operational model:
 
-- disabled by default via `structure_recognition.enabled = false`
-- manually enabled for opt-in runs
+- legacy `structure_recognition.enabled = false|true`
+- legacy manual opt-in via boolean override
 
 with a more practical runtime policy:
 
@@ -37,7 +41,7 @@ The repository already contains a working AI structure-recognition pipeline:
 1. `structure_recognition.py` builds compact paragraph descriptors
 2. the model classifies paragraph roles and heading levels
 3. `apply_structure_map(...)` enriches paragraph roles before semantic block construction
-4. the whole stage is optional and currently protected by `structure_recognition_enabled`
+4. the whole stage is optional and currently controlled by resolved structure-recognition mode (`off` / `auto` / `always`), with legacy `structure_recognition_enabled` retained only as a backward-compatibility input/output surface
 
 However, the current behavior has a product gap:
 
@@ -88,20 +92,31 @@ Current baseline configuration:
 default = "gpt-5-mini"
 
 [structure_recognition]
-enabled = false
+mode = "auto"
 max_window_paragraphs = 1800
 overlap_paragraphs = 50
 timeout_seconds = 60
 min_confidence = "medium"
 cache_enabled = true
 save_debug_artifacts = true
+
+[structure_validation]
+enabled = true
+min_paragraphs_for_auto_gate = 40
+min_explicit_heading_density = 0.003
+max_suspicious_short_body_ratio_without_escalation = 0.05
+max_all_caps_or_centered_body_ratio_without_escalation = 0.03
+toc_like_sequence_min_length = 4
+forbid_heading_only_collapse = true
+save_debug_artifacts = true
 ```
 
 Current operational behavior:
 
 1. extraction runs first
-2. if `structure_recognition_enabled` is false, the AI stage is skipped
-3. if enabled, the full-document structure-recognition stage runs
+2. if resolved mode is `off`, the AI stage is skipped
+3. if resolved mode is `always`, the full-document structure-recognition stage runs
+4. if resolved mode is `auto`, deterministic structure validation decides whether to escalate into the full-document AI stage
 4. the pipeline then builds source text and semantic blocks
 5. failure falls back to heuristic structure
 
@@ -169,7 +184,7 @@ Recommended Phase 1 baseline:
 ```toml
 [structure_recognition]
 mode = "auto"                 # off | auto | always
-model = "gpt-5-mini"
+# model source: [models.structure_recognition].default (see below)
 max_window_paragraphs = 1800
 overlap_paragraphs = 50
 timeout_seconds = 60
@@ -199,6 +214,22 @@ Rules:
    - `false` maps to `off`
 2. if `mode` is present, it is canonical
 3. docs and examples should prefer `mode`, not `enabled`
+
+### Implementation location for backward compat
+
+The fallback logic lives in `_build_app_config()` inside `config.py`.
+
+Currently `structure_recognition_enabled` is resolved in two places:
+
+1. TOML section parsing (~line 993)
+2. env override via `DOCX_AI_STRUCTURE_RECOGNITION_ENABLED` (~line 1160)
+
+Phase 1 resolution order:
+
+1. `structure_recognition.mode` from TOML
+2. `DOCX_AI_STRUCTURE_RECOGNITION_MODE` env override
+3. legacy `structure_recognition.enabled` (TOML then env) → mapped to `always` / `off`
+4. default: `"off"`
 
 ### `.env.example`
 
@@ -240,6 +271,32 @@ class StructureValidationReport:
 ```
 
 The report is deterministic and must not call any model.
+
+## Available Paragraph Attributes
+
+The gate function receives `list[ParagraphUnit]`. Relevant fields already available on `ParagraphUnit`:
+
+| Gate need | `ParagraphUnit` field | Notes |
+|---|---|---|
+| text content / length | `text: str` | word count derived as `len(text.split())` |
+| alignment / centered | `paragraph_alignment: str \| None` | values: `"center"`, `"left"`, `"right"`, `"justify"`, `None` |
+| heading detection | `role == "heading"`, `heading_level`, `heading_source` | `heading_source` distinguishes `"style"` (explicit) from `"heuristic"` |
+| list detection | `role == "list"` or `list_kind is not None` | |
+| bold | `is_bold: bool` | |
+| style name | `style_name: str` | |
+| structural role | `structural_role: str` | e.g. `"epigraph"`, `"attribution"`, `"toc_entry"` |
+| asset attachment | `attached_to_asset_id` | exclude image/table captions |
+
+Fields **not** directly on `ParagraphUnit` but available on `ParagraphDescriptor` (declared in `models.py`, built by `structure_recognition.py`):
+
+| Field | `ParagraphDescriptor` | Notes |
+|---|---|---|
+| `is_all_caps` | `bool` | |
+| `is_centered` | `bool` | |
+| `text_length` | `int` | |
+| `font_size_pt` | `float \| None` | |
+
+Implementation decision: the gate should compute `is_all_caps` inline from `ParagraphUnit.text` (simple `text.isupper()` check) and derive `is_centered` from `paragraph_alignment == "center"`, rather than building full `ParagraphDescriptor` objects. This keeps the gate lightweight and avoids coupling to the structure-recognition descriptor builder.
 
 ## Gate Heuristics
 
@@ -299,21 +356,42 @@ Interpretation:
 
 Escalate if:
 
-1. a sequence of short lines resembles a contents region
-2. the sequence length exceeds `toc_like_sequence_min_length`
-3. current deterministic labels do not clearly explain the region
+1. a sequence of consecutive short non-heading paragraphs resembles a contents region
+2. the sequence length exceeds `toc_like_sequence_min_length` (default: 4)
+3. current deterministic labels do not already mark them as `toc_entry` / `toc_header`
+
+Detection algorithm (Phase 1):
+
+1. iterate paragraphs in order
+2. a paragraph is a TOC candidate if:
+   - `role != "heading"` and `structural_role not in {"toc_entry", "toc_header"}`
+   - word count ≤ 12
+   - not a list item (`list_kind is None`)
+   - not attached to an image/table (`attached_to_asset_id is None`)
+3. count consecutive TOC candidates; reset counter on non-candidate
+4. if any consecutive run ≥ `toc_like_sequence_min_length`, record one TOC-like sequence
+5. `toc_like_sequence_count` = number of such runs found
 
 Interpretation:
 
 - table of contents often looks flat in poor DOCX conversions
+- sequences of short unstructured lines in a row are a strong ambiguity signal
 
 ### Trigger group 5: heading-only collapse risk
 
-Escalate if deterministic structure suggests unhealthy flattening, such as:
+Escalate if deterministic structure suggests unhealthy flattening.
 
-1. very large body runs with too few structural breaks
-2. unexpectedly low heading count in a document profile expected to contain headings
-3. evidence of heading-only collapse risk analogous to existing structural validation concerns
+Detection algorithm (Phase 1):
+
+1. compute `max_body_run_length`: the longest consecutive run of non-heading, non-structural-role paragraphs (excluding empty paragraphs)
+2. escalate if `max_body_run_length >= 120` **and** `explicit_heading_count < 3`
+3. this catches documents where almost everything is flat body text with no structural breaks
+
+The threshold `120` and `< 3` are initial conservative values; they are not exposed as config parameters in Phase 1 but may be promoted to `[structure_validation]` config in a later phase if tuning is needed.
+
+Test requirement: unit tests for this trigger group must cover both boundary values (`max_body_run_length` = 119 vs 120, `explicit_heading_count` = 2 vs 3) to protect against silent regression during future refactoring.
+
+If `forbid_heading_only_collapse = false` in config, this trigger group is skipped entirely.
 
 ## Gate Scope
 
@@ -357,8 +435,6 @@ Pseudo-code:
 ```python
 report = validate_structure_quality(
     paragraphs=paragraphs,
-    image_assets=image_assets,
-    relations=relations,
     app_config=app_config,
 )
 
@@ -401,8 +477,12 @@ Recommended preparation flow:
 #### `Структура: валидация`
 The system computes the deterministic gate report.
 
+Target progress value: `0.30`.
+
 #### `Структура: детерминированно`
 The gate did not trigger AI escalation.
+
+Target progress value: `0.35`.
 
 Suggested detail text:
 
@@ -411,9 +491,13 @@ Suggested detail text:
 #### `Распознавание структуры…`
 The gate triggered AI escalation.
 
+Target progress value: `0.35` (then existing AI stage progresses from `0.35` to `0.55` as before).
+
 Suggested detail text:
 
 - `Найдены структурно неоднозначные участки. Запускаю AI-анализ документа.`
+
+Note: the current `_run_structure_recognition` uses `progress=0.35` as its entry point. The new validation stage inserts at `0.30`, keeping the AI stage anchored at its current value.
 
 ## Artifacts
 
@@ -424,6 +508,20 @@ Phase 1 must produce inspectable gate artifacts.
 ```text
 .run/structure_validation/
 ```
+
+### Artifact naming
+
+One artifact per gate run. Naming pattern:
+
+```text
+.run/structure_validation/gate_report_{timestamp_iso}.json
+```
+
+Example: `gate_report_2026-04-19T14-32-01.json`.
+
+Timestamp format: ISO-8601 local time with colons replaced by hyphens (Windows-safe). No timezone suffix. Example: `2026-04-19T14-32-01`.
+
+No automatic cleanup in Phase 1; artifacts accumulate until manually purged or until a future rotation policy is added.
 
 ### Artifact payload
 
@@ -462,11 +560,11 @@ Purpose:
 
 ## Model Policy For This Spec
 
-Phase 1 structure-recognition model is:
+Phase 1 structure-recognition model is `gpt-5-mini`.
 
-```toml
-model = "gpt-5-mini"
-```
+Canonical source: `[models.structure_recognition].default` in `config.toml`.
+
+The legacy key `[structure_recognition].model` remains deprecated and commented out. Phase 1 does **not** reintroduce it. The model resolution order in `config.py` (`_resolve_model_role_assignment`) already handles `[models.structure_recognition].default` → env `DOCX_AI_MODELS_STRUCTURE_RECOGNITION_DEFAULT` → migration default. This order is unchanged.
 
 Status for this spec:
 
@@ -515,16 +613,58 @@ For Phase 1, the important part is that `auto` mode becomes testable and auditab
 
 Implementation is expected to touch at least:
 
-1. `config.toml`
-2. `config.py`
+1. `config.toml` — add `mode`, remove/deprecate `enabled`; add `[structure_validation]` section
+2. `config.py` — new `AppConfig` fields, mode resolution with backward compat, validation config parsing
 3. `README.md`
-4. `.env.example`
-5. `preparation.py`
-6. new gate helper location, likely:
-   - `structure_validation.py`
-   - or a confined section inside `preparation.py`
+4. `.env.example` — add mode and validation env vars
+5. `preparation.py` — insert validation gate before `_run_structure_recognition`, update cache key
+6. new module `structure_validation.py` — `validate_structure_quality()`, `StructureValidationReport`, artifact writer
 7. tests for config parsing and runtime decisioning
 8. tests for artifacts and escalation logic
+
+### New `AppConfig` fields
+
+Canonical primary field:
+
+```python
+structure_recognition_mode: str              # "off" | "auto" | "always"
+```
+
+Compatibility field retained in Phase 1:
+
+```python
+structure_recognition_enabled: bool          # derived as structure_recognition_mode == "always"
+```
+
+Add:
+
+```python
+structure_validation_enabled: bool
+structure_validation_min_paragraphs_for_auto_gate: int
+structure_validation_min_explicit_heading_density: float
+structure_validation_max_suspicious_short_body_ratio_without_escalation: float
+structure_validation_max_all_caps_or_centered_body_ratio_without_escalation: float
+structure_validation_toc_like_sequence_min_length: int
+structure_validation_forbid_heading_only_collapse: bool
+structure_validation_save_debug_artifacts: bool
+```
+
+Existing fields `structure_recognition_model`, `structure_recognition_max_window_paragraphs`, etc. remain unchanged.
+
+### Cache key impact
+
+The current `build_prepared_source_key()` uses `structure_recognition_enabled: bool`. This must change to use the resolved mode string **and**, when mode is `auto`, include `structure_validation_enabled` in the key, so that cache entries for different modes do not collide. This is a hard requirement, not optional.
+
+### Gate function signature
+
+```python
+def validate_structure_quality(
+    paragraphs: list[ParagraphUnit],
+    app_config: Mapping[str, Any],
+) -> StructureValidationReport:
+```
+
+The function does not need `image_assets` or `relations` — none of the Phase 1 trigger groups use them. If a future phase adds image/relation-aware triggers, the signature can be extended then.
 
 ## Tests
 
@@ -555,6 +695,8 @@ At minimum, Phase 1 should be exercised against the canonical large ambiguous sa
 
 - `tests/sources/bernardlietaer-creatingwealthpdffromepub-160516072739 ru.docx`
 
+Note: the repository also has `tests/sources/Лиетар глава1.docx` (a single-chapter extract used by the Lietaer real-document validation harness). Both files are relevant for validation, but the full-book file above is the primary target for auto-gate testing because it contains the most structural ambiguity.
+
 Expected Phase 1 interpretation for this document:
 
 1. structurally ambiguous
@@ -575,6 +717,19 @@ This specification is implemented when:
 8. progress reporting distinguishes validation from escalation
 9. `.run/structure_validation/` artifacts explain escalation decisions
 10. config/docs/examples are aligned on the new mode-based contract
+
+## Implementation Status
+
+As of 2026-04-19, the implementation and verification for this spec are complete:
+
+1. `config.py`, `config.toml`, `.env.example`, and `README.md` are aligned on `structure_recognition.mode = off|auto|always`
+2. `structure_validation.py` implements the deterministic gate and artifact writing
+3. `preparation.py` integrates validation-before-AI and mode-aware cache keys
+4. real-document validation profiles now resolve `structure_recognition_mode` canonically
+5. structural passthrough corpus validation is pinned to `structure_recognition_mode = "off"`
+6. full visible regression verification passed through the VS Code task `Run Full Pytest`
+
+This means the document no longer describes an in-progress workstream. It is now a realized implementation record and is eligible for archive transfer.
 
 ## Risks And Tradeoffs
 

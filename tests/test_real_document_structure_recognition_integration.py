@@ -80,8 +80,9 @@ def test_lietaer_real_validation_uses_canonical_ai_profile() -> None:
     assert report["result"] == "succeeded"
     assert report["run_profile_id"] == AI_RUN_PROFILE_ID
     assert report["acceptance"]["passed"] is True
+    assert report["runtime_config"]["effective"]["structure_recognition_mode"] == "always"
     assert report["runtime_config"]["effective"]["structure_recognition_enabled"] is True
-    assert report["runtime_config"]["overrides"]["structure_recognition_enabled"] is True
+    assert report["runtime_config"]["overrides"]["structure_recognition_mode"] == "always"
     assert report["preparation"]["ai_classified_count"] > 0
     assert report["preparation"]["ai_heading_count"] > 0
     assert report["preparation"]["ai_role_change_count"] >= 0
@@ -89,7 +90,7 @@ def test_lietaer_real_validation_uses_canonical_ai_profile() -> None:
     assert report["preparation"]["ai_heading_demotion_count"] >= 0
     assert report["preparation"]["ai_structural_role_change_count"] >= 0
     assert "run_profile_id=ui-parity-ai-default" in summary_text
-    assert 'runtime_overrides={"enable_paragraph_markers": true, "structure_recognition_enabled": true}' in summary_text
+    assert 'runtime_overrides={"enable_paragraph_markers": true, "structure_recognition_enabled": true, "structure_recognition_mode": "always"}' in summary_text
     assert "ai_classified_count=" in summary_text
     assert "ai_heading_count=" in summary_text
     assert "ai_role_change_count=" in summary_text

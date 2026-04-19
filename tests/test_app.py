@@ -6,6 +6,7 @@ import app
 import application_flow
 import compare_panel
 import processing_runtime
+from structure_validation import StructureValidationReport
 from runtime_artifacts import AppReadyMarkerWriter
 from constants import MAX_DOCX_ARCHIVE_SIZE_BYTES
 from models import ImageAsset, StructureRecognitionSummary
@@ -116,6 +117,9 @@ def _build_prepared_run_context(**overrides):
         "relation_report": None,
         "structure_map": None,
         "structure_recognition_summary": StructureRecognitionSummary(),
+        "structure_validation_report": None,
+        "structure_recognition_mode": "off",
+        "structure_ai_attempted": False,
     }
     payload.update(overrides)
     return application_flow.PreparedRunContext(**payload)
@@ -194,6 +198,7 @@ def test_store_preparation_summary_uses_preparation_context_not_processing_statu
         "ai_structural_role_changes": 1,
         "elapsed": "1.2 c",
         "progress": 1.0,
+        "status_notes": ["Структура: AI выключен, использованы текущие правила."],
         "raw_paragraph_count": 3,
         "logical_paragraph_count": 2,
         "merged_group_count": 1,
@@ -495,7 +500,13 @@ def test_maybe_apply_file_recommendations_auto_applies_once(monkeypatch):
     assert session_state.recommended_text_settings["file_token"] == "report.docx:3:abc"
     assert session_state.recommended_text_settings_applied_for_token == "report.docx:3:abc"
     assert session_state.recommended_text_settings_notice_token == "report.docx:3:abc"
-    assert session_state.sidebar_text_operation == "Перевод"
+    assert session_state.recommended_text_settings_pending_widget_state == {
+        "file_token": "report.docx:3:abc",
+        "widget_state": {
+            "sidebar_text_operation": "Перевод",
+            "sidebar_source_language": "Авто",
+        },
+    }
 
 
 def test_maybe_apply_file_recommendations_auto_applies_once_for_cached_preparation_context(monkeypatch):
@@ -1076,10 +1087,11 @@ def test_main_places_recommended_text_settings_notice_inside_preparation_summary
     app.main()
 
     assert len(summary_calls) == 1
-    assert summary_calls[0]["secondary_stage_line"] == (
+    assert summary_calls[0]["status_notes"] == [
+        "Структура: AI выключен, использованы текущие правила.",
         "После анализа файла приложение скорректировало текстовые настройки: "
-        "режим: Литературное редактирование -> Перевод; язык оригинала: en -> Авто."
-    )
+        "режим: Литературное редактирование -> Перевод; язык оригинала: en -> Авто.",
+    ]
     assert caption_calls == []
 
 
@@ -1282,8 +1294,8 @@ def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):
 
     assert len(summary_calls) == 1
     expected_summary = dict(session_state.latest_preparation_summary)
-    if "secondary_stage_line" in summary_calls[0]:
-        expected_summary["secondary_stage_line"] = summary_calls[0]["secondary_stage_line"]
+    if "status_notes" in summary_calls[0]:
+        expected_summary["status_notes"] = summary_calls[0]["status_notes"]
     assert summary_calls[0] == expected_summary
     assert summary_calls[0]["cached"] is True
     assert summary_calls[0]["block_count"] == 2
@@ -1365,6 +1377,40 @@ def test_main_marks_prepared_status_with_completed_terminal_kind(monkeypatch):
     assert status_calls[0]["logical_paragraph_count"] == 3
     assert status_calls[0]["merged_group_count"] == 1
     assert status_calls[0]["merged_raw_paragraph_count"] == 2
+
+
+def test_store_preparation_summary_includes_auto_structure_status_note(monkeypatch):
+    session_state = SessionState()
+    prepared_run_context = _build_prepared_run_context(
+        structure_recognition_mode="auto",
+        structure_ai_attempted=True,
+        structure_map=object(),
+        structure_recognition_summary=StructureRecognitionSummary(ai_classified_count=6, ai_heading_count=2),
+        structure_validation_report=StructureValidationReport(
+            paragraph_count=50,
+            nonempty_paragraph_count=50,
+            explicit_heading_count=0,
+            heuristic_heading_count=0,
+            suspicious_short_body_count=8,
+            all_caps_body_count=0,
+            centered_body_count=0,
+            toc_like_sequence_count=1,
+            ambiguous_paragraph_count=8,
+            explicit_heading_density=0.0,
+            suspicious_short_body_ratio=0.16,
+            all_caps_or_centered_body_ratio=0.0,
+            escalation_recommended=True,
+            escalation_reasons=("low_explicit_heading_density", "toc_like_sequence_detected"),
+        ),
+    )
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+
+    app._store_preparation_summary(prepared_run_context=prepared_run_context)
+
+    assert session_state.latest_preparation_summary["status_notes"] == [
+        "Структура: auto-режим, выполнена эскалация в AI; классифицировано 6 абзацев, найдено 2 заголовков. Причины: мало явных заголовков, обнаружен TOC-подобный фрагмент."
+    ]
 
 
 @pytest.mark.parametrize("outcome", ["stopped", "failed"])

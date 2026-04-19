@@ -120,6 +120,7 @@ echo START && wsl.exe -d Debian bash -c "cd /mnt/d/www/projects/2025/DocxAICorre
 - `CONTRIBUTING.md`
 - `docs/WORKFLOW_AND_IMAGE_MODES.md`
 - `docs/AI_AGENT_DEVELOPMENT_RULES.md`
+- `docs/LOGGING_AND_ARTIFACT_RETENTION.md`
 - `.github/copilot-instructions.md`
 
 ## Streamlit Layout Contract

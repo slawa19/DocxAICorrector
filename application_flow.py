@@ -6,7 +6,7 @@ from typing import Any, Protocol
 
 from document import summarize_boundary_normalization_metrics, validate_docx_source_bytes
 from models import StructureRecognitionSummary
-from preparation import emit_preparation_progress, prepare_document_for_processing
+from preparation import build_structure_processing_status_note, emit_preparation_progress, prepare_document_for_processing
 from processing_runtime import (
     FrozenUploadPayload,
     build_in_memory_uploaded_file,
@@ -43,6 +43,9 @@ class PreparedRunContext:
     relation_report: object | None = None
     structure_map: object | None = None
     structure_recognition_summary: StructureRecognitionSummary = StructureRecognitionSummary()
+    structure_validation_report: object | None = None
+    structure_recognition_mode: str = "off"
+    structure_ai_attempted: bool = False
 
     @property
     def ai_classified_count(self) -> int:
@@ -303,6 +306,9 @@ def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: 
         relation_report=getattr(prepared_document, "relation_report", None),
         structure_map=getattr(prepared_document, "structure_map", None),
         structure_recognition_summary=structure_summary,
+        structure_validation_report=getattr(prepared_document, "structure_validation_report", None),
+        structure_recognition_mode=str(getattr(prepared_document, "structure_recognition_mode", "off") or "off"),
+        structure_ai_attempted=bool(getattr(prepared_document, "structure_ai_attempted", False)),
     )
 
 

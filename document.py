@@ -18,6 +18,15 @@ from constants import (
     MAX_DOCX_ENTRY_COUNT,
     MAX_DOCX_UNCOMPRESSED_SIZE_BYTES,
 )
+from runtime_artifact_retention import (
+    PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_AGE_SECONDS,
+    PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_COUNT,
+    PARAGRAPH_BOUNDARY_REPORTS_MAX_AGE_SECONDS,
+    PARAGRAPH_BOUNDARY_REPORTS_MAX_COUNT,
+    RELATION_NORMALIZATION_REPORTS_MAX_AGE_SECONDS,
+    RELATION_NORMALIZATION_REPORTS_MAX_COUNT,
+    prune_artifact_dir,
+)
 from image_shared import (
     call_responses_create_with_retry,
     extract_model_response_error_code,
@@ -1272,6 +1281,11 @@ def _write_paragraph_boundary_ai_review_artifact(
         if error_code is not None:
             payload["error_code"] = error_code
         artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        prune_artifact_dir(
+            target_dir=PARAGRAPH_BOUNDARY_AI_REVIEW_DIR,
+            max_age_seconds=PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_AGE_SECONDS,
+            max_count=PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_COUNT,
+        )
         return str(artifact_path)
     except Exception:
         return None
@@ -1696,6 +1710,11 @@ def _write_paragraph_boundary_report_artifact(
             ],
         }
         artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        prune_artifact_dir(
+            target_dir=PARAGRAPH_BOUNDARY_REPORTS_DIR,
+            max_age_seconds=PARAGRAPH_BOUNDARY_REPORTS_MAX_AGE_SECONDS,
+            max_count=PARAGRAPH_BOUNDARY_REPORTS_MAX_COUNT,
+        )
         return str(artifact_path)
     except Exception:
         return None
@@ -1735,6 +1754,11 @@ def _write_relation_normalization_report_artifact(
             ],
         }
         artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        prune_artifact_dir(
+            target_dir=RELATION_NORMALIZATION_REPORTS_DIR,
+            max_age_seconds=RELATION_NORMALIZATION_REPORTS_MAX_AGE_SECONDS,
+            max_count=RELATION_NORMALIZATION_REPORTS_MAX_COUNT,
+        )
         return str(artifact_path)
     except Exception:
         return None

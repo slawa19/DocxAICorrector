@@ -346,6 +346,10 @@ def render_preparation_summary(summary: dict[str, Any] | None, target=None) -> N
         elapsed_fragment = f" | Подготовка: {elapsed}" if elapsed else ""
         stage = str(summary.get("stage") or "Документ подготовлен")
         secondary_stage_line = str(summary.get("secondary_stage_line") or "").strip()
+        raw_status_notes = summary.get("status_notes", [])
+        status_notes = [str(note).strip() for note in raw_status_notes if str(note).strip()] if isinstance(raw_status_notes, list) else []
+        if secondary_stage_line:
+            status_notes.insert(0, secondary_stage_line)
         detail = str(summary.get("detail") or "")
         meta_lines = [
             f"Источник: {source_label}{elapsed_fragment}",
@@ -369,7 +373,7 @@ def render_preparation_summary(summary: dict[str, Any] | None, target=None) -> N
             title=stage,
             stage="",
             detail=detail,
-            meta_lines=([secondary_stage_line] if secondary_stage_line else []) + meta_lines,
+            meta_lines=status_notes + meta_lines,
         )
 
 
