@@ -14,6 +14,7 @@ from processing_runtime import (
     resolve_uploaded_filename,
 )
 from restart_store import clear_restart_source, load_restart_source_bytes
+from state import set_selected_source_token
 from workflow_state import IdleViewState, derive_idle_view_state, has_restartable_outcome
 
 
@@ -123,14 +124,14 @@ class ResolvedPreparationUpload:
 def sync_selected_file_context(*, session_state, reset_run_state_fn, uploaded_file_token: str) -> None:
     previous_token = session_state.get("selected_source_token", "")
     if not previous_token or previous_token == uploaded_file_token:
-        session_state.selected_source_token = uploaded_file_token
+        set_selected_source_token(uploaded_file_token)
         return
 
     reset_run_state_fn(keep_restart_source=False)
     for widget_key in ("sidebar_text_operation", "sidebar_source_language", "sidebar_target_language"):
         if widget_key in session_state:
             del session_state[widget_key]
-    session_state.selected_source_token = uploaded_file_token
+    set_selected_source_token(uploaded_file_token)
 
 
 def get_cached_restart_file(

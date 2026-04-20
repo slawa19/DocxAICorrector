@@ -34,6 +34,14 @@ OWNED_KEYS = {
     "latest_source_token",
     "selected_source_token",
     "latest_image_mode",
+    "text_transform_assessment",
+    "recommended_text_settings",
+    "recommended_text_settings_applied_for_token",
+    "recommended_text_settings_applied_snapshot",
+    "recommended_text_settings_pending_widget_state",
+    "recommended_text_settings_notice_token",
+    "recommended_text_settings_notice_details",
+    "manual_text_settings_override_for_token",
 }
 
 
@@ -79,6 +87,10 @@ def _is_st_session_state_get_call(node: ast.Call) -> bool:
     )
 
 
+def _is_session_state_parameter_name(node: ast.AST) -> bool:
+    return isinstance(node, ast.Name) and node.id == "session_state"
+
+
 def _should_scan_python_file(path: Path) -> bool:
     if path.suffix != ".py":
         return False
@@ -97,5 +109,28 @@ def test_p1a_owned_session_keys_are_not_accessed_raw_outside_owner_or_whitelist(
         visitor = _SessionStateAccessVisitor(path)
         visitor.visit(tree)
         findings.extend(visitor.findings)
+
+    assert findings == []
+
+
+def test_p1a_owned_session_keys_are_not_written_via_injected_session_state_parameter() -> None:
+    findings: list[str] = []
+    for path in sorted(PROJECT_ROOT.rglob("*.py")):
+        if not _should_scan_python_file(path):
+            continue
+        if path.name == "state.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Attribute):
+                continue
+            if not _is_session_state_parameter_name(node.value):
+                continue
+            if node.attr not in OWNED_KEYS:
+                continue
+            if isinstance(getattr(node, "ctx", None), ast.Store):
+                findings.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{node.lineno}: injected session_state write to owned key {node.attr!r}"
+                )
 
     assert findings == []

@@ -176,8 +176,13 @@ This section tracks implementation progress for the approved first slice only.
 
 1. `P1a.1` checked-in ownership matrix artifact: implemented in this slice.
 2. `P1a.2` initial whitelist-backed enforcement test: implemented in this slice.
-3. `P1a.3` first migrated lifecycle/source-identity key family: implemented for the processing-start transition and read-side helpers in this slice.
+3. `P1a.3` first migrated lifecycle/source-identity key family: implemented for the processing-start transition, stop-request path, `selected_source_token` write ownership, and read-side helpers in this slice.
 4. `P1a.4` recommendation-state migration: not started by design; deferred to `P1b`.
+
+### 5A.3 P1b Status
+
+1. `P1b.1` recommendation-state write ownership centralization in `state.py`: implemented for `text_transform_assessment`, recommendation-state session keys, and pending widget-state application in this slice.
+2. `P1b.2` `application_flow.py:selected_source_token` write-side ownership gap: implemented in this slice.
 
 ## 6. Refactor Goals
 

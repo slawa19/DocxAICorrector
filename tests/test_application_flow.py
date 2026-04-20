@@ -63,6 +63,7 @@ def test_prepare_run_context_updates_selected_token_and_prepared_key(monkeypatch
         prepared_source_key="",
         completed_source={"filename": "report.docx", "token": "report.docx:3:ba7816bf8f01cfea", "storage_path": "completed.bin"},
     )
+    monkeypatch.setattr(state.st, "session_state", session_state)
     logged = []
     progress_events = []
 
@@ -133,6 +134,23 @@ def test_prepare_run_context_updates_selected_token_and_prepared_key(monkeypatch
     assert logged[0][1]["logical_paragraph_count"] == 2
     assert logged[0][1]["merged_group_count"] == 1
     assert logged[0][1]["merged_raw_paragraph_count"] == 2
+
+
+def test_sync_selected_file_context_delegates_selected_token_write_to_state(monkeypatch):
+    session_state = SessionState(selected_source_token="")
+    monkeypatch.setattr(state.st, "session_state", session_state)
+    delegated_tokens = []
+
+    monkeypatch.setattr(application_flow, "set_selected_source_token", lambda token: delegated_tokens.append(token) or session_state.__setattr__("selected_source_token", token))
+
+    application_flow.sync_selected_file_context(
+        session_state=session_state,
+        reset_run_state_fn=lambda **kwargs: None,
+        uploaded_file_token="report.docx:3:abc",
+    )
+
+    assert delegated_tokens == ["report.docx:3:abc"]
+    assert session_state.selected_source_token == "report.docx:3:abc"
 
 
 def test_prepare_run_context_raises_on_empty_job_target(monkeypatch):

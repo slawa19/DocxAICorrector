@@ -6,6 +6,7 @@ import app
 import application_flow
 import compare_panel
 import processing_runtime
+import state
 from structure_validation import StructureValidationReport
 from runtime_artifacts import AppReadyMarkerWriter
 from constants import MAX_DOCX_ARCHIVE_SIZE_BYTES
@@ -447,6 +448,7 @@ def test_start_background_processing_passes_translate_context_to_runtime(monkeyp
 def test_assess_text_transform_stores_assessment_in_session_state(monkeypatch):
     session_state = SessionState()
     monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(state.st, "session_state", session_state)
 
     assessment = app._assess_text_transform(
         source_text="Привет, это уже русский текст.",
@@ -1116,6 +1118,46 @@ def test_apply_pending_recommended_widget_state_applies_before_sidebar(monkeypat
     assert session_state.recommended_text_settings_pending_widget_state is None
 
 
+def test_apply_pending_recommended_widget_state_uses_state_consumer(monkeypatch):
+    session_state = SessionState()
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(
+        app,
+        "consume_recommended_text_settings_pending_widget_state",
+        lambda: {
+            "file_token": "report.docx:3:abc",
+            "widget_state": {
+                "sidebar_text_operation": "Перевод",
+                "sidebar_source_language": "Авто",
+            },
+        },
+    )
+
+    app._apply_pending_recommended_widget_state()
+
+    assert session_state.sidebar_text_operation == "Перевод"
+    assert session_state.sidebar_source_language == "Авто"
+
+
+def test_apply_pending_recommended_widget_state_uses_state_widget_apply_helper(monkeypatch):
+    session_state = SessionState()
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    apply_calls = []
+    monkeypatch.setattr(
+        app,
+        "consume_recommended_text_settings_pending_widget_state",
+        lambda: {
+            "file_token": "report.docx:3:abc",
+            "widget_state": {"sidebar_text_operation": "Перевод"},
+        },
+    )
+    monkeypatch.setattr(app, "apply_recommended_widget_state", lambda payload: apply_calls.append(payload))
+
+    app._apply_pending_recommended_widget_state()
+
+    assert apply_calls == [{"sidebar_text_operation": "Перевод"}]
+
+
 def test_main_normalizes_legacy_doc_before_starting_background_preparation(monkeypatch):
     session_state = SessionState(
         app_start_logged=True,
@@ -1569,6 +1611,7 @@ def test_sync_selected_file_context_resets_run_state_for_new_file(monkeypatch):
         restart_source={"filename": "old.docx", "storage_path": "old.bin"},
     )
     reset_calls = []
+    monkeypatch.setattr(state.st, "session_state", session_state)
 
     application_flow.sync_selected_file_context(
         session_state=session_state,

@@ -302,6 +302,90 @@ def request_processing_stop() -> None:
     st.session_state.processing_stop_requested = True
 
 
+def set_selected_source_token(uploaded_token: str) -> None:
+    st.session_state.selected_source_token = uploaded_token
+
+
+def get_recommended_text_settings() -> object | None:
+    return st.session_state.get("recommended_text_settings")
+
+
+def get_text_transform_assessment() -> object | None:
+    return st.session_state.get("text_transform_assessment")
+
+
+def get_recommended_text_settings_applied_for_token() -> str:
+    return str(st.session_state.get("recommended_text_settings_applied_for_token") or "")
+
+
+def get_recommended_text_settings_applied_snapshot() -> object | None:
+    return st.session_state.get("recommended_text_settings_applied_snapshot")
+
+
+def get_recommended_text_settings_pending_widget_state() -> object | None:
+    return st.session_state.get("recommended_text_settings_pending_widget_state")
+
+
+def get_recommended_text_settings_notice_token() -> str:
+    return str(st.session_state.get("recommended_text_settings_notice_token") or "")
+
+
+def get_recommended_text_settings_notice_details() -> object | None:
+    return st.session_state.get("recommended_text_settings_notice_details")
+
+
+def get_manual_text_settings_override_for_token() -> object | None:
+    return st.session_state.get("manual_text_settings_override_for_token")
+
+
+def set_recommended_text_settings(recommendation: object | None) -> None:
+    st.session_state.recommended_text_settings = recommendation
+
+
+def set_text_transform_assessment(assessment: object | None) -> None:
+    st.session_state.text_transform_assessment = assessment
+
+
+def set_manual_text_settings_override_for_token(manual_override: object | None) -> None:
+    st.session_state.manual_text_settings_override_for_token = manual_override
+
+
+def clear_recommended_text_settings_notice_token() -> None:
+    st.session_state.recommended_text_settings_notice_token = None
+
+
+def set_recommended_text_settings_applied(*, file_token: str | None, snapshot: dict[str, str] | None) -> None:
+    st.session_state.recommended_text_settings_applied_for_token = file_token
+    st.session_state.recommended_text_settings_applied_snapshot = snapshot
+
+
+def set_recommended_text_settings_pending_widget_state(pending_state: dict[str, object] | None) -> None:
+    st.session_state.recommended_text_settings_pending_widget_state = pending_state
+
+
+def set_recommended_text_settings_notice(*, file_token: str | None, details: dict[str, object] | None) -> None:
+    st.session_state.recommended_text_settings_notice_token = file_token
+    st.session_state.recommended_text_settings_notice_details = details
+
+
+def consume_recommended_text_settings_pending_widget_state() -> dict[str, object] | None:
+    pending_state = st.session_state.get("recommended_text_settings_pending_widget_state")
+    if not isinstance(pending_state, dict):
+        return None
+    widget_state = pending_state.get("widget_state")
+    if not isinstance(widget_state, dict):
+        st.session_state.recommended_text_settings_pending_widget_state = None
+        return None
+    st.session_state.recommended_text_settings_pending_widget_state = None
+    return pending_state
+
+
+def apply_recommended_widget_state(widget_state: dict[str, object]) -> None:
+    for widget_key, widget_value in widget_state.items():
+        if isinstance(widget_key, str):
+            st.session_state[widget_key] = widget_value
+
+
 def _current_unix_timestamp() -> float:
     return time.time()
 
@@ -373,6 +457,7 @@ def init_session_state() -> None:
     st.session_state.setdefault("persisted_source_cleanup_done", False)
     st.session_state.setdefault("restart_session_id", uuid4().hex)
     st.session_state.setdefault("latest_image_mode", "no_change")
+    st.session_state.setdefault("text_transform_assessment", None)
     st.session_state.setdefault("recommended_text_settings", None)
     st.session_state.setdefault("recommended_text_settings_applied_for_token", None)
     st.session_state.setdefault("recommended_text_settings_applied_snapshot", None)

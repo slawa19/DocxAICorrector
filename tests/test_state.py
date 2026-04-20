@@ -279,6 +279,104 @@ def test_reset_run_state_drops_recommendation_state_for_different_preserved_file
     assert session_state.manual_text_settings_override_for_token is None
 
 
+def test_recommended_text_settings_helpers_roundtrip_state(monkeypatch):
+    session_state = SessionState()
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    state.set_recommended_text_settings({"file_token": "report.docx:3:abc"})
+    state.set_manual_text_settings_override_for_token({"file_token": "report.docx:3:abc", "processing_operation": True})
+    state.set_recommended_text_settings_applied(
+        file_token="report.docx:3:abc",
+        snapshot={
+            "file_token": "report.docx:3:abc",
+            "processing_operation": "translate",
+            "source_language": "auto",
+            "target_language": "ru",
+        },
+    )
+    state.set_recommended_text_settings_pending_widget_state(
+        {"file_token": "report.docx:3:abc", "widget_state": {"sidebar_text_operation": "Перевод"}}
+    )
+    state.set_recommended_text_settings_notice(
+        file_token="report.docx:3:abc",
+        details={"file_token": "report.docx:3:abc", "changes": ["режим: edit -> translate"]},
+    )
+
+    assert state.get_recommended_text_settings() == {"file_token": "report.docx:3:abc"}
+    assert state.get_manual_text_settings_override_for_token() == {
+        "file_token": "report.docx:3:abc",
+        "processing_operation": True,
+    }
+    assert state.get_recommended_text_settings_applied_for_token() == "report.docx:3:abc"
+    assert state.get_recommended_text_settings_applied_snapshot() == {
+        "file_token": "report.docx:3:abc",
+        "processing_operation": "translate",
+        "source_language": "auto",
+        "target_language": "ru",
+    }
+    assert state.get_recommended_text_settings_pending_widget_state() == {
+        "file_token": "report.docx:3:abc",
+        "widget_state": {"sidebar_text_operation": "Перевод"},
+    }
+    assert state.get_recommended_text_settings_notice_token() == "report.docx:3:abc"
+    assert state.get_recommended_text_settings_notice_details() == {
+        "file_token": "report.docx:3:abc",
+        "changes": ["режим: edit -> translate"],
+    }
+
+
+def test_text_transform_assessment_helper_roundtrip_state(monkeypatch):
+    session_state = SessionState()
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    state.set_text_transform_assessment({"dominant_language": "ru"})
+
+    assert state.get_text_transform_assessment() == {"dominant_language": "ru"}
+
+
+def test_consume_recommended_text_settings_pending_widget_state_clears_valid_payload(monkeypatch):
+    session_state = SessionState(
+        recommended_text_settings_pending_widget_state={
+            "file_token": "report.docx:3:abc",
+            "widget_state": {"sidebar_text_operation": "Перевод"},
+        }
+    )
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    payload = state.consume_recommended_text_settings_pending_widget_state()
+
+    assert payload == {
+        "file_token": "report.docx:3:abc",
+        "widget_state": {"sidebar_text_operation": "Перевод"},
+    }
+    assert session_state.recommended_text_settings_pending_widget_state is None
+
+
+def test_consume_recommended_text_settings_pending_widget_state_clears_malformed_payload(monkeypatch):
+    session_state = SessionState(recommended_text_settings_pending_widget_state={"file_token": "report.docx:3:abc", "widget_state": None})
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    payload = state.consume_recommended_text_settings_pending_widget_state()
+
+    assert payload is None
+    assert session_state.recommended_text_settings_pending_widget_state is None
+
+
+def test_apply_recommended_widget_state_updates_streamlit_widget_keys(monkeypatch):
+    session_state = SessionState()
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    state.apply_recommended_widget_state(
+        {
+            "sidebar_text_operation": "Перевод",
+            "sidebar_source_language": "Авто",
+        }
+    )
+
+    assert session_state.sidebar_text_operation == "Перевод"
+    assert session_state.sidebar_source_language == "Авто"
+
+
 def test_preparation_marker_helpers_track_request_state(monkeypatch):
     prepared_run_context = PreparedRunContext(
         uploaded_filename="report.docx",

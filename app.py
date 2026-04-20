@@ -46,7 +46,16 @@ from processing_runtime import (
 )
 from runtime_artifacts import AppReadyMarkerWriter
 from state import (
+    apply_recommended_widget_state,
+    clear_recommended_text_settings_notice_token,
+    consume_recommended_text_settings_pending_widget_state,
+    get_manual_text_settings_override_for_token,
     get_latest_image_mode,
+    get_recommended_text_settings_applied_for_token,
+    get_recommended_text_settings_applied_snapshot,
+    get_recommended_text_settings_notice_details,
+    get_recommended_text_settings_notice_token,
+    get_text_transform_assessment,
     get_latest_source_token,
     get_processing_outcome,
     get_processing_session_snapshot,
@@ -58,6 +67,12 @@ from state import (
     is_processing_stop_requested,
     push_activity,
     reset_run_state,
+    set_manual_text_settings_override_for_token,
+    set_recommended_text_settings,
+    set_recommended_text_settings_applied,
+    set_recommended_text_settings_notice,
+    set_recommended_text_settings_pending_widget_state,
+    set_text_transform_assessment,
     set_processing_status,
     should_start_preparation_for_marker,
 )
@@ -262,7 +277,7 @@ def _store_preparation_summary(*, prepared_run_context) -> None:
 
 def _assess_text_transform(*, source_text: str, target_language: str) -> TextTransformAssessment:
     assessment = assess_text_transform_excerpt(source_text, target_language=target_language)
-    st.session_state.text_transform_assessment = assessment
+    set_text_transform_assessment(assessment)
     return assessment
 
 
@@ -321,7 +336,7 @@ def _describe_recommended_text_setting_changes(
 def _build_recommended_text_settings_notice(uploaded_file_token: str) -> str | None:
     if not _should_render_recommended_text_settings_notice(uploaded_file_token):
         return None
-    notice_details = st.session_state.get("recommended_text_settings_notice_details")
+    notice_details = get_recommended_text_settings_notice_details()
     if not isinstance(notice_details, dict) or str(notice_details.get("file_token", "")) != uploaded_file_token:
         return "После анализа файла приложение скорректировало текстовые настройки до рекомендуемых для этого документа."
     changes = notice_details.get("changes")
@@ -361,17 +376,13 @@ def _apply_recommended_widget_state(
 
 
 def _apply_pending_recommended_widget_state() -> None:
-    pending_state = st.session_state.get("recommended_text_settings_pending_widget_state")
+    pending_state = consume_recommended_text_settings_pending_widget_state()
     if not isinstance(pending_state, dict):
         return
     widget_state = pending_state.get("widget_state")
     if not isinstance(widget_state, dict):
-        st.session_state.recommended_text_settings_pending_widget_state = None
         return
-    for widget_key, widget_value in widget_state.items():
-        if isinstance(widget_key, str):
-            st.session_state[widget_key] = widget_value
-    st.session_state.recommended_text_settings_pending_widget_state = None
+    apply_recommended_widget_state(widget_state)
 
 
 def _maybe_apply_file_recommendations(
@@ -394,18 +405,18 @@ def _maybe_apply_file_recommendations(
     )
     source_visible = processing_operation == "translate"
     manual_override = normalize_manual_text_settings_override(
-        st.session_state.get("manual_text_settings_override_for_token"),
+        get_manual_text_settings_override_for_token(),
         file_token=file_token,
     )
-    applied_for_token = str(st.session_state.get("recommended_text_settings_applied_for_token") or "")
-    notice_token = str(st.session_state.get("recommended_text_settings_notice_token") or "")
+    applied_for_token = get_recommended_text_settings_applied_for_token()
+    notice_token = get_recommended_text_settings_notice_token()
     applied_snapshot = normalize_recommendation_snapshot(
-        st.session_state.get("recommended_text_settings_applied_snapshot"),
+        get_recommended_text_settings_applied_snapshot(),
         file_token=file_token,
     )
 
     if notice_token and notice_token != file_token and applied_for_token != file_token:
-        st.session_state.recommended_text_settings_notice_token = None
+        clear_recommended_text_settings_notice_token()
 
     if applied_for_token != file_token:
         manual_override = mark_manual_overrides_from_baseline(
@@ -420,7 +431,7 @@ def _maybe_apply_file_recommendations(
         assessment=assessment,
         current_settings=current_settings,
     )
-    st.session_state.recommended_text_settings = recommendation
+    set_recommended_text_settings(recommendation)
 
     if applied_for_token == file_token:
         manual_override_before_recommendation = dict(manual_override)
@@ -437,28 +448,28 @@ def _maybe_apply_file_recommendations(
                 recommended_settings=recommendation,
                 source_visible=source_visible,
             )
-        st.session_state.manual_text_settings_override_for_token = manual_override
+        set_manual_text_settings_override_for_token(manual_override)
         if any(
             not bool(manual_override_before_recommendation.get(field, False))
             and bool(manual_override.get(field, False))
             for field in TEXT_SETTINGS_FIELDS
         ):
-            st.session_state.recommended_text_settings_notice_token = None
+            clear_recommended_text_settings_notice_token()
         return
 
-    st.session_state.manual_text_settings_override_for_token = manual_override
+    set_manual_text_settings_override_for_token(manual_override)
     widget_state_updates = _apply_recommended_widget_state(
         config=app_config,
         recommendation=recommendation,
         manual_override=manual_override,
     )
-    st.session_state.recommended_text_settings_applied_for_token = file_token
-    st.session_state.recommended_text_settings_applied_snapshot = {
+    applied_snapshot_payload = {
         "file_token": file_token,
         "processing_operation": str(recommendation["processing_operation"]),
         "source_language": str(recommendation["source_language"]),
         "target_language": str(recommendation["target_language"]),
     }
+    set_recommended_text_settings_applied(file_token=file_token, snapshot=applied_snapshot_payload)
     did_change = bool(widget_state_updates)
     notice_changes = _describe_recommended_text_setting_changes(
         config=app_config,
@@ -466,7 +477,7 @@ def _maybe_apply_file_recommendations(
         recommendation=recommendation,
         manual_override=manual_override,
     )
-    st.session_state.recommended_text_settings_pending_widget_state = (
+    pending_widget_state = (
         {
             "file_token": file_token,
             "widget_state": widget_state_updates,
@@ -474,7 +485,7 @@ def _maybe_apply_file_recommendations(
         if did_change
         else None
     )
-    st.session_state.recommended_text_settings_notice_details = (
+    notice_details = (
         {
             "file_token": file_token,
             "changes": notice_changes,
@@ -482,13 +493,14 @@ def _maybe_apply_file_recommendations(
         if did_change
         else None
     )
-    st.session_state.recommended_text_settings_notice_token = file_token if did_change else None
+    set_recommended_text_settings_pending_widget_state(pending_widget_state)
+    set_recommended_text_settings_notice(file_token=file_token if did_change else None, details=notice_details)
     if did_change:
         st.rerun()
 
 
 def _should_render_recommended_text_settings_notice(uploaded_file_token: str) -> bool:
-    notice_token = str(st.session_state.get("recommended_text_settings_notice_token") or "")
+    notice_token = get_recommended_text_settings_notice_token()
     return bool(uploaded_file_token) and notice_token == uploaded_file_token
 
 
