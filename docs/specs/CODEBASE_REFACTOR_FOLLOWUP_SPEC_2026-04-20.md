@@ -47,9 +47,11 @@ Usage rule for this spec:
 3. whenever a later review cites a count, it must say which metric it uses.
 4. before P1 implementation begins, rerun these metrics via a checked-in canonical script or test helper and replace any stale baseline numbers in this document.
 
-## 4. Current-State Validation Of Review Remarks
+## 4. Validation Baseline At Slice Start
 
-The review notes are directionally strong, but several details are now outdated and need correction before they are used as an engineering plan.
+The review notes were directionally strong, but several details were already outdated at validation time and needed correction before they could be used as an engineering plan.
+
+This section is a baseline snapshot captured before the implementation slices recorded later in this spec. Live status for the repository after implementation belongs to the dated progress notes and the explicit `P2`/`P3`/`P4` status sections, not to the historical counts below.
 
 ### 4.1 Confirmed As Still Relevant
 
@@ -183,6 +185,35 @@ This section tracks implementation progress for the approved first slice only.
 
 1. `P1b.1` recommendation-state write ownership centralization in `state.py`: implemented for `text_transform_assessment`, recommendation-state session keys, and pending widget-state application in this slice.
 2. `P1b.2` `application_flow.py:selected_source_token` write-side ownership gap: implemented in this slice.
+
+### 5A.4 P2 Status
+
+1. `P2.1` dependency, emitter, context, and processing-state containers for `run_document_processing()`: implemented in this slice.
+2. `P2.2` phase-oriented helper split for initialization, block processing, image processing, placeholder validation, DOCX build, and success finalization: implemented in this slice.
+3. `P2.3` public `run_document_processing()` entrypoint reduction: advanced in the SLO follow-up slice; component wiring and run execution now live behind dedicated helpers so the public entrypoint is a thin facade over builder-plus-executor orchestration.
+4. `P2.4` repeated failure-path emission cleanup: advanced in this slice through shared terminal-result helpers plus dedicated block-phase failure handlers for invalid-job, generation-failure, processed-output rejection, and marker-registry failure paths.
+5. `P2.5` block-phase happy-path extraction: implemented in this slice through dedicated helpers for block start emission, block execution, marker-registry append, and block completion emission.
+6. `P2.6` single-block orchestration extraction: implemented in this slice through `_process_single_block()`, leaving `_run_block_processing_phase()` as a thin loop over stop-check plus per-block dispatch.
+
+### 5A.5 P3 Status
+
+1. `P3.1` first paragraph-role extraction into `document_roles.py`: implemented in this slice while keeping `document.py` as the compatibility import surface for existing callers and tests.
+2. `P3.2` relation-normalization extraction into `document_relations.py`: implemented in this slice while keeping `document.py` as the compatibility import surface for existing callers, tests, and report-writer monkeypatches.
+3. `P3.3` semantic-block assembly extraction into `document_semantic_blocks.py`: implemented in this slice while keeping `document.py` as the compatibility import surface for existing callers and preserving the legacy relation-settings wrapper used by the document facade.
+4. `P3.4` deterministic paragraph-boundary normalization extraction into `document_boundaries.py`: implemented in this slice while keeping `document.py` as the compatibility facade for normalization entry points, settings wrappers, and report-artifact monkeypatch targets.
+5. `P3.5` boundary AI review extraction into `document_boundary_review.py`: implemented in this slice while keeping `document.py` as the compatibility facade for settings resolution, execution entry points, and monkeypatch-friendly wrappers used by existing tests.
+6. `P3.6` table rendering extraction into `document_tables.py`: implemented in this slice while keeping `document.py` as the compatibility facade for raw-table construction and HTML rendering helpers.
+7. `P3.7` shared XML ownership cleanup into `document_shared_xml.py`: implemented in this slice for source XML fingerprinting, drawing/image XML forensics, and numbering XML helpers, while `document.py` keeps compatibility wrappers for existing callers.
+8. `P3.8` remaining DOCX extraction, archive-validation, list-metadata, and inline render ownership move into `document_extraction.py`: implemented in the SLO follow-up slice, with `document.py` reduced to a compact compatibility facade that preserves legacy monkeypatch/test seams while the heavy extraction logic now lives outside the facade.
+
+### 5A.6 P4 Status
+
+1. `P4.1` first section-loader extraction for document-structure settings inside `config.py:load_app_config()`: implemented in this slice for paragraph-boundary normalization, paragraph-boundary AI review, relation normalization, structure recognition, and structure validation.
+2. `P4.2` image/semantic-validation and image-output section-loader extraction inside `config.py:load_app_config()`: implemented in this slice while keeping model-registry migration logic untouched.
+3. `P4.3` text runtime defaults and output-font section-loader extraction inside `config.py:load_app_config()`: implemented in this slice while preserving env precedence and validation rules.
+4. `P4.4` model-registry resolution and legacy-warning emission extraction inside `config.py:load_app_config()`: implemented in this slice while preserving canonical-over-legacy precedence and warning behavior.
+5. `P4.5` `AppConfig` assembly/body-size SLO follow-up: implemented in this slice by moving clamp normalization into section helpers and routing final object assembly through a dedicated `_build_app_config()` helper.
+6. residual `P4` cleanup and any optional further reduction after helper extraction: not started by design.
 
 ## 6. Refactor Goals
 
@@ -597,6 +628,13 @@ That slice has the best ratio of architectural value to migration risk and will 
 
 This section is updated during implementation of the first approved slice.
 
+### 2026-04-20 Additional Progress
+
+1. Started `P5.1` test-surface cleanup with the first low-risk split of `tests/test_document.py`.
+2. Moved semantic-block, relation-normalization, and marker-wrapping tests into `tests/test_document_structure_blocks.py` while keeping the remaining facade, extraction, formatting, and reinsertion coverage in `tests/test_document.py`.
+3. Kept the split intentionally narrow so production boundary work remains stable and pytest collection/import behavior stays easy to verify.
+4. Continued `P5.1` by moving image-reinsertion and delivery-payload coverage into `tests/test_image_reinsertion.py`, leaving `tests/test_document.py` focused on facade, extraction, archive-validation, and formatting-adjacent behavior.
+
 ### 2026-04-20 Progress
 
 1. Confirmed and recorded an additional `P1a`-specific problem: the first migrated key family was split by lifecycle phase across `processing_runtime.py`, `state.py`, and `application_flow.py` rather than having one authoritative write owner.
@@ -604,3 +642,21 @@ This section is updated during implementation of the first approved slice.
 3. Removed the legacy fallback normalizer from `document.py:_read_uploaded_docx_bytes()` so the runtime normalization boundary remains singular.
 4. Added `docs/architecture/session_state_ownership_matrix_2026-04-20.md` and `tests/test_session_state_ownership.py` as the initial ownership artifact plus whitelist-backed regression gate.
 5. Moved the maintained review report into `docs/reviews/CODE_REVIEW_REPORT_2026-03-24.md` and ignored root diagnostic artifacts in `.gitignore`.
+6. Decomposed `document_pipeline.py:run_document_processing()` into typed containers plus explicit internal phases while preserving the existing public function signature and targeted pipeline behavior.
+7. Added shared terminal-result helpers in `document_pipeline.py` so repeated finalize/activity/log emission for failed and stopped paths no longer has to be open-coded at each phase boundary.
+8. Extracted the main happy-path portions of block execution in `document_pipeline.py` so `_run_block_processing_phase()` now delegates both the main success flow and the major failure branches to focused helpers.
+9. Added `_process_single_block()` so the block-phase loop now mostly expresses orchestration structure rather than inline block lifecycle details.
+10. Extracted the first document-structure section loaders from `config.py:load_app_config()` into focused helper functions, keeping model-registry migration logic and the public config API unchanged while reducing flat parse-tape density for the P4 wave.
+11. Extracted the image/semantic-validation runtime settings and `image_output` parsing from `config.py:load_app_config()` into dedicated helper functions, further shrinking the remaining flat config-loader body without changing clamps, env precedence, or return shape.
+12. Extracted text runtime defaults and `output.fonts` parsing from `config.py:load_app_config()` into dedicated helper functions, preserving context validation, env overrides, and the existing `AppConfig` return contract.
+13. Extracted model-registry resolution, legacy fallback precedence, and legacy-warning emission from `config.py:load_app_config()` into a dedicated helper, leaving the top-level loader mostly as section orchestration plus final `AppConfig` assembly.
+14. Closed the immediate top-level P2/P4 SLO gaps by routing `run_document_processing()` through dedicated run-component/executor helpers and by moving `load_app_config()` clamp-heavy final assembly into section helpers plus `_build_app_config()`.
+15. Started `P3` with the first paragraph-role extraction: role heuristics, heading/caption/list classification helpers, and standalone-heading/caption reclassification now live in `document_roles.py`, while `document.py` remains the compatibility facade for existing imports.
+16. Continued `P3` with relation-normalization extraction: `build_paragraph_relations()`, relation-side-effect application, TOC/epigraph relation heuristics, and relation report artifact writing now live in `document_relations.py`, while `document.py` keeps compatibility wrappers for existing imports and test monkeypatch targets.
+17. Continued `P3` with semantic-block extraction: block clustering, context excerpt assembly, marker-wrapped block rendering, and editing-job construction now live in `document_semantic_blocks.py`, while `document.py` keeps compatibility re-exports and a facade-level relation-settings wrapper for unchanged call sites.
+18. Continued `P3` with deterministic boundary extraction: normalization settings resolution, boundary decision heuristics, merged-raw-paragraph assembly, metrics summarization, and boundary report artifact writing now live in `document_boundaries.py`, while `document.py` keeps facade-level wrappers for orchestration and existing test monkeypatch points.
+19. Continued `P3` with boundary AI review extraction: candidate building, request payload construction, recommendation parsing, decision recording, and review artifact writing now live in `document_boundary_review.py`, while `document.py` keeps facade-level wrappers and test monkeypatch seams.
+20. Continued `P3` with table rendering extraction: raw-table construction plus HTML table/cell/row rendering now live in `document_tables.py`, while `document.py` keeps compatibility wrappers and continues supplying paragraph text rendering for cell content.
+21. Continued `P3` with shared XML ownership cleanup: source XML fingerprinting, drawing/image extraction forensics, and list-numbering XML resolution now live in `document_shared_xml.py`, while `document.py` keeps compatibility wrappers and existing XML primitives continue to come from `document_roles.py`.
+22. Finished the remaining `P3` extraction move by introducing `document_extraction.py` for DOCX archive validation, upload-byte reading, paragraph/image extraction, inline run rendering, and list metadata ownership; `document.py` was reduced from the historical monolith to a compact compatibility facade and no longer owns the heavy extraction logic.
+23. Closed the post-extraction compatibility regressions by restoring legacy monkeypatch seams in `document.py`, keeping the facade within the SLO at 162 lines while targeted verification passed for `tests/test_document.py`, `tests/test_document_extraction.py`, and `tests/test_document_structure_blocks.py`.

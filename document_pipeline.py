@@ -4,6 +4,7 @@ import inspect
 import re
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Sized
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol, TypeAlias
 
@@ -146,6 +147,90 @@ class ResultArtifactWriter(Protocol):
 
 class ProcessingJobs(Sized, Protocol):
     def __iter__(self) -> Iterator[ProcessingJob]: ...
+
+
+@dataclass(frozen=True)
+class ProcessingDependencies:
+    resolve_uploaded_filename: FilenameResolver
+    get_client: ClientFactory
+    ensure_pandoc_available: Callable[[], None]
+    load_system_prompt: SystemPromptLoader
+    log_event: EventLogger
+    present_error: ErrorPresenter
+    should_stop_processing: StopPredicate
+    generate_markdown_block: MarkdownGenerator
+    process_document_images: ImageProcessor
+    inspect_placeholder_integrity: PlaceholderInspector
+    convert_markdown_to_docx_bytes: MarkdownToDocxConverter
+    preserve_source_paragraph_properties: ParagraphPropertiesPreserver
+    normalize_semantic_output_docx: SemanticDocxNormalizer
+    reinsert_inline_images: ImageReinserter
+    write_ui_result_artifacts: ResultArtifactWriter
+
+
+@dataclass(frozen=True)
+class ProcessingEmitters:
+    emit_state: StateEmitter
+    emit_finalize: FinalizeEmitter
+    emit_activity: ActivityEmitter
+    emit_log: LogEmitter
+    emit_status: StatusEmitter
+
+
+@dataclass(frozen=True)
+class ProcessingContext:
+    uploaded_file: object
+    uploaded_filename: str
+    jobs: ProcessingJobs
+    source_paragraphs: Sequence[ParagraphLike] | None
+    image_assets: Sequence[ImageAssetLike]
+    image_mode: str
+    app_config: Mapping[str, object]
+    model: str
+    max_retries: int
+    processing_operation: str
+    source_language: str
+    target_language: str
+    on_progress: ProgressCallback
+    runtime: object
+
+
+@dataclass
+class ProcessingState:
+    processed_chunks: list[str] = field(default_factory=list)
+    generated_paragraph_registry: list[dict[str, object]] = field(default_factory=list)
+    system_prompt: str | None = None
+    started_at: float = field(default_factory=time.perf_counter)
+
+
+@dataclass(frozen=True)
+class ProcessingInitialization:
+    client: object
+    job_count: int
+
+
+@dataclass(frozen=True)
+class ImageProcessingPhaseResult:
+    processed_image_assets: list[ImageAssetLike]
+    placeholder_integrity: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class DocxBuildPhaseResult:
+    docx_bytes: bytes
+    latest_result_notice: dict[str, str] | None
+
+
+@dataclass(frozen=True)
+class BlockExecutionPayload:
+    job_kind: str
+    target_chars: int
+    context_chars: int
+    target_text: str
+    target_text_with_markers: str
+    paragraph_ids: list[str] | None
+    context_before: str
+    context_after: str
 
 
 def _coerce_required_text_field(job: ProcessingJob, field_name: str, *, allow_blank: bool = True) -> str:
@@ -542,6 +627,1461 @@ def _call_docx_restorer_with_optional_registry(restorer, docx_bytes: bytes, para
         return restorer(docx_bytes, paragraphs)
 
 
+def _build_processing_dependencies(
+    *,
+    resolve_uploaded_filename: FilenameResolver,
+    get_client: ClientFactory,
+    ensure_pandoc_available: Callable[[], None],
+    load_system_prompt: SystemPromptLoader,
+    log_event: EventLogger,
+    present_error: ErrorPresenter,
+    should_stop_processing: StopPredicate,
+    generate_markdown_block: MarkdownGenerator,
+    process_document_images: ImageProcessor,
+    inspect_placeholder_integrity: PlaceholderInspector,
+    convert_markdown_to_docx_bytes: MarkdownToDocxConverter,
+    preserve_source_paragraph_properties: ParagraphPropertiesPreserver,
+    normalize_semantic_output_docx: SemanticDocxNormalizer,
+    reinsert_inline_images: ImageReinserter,
+    write_ui_result_artifacts: ResultArtifactWriter,
+) -> ProcessingDependencies:
+    return ProcessingDependencies(
+        resolve_uploaded_filename=resolve_uploaded_filename,
+        get_client=get_client,
+        ensure_pandoc_available=ensure_pandoc_available,
+        load_system_prompt=load_system_prompt,
+        log_event=log_event,
+        present_error=present_error,
+        should_stop_processing=should_stop_processing,
+        generate_markdown_block=generate_markdown_block,
+        process_document_images=process_document_images,
+        inspect_placeholder_integrity=inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=preserve_source_paragraph_properties,
+        normalize_semantic_output_docx=normalize_semantic_output_docx,
+        reinsert_inline_images=reinsert_inline_images,
+        write_ui_result_artifacts=write_ui_result_artifacts,
+    )
+
+
+def _build_processing_emitters(
+    *,
+    emit_state: StateEmitter,
+    emit_finalize: FinalizeEmitter,
+    emit_activity: ActivityEmitter,
+    emit_log: LogEmitter,
+    emit_status: StatusEmitter,
+) -> ProcessingEmitters:
+    return ProcessingEmitters(
+        emit_state=emit_state,
+        emit_finalize=emit_finalize,
+        emit_activity=emit_activity,
+        emit_log=emit_log,
+        emit_status=emit_status,
+    )
+
+
+def _build_processing_context(
+    *,
+    uploaded_file: object,
+    jobs: ProcessingJobs,
+    source_paragraphs: Sequence[ParagraphLike] | None,
+    image_assets: Sequence[ImageAssetLike],
+    image_mode: str,
+    app_config: Mapping[str, object],
+    model: str,
+    max_retries: int,
+    processing_operation: str,
+    source_language: str,
+    target_language: str,
+    on_progress: ProgressCallback,
+    runtime: object,
+    dependencies: ProcessingDependencies,
+) -> ProcessingContext:
+    return ProcessingContext(
+        uploaded_file=uploaded_file,
+        uploaded_filename=dependencies.resolve_uploaded_filename(uploaded_file),
+        jobs=jobs,
+        source_paragraphs=source_paragraphs,
+        image_assets=image_assets,
+        image_mode=image_mode,
+        app_config=app_config,
+        model=model,
+        max_retries=max_retries,
+        processing_operation=processing_operation,
+        source_language=source_language,
+        target_language=target_language,
+        on_progress=on_progress,
+        runtime=runtime,
+    )
+
+
+@dataclass(frozen=True)
+class ProcessingRunComponents:
+    dependencies: ProcessingDependencies
+    emitters: ProcessingEmitters
+    context: ProcessingContext
+
+
+def _build_processing_run_components(
+    *,
+    uploaded_file: object,
+    jobs: ProcessingJobs,
+    source_paragraphs: Sequence[ParagraphLike] | None,
+    image_assets: Sequence[ImageAssetLike],
+    image_mode: str,
+    app_config: Mapping[str, object],
+    model: str,
+    max_retries: int,
+    processing_operation: str,
+    source_language: str,
+    target_language: str,
+    on_progress: ProgressCallback,
+    runtime: object,
+    resolve_uploaded_filename: FilenameResolver,
+    get_client: ClientFactory,
+    ensure_pandoc_available: Callable[[], None],
+    load_system_prompt: SystemPromptLoader,
+    log_event: EventLogger,
+    present_error: ErrorPresenter,
+    emit_state: StateEmitter,
+    emit_finalize: FinalizeEmitter,
+    emit_activity: ActivityEmitter,
+    emit_log: LogEmitter,
+    emit_status: StatusEmitter,
+    should_stop_processing: StopPredicate,
+    generate_markdown_block: MarkdownGenerator,
+    process_document_images: ImageProcessor,
+    inspect_placeholder_integrity: PlaceholderInspector,
+    convert_markdown_to_docx_bytes: MarkdownToDocxConverter,
+    preserve_source_paragraph_properties: ParagraphPropertiesPreserver,
+    normalize_semantic_output_docx: SemanticDocxNormalizer,
+    reinsert_inline_images: ImageReinserter,
+    write_ui_result_artifacts: ResultArtifactWriter,
+) -> ProcessingRunComponents:
+    dependencies = _build_processing_dependencies(
+        resolve_uploaded_filename=resolve_uploaded_filename,
+        get_client=get_client,
+        ensure_pandoc_available=ensure_pandoc_available,
+        load_system_prompt=load_system_prompt,
+        log_event=log_event,
+        present_error=present_error,
+        should_stop_processing=should_stop_processing,
+        generate_markdown_block=generate_markdown_block,
+        process_document_images=process_document_images,
+        inspect_placeholder_integrity=inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=preserve_source_paragraph_properties,
+        normalize_semantic_output_docx=normalize_semantic_output_docx,
+        reinsert_inline_images=reinsert_inline_images,
+        write_ui_result_artifacts=write_ui_result_artifacts,
+    )
+    emitters = _build_processing_emitters(
+        emit_state=emit_state,
+        emit_finalize=emit_finalize,
+        emit_activity=emit_activity,
+        emit_log=emit_log,
+        emit_status=emit_status,
+    )
+    context = _build_processing_context(
+        uploaded_file=uploaded_file,
+        jobs=jobs,
+        source_paragraphs=source_paragraphs,
+        image_assets=image_assets,
+        image_mode=image_mode,
+        app_config=app_config,
+        model=model,
+        max_retries=max_retries,
+        processing_operation=processing_operation,
+        source_language=source_language,
+        target_language=target_language,
+        on_progress=on_progress,
+        runtime=runtime,
+        dependencies=dependencies,
+    )
+    return ProcessingRunComponents(
+        dependencies=dependencies,
+        emitters=emitters,
+        context=context,
+    )
+
+
+def _execute_processing_run(
+    *,
+    context: ProcessingContext,
+    dependencies: ProcessingDependencies,
+    emitters: ProcessingEmitters,
+) -> PipelineResult:
+    initialization = _initialize_processing_run(
+        context=context,
+        dependencies=dependencies,
+        emitters=emitters,
+    )
+    if not isinstance(initialization, ProcessingInitialization):
+        return initialization or "failed"
+    if initialization.job_count == 0:
+        return _fail_empty_processing_plan(
+            context=context,
+            dependencies=dependencies,
+            emitters=emitters,
+        )
+
+    state = ProcessingState()
+    block_phase_outcome = _run_block_processing_phase(
+        context=context,
+        dependencies=dependencies,
+        emitters=emitters,
+        state=state,
+        initialization=initialization,
+    )
+    if block_phase_outcome is not None:
+        return block_phase_outcome
+
+    image_phase = _run_image_processing_phase(
+        context=context,
+        dependencies=dependencies,
+        emitters=emitters,
+        state=state,
+        initialization=initialization,
+    )
+    if image_phase is None:
+        return "failed"
+    if dependencies.should_stop_processing(context.runtime):
+        return _emit_stopped_result(
+            emitters=emitters,
+            runtime=context.runtime,
+            detail="Обработка остановлена пользователем.",
+            progress=1.0,
+            block_index=initialization.job_count,
+            block_count=initialization.job_count,
+        )
+
+    final_markdown = _current_markdown(state.processed_chunks)
+    if not _validate_placeholder_integrity_phase(
+        context=context,
+        dependencies=dependencies,
+        emitters=emitters,
+        final_markdown=final_markdown,
+        image_phase=image_phase,
+        job_count=initialization.job_count,
+    ):
+        return "failed"
+
+    docx_phase = _run_docx_build_phase(
+        context=context,
+        dependencies=dependencies,
+        emitters=emitters,
+        state=state,
+        image_phase=image_phase,
+        job_count=initialization.job_count,
+    )
+    if docx_phase is None:
+        return "failed"
+
+    return _finalize_processing_success(
+        context=context,
+        dependencies=dependencies,
+        emitters=emitters,
+        state=state,
+        docx_phase=docx_phase,
+        job_count=initialization.job_count,
+    )
+
+
+def _current_markdown(processed_chunks: Sequence[str]) -> str:
+    return "\n\n".join(processed_chunks).strip()
+
+
+def _parse_processing_job(*, job: ProcessingJob) -> BlockExecutionPayload:
+    job_kind = _coerce_job_kind(job)
+    target_chars = _coerce_required_int_field(job, "target_chars")
+    context_chars = _coerce_required_int_field(job, "context_chars")
+    target_text = _coerce_required_text_field(job, "target_text", allow_blank=False)
+    target_text_with_markers = _coerce_optional_text_field(job, "target_text_with_markers") or target_text
+    paragraph_ids = _coerce_optional_string_list(job, "paragraph_ids")
+    context_before = _coerce_required_text_field(job, "context_before")
+    context_after = _coerce_required_text_field(job, "context_after")
+    return BlockExecutionPayload(
+        job_kind=job_kind,
+        target_chars=target_chars,
+        context_chars=context_chars,
+        target_text=target_text,
+        target_text_with_markers=target_text_with_markers,
+        paragraph_ids=paragraph_ids,
+        context_before=context_before,
+        context_after=context_after,
+    )
+
+
+def _is_marker_mode_enabled(context: ProcessingContext, payload: BlockExecutionPayload) -> bool:
+    return bool(context.app_config.get("enable_paragraph_markers", False)) and bool(payload.paragraph_ids)
+
+
+def _emit_block_started(
+    *,
+    context: ProcessingContext,
+    dependencies: ProcessingDependencies,
+    emitters: ProcessingEmitters,
+    initialization: ProcessingInitialization,
+    index: int,
+    payload: BlockExecutionPayload,
+) -> None:
+    emitters.emit_status(
+        context.runtime,
+        stage="Подготовка блока",
+        detail=(
+            f"Готовлю блок {index} из {initialization.job_count} к отправке в OpenAI."
+            if payload.job_kind == "llm"
+            else f"Готовлю passthrough-блок {index} из {initialization.job_count} без вызова OpenAI."
+        ),
+        current_block=index,
+        block_count=initialization.job_count,
+        target_chars=payload.target_chars,
+        context_chars=payload.context_chars,
+        progress=(index - 1) / initialization.job_count,
+        is_running=True,
+    )
+    emitters.emit_activity(context.runtime, f"Начата обработка блока {index} из {initialization.job_count}.")
+    dependencies.log_event(
+        logging.DEBUG,
+        "block_started",
+        "Начата обработка блока",
+        filename=context.uploaded_filename,
+        block_index=index,
+        block_count=initialization.job_count,
+        target_chars=payload.target_chars,
+        context_chars=payload.context_chars,
+        model=context.model,
+        job_kind=payload.job_kind,
+    )
+
+
+def _execute_processing_block(
+    *,
+    context: ProcessingContext,
+    dependencies: ProcessingDependencies,
+    emitters: ProcessingEmitters,
+    state: ProcessingState,
+    initialization: ProcessingInitialization,
+    index: int,
+    payload: BlockExecutionPayload,
+) -> tuple[str, bool]:
+    if payload.job_kind == "passthrough":
+        emitters.emit_status(
+            context.runtime,
+            stage="Passthrough блока",
+            detail=f"Блок {index} не требует LLM-обработки и будет перенесён в Markdown как есть.",
+            current_block=index,
+            block_count=initialization.job_count,
+            target_chars=payload.target_chars,
+            context_chars=payload.context_chars,
+            progress=(index - 1) / initialization.job_count,
+            is_running=True,
+        )
+        emitters.emit_activity(context.runtime, f"Блок {index} пропущен через passthrough без OpenAI.")
+        context.on_progress(preview_title="Текущий Markdown")
+        return payload.target_text, False
+
+    marker_mode_enabled = _is_marker_mode_enabled(context, payload)
+    if state.system_prompt is None:
+        state.system_prompt = _resolve_system_prompt(
+            dependencies.load_system_prompt,
+            operation=context.processing_operation,
+            source_language=context.source_language,
+            target_language=context.target_language,
+        )
+    emitters.emit_status(
+        context.runtime,
+        stage="Ожидание ответа OpenAI",
+        detail=f"Блок {index} отправлен в модель. Приложение работает, ожидаю ответ.",
+        current_block=index,
+        block_count=initialization.job_count,
+        target_chars=payload.target_chars,
+        context_chars=payload.context_chars,
+        progress=(index - 1) / initialization.job_count,
+        is_running=True,
+    )
+    emitters.emit_activity(context.runtime, f"Блок {index} отправлен в OpenAI.")
+    context.on_progress(preview_title="Текущий Markdown")
+    processed_chunk = dependencies.generate_markdown_block(
+        client=initialization.client,
+        model=context.model,
+        system_prompt=state.system_prompt,
+        target_text=payload.target_text_with_markers if marker_mode_enabled else payload.target_text,
+        context_before=payload.context_before,
+        context_after=payload.context_after,
+        max_retries=context.max_retries,
+        expected_paragraph_ids=payload.paragraph_ids if marker_mode_enabled else None,
+        marker_mode=marker_mode_enabled,
+    )
+    return processed_chunk, marker_mode_enabled
+
+
+def _append_marker_registry_entries(
+    *,
+    context: ProcessingContext,
+    dependencies: ProcessingDependencies,
+    state: ProcessingState,
+    initialization: ProcessingInitialization,
+    index: int,
+    payload: BlockExecutionPayload,
+    processed_chunk: str,
+) -> None:
+    paragraph_ids = payload.paragraph_ids or []
+    state.generated_paragraph_registry.extend(
+        _build_processed_paragraph_registry_entries(
+            block_index=index,
+            paragraph_ids=paragraph_ids,
+            processed_chunk=processed_chunk,
+        )
+    )
+    dependencies.log_event(
+        logging.DEBUG,
+        "block_marker_registry_built",
+        "Для блока собран marker-aware paragraph registry.",
+        filename=context.uploaded_filename,
+        block_index=index,
+        block_count=initialization.job_count,
+        paragraph_count=len(paragraph_ids),
+    )
+
+
+def _emit_block_completed(
+    *,
+    context: ProcessingContext,
+    dependencies: ProcessingDependencies,
+    emitters: ProcessingEmitters,
+    state: ProcessingState,
+    initialization: ProcessingInitialization,
+    index: int,
+    payload: BlockExecutionPayload,
+    processed_chunk: str,
+) -> None:
+    emitters.emit_state(
+        context.runtime,
+        processed_block_markdowns=state.processed_chunks.copy(),
+        latest_markdown=_current_markdown(state.processed_chunks),
+        processed_paragraph_registry=state.generated_paragraph_registry.copy(),
+    )
+    emitters.emit_log(
+        context.runtime,
+        status="OK",
+        block_index=index,
+        block_count=initialization.job_count,
+        target_chars=payload.target_chars,
+        context_chars=payload.context_chars,
+        details=f"готово за {time.perf_counter() - state.started_at:.1f} сек. с начала запуска",
+    )
+    emitters.emit_status(
+        context.runtime,
+        stage="Блок обработан",
+        detail=f"Получен ответ для блока {index}. Обновляю промежуточный Markdown.",
+        current_block=index,
+        block_count=initialization.job_count,
+        target_chars=payload.target_chars,
+        context_chars=payload.context_chars,
+        progress=index / initialization.job_count,
+        is_running=True,
+    )
+    emitters.emit_activity(context.runtime, f"Блок {index} обработан успешно.")
+    output_chars = len(processed_chunk)
+    output_ratio = round(output_chars / max(payload.target_chars, 1), 2)
+    dependencies.log_event(
+        logging.DEBUG,
+        "block_completed",
+        "Блок обработан успешно",
+        filename=context.uploaded_filename,
+        block_index=index,
+        block_count=initialization.job_count,
+        target_chars=payload.target_chars,
+        context_chars=payload.context_chars,
+        output_chars=output_chars,
+        output_ratio=output_ratio,
+        input_preview=payload.target_text[:300],
+        output_preview=processed_chunk[:300],
+        job_kind=payload.job_kind,
+    )
+    context.on_progress(preview_title="Текущий Markdown")
+
+
+def _process_single_block(
+    *,
+    context: ProcessingContext,
+    dependencies: ProcessingDependencies,
+    emitters: ProcessingEmitters,
+    state: ProcessingState,
+    initialization: ProcessingInitialization,
+    index: int,
+    job: ProcessingJob,
+) -> PipelineResult | None:
+    try:
+        payload = _parse_processing_job(job=job)
+    except (KeyError, TypeError, ValueError) as exc:
+        return _handle_invalid_processing_job(
+            context=context,
+            dependencies=dependencies,
+            emitters=emitters,
+            state=state,
+            initialization=initialization,
+            index=index,
+            exc=exc,
+        )
+
+    _emit_block_started(
+        context=context,
+        dependencies=dependencies,
+        emitters=emitters,
+        initialization=initialization,
+        index=index,
+        payload=payload,
+    )
+    marker_mode_enabled = _is_marker_mode_enabled(context, payload)
+    try:
+        processed_chunk, marker_mode_enabled = _execute_processing_block(
+            context=context,
+            dependencies=dependencies,
+            emitters=emitters,
+            state=state,
+            initialization=initialization,
+            index=index,
+            payload=payload,
+        )
+    except Exception as exc:
+        return _handle_block_generation_failure(
+            context=context,
+            dependencies=dependencies,
+            emitters=emitters,
+            state=state,
+            initialization=initialization,
+            index=index,
+            payload=payload,
+            marker_mode_enabled=marker_mode_enabled,
+            exc=exc,
+        )
+
+    processed_block_status = _classify_processed_block(payload.target_text, processed_chunk)
+    if processed_block_status != "valid":
+        return _handle_processed_block_rejection(
+            context=context,
+            dependencies=dependencies,
+            emitters=emitters,
+            initialization=initialization,
+            index=index,
+            target_chars=payload.target_chars,
+            context_chars=payload.context_chars,
+            target_text=payload.target_text,
+            processed_chunk=processed_chunk,
+            rejection_kind=processed_block_status,
+        )
+
+    state.processed_chunks.append(processed_chunk)
+    if payload.job_kind == "llm" and marker_mode_enabled and payload.paragraph_ids:
+        try:
+            _append_marker_registry_entries(
+                context=context,
+                dependencies=dependencies,
+                state=state,
+                initialization=initialization,
+                index=index,
+                payload=payload,
+                processed_chunk=processed_chunk,
+            )
+        except Exception as exc:
+            return _handle_marker_registry_failure(
+                context=context,
+                dependencies=dependencies,
+                emitters=emitters,
+                state=state,
+                initialization=initialization,
+                index=index,
+                payload=payload,
+                processed_chunk=processed_chunk,
+                exc=exc,
+            )
+    _emit_block_completed(
+        context=context,
+        dependencies=dependencies,
+        emitters=emitters,
+        state=state,
+        initialization=initialization,
+        index=index,
+        payload=payload,
+        processed_chunk=processed_chunk,
+    )
+    return None
+
+
+def _emit_terminal_result(
+    *,
+    emitters: ProcessingEmitters,
+    runtime: object,
+    finalize_stage: str,
+    detail: str,
+    progress: float,
+    terminal_kind: str,
+    activity_message: str,
+    log_status: str,
+    block_index: int,
+    block_count: int,
+    target_chars: int,
+    context_chars: int,
+    log_details: str,
+) -> None:
+    emitters.emit_finalize(runtime, finalize_stage, detail, progress, terminal_kind)
+    emitters.emit_activity(runtime, activity_message)
+    emitters.emit_log(
+        runtime,
+        status=log_status,
+        block_index=block_index,
+        block_count=block_count,
+        target_chars=target_chars,
+        context_chars=context_chars,
+        details=log_details,
+    )
+
+
+def _emit_failed_result(
+    *,
+    emitters: ProcessingEmitters,
+    runtime: object,
+    finalize_stage: str,
+    detail: str,
+    progress: float,
+    activity_message: str,
+    block_index: int,
+    block_count: int,
+    target_chars: int,
+    context_chars: int,
+    log_details: str,
+) -> PipelineResult:
+    _emit_terminal_result(
+        emitters=emitters,
+        runtime=runtime,
+        finalize_stage=finalize_stage,
+        detail=detail,
+        progress=progress,
+        terminal_kind="error",
+        activity_message=activity_message,
+        log_status="ERROR",
+        block_index=block_index,
+        block_count=block_count,
+        target_chars=target_chars,
+        context_chars=context_chars,
+        log_details=log_details,
+    )
+    return "failed"
+
+
+def _emit_stopped_result(
+    *,
+    emitters: ProcessingEmitters,
+    runtime: object,
+    detail: str,
+    progress: float,
+    block_index: int,
+    block_count: int,
+) -> PipelineResult:
+    _emit_terminal_result(
+        emitters=emitters,
+        runtime=runtime,
+        finalize_stage="Остановлено пользователем",
+        detail=detail,
+        progress=progress,
+        terminal_kind="stopped",
+        activity_message=detail,
+        log_status="STOP",
+        block_index=block_index,
+        block_count=block_count,
+        target_chars=0,
+        context_chars=0,
+        log_details=detail,
+    )
+    return "stopped"
+
+
+def _handle_invalid_processing_job(
+    *,
+    context: ProcessingContext,
+    dependencies: ProcessingDependencies,
+    emitters: ProcessingEmitters,
+    state: ProcessingState,
+    initialization: ProcessingInitialization,
+    index: int,
+    exc: Exception,
+) -> PipelineResult:
+    emitters.emit_state(
+        context.runtime,
+        latest_markdown=_current_markdown(state.processed_chunks),
+        latest_docx_bytes=None,
+    )
+    error_message = dependencies.present_error(
+        "invalid_processing_job",
+        exc,
+        "Ошибка подготовки блока",
+        filename=context.uploaded_filename,
+        block_index=index,
+        block_count=initialization.job_count,
+        model=context.model,
+    )
+    formatted_error = f"Ошибка на блоке {index}: {error_message}"
+    emitters.emit_state(context.runtime, last_error=formatted_error, latest_docx_bytes=None)
+    return _emit_failed_result(
+        emitters=emitters,
+        runtime=context.runtime,
+        finalize_stage="Ошибка подготовки блока",
+        detail=formatted_error,
+        progress=(index - 1) / initialization.job_count,
+        activity_message=f"Блок {index}: некорректный план обработки.",
+        block_index=index,
+        block_count=initialization.job_count,
+        target_chars=0,
+        context_chars=0,
+        log_details=error_message,
+    )
+
+
+def _handle_block_generation_failure(
+    *,
+    context: ProcessingContext,
+    dependencies: ProcessingDependencies,
+    emitters: ProcessingEmitters,
+    state: ProcessingState,
+    initialization: ProcessingInitialization,
+    index: int,
+    payload: BlockExecutionPayload,
+    marker_mode_enabled: bool,
+    exc: Exception,
+) -> PipelineResult:
+    marker_diagnostics_artifact = None
+    marker_error_code = _extract_marker_diagnostics_code(exc) if marker_mode_enabled else None
+    if marker_error_code is not None:
+        marker_diagnostics_artifact = _write_marker_diagnostics_artifact(
+            stage="generation",
+            uploaded_filename=context.uploaded_filename,
+            block_index=index,
+            block_count=initialization.job_count,
+            error_code=marker_error_code,
+            target_text=payload.target_text_with_markers,
+            context_before=payload.context_before,
+            context_after=payload.context_after,
+            paragraph_ids=payload.paragraph_ids,
+        )
+    emitters.emit_state(
+        context.runtime,
+        latest_markdown=_current_markdown(state.processed_chunks),
+        latest_docx_bytes=None,
+    )
+    error_message = dependencies.present_error(
+        "block_failed",
+        exc,
+        "Ошибка обработки блока",
+        filename=context.uploaded_filename,
+        block_index=index,
+        block_count=initialization.job_count,
+        target_chars=payload.target_chars,
+        context_chars=payload.context_chars,
+        model=context.model,
+    )
+    formatted_error = f"Ошибка на блоке {index}: {error_message}"
+    emitters.emit_state(
+        context.runtime,
+        last_error=formatted_error,
+        latest_docx_bytes=None,
+        latest_marker_diagnostics_artifact=marker_diagnostics_artifact,
+    )
+    outcome = _emit_failed_result(
+        emitters=emitters,
+        runtime=context.runtime,
+        finalize_stage="Ошибка обработки",
+        detail=formatted_error,
+        progress=(index - 1) / initialization.job_count,
+        activity_message=f"Блок {index}: ошибка обработки.",
+        block_index=index,
+        block_count=initialization.job_count,
+        target_chars=payload.target_chars,
+        context_chars=payload.context_chars,
+        log_details=(
+            f"{error_message}; marker diagnostics: {marker_diagnostics_artifact}"
+            if marker_diagnostics_artifact
+            else error_message
+        ),
+    )
+    if marker_diagnostics_artifact is not None:
+        dependencies.log_event(
+            logging.WARNING,
+            "marker_diagnostics_artifact_created",
+            "Сохранён marker diagnostics artifact для блока с ошибкой generation.",
+            filename=context.uploaded_filename,
+            block_index=index,
+            block_count=initialization.job_count,
+            artifact_path=marker_diagnostics_artifact,
+            error_code=marker_error_code,
+        )
+    return outcome
+
+
+def _handle_processed_block_rejection(
+    *,
+    context: ProcessingContext,
+    dependencies: ProcessingDependencies,
+    emitters: ProcessingEmitters,
+    initialization: ProcessingInitialization,
+    index: int,
+    target_chars: int,
+    context_chars: int,
+    target_text: str,
+    processed_chunk: str,
+    rejection_kind: ProcessedBlockStatus,
+) -> PipelineResult:
+    if rejection_kind == "empty":
+        critical_message = dependencies.present_error(
+            "empty_processed_block",
+            RuntimeError("Модель вернула пустой Markdown-блок после успешного вызова (empty_processed_block)."),
+            "Критическая ошибка обработки блока",
+            filename=context.uploaded_filename,
+            block_index=index,
+            output_classification="empty_processed_block",
+        )
+        formatted_error = f"Ошибка на блоке {index}: {critical_message}"
+        emitters.emit_state(context.runtime, last_error=formatted_error, latest_docx_bytes=None)
+        return _emit_failed_result(
+            emitters=emitters,
+            runtime=context.runtime,
+            finalize_stage="Критическая ошибка",
+            detail=formatted_error,
+            progress=(index - 1) / initialization.job_count,
+            activity_message=f"Блок {index}: модель вернула пустой Markdown.",
+            block_index=index,
+            block_count=initialization.job_count,
+            target_chars=target_chars,
+            context_chars=context_chars,
+            log_details=critical_message,
+        )
+
+    critical_message = dependencies.present_error(
+        "structurally_insufficient_processed_block",
+        RuntimeError(
+            "Модель вернула только заголовок при наличии основного текста во входном блоке (heading_only_output)."
+        ),
+        "Критическая ошибка обработки блока",
+        filename=context.uploaded_filename,
+        block_index=index,
+        output_classification="heading_only_output",
+    )
+    formatted_error = f"Ошибка на блоке {index}: {critical_message}"
+    emitters.emit_state(context.runtime, last_error=formatted_error, latest_docx_bytes=None)
+    outcome = _emit_failed_result(
+        emitters=emitters,
+        runtime=context.runtime,
+        finalize_stage="Критическая ошибка",
+        detail=formatted_error,
+        progress=(index - 1) / initialization.job_count,
+        activity_message=f"Блок {index}: отклонён структурно недостаточный Markdown.",
+        block_index=index,
+        block_count=initialization.job_count,
+        target_chars=target_chars,
+        context_chars=context_chars,
+        log_details=critical_message,
+    )
+    dependencies.log_event(
+        logging.WARNING,
+        "block_rejected",
+        "Блок отклонён по acceptance-контракту",
+        filename=context.uploaded_filename,
+        block_index=index,
+        block_count=initialization.job_count,
+        target_chars=target_chars,
+        context_chars=context_chars,
+        output_classification="heading_only_output",
+        input_preview=target_text[:300],
+        output_preview=processed_chunk[:300],
+    )
+    return outcome
+
+
+def _handle_marker_registry_failure(
+    *,
+    context: ProcessingContext,
+    dependencies: ProcessingDependencies,
+    emitters: ProcessingEmitters,
+    state: ProcessingState,
+    initialization: ProcessingInitialization,
+    index: int,
+    payload: BlockExecutionPayload,
+    processed_chunk: str,
+    exc: Exception,
+) -> PipelineResult:
+    marker_diagnostics_artifact = _write_marker_diagnostics_artifact(
+        stage="registry",
+        uploaded_filename=context.uploaded_filename,
+        block_index=index,
+        block_count=initialization.job_count,
+        error_code=_extract_marker_diagnostics_code(exc) or "marker_registry_build_failed",
+        target_text=payload.target_text_with_markers,
+        context_before=payload.context_before,
+        context_after=payload.context_after,
+        paragraph_ids=payload.paragraph_ids,
+        processed_chunk=processed_chunk,
+    )
+    emitters.emit_state(
+        context.runtime,
+        latest_markdown=_current_markdown(state.processed_chunks),
+        latest_docx_bytes=None,
+    )
+    error_message = dependencies.present_error(
+        "block_marker_registry_failed",
+        exc,
+        "Ошибка marker-реестра блока",
+        filename=context.uploaded_filename,
+        block_index=index,
+        block_count=initialization.job_count,
+    )
+    formatted_error = f"Ошибка на блоке {index}: {error_message}"
+    emitters.emit_state(
+        context.runtime,
+        last_error=formatted_error,
+        latest_docx_bytes=None,
+        latest_marker_diagnostics_artifact=marker_diagnostics_artifact,
+    )
+    outcome = _emit_failed_result(
+        emitters=emitters,
+        runtime=context.runtime,
+        finalize_stage="Ошибка marker-реестра",
+        detail=formatted_error,
+        progress=index / initialization.job_count,
+        activity_message=f"Блок {index}: не удалось собрать marker-aware paragraph registry.",
+        block_index=index,
+        block_count=initialization.job_count,
+        target_chars=payload.target_chars,
+        context_chars=payload.context_chars,
+        log_details=(
+            f"{error_message}; marker diagnostics: {marker_diagnostics_artifact}"
+            if marker_diagnostics_artifact
+            else error_message
+        ),
+    )
+    dependencies.log_event(
+        logging.WARNING,
+        "marker_diagnostics_artifact_created",
+        "Сохранён marker diagnostics artifact для блока с ошибкой registry build.",
+        filename=context.uploaded_filename,
+        block_index=index,
+        block_count=initialization.job_count,
+        artifact_path=marker_diagnostics_artifact,
+    )
+    return outcome
+
+
+def _initialize_processing_run(
+    *,
+    context: ProcessingContext,
+    dependencies: ProcessingDependencies,
+    emitters: ProcessingEmitters,
+) -> ProcessingInitialization | PipelineResult | None:
+    try:
+        job_count = len(context.jobs)
+    except Exception as exc:
+        error_message = dependencies.present_error(
+            "invalid_processing_plan",
+            exc,
+            "Ошибка подготовки обработки",
+            filename=context.uploaded_filename,
+        )
+        emitters.emit_state(
+            context.runtime,
+            last_error=error_message,
+            latest_markdown="",
+            processed_block_markdowns=[],
+            latest_docx_bytes=None,
+        )
+        return _emit_failed_result(
+            emitters=emitters,
+            runtime=context.runtime,
+            finalize_stage="Ошибка подготовки обработки",
+            detail=error_message,
+            progress=0.0,
+            activity_message="Обработка документа остановлена: план обработки некорректен.",
+            block_index=0,
+            block_count=0,
+            target_chars=0,
+            context_chars=0,
+            log_details=error_message,
+        )
+
+    try:
+        client = dependencies.get_client()
+        dependencies.ensure_pandoc_available()
+        dependencies.log_event(
+            logging.INFO,
+            "processing_started",
+            "Запуск обработки документа",
+            filename=context.uploaded_filename,
+            model=context.model,
+            block_count=job_count,
+            max_retries=context.max_retries,
+            image_count=len(context.image_assets),
+        )
+        block_plan_summary = _summarize_block_plan(context.jobs)
+        dependencies.log_event(
+            logging.INFO,
+            "block_plan_summary",
+            "План блоков документа подготовлен",
+            filename=context.uploaded_filename,
+            block_count=block_plan_summary["block_count"],
+            llm_block_count=block_plan_summary["llm_block_count"],
+            passthrough_block_count=block_plan_summary["passthrough_block_count"],
+            total_target_chars=block_plan_summary["total_target_chars"],
+            min_target_chars=block_plan_summary["min_target_chars"],
+            max_target_chars=block_plan_summary["max_target_chars"],
+            avg_target_chars=block_plan_summary["avg_target_chars"],
+            first_block_target_chars=block_plan_summary["first_block_target_chars"],
+        )
+        dependencies.log_event(
+            logging.DEBUG,
+            "block_plan_detail",
+            "Детальная карта блоков документа подготовлена",
+            filename=context.uploaded_filename,
+            blocks=block_plan_summary["blocks"],
+        )
+        emitters.emit_activity(context.runtime, f"Инициализация завершена. Модель: {context.model}.")
+    except Exception as exc:
+        error_message = dependencies.present_error(
+            "processing_init_failed",
+            exc,
+            "Ошибка инициализации обработки",
+            filename=context.uploaded_filename,
+            model=context.model,
+        )
+        emitters.emit_state(
+            context.runtime,
+            last_error=error_message,
+            latest_markdown="",
+            processed_block_markdowns=[],
+            latest_docx_bytes=None,
+        )
+        _emit_failed_result(
+            emitters=emitters,
+            runtime=context.runtime,
+            finalize_stage="Ошибка инициализации",
+            detail=error_message,
+            progress=0.0,
+            activity_message="Обработка документа остановлена: ошибка инициализации.",
+            block_index=0,
+            block_count=0,
+            target_chars=0,
+            context_chars=0,
+            log_details=error_message,
+        )
+        return None
+
+    return ProcessingInitialization(client=client, job_count=job_count)
+
+
+def _fail_empty_processing_plan(
+    *,
+    context: ProcessingContext,
+    dependencies: ProcessingDependencies,
+    emitters: ProcessingEmitters,
+) -> PipelineResult:
+    error_message = dependencies.present_error(
+        "empty_processing_plan",
+        RuntimeError("План обработки документа пуст."),
+        "Ошибка подготовки обработки",
+        filename=context.uploaded_filename,
+    )
+    emitters.emit_state(
+        context.runtime,
+        last_error=error_message,
+        latest_markdown="",
+        processed_block_markdowns=[],
+        latest_docx_bytes=None,
+    )
+    return _emit_failed_result(
+        emitters=emitters,
+        runtime=context.runtime,
+        finalize_stage="Ошибка подготовки обработки",
+        detail=error_message,
+        progress=0.0,
+        activity_message="Обработка документа остановлена: не найдено ни одного блока для обработки.",
+        block_index=0,
+        block_count=0,
+        target_chars=0,
+        context_chars=0,
+        log_details=error_message,
+    )
+
+
+def _run_block_processing_phase(
+    *,
+    context: ProcessingContext,
+    dependencies: ProcessingDependencies,
+    emitters: ProcessingEmitters,
+    state: ProcessingState,
+    initialization: ProcessingInitialization,
+) -> PipelineResult | None:
+    for index, job in enumerate(context.jobs, start=1):
+        if dependencies.should_stop_processing(context.runtime):
+            stop_message = "Обработка остановлена пользователем."
+            return _emit_stopped_result(
+                emitters=emitters,
+                runtime=context.runtime,
+                detail=stop_message,
+                progress=(index - 1) / initialization.job_count,
+                block_index=max(0, index - 1),
+                block_count=initialization.job_count,
+            )
+
+        block_outcome = _process_single_block(
+            context=context,
+            dependencies=dependencies,
+            emitters=emitters,
+            state=state,
+            initialization=initialization,
+            index=index,
+            job=job,
+        )
+        if block_outcome is not None:
+            return block_outcome
+
+    if len(state.processed_chunks) != initialization.job_count:
+        critical_message = dependencies.present_error(
+            "processed_block_count_mismatch",
+            RuntimeError("Количество обработанных блоков не совпало с планом обработки."),
+            "Критическая ошибка финализации",
+            filename=context.uploaded_filename,
+            processed_count=len(state.processed_chunks),
+            planned_count=initialization.job_count,
+            incomplete_count=max(initialization.job_count - len(state.processed_chunks), 0),
+        )
+        emitters.emit_state(context.runtime, last_error=critical_message, latest_docx_bytes=None)
+        return _emit_failed_result(
+            emitters=emitters,
+            runtime=context.runtime,
+            finalize_stage="Критическая ошибка",
+            detail=critical_message,
+            progress=len(state.processed_chunks) / max(initialization.job_count, 1),
+            activity_message="Обнаружено несоответствие количества обработанных блоков.",
+            block_index=len(state.processed_chunks),
+            block_count=initialization.job_count,
+            target_chars=len(_current_markdown(state.processed_chunks)),
+            context_chars=0,
+            log_details=critical_message,
+        )
+
+    return None
+
+
+def _run_image_processing_phase(
+    *,
+    context: ProcessingContext,
+    dependencies: ProcessingDependencies,
+    emitters: ProcessingEmitters,
+    state: ProcessingState,
+    initialization: ProcessingInitialization,
+) -> ImageProcessingPhaseResult | None:
+    final_markdown = _current_markdown(state.processed_chunks)
+    emitters.emit_state(context.runtime, latest_markdown=final_markdown)
+    try:
+        processed_image_assets = dependencies.process_document_images(
+            image_assets=context.image_assets,
+            image_mode=context.image_mode,
+            config=context.app_config,
+            on_progress=context.on_progress,
+            runtime=context.runtime,
+            client=initialization.client,
+        )
+        if processed_image_assets is None:
+            raise RuntimeError("Пайплайн обработки изображений вернул None вместо коллекции ассетов.")
+
+        normalized_image_assets = list(processed_image_assets)
+        placeholder_integrity = dependencies.inspect_placeholder_integrity(final_markdown, normalized_image_assets)
+        if not isinstance(placeholder_integrity, Mapping):
+            raise TypeError("Проверка целостности placeholder вернула неподдерживаемый тип результата.")
+
+        for asset in normalized_image_assets:
+            asset.update_pipeline_metadata(placeholder_status=placeholder_integrity.get(asset.image_id))
+    except Exception as exc:
+        error_message = dependencies.present_error(
+            "image_processing_failed",
+            exc,
+            "Ошибка обработки изображений",
+            filename=context.uploaded_filename,
+            final_markdown_chars=len(final_markdown),
+            image_count=len(context.image_assets),
+            image_mode=context.image_mode,
+        )
+        emitters.emit_state(
+            context.runtime,
+            latest_markdown=final_markdown,
+            last_error=error_message,
+            latest_docx_bytes=None,
+        )
+        _emit_failed_result(
+            emitters=emitters,
+            runtime=context.runtime,
+            finalize_stage="Ошибка обработки изображений",
+            detail=error_message,
+            progress=1.0,
+            activity_message="Ошибка на этапе обработки изображений документа.",
+            block_index=initialization.job_count,
+            block_count=initialization.job_count,
+            target_chars=len(final_markdown),
+            context_chars=0,
+            log_details=error_message,
+        )
+        return None
+
+    return ImageProcessingPhaseResult(
+        processed_image_assets=normalized_image_assets,
+        placeholder_integrity=placeholder_integrity,
+    )
+
+
+def _validate_placeholder_integrity_phase(
+    *,
+    context: ProcessingContext,
+    dependencies: ProcessingDependencies,
+    emitters: ProcessingEmitters,
+    final_markdown: str,
+    image_phase: ImageProcessingPhaseResult,
+    job_count: int,
+) -> bool:
+    placeholder_mismatches = _reconcile_placeholder_integrity(
+        image_phase.placeholder_integrity,
+        image_phase.processed_image_assets,
+    )
+    for image_id, placeholder_status in placeholder_mismatches.items():
+        dependencies.log_event(
+            logging.WARNING,
+            "image_placeholder_mismatch",
+            "Обнаружено нарушение контракта image placeholder.",
+            filename=context.uploaded_filename,
+            image_id=image_id,
+            placeholder_status=placeholder_status,
+        )
+    if not placeholder_mismatches:
+        return True
+
+    mismatch_details = ", ".join(
+        f"{image_id}:{placeholder_status}"
+        for image_id, placeholder_status in sorted(placeholder_mismatches.items())
+    )
+    critical_message = dependencies.present_error(
+        "image_placeholder_integrity_failed",
+        RuntimeError(f"Нарушен контракт placeholder-ов: {mismatch_details}"),
+        "Критическая ошибка подготовки изображений",
+        filename=context.uploaded_filename,
+        mismatch_count=len(placeholder_mismatches),
+        mismatch_details=mismatch_details,
+    )
+    emitters.emit_state(context.runtime, last_error=critical_message, latest_docx_bytes=None)
+    _emit_failed_result(
+        emitters=emitters,
+        runtime=context.runtime,
+        finalize_stage="Критическая ошибка",
+        detail=critical_message,
+        progress=1.0,
+        activity_message="Сборка DOCX остановлена из-за потери или дублирования image placeholder.",
+        block_index=job_count,
+        block_count=job_count,
+        target_chars=len(final_markdown),
+        context_chars=0,
+        log_details=critical_message,
+    )
+    return False
+
+
+def _run_docx_build_phase(
+    *,
+    context: ProcessingContext,
+    dependencies: ProcessingDependencies,
+    emitters: ProcessingEmitters,
+    state: ProcessingState,
+    image_phase: ImageProcessingPhaseResult,
+    job_count: int,
+) -> DocxBuildPhaseResult | None:
+    final_markdown = _current_markdown(state.processed_chunks)
+    emitters.emit_status(
+        context.runtime,
+        stage="Сборка DOCX",
+        detail="Все блоки готовы. Собираю итоговый DOCX из Markdown.",
+        current_block=job_count,
+        block_count=job_count,
+        target_chars=len(final_markdown),
+        context_chars=0,
+        progress=1.0,
+        is_running=True,
+    )
+    emitters.emit_activity(context.runtime, "Все блоки готовы. Начата сборка итогового DOCX.")
+    context.on_progress(preview_title="Текущий Markdown")
+    build_started_at_epoch = time.time()
+
+    try:
+        docx_bytes = dependencies.convert_markdown_to_docx_bytes(final_markdown)
+        if context.source_paragraphs:
+            docx_bytes = _call_docx_restorer_with_optional_registry(
+                dependencies.preserve_source_paragraph_properties,
+                docx_bytes,
+                context.source_paragraphs,
+                state.generated_paragraph_registry or None,
+            )
+            docx_bytes = _call_docx_restorer_with_optional_registry(
+                dependencies.normalize_semantic_output_docx,
+                docx_bytes,
+                context.source_paragraphs,
+                state.generated_paragraph_registry or None,
+            )
+        if image_phase.processed_image_assets:
+            docx_bytes = dependencies.reinsert_inline_images(docx_bytes, image_phase.processed_image_assets)
+    except Exception as exc:
+        error_message = dependencies.present_error(
+            "docx_build_failed",
+            exc,
+            "Ошибка сборки DOCX",
+            filename=context.uploaded_filename,
+            final_markdown_chars=len(final_markdown),
+        )
+        emitters.emit_state(context.runtime, last_error=error_message, latest_docx_bytes=None)
+        _emit_failed_result(
+            emitters=emitters,
+            runtime=context.runtime,
+            finalize_stage="Ошибка сборки DOCX",
+            detail=error_message,
+            progress=1.0,
+            activity_message="Ошибка на этапе сборки DOCX.",
+            block_index=job_count,
+            block_count=job_count,
+            target_chars=len(final_markdown),
+            context_chars=0,
+            log_details=error_message,
+        )
+        return None
+
+    latest_result_notice: dict[str, str] | None = None
+    formatting_diagnostics_artifacts = _collect_recent_formatting_diagnostics(
+        since_epoch_seconds=build_started_at_epoch
+    )
+    if formatting_diagnostics_artifacts:
+        severity, activity_message, user_summary = _build_formatting_diagnostics_user_feedback(
+            formatting_diagnostics_artifacts
+        )
+        emitters.emit_activity(context.runtime, activity_message)
+        if severity == "INFO":
+            latest_result_notice = {"level": "info", "message": user_summary}
+        else:
+            emitters.emit_log(
+                context.runtime,
+                status=severity,
+                block_index=job_count,
+                block_count=job_count,
+                target_chars=len(final_markdown),
+                context_chars=0,
+                details=user_summary,
+            )
+        dependencies.log_event(
+            logging.WARNING,
+            "formatting_diagnostics_artifacts_detected",
+            "Во время сборки DOCX сохранены formatting diagnostics artifacts.",
+            filename=context.uploaded_filename,
+            artifact_paths=formatting_diagnostics_artifacts,
+        )
+
+    if not docx_bytes:
+        critical_message = dependencies.present_error(
+            "empty_docx_bytes",
+            RuntimeError("Сборка DOCX завершилась без содержимого файла."),
+            "Критическая ошибка сборки DOCX",
+            filename=context.uploaded_filename,
+        )
+        emitters.emit_state(context.runtime, last_error=critical_message, latest_docx_bytes=None)
+        _emit_failed_result(
+            emitters=emitters,
+            runtime=context.runtime,
+            finalize_stage="Критическая ошибка",
+            detail=critical_message,
+            progress=1.0,
+            activity_message="DOCX собран без содержимого.",
+            block_index=job_count,
+            block_count=job_count,
+            target_chars=len(final_markdown),
+            context_chars=0,
+            log_details=critical_message,
+        )
+        return None
+
+    return DocxBuildPhaseResult(docx_bytes=docx_bytes, latest_result_notice=latest_result_notice)
+
+
+def _finalize_processing_success(
+    *,
+    context: ProcessingContext,
+    dependencies: ProcessingDependencies,
+    emitters: ProcessingEmitters,
+    state: ProcessingState,
+    docx_phase: DocxBuildPhaseResult,
+    job_count: int,
+) -> PipelineResult:
+    final_markdown = _current_markdown(state.processed_chunks)
+    emitters.emit_state(
+        context.runtime,
+        latest_docx_bytes=docx_phase.docx_bytes,
+        latest_markdown=final_markdown,
+        latest_result_notice=docx_phase.latest_result_notice,
+        last_error="",
+    )
+    try:
+        result_artifact_paths = dict(
+            dependencies.write_ui_result_artifacts(
+                source_name=context.uploaded_filename,
+                markdown_text=final_markdown,
+                docx_bytes=docx_phase.docx_bytes,
+            )
+        )
+    except OSError as exc:
+        dependencies.log_event(
+            logging.WARNING,
+            "ui_result_artifacts_save_failed",
+            "Не удалось сохранить итоговые UI-артефакты обработки.",
+            filename=context.uploaded_filename,
+            error_message=str(exc),
+        )
+    else:
+        dependencies.log_event(
+            logging.INFO,
+            "ui_result_artifacts_saved",
+            "Сохранены итоговые UI-артефакты обработки.",
+            filename=context.uploaded_filename,
+            artifact_paths=result_artifact_paths,
+        )
+    emitters.emit_finalize(
+        context.runtime,
+        "Обработка завершена",
+        f"Документ обработан за {time.perf_counter() - state.started_at:.1f} сек.",
+        1.0,
+        "completed",
+    )
+    emitters.emit_activity(context.runtime, "Документ обработан полностью.")
+    dependencies.log_event(
+        logging.INFO,
+        "processing_completed",
+        "Документ обработан полностью",
+        filename=context.uploaded_filename,
+        block_count=job_count,
+        final_markdown_chars=len(final_markdown),
+        elapsed_seconds=round(time.perf_counter() - state.started_at, 2),
+    )
+    emitters.emit_log(
+        context.runtime,
+        status="DONE",
+        block_index=job_count,
+        block_count=job_count,
+        target_chars=len(final_markdown),
+        context_chars=0,
+        details=f"весь документ обработан за {time.perf_counter() - state.started_at:.1f} сек.",
+    )
+    return "succeeded"
+
+
 def run_document_processing(
     *,
     uploaded_file: object,
@@ -578,765 +2118,43 @@ def run_document_processing(
     reinsert_inline_images: ImageReinserter,
     write_ui_result_artifacts: ResultArtifactWriter = write_ui_result_artifacts_impl,
 ) -> PipelineResult:
-    uploaded_filename = resolve_uploaded_filename(uploaded_file)
-    try:
-        job_count = len(jobs)
-    except Exception as exc:
-        error_message = present_error(
-            "invalid_processing_plan",
-            exc,
-            "Ошибка подготовки обработки",
-            filename=uploaded_filename,
-        )
-        emit_state(
-            runtime,
-            last_error=error_message,
-            latest_markdown="",
-            processed_block_markdowns=[],
-            latest_docx_bytes=None,
-        )
-        emit_finalize(runtime, "Ошибка подготовки обработки", error_message, 0.0, "error")
-        emit_activity(runtime, "Обработка документа остановлена: план обработки некорректен.")
-        emit_log(
-            runtime,
-            status="ERROR",
-            block_index=0,
-            block_count=0,
-            target_chars=0,
-            context_chars=0,
-            details=error_message,
-        )
-        return "failed"
-
-    try:
-        client = get_client()
-        ensure_pandoc_available()
-        log_event(
-            logging.INFO,
-            "processing_started",
-            "Запуск обработки документа",
-            filename=uploaded_filename,
-            model=model,
-            block_count=job_count,
-            max_retries=max_retries,
-            image_count=len(image_assets),
-        )
-        block_plan_summary = _summarize_block_plan(jobs)
-        log_event(
-            logging.INFO,
-            "block_plan_summary",
-            "План блоков документа подготовлен",
-            filename=uploaded_filename,
-            block_count=block_plan_summary["block_count"],
-            llm_block_count=block_plan_summary["llm_block_count"],
-            passthrough_block_count=block_plan_summary["passthrough_block_count"],
-            total_target_chars=block_plan_summary["total_target_chars"],
-            min_target_chars=block_plan_summary["min_target_chars"],
-            max_target_chars=block_plan_summary["max_target_chars"],
-            avg_target_chars=block_plan_summary["avg_target_chars"],
-            first_block_target_chars=block_plan_summary["first_block_target_chars"],
-        )
-        log_event(
-            logging.DEBUG,
-            "block_plan_detail",
-            "Детальная карта блоков документа подготовлена",
-            filename=uploaded_filename,
-            blocks=block_plan_summary["blocks"],
-        )
-        emit_activity(runtime, f"Инициализация завершена. Модель: {model}.")
-    except Exception as exc:
-        error_message = present_error(
-            "processing_init_failed",
-            exc,
-            "Ошибка инициализации обработки",
-            filename=uploaded_filename,
-            model=model,
-        )
-        emit_state(
-            runtime,
-            last_error=error_message,
-            latest_markdown="",
-            processed_block_markdowns=[],
-            latest_docx_bytes=None,
-        )
-        emit_finalize(runtime, "Ошибка инициализации", error_message, 0.0, "error")
-        return "failed"
-
-    system_prompt: str | None = None
-
-    if job_count == 0:
-        error_message = present_error(
-            'empty_processing_plan',
-            RuntimeError('План обработки документа пуст.'),
-            'Ошибка подготовки обработки',
-            filename=uploaded_filename,
-        )
-        emit_state(
-            runtime,
-            last_error=error_message,
-            latest_markdown='',
-            processed_block_markdowns=[],
-            latest_docx_bytes=None,
-        )
-        emit_finalize(runtime, 'Ошибка подготовки обработки', error_message, 0.0, "error")
-        emit_activity(runtime, 'Обработка документа остановлена: не найдено ни одного блока для обработки.')
-        emit_log(
-            runtime,
-            status='ERROR',
-            block_index=0,
-            block_count=0,
-            target_chars=0,
-            context_chars=0,
-            details=error_message,
-        )
-        return 'failed'
-
-    processed_chunks: list[str] = []
-    generated_paragraph_registry: list[dict[str, object]] = []
-    started_at = time.perf_counter()
-
-    for index, job in enumerate(jobs, start=1):
-        if should_stop_processing(runtime):
-            stop_message = "Обработка остановлена пользователем."
-            emit_finalize(runtime, "Остановлено пользователем", stop_message, (index - 1) / job_count, "stopped")
-            emit_activity(runtime, stop_message)
-            emit_log(
-                runtime,
-                status="STOP",
-                block_index=max(0, index - 1),
-                block_count=job_count,
-                target_chars=0,
-                context_chars=0,
-                details=stop_message,
-            )
-            return "stopped"
-
-        try:
-            job_kind = _coerce_job_kind(job)
-            target_chars = _coerce_required_int_field(job, "target_chars")
-            context_chars = _coerce_required_int_field(job, "context_chars")
-            target_text = _coerce_required_text_field(job, "target_text", allow_blank=False)
-            target_text_with_markers = _coerce_optional_text_field(job, "target_text_with_markers") or target_text
-            paragraph_ids = _coerce_optional_string_list(job, "paragraph_ids")
-            context_before = _coerce_required_text_field(job, "context_before")
-            context_after = _coerce_required_text_field(job, "context_after")
-        except (KeyError, TypeError, ValueError) as exc:
-            emit_state(runtime, latest_markdown="\n\n".join(processed_chunks).strip(), latest_docx_bytes=None)
-            error_message = present_error(
-                "invalid_processing_job",
-                exc,
-                "Ошибка подготовки блока",
-                filename=uploaded_filename,
-                block_index=index,
-                block_count=job_count,
-                model=model,
-            )
-            formatted_error = f"Ошибка на блоке {index}: {error_message}"
-            emit_state(runtime, last_error=formatted_error, latest_docx_bytes=None)
-            emit_finalize(runtime, "Ошибка подготовки блока", formatted_error, (index - 1) / job_count, "error")
-            emit_activity(runtime, f"Блок {index}: некорректный план обработки.")
-            emit_log(
-                runtime,
-                status="ERROR",
-                block_index=index,
-                block_count=job_count,
-                target_chars=0,
-                context_chars=0,
-                details=error_message,
-            )
-            return "failed"
-
-        emit_status(
-            runtime,
-            stage="Подготовка блока",
-            detail=(
-                f"Готовлю блок {index} из {job_count} к отправке в OpenAI."
-                if job_kind == "llm"
-                else f"Готовлю passthrough-блок {index} из {job_count} без вызова OpenAI."
-            ),
-            current_block=index,
-            block_count=job_count,
-            target_chars=target_chars,
-            context_chars=context_chars,
-            progress=(index - 1) / job_count,
-            is_running=True,
-        )
-        emit_activity(runtime, f"Начата обработка блока {index} из {job_count}.")
-        log_event(
-            logging.DEBUG,
-            "block_started",
-            "Начата обработка блока",
-            filename=uploaded_filename,
-            block_index=index,
-            block_count=job_count,
-            target_chars=target_chars,
-            context_chars=context_chars,
-            model=model,
-            job_kind=job_kind,
-        )
-        marker_mode_enabled = False
-        try:
-            if job_kind == "passthrough":
-                emit_status(
-                    runtime,
-                    stage="Passthrough блока",
-                    detail=f"Блок {index} не требует LLM-обработки и будет перенесён в Markdown как есть.",
-                    current_block=index,
-                    block_count=job_count,
-                    target_chars=target_chars,
-                    context_chars=context_chars,
-                    progress=(index - 1) / job_count,
-                    is_running=True,
-                )
-                emit_activity(runtime, f"Блок {index} пропущен через passthrough без OpenAI.")
-                on_progress(preview_title="Текущий Markdown")
-                processed_chunk = target_text
-            else:
-                marker_mode_enabled = bool(app_config.get("enable_paragraph_markers", False)) and bool(paragraph_ids)
-                if system_prompt is None:
-                    system_prompt = _resolve_system_prompt(
-                        load_system_prompt,
-                        operation=processing_operation,
-                        source_language=source_language,
-                        target_language=target_language,
-                    )
-                emit_status(
-                    runtime,
-                    stage="Ожидание ответа OpenAI",
-                    detail=f"Блок {index} отправлен в модель. Приложение работает, ожидаю ответ.",
-                    current_block=index,
-                    block_count=job_count,
-                    target_chars=target_chars,
-                    context_chars=context_chars,
-                    progress=(index - 1) / job_count,
-                    is_running=True,
-                )
-                emit_activity(runtime, f"Блок {index} отправлен в OpenAI.")
-                on_progress(preview_title="Текущий Markdown")
-                processed_chunk = generate_markdown_block(
-                    client=client,
-                    model=model,
-                    system_prompt=system_prompt,
-                    target_text=target_text_with_markers if marker_mode_enabled else target_text,
-                    context_before=context_before,
-                    context_after=context_after,
-                    max_retries=max_retries,
-                    expected_paragraph_ids=paragraph_ids if marker_mode_enabled else None,
-                    marker_mode=marker_mode_enabled,
-                )
-        except Exception as exc:
-            marker_diagnostics_artifact = None
-            marker_error_code = _extract_marker_diagnostics_code(exc) if marker_mode_enabled else None
-            if marker_error_code is not None:
-                marker_diagnostics_artifact = _write_marker_diagnostics_artifact(
-                    stage="generation",
-                    uploaded_filename=uploaded_filename,
-                    block_index=index,
-                    block_count=job_count,
-                    error_code=marker_error_code,
-                    target_text=target_text_with_markers,
-                    context_before=context_before,
-                    context_after=context_after,
-                    paragraph_ids=paragraph_ids,
-                )
-            emit_state(runtime, latest_markdown="\n\n".join(processed_chunks).strip(), latest_docx_bytes=None)
-            error_message = present_error(
-                "block_failed",
-                exc,
-                "Ошибка обработки блока",
-                filename=uploaded_filename,
-                block_index=index,
-                block_count=job_count,
-                target_chars=target_chars,
-                context_chars=context_chars,
-                model=model,
-            )
-            formatted_error = f"Ошибка на блоке {index}: {error_message}"
-            emit_state(
-                runtime,
-                last_error=formatted_error,
-                latest_docx_bytes=None,
-                latest_marker_diagnostics_artifact=marker_diagnostics_artifact,
-            )
-            emit_finalize(runtime, "Ошибка обработки", formatted_error, (index - 1) / job_count, "error")
-            emit_activity(runtime, f"Блок {index}: ошибка обработки.")
-            emit_log(
-                runtime,
-                status="ERROR",
-                block_index=index,
-                block_count=job_count,
-                target_chars=target_chars,
-                context_chars=context_chars,
-                details=(
-                    f"{error_message}; marker diagnostics: {marker_diagnostics_artifact}"
-                    if marker_diagnostics_artifact
-                    else error_message
-                ),
-            )
-            if marker_diagnostics_artifact is not None:
-                log_event(
-                    logging.WARNING,
-                    "marker_diagnostics_artifact_created",
-                    "Сохранён marker diagnostics artifact для блока с ошибкой generation.",
-                    filename=uploaded_filename,
-                    block_index=index,
-                    block_count=job_count,
-                    artifact_path=marker_diagnostics_artifact,
-                    error_code=marker_error_code,
-                )
-            return "failed"
-
-        processed_block_status = _classify_processed_block(target_text, processed_chunk)
-        if processed_block_status == "empty":
-            critical_message = present_error(
-                "empty_processed_block",
-                RuntimeError("Модель вернула пустой Markdown-блок после успешного вызова (empty_processed_block)."),
-                "Критическая ошибка обработки блока",
-                filename=uploaded_filename,
-                block_index=index,
-                output_classification="empty_processed_block",
-            )
-            formatted_error = f"Ошибка на блоке {index}: {critical_message}"
-            emit_state(runtime, last_error=formatted_error, latest_docx_bytes=None)
-            emit_finalize(runtime, "Критическая ошибка", formatted_error, (index - 1) / job_count, "error")
-            emit_activity(runtime, f"Блок {index}: модель вернула пустой Markdown.")
-            emit_log(
-                runtime,
-                status="ERROR",
-                block_index=index,
-                block_count=job_count,
-                target_chars=target_chars,
-                context_chars=context_chars,
-                details=critical_message,
-            )
-            return "failed"
-        if processed_block_status == "heading_only_output":
-            critical_message = present_error(
-                "structurally_insufficient_processed_block",
-                RuntimeError(
-                    "Модель вернула только заголовок при наличии основного текста во входном блоке (heading_only_output)."
-                ),
-                "Критическая ошибка обработки блока",
-                filename=uploaded_filename,
-                block_index=index,
-                output_classification="heading_only_output",
-            )
-            formatted_error = f"Ошибка на блоке {index}: {critical_message}"
-            emit_state(runtime, last_error=formatted_error, latest_docx_bytes=None)
-            emit_finalize(runtime, "Критическая ошибка", formatted_error, (index - 1) / job_count, "error")
-            emit_activity(runtime, f"Блок {index}: отклонён структурно недостаточный Markdown.")
-            emit_log(
-                runtime,
-                status="ERROR",
-                block_index=index,
-                block_count=job_count,
-                target_chars=target_chars,
-                context_chars=context_chars,
-                details=critical_message,
-            )
-            log_event(
-                logging.WARNING,
-                "block_rejected",
-                "Блок отклонён по acceptance-контракту",
-                filename=uploaded_filename,
-                block_index=index,
-                block_count=job_count,
-                target_chars=target_chars,
-                context_chars=context_chars,
-                output_classification="heading_only_output",
-                input_preview=target_text[:300],
-                output_preview=processed_chunk[:300],
-            )
-            return "failed"
-
-        processed_chunks.append(processed_chunk)
-        if job_kind == "llm" and marker_mode_enabled and paragraph_ids:
-            try:
-                generated_paragraph_registry.extend(
-                    _build_processed_paragraph_registry_entries(
-                        block_index=index,
-                        paragraph_ids=paragraph_ids,
-                        processed_chunk=processed_chunk,
-                    )
-                )
-                log_event(
-                    logging.DEBUG,
-                    "block_marker_registry_built",
-                    "Для блока собран marker-aware paragraph registry.",
-                    filename=uploaded_filename,
-                    block_index=index,
-                    block_count=job_count,
-                    paragraph_count=len(paragraph_ids),
-                )
-            except Exception as exc:
-                marker_diagnostics_artifact = _write_marker_diagnostics_artifact(
-                    stage="registry",
-                    uploaded_filename=uploaded_filename,
-                    block_index=index,
-                    block_count=job_count,
-                    error_code=_extract_marker_diagnostics_code(exc) or "marker_registry_build_failed",
-                    target_text=target_text_with_markers,
-                    context_before=context_before,
-                    context_after=context_after,
-                    paragraph_ids=paragraph_ids,
-                    processed_chunk=processed_chunk,
-                )
-                emit_state(runtime, latest_markdown="\n\n".join(processed_chunks).strip(), latest_docx_bytes=None)
-                error_message = present_error(
-                    "block_marker_registry_failed",
-                    exc,
-                    "Ошибка marker-реестра блока",
-                    filename=uploaded_filename,
-                    block_index=index,
-                    block_count=job_count,
-                )
-                formatted_error = f"Ошибка на блоке {index}: {error_message}"
-                emit_state(
-                    runtime,
-                    last_error=formatted_error,
-                    latest_docx_bytes=None,
-                    latest_marker_diagnostics_artifact=marker_diagnostics_artifact,
-                )
-                emit_finalize(runtime, "Ошибка marker-реестра", formatted_error, index / job_count, "error")
-                emit_activity(runtime, f"Блок {index}: не удалось собрать marker-aware paragraph registry.")
-                emit_log(
-                    runtime,
-                    status="ERROR",
-                    block_index=index,
-                    block_count=job_count,
-                    target_chars=target_chars,
-                    context_chars=context_chars,
-                    details=(
-                        f"{error_message}; marker diagnostics: {marker_diagnostics_artifact}"
-                        if marker_diagnostics_artifact
-                        else error_message
-                    ),
-                )
-                if marker_diagnostics_artifact is not None:
-                    log_event(
-                        logging.WARNING,
-                        "marker_diagnostics_artifact_created",
-                        "Сохранён marker diagnostics artifact для блока с ошибкой registry build.",
-                        filename=uploaded_filename,
-                        block_index=index,
-                        block_count=job_count,
-                        artifact_path=marker_diagnostics_artifact,
-                    )
-                return "failed"
-        emit_state(
-            runtime,
-            processed_block_markdowns=processed_chunks.copy(),
-            latest_markdown="\n\n".join(processed_chunks).strip(),
-            processed_paragraph_registry=generated_paragraph_registry.copy(),
-        )
-        emit_log(
-            runtime,
-            status="OK",
-            block_index=index,
-            block_count=job_count,
-            target_chars=target_chars,
-            context_chars=context_chars,
-            details=f"готово за {time.perf_counter() - started_at:.1f} сек. с начала запуска",
-        )
-        emit_status(
-            runtime,
-            stage="Блок обработан",
-            detail=f"Получен ответ для блока {index}. Обновляю промежуточный Markdown.",
-            current_block=index,
-            block_count=job_count,
-            target_chars=target_chars,
-            context_chars=context_chars,
-            progress=index / job_count,
-            is_running=True,
-        )
-        emit_activity(runtime, f"Блок {index} обработан успешно.")
-        output_chars = len(processed_chunk)
-        output_ratio = round(output_chars / max(target_chars, 1), 2)
-        log_event(
-            logging.DEBUG,
-            "block_completed",
-            "Блок обработан успешно",
-            filename=uploaded_filename,
-            block_index=index,
-            block_count=job_count,
-            target_chars=target_chars,
-            context_chars=context_chars,
-            output_chars=output_chars,
-            output_ratio=output_ratio,
-            input_preview=target_text[:300],
-            output_preview=processed_chunk[:300],
-            job_kind=job_kind,
-        )
-        on_progress(preview_title="Текущий Markdown")
-
-    if len(processed_chunks) != job_count:
-        critical_message = present_error(
-            "processed_block_count_mismatch",
-            RuntimeError("Количество обработанных блоков не совпало с планом обработки."),
-            "Критическая ошибка финализации",
-            filename=uploaded_filename,
-            processed_count=len(processed_chunks),
-            planned_count=job_count,
-            incomplete_count=max(job_count - len(processed_chunks), 0),
-        )
-        emit_state(runtime, last_error=critical_message, latest_docx_bytes=None)
-        emit_finalize(runtime, "Критическая ошибка", critical_message, len(processed_chunks) / max(job_count, 1), "error")
-        emit_activity(runtime, "Обнаружено несоответствие количества обработанных блоков.")
-        emit_log(
-            runtime,
-            status="ERROR",
-            block_index=len(processed_chunks),
-            block_count=job_count,
-            target_chars=len("\n\n".join(processed_chunks).strip()),
-            context_chars=0,
-            details=critical_message,
-        )
-        return "failed"
-
-    final_markdown = "\n\n".join(processed_chunks).strip()
-    emit_state(runtime, latest_markdown=final_markdown)
-    try:
-        processed_image_assets = process_document_images(
-            image_assets=image_assets,
-            image_mode=image_mode,
-            config=app_config,
-            on_progress=on_progress,
-            runtime=runtime,
-            client=client,
-        )
-        if processed_image_assets is None:
-            raise RuntimeError("Пайплайн обработки изображений вернул None вместо коллекции ассетов.")
-
-        processed_image_assets = list(processed_image_assets)
-        placeholder_integrity = inspect_placeholder_integrity(final_markdown, processed_image_assets)
-        if not isinstance(placeholder_integrity, Mapping):
-            raise TypeError("Проверка целостности placeholder вернула неподдерживаемый тип результата.")
-
-        for asset in processed_image_assets:
-            asset.update_pipeline_metadata(placeholder_status=placeholder_integrity.get(asset.image_id))
-    except Exception as exc:
-        error_message = present_error(
-            "image_processing_failed",
-            exc,
-            "Ошибка обработки изображений",
-            filename=uploaded_filename,
-            final_markdown_chars=len(final_markdown),
-            image_count=len(image_assets),
-            image_mode=image_mode,
-        )
-        emit_state(runtime, latest_markdown=final_markdown, last_error=error_message, latest_docx_bytes=None)
-        emit_finalize(runtime, "Ошибка обработки изображений", error_message, 1.0, "error")
-        emit_activity(runtime, "Ошибка на этапе обработки изображений документа.")
-        emit_log(
-            runtime,
-            status="ERROR",
-            block_index=job_count,
-            block_count=job_count,
-            target_chars=len(final_markdown),
-            context_chars=0,
-            details=error_message,
-        )
-        return "failed"
-    if should_stop_processing(runtime):
-        emit_finalize(runtime, "Остановлено пользователем", "Обработка остановлена пользователем.", 1.0, "stopped")
-        emit_activity(runtime, "Обработка документа остановлена пользователем.")
-        return "stopped"
-
-    placeholder_mismatches = _reconcile_placeholder_integrity(placeholder_integrity, processed_image_assets)
-    for image_id, placeholder_status in placeholder_mismatches.items():
-        log_event(
-            logging.WARNING,
-            "image_placeholder_mismatch",
-            "Обнаружено нарушение контракта image placeholder.",
-            filename=uploaded_filename,
-            image_id=image_id,
-            placeholder_status=placeholder_status,
-        )
-    if placeholder_mismatches:
-        mismatch_details = ", ".join(
-            f"{image_id}:{placeholder_status}" for image_id, placeholder_status in sorted(placeholder_mismatches.items())
-        )
-        critical_message = present_error(
-            "image_placeholder_integrity_failed",
-            RuntimeError(f"Нарушен контракт placeholder-ов: {mismatch_details}"),
-            "Критическая ошибка подготовки изображений",
-            filename=uploaded_filename,
-            mismatch_count=len(placeholder_mismatches),
-            mismatch_details=mismatch_details,
-        )
-        emit_state(runtime, last_error=critical_message, latest_docx_bytes=None)
-        emit_finalize(runtime, "Критическая ошибка", critical_message, 1.0, "error")
-        emit_activity(runtime, "Сборка DOCX остановлена из-за потери или дублирования image placeholder.")
-        emit_log(
-            runtime,
-            status="ERROR",
-            block_index=job_count,
-            block_count=job_count,
-            target_chars=len(final_markdown),
-            context_chars=0,
-            details=critical_message,
-        )
-        return "failed"
-    emit_status(
-        runtime,
-        stage="Сборка DOCX",
-        detail="Все блоки готовы. Собираю итоговый DOCX из Markdown.",
-        current_block=job_count,
-        block_count=job_count,
-        target_chars=len(final_markdown),
-        context_chars=0,
-        progress=1.0,
-        is_running=True,
+    components = _build_processing_run_components(
+        uploaded_file=uploaded_file,
+        jobs=jobs,
+        source_paragraphs=source_paragraphs,
+        image_assets=image_assets,
+        image_mode=image_mode,
+        app_config=app_config,
+        model=model,
+        max_retries=max_retries,
+        processing_operation=processing_operation,
+        source_language=source_language,
+        target_language=target_language,
+        on_progress=on_progress,
+        runtime=runtime,
+        resolve_uploaded_filename=resolve_uploaded_filename,
+        get_client=get_client,
+        ensure_pandoc_available=ensure_pandoc_available,
+        load_system_prompt=load_system_prompt,
+        log_event=log_event,
+        present_error=present_error,
+        emit_state=emit_state,
+        emit_finalize=emit_finalize,
+        emit_activity=emit_activity,
+        emit_log=emit_log,
+        emit_status=emit_status,
+        should_stop_processing=should_stop_processing,
+        generate_markdown_block=generate_markdown_block,
+        process_document_images=process_document_images,
+        inspect_placeholder_integrity=inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=preserve_source_paragraph_properties,
+        normalize_semantic_output_docx=normalize_semantic_output_docx,
+        reinsert_inline_images=reinsert_inline_images,
+        write_ui_result_artifacts=write_ui_result_artifacts,
     )
-    emit_activity(runtime, "Все блоки готовы. Начата сборка итогового DOCX.")
-    on_progress(preview_title="Текущий Markdown")
-    build_started_at_epoch = time.time()
-
-    try:
-        docx_bytes = convert_markdown_to_docx_bytes(final_markdown)
-        if source_paragraphs:
-            docx_bytes = _call_docx_restorer_with_optional_registry(
-                preserve_source_paragraph_properties,
-                docx_bytes,
-                source_paragraphs,
-                generated_paragraph_registry or None,
-            )
-            docx_bytes = _call_docx_restorer_with_optional_registry(
-                normalize_semantic_output_docx,
-                docx_bytes,
-                source_paragraphs,
-                generated_paragraph_registry or None,
-            )
-        if processed_image_assets:
-            docx_bytes = reinsert_inline_images(docx_bytes, processed_image_assets)
-    except Exception as exc:
-        error_message = present_error(
-            "docx_build_failed",
-            exc,
-            "Ошибка сборки DOCX",
-            filename=uploaded_filename,
-            final_markdown_chars=len(final_markdown),
-        )
-        emit_state(runtime, last_error=error_message, latest_docx_bytes=None)
-        emit_finalize(runtime, "Ошибка сборки DOCX", error_message, 1.0, "error")
-        emit_activity(runtime, "Ошибка на этапе сборки DOCX.")
-        emit_log(
-            runtime,
-            status="ERROR",
-            block_index=job_count,
-            block_count=job_count,
-            target_chars=len(final_markdown),
-            context_chars=0,
-            details=error_message,
-        )
-        return "failed"
-
-    latest_result_notice: dict[str, str] | None = None
-
-    formatting_diagnostics_artifacts = _collect_recent_formatting_diagnostics(
-        since_epoch_seconds=build_started_at_epoch
+    return _execute_processing_run(
+        context=components.context,
+        dependencies=components.dependencies,
+        emitters=components.emitters,
     )
-    if formatting_diagnostics_artifacts:
-        severity, activity_message, user_summary = _build_formatting_diagnostics_user_feedback(
-            formatting_diagnostics_artifacts
-        )
-        emit_activity(runtime, activity_message)
-        if severity == "INFO":
-            latest_result_notice = {"level": "info", "message": user_summary}
-        else:
-            emit_log(
-                runtime,
-                status=severity,
-                block_index=job_count,
-                block_count=job_count,
-                target_chars=len(final_markdown),
-                context_chars=0,
-                details=user_summary,
-            )
-        log_event(
-            logging.WARNING,
-            "formatting_diagnostics_artifacts_detected",
-            "Во время сборки DOCX сохранены formatting diagnostics artifacts.",
-            filename=uploaded_filename,
-            artifact_paths=formatting_diagnostics_artifacts,
-        )
-
-    if not docx_bytes:
-        critical_message = present_error(
-            "empty_docx_bytes",
-            RuntimeError("Сборка DOCX завершилась без содержимого файла."),
-            "Критическая ошибка сборки DOCX",
-            filename=uploaded_filename,
-        )
-        emit_state(runtime, last_error=critical_message, latest_docx_bytes=None)
-        emit_finalize(runtime, "Критическая ошибка", critical_message, 1.0, "error")
-        emit_activity(runtime, "DOCX собран без содержимого.")
-        emit_log(
-            runtime,
-            status="ERROR",
-            block_index=job_count,
-            block_count=job_count,
-            target_chars=len(final_markdown),
-            context_chars=0,
-            details=critical_message,
-        )
-        return "failed"
-
-    emit_state(
-        runtime,
-        latest_docx_bytes=docx_bytes,
-        latest_markdown=final_markdown,
-        latest_result_notice=latest_result_notice,
-        last_error="",
-    )
-    try:
-        result_artifact_paths = dict(
-            write_ui_result_artifacts(
-                source_name=uploaded_filename,
-                markdown_text=final_markdown,
-                docx_bytes=docx_bytes,
-            )
-        )
-    except OSError as exc:
-        log_event(
-            logging.WARNING,
-            "ui_result_artifacts_save_failed",
-            "Не удалось сохранить итоговые UI-артефакты обработки.",
-            filename=uploaded_filename,
-            error_message=str(exc),
-        )
-    else:
-        log_event(
-            logging.INFO,
-            "ui_result_artifacts_saved",
-            "Сохранены итоговые UI-артефакты обработки.",
-            filename=uploaded_filename,
-            artifact_paths=result_artifact_paths,
-        )
-    emit_finalize(
-        runtime,
-        "Обработка завершена",
-        f"Документ обработан за {time.perf_counter() - started_at:.1f} сек.",
-        1.0,
-        "completed",
-    )
-    emit_activity(runtime, "Документ обработан полностью.")
-    log_event(
-        logging.INFO,
-        "processing_completed",
-        "Документ обработан полностью",
-        filename=uploaded_filename,
-        block_count=job_count,
-        final_markdown_chars=len(final_markdown),
-        elapsed_seconds=round(time.perf_counter() - started_at, 2),
-    )
-    emit_log(
-        runtime,
-        status="DONE",
-        block_index=job_count,
-        block_count=job_count,
-        target_chars=len(final_markdown),
-        context_chars=0,
-        details=f"весь документ обработан за {time.perf_counter() - started_at:.1f} сек.",
-    )
-    return "succeeded"

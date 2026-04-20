@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import queue
+import threading
 import time
 import logging
 from typing import Any, TYPE_CHECKING
@@ -45,9 +47,9 @@ class PreparationStateSnapshot:
 @dataclass(frozen=True)
 class ProcessingSessionSnapshot:
     outcome: str
-    worker: object | None
-    event_queue: object | None
-    stop_event: object | None
+    worker: threading.Thread | None
+    event_queue: queue.Queue[Any] | None
+    stop_event: threading.Event | None
     stop_requested: bool
     latest_source_name: str
     latest_source_token: str
@@ -134,15 +136,15 @@ def get_latest_image_mode() -> str:
     return get_processing_session_snapshot().latest_image_mode
 
 
-def get_processing_worker():
+def get_processing_worker() -> threading.Thread | None:
     return get_processing_session_snapshot().worker
 
 
-def get_processing_event_queue():
+def get_processing_event_queue() -> queue.Queue[Any] | None:
     return get_processing_session_snapshot().event_queue
 
 
-def get_processing_stop_event():
+def get_processing_stop_event() -> threading.Event | None:
     return get_processing_session_snapshot().stop_event
 
 

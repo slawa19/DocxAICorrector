@@ -5,6 +5,7 @@ import json
 import config
 from docx import Document as make_document
 import document as document_module
+import document_boundary_review as boundary_review_module
 from models import (
     ParagraphBoundaryDecision,
     ParagraphBoundaryNormalizationReport,
@@ -560,7 +561,7 @@ def test_table_boundary_is_never_merged():
 
 
 def test_ai_review_candidates_include_medium_boundaries_and_rejected_relations():
-    candidates = document_module._build_ai_review_candidates(
+    candidates = boundary_review_module.build_ai_review_candidates(
         raw_blocks=[
             RawParagraph(raw_index=0, text="Это важное наблюдение:", style_name="Normal"),
             RawParagraph(raw_index=1, text="Следующий шаг требует проверки.", style_name="Normal"),
