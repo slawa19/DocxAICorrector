@@ -187,6 +187,7 @@ bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && python3 scripts/_list_lo
 | `.run/paragraph_boundary_ai_review/*.json` | TTL 14 дней, max 200 файлов, pruning при каждой записи | `document._write_paragraph_boundary_ai_review_artifact()` → `prune_artifact_dir()` |
 | `.run/structure_maps/*.json` | TTL 30 дней, max 200 файлов, pruning при каждой записи | `preparation._write_structure_map_debug_artifact()` → `prune_artifact_dir()` |
 | `.run/structure_validation/*.json` | TTL 30 дней, max 200 файлов, pruning при каждой записи | `structure_validation.write_structure_validation_debug_artifact()` → `prune_artifact_dir()` |
+| `.run/ui_results/*` | TTL 7 дней, max 80 файлов, pruning при каждой записи | `runtime_artifacts.write_ui_result_artifacts()` → `prune_artifact_dir(glob="*")` |
 | `.run/restart_*`, `.run/completed_*` | TTL 12 часов, cleanup при старте приложения | `restart_store.cleanup_stale_persisted_sources`, вызов из `app._schedule_stale_persisted_sources_cleanup` |
 | `.run/project.log` | Size-rollover на PowerShell-стороне (`Invoke-ProjectLogRollover`), backupCount=5, порог `256 KiB` | `scripts/_shared.ps1` |
 | `.run/streamlit.log` | Size-rollover в WSL control-скрипте, backupCount=5, порог `256 KiB`, check каждые 30s | `scripts/project-control-wsl.sh :: rotate_streamlit_log_if_needed` |
@@ -221,6 +222,13 @@ bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && python3 scripts/_list_lo
 6. Добавить unit-тест на retention (pruning по age, по count, preservation of newest). Шаблон тестов — `tests/test_runtime_artifact_retention.py`.
 7. Не трогать `tests/artifacts/...` из runtime-кода. Runtime cleanup действует только на `.run/`.
 8. Если артефакт-семья генерируется только тест-сценариями, а не production-путём, добавлять её в `scripts/clean-stale-run-artifacts.sh` whitelisted patterns, а не в runtime pruner.
+
+### 5.5 Разграничение persisted source и итогового output
+
+- `.run/restart_*` и `.run/completed_*` относятся к persisted source cache и содержат байты исходного загруженного файла, а не итоговый результат обработки.
+- Итоговые user-visible output files для обычных UI-прогонов живут в `.run/ui_results/`.
+- Канонический runtime-event для итоговых UI output files: `ui_result_artifacts_saved` с контекстом `artifact_paths={markdown_path, docx_path}`.
+- Если нужно восстановить, что именно пользователь видел в финальном download path, начинать надо с `.run/ui_results/` и `ui_result_artifacts_saved`, а не с root-level `.run/completed_*`.
 
 ---
 

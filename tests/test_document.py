@@ -7,6 +7,8 @@ from pathlib import Path
 import config
 from typing import Any, cast
 
+import pytest
+
 import document
 import formatting_transfer
 import formatting_diagnostics_retention
@@ -2996,22 +2998,12 @@ def test_read_uploaded_docx_bytes_reuses_existing_docx_bytes_without_renormalizi
     docx_bytes = buffer.getvalue()
 
     monkeypatch.setattr(document, "read_uploaded_file_bytes", lambda uploaded_file: docx_bytes)
-    monkeypatch.setattr(
-        document,
-        "normalize_uploaded_document",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("normalize_uploaded_document should not be called for DOCX bytes")),
-    )
-
     assert document._read_uploaded_docx_bytes(object()) == docx_bytes
 
 
-def test_read_uploaded_docx_bytes_normalizes_legacy_doc_upload(monkeypatch):
+def test_read_uploaded_docx_bytes_rejects_non_normalized_non_docx_input(monkeypatch):
     monkeypatch.setattr(document, "read_uploaded_file_bytes", lambda uploaded_file: b"legacy-binary")
     monkeypatch.setattr(document, "resolve_uploaded_filename", lambda uploaded_file: "legacy.doc")
-    monkeypatch.setattr(
-        document,
-        "normalize_uploaded_document",
-        lambda **kwargs: type("NormalizedDocument", (), {"content_bytes": b"converted-docx"})(),
-    )
 
-    assert document._read_uploaded_docx_bytes(object()) == b"converted-docx"
+    with pytest.raises(ValueError, match="Ожидался уже нормализованный DOCX-архив"):
+        document._read_uploaded_docx_bytes(object())

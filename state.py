@@ -42,6 +42,19 @@ class PreparationStateSnapshot:
     prepared_run_context: object | None
 
 
+@dataclass(frozen=True)
+class ProcessingSessionSnapshot:
+    outcome: str
+    worker: object | None
+    event_queue: object | None
+    stop_event: object | None
+    stop_requested: bool
+    latest_source_name: str
+    latest_source_token: str
+    selected_source_token: str
+    latest_image_mode: str
+
+
 def get_preparation_state() -> PreparationStateSnapshot:
     return PreparationStateSnapshot(
         input_marker=str(st.session_state.get("preparation_input_marker", "")),
@@ -52,6 +65,20 @@ def get_preparation_state() -> PreparationStateSnapshot:
 
 def get_processing_outcome() -> str:
     return str(st.session_state.get("processing_outcome") or ProcessingOutcome.IDLE.value)
+
+
+def get_processing_session_snapshot() -> ProcessingSessionSnapshot:
+    return ProcessingSessionSnapshot(
+        outcome=get_processing_outcome(),
+        worker=st.session_state.get("processing_worker"),
+        event_queue=st.session_state.get("processing_event_queue"),
+        stop_event=st.session_state.get("processing_stop_event"),
+        stop_requested=bool(st.session_state.get("processing_stop_requested", False)),
+        latest_source_name=str(st.session_state.get("latest_source_name", "")),
+        latest_source_token=str(st.session_state.get("latest_source_token", "")),
+        selected_source_token=str(st.session_state.get("selected_source_token", "")),
+        latest_image_mode=str(st.session_state.get("latest_image_mode", "no_change") or "no_change"),
+    )
 
 
 def get_processing_status() -> dict[str, Any]:
@@ -91,8 +118,36 @@ def get_latest_docx_bytes():
     return st.session_state.get("latest_docx_bytes")
 
 
+def get_latest_source_name() -> str:
+    return get_processing_session_snapshot().latest_source_name
+
+
+def get_latest_source_token() -> str:
+    return get_processing_session_snapshot().latest_source_token
+
+
+def get_selected_source_token() -> str:
+    return get_processing_session_snapshot().selected_source_token
+
+
+def get_latest_image_mode() -> str:
+    return get_processing_session_snapshot().latest_image_mode
+
+
+def get_processing_worker():
+    return get_processing_session_snapshot().worker
+
+
+def get_processing_event_queue():
+    return get_processing_session_snapshot().event_queue
+
+
+def get_processing_stop_event():
+    return get_processing_session_snapshot().stop_event
+
+
 def is_processing_stop_requested() -> bool:
-    return bool(st.session_state.get("processing_stop_requested", False))
+    return get_processing_session_snapshot().stop_requested
 
 
 def get_restart_source() -> dict[str, object]:
@@ -218,6 +273,33 @@ def apply_processing_completion(
     st.session_state.processing_event_queue = None
     st.session_state.processing_stop_event = None
     st.session_state.processing_stop_requested = False
+
+
+def apply_processing_start(
+    *,
+    uploaded_filename: str,
+    uploaded_token: str,
+    image_mode: str,
+    worker,
+    event_queue,
+    stop_event,
+) -> None:
+    st.session_state.latest_source_name = uploaded_filename
+    st.session_state.latest_source_token = uploaded_token
+    st.session_state.selected_source_token = uploaded_token
+    st.session_state.latest_image_mode = image_mode
+    st.session_state.processing_outcome = ProcessingOutcome.RUNNING.value
+    st.session_state.processing_worker = worker
+    st.session_state.processing_event_queue = event_queue
+    st.session_state.processing_stop_event = stop_event
+    st.session_state.processing_stop_requested = False
+
+
+def request_processing_stop() -> None:
+    stop_event = get_processing_stop_event()
+    if stop_event is not None:
+        stop_event.set()
+    st.session_state.processing_stop_requested = True
 
 
 def _current_unix_timestamp() -> float:

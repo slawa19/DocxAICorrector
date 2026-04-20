@@ -35,3 +35,8 @@ tests/artifacts/real_image_pipeline/**
 tests/artifacts/real_document_pipeline/**
 !tests/artifacts/real_document_pipeline/
 !tests/artifacts/real_document_pipeline/run_lietaer_validation.py
+
+# Root diagnostic artifacts
+/search_result.txt
+/wsl_out.txt
+/.pyright_errors.txt

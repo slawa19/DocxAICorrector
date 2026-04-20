@@ -108,6 +108,51 @@ echo START && wsl.exe -d Debian bash -c "cd /mnt/d/www/projects/2025/DocxAICorre
 
 Без `echo START` в начале агент часто не видит никакого вывода вообще.
 
+### Когда допустим PowerShell и как его вызывать правильно
+
+PowerShell допустим только для read-only Windows-side диагностики, когда нужно:
+
+- посчитать метрики по файлам или строкам;
+- обойти нестабильный WSL stdout capture;
+- быстро проверить содержимое workspace без запуска project runtime.
+
+Для тестов, импортов runtime и любой финальной верификации это правило не отменяет WSL-first contract.
+
+Правильный путь для агентских команд:
+
+1. Не делайте nested shell chain вида `cmd.exe -> powershell.exe -> ...`.
+2. Не создавайте временный `.ps1` в WSL-пути вроде `/tmp/...` и не передавайте его в Windows PowerShell через `-File`.
+3. Если нужен скрипт, создавайте его в Windows-доступном пути, например `C:\Users\admin\AppData\Local\Temp\...`.
+4. При запуске файла используйте `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\...\script.ps1"`.
+5. Если хватает однострочника, предпочитайте прямой `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "..."` без промежуточного `cmd.exe`.
+6. Для многострочного PowerShell не вкладывайте сложные переменные и циклы в несколько уровней shell quoting; лучше вынести их в временный Windows-side `.ps1`.
+
+Практические причины:
+
+- nested quoting ломает `$var`, `foreach(...)` и кавычки ещё до того, как код доходит до PowerShell;
+- PowerShell из Windows не видит WSL-пути вида `/tmp/...` как валидный аргумент для `-File`;
+- execution policy может блокировать `.ps1`, поэтому нужен `-ExecutionPolicy Bypass`;
+- для read-only метрик PowerShell полезен, но он не должен подменять WSL runtime contract.
+
+Надёжные шаблоны:
+
+```bash
+# Read-only однострочник из агентского терминала
+echo START && powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "<POWERSHELL>" && echo DONE
+
+# Read-only многострочный скрипт
+# 1) записать файл в Windows temp
+# 2) запустить его так:
+echo START && powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Users\admin\AppData\Local\Temp\agent_check.ps1" && echo DONE
+```
+
+Антипаттерны:
+
+- `cmd.exe /c powershell.exe ...` без явной необходимости;
+- `powershell.exe -File /tmp/script.ps1`;
+- сложный PowerShell-код, встроенный в `wsl.exe -d Debian bash -lc "..."`;
+- использование PowerShell как обходного пути для pytest verification.
+
 ### Долгие команды
 
 - Pyright, mypy и другие type-checkers работают 40–120 секунд.
@@ -122,6 +167,13 @@ echo START && wsl.exe -d Debian bash -c "cd /mnt/d/www/projects/2025/DocxAICorre
 - `docs/AI_AGENT_DEVELOPMENT_RULES.md`
 - `docs/LOGGING_AND_ARTIFACT_RETENTION.md`
 - `.github/copilot-instructions.md`
+
+## UI result artifacts
+
+- Не путайте `.run/completed_*` с итоговым результатом обработки: `completed_*` — это persisted cache исходного загруженного файла для restart/reuse после успешного прогона, а не output DOCX.
+- Для обычных UI-прогонов итоговые user-visible output artifacts пишутся в `.run/ui_results/` как пара файлов одного stem: `.result.md` и `.result.docx`.
+- Канонический лог-сигнал для этих файлов: `ui_result_artifacts_saved`. В его `artifact_paths` лежат точные пути к итоговому Markdown и итоговому DOCX.
+- Если нужно анализировать качество последнего UI-прогона, сначала ищите `ui_result_artifacts_saved` и соответствующие файлы в `.run/ui_results/`, а уже потом fallback'айтесь к промежуточным diagnostics.
 
 ## Streamlit Layout Contract
 

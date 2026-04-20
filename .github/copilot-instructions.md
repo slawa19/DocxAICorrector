@@ -96,6 +96,15 @@ Important limits for agents:
 - If interactive breakpoint stepping in the browser is required, use the `editor-browser` launch configuration rather than improvising a different browser workflow.
 - If the task only requires reading or clicking through the page, agent browser tools or an integrated browser page are appropriate without reframing the task as a test run.
 
+## UI Result Artifact Contract
+
+For normal interactive UI processing runs, AI agents must distinguish between persisted input caches and final user-visible outputs.
+
+- `.run/completed_*` files are not final output artifacts. They cache the original uploaded source bytes for restart/reuse after a successful run.
+- Final UI-visible outputs are written under `.run/ui_results/` as paired `.result.md` and `.result.docx` files sharing the same stem.
+- The canonical log event for those final outputs is `ui_result_artifacts_saved`; prefer its `artifact_paths` over guessing by filename in `.run/` root.
+- When reconciling what the user saw in the UI versus what exists on disk, inspect `.run/ui_results/` first, then `ui_result_artifacts_saved`, and only then intermediate diagnostics such as `.run/formatting_diagnostics/*.json`.
+
 ## Real Document Validation
 
 Canonical real-document validation target: `tests/sources/Лиетар глава1.docx`.

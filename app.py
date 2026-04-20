@@ -46,12 +46,16 @@ from processing_runtime import (
 )
 from runtime_artifacts import AppReadyMarkerWriter
 from state import (
+    get_latest_image_mode,
+    get_latest_source_token,
     get_processing_outcome,
+    get_processing_session_snapshot,
     get_prepared_run_context_for_marker,
     get_restart_source_filename,
     has_persisted_source,
     init_session_state,
     is_preparation_failed_for_marker,
+    is_processing_stop_requested,
     push_activity,
     reset_run_state,
     set_processing_status,
@@ -489,7 +493,7 @@ def _should_render_recommended_text_settings_notice(uploaded_file_token: str) ->
 
 
 def _render_processing_controls(*, can_start: bool, is_processing: bool, emphasize_start: bool = True) -> str | None:
-    stop_requested = bool(st.session_state.get("processing_stop_requested", False))
+    stop_requested = is_processing_stop_requested()
     start_col, stop_col = st.columns(2)
 
     start_label = "Обработка запущена" if is_processing else ("Начать обработку" if emphasize_start else "Обработать повторно")
@@ -792,8 +796,9 @@ def main() -> None:
         st.error(st.session_state.last_error)
         st.caption(st.session_state.last_log_hint)
 
+    processing_snapshot = get_processing_session_snapshot()
     has_completed_result = bool(
-        st.session_state.latest_docx_bytes and st.session_state.latest_source_token == uploaded_file_token
+        st.session_state.latest_docx_bytes and processing_snapshot.latest_source_token == uploaded_file_token
     )
     if not restartable_outcome:
         preparation_summary = st.session_state.get("latest_preparation_summary")
@@ -810,7 +815,7 @@ def main() -> None:
     render_partial_result()
 
     compare_panel.render_compare_all_apply_panel(
-        latest_image_mode=st.session_state.latest_image_mode,
+        latest_image_mode=get_latest_image_mode(),
         image_assets=st.session_state.image_assets,
         render_section_gap=render_section_gap,
     )

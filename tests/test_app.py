@@ -286,7 +286,6 @@ def test_render_processing_controls_keeps_start_visible_while_processing(monkeyp
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app.st, "columns", lambda n: [start_column, stop_column])
-
     action = app._render_processing_controls(can_start=False, is_processing=True)
 
     assert action is None
@@ -316,7 +315,6 @@ def test_render_processing_controls_enables_start_and_disables_stop_when_idle(mo
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app.st, "columns", lambda n: [start_column, stop_column])
-
     action = app._render_processing_controls(can_start=True, is_processing=False)
 
     assert action == "start"
@@ -339,7 +337,6 @@ def test_render_processing_controls_demotes_start_after_completed_result(monkeyp
 
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app.st, "columns", lambda n: [start_column, stop_column])
-
     action = app._render_processing_controls(can_start=True, is_processing=False, emphasize_start=False)
 
     assert action is None
@@ -387,6 +384,8 @@ def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatc
     monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
     monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
     monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
+    monkeypatch.setattr(app, "get_processing_session_snapshot", lambda: type("ProcessingSnapshot", (), {"latest_source_token": ""})())
+    monkeypatch.setattr(app, "get_latest_image_mode", lambda: "safe")
     monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
@@ -1078,6 +1077,8 @@ def test_main_places_recommended_text_settings_notice_inside_preparation_summary
     monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
+    monkeypatch.setattr(app, "get_processing_session_snapshot", lambda: type("ProcessingSnapshot", (), {"latest_source_token": ""})())
+    monkeypatch.setattr(app, "get_latest_image_mode", lambda: "safe")
     monkeypatch.setattr(compare_panel, "render_compare_all_apply_panel", lambda **kwargs: None)
     monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)
     monkeypatch.setattr(application_flow, "has_resettable_state", lambda **kwargs: False)
@@ -1272,6 +1273,8 @@ def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):
     monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
     monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
     monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
+    monkeypatch.setattr(app, "get_processing_session_snapshot", lambda: type("ProcessingSnapshot", (), {"latest_source_token": ""})())
+    monkeypatch.setattr(app, "get_latest_image_mode", lambda: "safe")
     monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
     monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)

@@ -16,10 +16,17 @@ import streamlit as st
 from logger import log_event
 from restart_store import clear_restart_source, load_restart_source_bytes, store_completed_source, store_restart_source
 from state import (
+    apply_processing_start,
     apply_preparation_complete,
     apply_preparation_failure,
     apply_processing_completion,
+    get_processing_event_queue,
+    get_processing_stop_event,
+    get_processing_worker,
+    get_latest_source_name,
+    get_latest_source_token,
     mark_preparation_started,
+    request_processing_stop as request_processing_stop_via_state,
     reset_image_state,
 )
 from runtime_events import (
@@ -489,8 +496,8 @@ def get_current_result_bundle() -> dict[str, object] | None:
     if not latest_docx_bytes:
         return None
     return build_result_bundle(
-        source_name=st.session_state.get("latest_source_name", ""),
-        source_token=st.session_state.get("latest_source_token", ""),
+        source_name=get_latest_source_name(),
+        source_token=get_latest_source_token(),
         docx_bytes=latest_docx_bytes,
         markdown_text=st.session_state.get("latest_markdown", ""),
     )
@@ -637,7 +644,7 @@ def resolve_uploaded_filename(uploaded_file) -> str:
 
 
 def drain_processing_events(*, set_processing_status, finalize_processing_status, push_activity, append_log, append_image_log) -> None:
-    event_queue = st.session_state.get("processing_event_queue")
+    event_queue = get_processing_event_queue()
     if event_queue is None:
         return
     while True:
@@ -723,15 +730,12 @@ def preparation_worker_is_active() -> bool:
 
 
 def processing_worker_is_active() -> bool:
-    worker = st.session_state.get("processing_worker")
+    worker = get_processing_worker()
     return worker is not None and worker.is_alive()
 
 
 def request_processing_stop() -> None:
-    stop_event = st.session_state.get("processing_stop_event")
-    if stop_event is not None:
-        stop_event.set()
-    st.session_state.processing_stop_requested = True
+    request_processing_stop_via_state()
 
 
 def start_background_processing(
@@ -757,9 +761,6 @@ def start_background_processing(
     previous_restart_source = st.session_state.get("restart_source")
     restart_session_id = str(st.session_state.get("restart_session_id", ""))
     reset_run_state(preserve_preparation=True)
-    st.session_state.latest_source_name = uploaded_filename
-    st.session_state.latest_source_token = uploaded_token
-    st.session_state.selected_source_token = uploaded_token
     try:
         st.session_state.restart_source = store_restart_source(
             session_id=restart_session_id,
@@ -779,8 +780,6 @@ def start_background_processing(
             error_message=str(exc),
         )
         push_activity("Не удалось сохранить временный файл для restart. Повторный запуск без загрузки файла будет недоступен.")
-    st.session_state.latest_image_mode = image_mode
-    st.session_state.processing_outcome = ProcessingOutcome.RUNNING.value
 
     processing_events = queue.Queue()
     stop_event = threading.Event()
@@ -814,9 +813,14 @@ def start_background_processing(
         },
         daemon=True,
     )
-    st.session_state.processing_worker = worker
-    st.session_state.processing_event_queue = processing_events
-    st.session_state.processing_stop_event = stop_event
+    apply_processing_start(
+        uploaded_filename=uploaded_filename,
+        uploaded_token=uploaded_token,
+        image_mode=image_mode,
+        worker=worker,
+        event_queue=processing_events,
+        stop_event=stop_event,
+    )
     worker.start()
 
 

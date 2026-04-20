@@ -474,6 +474,43 @@ bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate &&
 
 Если запуск делается из Windows shell или внешней automation вне WSL, допустим путь `PowerShell -> WSL -> .venv/bin/activate -> pytest`, но это не основной сценарий для VS Code в этом репозитории.
 
+### 5.x. PowerShell для read-only метрик и диагностики
+
+Для read-only задач уровня документации, code review и метрик по workspace допустимо использовать Windows PowerShell, если агенту нужно обойти нестабильный WSL stdout capture.
+
+Это допустимо только для сценариев вроде:
+
+- подсчёта строк, match-count и occurrence-count;
+- read-only инвентаризации файлов;
+- простой диагностики quoting / path handling вне project runtime.
+
+Это не делает PowerShell допустимым путём для тестовой верификации, runtime-import проверок или замены WSL-first contract.
+
+Правила запуска:
+
+1. Предпочитайте прямой вызов `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "..."`.
+2. Не оборачивайте PowerShell в лишний `cmd.exe -> powershell.exe` chain, если нет жёсткой необходимости.
+3. Если скрипт многострочный, пишите его во временный Windows path, а не в WSL `/tmp`.
+4. Для `.ps1` используйте `-ExecutionPolicy Bypass`, иначе запуск может быть заблокирован policy на машине пользователя.
+5. Не вкладывайте сложный PowerShell с `$variables`, `foreach` и кавычками в несколько уровней `bash -lc`/`wsl.exe` quoting; это частый источник ложных syntax errors.
+
+Надёжные шаблоны:
+
+```text
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "<READ_ONLY_POWERSHELL>"
+```
+
+```text
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Users\admin\AppData\Local\Temp\agent_check.ps1"
+```
+
+Антипаттерны, которые уже приводили к ложным сбоям:
+
+- `cmd.exe /c powershell.exe ...` для обычных read-only метрик;
+- `powershell.exe -File /tmp/script.ps1`;
+- PowerShell-код, завернутый внутрь `wsl.exe ... bash -lc "..."`;
+- попытка использовать PowerShell pipeline как доказательство итогового pytest результата.
+
 ---
 
 ## 6. Правила для документации и ревью

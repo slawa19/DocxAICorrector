@@ -51,6 +51,11 @@ STRUCTURE_MAPS_MAX_COUNT = 200
 STRUCTURE_VALIDATION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 STRUCTURE_VALIDATION_MAX_COUNT = 200
 
+# Final UI-visible markdown/docx outputs for successful interactive runs
+# (``runtime_artifacts.py``).
+UI_RESULT_ARTIFACTS_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+UI_RESULT_ARTIFACTS_MAX_COUNT = 80
+
 
 def prune_artifact_dir(
     *,

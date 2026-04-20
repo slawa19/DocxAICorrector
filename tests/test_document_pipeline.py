@@ -108,18 +108,19 @@ def _run_processing(runtime, **overrides):
         "preserve_source_paragraph_properties": lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         "normalize_semantic_output_docx": lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         "reinsert_inline_images": _reinsert_inline_images,
+        "write_ui_result_artifacts": lambda **kwargs: {"markdown_path": "/tmp/final.result.md", "docx_path": "/tmp/final.result.docx"},
     }
     params.update(overrides)
     return document_pipeline.run_document_processing(**params)
 
 
 def _capture_log_events():
-    events = []
+    captured = []
 
-    def _log_event(level, event_id, message, **context):
-        events.append({"level": level, "event_id": event_id, "message": message, "context": context})
+    def log_event(level, event_id, message, **context):
+        captured.append({"level": level, "event_id": event_id, "message": message, "context": context})
 
-    return events, _log_event
+    return captured, log_event
 
 
 def test_run_document_processing_happy_path_updates_runtime_state():
@@ -212,6 +213,54 @@ def test_run_document_processing_passes_text_transform_context_to_system_prompt_
         "source_language": "en",
         "target_language": "de",
     }
+
+
+def test_run_document_processing_persists_final_ui_result_artifacts_and_logs_paths():
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+    captured = {}
+
+    def write_ui_result_artifacts(**kwargs):
+        captured["artifact_kwargs"] = kwargs
+        return {
+            "markdown_path": "/tmp/mariana.result.md",
+            "docx_path": "/tmp/mariana.result.docx",
+        }
+
+    result = _run_processing(
+        runtime,
+        log_event=log_event,
+        write_ui_result_artifacts=write_ui_result_artifacts,
+    )
+
+    assert result == "succeeded"
+    assert captured["artifact_kwargs"] == {
+        "source_name": "report.docx",
+        "markdown_text": "Обработанный блок",
+        "docx_bytes": b"docx-bytes",
+    }
+    info_events = [event for event in events if event["level"] == logging.INFO]
+    saved_event = next(event for event in info_events if event["event_id"] == "ui_result_artifacts_saved")
+    assert saved_event["context"]["artifact_paths"] == {
+        "markdown_path": "/tmp/mariana.result.md",
+        "docx_path": "/tmp/mariana.result.docx",
+    }
+
+
+def test_run_document_processing_does_not_fail_when_ui_result_artifact_save_fails():
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+
+    result = _run_processing(
+        runtime,
+        log_event=log_event,
+        write_ui_result_artifacts=lambda **kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    assert result == "succeeded"
+    warning_events = [event for event in events if event["level"] == logging.WARNING]
+    failed_event = next(event for event in warning_events if event["event_id"] == "ui_result_artifacts_save_failed")
+    assert failed_event["context"]["error_message"] == "disk full"
 
 
 def test_resolve_system_prompt_does_not_mask_internal_type_errors():

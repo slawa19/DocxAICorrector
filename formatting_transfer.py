@@ -679,6 +679,7 @@ def preserve_source_paragraph_properties(
     paragraphs: list[ParagraphUnit],
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
 ) -> bytes:
+    """Canonical public formatting entry point for the current transition wave."""
     return apply_output_formatting(
         docx_bytes,
         paragraphs,
@@ -696,7 +697,9 @@ def normalize_semantic_output_docx(
     paragraphs: list[ParagraphUnit],
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
 ) -> bytes:
-    # Compat wrapper — no-op after unified restore in preserve_source_paragraph_properties.
+    # Transitional compatibility wrapper.
+    # Sunset rule: remove or reduce to an internal alias by the end of P3 or 2026-06-30,
+    # whichever comes first, once production, validation, and test callers are migrated.
     return docx_bytes
 
 

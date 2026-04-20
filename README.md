@@ -115,7 +115,7 @@ Universal real-document validation architecture и её текущий implement
 Во время Phase 1 transition публичный callback surface сохранён для совместимости:
 
 - `preserve_source_paragraph_properties()` остаётся mainline formatter entry point;
-- `normalize_semantic_output_docx()` остаётся compatibility no-op.
+- `normalize_semantic_output_docx()` остаётся временным compatibility no-op и должен быть убран или сведен к internal alias не позднее конца P3 или `2026-06-30`, когда production, validation и test call sites будут переведены на основной entry point.
 
 ## Требования
 

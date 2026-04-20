@@ -50,7 +50,7 @@ from models import (
     RawTable,
     RelationNormalizationReport,
 )
-from processing_runtime import normalize_uploaded_document, read_uploaded_file_bytes, resolve_uploaded_filename
+from processing_runtime import read_uploaded_file_bytes, resolve_uploaded_filename
 
 IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_IMAGE_img_\d+\]\]")
 PARAGRAPH_MARKER_PATTERN = re.compile(r"\[\[DOCX_PARA_([A-Za-z0-9_]+)\]\]")
@@ -1931,13 +1931,11 @@ def _read_uploaded_docx_bytes(uploaded_file) -> bytes:
         raise ValueError("Не удалось прочитать содержимое DOCX-файла.") from exc
     if zipfile.is_zipfile(BytesIO(source_bytes)):
         return source_bytes
-    # Legacy compatibility path: some low-level DOCX-oriented helpers still receive raw
-    # .doc uploads here. The authoritative upload normalization boundary lives earlier.
-    normalized_document = normalize_uploaded_document(
-        filename=resolve_uploaded_filename(uploaded_file),
-        source_bytes=source_bytes,
+    source_name = resolve_uploaded_filename(uploaded_file)
+    raise ValueError(
+        "Ожидался уже нормализованный DOCX-архив, но получен ненормализованный входной файл: "
+        f"{source_name}"
     )
-    return normalized_document.content_bytes
 
 
 def _extract_explicit_heading_level(paragraph, style_name: str) -> int | None:

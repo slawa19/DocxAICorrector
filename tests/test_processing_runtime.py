@@ -478,6 +478,85 @@ def test_start_background_processing_preserves_prepared_context(monkeypatch):
     assert session_state.processing_outcome == "running"
 
 
+def test_start_background_processing_delegates_p1a_start_state_to_state_owner(monkeypatch):
+    session_state = SessionState(restart_session_id="session-a")
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    monkeypatch.setattr(state.st, "session_state", session_state)
+    state.init_session_state()
+    session_state.restart_session_id = "session-a"
+    monkeypatch.setattr(
+        processing_runtime,
+        "store_restart_source",
+        lambda **kwargs: {
+            "filename": kwargs["source_name"],
+            "token": kwargs["source_token"],
+            "storage_path": "restart.bin",
+            "session_id": kwargs["session_id"],
+        },
+    )
+    start_calls = []
+
+    original_apply_processing_start = processing_runtime.apply_processing_start
+
+    def tracking_apply_processing_start(**kwargs):
+        start_calls.append(kwargs)
+        return original_apply_processing_start(**kwargs)
+
+    monkeypatch.setattr(processing_runtime, "apply_processing_start", tracking_apply_processing_start)
+
+    processing_runtime.start_background_processing(
+        worker_target=lambda **kwargs: None,
+        reset_run_state=state.reset_run_state,
+        push_activity=lambda message: None,
+        set_processing_status=lambda **kwargs: None,
+        uploaded_filename="report.docx",
+        uploaded_token="report.docx:3:abc",
+        source_bytes=b"abc",
+        jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
+        source_paragraphs=["paragraph"],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+    )
+
+    session_state.processing_worker.join(timeout=5)
+
+    assert len(start_calls) == 1
+    assert start_calls[0]["uploaded_filename"] == "report.docx"
+    assert start_calls[0]["uploaded_token"] == "report.docx:3:abc"
+    assert start_calls[0]["image_mode"] == "safe"
+    assert start_calls[0]["worker"] is session_state.processing_worker
+    assert start_calls[0]["event_queue"] is session_state.processing_event_queue
+    assert start_calls[0]["stop_event"] is session_state.processing_stop_event
+
+
+def test_request_processing_stop_delegates_to_state_owner(monkeypatch):
+    calls = []
+    monkeypatch.setattr(processing_runtime, "request_processing_stop_via_state", lambda: calls.append("called"))
+
+    processing_runtime.request_processing_stop()
+
+    assert calls == ["called"]
+
+
+def test_get_current_result_bundle_reads_p1a_source_identity_via_state_helpers(monkeypatch):
+    session_state = SessionState(latest_docx_bytes=b"docx", latest_markdown="md")
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    monkeypatch.setattr(processing_runtime, "get_latest_source_name", lambda: "report.docx")
+    monkeypatch.setattr(processing_runtime, "get_latest_source_token", lambda: "report.docx:3:abc")
+
+    result = processing_runtime.get_current_result_bundle()
+
+    assert result == {
+        "source_name": "report.docx",
+        "source_token": "report.docx:3:abc",
+        "docx_bytes": b"docx",
+        "markdown_text": "md",
+    }
+
+
 def test_freeze_uploaded_file_normalizes_legacy_doc_payload(monkeypatch):
     uploaded_file = processing_runtime.build_in_memory_uploaded_file(
         source_name="legacy.doc",

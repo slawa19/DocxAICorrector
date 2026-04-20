@@ -13,6 +13,7 @@ from formatting_diagnostics_retention import (
     load_formatting_diagnostics_payloads,
     write_formatting_diagnostics_artifact,
 )
+from runtime_artifacts import write_ui_result_artifacts as write_ui_result_artifacts_impl
 
 
 JobValue: TypeAlias = object
@@ -137,6 +138,10 @@ class SemanticDocxNormalizer(Protocol):
 
 class ImageReinserter(Protocol):
     def __call__(self, docx_bytes: bytes, image_assets: Sequence[ImageAssetLike]) -> bytes: ...
+
+
+class ResultArtifactWriter(Protocol):
+    def __call__(self, *, source_name: str, markdown_text: str, docx_bytes: bytes) -> Mapping[str, str]: ...
 
 
 class ProcessingJobs(Sized, Protocol):
@@ -571,6 +576,7 @@ def run_document_processing(
     preserve_source_paragraph_properties: ParagraphPropertiesPreserver,
     normalize_semantic_output_docx: SemanticDocxNormalizer,
     reinsert_inline_images: ImageReinserter,
+    write_ui_result_artifacts: ResultArtifactWriter = write_ui_result_artifacts_impl,
 ) -> PipelineResult:
     uploaded_filename = resolve_uploaded_filename(uploaded_file)
     try:
@@ -1283,6 +1289,30 @@ def run_document_processing(
         latest_result_notice=latest_result_notice,
         last_error="",
     )
+    try:
+        result_artifact_paths = dict(
+            write_ui_result_artifacts(
+                source_name=uploaded_filename,
+                markdown_text=final_markdown,
+                docx_bytes=docx_bytes,
+            )
+        )
+    except OSError as exc:
+        log_event(
+            logging.WARNING,
+            "ui_result_artifacts_save_failed",
+            "Не удалось сохранить итоговые UI-артефакты обработки.",
+            filename=uploaded_filename,
+            error_message=str(exc),
+        )
+    else:
+        log_event(
+            logging.INFO,
+            "ui_result_artifacts_saved",
+            "Сохранены итоговые UI-артефакты обработки.",
+            filename=uploaded_filename,
+            artifact_paths=result_artifact_paths,
+        )
     emit_finalize(
         runtime,
         "Обработка завершена",

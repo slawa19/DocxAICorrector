@@ -168,3 +168,22 @@ def test_prune_artifact_dir_negative_limits_disable_policy(tmp_path):
 
     assert pruned == []
     assert len(list(target.glob("*.json"))) == 3
+
+
+def test_prune_artifact_dir_with_glob_star_prunes_non_json_artifacts(tmp_path):
+    target = tmp_path / "ui_results"
+    target.mkdir()
+    _write_file(target / "old.result.md", mtime=1.0, content="# old")
+    _write_file(target / "new.result.docx", mtime=999.0, content="docx")
+
+    pruned = prune_artifact_dir(
+        target_dir=target,
+        max_age_seconds=10,
+        max_count=None,
+        now_epoch_seconds=1000.0,
+        glob="*",
+        emit_log=False,
+    )
+
+    assert [Path(p).name for p in pruned] == ["old.result.md"]
+    assert sorted(p.name for p in target.iterdir() if p.is_file()) == ["new.result.docx"]

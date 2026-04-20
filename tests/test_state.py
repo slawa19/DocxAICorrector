@@ -353,6 +353,43 @@ def test_state_read_helpers_expose_processing_and_persisted_source_state(monkeyp
     assert state.has_persisted_source() is True
 
 
+def test_processing_session_snapshot_exposes_p1a_owned_keys(monkeypatch):
+    worker = object()
+    event_queue = object()
+    stop_event = object()
+    session_state = SessionState(
+        processing_outcome="running",
+        processing_worker=worker,
+        processing_event_queue=event_queue,
+        processing_stop_event=stop_event,
+        processing_stop_requested=True,
+        latest_source_name="report.docx",
+        latest_source_token="report.docx:3:abc",
+        selected_source_token="report.docx:3:abc",
+        latest_image_mode="safe",
+    )
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    snapshot = state.get_processing_session_snapshot()
+
+    assert snapshot.outcome == "running"
+    assert snapshot.worker is worker
+    assert snapshot.event_queue is event_queue
+    assert snapshot.stop_event is stop_event
+    assert snapshot.stop_requested is True
+    assert snapshot.latest_source_name == "report.docx"
+    assert snapshot.latest_source_token == "report.docx:3:abc"
+    assert snapshot.selected_source_token == "report.docx:3:abc"
+    assert snapshot.latest_image_mode == "safe"
+    assert state.get_latest_source_name() == "report.docx"
+    assert state.get_latest_source_token() == "report.docx:3:abc"
+    assert state.get_selected_source_token() == "report.docx:3:abc"
+    assert state.get_latest_image_mode() == "safe"
+    assert state.get_processing_worker() is worker
+    assert state.get_processing_event_queue() is event_queue
+    assert state.get_processing_stop_event() is stop_event
+
+
 def test_apply_preparation_complete_updates_owned_session_keys(monkeypatch):
     prepared_run_context = type("PreparedRunContextStub", (), {
         "uploaded_file_token": "report.docx:3:abc",
@@ -454,6 +491,51 @@ def test_apply_processing_completion_moves_restart_source_to_completed_cache(mon
     assert session_state.processing_stop_event is None
     assert session_state.processing_stop_requested is False
     assert cleared == [{"filename": "report.docx", "token": "report.docx:3:abc", "storage_path": "restart.bin", "session_id": "session-a"}]
+
+
+def test_apply_processing_start_updates_owned_p1a_keys(monkeypatch):
+    worker = object()
+    event_queue = object()
+    stop_event = object()
+    session_state = SessionState(processing_stop_requested=True)
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    state.apply_processing_start(
+        uploaded_filename="report.docx",
+        uploaded_token="report.docx:3:abc",
+        image_mode="safe",
+        worker=worker,
+        event_queue=event_queue,
+        stop_event=stop_event,
+    )
+
+    assert session_state.latest_source_name == "report.docx"
+    assert session_state.latest_source_token == "report.docx:3:abc"
+    assert session_state.selected_source_token == "report.docx:3:abc"
+    assert session_state.latest_image_mode == "safe"
+    assert session_state.processing_outcome == "running"
+    assert session_state.processing_worker is worker
+    assert session_state.processing_event_queue is event_queue
+    assert session_state.processing_stop_event is stop_event
+    assert session_state.processing_stop_requested is False
+
+
+def test_request_processing_stop_marks_flag_and_sets_event(monkeypatch):
+    class StopEvent:
+        def __init__(self) -> None:
+            self.set_calls = 0
+
+        def set(self) -> None:
+            self.set_calls += 1
+
+    stop_event = StopEvent()
+    session_state = SessionState(processing_stop_event=stop_event, processing_stop_requested=False)
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    state.request_processing_stop()
+
+    assert stop_event.set_calls == 1
+    assert session_state.processing_stop_requested is True
 
 
 def test_apply_processing_completion_reports_large_restart_source_without_completed_cache(monkeypatch):
