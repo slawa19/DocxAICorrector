@@ -476,6 +476,122 @@ def test_restart_flow_restores_uploaded_file_from_run_store_and_cleans_up(tmp_pa
     state.reset_run_state(keep_restart_source=False)
 
 
+def test_sync_selected_file_context_resets_run_state_for_new_file(monkeypatch):
+    session_state = SessionState(
+        selected_source_token="old.docx:10",
+        sidebar_text_operation="Перевод",
+        sidebar_source_language="Авто",
+        sidebar_target_language="Русский",
+        previous_result=None,
+        latest_docx_bytes=b"docx",
+        latest_source_name="old.docx",
+        latest_source_token="old.docx:10",
+        latest_markdown="markdown",
+        run_log=[{"status": "STOP"}],
+        activity_feed=[{"time": "10:00:00", "message": "stale"}],
+        processed_block_markdowns=["partial"],
+        last_error="",
+        image_assets=[],
+        image_validation_failures=[],
+        image_processing_summary={},
+        processing_status={},
+        processing_stop_requested=False,
+        processing_worker=None,
+        processing_event_queue=None,
+        processing_stop_event=None,
+        processing_outcome="idle",
+        prepared_source_key="old.docx:10:6000",
+        restart_source={"filename": "old.docx", "storage_path": "old.bin"},
+    )
+    reset_calls = []
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    application_flow.sync_selected_file_context(
+        session_state=session_state,
+        reset_run_state_fn=lambda **kwargs: (reset_calls.append(kwargs), session_state.update(run_log=[], activity_feed=[], restart_source=None)),
+        uploaded_file_token="new.docx:20",
+    )
+
+    assert reset_calls == [{"keep_restart_source": False}]
+    assert session_state.selected_source_token == "new.docx:20"
+    assert session_state.restart_source is None
+    assert session_state.run_log == []
+    assert session_state.activity_feed == []
+    assert "sidebar_text_operation" not in session_state
+    assert "sidebar_source_language" not in session_state
+    assert "sidebar_target_language" not in session_state
+
+
+def test_has_resettable_state_depends_on_restartable_source(tmp_path):
+    restart_path = tmp_path / "restart.bin"
+    restart_path.write_bytes(b"abc")
+    session_state = SessionState(processing_outcome="stopped", restart_source={"filename": "report.docx", "storage_path": str(restart_path)})
+
+    assert application_flow.has_resettable_state(current_result=None, session_state=session_state) is True  # type: ignore[arg-type]
+
+    session_state.processing_outcome = "idle"
+
+    assert application_flow.has_resettable_state(current_result=None, session_state=session_state) is False  # type: ignore[arg-type]
+
+
+def test_derive_idle_view_state_covers_idle_paths(tmp_path):
+    restart_path = tmp_path / "restart.bin"
+    restart_path.write_bytes(b"abc")
+    session_state = SessionState(processing_outcome="stopped", restart_source={"filename": "report.docx", "storage_path": str(restart_path)})
+
+    assert application_flow.derive_app_idle_view_state(current_result=None, uploaded_file=object(), session_state=session_state) == "file_selected"
+    assert application_flow.derive_app_idle_view_state(current_result={"docx_bytes": b"x"}, uploaded_file=None, session_state=session_state) == "completed"
+    assert application_flow.derive_app_idle_view_state(current_result=None, uploaded_file=None, session_state=session_state) == "restartable"
+
+    session_state.processing_outcome = "idle"
+
+    assert application_flow.derive_app_idle_view_state(current_result=None, uploaded_file=None, session_state=session_state) == "empty"
+
+
+def test_get_cached_restart_file_returns_none_when_storage_missing(monkeypatch):
+    session_state = SessionState(restart_source={"filename": "report.docx", "storage_path": "missing.bin"})
+    monkeypatch.setattr(application_flow, "load_restart_source_bytes", lambda restart_source: None)
+
+    assert application_flow.get_cached_restart_file(session_state=session_state) is None  # type: ignore[arg-type]
+
+
+def test_resolve_effective_uploaded_file_uses_completed_source_after_success():
+    session_state = SessionState(
+        completed_source={"filename": "report.docx", "storage_path": "completed.bin", "token": "report.docx:3:abc"}
+    )
+
+    uploaded_file = application_flow.resolve_effective_uploaded_file(
+        uploaded_file=None,
+        current_result={"docx_bytes": b"done"},
+        session_state=session_state,
+        load_restart_source_bytes_fn=lambda source: b"abc",
+    )
+
+    assert uploaded_file is not None
+    assert uploaded_file.name == "report.docx"
+    assert uploaded_file.getvalue() == b"abc"
+
+
+def test_has_restartable_source_does_not_materialize_restart_bytes(tmp_path, monkeypatch):
+    restart_path = tmp_path / "restart.bin"
+    restart_path.write_bytes(b"abc")
+    session_state = SessionState(processing_outcome="stopped", restart_source={"filename": "report.docx", "storage_path": str(restart_path)})
+    load_calls = []
+    monkeypatch.setattr(application_flow, "load_restart_source_bytes", lambda restart_source: load_calls.append(restart_source) or b"abc")
+
+    assert application_flow.has_restartable_source(session_state=session_state) is True  # type: ignore[arg-type]
+    assert load_calls == []
+
+
+def test_has_restartable_source_returns_false_when_restart_file_was_removed(tmp_path):
+    restart_path = tmp_path / "restart.bin"
+    restart_path.write_bytes(b"abc")
+    session_state = SessionState(processing_outcome="stopped", restart_source={"filename": "report.docx", "storage_path": str(restart_path)})
+    restart_path.unlink()
+
+    assert application_flow.has_restartable_source(session_state=session_state) is False  # type: ignore[arg-type]
+
+
 def test_prepare_run_context_for_background_uses_frozen_upload_payload(monkeypatch):
     monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: None)
     captured = {}
