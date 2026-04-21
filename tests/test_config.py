@@ -146,6 +146,56 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["image_output_trim_max_loss_ratio"] == 0.15
 
 
+def test_load_app_config_applies_editorial_intensity_env_override(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.setenv("DOCX_AI_EDITORIAL_INTENSITY_DEFAULT", "conservative")
+
+    app_config = config.load_app_config()
+
+    assert app_config["editorial_intensity_default"] == "conservative"
+
+
+def test_load_app_config_applies_translation_second_pass_env_overrides(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.setenv("DOCX_AI_TRANSLATION_SECOND_PASS_DEFAULT", "true")
+    monkeypatch.setenv("DOCX_AI_TRANSLATION_SECOND_PASS_MODEL", "gpt-5.4")
+
+    app_config = config.load_app_config()
+
+    assert app_config["translation_second_pass_default"] is True
+    assert app_config["translation_second_pass_model"] == "gpt-5.4"
+
+
+def test_load_system_prompt_varies_by_editorial_intensity():
+    literary_prompt = config.load_system_prompt(
+        operation="translate",
+        source_language="en",
+        target_language="ru",
+        editorial_intensity="literary",
+    )
+    conservative_prompt = config.load_system_prompt(
+        operation="translate",
+        source_language="en",
+        target_language="ru",
+        editorial_intensity="conservative",
+    )
+
+    assert literary_prompt != conservative_prompt
+    assert "словно заново выдумывал себя у всех на глазах" in literary_prompt
+    assert "Работайте с текстом сдержанно и аккуратно." in conservative_prompt
+    assert "Preserve every marker [[DOCX_PARA_...]] exactly as it appears" not in literary_prompt
+
+
+def test_load_system_prompt_rejects_unsupported_editorial_intensity():
+    with pytest.raises(RuntimeError, match="Некорректная editorial_intensity"):
+        config.load_system_prompt(
+            operation="translate",
+            source_language="en",
+            target_language="ru",
+            editorial_intensity="aggressive",
+        )
+
+
 def test_load_app_config_applies_image_env_overrides_and_clamps(monkeypatch):
     monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
     monkeypatch.setenv("DOCX_AI_IMAGE_MODE_DEFAULT", "semantic_redraw_direct")
@@ -291,6 +341,80 @@ def test_load_system_prompt_translate_includes_hardening_rules():
     assert "не выполняйте повторный перевод" in prompt
     assert "ориентируйтесь в первую очередь на фактический язык блока" in prompt
     assert "предпочитайте консервативный результат" in prompt
+
+
+def test_load_system_prompt_translate_includes_editorial_intensity_fragment_and_example_rules():
+    config.load_system_prompt.cache_clear()
+    try:
+        prompt = config.load_system_prompt(
+            operation="translate",
+            source_language="en",
+            target_language="ru",
+            editorial_intensity="literary",
+        )
+    finally:
+        config.load_system_prompt.cache_clear()
+
+    assert "словно заново выдумывал себя у всех на глазах" in prompt
+    assert "Стремитесь к литературно естественному тексту на языке Русский" in prompt
+    assert "[[DOCX_IMAGE_img_001]]" in prompt
+    assert "[[DOCX_PARA_...]]" in prompt
+
+
+def test_load_system_prompt_cache_distinguishes_editorial_intensity_modes():
+    config.load_system_prompt.cache_clear()
+    try:
+        initial = config.load_system_prompt.cache_info()
+
+        literary_prompt = config.load_system_prompt(
+            operation="translate",
+            source_language="en",
+            target_language="ru",
+            editorial_intensity="literary",
+        )
+        after_first = config.load_system_prompt.cache_info()
+
+        repeated_literary_prompt = config.load_system_prompt(
+            operation="translate",
+            source_language="en",
+            target_language="ru",
+            editorial_intensity="literary",
+        )
+        after_second = config.load_system_prompt.cache_info()
+
+        conservative_prompt = config.load_system_prompt(
+            operation="translate",
+            source_language="en",
+            target_language="ru",
+            editorial_intensity="conservative",
+        )
+        after_third = config.load_system_prompt.cache_info()
+    finally:
+        config.load_system_prompt.cache_clear()
+
+    assert literary_prompt == repeated_literary_prompt
+    assert literary_prompt != conservative_prompt
+    assert after_first.misses == initial.misses + 1
+    assert after_second.hits == after_first.hits + 1
+    assert after_third.misses == after_second.misses + 1
+
+
+def test_load_system_prompt_supports_literary_polish_variant():
+    config.load_system_prompt.cache_clear()
+    try:
+        prompt = config.load_system_prompt(
+            operation="translate",
+            source_language="en",
+            target_language="ru",
+            editorial_intensity="literary",
+            prompt_variant="literary_polish",
+        )
+    finally:
+        config.load_system_prompt.cache_clear()
+
+    assert "Текст уже находится на языке Русский. Не переводите его заново." in prompt
+    assert "Выполните только литературную полировку" in prompt
+    assert "словно заново выдумывал себя у всех на глазах" in prompt
 
 
 def test_load_app_config_applies_env_override_for_paragraph_boundary_mode(monkeypatch, tmp_path):

@@ -133,6 +133,11 @@ _PROMPT_OPERATION_PATHS = {
     "translate": PROMPTS_DIR / "operation_translate.txt",
 }
 
+_PROMPT_EDITORIAL_INTENSITY_PATHS = {
+    "conservative": PROMPTS_DIR / "editorial_intensity_conservative.txt",
+    "literary": PROMPTS_DIR / "editorial_intensity_literary.txt",
+}
+
 _PROMPT_EXAMPLE_PATHS = {
     "edit": PROMPTS_DIR / "example_edit.txt",
     "translate": PROMPTS_DIR / "example_translate.txt",
@@ -153,6 +158,8 @@ class AppConfig(Mapping[str, Any]):
     source_language_default: str
     target_language_default: str
     editorial_intensity_default: str
+    translation_second_pass_default: bool
+    translation_second_pass_model: str
     supported_languages: tuple[LanguageOption, ...]
     enable_paragraph_markers: bool
     paragraph_boundary_normalization_enabled: bool
@@ -759,11 +766,13 @@ def _resolve_text_runtime_defaults(
         parse_supported_languages_fn=parse_supported_languages,
         parse_choice_str_fn=parse_choice_str,
         parse_config_str_fn=parse_config_str,
+        parse_optional_config_str_fn=parse_optional_config_str,
         validate_text_transform_context_fn=_validate_text_transform_context,
         parse_config_bool_fn=parse_config_bool,
         parse_int_env_fn=parse_int_env,
         parse_choice_env_fn=parse_choice_env,
         parse_bool_env_fn=parse_bool_env,
+        parse_optional_str_env_fn=parse_optional_str_env,
         clamp_int_fn=_clamp_int,
         processing_operation_values=PROCESSING_OPERATION_VALUES,
     )
@@ -895,6 +904,16 @@ def _resolve_language_label(language_code: str) -> str:
     return normalized
 
 
+def _resolve_editorial_intensity(editorial_intensity: str) -> str:
+    normalized = editorial_intensity.strip().lower() or "literary"
+    if normalized not in _PROMPT_EDITORIAL_INTENSITY_PATHS:
+        raise RuntimeError(
+            "Некорректная editorial_intensity. Ожидалось одно из значений: "
+            f"{', '.join(sorted(_PROMPT_EDITORIAL_INTENSITY_PATHS))}."
+        )
+    return normalized
+
+
 @lru_cache(maxsize=32)
 def load_system_prompt(
     *,
@@ -902,21 +921,40 @@ def load_system_prompt(
     source_language: str = "en",
     target_language: str = "ru",
     editorial_intensity: str = "literary",
+    prompt_variant: str = "default",
 ) -> str:
     normalized_operation = operation.strip().lower() or "edit"
     normalized_source_language = source_language.strip().lower() or "en"
     normalized_target_language = target_language.strip().lower() or "ru"
+    normalized_editorial_intensity = _resolve_editorial_intensity(editorial_intensity)
+    normalized_prompt_variant = prompt_variant.strip().lower() or "default"
     _validate_text_transform_context(
         operation=normalized_operation,
         source_language=normalized_source_language,
         target_language=normalized_target_language,
         supported_language_codes={language.code for language in DEFAULT_SUPPORTED_LANGUAGES},
     )
-    operation_instructions = _read_prompt_file(_PROMPT_OPERATION_PATHS[normalized_operation]).format(
+    if normalized_prompt_variant == "default":
+        operation_prompt_path = _PROMPT_OPERATION_PATHS[normalized_operation]
+        example_prompt_path = _PROMPT_EXAMPLE_PATHS[normalized_operation]
+    elif normalized_prompt_variant == "literary_polish":
+        operation_prompt_path = PROMPTS_DIR / "operation_literary_polish.txt"
+        example_prompt_path = PROMPTS_DIR / "example_literary_polish.txt"
+        normalized_editorial_intensity = "literary"
+    else:
+        raise RuntimeError(f"Некорректный prompt_variant: {prompt_variant}")
+
+    operation_instructions = _read_prompt_file(operation_prompt_path).format(
         source_language=_resolve_language_label(normalized_source_language),
         target_language=_resolve_language_label(normalized_target_language),
     )
-    example_block = _read_prompt_file(_PROMPT_EXAMPLE_PATHS[normalized_operation]).format(
+    example_block = _read_prompt_file(example_prompt_path).format(
+        source_language=_resolve_language_label(normalized_source_language),
+        target_language=_resolve_language_label(normalized_target_language),
+    )
+    editorial_intensity_instructions = _read_prompt_file(
+        _PROMPT_EDITORIAL_INTENSITY_PATHS[normalized_editorial_intensity]
+    ).format(
         source_language=_resolve_language_label(normalized_source_language),
         target_language=_resolve_language_label(normalized_target_language),
     )
@@ -925,6 +963,7 @@ def load_system_prompt(
         source_language=_resolve_language_label(normalized_source_language),
         target_language=_resolve_language_label(normalized_target_language),
         operation_instructions=operation_instructions,
+        editorial_intensity_instructions=editorial_intensity_instructions,
         example_block=example_block,
     )
 

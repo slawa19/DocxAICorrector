@@ -533,6 +533,7 @@ def finalize_processing_success(
         block_count=job_count,
         final_markdown_chars=len(final_markdown),
         elapsed_seconds=round(time.perf_counter() - state.started_at, 2),
+        translation_second_pass_enabled=bool(context.app_config.get("translation_second_pass_enabled", False)),
     )
     emitters.emit_log(
         context.runtime,

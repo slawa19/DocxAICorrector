@@ -345,11 +345,13 @@ def resolve_text_runtime_defaults(
     parse_supported_languages_fn: Any,
     parse_choice_str_fn: Any,
     parse_config_str_fn: Any,
+    parse_optional_config_str_fn: Any,
     validate_text_transform_context_fn: Any,
     parse_config_bool_fn: Any,
     parse_int_env_fn: Any,
     parse_choice_env_fn: Any,
     parse_bool_env_fn: Any,
+    parse_optional_str_env_fn: Any,
     clamp_int_fn: Any,
     processing_operation_values: tuple[str, ...],
 ) -> dict[str, Any]:
@@ -375,6 +377,14 @@ def resolve_text_runtime_defaults(
     source_language_default = parse_config_str_fn(config_data, "source_language_default", "en").strip().lower()
     target_language_default = parse_config_str_fn(config_data, "target_language_default", "ru").strip().lower()
     editorial_intensity_default = parse_config_str_fn(config_data, "editorial_intensity_default", "literary").strip().lower()
+    translation_second_pass_default = parse_config_bool_fn(config_data, "translation_second_pass_default", False)
+    raw_translation_second_pass_model = config_data.get("translation_second_pass_model")
+    if raw_translation_second_pass_model is None:
+        translation_second_pass_model = ""
+    elif not isinstance(raw_translation_second_pass_model, str):
+        raise RuntimeError(f"Некорректное поле translation_second_pass_model в {config_path}: ожидается строка")
+    else:
+        translation_second_pass_model = raw_translation_second_pass_model.strip()
     validate_text_transform_context_fn(
         operation=processing_operation_default,
         source_language=source_language_default,
@@ -402,6 +412,11 @@ def resolve_text_runtime_defaults(
         os.getenv("DOCX_AI_EDITORIAL_INTENSITY_DEFAULT", editorial_intensity_default).strip().lower()
         or editorial_intensity_default
     )
+    translation_second_pass_default = parse_bool_env_fn(
+        "DOCX_AI_TRANSLATION_SECOND_PASS_DEFAULT",
+        translation_second_pass_default,
+    )
+    translation_second_pass_model = parse_optional_str_env_fn("DOCX_AI_TRANSLATION_SECOND_PASS_MODEL") or translation_second_pass_model
     validate_text_transform_context_fn(
         operation=processing_operation_default,
         source_language=source_language_default,
@@ -421,6 +436,8 @@ def resolve_text_runtime_defaults(
         "source_language_default": source_language_default,
         "target_language_default": target_language_default,
         "editorial_intensity_default": editorial_intensity_default,
+        "translation_second_pass_default": translation_second_pass_default,
+        "translation_second_pass_model": translation_second_pass_model,
         "enable_paragraph_markers": enable_paragraph_markers,
     }
 

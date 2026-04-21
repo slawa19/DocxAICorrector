@@ -6,6 +6,85 @@ from typing import Any, Literal, TypeAlias
 PipelineResult: TypeAlias = Literal["succeeded", "failed", "stopped"]
 
 
+def _should_run_translation_second_pass(*, context: Any) -> bool:
+    return context.processing_operation == "translate" and bool(
+        context.app_config.get("translation_second_pass_enabled", False)
+    )
+
+
+def _resolve_translation_second_pass_model(*, context: Any) -> str:
+    configured_model = str(context.app_config.get("translation_second_pass_model", "")).strip()
+    return configured_model or context.model
+
+
+def _run_translation_second_pass(
+    *,
+    context: Any,
+    dependencies: Any,
+    emitters: Any,
+    state: Any,
+    initialization: Any,
+    index: int,
+    payload: Any,
+    processed_chunk: str,
+    marker_mode_enabled: bool,
+    resolve_system_prompt_fn: Any,
+) -> str:
+    if state.second_pass_system_prompt is None:
+        state.second_pass_system_prompt = resolve_system_prompt_fn(
+            dependencies.load_system_prompt,
+            operation="translate",
+            source_language=context.target_language,
+            target_language=context.target_language,
+            editorial_intensity="literary",
+            prompt_variant="literary_polish",
+        )
+
+    second_pass_model = _resolve_translation_second_pass_model(context=context)
+    emitters.emit_status(
+        context.runtime,
+        stage="Литературная полировка",
+        detail=f"Блок {index} проходит дополнительный литературный проход.",
+        current_block=index,
+        block_count=initialization.job_count,
+        target_chars=payload.target_chars,
+        context_chars=0,
+        progress=(index - 1) / initialization.job_count,
+        is_running=True,
+    )
+    emitters.emit_activity(context.runtime, f"Запущен второй литературный проход для блока {index}.")
+    dependencies.log_event(
+        logging.INFO,
+        "block_second_pass_started",
+        "Запущен второй литературный проход для блока.",
+        filename=context.uploaded_filename,
+        block_index=index,
+        block_count=initialization.job_count,
+        model=second_pass_model,
+    )
+    polished_chunk = dependencies.generate_markdown_block(
+        client=initialization.client,
+        model=second_pass_model,
+        system_prompt=state.second_pass_system_prompt,
+        target_text=processed_chunk,
+        context_before="",
+        context_after="",
+        max_retries=context.max_retries,
+        expected_paragraph_ids=payload.paragraph_ids if marker_mode_enabled else None,
+        marker_mode=marker_mode_enabled,
+    )
+    dependencies.log_event(
+        logging.INFO,
+        "block_second_pass_completed",
+        "Второй литературный проход для блока завершён.",
+        filename=context.uploaded_filename,
+        block_index=index,
+        block_count=initialization.job_count,
+        model=second_pass_model,
+    )
+    return polished_chunk
+
+
 def build_processed_paragraph_registry_entries(
     *,
     block_index: int,
@@ -101,6 +180,7 @@ def execute_processing_block(
             operation=context.processing_operation,
             source_language=context.source_language,
             target_language=context.target_language,
+            editorial_intensity=str(context.app_config.get("editorial_intensity_default", "literary")),
         )
     emitters.emit_status(
         context.runtime,
@@ -126,6 +206,19 @@ def execute_processing_block(
         expected_paragraph_ids=payload.paragraph_ids if marker_mode_enabled else None,
         marker_mode=marker_mode_enabled,
     )
+    if _should_run_translation_second_pass(context=context):
+        processed_chunk = _run_translation_second_pass(
+            context=context,
+            dependencies=dependencies,
+            emitters=emitters,
+            state=state,
+            initialization=initialization,
+            index=index,
+            payload=payload,
+            processed_chunk=processed_chunk,
+            marker_mode_enabled=marker_mode_enabled,
+            resolve_system_prompt_fn=resolve_system_prompt_fn,
+        )
     return processed_chunk, marker_mode_enabled
 
 

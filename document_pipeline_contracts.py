@@ -30,7 +30,15 @@ class ClientFactory(Protocol):
 
 
 class SystemPromptLoader(Protocol):
-    def __call__(self, *, operation: str = "edit", source_language: str = "en", target_language: str = "ru") -> str: ...
+    def __call__(
+        self,
+        *,
+        operation: str = "edit",
+        source_language: str = "en",
+        target_language: str = "ru",
+        editorial_intensity: str = "literary",
+        prompt_variant: str = "default",
+    ) -> str: ...
 
 
 class EventLogger(Protocol):
@@ -173,6 +181,7 @@ class ProcessingState:
     processed_chunks: list[str] = field(default_factory=list)
     generated_paragraph_registry: list[dict[str, object]] = field(default_factory=list)
     system_prompt: str | None = None
+    second_pass_system_prompt: str | None = None
     started_at: float = field(default_factory=time.perf_counter)
 
 

@@ -477,7 +477,7 @@ def _asset_value(asset, field_name: str, default=None):
     return getattr(asset, field_name, default)
 
 
-def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool, str, str, str]:
+def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool, str, str, str, bool]:
     st.sidebar.header("Настройки")
     operation_default = str(config.get("processing_operation_default", "edit"))
     operation_options = list(TEXT_OPERATION_LABELS.values())
@@ -525,6 +525,18 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
             st.sidebar.warning(
                 "Исходный и целевой язык совпадают. Если нужен только стилистический апгрейд, обычно лучше выбрать литературное редактирование."
             )
+
+    translation_second_pass_enabled = False
+    if processing_operation == "translate":
+        translation_second_pass_enabled = st.sidebar.checkbox(
+            "Дополнительный литературный проход после перевода",
+            value=bool(config.get("translation_second_pass_default", False)),
+            help=(
+                "Делает второй проход только по уже переведённому тексту. "
+                "Обычно улучшает стиль, но увеличивает время и стоимость обработки."
+            ),
+            key="sidebar_translation_second_pass",
+        )
 
     model_options = [*get_text_model_options(config), "custom"]
     default_model = get_text_model_default(config)
@@ -575,6 +587,7 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
         processing_operation,
         source_language,
         target_language,
+        translation_second_pass_enabled,
     )
 
 

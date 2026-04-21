@@ -340,6 +340,7 @@ def initialize_processing_run(
             block_count=job_count,
             max_retries=context.max_retries,
             image_count=len(context.image_assets),
+            translation_second_pass_enabled=bool(context.app_config.get("translation_second_pass_enabled", False)),
         )
         block_plan_summary = summarize_block_plan_fn(context.jobs)
         dependencies.log_event(
@@ -355,6 +356,7 @@ def initialize_processing_run(
             max_target_chars=block_plan_summary["max_target_chars"],
             avg_target_chars=block_plan_summary["avg_target_chars"],
             first_block_target_chars=block_plan_summary["first_block_target_chars"],
+            translation_second_pass_enabled=bool(context.app_config.get("translation_second_pass_enabled", False)),
         )
         dependencies.log_event(
             logging.DEBUG,

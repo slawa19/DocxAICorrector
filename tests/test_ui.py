@@ -273,7 +273,7 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
 
     result = ui.render_sidebar(config)
 
-    assert result == ("gpt-5-mini", 6000, 3, "semantic_redraw_direct", False, "edit", "en", "ru")
+    assert result == ("gpt-5-mini", 6000, 3, "semantic_redraw_direct", False, "edit", "en", "ru", False)
     assert sidebar_calls == [
         ("header", "Настройки"),
         (
@@ -352,11 +352,30 @@ def test_render_sidebar_warns_when_translate_source_matches_target(monkeypatch):
     monkeypatch.setattr(ui.st.sidebar, "selectbox", fake_selectbox)
     monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
     monkeypatch.setattr(ui.st.sidebar, "slider", lambda label, **kwargs: kwargs["value"])
-    monkeypatch.setattr(ui.st.sidebar, "checkbox", lambda label, value, key=None, help=None: value)
+    checkbox_calls = []
+    monkeypatch.setattr(
+        ui.st.sidebar,
+        "checkbox",
+        lambda label, value, key=None, help=None: checkbox_calls.append((label, value, key, help)) or value,
+    )
 
     result = ui.render_sidebar(config)
 
-    assert result == ("gpt-5-mini", 6000, 3, "semantic_redraw_direct", False, "translate", "en", "en")
+    assert result == ("gpt-5-mini", 6000, 3, "semantic_redraw_direct", False, "translate", "en", "en", False)
+    assert checkbox_calls == [
+        (
+            "Дополнительный литературный проход после перевода",
+            False,
+            "sidebar_translation_second_pass",
+            "Делает второй проход только по уже переведённому тексту. Обычно улучшает стиль, но увеличивает время и стоимость обработки.",
+        ),
+        (
+            "Сохранять все варианты изображений",
+            False,
+            "sidebar_keep_all_image_variants",
+            "Сохраняет все сгенерированные варианты изображений для последующего сравнения.",
+        ),
+    ]
     assert warnings == [
         "Исходный и целевой язык совпадают. Если нужен только стилистический апгрейд, обычно лучше выбрать литературное редактирование."
     ]
@@ -403,11 +422,17 @@ def test_render_sidebar_translate_mode_does_not_add_extra_caption(monkeypatch):
     monkeypatch.setattr(ui.st.sidebar, "selectbox", fake_selectbox)
     monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
     monkeypatch.setattr(ui.st.sidebar, "slider", lambda label, **kwargs: kwargs["value"])
-    monkeypatch.setattr(ui.st.sidebar, "checkbox", lambda label, value, key=None, help=None: value)
+    checkbox_calls = []
+    monkeypatch.setattr(
+        ui.st.sidebar,
+        "checkbox",
+        lambda label, value, key=None, help=None: checkbox_calls.append((label, value, key, help)) or value,
+    )
 
     ui.render_sidebar(config)
 
     assert captions == [ui.IMAGE_MODE_DESCRIPTIONS["safe"]]
+    assert checkbox_calls[0][0] == "Дополнительный литературный проход после перевода"
     assert selectbox_calls[0][1] == (
         "Литературное редактирование улучшает уже готовый текст на выбранном языке. "
         "Перевод используйте для текста, который ещё не на целевом языке. "

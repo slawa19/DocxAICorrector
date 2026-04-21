@@ -176,7 +176,7 @@ def test_run_document_processing_passes_text_transform_context_to_system_prompt_
         source_paragraphs=[],
         image_assets=[],
         image_mode="safe",
-        app_config={},
+        app_config={"editorial_intensity_default": "conservative"},
         model="gpt-5.4",
         max_retries=1,
         processing_operation="translate",
@@ -209,6 +209,8 @@ def test_run_document_processing_passes_text_transform_context_to_system_prompt_
         "operation": "translate",
         "source_language": "en",
         "target_language": "de",
+        "editorial_intensity": "conservative",
+        "prompt_variant": "default",
     }
 
 
@@ -261,7 +263,7 @@ def test_run_document_processing_does_not_fail_when_ui_result_artifact_save_fail
 
 
 def test_resolve_system_prompt_does_not_mask_internal_type_errors():
-    def broken_loader(*, operation: str = "edit", source_language: str = "en", target_language: str = "ru"):
+    def broken_loader(*, operation: str = "edit", source_language: str = "en", target_language: str = "ru", editorial_intensity: str = "literary"):
         raise TypeError("broken template")
 
     with pytest.raises(TypeError, match="broken template"):
@@ -270,7 +272,184 @@ def test_resolve_system_prompt_does_not_mask_internal_type_errors():
             operation="translate",
             source_language="en",
             target_language="de",
+            editorial_intensity="literary",
         )
+
+
+def test_resolve_system_prompt_falls_back_for_legacy_loader_without_editorial_intensity():
+    captured = {}
+
+    def legacy_loader(*, operation: str = "edit", source_language: str = "en", target_language: str = "ru"):
+        captured["prompt"] = {
+            "operation": operation,
+            "source_language": source_language,
+            "target_language": target_language,
+        }
+        return "system"
+
+    resolved = document_pipeline._resolve_system_prompt(
+        legacy_loader,
+        operation="translate",
+        source_language="en",
+        target_language="de",
+        editorial_intensity="conservative",
+    )
+
+    assert resolved == "system"
+    assert captured["prompt"] == {
+        "operation": "translate",
+        "source_language": "en",
+        "target_language": "de",
+    }
+
+
+def test_run_document_processing_runs_second_pass_only_when_enabled():
+    runtime = _build_runtime_capture()
+    prompts = []
+    generated_calls = []
+    events, log_event = _capture_log_events()
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "before", "context_after": "after", "target_chars": 5, "context_chars": 10}],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={
+            "editorial_intensity_default": "conservative",
+            "translation_second_pass_enabled": True,
+            "translation_second_pass_model": "gpt-5.4",
+        },
+        model="gpt-5.4-mini",
+        max_retries=1,
+        processing_operation="translate",
+        source_language="en",
+        target_language="de",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **kwargs: prompts.append(dict(kwargs)) or f"system:{kwargs.get('prompt_variant', 'default')}",
+        log_event=log_event,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: generated_calls.append(dict(kwargs)) or ("перевод" if len(generated_calls) == 1 else "полировка"),
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
+    )
+
+    assert result == "succeeded"
+    assert len(prompts) == 2
+    assert prompts[0]["prompt_variant"] == "default"
+    assert prompts[1]["prompt_variant"] == "literary_polish"
+    assert generated_calls[0]["model"] == "gpt-5.4-mini"
+    assert generated_calls[0]["target_text"] == "block"
+    assert generated_calls[0]["context_before"] == "before"
+    assert generated_calls[1]["model"] == "gpt-5.4"
+    assert generated_calls[1]["target_text"] == "перевод"
+    assert generated_calls[1]["context_before"] == ""
+    assert runtime["state"]["latest_markdown"] == "полировка"
+    info_events = [event for event in events if event["level"] == logging.INFO]
+    assert any(event["event_id"] == "block_second_pass_started" for event in info_events)
+    completed_event = next(event for event in info_events if event["event_id"] == "processing_completed")
+    assert completed_event["context"]["translation_second_pass_enabled"] is True
+
+
+def test_run_document_processing_skips_second_pass_outside_translate_mode():
+    runtime = _build_runtime_capture()
+    generated_calls = []
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "before", "context_after": "after", "target_chars": 5, "context_chars": 10}],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={"translation_second_pass_enabled": True},
+        model="gpt-5.4-mini",
+        max_retries=1,
+        processing_operation="edit",
+        source_language="en",
+        target_language="de",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **kwargs: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: generated_calls.append(dict(kwargs)) or "edited",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
+    )
+
+    assert result == "succeeded"
+    assert len(generated_calls) == 1
+
+
+def test_run_document_processing_fails_when_second_pass_raises():
+    runtime = _build_runtime_capture()
+
+    def generate_markdown_block(**kwargs):
+        if kwargs["target_text"] == "перевод":
+            raise RuntimeError("second pass exploded")
+        return "перевод"
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "before", "context_after": "after", "target_chars": 5, "context_chars": 10}],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={"translation_second_pass_enabled": True},
+        model="gpt-5.4-mini",
+        max_retries=1,
+        processing_operation="translate",
+        source_language="en",
+        target_language="de",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **kwargs: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=generate_markdown_block,
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
+    )
+
+    assert result == "failed"
+    assert "second pass exploded" in runtime["state"]["last_error"]
 
 
 def test_run_document_processing_applies_semantic_output_normalization_before_image_reinsertion():

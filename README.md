@@ -200,6 +200,9 @@ OPENAI_API_KEY=sk-...
 - `DOCX_AI_MODELS_TEXT_OPTIONS` — список моделей для sidebar через запятую.
 - `DOCX_AI_CHUNK_SIZE` — размер целевого блока документа.
 - `DOCX_AI_MAX_RETRIES` — число retry для текстовых вызовов.
+- `DOCX_AI_EDITORIAL_INTENSITY_DEFAULT` — дефолтная стилистическая интенсивность для текстовой обработки: `literary` или `conservative`. В текущем Slice 1 влияет только на prompt contract и не меняет `temperature`.
+- `DOCX_AI_TRANSLATION_SECOND_PASS_DEFAULT` — включает дополнительный литературный проход после перевода по умолчанию для translate-режима.
+- `DOCX_AI_TRANSLATION_SECOND_PASS_MODEL` — optional override модели для второго литературного прохода; если пусто, используется выбранная основная text model.
 - `DOCX_AI_LOG_LEVEL` — уровень логирования приложения: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`; по умолчанию `INFO`, некорректное значение безопасно откатывается к `INFO` с warning-записью в лог.
 - `DOCX_AI_IMAGE_MODE_DEFAULT` — режим изображений по умолчанию: `no_change`, `safe`, `semantic_redraw_direct`, `semantic_redraw_structured`, `compare_all`.
 - `DOCX_AI_SEMANTIC_VALIDATION_POLICY` — политика post-check: `advisory` или `strict`.
@@ -220,6 +223,9 @@ DOCX_AI_MODELS_TEXT_DEFAULT=gpt-5.4-mini
 DOCX_AI_MODELS_TEXT_OPTIONS=gpt-5.4,gpt-5.4-mini,gpt-5-mini
 DOCX_AI_CHUNK_SIZE=6000
 DOCX_AI_MAX_RETRIES=3
+DOCX_AI_EDITORIAL_INTENSITY_DEFAULT=literary
+DOCX_AI_TRANSLATION_SECOND_PASS_DEFAULT=false
+DOCX_AI_TRANSLATION_SECOND_PASS_MODEL=
 DOCX_AI_MODELS_STRUCTURE_RECOGNITION_DEFAULT=gpt-5-mini
 DOCX_AI_STRUCTURE_RECOGNITION_MODE=auto
 DOCX_AI_STRUCTURE_VALIDATION_ENABLED=true

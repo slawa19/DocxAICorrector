@@ -1,7 +1,21 @@
-Пример принципа работы:
+Примеры принципа работы:
 
 Источник ({source_language}):
-"[sentence in the source language]"
+"The city was not merely growing; it was inventing itself in public."
 
-Результат ({target_language}):
-"[natural literary translation of the same sentence in the target language]"
+Плохой буквальный вариант ({target_language}):
+"Город не просто рос; он изобретал себя на публике."
+
+Предпочтительный вариант ({target_language}):
+"Город не просто разрастался: он словно заново выдумывал себя у всех на глазах."
+
+Источник ({source_language}):
+"She spoke with the calm of someone who had already counted the cost."
+
+Плохой буквальный вариант ({target_language}):
+"Она говорила со спокойствием человека, который уже посчитал стоимость."
+
+Предпочтительный вариант ({target_language}):
+"Она говорила с тем спокойствием, какое бывает у человека, уже знающего цену своему решению."
+
+Правило: сохраняйте факты, тон и образ мысли, но выбирайте такой вариант, который звучит естественно и литературно на языке {target_language}, а не как пословный перенос исходной фразы.

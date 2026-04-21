@@ -226,11 +226,13 @@ def _start_background_processing(
 
 
 def _resolve_sidebar_settings(sidebar_result):
-    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 8:
+    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 9:
         return sidebar_result
+    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 8:
+        return (*sidebar_result, False)
     if isinstance(sidebar_result, tuple) and len(sidebar_result) == 5:
         model, chunk_size, max_retries, image_mode, keep_all_image_variants = sidebar_result
-        return model, chunk_size, max_retries, image_mode, keep_all_image_variants, "edit", "en", "ru"
+        return model, chunk_size, max_retries, image_mode, keep_all_image_variants, "edit", "en", "ru", False
     raise RuntimeError("Некорректный контракт render_sidebar().")
 
 
@@ -562,12 +564,14 @@ def main() -> None:
         processing_operation,
         source_language,
         target_language,
+        translation_second_pass_enabled,
     ) = _resolve_sidebar_settings(render_sidebar(app_config))
     app_config = dict(app_config)
     app_config["keep_all_image_variants"] = keep_all_image_variants
     app_config["processing_operation"] = processing_operation
     app_config["source_language"] = source_language
     app_config["target_language"] = target_language
+    app_config["translation_second_pass_enabled"] = translation_second_pass_enabled
 
     processing_active = _processing_worker_is_active()
     processing_outcome = get_processing_outcome()

@@ -26,6 +26,8 @@ processing_operation_default = "edit"
 source_language_default = "en"
 target_language_default = "ru"
 editorial_intensity_default = "literary"
+translation_second_pass_default = false
+translation_second_pass_model = ""
 supported_languages = [
   { code = "ru", label = "Русский" },
   { code = "en", label = "English" },

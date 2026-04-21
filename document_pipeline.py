@@ -128,12 +128,16 @@ def _resolve_system_prompt(
     operation: str,
     source_language: str,
     target_language: str,
+    editorial_intensity: str = "literary",
+    prompt_variant: str = "default",
 ) -> str:
     return _resolve_system_prompt_impl(
         load_system_prompt,
         operation=operation,
         source_language=source_language,
         target_language=target_language,
+        editorial_intensity=editorial_intensity,
+        prompt_variant=prompt_variant,
     )
 
 
