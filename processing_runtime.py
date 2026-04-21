@@ -71,6 +71,7 @@ __all__ = [
     "InMemoryUploadedFile",
     "RuntimeEventEmitterDependencies",
     "RuntimeEventEmitters",
+    "legacy_doc_conversion_available",
     "read_uploaded_file_bytes",
     "normalize_uploaded_document",
     "resolve_upload_contract",
@@ -351,6 +352,23 @@ def _convert_legacy_doc_to_docx(*, filename: str, source_bytes: bytes) -> tuple[
         "Загружен legacy DOC-файл, но автоконвертация недоступна. "
         "Установите в WSL LibreOffice (`soffice`) или связку `antiword` + `pandoc`."
     )
+
+
+def legacy_doc_conversion_available() -> bool:
+    if shutil.which("soffice") or shutil.which("libreoffice"):
+        return True
+
+    if not shutil.which("antiword"):
+        return False
+
+    try:
+        import pypandoc
+
+        pypandoc.get_pandoc_version()
+    except OSError:
+        return False
+
+    return True
 
 
 def normalize_uploaded_document(*, filename: str, source_bytes: bytes) -> NormalizedUploadedDocument:

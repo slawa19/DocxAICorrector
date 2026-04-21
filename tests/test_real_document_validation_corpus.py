@@ -5,6 +5,7 @@ from typing import Any, cast
 
 import pytest
 
+import processing_runtime
 from models import ParagraphBoundaryNormalizationReport, RelationNormalizationReport
 from real_document_validation_profiles import load_validation_registry
 import real_document_validation_structural
@@ -15,11 +16,20 @@ REGISTRY = load_validation_registry()
 STRUCTURAL_RUN_PROFILE = REGISTRY.get_run_profile("structural-passthrough-default")
 
 
+def _skip_if_legacy_doc_conversion_unavailable(source_path: Path) -> None:
+    if source_path.suffix.lower() != ".doc":
+        return
+    if processing_runtime.legacy_doc_conversion_available():
+        return
+    pytest.skip(f"legacy DOC auto-conversion unavailable in current runtime: {source_path}")
+
+
 @pytest.mark.parametrize("document_profile", REGISTRY.documents, ids=[profile.id for profile in REGISTRY.documents])
 def test_corpus_extraction(document_profile) -> None:
     source_path = document_profile.resolved_source_path()
     if not source_path.exists():
         pytest.skip(f"missing real-document source: {source_path}")
+    _skip_if_legacy_doc_conversion_unavailable(source_path)
 
     result = cast(dict[str, Any], evaluate_extraction_profile(document_profile))
 
@@ -33,6 +43,7 @@ def test_corpus_structural_passthrough(document_profile) -> None:
     source_path = document_profile.resolved_source_path()
     if not source_path.exists():
         pytest.skip(f"missing real-document source: {source_path}")
+    _skip_if_legacy_doc_conversion_unavailable(source_path)
 
     result = cast(dict[str, Any], run_structural_passthrough_validation(document_profile, STRUCTURAL_RUN_PROFILE))
 

@@ -638,6 +638,41 @@ def test_convert_legacy_doc_to_docx_falls_back_to_antiword_when_soffice_fails(mo
     assert calls == ["soffice", "antiword"]
 
 
+def test_legacy_doc_conversion_available_requires_pandoc_for_antiword_path(monkeypatch):
+    monkeypatch.setattr(
+        processing_runtime.shutil,
+        "which",
+        lambda name: {
+            "soffice": None,
+            "libreoffice": None,
+            "antiword": "/usr/bin/antiword",
+        }.get(name),
+    )
+
+    class _PandocStub:
+        @staticmethod
+        def get_pandoc_version():
+            raise OSError("pandoc missing")
+
+    monkeypatch.setitem(processing_runtime.legacy_doc_conversion_available.__globals__, "pypandoc", _PandocStub)
+
+    assert processing_runtime.legacy_doc_conversion_available() is False
+
+
+def test_legacy_doc_conversion_available_accepts_soffice_without_antiword(monkeypatch):
+    monkeypatch.setattr(
+        processing_runtime.shutil,
+        "which",
+        lambda name: {
+            "soffice": "/usr/bin/soffice",
+            "libreoffice": None,
+            "antiword": None,
+        }.get(name),
+    )
+
+    assert processing_runtime.legacy_doc_conversion_available() is True
+
+
 def test_build_uploaded_file_token_for_legacy_doc_is_stable_across_converter_outputs(monkeypatch):
     converted_outputs = [b"converted-docx-a", b"converted-docx-b"]
 
