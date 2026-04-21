@@ -662,6 +662,18 @@ def test_read_uploaded_docx_bytes_rejects_non_normalized_non_docx_input(monkeypa
         document._read_uploaded_docx_bytes(object())
 
 
+def test_extraction_compatibility_override_inventory_is_explicit_and_applied(monkeypatch):
+    monkeypatch.setattr(document._document_extraction, "MAX_DOCX_ARCHIVE_SIZE_BYTES", -1, raising=False)
+    monkeypatch.setattr(document._document_extraction, "_validate_docx_archive", None, raising=False)
+
+    document._sync_extraction_compatibility_overrides()
+
+    assert document.EXTRACTION_COMPATIBILITY_OVERRIDE_DEADLINE == "2026-06-30"
+    assert tuple(document._build_extraction_compatibility_overrides()) == document.EXTRACTION_COMPATIBILITY_OVERRIDE_TARGETS
+    assert document._document_extraction.MAX_DOCX_ARCHIVE_SIZE_BYTES == document.MAX_DOCX_ARCHIVE_SIZE_BYTES
+    assert document._document_extraction._validate_docx_archive is document._validate_docx_archive
+
+
 def test_extract_document_content_from_docx_marks_caption_after_table():
     doc = Document()
     table = doc.add_table(rows=1, cols=1)

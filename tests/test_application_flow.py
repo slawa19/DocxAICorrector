@@ -141,7 +141,12 @@ def test_sync_selected_file_context_delegates_selected_token_write_to_state(monk
     monkeypatch.setattr(state.st, "session_state", session_state)
     delegated_tokens = []
 
-    monkeypatch.setattr(application_flow, "set_selected_source_token", lambda token: delegated_tokens.append(token) or session_state.__setattr__("selected_source_token", token))
+    def record_selected_token(token, session_state=None):
+        delegated_tokens.append(token)
+        if session_state is not None:
+            session_state.selected_source_token = token
+
+    monkeypatch.setattr(application_flow, "set_selected_source_token", record_selected_token)
 
     application_flow.sync_selected_file_context(
         session_state=session_state,

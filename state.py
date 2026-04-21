@@ -37,6 +37,10 @@ def reset_image_state() -> None:
     st.session_state.image_processing_summary = build_default_image_processing_summary()
 
 
+def _resolve_session_state(session_state=None):
+    return st.session_state if session_state is None else session_state
+
+
 @dataclass(frozen=True)
 class PreparationStateSnapshot:
     input_marker: str
@@ -65,21 +69,23 @@ def get_preparation_state() -> PreparationStateSnapshot:
     )
 
 
-def get_processing_outcome() -> str:
-    return str(st.session_state.get("processing_outcome") or ProcessingOutcome.IDLE.value)
+def get_processing_outcome(*, session_state=None) -> str:
+    resolved_session_state = _resolve_session_state(session_state)
+    return str(resolved_session_state.get("processing_outcome") or ProcessingOutcome.IDLE.value)
 
 
-def get_processing_session_snapshot() -> ProcessingSessionSnapshot:
+def get_processing_session_snapshot(*, session_state=None) -> ProcessingSessionSnapshot:
+    resolved_session_state = _resolve_session_state(session_state)
     return ProcessingSessionSnapshot(
-        outcome=get_processing_outcome(),
-        worker=st.session_state.get("processing_worker"),
-        event_queue=st.session_state.get("processing_event_queue"),
-        stop_event=st.session_state.get("processing_stop_event"),
-        stop_requested=bool(st.session_state.get("processing_stop_requested", False)),
-        latest_source_name=str(st.session_state.get("latest_source_name", "")),
-        latest_source_token=str(st.session_state.get("latest_source_token", "")),
-        selected_source_token=str(st.session_state.get("selected_source_token", "")),
-        latest_image_mode=str(st.session_state.get("latest_image_mode", "no_change") or "no_change"),
+        outcome=get_processing_outcome(session_state=resolved_session_state),
+        worker=resolved_session_state.get("processing_worker"),
+        event_queue=resolved_session_state.get("processing_event_queue"),
+        stop_event=resolved_session_state.get("processing_stop_event"),
+        stop_requested=bool(resolved_session_state.get("processing_stop_requested", False)),
+        latest_source_name=str(resolved_session_state.get("latest_source_name", "")),
+        latest_source_token=str(resolved_session_state.get("latest_source_token", "")),
+        selected_source_token=str(resolved_session_state.get("selected_source_token", "")),
+        latest_image_mode=str(resolved_session_state.get("latest_image_mode", "no_change") or "no_change"),
     )
 
 
@@ -120,20 +126,20 @@ def get_latest_docx_bytes():
     return st.session_state.get("latest_docx_bytes")
 
 
-def get_latest_source_name() -> str:
-    return get_processing_session_snapshot().latest_source_name
+def get_latest_source_name(*, session_state=None) -> str:
+    return get_processing_session_snapshot(session_state=session_state).latest_source_name
 
 
-def get_latest_source_token() -> str:
-    return get_processing_session_snapshot().latest_source_token
+def get_latest_source_token(*, session_state=None) -> str:
+    return get_processing_session_snapshot(session_state=session_state).latest_source_token
 
 
-def get_selected_source_token() -> str:
-    return get_processing_session_snapshot().selected_source_token
+def get_selected_source_token(*, session_state=None) -> str:
+    return get_processing_session_snapshot(session_state=session_state).selected_source_token
 
 
-def get_latest_image_mode() -> str:
-    return get_processing_session_snapshot().latest_image_mode
+def get_latest_image_mode(*, session_state=None) -> str:
+    return get_processing_session_snapshot(session_state=session_state).latest_image_mode
 
 
 def get_processing_worker() -> threading.Thread | None:
@@ -152,22 +158,86 @@ def is_processing_stop_requested() -> bool:
     return get_processing_session_snapshot().stop_requested
 
 
-def get_restart_source() -> dict[str, object]:
-    restart_source = st.session_state.get("restart_source")
+def get_restart_source(*, session_state=None) -> dict[str, object]:
+    restart_source = _resolve_session_state(session_state).get("restart_source")
     return restart_source if isinstance(restart_source, dict) else {}
 
 
-def get_completed_source() -> dict[str, object]:
-    completed_source = st.session_state.get("completed_source")
+def get_completed_source(*, session_state=None) -> dict[str, object]:
+    completed_source = _resolve_session_state(session_state).get("completed_source")
     return completed_source if isinstance(completed_source, dict) else {}
 
 
-def has_persisted_source() -> bool:
-    return bool(get_restart_source() or get_completed_source())
+def get_prepared_source_key(*, session_state=None) -> str:
+    return str(_resolve_session_state(session_state).get("prepared_source_key", ""))
 
 
-def get_restart_source_filename() -> str:
-    return str(get_restart_source().get("filename", ""))
+def get_latest_preparation_summary(*, session_state=None) -> dict[str, Any] | None:
+    summary = _resolve_session_state(session_state).get("latest_preparation_summary")
+    return summary if isinstance(summary, dict) else None
+
+
+def get_preparation_worker() -> threading.Thread | None:
+    worker = st.session_state.get("preparation_worker")
+    return worker if isinstance(worker, threading.Thread) else None
+
+
+def get_preparation_event_queue() -> queue.Queue[Any] | None:
+    event_queue = st.session_state.get("preparation_event_queue")
+    return event_queue if isinstance(event_queue, queue.Queue) else None
+
+
+def is_app_start_logged() -> bool:
+    return bool(st.session_state.get("app_start_logged", False))
+
+
+def is_persisted_source_cleanup_done() -> bool:
+    return bool(st.session_state.get("persisted_source_cleanup_done", False))
+
+
+def has_persisted_source(*, session_state=None) -> bool:
+    return bool(
+        get_restart_source(session_state=session_state)
+        or get_completed_source(session_state=session_state)
+    )
+
+
+def get_restart_source_filename(*, session_state=None) -> str:
+    return str(get_restart_source(session_state=session_state).get("filename", ""))
+
+
+def mark_app_start_logged(*, session_state=None) -> None:
+    _resolve_session_state(session_state).app_start_logged = True
+
+
+def mark_persisted_source_cleanup_done(*, session_state=None) -> None:
+    _resolve_session_state(session_state).persisted_source_cleanup_done = True
+
+
+def set_latest_preparation_summary(summary: dict[str, object] | None, *, session_state=None) -> None:
+    _resolve_session_state(session_state).latest_preparation_summary = summary
+
+
+def set_prepared_source_key(prepared_source_key: str, *, session_state=None) -> None:
+    _resolve_session_state(session_state).prepared_source_key = prepared_source_key
+
+
+def set_restart_source(restart_source: dict[str, object] | None, *, session_state=None) -> None:
+    _resolve_session_state(session_state).restart_source = restart_source
+
+
+def set_preparation_runtime(*, worker, event_queue, session_state=None) -> None:
+    resolved_session_state = _resolve_session_state(session_state)
+    resolved_session_state.preparation_worker = worker
+    resolved_session_state.preparation_event_queue = event_queue
+
+
+def clear_completed_source(*, completed_source: dict[str, object] | None = None, clear_restart_source_fn=clear_restart_source, session_state=None) -> None:
+    resolved_session_state = _resolve_session_state(session_state)
+    source_to_clear = completed_source if completed_source is not None else resolved_session_state.get("completed_source")
+    if source_to_clear:
+        clear_restart_source_fn(source_to_clear)
+    resolved_session_state.completed_source = None
 
 
 def should_start_preparation_for_marker(upload_marker: str) -> bool:
@@ -205,9 +275,8 @@ def apply_preparation_complete(*, prepared_run_context, upload_marker: str, rese
     st.session_state.preparation_input_marker = upload_marker
     st.session_state.preparation_failed_marker = ""
     st.session_state.selected_source_token = uploaded_token
-    st.session_state.prepared_source_key = str(getattr(prepared_run_context, "prepared_source_key", ""))
-    st.session_state.preparation_worker = None
-    st.session_state.preparation_event_queue = None
+    set_prepared_source_key(str(getattr(prepared_run_context, "prepared_source_key", "")))
+    set_preparation_runtime(worker=None, event_queue=None)
     st.session_state.processing_outcome = ProcessingOutcome.IDLE.value
 
 
@@ -215,8 +284,7 @@ def apply_preparation_failure(*, upload_marker: str, error_message: str, error_d
     st.session_state.prepared_run_context = None
     st.session_state.preparation_input_marker = upload_marker
     st.session_state.preparation_failed_marker = upload_marker
-    st.session_state.preparation_worker = None
-    st.session_state.preparation_event_queue = None
+    set_preparation_runtime(worker=None, event_queue=None)
     st.session_state.last_background_error = error_details
     st.session_state.last_error = error_message
     st.session_state.processing_outcome = ProcessingOutcome.FAILED.value
@@ -249,7 +317,7 @@ def apply_processing_completion(
                 except OSError as exc:
                     if previous_completed_source:
                         clear_restart_source_fn(previous_completed_source)
-                    st.session_state.completed_source = None
+                    clear_completed_source(clear_restart_source_fn=clear_restart_source_fn)
                     log_event_fn(
                         logging.WARNING,
                         "completed_source_store_failed",
@@ -264,12 +332,12 @@ def apply_processing_completion(
             else:
                 if previous_completed_source:
                     clear_restart_source_fn(previous_completed_source)
-                st.session_state.completed_source = None
+                clear_completed_source(clear_restart_source_fn=clear_restart_source_fn)
                 push_activity(
                     "Исходный файл слишком большой для повторного запуска из памяти. Для нового запуска загрузите DOCX заново."
                 )
         clear_restart_source_fn(restart_source)
-        st.session_state.restart_source = None
+        set_restart_source(None)
     st.session_state.processing_outcome = outcome
     st.session_state.processing_worker = None
     st.session_state.processing_event_queue = None
@@ -304,8 +372,8 @@ def request_processing_stop() -> None:
     st.session_state.processing_stop_requested = True
 
 
-def set_selected_source_token(uploaded_token: str) -> None:
-    st.session_state.selected_source_token = uploaded_token
+def set_selected_source_token(uploaded_token: str, *, session_state=None) -> None:
+    _resolve_session_state(session_state).selected_source_token = uploaded_token
 
 
 def get_recommended_text_settings() -> object | None:

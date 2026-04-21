@@ -692,17 +692,6 @@ def preserve_source_paragraph_properties(
     )
 
 
-def normalize_semantic_output_docx(
-    docx_bytes: bytes,
-    paragraphs: list[ParagraphUnit],
-    generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
-) -> bytes:
-    # Transitional compatibility wrapper.
-    # Sunset rule: remove or reduce to an internal alias by the end of P3 or 2026-06-30,
-    # whichever comes first, once production, validation, and test callers are migrated.
-    return docx_bytes
-
-
 def apply_output_formatting(
     docx_bytes: bytes,
     paragraphs: list[ParagraphUnit],

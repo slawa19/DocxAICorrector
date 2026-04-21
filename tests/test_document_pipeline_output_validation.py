@@ -77,7 +77,6 @@ def test_run_document_processing_fails_on_empty_processed_block():
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -125,7 +124,6 @@ def test_run_document_processing_rejects_heading_only_output_for_body_heavy_inpu
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -169,7 +167,6 @@ def test_run_document_processing_accepts_heading_only_output_for_legitimate_head
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -217,7 +214,6 @@ def test_run_document_processing_accepts_heading_only_output_for_uppercase_title
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -265,7 +261,6 @@ def test_run_document_processing_accepts_heading_only_output_for_table_of_conten
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -313,7 +308,6 @@ def test_run_document_processing_accepts_heading_only_output_for_colon_section_t
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -361,7 +355,6 @@ def test_run_document_processing_accepts_heading_only_output_for_plaintext_banne
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 

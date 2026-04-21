@@ -49,6 +49,7 @@ from state import (
     apply_recommended_widget_state,
     clear_recommended_text_settings_notice_token,
     consume_recommended_text_settings_pending_widget_state,
+    get_latest_preparation_summary,
     get_manual_text_settings_override_for_token,
     get_latest_image_mode,
     get_recommended_text_settings_applied_for_token,
@@ -63,8 +64,12 @@ from state import (
     get_restart_source_filename,
     has_persisted_source,
     init_session_state,
+    is_app_start_logged,
     is_preparation_failed_for_marker,
+    is_persisted_source_cleanup_done,
     is_processing_stop_requested,
+    mark_app_start_logged,
+    mark_persisted_source_cleanup_done,
     push_activity,
     reset_run_state,
     set_manual_text_settings_override_for_token,
@@ -72,6 +77,7 @@ from state import (
     set_recommended_text_settings_applied,
     set_recommended_text_settings_notice,
     set_recommended_text_settings_pending_widget_state,
+    set_latest_preparation_summary,
     set_text_transform_assessment,
     set_processing_status,
     should_start_preparation_for_marker,
@@ -116,7 +122,7 @@ def _cached_load_app_config():
 
 def _schedule_stale_persisted_sources_cleanup() -> None:
     global _CLEANUP_THREAD_STARTED
-    if st.session_state.get("persisted_source_cleanup_done", False):
+    if is_persisted_source_cleanup_done():
         return
     with _CLEANUP_THREAD_LOCK:
         if _CLEANUP_THREAD_STARTED:
@@ -134,7 +140,7 @@ def _schedule_stale_persisted_sources_cleanup() -> None:
                 _CLEANUP_THREAD_STARTED = False
 
     threading.Thread(target=worker, daemon=True, name="persisted-source-cleanup").start()
-    st.session_state.persisted_source_cleanup_done = True
+    mark_persisted_source_cleanup_done()
 
 
 def _mark_app_ready() -> None:
@@ -257,7 +263,7 @@ def _store_preparation_summary(*, prepared_run_context) -> None:
         getattr(prepared_run_context, "relation_report", None)
     )
     structure_status_note = application_flow.build_structure_processing_status_note(prepared_run_context)
-    st.session_state.latest_preparation_summary = {
+    set_latest_preparation_summary({
         "stage": str(getattr(prepared_run_context, "preparation_stage", "Документ подготовлен")),
         "detail": str(getattr(prepared_run_context, "preparation_detail", "")),
         "file_size_bytes": len(prepared_run_context.uploaded_file_bytes),
@@ -272,7 +278,7 @@ def _store_preparation_summary(*, prepared_run_context) -> None:
         "status_notes": [structure_status_note] if structure_status_note else [],
         **normalization_metrics,
         **relation_metrics,
-    }
+    })
 
 
 def _assess_text_transform(*, source_text: str, target_language: str) -> TextTransformAssessment:
@@ -534,9 +540,9 @@ def main() -> None:
     _drain_processing_events()
     _drain_preparation_events()
     inject_ui_styles()
-    if not st.session_state.app_start_logged:
+    if not is_app_start_logged():
         log_event(logging.INFO, "app_start", "Приложение инициализировано")
-        st.session_state.app_start_logged = True
+        mark_app_start_logged()
 
     try:
         app_config = _cached_load_app_config()
@@ -813,7 +819,7 @@ def main() -> None:
         st.session_state.latest_docx_bytes and processing_snapshot.latest_source_token == uploaded_file_token
     )
     if not restartable_outcome:
-        preparation_summary = st.session_state.get("latest_preparation_summary")
+        preparation_summary = get_latest_preparation_summary()
         if isinstance(preparation_summary, dict) and notice_message is not None:
             status_notes = [str(note).strip() for note in preparation_summary.get("status_notes", []) if str(note).strip()]
             status_notes.append(notice_message)

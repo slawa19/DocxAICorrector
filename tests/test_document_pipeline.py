@@ -106,7 +106,6 @@ def _run_processing(runtime, **overrides):
         "inspect_placeholder_integrity": _inspect_placeholder_integrity,
         "convert_markdown_to_docx_bytes": _convert_markdown_to_docx_bytes,
         "preserve_source_paragraph_properties": lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        "normalize_semantic_output_docx": lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         "reinsert_inline_images": _reinsert_inline_images,
         "write_ui_result_artifacts": lambda **kwargs: {"markdown_path": "/tmp/final.result.md", "docx_path": "/tmp/final.result.docx"},
     }
@@ -156,7 +155,6 @@ def test_run_document_processing_happy_path_updates_runtime_state():
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
     )
 
@@ -203,7 +201,6 @@ def test_run_document_processing_passes_text_transform_context_to_system_prompt_
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
     )
 
@@ -309,12 +306,11 @@ def test_run_document_processing_applies_semantic_output_normalization_before_im
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=lambda markdown_text: call_order.append("convert") or b"docx-bytes",
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: call_order.append("preserve") or docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: call_order.append("normalize") or docx_bytes,
         reinsert_inline_images=lambda docx_bytes, image_assets: call_order.append("reinsert") or docx_bytes,
     )
 
     assert result == "succeeded"
-    assert call_order == ["convert", "preserve", "normalize", "reinsert"]
+    assert call_order == ["convert", "preserve", "reinsert"]
 
 
 def test_run_document_processing_surfaces_formatting_diagnostics_artifacts(tmp_path, monkeypatch):
@@ -368,7 +364,6 @@ def test_run_document_processing_surfaces_formatting_diagnostics_artifacts(tmp_p
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=lambda markdown_text: b"docx-bytes",
         preserve_source_paragraph_properties=preserve_with_artifact,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
     )
 
@@ -440,7 +435,6 @@ def test_run_document_processing_warns_user_only_for_conflicting_formatting_diag
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=lambda markdown_text: b"docx-bytes",
         preserve_source_paragraph_properties=preserve_with_conflict_artifact,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
     )
 
@@ -548,7 +542,6 @@ def test_run_document_processing_passes_marker_wrapped_text_only_when_marker_mod
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -565,7 +558,6 @@ def test_run_document_processing_passes_marker_wrapped_text_only_when_marker_mod
 def test_run_document_processing_passes_generated_paragraph_registry_into_docx_restoration():
     runtime = _build_runtime_capture()
     preserve_calls = []
-    normalize_calls = []
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
@@ -603,14 +595,12 @@ def test_run_document_processing_passes_generated_paragraph_registry_into_docx_r
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: preserve_calls.append(generated_paragraph_registry) or docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: normalize_calls.append(generated_paragraph_registry) or docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
     assert result == "succeeded"
     expected_registry = [{"block_index": 1, "paragraph_id": "p0001", "text": "Очищенный блок"}]
     assert preserve_calls == [expected_registry]
-    assert normalize_calls == [expected_registry]
 
 
 def test_run_document_processing_registry_uses_logical_marker_for_merged_source_paragraph():
@@ -662,7 +652,6 @@ def test_run_document_processing_registry_uses_logical_marker_for_merged_source_
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -714,7 +703,6 @@ def test_run_document_processing_writes_marker_generation_diagnostics_artifact_o
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -769,7 +757,6 @@ def test_run_document_processing_writes_marker_registry_diagnostics_artifact_on_
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -822,7 +809,6 @@ def test_run_document_processing_stops_before_second_block():
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -866,7 +852,6 @@ def test_run_document_processing_end_to_end_produces_openable_docx_artifact(tmp_
         process_document_images=lambda **kwargs: image_assets,
         convert_markdown_to_docx_bytes=build_docx_from_markdown,
         preserve_source_paragraph_properties=__import__("formatting_transfer").preserve_source_paragraph_properties,
-        normalize_semantic_output_docx=__import__("formatting_transfer").normalize_semantic_output_docx,
         reinsert_inline_images=__import__("image_reinsertion").reinsert_inline_images,
     )
 

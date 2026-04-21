@@ -213,7 +213,7 @@ This section tracks implementation progress for the approved first slice only.
 3. `P4.3` text runtime defaults and output-font section-loader extraction inside `config.py:load_app_config()`: implemented in this slice while preserving env precedence and validation rules.
 4. `P4.4` model-registry resolution and legacy-warning emission extraction inside `config.py:load_app_config()`: implemented in this slice while preserving canonical-over-legacy precedence and warning behavior.
 5. `P4.5` `AppConfig` assembly/body-size SLO follow-up: implemented in this slice by moving clamp normalization into section helpers and routing final object assembly through a dedicated `_build_app_config()` helper.
-6. residual `P4` cleanup and any optional further reduction after helper extraction: not started by design.
+6. residual `P4` cleanup and any optional further reduction after helper extraction: implemented for the remaining high-value config seams; blanket size symmetry remains deferred by design.
 
 ## 6. Refactor Goals
 
@@ -227,12 +227,13 @@ This follow-up wave should aim for the following outcomes:
 
 ## 7. Definition Of Done And Size SLOs
 
-The following target sizes are not style preferences; they are the closure criteria for the main refactor slices unless a later approved note explicitly overrides them.
+The completed slices already met the highest-value public-surface SLOs. The remaining closure criteria for this workstream are intentionally narrower and are judged by support value rather than by blanket structural symmetry.
 
-1. `document.py` compatibility facade: target `<= 300` lines after P3.
-2. `load_app_config()` top-level body: target `<= 150` lines after P4.
-3. `run_document_processing()` entrypoint body: target `<= 80` lines after P2, excluding small dataclass definitions and tiny wrappers.
-4. Max production file size target: `<= 1000` lines after the relevant phase, except for `models.py` and any future config-schema file explicitly approved as an exception.
+1. `document.py` remains a compatibility facade and stays within the already-achieved `<= 300` line target.
+2. `load_app_config()` keeps its section-oriented top-level structure and stays within the already-achieved P4 body-size target.
+3. `run_document_processing()` keeps its thin public-entrypoint shape and phase-oriented orchestration contract.
+4. Further size reduction in large production modules is a guided follow-up objective, not a hard closure gate by itself; the current post-follow-up baseline is approximately `document_pipeline.py` 922 lines, `config.py` 952 lines, `processing_runtime.py` 928 lines, `app.py` 871 lines, `state.py` 812 lines, and `document.py` 269 lines.
+5. No remaining refactor task should be pursued if it primarily improves architectural neatness without reducing support cost, ownership ambiguity, or runtime maintainability.
 
 ## 8. Non-Goals
 
@@ -246,7 +247,7 @@ This spec does not authorize the following:
 
 ## 9. Deferred And Explicitly Out Of Scope For This Wave
 
-The following hotspots are recognized but are not first-wave implementation targets under this spec unless they become direct dependencies of an approved slice.
+The following hotspots are recognized but are not required to close this workstream unless they become direct dependencies of a currently approved slice.
 
 1. `generation.py` is a real hotspot and should be treated as deferred, not ignored.
    Reason: prompt/retry behavior is high-risk and can be refactored after runtime/session and pipeline ownership are clearer.
@@ -260,12 +261,29 @@ The following hotspots are recognized but are not first-wave implementation targ
 4. `models.py` is intentionally out of scope for structural breakup in this wave.
    Reason: it is currently a stable single source of truth; changing it now would add churn without reducing the primary ownership hotspots.
 
-5. `tests/test_document_pipeline.py` and `tests/test_app.py` are acknowledged as future split candidates alongside `tests/test_document.py`.
-   Reason: test decomposition should follow production boundaries and not front-run them.
+5. Further test-surface decomposition and harness polishing are deferred unless needed for a concrete production-facing change.
+   Reason: the current project priority is architecture/runtime supportability, not continued test-surface symmetry work.
 
-## 10. Proposed Refactor Plan
+6. A fully typed `SessionStore` or equivalent repo-wide state abstraction is deferred.
+   Reason: the current `state.py` owner-helper boundary is sufficient for present support needs, and additional abstraction should be justified by concrete maintenance pain rather than by design neatness alone.
 
-The plan is intentionally staged to keep risk proportional to the architectural value of each slice.
+7. Remaining read-side cleanup for shared session-state keys is opportunistic rather than mandatory.
+   Reason: new writes must stay behind documented owners, but forcing immediate elimination of every remaining read-side exception would create churn disproportionate to current value.
+
+8. Repo-wide normalization to a blanket max production file size target is deferred.
+   Reason: size remains a useful signal, but forcing every large module below one threshold is no longer the closure standard for this workstream.
+
+## 10. Historical Plan And Narrowed Remaining Scope
+
+The phase descriptions below remain as the historical implementation plan and progress record for work already completed. They should not be read as a requirement to finish every originally proposed cleanup item before closing this workstream.
+
+The remaining active scope is intentionally limited to the highest-value architecture and maintainability work:
+
+1. residual cleanup in `config.py`, especially where additional low-risk loader-layer or helper extraction reduces maintenance cost without touching the startup/runtime contract;
+2. low-risk structural reduction in `document_pipeline.py`, especially where helper extraction or seam cleanup reduces support cost without redesigning orchestration semantics;
+3. opportunistic `state.py` ownership tightening only when touching the corresponding flow, not as a new standalone abstraction wave.
+
+Test-surface polish, blanket file-size normalization, and a full typed session-store abstraction are no longer active closure targets under this spec.
 
 ### P0. Baseline Cleanup And Contract Tightening
 
@@ -568,6 +586,8 @@ Rollback rule:
 
 Objective: align tests with the new module boundaries once production ownership is cleaner.
 
+Status note: this phase is now treated as opportunistic backlog rather than a mandatory closure track for the current workstream, except where a concrete production-facing change requires corresponding test movement.
+
 Tasks:
 
 1. Split `tests/test_document.py` by responsibility after the `document.py` decomposition boundary exists.
@@ -582,19 +602,17 @@ Regression gates:
 
 ## 11. Recommended Implementation Order
 
-1. P0 baseline cleanup and docs/hygiene correction.
-2. P1 session-state ownership slice.
-3. P2 pipeline phase decomposition.
-4. P3 `document.py` decomposition follow-up.
-5. P4 config loader refactor.
-6. P5 test and harness cleanup.
+1. Residual config-loader cleanup in `config.py`.
+2. Low-risk structural reduction in `document_pipeline.py`.
+3. Opportunistic ownership tightening in `state.py` only when touching the related flow.
+4. Test and validation surface cleanup only when required by a production-facing slice.
 
 This order is intentional:
 
-1. session ownership affects almost every user-facing run;
-2. pipeline decomposition reduces the blast radius before deeper document extraction changes;
-3. config refactor is valuable but less urgent than runtime and pipeline ownership;
-4. test splitting should follow production boundaries, not precede them.
+1. residual config cleanup now has the best ratio of support value to implementation risk;
+2. pipeline reduction remains valuable, but should continue only through low-risk extractions rather than through another broad decomposition campaign;
+3. state ownership should stay strict for new writes without forcing a new abstraction-first refactor;
+4. test splitting follows production needs and no longer stands as its own closure gate.
 
 ## 12. Review Verdict Summary
 
@@ -611,7 +629,19 @@ However, the review should not be used verbatim as an implementation brief becau
 
 No large-scale refactor should begin until a concrete implementation slice is chosen from this spec.
 
-Recommended first approved slice:
+The originally recommended first approved slice has already been completed and is kept below as historical context.
+
+Recommended current approved slice:
+
+1. residual `P4` cleanup in `config.py`, paired with any narrowly-scoped low-risk `document_pipeline.py` seam reduction that can be shipped without orchestration churn.
+
+Current slice guardrails:
+
+1. preserve startup behavior, config precedence, and warning semantics;
+2. avoid turning `document_pipeline.py` work into a second full-phase redesign;
+3. do not start a new standalone test-polish or state-abstraction track as part of this slice.
+
+Historical first approved slice:
 
 1. P0 baseline cleanup plus `P1a` session-state ownership tightening.
 
@@ -642,6 +672,8 @@ This section is updated during implementation of the first approved slice.
 10. Finished the recommendation-domain app split by moving the remaining recommendation integration coverage for summary notice rendering and pending widget-state application out of `tests/test_app.py` into `tests/test_app_recommendations.py`, leaving the main app test file focused on non-recommendation runtime and UI flows.
 11. Continued `P5.1` across two more small seams at once: moved restartable-outcome notice and oversized-upload guard coverage out of `tests/test_app.py` into `tests/test_app_restartable_state.py`, leaving the main app test file focused on broader non-restartable composition and runtime flows.
 12. Finished the remaining compare-panel extraction from the app catch-all by moving compare-all panel visibility/no-op coverage into `tests/test_compare_panel.py` and relocating flow-specific restartable helper coverage into `tests/test_application_flow.py`, so the leftover `tests/test_app.py` is no longer the home for module-specific helper behavior.
+13. Continued `P5.1` with a helper/runtime split: moved app-start logging, cleanup scheduling, ready-marker, and processing-control coverage out of `tests/test_app.py` into `tests/test_app_runtime.py`, and moved upload-token/preparation-marker helper checks into `tests/test_processing_runtime.py` where those helpers are actually owned.
+14. Continued `P5.1` again by moving preparation-summary assembly and preparation/main-flow orchestration coverage into `tests/test_app_preparation.py`, leaving `tests/test_app.py` as a much smaller residual surface for narrow app-only helper checks rather than a mixed catch-all.
 
 ### 2026-04-20 Progress
 
@@ -668,3 +700,51 @@ This section is updated during implementation of the first approved slice.
 21. Continued `P3` with shared XML ownership cleanup: source XML fingerprinting, drawing/image extraction forensics, and list-numbering XML resolution now live in `document_shared_xml.py`, while `document.py` keeps compatibility wrappers and existing XML primitives continue to come from `document_roles.py`.
 22. Finished the remaining `P3` extraction move by introducing `document_extraction.py` for DOCX archive validation, upload-byte reading, paragraph/image extraction, inline run rendering, and list metadata ownership; `document.py` was reduced from the historical monolith to a compact compatibility facade and no longer owns the heavy extraction logic.
 23. Closed the post-extraction compatibility regressions by restoring legacy monkeypatch seams in `document.py`, keeping the facade within the SLO at 162 lines while targeted verification passed for `tests/test_document.py`, `tests/test_document_extraction.py`, and `tests/test_document_structure_blocks.py`.
+
+### 2026-04-21 Review Reconciliation
+
+1. The 2026-04-21 implementation review is directionally correct on the main follow-up debt: current counts at review time confirmed `document.py` at 272 lines, `document_pipeline.py` at 2160 lines, and `config.py` at 1955 lines, so the targeted `P2`/`P3`/`P4` entrypoint SLOs were met but the general max-production-file-size SLO in section 7 was still not met for the pipeline and config modules.
+2. The review's `document.py` no-op alias finding is confirmed: `document.py` still contains `_xml_local_name = _xml_local_name`; treat this as a cleanup bug and remove or replace the accidental self-assignment.
+3. The review's unused-import finding is confirmed: `import lxml.etree as etree` is now unused in the facade and should be removed in the next cleanup slice.
+4. The review is correct that the current ownership matrix and enforcement test are narrower than the actual remaining session-state write surface, but one cited location was overstated: `app.py` line 119 is a raw read of `persisted_source_cleanup_done`, not a write.
+5. Confirmed raw writes outside `state.py` that remain undocumented by the current matrix include `app.py` writes for `persisted_source_cleanup_done`, `latest_preparation_summary`, and `app_start_logged`; `processing_runtime.py` writes for `restart_source`, `preparation_event_queue`, and `preparation_worker`; and `application_flow.py` writes for `completed_source`.
+6. Additional ownership gap not called out in the review: `application_flow.py` also writes `prepared_source_key` through the injected `session_state` parameter during preparation completion, so the gap is not limited to the keys listed in the first review draft.
+7. The enforcement-performance concern is confirmed in mechanism even if wall-clock time should not be frozen in this spec as a constant: `tests/test_session_state_ownership.py` previously repeated repository scanning and AST parsing across multiple assertions, so the test should be cached to one scan/parse pass before it becomes a wider architectural gate.
+8. Additional enforcement blind spot beyond the review text: the current regression test only protects `OWNED_KEYS`; keys such as `preparation_worker`, `preparation_event_queue`, `restart_source`, `completed_source`, `latest_preparation_summary`, `prepared_source_key`, `persisted_source_cleanup_done`, and `app_start_logged` remain outside the canonical inventory and therefore outside automated boundary enforcement.
+9. Additional follow-up debt confirmed by code inspection: `_sync_extraction_compatibility_overrides()` in `document.py` still rewires `document_extraction` module globals at runtime, so the compatibility monkeypatch seam must keep an explicit override inventory plus a dated removal target until facade-level monkeypatch callers are retired.
+10. Clarification for the progress log above: the earlier point-in-time note that `document.py` was at 162 lines should be treated as historical slice output only; the current post-follow-up facade still satisfies the `<= 300` SLO but now measures 272 lines.
+
+### 2026-04-21 Follow-up Completion
+
+1. Completed the confirmed facade cleanup items from the 2026-04-21 review: removed the accidental `document.py` self-assignment alias, removed the unused `lxml.etree` import, and added an explicit in-code sunset note on `_sync_extraction_compatibility_overrides()`.
+2. Expanded the session-state ownership contract in `docs/architecture/session_state_ownership_matrix_2026-04-20.md` to include app-start markers, preparation worker/event queue state, preparation summary state, prepared-source tracking, and restart/completed-source metadata.
+3. Closed the newly-documented direct write gaps by routing `app.py`, `processing_runtime.py`, and `application_flow.py` through `state.py` helpers for `app_start_logged`, `persisted_source_cleanup_done`, `latest_preparation_summary`, `preparation_worker`, `preparation_event_queue`, `restart_source`, `completed_source`, and `prepared_source_key`.
+4. Optimized `tests/test_session_state_ownership.py` by collapsing the previous double repository scan and double AST parse into a cached single candidate-file pass per test run, while also expanding enforcement coverage to the newly-owned key set and keeping the injected-session-state write guard in the same pass.
+5. This follow-up closes the three immediate review actions requested on 2026-04-21: confirmed facade cleanup, ownership-matrix/enforcement expansion, and ownership-test performance cleanup.
+
+### 2026-04-21 Continued Priority Slice
+
+1. Advanced `P2` again by extracting the late pipeline phases out of `document_pipeline.py` into `document_pipeline_late_phases.py`, reducing the main module's ownership scope while still leaving `document_pipeline.py` as a sizable orchestration and compatibility hub rather than a small facade.
+2. Advanced the residual `P4` cleanup by introducing `config_loader_layers.py` and moving `load_app_config()` section-orchestration into explicit loader-layer helpers for config file loading, optional-section parsing, and resolved-section assembly, while preserving the existing resolver functions and final `AppConfig` construction path.
+3. Tightened the session-state ownership boundary further by adding session-scoped getters in `state.py` and routing `application_flow.py` read-side ownership checks for `selected_source_token`, `restart_source`, `completed_source`, `prepared_source_key`, and `processing_outcome` through those helpers instead of injected raw `session_state.get(...)` calls.
+4. Expanded `tests/test_session_state_ownership.py` beyond raw `st.session_state` reads and injected writes so it now also fails on injected `session_state.get(...)` reads of owned keys, turning the `application_flow.py` cleanup into an enforced boundary rather than a style preference.
+5. This slice matches the current priority order: another material readability cut in the production pipeline hotspot, a clearer config loader layer without behavior drift, and a stricter session-state ownership boundary around preparation/restart flows; it should not be read as a claim that `document_pipeline.py` is now small.
+6. Continued the residual `P4` cleanup by moving the clamp-heavy final `AppConfig` field mapping out of `config.py` into `config_loader_layers.build_app_config_payload()`, leaving the production config module responsible for typed section resolvers plus the public `AppConfig` type rather than one large assembly body.
+7. Continued the low-risk `P2` seam reduction by introducing `document_pipeline_setup.py` for processing-run initialization and block-plan summary logging, leaving `document_pipeline.py` focused more narrowly on orchestration flow and block execution rather than mixed setup/detail logging.
+8. Continued the same `P2` seam reduction by moving processing emitters/context assembly, run-component wiring, and the top-level execute-flow into helper functions in `document_pipeline_setup.py`, leaving `document_pipeline.py` more clearly centered on block lifecycle, validation, and phase-specific behavior rather than generic orchestration glue.
+9. Continued the same low-risk `P2` reduction by moving block failure-handling branches into `document_pipeline_block_failures.py`, so `document_pipeline.py` now keeps thin delegating wrappers for invalid-job, generation-failure, output-rejection, and marker-registry failure paths instead of owning the full failure-body implementations inline.
+10. Continued the same low-risk `P2` reduction in a larger safe batch by moving processing-job parsing/coercion into `document_pipeline_job_parsing.py` and heading-only/output-validation heuristics into `document_pipeline_output_validation.py`, leaving `document_pipeline.py` with thin delegating wrappers for those support concerns instead of keeping the inline helper bodies.
+11. Continued the residual `P4` cleanup by moving paragraph-boundary, relation-normalization, structure-recognition, and structure-validation resolver bodies out of `config.py` into `config_structure_sections.py`, while keeping thin delegating wrappers in the main config module so config precedence, env names, and warning semantics remain unchanged.
+12. Continued the residual `P4` cleanup again by moving semantic-validation/runtime defaults, image-output settings, text runtime defaults, and output-font resolution out of `config.py` into `config_runtime_sections.py`, while keeping thin delegating wrappers in the main config module so load-time behavior, clamps, env precedence, and public `AppConfig` shape remain unchanged.
+13. Continued the residual `P2` reduction by moving the single-block happy-path helpers and the block-phase loop out of `document_pipeline.py` into `document_pipeline_block_execution.py`, while keeping thin delegating wrappers in the main pipeline module so stop/error behavior, marker handling, and the public `run_document_processing()` orchestration contract remain unchanged.
+14. Continued the same residual `P2` reduction by moving prompt-resolution glue, marker-diagnostics support helpers, the optional DOCX-restorer compatibility shim, and current-Markdown assembly out of `document_pipeline.py` into `document_pipeline_support.py`, while keeping thin delegating wrappers in the main pipeline module so helper injection seams and externally referenced compatibility helpers remain stable.
+15. Finished the residual high-value `P4` cleanup by moving model-registry resolution, runtime model access helpers, canonical-vs-legacy source selection, and legacy-warning/logging support out of `config.py` into `config_model_registry.py`, leaving the main config module closer to a public API plus section orchestration surface rather than the home of one last large registry island.
+16. Finished the residual high-value `P2` cleanup by moving document-pipeline protocol contracts, run-state/result dataclasses, and dependency-container construction out of `document_pipeline.py` into `document_pipeline_contracts.py`, leaving the main pipeline module centered more narrowly on orchestration wrappers and phase wiring instead of mixing contracts, containers, and execution flow in one file.
+17. Closed the remaining 2026-04-21 audit gaps: removed the expired `normalize_semantic_output_docx()` compatibility pass from production, validation, and test runtime surfaces; cached the session-state ownership enforcement scan to a single parse pass per run; and converted the extraction-facade monkeypatch seam into an explicit inventory-backed compatibility contract with a dated removal target.
+
+### 2026-04-21 Scope Narrowing Note
+
+1. The completed `P0` through `P4` slices and the documented 2026-04-21 follow-up work remain part of the canonical implementation record and are not candidates for removal from this spec.
+2. From this point onward, the active mandatory scope is narrowed to residual maintainability work in `config.py` plus low-risk structural reduction in `document_pipeline.py`.
+3. Further test-surface cleanup, blanket file-size normalization, and full session-state abstraction are retained only as deferred or opportunistic follow-up work unless a later approved slice reactivates them.
+4. This narrowing is intentional and reflects the current project priority: architecture/runtime supportability over architectural symmetry or additional cleanup for its own sake.

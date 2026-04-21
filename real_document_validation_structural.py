@@ -22,7 +22,7 @@ from document import (
     inspect_placeholder_integrity,
     summarize_boundary_normalization_metrics,
 )
-from formatting_transfer import normalize_semantic_output_docx, preserve_source_paragraph_properties
+from formatting_transfer import preserve_source_paragraph_properties
 from generation import convert_markdown_to_docx_bytes, ensure_pandoc_available
 from image_reinsertion import reinsert_inline_images
 from models import ParagraphBoundaryNormalizationReport
@@ -251,7 +251,6 @@ def _build_validation_processing_service(event_log: list[dict[str, object]]):
         detect_image_mime_type_fn=lambda *args, **kwargs: None,
         inspect_placeholder_integrity_fn=_inspect_placeholder_integrity_adapter,
         preserve_source_paragraph_properties_fn=_preserve_source_paragraph_properties_adapter,
-        normalize_semantic_output_docx_fn=_normalize_semantic_output_docx_adapter,
         reinsert_inline_images_fn=_reinsert_inline_images_adapter,
         run_document_processing_impl_fn=_run_document_processing_impl,
         present_error_fn=lambda code, exc, title, **context: f"{title}: {exc}",
@@ -610,18 +609,6 @@ def _preserve_source_paragraph_properties_adapter(
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
 ) -> bytes:
     return preserve_source_paragraph_properties(
-        docx_bytes,
-        cast(list[Any], list(paragraphs)),
-        generated_paragraph_registry=generated_paragraph_registry,
-    )
-
-
-def _normalize_semantic_output_docx_adapter(
-    docx_bytes: bytes,
-    paragraphs: Sequence[object],
-    generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
-) -> bytes:
-    return normalize_semantic_output_docx(
         docx_bytes,
         cast(list[Any], list(paragraphs)),
         generated_paragraph_registry=generated_paragraph_registry,

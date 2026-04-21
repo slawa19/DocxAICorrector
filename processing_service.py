@@ -5,7 +5,7 @@ from typing import Any, cast
 
 from config import get_client, load_system_prompt
 from document import inspect_placeholder_integrity
-from formatting_transfer import normalize_semantic_output_docx, preserve_source_paragraph_properties
+from formatting_transfer import preserve_source_paragraph_properties
 from image_reinsertion import reinsert_inline_images
 from document_pipeline import (
     ActivityEmitter,
@@ -19,7 +19,6 @@ from document_pipeline import (
     MarkdownToDocxConverter,
     ParagraphPropertiesPreserver,
     PlaceholderInspector,
-    SemanticDocxNormalizer,
     StateEmitter,
     StatusEmitter,
     StopPredicate,
@@ -65,7 +64,6 @@ class ProcessingServiceDependencies:
     detect_image_mime_type_fn: Callable[..., str | None]
     inspect_placeholder_integrity_fn: PlaceholderInspector
     preserve_source_paragraph_properties_fn: ParagraphPropertiesPreserver
-    normalize_semantic_output_docx_fn: SemanticDocxNormalizer
     reinsert_inline_images_fn: ImageReinserter
     run_document_processing_impl_fn: Callable[..., str]
     present_error_fn: ErrorPresenter
@@ -177,7 +175,6 @@ class ProcessingService:
             inspect_placeholder_integrity=deps.inspect_placeholder_integrity_fn,
             convert_markdown_to_docx_bytes=deps.convert_markdown_to_docx_bytes_fn,
             preserve_source_paragraph_properties=deps.preserve_source_paragraph_properties_fn,
-            normalize_semantic_output_docx=deps.normalize_semantic_output_docx_fn,
             reinsert_inline_images=deps.reinsert_inline_images_fn,
         )
 
@@ -336,13 +333,6 @@ def build_default_processing_service_dependencies() -> ProcessingServiceDependen
             generated_paragraph_registry=generated_paragraph_registry,
         )
 
-    def _normalize_semantic_output_docx(docx_bytes: bytes, paragraphs, generated_paragraph_registry=None) -> bytes:
-        return normalize_semantic_output_docx(
-            docx_bytes,
-            list(paragraphs),
-            generated_paragraph_registry=generated_paragraph_registry,
-        )
-
     def _reinsert_inline_images(docx_bytes: bytes, image_assets) -> bytes:
         return reinsert_inline_images(docx_bytes, list(image_assets))
 
@@ -378,7 +368,6 @@ def build_default_processing_service_dependencies() -> ProcessingServiceDependen
         detect_image_mime_type_fn=detect_image_mime_type,
         inspect_placeholder_integrity_fn=_inspect_placeholder_integrity,
         preserve_source_paragraph_properties_fn=_preserve_source_paragraph_properties,
-        normalize_semantic_output_docx_fn=_normalize_semantic_output_docx,
         reinsert_inline_images_fn=_reinsert_inline_images,
         run_document_processing_impl_fn=run_document_processing_impl,
         present_error_fn=_present_error,

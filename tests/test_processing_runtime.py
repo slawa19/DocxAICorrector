@@ -31,6 +31,58 @@ class SessionState(dict):
         self[name] = value
 
 
+class UploadedFileStub:
+    def __init__(self, name: str, content: bytes):
+        self.name = name
+        self.size = len(content)
+        self._content = content
+        self._position = 0
+
+    def read(self, size: int = -1) -> bytes:
+        if size < 0:
+            data = self._content[self._position :]
+            self._position = len(self._content)
+            return data
+        start = self._position
+        end = min(len(self._content), start + size)
+        self._position = end
+        return self._content[start:end]
+
+    def getvalue(self) -> bytes:
+        return self._content
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        if whence == 0:
+            self._position = max(0, offset)
+        elif whence == 1:
+            self._position = max(0, self._position + offset)
+        elif whence == 2:
+            self._position = max(0, len(self._content) + offset)
+        else:
+            raise ValueError("Unsupported whence")
+        self._position = min(self._position, len(self._content))
+        return self._position
+
+
+def test_build_uploaded_file_token_uses_name_size_and_content_hash():
+    token = processing_runtime.build_uploaded_file_token(UploadedFileStub("report.docx", b"abc"))
+
+    assert token == "report.docx:3:ba7816bf8f01cfea"
+
+
+def test_build_preparation_request_marker_includes_chunk_size():
+    marker = processing_runtime.build_preparation_request_marker(UploadedFileStub("report.docx", b"abc"), chunk_size=6000)
+
+    assert marker == "report.docx:3:ba7816bf8f01cfea:6000"
+
+
+def test_build_preparation_request_marker_uses_content_hash_for_same_name_same_size_files():
+    marker_one = processing_runtime.build_preparation_request_marker(UploadedFileStub("report.docx", b"abc"), chunk_size=6000)
+    marker_two = processing_runtime.build_preparation_request_marker(UploadedFileStub("report.docx", b"xyz"), chunk_size=6000)
+
+    assert marker_one != marker_two
+
+
 def test_drain_processing_events_applies_typed_runtime_events(monkeypatch):
     session_state = SessionState(
         processing_event_queue=queue.Queue(),

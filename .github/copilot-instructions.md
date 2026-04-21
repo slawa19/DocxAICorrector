@@ -36,6 +36,10 @@ Clarification for AI agents:
 - foreground agent shell output is also not the same thing as the user's visible VS Code terminal panel;
 - if the user explicitly wants to see the test run in the VS Code terminal, the final verification MUST use the existing VS Code tasks rather than agent-only shell capture or foreground tool terminals;
 - if an agent uses shell test runs for debugging, run exactly one selector per command and wait for its full output; do not chain multiple pytest invocations with `&&` or other collapsed command patterns that make the result partial or ambiguous;
+- if a `wsl.exe ... pytest ...` run returns only partial output, treat that first as a transport/capture failure, not as a completed pytest result;
+- do not report pass/fail from a truncated run; rerun the same scope or a narrower single selector until the output is complete enough to establish an exit status;
+- if a file-level selector still produces partial capture, narrow further to the most directly affected node selector instead of retrying a broader run;
+- when a direct WSL shell or an existing VS Code pytest task is available for the same selector, prefer that path over repeated retries through the same fragile bridge;
 - do not use background terminals for pytest verification, because that hides the live result stream from both the agent and the user;
 - log-file recovery, hidden reruns, and foreground agent shell runs may be used for debugging, but never as the final user-facing proof when the user asked for visible terminal output.
 - when using ad-hoc shell commands in WSL for debugging, verify the command exists first if availability is uncertain; avoid assuming helper utilities like `unzip` are installed.

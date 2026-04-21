@@ -20,7 +20,6 @@ from formatting_transfer import (
     _map_source_target_paragraphs,
     _apply_minimal_caption_formatting,
     _apply_minimal_image_formatting,
-    normalize_semantic_output_docx,
     preserve_source_paragraph_properties,
     restore_source_formatting,
 )
@@ -251,17 +250,6 @@ def test_unified_restoration_preserves_heading_styles():
     assert updated_doc.paragraphs[1].style.name == "Heading 2"
     assert updated_doc.paragraphs[2].style.name == "Heading 2"
     assert updated_doc.paragraphs[3].style.name in {"Body Text", "Normal"}
-
-
-def test_normalize_semantic_output_docx_is_noop():
-    document = Document()
-    paragraph = document.add_paragraph("Обычный текст")
-    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    buffer = BytesIO()
-    document.save(buffer)
-
-    docx_bytes = buffer.getvalue()
-    assert normalize_semantic_output_docx(docx_bytes, [ParagraphUnit(text="Обычный текст", role="body")]) == docx_bytes
 
 
 def test_mapping_accepts_split_heading_target_for_merged_source_paragraph():
@@ -1205,17 +1193,6 @@ def test_preserve_source_paragraph_properties_restores_numbering_for_mapped_plai
     assert num_id is not None
     assert _numbering_root_contains_num_id(updated_doc, num_id)
     assert _extract_numbering_ids(updated_doc.paragraphs[1]) == (None, None)
-
-
-def test_normalize_semantic_output_docx_remains_noop():
-    target_doc = Document()
-    paragraph = target_doc.add_paragraph("Обычный текст")
-    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    target_buffer = BytesIO()
-    target_doc.save(target_buffer)
-
-    docx_bytes = target_buffer.getvalue()
-    assert normalize_semantic_output_docx(docx_bytes, [ParagraphUnit(text="Обычный текст", role="body")]) == docx_bytes
 
 
 def test_caption_survives_extraction_markdown_and_preserve_after_image(tmp_path):

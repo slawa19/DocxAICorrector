@@ -3,8 +3,6 @@ import zipfile
 from io import BytesIO
 from pathlib import Path
 
-import lxml.etree as etree
-
 import document_extraction as _document_extraction
 from constants import (
     MAX_DOCX_ARCHIVE_SIZE_BYTES,
@@ -73,24 +71,34 @@ MANUAL_REVIEW_SAFE_LABEL = "safe"
 PARAGRAPH_BOUNDARY_REPORTS_DIR = Path(".run") / "paragraph_boundary_reports"
 RELATION_NORMALIZATION_REPORTS_DIR = Path(".run") / "relation_normalization_reports"
 PARAGRAPH_BOUNDARY_AI_REVIEW_DIR = Path(".run") / "paragraph_boundary_ai_review"
+EXTRACTION_COMPATIBILITY_OVERRIDE_DEADLINE = "2026-06-30"
+EXTRACTION_COMPATIBILITY_OVERRIDE_TARGETS = (
+    "MAX_DOCX_ARCHIVE_SIZE_BYTES",
+    "MAX_DOCX_COMPRESSION_RATIO",
+    "MAX_DOCX_ENTRY_COUNT",
+    "MAX_DOCX_UNCOMPRESSED_SIZE_BYTES",
+    "PARAGRAPH_BOUNDARY_REPORTS_DIR",
+    "RELATION_NORMALIZATION_REPORTS_DIR",
+    "PARAGRAPH_BOUNDARY_AI_REVIEW_DIR",
+    "read_uploaded_file_bytes",
+    "resolve_uploaded_filename",
+    "_validate_docx_archive",
+    "_read_uploaded_docx_bytes",
+    "_write_paragraph_boundary_report_artifact",
+    "_write_relation_normalization_report_artifact",
+    "_request_ai_review_recommendations",
+    "_run_paragraph_boundary_ai_review",
+)
 
 
 def _sync_extraction_compatibility_overrides() -> None:
-    _document_extraction.MAX_DOCX_ARCHIVE_SIZE_BYTES = MAX_DOCX_ARCHIVE_SIZE_BYTES
-    _document_extraction.MAX_DOCX_COMPRESSION_RATIO = MAX_DOCX_COMPRESSION_RATIO
-    _document_extraction.MAX_DOCX_ENTRY_COUNT = MAX_DOCX_ENTRY_COUNT
-    _document_extraction.MAX_DOCX_UNCOMPRESSED_SIZE_BYTES = MAX_DOCX_UNCOMPRESSED_SIZE_BYTES
-    _document_extraction.PARAGRAPH_BOUNDARY_REPORTS_DIR = PARAGRAPH_BOUNDARY_REPORTS_DIR
-    _document_extraction.RELATION_NORMALIZATION_REPORTS_DIR = RELATION_NORMALIZATION_REPORTS_DIR
-    _document_extraction.PARAGRAPH_BOUNDARY_AI_REVIEW_DIR = PARAGRAPH_BOUNDARY_AI_REVIEW_DIR
-    _document_extraction.read_uploaded_file_bytes = read_uploaded_file_bytes
-    _document_extraction.resolve_uploaded_filename = resolve_uploaded_filename
-    _document_extraction._validate_docx_archive = _validate_docx_archive
-    _document_extraction._read_uploaded_docx_bytes = _read_uploaded_docx_bytes
-    _document_extraction._write_paragraph_boundary_report_artifact = _write_paragraph_boundary_report_artifact
-    _document_extraction._write_relation_normalization_report_artifact = _write_relation_normalization_report_artifact
-    _document_extraction._request_ai_review_recommendations = _request_ai_review_recommendations
-    _document_extraction._run_paragraph_boundary_ai_review = _run_paragraph_boundary_ai_review
+    # Transitional compatibility seam: remove after facade-level monkeypatch targets
+    # are retired from callers and tests no later than EXTRACTION_COMPATIBILITY_OVERRIDE_DEADLINE.
+    override_map = _build_extraction_compatibility_overrides()
+    if tuple(override_map) != EXTRACTION_COMPATIBILITY_OVERRIDE_TARGETS:
+        raise RuntimeError("Extraction compatibility override inventory drifted; update the contract before changing the seam.")
+    for attribute_name, value in override_map.items():
+        setattr(_document_extraction, attribute_name, value)
 
 
 def _validate_docx_archive(source_bytes: bytes) -> None:
@@ -222,6 +230,26 @@ def _run_paragraph_boundary_ai_review(
     )
 
 
+def _build_extraction_compatibility_overrides() -> dict[str, object]:
+    return {
+        "MAX_DOCX_ARCHIVE_SIZE_BYTES": MAX_DOCX_ARCHIVE_SIZE_BYTES,
+        "MAX_DOCX_COMPRESSION_RATIO": MAX_DOCX_COMPRESSION_RATIO,
+        "MAX_DOCX_ENTRY_COUNT": MAX_DOCX_ENTRY_COUNT,
+        "MAX_DOCX_UNCOMPRESSED_SIZE_BYTES": MAX_DOCX_UNCOMPRESSED_SIZE_BYTES,
+        "PARAGRAPH_BOUNDARY_REPORTS_DIR": PARAGRAPH_BOUNDARY_REPORTS_DIR,
+        "RELATION_NORMALIZATION_REPORTS_DIR": RELATION_NORMALIZATION_REPORTS_DIR,
+        "PARAGRAPH_BOUNDARY_AI_REVIEW_DIR": PARAGRAPH_BOUNDARY_AI_REVIEW_DIR,
+        "read_uploaded_file_bytes": read_uploaded_file_bytes,
+        "resolve_uploaded_filename": resolve_uploaded_filename,
+        "_validate_docx_archive": _validate_docx_archive,
+        "_read_uploaded_docx_bytes": _read_uploaded_docx_bytes,
+        "_write_paragraph_boundary_report_artifact": _write_paragraph_boundary_report_artifact,
+        "_write_relation_normalization_report_artifact": _write_relation_normalization_report_artifact,
+        "_request_ai_review_recommendations": _request_ai_review_recommendations,
+        "_run_paragraph_boundary_ai_review": _run_paragraph_boundary_ai_review,
+    }
+
+
 def extract_document_content_from_docx(uploaded_file) -> tuple[list[ParagraphUnit], list[ImageAsset]]:
     _sync_extraction_compatibility_overrides()
     return _document_extraction.extract_document_content_from_docx(uploaded_file)
@@ -265,8 +293,5 @@ is_likely_caption_text = _is_likely_caption_text
 detect_explicit_list_kind = _detect_explicit_list_kind
 find_child_element = _find_child_element
 get_xml_attribute = _get_xml_attribute
-_xml_local_name = _xml_local_name
-_find_child_element = _find_child_element
-_promote_short_standalone_headings = _promote_short_standalone_headings
 _paragraph_has_strong_heading_format = paragraph_has_strong_heading_format
 _resolve_effective_paragraph_font_size = resolve_effective_paragraph_font_size

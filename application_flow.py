@@ -14,7 +14,16 @@ from processing_runtime import (
     resolve_uploaded_filename,
 )
 from restart_store import clear_restart_source, load_restart_source_bytes
-from state import set_selected_source_token
+from state import (
+    clear_completed_source,
+    get_completed_source,
+    get_prepared_source_key,
+    get_processing_outcome,
+    get_restart_source,
+    get_selected_source_token,
+    set_prepared_source_key,
+    set_selected_source_token,
+)
 from workflow_state import IdleViewState, derive_idle_view_state, has_restartable_outcome
 
 
@@ -122,16 +131,16 @@ class ResolvedPreparationUpload:
         return self.uploaded_payload.file_token
 
 def sync_selected_file_context(*, session_state, reset_run_state_fn, uploaded_file_token: str) -> None:
-    previous_token = session_state.get("selected_source_token", "")
+    previous_token = get_selected_source_token(session_state=session_state)
     if not previous_token or previous_token == uploaded_file_token:
-        set_selected_source_token(uploaded_file_token)
+        set_selected_source_token(uploaded_file_token, session_state=session_state)
         return
 
     reset_run_state_fn(keep_restart_source=False)
     for widget_key in ("sidebar_text_operation", "sidebar_source_language", "sidebar_target_language"):
         if widget_key in session_state:
             del session_state[widget_key]
-    set_selected_source_token(uploaded_file_token)
+    set_selected_source_token(uploaded_file_token, session_state=session_state)
 
 
 def get_cached_restart_file(
@@ -144,7 +153,7 @@ def get_cached_restart_file(
         load_restart_source_bytes_fn = load_restart_source_bytes
     if build_in_memory_uploaded_file_fn is None:
         build_in_memory_uploaded_file_fn = build_in_memory_uploaded_file
-    restart_source = session_state.get("restart_source")
+    restart_source = get_restart_source(session_state=session_state)
     if not isinstance(restart_source, dict):
         return None
     if not restart_source:
@@ -166,7 +175,7 @@ def get_cached_completed_file(
         build_in_memory_uploaded_file_fn = build_in_memory_uploaded_file
     if load_completed_source_bytes_fn is None:
         load_completed_source_bytes_fn = load_restart_source_bytes
-    completed_source = session_state.get("completed_source")
+    completed_source = get_completed_source(session_state=session_state)
     if not isinstance(completed_source, dict):
         return None
     if not completed_source:
@@ -179,17 +188,20 @@ def get_cached_completed_file(
 
 
 def should_log_document_prepared(*, session_state, prepared_source_key: str) -> bool:
-    return session_state.get("prepared_source_key", "") != prepared_source_key
+    return get_prepared_source_key(session_state=session_state) != prepared_source_key
 
 
 def consume_completed_source_if_used(*, session_state, uploaded_file_token: str) -> None:
-    completed_source = session_state.get("completed_source")
+    completed_source = get_completed_source(session_state=session_state)
     if not completed_source:
         return
     if str(completed_source.get("token", "")) != uploaded_file_token:
         return
-    clear_restart_source(completed_source)
-    session_state.completed_source = None
+    clear_completed_source(
+        completed_source=completed_source,
+        clear_restart_source_fn=clear_restart_source,
+        session_state=session_state,
+    )
 
 
 def _resolve_preparation_dependencies(
@@ -317,10 +329,10 @@ def has_restartable_source(
     *,
     session_state: SessionStateLike,
 ) -> bool:
-    restart_source = session_state.get("restart_source")
+    restart_source = get_restart_source(session_state=session_state)
     if not isinstance(restart_source, dict) or not restart_source:
         return False
-    if not has_restartable_outcome(session_state.get("processing_outcome")):
+    if not has_restartable_outcome(get_processing_outcome(session_state=session_state)):
         return False
     source_name = str(restart_source.get("filename", ""))
     storage_path = str(restart_source.get("storage_path", ""))
@@ -423,7 +435,7 @@ def prepare_run_context(
             **flatten_normalization_metrics(getattr(prepared_document, "normalization_report", None)),
             **flatten_relation_metrics(getattr(prepared_document, "relation_report", None)),
         )
-        session_state.prepared_source_key = prepared_document.prepared_source_key
+        set_prepared_source_key(prepared_document.prepared_source_key, session_state=session_state)
     emit_preparation_progress(
         progress_callback,
         stage="Документ подготовлен",

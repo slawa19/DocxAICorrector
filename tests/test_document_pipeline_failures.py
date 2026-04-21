@@ -93,7 +93,6 @@ def _run_processing(runtime, **overrides):
         "inspect_placeholder_integrity": _inspect_placeholder_integrity,
         "convert_markdown_to_docx_bytes": _convert_markdown_to_docx_bytes,
         "preserve_source_paragraph_properties": lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        "normalize_semantic_output_docx": lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         "reinsert_inline_images": _reinsert_inline_images,
         "write_ui_result_artifacts": lambda **kwargs: {"markdown_path": "/tmp/final.result.md", "docx_path": "/tmp/final.result.docx"},
     }
@@ -133,7 +132,6 @@ def test_run_document_processing_fails_on_empty_processing_plan():
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -191,7 +189,6 @@ def test_run_document_processing_fails_on_initialization_and_clears_stale_runtim
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -240,7 +237,6 @@ def test_run_document_processing_fails_when_process_document_images_raises():
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -290,7 +286,6 @@ def test_run_document_processing_fails_when_process_document_images_returns_none
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -333,7 +328,6 @@ def test_run_document_processing_fails_when_placeholder_integrity_check_raises()
         inspect_placeholder_integrity=lambda markdown_text, image_assets: (_ for _ in ()).throw(RuntimeError("placeholder integrity exploded")),
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -376,7 +370,6 @@ def test_run_document_processing_fails_on_invalid_job_shape():
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -425,7 +418,6 @@ def test_run_document_processing_fails_on_none_target_text_without_stringifying_
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -465,7 +457,6 @@ def test_run_document_processing_fails_on_missing_placeholder_status_entries():
         inspect_placeholder_integrity=lambda markdown_text, image_assets: {},
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -511,7 +502,6 @@ def test_run_document_processing_preserves_passthrough_image_block_without_opena
         inspect_placeholder_integrity=lambda markdown_text, image_assets: inspected_markdowns.append(markdown_text) or {asset.image_id: "ok" for asset in image_assets},
         convert_markdown_to_docx_bytes=lambda markdown_text: b"docx-bytes",
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -556,7 +546,6 @@ def test_run_document_processing_passthrough_only_does_not_require_system_prompt
         inspect_placeholder_integrity=lambda markdown_text, image_assets: {asset.image_id: "ok" for asset in image_assets},
         convert_markdown_to_docx_bytes=lambda markdown_text: b"docx-bytes",
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -600,7 +589,6 @@ def test_run_document_processing_detects_processed_block_count_mismatch():
         inspect_placeholder_integrity=_inspect_placeholder_integrity,
         convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
         preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
         reinsert_inline_images=_reinsert_inline_images,
     )
 
@@ -639,24 +627,6 @@ def test_run_document_processing_fails_when_preserve_source_paragraph_properties
     assert runtime["state"]["latest_markdown"] == "Обработанный блок"
     assert runtime["state"]["latest_docx_bytes"] is None
     assert runtime["state"]["last_error"] == "Ошибка сборки DOCX: preserve exploded"
-    assert runtime["finalize"][-1][0] == "Ошибка сборки DOCX"
-    assert runtime["activity"][-1] == "Ошибка на этапе сборки DOCX."
-    assert runtime["log"][-1]["status"] == "ERROR"
-
-
-def test_run_document_processing_fails_when_normalize_semantic_output_docx_raises():
-    runtime = _build_runtime_capture()
-
-    result = _run_processing(
-        runtime,
-        source_paragraphs=[ParagraphStub()],
-        normalize_semantic_output_docx=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: (_ for _ in ()).throw(RuntimeError("normalize exploded")),
-    )
-
-    assert result == "failed"
-    assert runtime["state"]["latest_markdown"] == "Обработанный блок"
-    assert runtime["state"]["latest_docx_bytes"] is None
-    assert runtime["state"]["last_error"] == "Ошибка сборки DOCX: normalize exploded"
     assert runtime["finalize"][-1][0] == "Ошибка сборки DOCX"
     assert runtime["activity"][-1] == "Ошибка на этапе сборки DOCX."
     assert runtime["log"][-1]["status"] == "ERROR"

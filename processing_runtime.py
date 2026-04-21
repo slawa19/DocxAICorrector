@@ -23,11 +23,16 @@ from state import (
     get_processing_event_queue,
     get_processing_stop_event,
     get_processing_worker,
+    get_preparation_event_queue,
+    get_preparation_worker,
     get_latest_source_name,
     get_latest_source_token,
+    get_restart_source,
     mark_preparation_started,
     request_processing_stop as request_processing_stop_via_state,
     reset_image_state,
+    set_preparation_runtime,
+    set_restart_source,
 )
 from runtime_events import (
     AppendImageLogEvent,
@@ -700,7 +705,7 @@ def drain_processing_events(*, set_processing_status, finalize_processing_status
 
 
 def drain_preparation_events(*, reset_run_state, set_processing_status, finalize_processing_status, push_activity) -> None:
-    event_queue = st.session_state.get("preparation_event_queue")
+    event_queue = get_preparation_event_queue()
     if event_queue is None:
         return
     while True:
@@ -743,7 +748,7 @@ def drain_preparation_events(*, reset_run_state, set_processing_status, finalize
 
 
 def preparation_worker_is_active() -> bool:
-    worker = st.session_state.get("preparation_worker")
+    worker = get_preparation_worker()
     return worker is not None and worker.is_alive()
 
 
@@ -776,19 +781,19 @@ def start_background_processing(
     source_language: str = "en",
     target_language: str = "ru",
 ) -> None:
-    previous_restart_source = st.session_state.get("restart_source")
+    previous_restart_source = get_restart_source()
     restart_session_id = str(st.session_state.get("restart_session_id", ""))
     reset_run_state(preserve_preparation=True)
     try:
-        st.session_state.restart_source = store_restart_source(
+        set_restart_source(store_restart_source(
             session_id=restart_session_id,
             source_name=uploaded_filename,
             source_token=uploaded_token,
             source_bytes=source_bytes,
             previous_restart_source=previous_restart_source,
-        )
+        ))
     except OSError as exc:
-        st.session_state.restart_source = None
+        set_restart_source(None)
         log_event(
             logging.WARNING,
             "restart_source_store_failed",
@@ -919,6 +924,5 @@ def start_background_preparation(
         runtime.emit(PreparationCompleteEvent(prepared_run_context=prepared_run_context, upload_marker=upload_marker))
 
     worker = threading.Thread(target=run_preparation, daemon=True, name="docx-preparation-worker")
-    st.session_state.preparation_event_queue = preparation_events
-    st.session_state.preparation_worker = worker
+    set_preparation_runtime(worker=worker, event_queue=preparation_events)
     worker.start()

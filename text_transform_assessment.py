@@ -135,7 +135,8 @@ def build_text_transform_warnings(
         )
 
     if (
-        source_language != "auto"
+        operation == "translate"
+        and source_language != "auto"
         and source_script is not None
         and dominant_script not in {"unknown", "mixed"}
         and source_script != dominant_script

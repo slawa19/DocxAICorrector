@@ -1,15 +1,17 @@
 # Translation Quality And Second Pass Spec
 
 Date: 2026-04-20
-Status: Proposed active specification
+Last updated against code: 2026-04-21
+Status: Active specification pending implementation on the post-refactor baseline
 Scope type: product behavior and pipeline quality improvement
 Primary inputs:
 
 - live UI translation run analysis for Mariana Mazzucato document on 2026-04-20
 - current translation prompts in `prompts/operation_translate.txt` and `prompts/system_prompt.txt`
-- current text pipeline in `document_pipeline.py`, `generation.py`, `processing_service.py`, `processing_runtime.py`
-- current UI controls in `ui.py`
+- current text pipeline in `document_pipeline.py`, `document_pipeline_support.py`, `document_pipeline_contracts.py`, `document_pipeline_setup.py`, `generation.py`, and `processing_service.py`
+- current UI controls in `ui.py` and `app.py`
 - current config surface in `config.py`
+- completed post-refactor baseline recorded in `docs/specs/CODEBASE_REFACTOR_FOLLOWUP_SPEC_2026-04-20.md`
 
 ## 1. Purpose
 
@@ -62,10 +64,11 @@ Current reality in code:
 1. `config.py` exposes `editorial_intensity_default` in `AppConfig` and reads it from file/env.
 2. `config.load_system_prompt()` accepts `editorial_intensity`, but the final prompt template currently ignores that parameter.
 3. `config.load_system_prompt()` is wrapped in `@lru_cache(maxsize=32)`, so once prompt composition starts using `editorial_intensity`, that value will correctly participate in the prompt cache key.
-4. `document_pipeline._resolve_system_prompt()` is the real call site that forwards kwargs into `load_system_prompt()` via signature introspection; it currently knows only about `operation`, `source_language`, and `target_language`.
-5. `generation.py` sends text requests with `temperature = 0.4`.
+4. `document_pipeline._resolve_system_prompt()` now exists mainly as a thin compatibility wrapper; the real signature-introspection helper lives in `document_pipeline_support.resolve_system_prompt()` and currently knows only about `operation`, `source_language`, and `target_language`.
+5. `generation.py` currently sends text requests with `temperature = 0.4`; this has been verified in code and should be re-checked during Slice 1 only if the implementation explicitly considers temperature as part of editorial-intensity behavior.
 6. Translation prompt examples are generic and do not include explicit anti-calque examples.
 7. `prompts/system_prompt.txt` currently has no placeholder for editorial-intensity-specific instructions.
+8. `document_pipeline_contracts.SystemPromptLoader` currently documents only `operation`, `source_language`, and `target_language`, so Slice 1 must update both the protocol and the many test doubles that currently use `lambda **_kw: "system"` or similar prompt-loader stubs.
 
 ### 5.2 UI reality
 
@@ -76,6 +79,7 @@ Current reality in UI:
 3. there is currently no user-visible control for editorial intensity or second pass;
 4. `ui.render_sidebar()` currently returns a strict annotated 8-tuple;
 5. `app._resolve_sidebar_settings()` explicitly accepts only the current 8-tuple contract or a legacy 5-tuple fallback used by older tests/mocks.
+6. the post-refactor test surface already locks this contract in `tests/test_ui.py` and `tests/test_app.py`, so any Slice 2 tuple expansion must update those tests in the same change-set.
 
 ### 5.3 Pipeline reality
 
@@ -88,6 +92,18 @@ Current reality in runtime:
 5. `processing_service.run_prepared_background_document()` is part of the active runtime/test surface and must stay aligned with any new per-run translation settings;
 6. `processing_completed` is currently a structured `log_event(...)` event, not a typed class in `runtime_events.py`;
 7. `ProcessingOutcome` remains a simple lifecycle enum with one running state; there is no existing typed multi-pass state machine.
+8. after the refactor, typed pipeline contracts live in `document_pipeline_contracts.py`, and `document_pipeline_setup.build_processing_context()` currently mirrors `processing_operation`, `source_language`, and `target_language` into `ProcessingContext`, but not `editorial_intensity` or any second-pass settings.
+
+### 5.4 Refactor-status relevance
+
+Current architectural status matters for this feature plan.
+
+Current reality after the completed refactor wave:
+
+1. the formerly blocking `P2` pipeline decomposition and `P4` config-loader decomposition are already implemented and recorded in `docs/specs/CODEBASE_REFACTOR_FOLLOWUP_SPEC_2026-04-20.md`;
+2. translation-quality work should therefore target the new stable seams instead of assuming pre-refactor hotspot files;
+3. Slice 1 is no longer waiting on architecture stabilization;
+4. Slice 2 still remains a broader cross-surface feature slice than Slice 1, but it no longer needs to be delayed merely because `document_pipeline.py` and `config.py` were previously mid-refactor.
 
 ## 6. Proposed Product Behavior
 
@@ -182,12 +198,19 @@ Behavior contract:
 2. `literary` explicitly prefers idiomatic, book-quality Russian phrasing while preserving meaning and structure;
 3. translation mode defaults to `literary` unless config says otherwise.
 
+Temperature rule for Slice 1:
+
+1. Slice 1 keeps generation temperature unchanged;
+2. `editorial_intensity` changes prompt behavior only, not sampling behavior;
+3. any future plan to vary temperature by editorial mode requires an explicit follow-up decision and verification pass, because that would be a separate risk/cost tradeoff rather than a prompt-only refinement.
+
 Implementation rules:
 
 1. add separate instruction fragments for editorial intensity rather than embedding everything in one monolithic template;
 2. compose them in `load_system_prompt()`;
 3. do not overload `operation_translate.txt` with all branching logic inline;
 4. add a dedicated placeholder such as `{editorial_intensity_instructions}` to `prompts/system_prompt.txt`, because the current template does not expose any insertion point for intensity-specific behavior.
+5. treat `app_config` as the source of truth for per-run translation settings, but use the post-refactor typed seam deliberately: if readability benefits, derive `editorial_intensity` into `ProcessingContext` inside `document_pipeline_setup.build_processing_context()` rather than threading ad hoc positional arguments through unrelated helpers.
 
 Recommended file shape:
 
@@ -227,14 +250,17 @@ Code changes:
 1. wire `editorial_intensity` through prompt assembly in `config.load_system_prompt()`;
 2. add explicit editorial-intensity prompt fragments;
 3. add `{editorial_intensity_instructions}` placeholder to `prompts/system_prompt.txt` and fill it from prompt assembly;
-4. update `document_pipeline._resolve_system_prompt()` so the actual pipeline call site can forward `editorial_intensity` when the target callable accepts it;
-5. use `app_config` as the simplest runtime parameter bag for first-pass `editorial_intensity`, mirroring the existing pattern for `processing_operation`, `source_language`, and `target_language`, instead of threading a new positional parameter through every intermediate signature unless a later refactor justifies it;
-6. strengthen `prompts/operation_translate.txt` with sharper anti-calque instructions;
-7. replace placeholder examples in `prompts/example_translate.txt` with concrete English-to-Russian examples showing:
+4. ensure the new editorial-intensity fragment files are format-safe for the current `str.format(...)` assembly path: they must either avoid raw braces entirely or escape them, and any intentional placeholders must match the values provided by prompt assembly such as `{source_language}` / `{target_language}`;
+5. update `document_pipeline_support.resolve_system_prompt()` and its `document_pipeline._resolve_system_prompt()` wrapper so the actual pipeline call site can forward `editorial_intensity` when the target callable accepts it;
+6. update `document_pipeline_contracts.SystemPromptLoader` to reflect the new optional `editorial_intensity` kwarg, and then update the affected prompt-loader test doubles in the pipeline test suite;
+7. use `app_config` as the canonical runtime parameter bag for first-pass `editorial_intensity`, mirroring the existing pattern for `processing_operation`, `source_language`, and `target_language`; if needed for readability, add a derived typed mirror in `ProcessingContext` via `document_pipeline_setup.build_processing_context()` instead of threading a new positional parameter through every intermediate helper signature;
+8. keep the post-refactor setup/contract split intact rather than pushing this feature logic back into one large orchestration function;
+9. strengthen `prompts/operation_translate.txt` with sharper anti-calque instructions;
+10. replace placeholder examples in `prompts/example_translate.txt` with concrete English-to-Russian examples showing:
    - literal-but-bad phrasing to avoid;
    - idiomatic literary Russian target phrasing to prefer;
    - preservation of facts and rhetorical force.
-8. document `@lru_cache` behavior in this slice as an intentional design fact: different `editorial_intensity` values are expected to produce distinct cached prompts.
+11. document `@lru_cache` behavior in this slice as an intentional design fact: different `editorial_intensity` values are expected to produce distinct cached prompts.
 
 Implementation notes:
 
@@ -247,12 +273,15 @@ Tests required:
 1. `tests/test_config.py`
    - verify `load_system_prompt()` output changes when `editorial_intensity` changes;
    - verify config/env parsing for `editorial_intensity_default` remains stable.
-2. `tests/test_document_pipeline.py` or `tests/test_processing_service.py`
+2. `tests/test_document_pipeline.py`
    - verify translation runs pass `editorial_intensity` into `_resolve_system_prompt()` / prompt resolution.
-3. prompt-shape tests
+3. pipeline-support contract touchpoints
+   - update any prompt-loader stubs impacted by the `SystemPromptLoader` protocol change, especially in `tests/test_document_pipeline.py`, `tests/test_document_pipeline_failures.py`, and `tests/test_document_pipeline_output_validation.py`.
+4. prompt-shape tests
    - verify selected prompt text contains the intended intensity fragment;
    - verify marker-preservation instructions remain present.
-4. cache-behavior test
+   - verify newly added editorial-intensity fragment files do not break prompt assembly through unescaped or unsupported `{...}` placeholders.
+5. cache-behavior test
    - verify distinct `editorial_intensity` values yield distinct prompt text without breaking cached reuse for identical inputs.
 
 Documentation required:
@@ -278,9 +307,10 @@ Code changes:
 2. add sidebar control in `ui.render_sidebar()` visible only in translate mode;
 3. expand the `render_sidebar()` tuple contract and update `app._resolve_sidebar_settings()` in the same change-set;
 4. update legacy tuple-based test mocks, especially in `tests/test_app.py`, that still return the older 5-tuple compatibility shape;
-5. pass the new per-run choice through `app.py`, `processing_runtime.py`, `processing_service.py`, `processing_service.run_prepared_background_document()`, and `document_pipeline.py`;
+5. pass the new per-run choice through `app.py`, `processing_service.py`, `processing_service.run_document_processing()`, `processing_service.run_processing_worker()`, `processing_service.run_prepared_background_document()`, and the post-refactor pipeline contracts/setup layer in `document_pipeline_contracts.py` and `document_pipeline_setup.py`;
 6. implement second-pass processing at the block level after successful translation output and before final markdown is committed as the block result;
 7. emit logging/state signals that make it inspectable when second pass was used.
+8. keep `app_config` as the source of truth for the new per-run setting, but decide explicitly whether `ProcessingContext` should mirror `translation_second_pass_enabled` for readability in block execution helpers.
 
 Recommended runtime fields and signals:
 
@@ -330,7 +360,9 @@ Tests required:
    - second pass is skipped in edit mode;
    - second pass output becomes final block markdown;
    - second-pass failure behavior is explicit and tested.
-5. `tests/test_config.py`
+5. pipeline-suite compatibility updates
+   - update any affected dependency builders or typed-contract fixtures if `ProcessingContext` or `SystemPromptLoader` signatures expand.
+6. `tests/test_config.py`
    - parse new config/env defaults correctly.
 
 Documentation required:
@@ -399,6 +431,7 @@ Reasoning:
 1. Slice 1 is cheaper, lower-risk, and likely to improve the main complaint directly;
 2. Slice 2 gives an explicit premium path without forcing higher cost on every run;
 3. model-tier escalation should be evidence-based after prompt and pipeline improvements are real.
+4. the earlier architectural reason to postpone translation-quality work has largely disappeared because the post-refactor pipeline/config seams are now already in place; implementation should use those seams rather than reopening the refactor.
 
 ## 13. Approval Gate
 
@@ -409,3 +442,9 @@ Implementation should proceed in this order:
 3. approve Slice 2 optional second-pass work if the quality delta still justifies the added complexity.
 
 If the user explicitly wants both implemented in one change-set anyway, the code should still be developed and reviewed in the internal order defined above: first-pass quality contract first, second-pass wiring second.
+
+Post-refactor execution note:
+
+1. both slices are now compatible with the implemented refactor baseline;
+2. Slice 1 remains the recommended first implementation because it is still narrower and lower-risk;
+3. Slice 2 no longer needs to wait for `P2`/`P4` stabilization, but it should still be reviewed as a broader cross-surface feature change rather than bundled casually into prompt-only work.

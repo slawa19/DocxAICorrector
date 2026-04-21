@@ -145,3 +145,19 @@ def test_build_text_transform_warnings_skips_translate_specific_warning_in_edit_
     )
 
     assert not any("Текст уже выглядит как текст на целевом языке" in warning for warning in warnings)
+
+
+def test_build_text_transform_warnings_skips_source_language_warning_in_edit_mode():
+    warnings = text_transform_assessment.build_text_transform_warnings(
+        operation="edit",
+        source_language="en",
+        target_language="ru",
+        assessment={
+            "dominant_language": "ru",
+            "dominant_script": "cyrillic",
+            "target_language_script_match": True,
+            "mixed_script_detected": False,
+        },
+    )
+
+    assert not any("язык оригинала" in warning for warning in warnings)
