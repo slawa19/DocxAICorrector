@@ -1,6 +1,9 @@
 import base64
+import zipfile
 from io import BytesIO
 from typing import Any, cast
+
+import pytest
 
 import document
 from docx import Document
@@ -505,6 +508,158 @@ def test_extract_document_content_from_docx_keeps_caption_style_after_image_even
     assert paragraphs[1].attached_to_asset_id == "img_001"
     assert paragraphs[1].heading_level is None
     assert build_document_text(paragraphs) == "[[DOCX_IMAGE_img_001]]\n\n**Рисунок 1 Образец подписи**"
+
+
+def test_validate_docx_archive_rejects_zip_slip_paths():
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("../evil.txt", "boom")
+
+    try:
+        document._validate_docx_archive(buffer.getvalue())
+    except RuntimeError as exc:
+        assert "подозрительные пути" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError for zip-slip path")
+
+
+def test_validate_docx_archive_rejects_oversized_archive_bytes(monkeypatch):
+    monkeypatch.setattr(document, "MAX_DOCX_ARCHIVE_SIZE_BYTES", 5)
+
+    try:
+        document._validate_docx_archive(b"123456")
+    except RuntimeError as exc:
+        assert "превышает допустимый размер архива" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError for oversized DOCX archive")
+
+
+def test_validate_docx_archive_rejects_bad_zip_payload():
+    try:
+        document._validate_docx_archive(b"not-a-zip")
+    except RuntimeError as exc:
+        assert "поврежденный или неподдерживаемый DOCX-архив" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError for invalid DOCX archive")
+
+
+def test_validate_docx_archive_rejects_empty_archive():
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w"):
+        pass
+
+    try:
+        document._validate_docx_archive(buffer.getvalue())
+    except RuntimeError as exc:
+        assert "пустой DOCX-архив" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError for empty DOCX archive")
+
+
+def test_validate_docx_archive_rejects_too_many_entries(monkeypatch):
+    monkeypatch.setattr(document, "MAX_DOCX_ENTRY_COUNT", 1)
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("word/document.xml", "<w:document/>")
+
+    try:
+        document._validate_docx_archive(buffer.getvalue())
+    except RuntimeError as exc:
+        assert "слишком много файлов" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError for excessive DOCX entry count")
+
+
+def test_validate_docx_archive_rejects_suspicious_compression_ratio(monkeypatch):
+    monkeypatch.setattr(document, "MAX_DOCX_COMPRESSION_RATIO", 1)
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", "A" * 2048)
+        archive.writestr("word/document.xml", "B" * 2048)
+
+    try:
+        document._validate_docx_archive(buffer.getvalue())
+    except RuntimeError as exc:
+        assert "подозрительно высокий коэффициент сжатия" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError for suspicious DOCX compression ratio")
+
+
+def test_validate_docx_archive_rejects_absolute_paths():
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("/word/document.xml", "boom")
+
+    try:
+        document._validate_docx_archive(buffer.getvalue())
+    except RuntimeError as exc:
+        assert "абсолютные пути" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError for absolute path in DOCX archive")
+
+
+def test_validate_docx_archive_rejects_missing_content_types():
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("word/document.xml", "<w:document/>")
+
+    try:
+        document._validate_docx_archive(buffer.getvalue())
+    except RuntimeError as exc:
+        assert "отсутствует [Content_Types].xml" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError for missing [Content_Types].xml")
+
+
+def test_extract_document_content_from_docx_rejects_suspicious_uncompressed_archive(monkeypatch):
+    monkeypatch.setattr(document, "MAX_DOCX_UNCOMPRESSED_SIZE_BYTES", 100)
+
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", "x" * 150)
+        archive.writestr("word/document.xml", "<w:document />")
+    buffer.seek(0)
+
+    try:
+        extract_document_content_from_docx(buffer)
+    except RuntimeError as exc:
+        assert "слишком велик после распаковки" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError for suspiciously large uncompressed DOCX archive")
+
+
+def test_read_uploaded_docx_bytes_preserves_original_cause(monkeypatch):
+    failing_error = ValueError("bad upload")
+    monkeypatch.setattr(document, "read_uploaded_file_bytes", lambda uploaded_file: (_ for _ in ()).throw(failing_error))
+
+    try:
+        document._read_uploaded_docx_bytes(object())
+    except ValueError as exc:
+        assert "Не удалось прочитать содержимое DOCX-файла" in str(exc)
+        assert exc.__cause__ is failing_error
+    else:
+        raise AssertionError("Expected ValueError when uploaded DOCX bytes cannot be read")
+
+
+def test_read_uploaded_docx_bytes_reuses_existing_docx_bytes_without_renormalizing(monkeypatch):
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, mode="w") as archive:
+        archive.writestr("word/document.xml", "<w:document />")
+    docx_bytes = buffer.getvalue()
+
+    monkeypatch.setattr(document, "read_uploaded_file_bytes", lambda uploaded_file: docx_bytes)
+    assert document._read_uploaded_docx_bytes(object()) == docx_bytes
+
+
+def test_read_uploaded_docx_bytes_rejects_non_normalized_non_docx_input(monkeypatch):
+    monkeypatch.setattr(document, "read_uploaded_file_bytes", lambda uploaded_file: b"legacy-binary")
+    monkeypatch.setattr(document, "resolve_uploaded_filename", lambda uploaded_file: "legacy.doc")
+
+    with pytest.raises(ValueError, match="Ожидался уже нормализованный DOCX-архив"):
+        document._read_uploaded_docx_bytes(object())
 
 
 def test_extract_document_content_from_docx_marks_caption_after_table():

@@ -634,6 +634,11 @@ This section is updated during implementation of the first approved slice.
 2. Moved semantic-block, relation-normalization, and marker-wrapping tests into `tests/test_document_structure_blocks.py` while keeping the remaining facade, extraction, formatting, and reinsertion coverage in `tests/test_document.py`.
 3. Kept the split intentionally narrow so production boundary work remains stable and pytest collection/import behavior stays easy to verify.
 4. Continued `P5.1` by moving image-reinsertion and delivery-payload coverage into `tests/test_image_reinsertion.py`, leaving `tests/test_document.py` focused on facade, extraction, archive-validation, and formatting-adjacent behavior.
+5. Continued `P5.1` again by moving DOCX archive-validation and upload-byte guard coverage into `tests/test_document_extraction.py`, further narrowing `tests/test_document.py` toward formatting and compatibility behavior only.
+6. Finished this `tests/test_document.py` decomposition wave by moving the remaining formatting, diagnostics-retention, and compatibility-formatting coverage into `tests/test_format_restoration.py` and deleting the empty catch-all file.
+7. Continued `P5.1` beyond the old document catch-all by splitting failure-path and validation-path coverage out of `tests/test_document_pipeline.py` into `tests/test_document_pipeline_failures.py`, leaving the original pipeline test file focused on happy-path, logging, marker, and end-to-end behavior.
+8. Continued `P5.1` inside the remaining pipeline surface by moving output-validation and heading-only acceptance coverage into `tests/test_document_pipeline_output_validation.py`, leaving `tests/test_document_pipeline.py` focused on happy-path, logging, marker, stop, and end-to-end behavior.
+9. Continued `P5.1` into the app-side test surface by moving recommendation auto-apply and notice-helper coverage out of `tests/test_app.py` into `tests/test_app_recommendations.py`, leaving `tests/test_app.py` focused on main-flow integration, preparation/runtime controls, restartable-state behavior, and compare-panel coverage.
 
 ### 2026-04-20 Progress
 
