@@ -1,4 +1,5 @@
 import queue
+import sys
 import subprocess
 
 import pytest
@@ -654,7 +655,7 @@ def test_legacy_doc_conversion_available_requires_pandoc_for_antiword_path(monke
         def get_pandoc_version():
             raise OSError("pandoc missing")
 
-    monkeypatch.setitem(processing_runtime.legacy_doc_conversion_available.__globals__, "pypandoc", _PandocStub)
+    monkeypatch.setitem(sys.modules, "pypandoc", _PandocStub)
 
     assert processing_runtime.legacy_doc_conversion_available() is False
 
