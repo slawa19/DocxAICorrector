@@ -49,6 +49,7 @@ streamlit run app.py
 
 ```text
 Tasks: Run Task -> Run Full Pytest
+Tasks: Run Task -> Run Docker CI Parity Pytest
 Tasks: Run Task -> Run Current Test File
 Tasks: Run Task -> Run Current Test Node
 ```
@@ -88,10 +89,12 @@ WSL-driven tasks открывают отдельный терминал и ос�
 Минимальный pre-push ritual:
 
 1. `Tasks: Run Task -> Run Full Pytest`
-2. clean parity run в Docker `python:3.12`
+2. `Tasks: Run Task -> Run Docker CI Parity Pytest`
 3. при изменениях вокруг legacy `.doc` или corpus validation: отдельный прогон `tests/test_real_document_validation_corpus.py`
 
-Parity run из WSL-корня репозитория:
+Предпочтительный user-visible parity path: `Tasks: Run Task -> Run Docker CI Parity Pytest`.
+
+Низкоуровневый fallback из WSL-корня репозитория:
 
 ```bash
 docker run --rm -v "$PWD":/src -w /src python:3.12 bash -lc '

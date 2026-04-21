@@ -140,6 +140,37 @@
 			"group": "test"
 		},
 		{
+			"label": "Run Docker CI Parity Pytest",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"docker run --rm -v \"$PWD\":/src -w /src python:3.12 bash -lc '\npython -m venv /tmp/docxai-venv &&\n. /tmp/docxai-venv/bin/activate &&\npython -m pip install --upgrade pip &&\npip install -r requirements.txt &&\npytest tests/ -q\n'"
+			],
+			"options": {
+				"shell": {
+					"executable": "wsl.exe",
+					"args": [
+						"-d",
+						"Debian",
+						"--cd",
+						"${workspaceFolder}",
+						"--"
+					]
+				}
+			},
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated",
+				"focus": true,
+				"clear": true,
+				"showReuseMessage": false,
+				"close": false
+			},
+			"group": "test"
+		},
+		{
 			"label": "Run Current Test File",
 			"type": "shell",
 			"command": "bash",

@@ -121,6 +121,8 @@ def run_structural_passthrough_validation(
     formatting_after = _snapshot_formatting_diagnostics_paths()
     formatting_paths = _collect_new_formatting_diagnostics_paths(formatting_before, formatting_after)
     formatting_diagnostics = _load_formatting_diagnostics_payloads(formatting_paths)
+    canonical_formatting_diagnostics = _select_canonical_formatting_diagnostics_payload(formatting_diagnostics)
+    canonical_formatting_payloads = [] if canonical_formatting_diagnostics is None else [canonical_formatting_diagnostics]
 
     runtime_state = _runtime_state(runtime)
     latest_docx_bytes = runtime_state.get("latest_docx_bytes")
@@ -154,11 +156,11 @@ def run_structural_passthrough_validation(
             ),
             "output_image_count": len(output_image_assets),
             "output_table_count": sum(1 for paragraph in output_paragraphs if paragraph.role == "table"),
-            "formatting_diagnostics_count": len(formatting_diagnostics),
-            "max_unmapped_source_paragraphs": _max_payload_length(formatting_diagnostics, "unmapped_source_ids"),
-            "max_unmapped_target_paragraphs": _max_payload_length(formatting_diagnostics, "unmapped_target_indexes"),
-            "accepted_merged_sources_count": _count_payload_items(formatting_diagnostics, "accepted_merged_sources"),
-            "max_accepted_merged_sources": _max_accepted_merged_sources(formatting_diagnostics),
+            "formatting_diagnostics_count": len(canonical_formatting_payloads),
+            "max_unmapped_source_paragraphs": _max_payload_length(canonical_formatting_payloads, "unmapped_source_ids"),
+            "max_unmapped_target_paragraphs": _max_payload_length(canonical_formatting_payloads, "unmapped_target_indexes"),
+            "accepted_merged_sources_count": _count_payload_items(canonical_formatting_payloads, "accepted_merged_sources"),
+            "max_accepted_merged_sources": _max_accepted_merged_sources(canonical_formatting_payloads),
             "relation_count": source_relation_report.total_relations,
             "rejected_relation_candidate_count": source_relation_report.rejected_candidate_count,
             "relation_counts": dict(source_relation_report.relation_counts),
@@ -432,6 +434,14 @@ def _load_formatting_diagnostics_payloads(artifact_paths: Sequence[str]) -> list
         if isinstance(payload, dict):
             payloads.append(payload)
     return payloads
+
+
+def _select_canonical_formatting_diagnostics_payload(
+    payloads: Sequence[Mapping[str, object]],
+) -> Mapping[str, object] | None:
+    if not payloads:
+        return None
+    return payloads[-1]
 
 
 def _max_payload_length(payloads: Sequence[Mapping[str, object]], key: str) -> int:

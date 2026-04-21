@@ -33,10 +33,12 @@
 ### Recommended Pre-Push Ritual
 
 1. Быстрый локальный прогон в WSL через `Run Full Pytest`.
-2. Отдельный parity run в Docker `python:3.12` с чистым venv.
+2. Отдельный parity run через VS Code task `Run Docker CI Parity Pytest`.
 3. Если менялись legacy `.doc`, corpus validation, real-document extraction или runtime normalization paths, отдельно гоняйте `tests/test_real_document_validation_corpus.py` в том же clean environment.
 
 ### Minimal CI-Parity Checks
+
+Предпочтительный user-visible path: `Tasks: Run Task -> Run Docker CI Parity Pytest`.
 
 Из корня репозитория внутри WSL:
 

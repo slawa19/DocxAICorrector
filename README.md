@@ -429,6 +429,7 @@ Prompt registry для изображений хранится в `prompts/image
 Через VS Code tasks:
 
 - `Tasks: Run Task -> Run Full Pytest`
+- `Tasks: Run Task -> Run Docker CI Parity Pytest`
 - `Tasks: Run Task -> Run Current Test File`
 - `Tasks: Run Task -> Run Current Test Node`
 
