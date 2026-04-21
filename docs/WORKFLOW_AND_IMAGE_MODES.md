@@ -22,6 +22,58 @@
 - Официальные PowerShell wrappers: `scripts/start-project.ps1`, `scripts/stop-project.ps1`, `scripts/status-project.ps1`, `scripts/tail-streamlit-log.ps1`.
 - Вся command logic живёт в `scripts/project-control-wsl.sh` и `scripts/test.sh`; lifecycle wrappers и tasks не должны дублировать raw streamlit or pytest command chains.
 
+## CI Parity Debugging Contract
+
+- Локальный WSL `.venv` остаётся source of truth для обычной разработки, но сам по себе не доказывает CI-совместимость.
+- Для расследования CI-only regressions нужен отдельный clean-environment parity run на Python 3.12, потому что CI job `tests` выполняется именно на таком runtime.
+- Для багов вокруг legacy `.doc`, corpus validation и real-document extraction проверяйте не только Python packages, но и системные бинарники: `soffice`, `antiword`, `pandoc`.
+- Отсутствие этих бинарников на чистом runner может дать red CI даже при зелёном локальном WSL pytest, если локальная машина уже имеет нужный toolchain.
+- Real-document и corpus tests следует считать environment-sensitive: они должны либо работать в текущем runtime, либо явно проверять capability contract и пропускаться по нему, а не падать как будто это business-logic regression.
+
+### Recommended Pre-Push Ritual
+
+1. Быстрый локальный прогон в WSL через `Run Full Pytest`.
+2. Отдельный parity run в Docker `python:3.12` с чистым venv.
+3. Если менялись legacy `.doc`, corpus validation, real-document extraction или runtime normalization paths, отдельно гоняйте `tests/test_real_document_validation_corpus.py` в том же clean environment.
+
+### Minimal CI-Parity Checks
+
+Из корня репозитория внутри WSL:
+
+```bash
+docker run --rm -v "$PWD":/src -w /src python:3.12 bash -lc '
+	python -m venv /tmp/docxai-venv &&
+	. /tmp/docxai-venv/bin/activate &&
+	python -m pip install --upgrade pip &&
+	pip install -r requirements.txt &&
+	pytest tests/test_real_document_validation_corpus.py -vv -x --tb=short
+'
+```
+
+Полный parity suite:
+
+```bash
+docker run --rm -v "$PWD":/src -w /src python:3.12 bash -lc '
+	python -m venv /tmp/docxai-venv &&
+	. /tmp/docxai-venv/bin/activate &&
+	python -m pip install --upgrade pip &&
+	pip install -r requirements.txt &&
+	pytest tests/ -q
+'
+```
+
+### Capability Probes For Legacy DOC Paths
+
+Перед выводом, что проблема в коде, а не в runtime toolchain:
+
+```bash
+command -v soffice || command -v libreoffice
+command -v antiword
+pandoc --version
+```
+
+Если legacy `.doc` path зависит от conversion backend, а эти команды недоступны, локальный green run в уже настроенной WSL среде не гарантирует green CI на чистом Ubuntu runner.
+
 ## Upload Normalization Contract
 
 - `freeze_uploaded_file` и preparation path должны строиться на одном canonical normalized payload contract.

@@ -75,6 +75,56 @@ bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate &&
 
 WSL-driven tasks открывают отдельный терминал и оставляют его видимым после завершения.
 
+## CI-Parity Debugging
+
+Обычный WSL pytest нужен для быстрой обратной связи, но он не ловит все CI-only дефекты. Особенно это касается путей, завязанных на clean Ubuntu runtime, Python 3.12 и внешние системные конвертеры для legacy `.doc`.
+
+Что важно помнить:
+
+- локальный `.venv` полезен для разработки, но не считается доказательством CI-совместимости;
+- если менялись corpus tests, real-document extraction, legacy `.doc` normalization или runtime conversion path, нужен отдельный parity run;
+- для таких расследований проверяйте не только Python dependencies, но и `soffice`, `antiword`, `pandoc`.
+
+Минимальный pre-push ritual:
+
+1. `Tasks: Run Task -> Run Full Pytest`
+2. clean parity run в Docker `python:3.12`
+3. при изменениях вокруг legacy `.doc` или corpus validation: отдельный прогон `tests/test_real_document_validation_corpus.py`
+
+Parity run из WSL-корня репозитория:
+
+```bash
+docker run --rm -v "$PWD":/src -w /src python:3.12 bash -lc '
+	python -m venv /tmp/docxai-venv &&
+	. /tmp/docxai-venv/bin/activate &&
+	python -m pip install --upgrade pip &&
+	pip install -r requirements.txt &&
+	pytest tests/ -q
+'
+```
+
+Точечный parity run для legacy DOC corpus path:
+
+```bash
+docker run --rm -v "$PWD":/src -w /src python:3.12 bash -lc '
+	python -m venv /tmp/docxai-venv &&
+	. /tmp/docxai-venv/bin/activate &&
+	python -m pip install --upgrade pip &&
+	pip install -r requirements.txt &&
+	pytest tests/test_real_document_validation_corpus.py -vv -x --tb=short
+'
+```
+
+Быстрые capability checks для legacy `.doc` conversion path:
+
+```bash
+command -v soffice || command -v libreoffice
+command -v antiword
+pandoc --version
+```
+
+Если clean Python 3.12 container и локальная WSL `.venv` расходятся по результату, приоритет для отладки CI имеет clean parity run.
+
 ## Real Document Validation
 
 Канонический пользовательский путь:

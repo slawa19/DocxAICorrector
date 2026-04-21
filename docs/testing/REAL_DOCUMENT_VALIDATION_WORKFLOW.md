@@ -109,6 +109,38 @@ bash scripts/test.sh tests/test_real_document_structure_recognition_integration.
 - The validator now self-bootstraps the repository root into `sys.path`, but the canonical runtime remains WSL `.venv`.
 - Legacy `.doc` validation requires either LibreOffice (`soffice`) or the fallback pair `antiword` + `pandoc` inside WSL.
 
+## CI-Parity Notes For Corpus Debugging
+
+`religion-wealth-core` intentionally points at an original legacy `.doc` source, so this profile exercises the real conversion boundary instead of a pre-normalized `.docx` shortcut.
+
+Consequences for debugging:
+
+- green local pytest in a developer WSL environment does not automatically prove green CI;
+- CI may fail only because a clean Ubuntu runner lacks `soffice` or `antiword` + `pandoc`;
+- extraction-tier and structural-tier corpus tests for legacy `.doc` should be treated as capability-sensitive, not as pure business-logic tests.
+
+When a CI run fails on corpus extraction or structural passthrough for a legacy `.doc` profile, check capability first:
+
+```bash
+command -v soffice || command -v libreoffice
+command -v antiword
+pandoc --version
+```
+
+If you need CI-parity reproduction, prefer a clean Python 3.12 container:
+
+```bash
+docker run --rm -v "$PWD":/src -w /src python:3.12 bash -lc '
+	python -m venv /tmp/docxai-venv &&
+	. /tmp/docxai-venv/bin/activate &&
+	python -m pip install --upgrade pip &&
+	pip install -r requirements.txt &&
+	pytest tests/test_real_document_validation_corpus.py -vv -x --tb=short
+'
+```
+
+Use this parity path before concluding that a regression came from Python code. For this class of failures, the missing dependency is often the conversion toolchain rather than the extraction logic itself.
+
 ## Artifact Layout
 
 Each validation run now gets a unique run directory:
