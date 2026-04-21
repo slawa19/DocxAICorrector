@@ -455,8 +455,14 @@ Operational-уточнение для visual debugging:
 
 - если нужно прогнать весь test suite, ИИ-агент должен использовать `bash scripts/test.sh tests/ -q` из WSL или task `Run Full Pytest`;
 - для file-level и node-level сценариев агент должен использовать `bash scripts/test.sh <target> -vv` или соответствующие `Run Current Test File` и `Run Current Test Node` tasks;
+- перед первым ручным test command агент обязан определить текущий shell через `uname` и `pwd`, а не угадывать его по умолчанию;
+- если shell уже Linux и рабочий каталог находится внутри `/mnt/d/www/projects/2025/DocxAICorrector`, агент обязан запускать `bash scripts/test.sh ...` напрямую и не вкладывать туда `wsl.exe`;
+- если shell не WSL, допустим только transport-path `wsl.exe -d Debian ...` до project runtime, причём как debug-layer, а не как финальный user-visible proof;
+- для одного расследования агент не должен держать несколько параллельных pytest run по одной и той же проблеме; один selector на один активный запуск, затем решение о сужении или расширении scope;
+- при CI-reproduction агент сначала подтверждает tested SHA failing run; если локальный worktree грязный или не совпадает с tested commit, нужно переключаться на clean worktree или Docker parity path до интерпретации результата;
 - нельзя полагаться на `.venv\Scripts\python.exe` как на источник истины, потому что этот репозиторий использует WSL-based virtualenv;
 - перед интерпретацией результатов нужно убедиться, что pytest видит корень проекта в `sys.path` и может импортировать `app.py`, `generation.py`, `restart_store.py` и остальные top-level модули.
+- shared typecheck config не должен требовать Windows-only virtualenv вроде `.venv-win`, если этот config используется Linux CI; editor-only interpreter bindings должны оставаться opt-in, а не ломать общий regression gate.
 
 Канонический запуск:
 

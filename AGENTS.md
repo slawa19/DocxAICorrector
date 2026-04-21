@@ -28,6 +28,16 @@ source .venv/bin/activate
 pytest tests/ -q
 ```
 
+## Перед первым ad-hoc запуском тестов
+
+- Сначала решите, нужен ли вообще shell-run: для финальной верификации в VS Code сначала предпочитайте existing tasks `Run Full Pytest`, `Run Current Test File`, `Run Current Test Node`.
+- Перед первым ручным test command обязательно определите текущий shell через `uname` и `pwd`, а не по предположению.
+- Если `uname` показывает Linux и рабочий каталог уже под `/mnt/d/www/projects/2025/DocxAICorrector`, вы уже внутри WSL runtime: запускайте `bash scripts/test.sh ...` напрямую.
+- Если shell показывает `MSYS_NT`, `MINGW64_NT`, Windows PowerShell или иной не-WSL runtime, используйте `wsl.exe -d Debian ...` только как transport layer до project WSL runtime.
+- Никогда не вкладывайте `wsl.exe` внутрь shell, который уже находится в WSL: это даёт ложные path/stdio проблемы и ломает диагностику.
+- Для одного расследования держите только один активный pytest run на один selector и дождитесь его окончания перед следующим запуском.
+- Для CI-parity сначала подтвердите SHA failing run. Если локальный worktree грязный или уже ушёл вперёд относительно tested commit, используйте clean worktree или готовый Docker CI-parity path прежде чем трактовать результат как репрезентативный.
+
 ## Финальная верификация для агентов
 
 - Для финальной верификации внутри VS Code предпочитайте user-visible task path, а не agent-side shell capture.
@@ -47,7 +57,7 @@ pytest tests/ -q
 
 ## КРИТИЧЕСКИ ВАЖНО: shell identity для Bash tool
 
-Bash tool (инструмент агента) по умолчанию запускает **MSYS/Git Bash**, а **не WSL bash**.
+Не предполагайте тип shell заранее: агентский terminal/tooling может оказаться **MSYS/Git Bash**, **PowerShell** или уже быть присоединён к **WSL bash**.
 
 Признаки MSYS shell (не WSL):
 - `uname` показывает `MSYS_NT-...` или `MINGW64_NT-...`
@@ -60,7 +70,15 @@ Bash tool (инструмент агента) по умолчанию запус
 - `/mnt/d/www/...` пути существуют
 - `.venv/bin/activate` и `pytest` работают корректно
 
-### Единственный корректный способ запустить тесты из Bash tool
+### Корректный способ запустить тесты после определения shell
+
+Если shell уже WSL:
+
+```bash
+bash scripts/test.sh tests/ -q
+```
+
+Если shell не WSL и нужен agent-side debug run:
 
 ```bash
 echo START && wsl.exe -d Debian bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate && pytest tests/ -q --tb=short 2>&1" && echo DONE
@@ -80,6 +98,7 @@ echo START && wsl.exe -d Debian bash -c "cd /mnt/d/www/projects/2025/DocxAICorre
 ```
 
 Обязательные правила:
+- Если `uname` уже показывает Linux и `pwd` уже под `/mnt/d/...`, не используйте `wsl.exe` повторно.
 - Всегда `wsl.exe`, не `wsl` (MSYS может не иметь `wsl` в PATH).
 - Всегда `echo START && ... && echo DONE` — без этого вывод теряется.
 - Всегда `2>&1` — stderr тоже буферизуется отдельно.
@@ -97,7 +116,7 @@ echo START && wsl.exe -d Debian bash -c "cd /mnt/d/www/projects/2025/DocxAICorre
 
 ## Надёжный вызов WSL из агентского терминала
 
-Агентский терминал по умолчанию — MSYS/Git Bash или PowerShell, **не WSL**.
+Этот раздел применяйте только если предыдущая проверка показала, что текущий shell ещё не WSL.
 
 ### Синтаксис вызова
 
@@ -122,6 +141,7 @@ echo START && wsl.exe -d Debian bash -c "cd /mnt/d/www/projects/2025/DocxAICorre
 - не расширяйте прогон до нового file-level/full-suite запуска ради "подтверждения";
 - переходите на более узкий одиночный selector;
 - при наличии подходящего existing task используйте его как финальный proof path вместо повторных agent-side rerun через тот же bridge.
+- не запускайте второй pytest run параллельно первому только чтобы "проверить ещё раз"; сначала дочитай и сузь текущий selector.
 
 ### Когда допустим PowerShell и как его вызывать правильно
 

@@ -34,8 +34,12 @@ Clarification for AI agents:
 
 - output seen only through agent-side tool capture is not the same thing as a visible VS Code terminal run;
 - foreground agent shell output is also not the same thing as the user's visible VS Code terminal panel;
+- before any ad-hoc shell test command, identify the current shell with `uname` and `pwd` instead of assuming it is WSL or Git Bash;
+- if the shell is already Linux inside `/mnt/d/www/projects/2025/DocxAICorrector`, run `bash scripts/test.sh ...` directly and do not nest `wsl.exe` inside that shell;
+- if the shell is MSYS/Git Bash or PowerShell, use `wsl.exe -d Debian ...` only as a transport wrapper into the project WSL runtime, and treat that path as debugging rather than final proof;
 - if the user explicitly wants to see the test run in the VS Code terminal, the final verification MUST use the existing VS Code tasks rather than agent-only shell capture or foreground tool terminals;
 - if an agent uses shell test runs for debugging, run exactly one selector per command and wait for its full output; do not chain multiple pytest invocations with `&&` or other collapsed command patterns that make the result partial or ambiguous;
+- do not start overlapping pytest runs for the same investigation in multiple terminals; keep one active selector, wait for completion, then narrow or broaden intentionally;
 - if a `wsl.exe ... pytest ...` run returns only partial output, treat that first as a transport/capture failure, not as a completed pytest result;
 - do not report pass/fail from a truncated run; rerun the same scope or a narrower single selector until the output is complete enough to establish an exit status;
 - if a file-level selector still produces partial capture, narrow further to the most directly affected node selector instead of retrying a broader run;
@@ -45,6 +49,8 @@ Clarification for AI agents:
 - when using ad-hoc shell commands in WSL for debugging, verify the command exists first if availability is uncertain; avoid assuming helper utilities like `unzip` are installed.
 - do not invoke Windows Python executables from WSL bash using mixed `d:/...` paths; prefer VS Code Python tools or a verified environment-native command path.
 - if a Python snippet or file inspection can be done with workspace Python tools, prefer that over cross-environment shell invocation.
+- when reproducing GitHub Actions, verify the failing run SHA first; if the local worktree is dirty or no longer matches that commit, use a clean worktree or the Docker CI-parity path before trusting the result.
+- do not hardcode a Windows-only virtualenv such as `.venv-win` in shared static-analysis config consumed by Linux CI; pass interpreter paths explicitly or keep editor-only environments opt-in.
 
 ## Project Lifecycle (app start/stop)
 
