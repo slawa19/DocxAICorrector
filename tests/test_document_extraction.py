@@ -175,6 +175,21 @@ def test_extract_document_content_from_docx_flattens_inline_break_wrapped_prose(
     )
 
 
+def test_extract_document_content_from_docx_drops_break_only_spacer_paragraphs():
+    doc = Document()
+    doc.add_paragraph("Before")
+    spacer = doc.add_paragraph()
+    spacer.add_run().add_break()
+    doc.add_paragraph("After")
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.text for paragraph in paragraphs] == ["Before", "After"]
+
+
 def test_extract_document_content_from_docx_splits_toc_like_inline_break_cluster_and_marks_toc_roles():
     doc = Document()
     doc.add_paragraph("Contents")
@@ -202,6 +217,46 @@ def test_extract_document_content_from_docx_splits_toc_like_inline_break_cluster
         "toc_entry",
         "toc_entry",
     ]
+
+
+def test_extract_document_content_from_docx_splits_compact_toc_run_clusters_without_explicit_breaks():
+    doc = Document()
+    doc.add_paragraph("Contents")
+    paragraph = doc.add_paragraph()
+    paragraph.add_run("Banks and Financial Markets Become Allies")
+    paragraph.add_run(" ")
+    paragraph.add_run("The Banking Problem")
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.text for paragraph in paragraphs] == [
+        "Contents",
+        "Banks and Financial Markets Become Allies",
+        "The Banking Problem",
+    ]
+    assert [paragraph.structural_role for paragraph in paragraphs] == [
+        "toc_header",
+        "toc_entry",
+        "toc_entry",
+    ]
+
+
+def test_extract_document_content_from_docx_keeps_regular_body_run_clusters_as_one_paragraph():
+    doc = Document()
+    paragraph = doc.add_paragraph()
+    paragraph.add_run("Market failures")
+    paragraph.add_run(" ")
+    paragraph.add_run("matter here")
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.text for paragraph in paragraphs] == ["Market failures matter here"]
 
 
 def test_extract_document_content_from_docx_inserts_image_placeholders(tmp_path):

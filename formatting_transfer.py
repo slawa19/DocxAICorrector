@@ -727,6 +727,7 @@ def apply_output_formatting(
         paragraphs,
         generated_paragraph_registry=generated_paragraph_registry,
     )
+    diagnostics["toc_format_restoration_decisions"] = _restore_toc_paragraph_properties_for_mapped_pairs(document, mapping_pairs)
     diagnostics["alignment_restoration_decisions"] = _restore_direct_paragraph_alignment_for_mapped_pairs(mapping_pairs)
     _restore_semantic_quote_formatting_for_mapped_pairs(mapping_pairs)
 
@@ -1092,6 +1093,50 @@ def _style_exists(document, style_name: str) -> bool:
     except KeyError:
         return False
     return True
+
+
+def _replace_paragraph_properties_from_xml(paragraph, paragraph_properties_xml: str) -> bool:
+    if not paragraph_properties_xml.strip():
+        return False
+
+    paragraph_properties = parse_xml(paragraph_properties_xml)
+    existing_properties = find_child_element(paragraph._element, "pPr")
+    if existing_properties is not None:
+        paragraph._element.remove(existing_properties)
+    paragraph._element.insert(0, paragraph_properties)
+    return True
+
+
+def _restore_toc_paragraph_properties_for_mapped_pairs(document, mapping_pairs: list[tuple[ParagraphUnit, Paragraph]]) -> list[dict[str, object]]:
+    decisions: list[dict[str, object]] = []
+    for source_paragraph, target_paragraph in mapping_pairs:
+        structural_role = str(getattr(source_paragraph, "structural_role", "") or "").strip().lower()
+        if structural_role not in {"toc_header", "toc_entry"}:
+            continue
+
+        decision = {
+            "paragraph_id": source_paragraph.paragraph_id,
+            "structural_role": structural_role,
+            "source_style_name": str(getattr(source_paragraph, "style_name", "") or "").strip() or None,
+            "target_style_name": _target_paragraph_style_name(target_paragraph),
+            "source_alignment": str(getattr(source_paragraph, "paragraph_alignment", "") or "").strip().lower() or None,
+            "source_preview": _paragraph_preview(source_paragraph.text),
+        }
+
+        paragraph_properties_xml = str(getattr(source_paragraph, "paragraph_properties_xml", "") or "")
+        if not paragraph_properties_xml:
+            decisions.append({**decision, "action": "skipped", "reason": "missing_source_paragraph_properties"})
+            continue
+
+        restored = _replace_paragraph_properties_from_xml(target_paragraph, paragraph_properties_xml)
+        if not restored:
+            decisions.append({**decision, "action": "skipped", "reason": "invalid_source_paragraph_properties"})
+            continue
+
+        if decision["source_style_name"] and _style_exists(document, cast(str, decision["source_style_name"])):
+            target_paragraph.style = document.styles[cast(str, decision["source_style_name"])]
+        decisions.append({**decision, "action": "restored", "reason": "copied_source_toc_paragraph_properties"})
+    return decisions
 
 
 def _set_direct_paragraph_alignment(paragraph, alignment_value: str | None) -> None:

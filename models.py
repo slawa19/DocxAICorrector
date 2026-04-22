@@ -47,6 +47,7 @@ class RawParagraph:
     raw_index: int
     text: str
     style_name: str
+    paragraph_properties_xml: str | None = None
     paragraph_alignment: str | None = None
     is_bold: bool = False
     is_italic: bool = False
@@ -131,6 +132,7 @@ class ParagraphUnit:
     role: str
     asset_id: str | None = None
     attached_to_asset_id: str | None = None
+    paragraph_properties_xml: str | None = None
     paragraph_alignment: str | None = None
     heading_level: int | None = None
     heading_source: str | None = None

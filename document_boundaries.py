@@ -97,12 +97,12 @@ def normalize_paragraph_boundaries(
             )
             effective_decision = decision
             if decision.decision == "merge" and decision.confidence == "medium" and mode != "high_and_medium":
-                effective_decision = ParagraphBoundaryDecision(
-                    left_raw_index=decision.left_raw_index,
-                    right_raw_index=decision.right_raw_index,
-                    decision="keep",
-                    confidence="medium",
-                    reasons=tuple((*decision.reasons, "medium_mode_disabled")),
+                effective_decision = _resolve_high_only_medium_boundary_decision(
+                    raw_blocks=raw_blocks,
+                    look_ahead=look_ahead,
+                    decision=decision,
+                    detect_explicit_list_kind=detect_explicit_list_kind,
+                    has_heading_text_signal=has_heading_text_signal,
                 )
             decisions.append(effective_decision)
             if effective_decision.decision != "merge":
@@ -130,6 +130,65 @@ def normalize_paragraph_boundaries(
         decisions=decisions,
     )
     return normalized_blocks, report
+
+
+def _resolve_high_only_medium_boundary_decision(
+    *,
+    raw_blocks: list[RawBlock],
+    look_ahead: int,
+    decision: ParagraphBoundaryDecision,
+    detect_explicit_list_kind,
+    has_heading_text_signal,
+) -> ParagraphBoundaryDecision:
+    if _should_promote_medium_chain_lead(
+        raw_blocks=raw_blocks,
+        look_ahead=look_ahead,
+        decision=decision,
+        detect_explicit_list_kind=detect_explicit_list_kind,
+        has_heading_text_signal=has_heading_text_signal,
+    ):
+        return ParagraphBoundaryDecision(
+            left_raw_index=decision.left_raw_index,
+            right_raw_index=decision.right_raw_index,
+            decision="merge",
+            confidence="medium",
+            reasons=tuple((*decision.reasons, "chain_continuation_supported")),
+        )
+    return ParagraphBoundaryDecision(
+        left_raw_index=decision.left_raw_index,
+        right_raw_index=decision.right_raw_index,
+        decision="keep",
+        confidence="medium",
+        reasons=tuple((*decision.reasons, "medium_mode_disabled")),
+    )
+
+
+def _should_promote_medium_chain_lead(
+    *,
+    raw_blocks: list[RawBlock],
+    look_ahead: int,
+    decision: ParagraphBoundaryDecision,
+    detect_explicit_list_kind,
+    has_heading_text_signal,
+) -> bool:
+    positive_reasons = set(decision.reasons)
+    if not {"same_body_style", "compatible_alignment", "left_not_terminal", "left_incomplete"}.issubset(positive_reasons):
+        return False
+    if look_ahead + 2 >= len(raw_blocks):
+        return False
+
+    middle_block = raw_blocks[look_ahead + 1]
+    following_block = raw_blocks[look_ahead + 2]
+    if not isinstance(middle_block, RawParagraph) or not isinstance(following_block, RawParagraph):
+        return False
+
+    next_decision = evaluate_paragraph_boundary(
+        middle_block,
+        following_block,
+        detect_explicit_list_kind=detect_explicit_list_kind,
+        has_heading_text_signal=has_heading_text_signal,
+    )
+    return next_decision.decision == "merge"
 
 
 def evaluate_paragraph_boundary(
@@ -226,6 +285,7 @@ def merge_raw_paragraph_group(group: list[RawParagraph], reasons: list[str], con
         raw_index=dominant.raw_index,
         text=merged_text,
         style_name=dominant.style_name,
+        paragraph_properties_xml=dominant.paragraph_properties_xml,
         paragraph_alignment=dominant.paragraph_alignment,
         is_bold=dominant.is_bold,
         is_italic=dominant.is_italic,

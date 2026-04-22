@@ -132,6 +132,35 @@ def test_high_confidence_merge_chain_collapses_three_adjacent_body_paragraphs():
     ]
 
 
+def test_high_only_promotes_medium_chain_lead_when_followed_by_mergeable_continuation(monkeypatch):
+    monkeypatch.setattr(
+        config,
+        "load_app_config",
+        lambda: {
+            "paragraph_boundary_normalization_enabled": True,
+            "paragraph_boundary_normalization_mode": "high_only",
+            "paragraph_boundary_normalization_save_debug_artifacts": False,
+        },
+    )
+    document = make_document()
+    document.add_paragraph("Почему она")
+    document.add_paragraph("Чаще всего просто считается")
+    document.add_paragraph("менее эффективной версией частного сектора?")
+
+    paragraphs, _, report = extract_document_content_with_boundary_report(_save_document(document))
+
+    assert len(paragraphs) == 1
+    assert paragraphs[0].text == "Почему она Чаще всего просто считается менее эффективной версией частного сектора?"
+    assert paragraphs[0].origin_raw_indexes == [0, 1, 2]
+    assert paragraphs[0].boundary_source == "normalized_merge"
+    assert paragraphs[0].boundary_confidence == "medium"
+    assert [(decision.left_raw_index, decision.right_raw_index, decision.decision, decision.confidence) for decision in report.decisions] == [
+        (0, 1, "merge", "medium"),
+        (1, 2, "merge", "high"),
+    ]
+    assert report.decisions[0].reasons[-1] == "chain_continuation_supported"
+
+
 def test_debug_artifact_report_writes_expected_path_and_payload(monkeypatch, tmp_path):
     reports_dir = tmp_path / "paragraph-boundary-reports"
     monkeypatch.setattr(document_module, "PARAGRAPH_BOUNDARY_REPORTS_DIR", reports_dir)

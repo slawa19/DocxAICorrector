@@ -24,6 +24,7 @@ from formatting_transfer import (
     _is_heading_like_source_paragraph,
     _is_short_non_heading_paragraph,
     _resolve_direct_alignment_restoration_decision,
+    apply_output_formatting,
     preserve_source_paragraph_properties,
     restore_source_formatting,
 )
@@ -520,6 +521,77 @@ def test_mapping_reports_medium_accepted_merged_sources_in_diagnostics():
             "source_text_preview": "Это важное наблюдение: Следующий шаг требует дополнительной проверки.",
         }
     ]
+
+
+def test_apply_output_formatting_restores_toc_paragraph_properties_from_source_mapping():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0000",
+            text="Содержание",
+            role="body",
+            structural_role="toc_header",
+            role_confidence="heuristic",
+            style_name="Normal",
+            paragraph_alignment="end",
+            paragraph_properties_xml=(
+                '<w:pPr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:pStyle w:val="Normal"/>'
+                '<w:spacing w:before="153" w:after="10" w:line="272" w:lineRule="exact"/>'
+                '<w:ind w:start="1519" w:end="0" w:hanging="0"/>'
+                '<w:jc w:val="end"/>'
+                '</w:pPr>'
+            ),
+        ),
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="Введение: создание и извлечение",
+            role="body",
+            structural_role="toc_entry",
+            role_confidence="heuristic",
+            style_name="Normal",
+            paragraph_properties_xml=(
+                '<w:pPr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:pStyle w:val="Normal"/>'
+                '<w:spacing w:before="281" w:after="10" w:line="272" w:lineRule="exact"/>'
+                '<w:ind w:start="1588" w:end="4878" w:hanging="0"/>'
+                '<w:jc w:val="end"/>'
+                '</w:pPr>'
+            ),
+        ),
+    ]
+    generated_registry = [
+        {"paragraph_id": "p0000", "text": "Содержание"},
+        {"paragraph_id": "p0001", "text": "Введение: создание и извлечение"},
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("Содержание", style="Body Text")
+    target_doc.add_paragraph("Введение: создание и извлечение", style="Body Text")
+    output = BytesIO()
+    target_doc.save(output)
+
+    restored_bytes = apply_output_formatting(
+        output.getvalue(),
+        source_paragraphs,
+        generated_paragraph_registry=generated_registry,
+        mismatch_event_name="test_mismatch",
+        mismatch_log_message="test mismatch",
+    )
+
+    restored_doc = Document(BytesIO(restored_bytes))
+    first = restored_doc.paragraphs[0]
+    second = restored_doc.paragraphs[1]
+
+    assert first.style is not None
+    assert second.style is not None
+    assert first.style.name == "Normal"
+    assert second.style.name == "Normal"
+    first_ppr = first._p.pPr
+    second_ppr = second._p.pPr
+    assert first_ppr is not None and first_ppr.jc is not None and first_ppr.jc.get(qn("w:val")) == "end"
+    assert second_ppr is not None and second_ppr.jc is not None and second_ppr.jc.get(qn("w:val")) == "end"
+    assert first_ppr.ind is not None and first_ppr.ind.get(qn("w:start")) == "1519"
+    assert second_ppr.ind is not None and second_ppr.ind.get(qn("w:end")) == "4878"
 
 
 def test_formatting_diagnostics_include_relation_metadata_and_registry_membership():

@@ -40,6 +40,7 @@ from document_roles import (
     extract_explicit_heading_level,
     find_child_element,
     get_xml_attribute,
+    has_heading_text_signal,
     infer_heuristic_heading_level,
     infer_role_confidence,
     is_caption_style,
@@ -295,6 +296,10 @@ def _build_raw_paragraph(paragraph, image_assets: list[ImageAsset], *, raw_index
     if role == "list" and list_metadata.get("_is_typographic_emdash_bullet"):
         role = "body"
         list_metadata = _empty_list_metadata()
+    if role == "body":
+        compact_toc_text = _build_compact_toc_run_cluster_text(paragraph)
+        if compact_toc_text is not None:
+            text = compact_toc_text
     asset_id = _extract_paragraph_asset_id(text, role=role)
     role_confidence = infer_role_confidence(
         role=role,
@@ -307,6 +312,7 @@ def _build_raw_paragraph(paragraph, image_assets: list[ImageAsset], *, raw_index
         raw_index=raw_index,
         text=text,
         style_name=style_name,
+        paragraph_properties_xml=_extract_paragraph_properties_xml(paragraph),
         paragraph_alignment=resolve_paragraph_alignment(paragraph),
         is_bold=paragraph_is_effectively_bold(paragraph),
         is_italic=paragraph_is_effectively_italic(paragraph),
@@ -348,6 +354,7 @@ def _build_logical_paragraph_units(raw_blocks: list[RawBlock]) -> list[Paragraph
                 text=block.text,
                 role=block.role_hint,
                 asset_id=_extract_paragraph_asset_id(block.text, role=block.role_hint),
+                paragraph_properties_xml=block.paragraph_properties_xml,
                 paragraph_alignment=block.paragraph_alignment,
                 heading_level=block.heading_level,
                 heading_source=block.heading_source,
@@ -399,6 +406,8 @@ def _normalize_inline_break_paragraphs(paragraphs: list[ParagraphUnit]) -> list[
             continue
 
         lines = _split_inline_break_lines(paragraph.text)
+        if not lines:
+            continue
         if len(lines) < 2:
             normalized.append(_copy_paragraph_unit(paragraph, text=_join_inline_break_lines(lines)))
             continue
@@ -432,6 +441,75 @@ def _copy_paragraph_unit(paragraph: ParagraphUnit, *, text: str) -> ParagraphUni
         origin_raw_indexes=list(paragraph.origin_raw_indexes),
         origin_raw_texts=list(paragraph.origin_raw_texts),
     )
+
+
+def _extract_paragraph_properties_xml(paragraph) -> str | None:
+    paragraph_properties = find_child_element(paragraph._element, "pPr")
+    if paragraph_properties is None:
+        return None
+    return paragraph_properties.xml
+
+
+def _build_compact_toc_run_cluster_text(paragraph) -> str | None:
+    segments = _extract_compact_run_clusters(paragraph)
+    if not _is_compact_toc_run_cluster(segments):
+        return None
+    return "<br/>".join(segments)
+
+
+def _extract_compact_run_clusters(paragraph) -> list[str]:
+    segments: list[str] = []
+    current_parts: list[str] = []
+
+    for child in paragraph._element:
+        if xml_local_name(child.tag) != "r":
+            continue
+        raw_text = _extract_run_text(child)
+        if not raw_text:
+            continue
+        if "<br/>" in raw_text or "\t" in raw_text:
+            return []
+        formatted_text = _apply_run_markdown(raw_text, child)
+        if not raw_text.strip():
+            if current_parts:
+                segment = "".join(current_parts).strip()
+                if segment:
+                    segments.append(segment)
+                current_parts = []
+            continue
+        current_parts.append(formatted_text)
+
+    if current_parts:
+        segment = "".join(current_parts).strip()
+        if segment:
+            segments.append(segment)
+
+    return segments
+
+
+def _is_compact_toc_run_cluster(segments: list[str]) -> bool:
+    if len(segments) < 2:
+        return False
+
+    normalized_segments = [segment.strip() for segment in segments if segment.strip()]
+    if len(normalized_segments) < 2:
+        return False
+    if not all(_is_toc_candidate_text(segment) for segment in normalized_segments):
+        return False
+
+    word_counts = [len(_TOC_CANDIDATE_WORD_PATTERN.findall(segment)) for segment in normalized_segments]
+    total_words = sum(word_counts)
+    if total_words > 14:
+        return False
+
+    if len(normalized_segments) == 2:
+        if min(word_counts) < 3:
+            return False
+        if not (any(count >= 4 for count in word_counts) or any(has_heading_text_signal(segment) for segment in normalized_segments)):
+            return False
+        return True
+
+    return all(count <= 5 for count in word_counts)
 
 
 def _should_expand_inline_break_paragraph(paragraph: ParagraphUnit, lines: list[str]) -> bool:
