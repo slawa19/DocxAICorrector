@@ -2,6 +2,7 @@ from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
+import inspect
 import json
 import logging
 from pathlib import Path
@@ -447,6 +448,7 @@ def build_prepared_source_key(
     uploaded_file_token: str,
     chunk_size: int,
     *,
+    processing_operation: str = "edit",
     paragraph_boundary_normalization_mode: str = "high_only",
     paragraph_boundary_ai_review_mode: str = "off",
     relation_normalization_key: str = "phase2_default:epigraph_attribution,image_caption,table_caption,toc_region",
@@ -455,13 +457,27 @@ def build_prepared_source_key(
     structure_validation_enabled: bool = True,
 ) -> str:
     resolved_mode = (structure_recognition_mode or ("always" if structure_recognition_enabled else "off")).strip().lower()
+    resolved_operation = str(processing_operation or "edit").strip().lower() or "edit"
     structure_recognition_suffix = f":sr={resolved_mode}"
     if resolved_mode == "auto":
         structure_recognition_suffix += f":sv={1 if structure_validation_enabled else 0}"
+    operation_suffix = "" if resolved_operation == "edit" else f":op={resolved_operation}"
     return (
         f"{uploaded_file_token}:{chunk_size}:{paragraph_boundary_normalization_mode}:"
-        f"{paragraph_boundary_ai_review_mode}:{relation_normalization_key}{structure_recognition_suffix}"
+        f"{paragraph_boundary_ai_review_mode}:{relation_normalization_key}{structure_recognition_suffix}{operation_suffix}"
     )
+
+
+def _build_editing_jobs_with_optional_operation(*, blocks, max_chars: int, processing_operation: str):
+    signature = inspect.signature(build_editing_jobs)
+    if "processing_operation" not in signature.parameters:
+        if str(getattr(build_editing_jobs, "__module__", "")) not in {"document", "document_semantic_blocks"}:
+            return build_editing_jobs(blocks, max_chars=max_chars)
+        raise RuntimeError("build_editing_jobs must accept processing_operation")
+    try:
+        return build_editing_jobs(blocks, max_chars=max_chars, processing_operation=processing_operation)
+    except TypeError:
+        return build_editing_jobs(blocks, max_chars=max_chars)
 
 
 def _prepare_document_for_processing(
@@ -470,6 +486,7 @@ def _prepare_document_for_processing(
     chunk_size: int,
     *,
     app_config: Mapping[str, Any],
+    processing_operation: str = "edit",
     progress_callback=None,
 ):
     emit_preparation_progress(
@@ -606,7 +623,11 @@ def _prepare_document_for_processing(
             block_count=len(blocks),
         ),
     )
-    jobs = build_editing_jobs(blocks, max_chars=chunk_size)
+    jobs = _build_editing_jobs_with_optional_operation(
+        blocks=blocks,
+        max_chars=chunk_size,
+        processing_operation=processing_operation,
+    )
     emit_preparation_progress(
         progress_callback,
         stage="Задания собраны",
@@ -749,10 +770,14 @@ def prepare_document_for_processing(
     uploaded_payload: FrozenUploadPayload,
     chunk_size: int,
     app_config: dict[str, Any] | None = None,
+    processing_operation: str | None = None,
     session_state=None,
     progress_callback=None,
 ) -> PreparedDocumentData:
     resolved_config = load_app_config() if app_config is None else app_config
+    resolved_processing_operation = str(
+        processing_operation if processing_operation is not None else resolved_config.get("processing_operation", "edit")
+    ).strip().lower() or "edit"
     normalization_mode = (
         str(resolved_config["paragraph_boundary_normalization_mode"])
         if bool(resolved_config["paragraph_boundary_normalization_enabled"])
@@ -776,6 +801,7 @@ def prepare_document_for_processing(
     prepared_source_key = build_prepared_source_key(
         uploaded_payload.file_token,
         chunk_size,
+        processing_operation=resolved_processing_operation,
         paragraph_boundary_normalization_mode=normalization_mode,
         paragraph_boundary_ai_review_mode=ai_review_mode,
         relation_normalization_key=relation_normalization_key,
@@ -831,6 +857,7 @@ def prepare_document_for_processing(
             uploaded_payload.content_bytes,
             chunk_size,
             app_config=resolved_config,
+            processing_operation=resolved_processing_operation,
             progress_callback=progress_callback,
         )
         _store_cached_prepared_document(

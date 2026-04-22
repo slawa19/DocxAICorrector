@@ -937,6 +937,11 @@ def load_system_prompt(
     if normalized_prompt_variant == "default":
         operation_prompt_path = _PROMPT_OPERATION_PATHS[normalized_operation]
         example_prompt_path = _PROMPT_EXAMPLE_PATHS[normalized_operation]
+    elif normalized_prompt_variant == "toc_translate":
+        if normalized_operation != "translate":
+            raise RuntimeError("prompt_variant toc_translate поддерживается только для translate")
+        operation_prompt_path = PROMPTS_DIR / "operation_toc_translate.txt"
+        example_prompt_path = PROMPTS_DIR / "example_toc_translate.txt"
     elif normalized_prompt_variant == "literary_polish":
         operation_prompt_path = PROMPTS_DIR / "operation_literary_polish.txt"
         example_prompt_path = PROMPTS_DIR / "example_literary_polish.txt"

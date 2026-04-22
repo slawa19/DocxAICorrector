@@ -777,7 +777,7 @@ def test_render_preparation_summary_places_secondary_stage_line_inside_info_bloc
     ui.render_preparation_summary(
         {
             "stage": "Документ подготовлен",
-            "secondary_stage_line": "После анализа файла приложение скорректировало текстовые настройки: режим: Литературное редактирование -> Перевод.",
+            "secondary_stage_line": "После анализа файла приложение скорректировало текстовые настройки: режим: изменено с Литературное редактирование на Перевод.",
             "detail": "Можно запускать обработку.",
             "file_size_bytes": 1024,
             "paragraph_count": 5,
@@ -792,7 +792,7 @@ def test_render_preparation_summary_places_secondary_stage_line_inside_info_bloc
     assert info_calls == ["Документ подготовлен"]
     assert writes == ["Можно запускать обработку."]
     assert any(
-        "После анализа файла приложение скорректировало текстовые настройки: режим: Литературное редактирование -> Перевод."
+        "После анализа файла приложение скорректировало текстовые настройки: режим: изменено с Литературное редактирование на Перевод."
         in text
         for text in captions
     )

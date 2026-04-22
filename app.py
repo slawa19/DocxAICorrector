@@ -337,7 +337,7 @@ def _describe_recommended_text_setting_changes(
             continue
         from_value = _text_setting_display_value(config=config, field=field, value=current_value)
         to_value = _text_setting_display_value(config=config, field=field, value=recommended_value)
-        changes.append(f"{field_labels[field]}: {from_value} -> {to_value}")
+        changes.append(f"{field_labels[field]}: изменено с {from_value} на {to_value}")
     return changes
 
 
@@ -579,7 +579,7 @@ def main() -> None:
     preparation_active = _preparation_worker_is_active()
     current_result = get_current_result_bundle()
 
-    if not processing_in_progress and current_result is None:
+    if current_result is None:
         render_intro_layout_styles()
 
     st.title("AI-редактор DOCX/DOC через Markdown")
@@ -734,6 +734,7 @@ def main() -> None:
                 chunk_size=chunk_size,
                 image_mode=image_mode,
                 keep_all_image_variants=keep_all_image_variants,
+                processing_operation=processing_operation,
                 session_state=st.session_state,
                 reset_run_state_fn=reset_run_state,
                 fail_critical_fn=fail_critical,

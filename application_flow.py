@@ -228,6 +228,7 @@ def _prepare_run_context_core(
     uploaded_file=None,
     uploaded_payload: FrozenUploadPayload | None = None,
     chunk_size: int,
+    processing_operation: str = "edit",
     app_config: dict[str, object] | None,
     session_state,
     progress_callback,
@@ -282,6 +283,7 @@ def _prepare_run_context_core(
         uploaded_payload=resolved_upload.uploaded_payload,
         chunk_size=chunk_size,
         app_config=app_config,
+        processing_operation=processing_operation,
         session_state=session_state,
         progress_callback=progress_callback,
     )
@@ -397,6 +399,7 @@ def prepare_run_context(
     chunk_size: int,
     image_mode: str,
     keep_all_image_variants: bool,
+    processing_operation: str = "edit",
     app_config: dict[str, object] | None = None,
     session_state,
     reset_run_state_fn,
@@ -409,6 +412,7 @@ def prepare_run_context(
     uploaded_filename, uploaded_file_bytes, uploaded_file_token, prepared_document, elapsed_seconds = _prepare_run_context_core(
         uploaded_file=uploaded_file,
         chunk_size=chunk_size,
+        processing_operation=processing_operation,
         app_config=app_config,
         session_state=session_state,
         progress_callback=progress_callback,

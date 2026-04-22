@@ -5,6 +5,7 @@ from docx import Document
 
 from config import ModelRegistry, TextModelConfig
 from models import ImageAsset, ImageVariantCandidate
+from models import DocumentBlock
 from models import ParagraphBoundaryNormalizationReport
 from models import ParagraphClassification, ParagraphUnit, StructureMap
 from models import StructureRecognitionSummary
@@ -120,6 +121,76 @@ def test_build_prepared_source_key_includes_auto_mode_and_validation_flag():
         structure_recognition_mode="auto",
         structure_validation_enabled=False,
     ) == "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:sr=auto:sv=0"
+
+
+def test_build_prepared_source_key_includes_translate_operation_suffix_when_not_default():
+    assert preparation.build_prepared_source_key(
+        "report.docx:10:hash",
+        6000,
+        processing_operation="translate",
+        paragraph_boundary_normalization_mode="high_only",
+    ) == "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:sr=off:op=translate"
+
+
+def test_prepare_document_for_processing_passes_processing_operation_to_job_builder(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(
+        preparation,
+        "extract_document_content_with_normalization_reports",
+        lambda uploaded_file: _build_extract_result([_build_paragraph(source_index=0, text="Contents")], [], None),
+    )
+    monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "Contents")
+    monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars, relations=None: ["block"])
+
+    def fake_build_editing_jobs(blocks, max_chars, processing_operation="edit"):
+        captured["processing_operation"] = processing_operation
+        return [{"target_text": "Contents", "target_chars": 8, "context_chars": 0}]
+
+    monkeypatch.setattr(preparation, "build_editing_jobs", fake_build_editing_jobs)
+
+    preparation.prepare_document_for_processing(
+        uploaded_payload=_build_uploaded_payload("report.docx", b"docx-bytes", "report.docx:10:hash"),
+        chunk_size=6000,
+        processing_operation="translate",
+        session_state={"preparation_cache": {}},
+    )
+
+    assert captured["processing_operation"] == "translate"
+
+
+def test_prepare_document_for_processing_keeps_toc_jobs_operation_aware_across_cache_entries(monkeypatch):
+    calls = {"count": 0}
+    session_state = {"preparation_cache": {}}
+    toc_paragraphs = [
+        ParagraphUnit(text="Contents", role="body", structural_role="toc_header", source_index=0),
+        ParagraphUnit(text="Chapter 1........ 12", role="body", structural_role="toc_entry", source_index=1),
+    ]
+
+    def fake_extract(uploaded_file):
+        calls["count"] += 1
+        return _build_extract_result(toc_paragraphs, [], None)
+
+    monkeypatch.setattr(preparation, "extract_document_content_with_normalization_reports", fake_extract)
+    monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "\n\n".join(paragraph.text for paragraph in paragraphs))
+    monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars, relations=None: [DocumentBlock(paragraphs=list(paragraphs))])
+
+    edit_result = preparation.prepare_document_for_processing(
+        uploaded_payload=_build_uploaded_payload("report.docx", b"docx-bytes", "report.docx:10:hash"),
+        chunk_size=6000,
+        processing_operation="edit",
+        session_state=session_state,
+    )
+    translate_result = preparation.prepare_document_for_processing(
+        uploaded_payload=_build_uploaded_payload("report.docx", b"docx-bytes", "report.docx:10:hash"),
+        chunk_size=6000,
+        processing_operation="translate",
+        session_state=session_state,
+    )
+
+    assert calls["count"] == 2
+    assert edit_result.jobs[0]["job_kind"] == "passthrough"
+    assert translate_result.jobs[0]["job_kind"] == "llm"
 
 
 def test_prepare_document_for_processing_cache_key_changes_with_ai_review_mode(monkeypatch):

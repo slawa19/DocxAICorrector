@@ -1,5 +1,6 @@
 import re
 import zipfile
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 from typing import cast
@@ -139,6 +140,9 @@ PARAGRAPH_BOUNDARY_REPORTS_DIR = Path(".run") / "paragraph_boundary_reports"
 RELATION_NORMALIZATION_REPORTS_DIR = Path(".run") / "relation_normalization_reports"
 PARAGRAPH_BOUNDARY_AI_REVIEW_DIR = Path(".run") / "paragraph_boundary_ai_review"
 _TYPOGRAPHIC_BULLET_CHARS = {"\u2014", "\u2013"}
+_INLINE_BREAK_PATTERN = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_TOC_HEADER_LINE_VALUES = {"contents", "содержание"}
+_TOC_CANDIDATE_WORD_PATTERN = re.compile(r"\w+(?:[-']\w+)*", re.UNICODE)
 
 
 def extract_paragraph_units_from_docx(uploaded_file) -> list[ParagraphUnit]:
@@ -172,6 +176,7 @@ def extract_document_content_with_normalization_reports(
     normalization_mode, save_boundary_debug_artifacts = _resolve_paragraph_boundary_normalization_settings()
     normalized_blocks, boundary_report = _normalize_paragraph_boundaries(raw_blocks, mode=normalization_mode)
     paragraphs = _build_logical_paragraph_units(normalized_blocks)
+    paragraphs = _normalize_inline_break_paragraphs(paragraphs)
     promote_short_standalone_headings(paragraphs)
     (
         relation_enabled,
@@ -384,6 +389,139 @@ def _build_logical_paragraph_units(raw_blocks: list[RawBlock]) -> list[Paragraph
         _assign_paragraph_identity(paragraph, len(paragraphs))
         paragraphs.append(paragraph)
     return paragraphs
+
+
+def _normalize_inline_break_paragraphs(paragraphs: list[ParagraphUnit]) -> list[ParagraphUnit]:
+    normalized: list[ParagraphUnit] = []
+    for paragraph in paragraphs:
+        if paragraph.role in {"image", "table"} or not _INLINE_BREAK_PATTERN.search(paragraph.text):
+            normalized.append(paragraph)
+            continue
+
+        lines = _split_inline_break_lines(paragraph.text)
+        if len(lines) < 2:
+            normalized.append(_copy_paragraph_unit(paragraph, text=_join_inline_break_lines(lines)))
+            continue
+
+        if _should_expand_inline_break_paragraph(paragraph, lines):
+            normalized.extend(_expand_inline_break_paragraph(paragraph, lines))
+            continue
+
+        normalized.append(_copy_paragraph_unit(paragraph, text=_join_inline_break_lines(lines)))
+
+    _annotate_toc_region_candidates(normalized)
+    for index, paragraph in enumerate(normalized):
+        _assign_paragraph_identity(paragraph, index)
+    return normalized
+
+
+def _split_inline_break_lines(text: str) -> list[str]:
+    return [part.strip() for part in _INLINE_BREAK_PATTERN.split(text) if part.strip()]
+
+
+def _join_inline_break_lines(lines: list[str]) -> str:
+    return " ".join(line.strip() for line in lines if line.strip())
+
+
+def _copy_paragraph_unit(paragraph: ParagraphUnit, *, text: str) -> ParagraphUnit:
+    return replace(
+        paragraph,
+        text=text,
+        paragraph_id="",
+        source_index=-1,
+        origin_raw_indexes=list(paragraph.origin_raw_indexes),
+        origin_raw_texts=list(paragraph.origin_raw_texts),
+    )
+
+
+def _should_expand_inline_break_paragraph(paragraph: ParagraphUnit, lines: list[str]) -> bool:
+    if paragraph.role not in {"body", "heading", "list"}:
+        return False
+    if len(lines) < 2:
+        return False
+    if _is_toc_header_line(lines[0]):
+        return sum(1 for line in lines[1:] if _is_toc_candidate_text(line)) >= 2
+    return len(lines) >= 2 and all(_is_toc_candidate_text(line) for line in lines)
+
+
+def _is_toc_header_line(text: str) -> bool:
+    return text.strip().lower() in _TOC_HEADER_LINE_VALUES
+
+
+def _is_toc_candidate_text(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if IMAGE_PLACEHOLDER_PATTERN.search(stripped):
+        return False
+    if stripped.startswith("<table"):
+        return False
+    if len(stripped) > 160:
+        return False
+    word_count = len(_TOC_CANDIDATE_WORD_PATTERN.findall(stripped))
+    if word_count == 0 or word_count > 16:
+        return False
+    if stripped.endswith((".", ";")):
+        return False
+    return True
+
+
+def _expand_inline_break_paragraph(paragraph: ParagraphUnit, lines: list[str]) -> list[ParagraphUnit]:
+    expanded: list[ParagraphUnit] = []
+    header_cluster = _is_toc_header_line(lines[0]) and len(lines) >= 3
+    for index, line in enumerate(lines):
+        clone = _copy_paragraph_unit(paragraph, text=line)
+        if header_cluster and index == 0:
+            clone.role = "body"
+            clone.structural_role = "toc_header"
+            clone.heading_level = None
+            clone.heading_source = None
+        elif header_cluster or _is_toc_candidate_text(line):
+            if clone.role == "heading" and clone.heading_source != "explicit":
+                clone.role = "body"
+                clone.heading_level = None
+                clone.heading_source = None
+            clone.structural_role = "toc_entry"
+        expanded.append(clone)
+    return expanded
+
+
+def _annotate_toc_region_candidates(paragraphs: list[ParagraphUnit]) -> None:
+    index = 0
+    while index < len(paragraphs):
+        paragraph = paragraphs[index]
+        if not _is_toc_header_line(paragraph.text):
+            index += 1
+            continue
+
+        look_ahead = index + 1
+        while look_ahead < len(paragraphs) and _is_toc_candidate_paragraph(paragraphs[look_ahead]):
+            look_ahead += 1
+
+        if look_ahead - index >= 3:
+            paragraph.role = "body"
+            paragraph.structural_role = "toc_header"
+            paragraph.heading_level = None
+            paragraph.heading_source = None
+            for toc_index in range(index + 1, look_ahead):
+                toc_paragraph = paragraphs[toc_index]
+                if toc_paragraph.role == "heading" and toc_paragraph.heading_source != "explicit":
+                    toc_paragraph.role = "body"
+                    toc_paragraph.heading_level = None
+                    toc_paragraph.heading_source = None
+                toc_paragraph.structural_role = "toc_entry"
+            index = look_ahead
+            continue
+
+        index += 1
+
+
+def _is_toc_candidate_paragraph(paragraph: ParagraphUnit) -> bool:
+    if paragraph.role in {"image", "table"}:
+        return False
+    if paragraph.attached_to_asset_id is not None:
+        return False
+    return _is_toc_candidate_text(paragraph.text)
 
 
 def _resolve_paragraph_boundary_normalization_settings() -> tuple[str, bool]:

@@ -2,6 +2,11 @@ from document_relations import build_paragraph_relations, resolve_effective_rela
 from models import DocumentBlock, ParagraphRelation, ParagraphUnit
 
 
+# Spec TOC/minimal-formatting 2026-04-21: a block becomes TOC-dominant at 70%+
+# TOC structural-role composition unless all paragraphs are TOC lines.
+TOC_DOMINANCE_THRESHOLD = 0.7
+
+
 def build_marker_wrapped_block_text(paragraphs: list[ParagraphUnit], *, paragraph_ids: list[str] | None = None) -> str:
     parts: list[str] = []
     for index, paragraph in enumerate(paragraphs):
@@ -164,7 +169,7 @@ def build_context_excerpt(blocks: list[DocumentBlock], block_index: int, limit_c
     return "\n\n".join(collected).strip()
 
 
-def build_editing_jobs(blocks: list[DocumentBlock], max_chars: int) -> list[dict[str, object]]:
+def build_editing_jobs(blocks: list[DocumentBlock], max_chars: int, processing_operation: str = "edit") -> list[dict[str, object]]:
     context_before_chars = max(600, min(1400, int(max_chars * 0.2)))
     context_after_chars = max(300, min(800, int(max_chars * 0.12)))
     jobs: list[dict[str, object]] = []
@@ -173,12 +178,20 @@ def build_editing_jobs(blocks: list[DocumentBlock], max_chars: int) -> list[dict
     for index, block in enumerate(blocks):
         context_before = build_context_excerpt(blocks, index, context_before_chars, reverse=True)
         context_after = build_context_excerpt(blocks, index, context_after_chars, reverse=False)
+        structural_roles = [_paragraph_structural_kind(paragraph) for paragraph in block.paragraphs]
+        paragraph_count = len(block.paragraphs)
+        toc_paragraph_count = sum(1 for role in structural_roles if role in {"toc_header", "toc_entry"})
+        toc_dominant = bool(paragraph_count) and (
+            toc_paragraph_count == paragraph_count
+            or (toc_paragraph_count / paragraph_count) >= TOC_DOMINANCE_THRESHOLD
+        )
+        normalized_operation = str(processing_operation or "edit").strip().lower() or "edit"
         job_kind = (
             "passthrough"
             if block.paragraphs
             and (
                 all(paragraph.role == "image" for paragraph in block.paragraphs)
-                or all(_is_toc_structural_role(paragraph) for paragraph in block.paragraphs)
+                or (normalized_operation != "translate" and all(_is_toc_structural_role(paragraph) for paragraph in block.paragraphs))
             )
             else "llm"
         )
@@ -192,6 +205,10 @@ def build_editing_jobs(blocks: list[DocumentBlock], max_chars: int) -> list[dict
                 "target_text": block.text,
                 "target_text_with_markers": build_marker_wrapped_block_text(block.paragraphs, paragraph_ids=paragraph_ids),
                 "paragraph_ids": paragraph_ids,
+                "structural_roles": structural_roles,
+                "toc_dominant": toc_dominant,
+                "toc_paragraph_count": toc_paragraph_count,
+                "paragraph_count": paragraph_count,
                 "context_before": context_before,
                 "context_after": context_after,
                 "target_chars": len(block.text),

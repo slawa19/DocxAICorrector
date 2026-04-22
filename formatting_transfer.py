@@ -40,6 +40,13 @@ from formatting_diagnostics_retention import get_formatting_diagnostics_dir, wri
 FORMATTING_DIAGNOSTICS_DIR = get_formatting_diagnostics_dir()
 MARKDOWN_HEADING_LINE_PATTERN = re.compile(r"^#{1,6}\s+\S")
 
+# Spec TOC/minimal-formatting 2026-04-21: centered direct alignment is allowed
+# only for narrow non-heading cases, with an explicit short-paragraph heuristic.
+CENTER_SHORT_NON_HEADING_MAX_CHARS = 90
+CENTER_SHORT_NON_HEADING_MAX_WORDS = 12
+ALLOWED_CENTERED_QUOTE_STRUCTURAL_ROLES = {"epigraph", "attribution", "dedication"}
+DISALLOWED_CENTER_SHORT_STRUCTURAL_ROLES = {"toc_header", "toc_entry", "heading", "caption"}
+
 
 def _paragraph_preview(text: str, *, limit: int = 120) -> str:
     normalized = re.sub(r"\s+", " ", text).strip()
@@ -720,7 +727,7 @@ def apply_output_formatting(
         paragraphs,
         generated_paragraph_registry=generated_paragraph_registry,
     )
-    _restore_direct_paragraph_alignment_for_mapped_pairs(mapping_pairs)
+    diagnostics["alignment_restoration_decisions"] = _restore_direct_paragraph_alignment_for_mapped_pairs(mapping_pairs)
     _restore_semantic_quote_formatting_for_mapped_pairs(mapping_pairs)
 
     mismatch_detected = bool(unmapped_source_ids or unmapped_target_indexes)
@@ -739,6 +746,8 @@ def apply_output_formatting(
     # whenever the AI added or removed even one paragraph in its output.
     diagnostics["list_restoration_decisions"] = _restore_list_numbering_for_mapped_paragraphs(document, mapping_pairs)
 
+    # Persisted diagnostics artifacts remain mismatch-only by contract; on the
+    # happy path, alignment decisions are still available in runtime logs.
     if mismatch_detected:
         artifact_path = _write_formatting_diagnostics_artifact("restore", diagnostics)
         log_event(
@@ -1098,11 +1107,104 @@ def _set_direct_paragraph_alignment(paragraph, alignment_value: str | None) -> N
     existing_alignment.set(qn("w:val"), alignment_value)
 
 
-def _restore_direct_paragraph_alignment_for_mapped_pairs(mapping_pairs: list[tuple[ParagraphUnit, Paragraph]]) -> None:
+def _target_paragraph_has_heading_style(paragraph) -> bool:
+    style = getattr(paragraph, "style", None)
+    style_name = str(getattr(style, "name", "") or "").strip().lower()
+    return style_name.startswith("heading ")
+
+
+def _target_paragraph_style_name(paragraph) -> str | None:
+    style = getattr(paragraph, "style", None)
+    style_name = str(getattr(style, "name", "") or "").strip()
+    return style_name or None
+
+
+def _is_heading_like_source_paragraph(source_paragraph: ParagraphUnit) -> bool:
+    source_role = str(getattr(source_paragraph, "role", "") or "").strip().lower()
+    structural_role = str(getattr(source_paragraph, "structural_role", "") or "").strip().lower()
+    return (
+        source_role == "heading"
+        or structural_role == "heading"
+        or getattr(source_paragraph, "heading_level", None) is not None
+        or bool(getattr(source_paragraph, "heading_source", None))
+    )
+
+
+def _is_allowlisted_centered_quote_paragraph(source_paragraph: ParagraphUnit) -> bool:
+    return str(getattr(source_paragraph, "structural_role", "") or "").strip().lower() in ALLOWED_CENTERED_QUOTE_STRUCTURAL_ROLES
+
+
+def _is_short_non_heading_paragraph(source_paragraph: ParagraphUnit) -> bool:
+    role = str(getattr(source_paragraph, "role", "") or "").strip().lower()
+    structural_role = str(getattr(source_paragraph, "structural_role", "") or "").strip().lower()
+    if role in {"heading", "list", "caption"}:
+        return False
+    if structural_role in DISALLOWED_CENTER_SHORT_STRUCTURAL_ROLES:
+        return False
+    if getattr(source_paragraph, "heading_level", None) is not None or getattr(source_paragraph, "heading_source", None):
+        return False
+    normalized = re.sub(r"\s+", " ", str(getattr(source_paragraph, "text", "") or "")).strip()
+    if not normalized:
+        return False
+    if len(normalized) > CENTER_SHORT_NON_HEADING_MAX_CHARS:
+        return False
+    words = [token for token in normalized.split(" ") if token]
+    return len(words) <= CENTER_SHORT_NON_HEADING_MAX_WORDS
+
+
+def _resolve_direct_alignment_restoration_decision(
+    source_paragraph: ParagraphUnit,
+    target_paragraph: Paragraph,
+) -> dict[str, object] | None:
+    alignment_value = str(source_paragraph.paragraph_alignment or "").strip().lower()
+    if not alignment_value:
+        return None
+    decision = {
+        "paragraph_id": source_paragraph.paragraph_id,
+        "source_alignment": alignment_value,
+        "target_style_name": _target_paragraph_style_name(target_paragraph),
+        "target_heading_level": _extract_target_heading_level(target_paragraph),
+        "source_role": str(getattr(source_paragraph, "role", "") or "").strip().lower(),
+        "source_structural_role": str(getattr(source_paragraph, "structural_role", "") or "").strip().lower(),
+        "source_preview": _paragraph_preview(source_paragraph.text),
+    }
+    if _is_heading_like_source_paragraph(source_paragraph):
+        return {**decision, "action": "skipped", "reason": "source_heading_semantics"}
+    if _target_paragraph_has_heading_style(target_paragraph):
+        return {**decision, "action": "skipped", "reason": "target_heading_style"}
+    if alignment_value != "center":
+        return {**decision, "action": "skipped", "reason": "unsupported_alignment_value"}
+    if str(getattr(source_paragraph, "role", "") or "").strip().lower() == "list":
+        return {**decision, "action": "skipped", "reason": "list_item_not_allowlisted"}
+    if _is_allowlisted_centered_quote_paragraph(source_paragraph):
+        return {**decision, "action": "restored", "reason": "center_quote_allowlisted"}
+    if not _is_short_non_heading_paragraph(source_paragraph):
+        return {**decision, "action": "skipped", "reason": "not_short_non_heading_paragraph"}
+    return {**decision, "action": "restored", "reason": "center_allowlisted"}
+
+
+def _restore_direct_paragraph_alignment_for_mapped_pairs(mapping_pairs: list[tuple[ParagraphUnit, Paragraph]]) -> list[dict[str, object]]:
+    decisions: list[dict[str, object]] = []
     for source_paragraph, target_paragraph in mapping_pairs:
-        if not source_paragraph.paragraph_alignment:
+        decision = _resolve_direct_alignment_restoration_decision(source_paragraph, target_paragraph)
+        if decision is None:
+            continue
+        decisions.append(decision)
+        if decision["action"] != "restored":
+            log_event(
+                logging.INFO,
+                "alignment_restoration_skipped",
+                "Пропущено восстановление direct alignment для абзаца.",
+                paragraph_id=decision.get("paragraph_id"),
+                source_alignment=decision.get("source_alignment"),
+                skip_reason=decision.get("reason"),
+                target_style_name=decision.get("target_style_name"),
+                target_heading_level=decision.get("target_heading_level"),
+                source_preview=decision.get("source_preview"),
+            )
             continue
         _set_direct_paragraph_alignment(target_paragraph, source_paragraph.paragraph_alignment)
+    return decisions
 
 
 def _restore_semantic_quote_formatting_for_mapped_pairs(mapping_pairs: list[tuple[ParagraphUnit, Paragraph]]) -> None:

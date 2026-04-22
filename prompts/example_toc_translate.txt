@@ -1,0 +1,33 @@
+Примеры перевода строк оглавления:
+
+Источник ({source_language}):
+Contents
+
+Предпочтительный вариант ({target_language}):
+Содержание
+
+Источник ({source_language}):
+Introduction: Making Versus Taking ........ 1
+
+Предпочтительный вариант ({target_language}):
+Введение: создание и извлечение ........ 1
+
+Источник ({source_language}):
+Part II: The Dynamics of Extraction ........ 83
+
+Предпочтительный вариант ({target_language}):
+Часть II: динамика извлечения ........ 83
+
+Источник ({source_language}):
+Prologue ........ xi
+
+Предпочтительный вариант ({target_language}):
+Пролог ........ xi
+
+Источник ({source_language}):
+UNESCO ........ 27
+
+Предпочтительный вариант ({target_language}):
+UNESCO ........ 27
+
+Правило: переводите названия разделов, но сохраняйте структуру строки оглавления, номера, римские цифры и page-reference-like хвосты.

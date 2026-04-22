@@ -181,6 +181,7 @@ class ProcessingState:
     processed_chunks: list[str] = field(default_factory=list)
     generated_paragraph_registry: list[dict[str, object]] = field(default_factory=list)
     system_prompt: str | None = None
+    toc_system_prompt: str | None = None
     second_pass_system_prompt: str | None = None
     started_at: float = field(default_factory=time.perf_counter)
 
@@ -213,6 +214,10 @@ class BlockExecutionPayload:
     paragraph_ids: list[str] | None
     context_before: str
     context_after: str
+    structural_roles: list[str] | None = None
+    toc_dominant: bool = False
+    toc_paragraph_count: int = 0
+    paragraph_count: int = 0
 
 
 @dataclass(frozen=True)

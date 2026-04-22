@@ -20,6 +20,10 @@ from formatting_transfer import (
     _map_source_target_paragraphs,
     _apply_minimal_caption_formatting,
     _apply_minimal_image_formatting,
+    _is_allowlisted_centered_quote_paragraph,
+    _is_heading_like_source_paragraph,
+    _is_short_non_heading_paragraph,
+    _resolve_direct_alignment_restoration_decision,
     preserve_source_paragraph_properties,
     restore_source_formatting,
 )
@@ -191,6 +195,41 @@ def test_preserve_source_paragraph_properties_restores_epigraph_italics_and_alig
     assert updated_doc.paragraphs[1].alignment == WD_ALIGN_PARAGRAPH.CENTER
     assert all(run.italic for run in updated_doc.paragraphs[0].runs if run.text.strip())
     assert all(run.italic for run in updated_doc.paragraphs[1].runs if run.text.strip())
+
+
+def test_is_heading_like_source_paragraph_accepts_heuristically_promoted_heading_metadata():
+    paragraph = ParagraphUnit(text="WHAT IS VALUE?", role="body", heading_source="heuristic", heading_level=2)
+
+    assert _is_heading_like_source_paragraph(paragraph) is True
+
+
+def test_is_allowlisted_centered_quote_paragraph_only_accepts_quote_roles():
+    assert _is_allowlisted_centered_quote_paragraph(ParagraphUnit(text="Quote", role="body", structural_role="epigraph")) is True
+    assert _is_allowlisted_centered_quote_paragraph(ParagraphUnit(text="Contents", role="body", structural_role="toc_header")) is False
+
+
+def test_is_short_non_heading_paragraph_respects_boundary_limits():
+    assert _is_short_non_heading_paragraph(ParagraphUnit(text="one two three four five six seven eight nine ten eleven twelve", role="body")) is True
+    assert _is_short_non_heading_paragraph(ParagraphUnit(text="one two three four five six seven eight nine ten eleven twelve thirteen", role="body")) is False
+    assert _is_short_non_heading_paragraph(ParagraphUnit(text="x" * 90, role="body")) is True
+    assert _is_short_non_heading_paragraph(ParagraphUnit(text="x" * 91, role="body")) is False
+
+
+def test_is_short_non_heading_paragraph_rejects_toc_headers_and_captions():
+    assert _is_short_non_heading_paragraph(ParagraphUnit(text="Contents", role="body", structural_role="toc_header")) is False
+    assert _is_short_non_heading_paragraph(ParagraphUnit(text="Figure 1", role="caption")) is False
+
+
+def test_resolve_direct_alignment_restoration_decision_skips_body_paragraph_when_target_is_heading():
+    source_paragraph = ParagraphUnit(text="Short title", role="body", paragraph_alignment="center")
+    target_doc = Document()
+    target_paragraph = target_doc.add_paragraph("Short title", style="Heading 2")
+
+    decision = _resolve_direct_alignment_restoration_decision(source_paragraph, target_paragraph)
+
+    assert decision is not None
+    assert decision["action"] == "skipped"
+    assert decision["reason"] == "target_heading_style"
 
 def test_restore_source_formatting_does_not_inject_source_numbering_xml():
     source_doc = Document()
@@ -882,6 +921,101 @@ def test_preserve_source_paragraph_properties_artifact_records_restored_list_dec
     payload = json.loads(artifacts[0].read_text(encoding="utf-8"))
     assert len(payload["list_restoration_decisions"]) == 1
     assert payload["list_restoration_decisions"][0]["action"] == "restored"
+
+
+def test_preserve_source_paragraph_properties_artifact_records_skipped_alignment_decisions_during_mismatch(tmp_path, monkeypatch):
+    source_paragraphs = [
+        ParagraphUnit(
+            text="WHAT IS VALUE?",
+            role="heading",
+            heading_level=2,
+            paragraph_id="p0001",
+            paragraph_alignment="end",
+        )
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("WHAT IS VALUE?", style="Heading 2")
+    target_doc.add_paragraph("Лишний абзац")
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    diagnostics_dir = tmp_path / "formatting_diagnostics"
+    monkeypatch.setattr(formatting_transfer, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
+
+    preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
+
+    artifacts = sorted(diagnostics_dir.glob("*.json"))
+    assert len(artifacts) == 1
+    payload = json.loads(artifacts[0].read_text(encoding="utf-8"))
+    assert len(payload["alignment_restoration_decisions"]) == 1
+    assert payload["alignment_restoration_decisions"][0]["action"] == "skipped"
+    assert payload["alignment_restoration_decisions"][0]["reason"] == "source_heading_semantics"
+
+
+def test_preserve_source_paragraph_properties_does_not_center_list_items_via_alignment_compatibility_path():
+    source_paragraphs = [
+        ParagraphUnit(
+            text="Первый пункт",
+            role="list",
+            paragraph_id="p0001",
+            paragraph_alignment="center",
+        )
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("Первый пункт")
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    updated_doc = Document(BytesIO(preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)))
+
+    assert updated_doc.paragraphs[0].alignment is None
+
+
+def test_preserve_source_paragraph_properties_restores_center_only_for_explicit_short_non_heading_paragraphs():
+    source_paragraphs = [
+        ParagraphUnit(text="Короткая врезка", role="body", paragraph_id="p0001", paragraph_alignment="center"),
+        ParagraphUnit(
+            text="Это явно длинный центрированный абзац, который больше не должен проходить через compatibility allowlist по длине.",
+            role="body",
+            paragraph_id="p0002",
+            paragraph_alignment="center",
+        ),
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("Короткая врезка")
+    target_doc.add_paragraph("Это явно длинный центрированный абзац, который больше не должен проходить через compatibility allowlist по длине.")
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    updated_doc = Document(BytesIO(preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)))
+
+    assert updated_doc.paragraphs[0].alignment == WD_ALIGN_PARAGRAPH.CENTER
+    assert updated_doc.paragraphs[1].alignment is None
+
+
+def test_preserve_source_paragraph_properties_does_not_replay_source_specific_table_theme_by_default():
+    source_doc = Document()
+    source_table = source_doc.add_table(rows=1, cols=1)
+    source_table.cell(0, 0).text = "A"
+    source_table.style = "Light Shading Accent 1"
+    source_buffer = BytesIO()
+    source_doc.save(source_buffer)
+    source_buffer.seek(0)
+    source_paragraphs, _ = extract_document_content_from_docx(source_buffer)
+
+    target_doc = Document()
+    target_table = target_doc.add_table(rows=1, cols=1)
+    target_table.cell(0, 0).text = "A"
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    updated_doc = Document(BytesIO(preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)))
+
+    assert updated_doc.tables[0].style is not None
+    assert updated_doc.tables[0].style.name == "Table Grid"
 
 
 def test_prune_formatting_diagnostics_removes_oldest_and_preserves_newest(tmp_path):

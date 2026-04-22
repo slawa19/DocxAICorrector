@@ -1396,6 +1396,34 @@ def test_convert_markdown_to_docx_bytes_preserves_ordered_list_word_numbering_se
     assert signatures[0]["hanging"] is not None
 
 
+@pytest.mark.skipif(not _pandoc_available(), reason="pandoc is unavailable in current runtime")
+def test_convert_markdown_to_docx_bytes_preserves_superscript_and_subscript_inline_tags():
+    result = generation.convert_markdown_to_docx_bytes("Alpha<sup>13</sup> beta\n\nH<sub>2</sub>O")
+
+    document = Document(io.BytesIO(result))
+
+    first_runs = document.paragraphs[0].runs
+    second_runs = document.paragraphs[1].runs
+
+    assert document.paragraphs[0].text == "Alpha13 beta"
+    assert first_runs[1].text == "13"
+    assert first_runs[1].font.superscript is True
+
+    assert document.paragraphs[1].text == "H2O"
+    assert second_runs[1].text == "2"
+    assert second_runs[1].font.subscript is True
+
+
+@pytest.mark.skipif(not _pandoc_available(), reason="pandoc is unavailable in current runtime")
+def test_convert_markdown_to_docx_bytes_preserves_inline_html_line_breaks():
+    result = generation.convert_markdown_to_docx_bytes("Line one<br/>Line two")
+
+    document = Document(io.BytesIO(result))
+
+    assert len(document.paragraphs) == 1
+    assert "w:br" in document.paragraphs[0]._p.xml
+
+
 # ---------------------------------------------------------------------------
 # _patch_reference_theme_fonts
 # ---------------------------------------------------------------------------

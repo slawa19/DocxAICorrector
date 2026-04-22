@@ -27,6 +27,9 @@ if TYPE_CHECKING:
 _PARAGRAPH_MARKER_PATTERN = re.compile(r"\[\[DOCX_PARA_([A-Za-z0-9_]+)\]\]")
 _IMAGE_ONLY_TARGET_PATTERN = re.compile(r"^(?:\s*\[\[DOCX_IMAGE_img_\d+\]\]\s*)+$")
 _WORD_TOKEN_PATTERN = re.compile(r"\w+(?:[-']\w+)*", re.UNICODE)
+_INLINE_HTML_SUP_PATTERN = re.compile(r"<sup>(.*?)</sup>", re.IGNORECASE | re.DOTALL)
+_INLINE_HTML_SUB_PATTERN = re.compile(r"<sub>(.*?)</sub>", re.IGNORECASE | re.DOTALL)
+_INLINE_HTML_BREAK_PATTERN = re.compile(r"<br\s*/?>", re.IGNORECASE)
 _INCOMPLETE_RESPONSE_RETRY_MIN_OUTPUT_TOKENS = 1024
 _INCOMPLETE_RESPONSE_RECOVERY_MIN_OUTPUT_TOKENS = 1536
 _CONTEXT_LEAKAGE_RETRY_WARNING = (
@@ -683,18 +686,32 @@ def convert_markdown_to_docx_bytes(
             markdown_path = temp_path / "result.md"
             docx_path = temp_path / "result.docx"
             reference_docx_path = temp_path / "reference.docx"
-            markdown_path.write_text(markdown_text, encoding="utf-8")
+            markdown_path.write_text(_preprocess_markdown_for_docx(markdown_text), encoding="utf-8")
             _build_reference_docx(reference_docx_path, body_font=body_font, heading_font=heading_font)
             pypandoc.convert_file(
                 str(markdown_path),
                 to="docx",
-                format="md",
+                format="markdown+raw_html+superscript+subscript",
                 outputfile=str(docx_path),
                 extra_args=[f"--reference-doc={reference_docx_path}"],
             )
             return docx_path.read_bytes()
     except Exception as exc:
         raise RuntimeError(f"Ошибка при сборке DOCX: {exc}") from exc
+
+
+def _preprocess_markdown_for_docx(markdown_text: str) -> str:
+    """Convert extractor-emitted inline HTML into Pandoc-friendly markdown.
+
+    The extraction layer preserves semantic inline signals as HTML-like tags
+    such as ``<sup>``, ``<sub>``, and ``<br/>``. Pandoc's DOCX writer does not
+    preserve those shapes reliably through the default markdown path, so we
+    translate them into markdown extensions that round-trip into OOXML.
+    """
+    processed = _INLINE_HTML_SUP_PATTERN.sub(lambda match: f"^{match.group(1)}^", markdown_text)
+    processed = _INLINE_HTML_SUB_PATTERN.sub(lambda match: f"~{match.group(1)}~", processed)
+    processed = _INLINE_HTML_BREAK_PATTERN.sub("\\\n", processed)
+    return processed
 
 
 def _patch_reference_theme_fonts(

@@ -5,6 +5,27 @@ from typing import Any, Literal, TypeAlias
 PipelineResult: TypeAlias = Literal["succeeded", "failed", "stopped"]
 
 
+def _parse_toc_validation_failure_details(exc: Exception) -> tuple[str | None, int | None, list[str]]:
+    prefix = "toc_language_validation_failed:"
+    text = str(exc)
+    if prefix not in text:
+        return None, None, []
+    payload = text.split(prefix, 1)[1].strip()
+    parts = [part.strip() for part in payload.split(";") if part.strip()]
+    reason = parts[0] if parts else "unknown_toc_validation_failure"
+    retry_attempt = None
+    rejection_history: list[str] = []
+    for part in parts[1:]:
+        if part.startswith("attempt="):
+            try:
+                retry_attempt = int(part.split("=", 1)[1])
+            except ValueError:
+                retry_attempt = None
+        elif part.startswith("history="):
+            rejection_history = [item for item in part.split("=", 1)[1].split("|") if item]
+    return reason, retry_attempt, rejection_history
+
+
 def handle_invalid_processing_job(
     *,
     context: Any,
@@ -66,6 +87,7 @@ def handle_block_generation_failure(
 ) -> PipelineResult:
     marker_diagnostics_artifact = None
     marker_error_code = extract_marker_diagnostics_code_fn(exc) if marker_mode_enabled else None
+    toc_validation_reason, toc_retry_attempt, toc_rejection_history = _parse_toc_validation_failure_details(exc)
     if marker_error_code is not None:
         marker_diagnostics_artifact = write_marker_diagnostics_artifact_fn(
             stage="generation",
@@ -83,16 +105,20 @@ def handle_block_generation_failure(
         latest_markdown=current_markdown_fn(state.processed_chunks),
         latest_docx_bytes=None,
     )
+    error_code = "toc_language_validation_failed" if toc_validation_reason is not None else "block_failed"
+    error_title = "Ошибка обработки блока оглавления" if toc_validation_reason is not None else "Ошибка обработки блока"
     error_message = dependencies.present_error(
-        "block_failed",
+        error_code,
         exc,
-        "Ошибка обработки блока",
+        error_title,
         filename=context.uploaded_filename,
         block_index=index,
         block_count=initialization.job_count,
         target_chars=payload.target_chars,
         context_chars=payload.context_chars,
         model=context.model,
+        toc_validation_reason=toc_validation_reason,
+        toc_retry_attempt=toc_retry_attempt,
     )
     formatted_error = f"Ошибка на блоке {index}: {error_message}"
     emitters.emit_state(
@@ -104,10 +130,14 @@ def handle_block_generation_failure(
     outcome = emit_failed_result_fn(
         emitters=emitters,
         runtime=context.runtime,
-        finalize_stage="Ошибка обработки",
+        finalize_stage="Ошибка обработки блока оглавления" if toc_validation_reason is not None else "Ошибка обработки",
         detail=formatted_error,
         progress=(index - 1) / initialization.job_count,
-        activity_message=f"Блок {index}: ошибка обработки.",
+        activity_message=(
+            f"Блок {index}: отклонён TOC validation после исчерпания retry budget."
+            if toc_validation_reason is not None
+            else f"Блок {index}: ошибка обработки."
+        ),
         block_index=index,
         block_count=initialization.job_count,
         target_chars=payload.target_chars,
@@ -128,6 +158,22 @@ def handle_block_generation_failure(
             block_count=initialization.job_count,
             artifact_path=marker_diagnostics_artifact,
             error_code=marker_error_code,
+        )
+    if toc_validation_reason is not None:
+        dependencies.log_event(
+            logging.WARNING,
+            "toc_validation_failed_terminal",
+            "TOC-блок не прошёл validation после исчерпания retry budget.",
+            filename=context.uploaded_filename,
+            block_index=index,
+            block_count=initialization.job_count,
+            rejection_reason=toc_validation_reason,
+            retry_attempt=toc_retry_attempt,
+            rejection_reasons=toc_rejection_history,
+            toc_paragraph_count=getattr(payload, "toc_paragraph_count", 0),
+            paragraph_count=getattr(payload, "paragraph_count", 0),
+            structural_roles=list(getattr(payload, "structural_roles", []) or []),
+            input_preview=payload.target_text[:300],
         )
     return outcome
 

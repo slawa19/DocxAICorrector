@@ -1,4 +1,5 @@
 import document_pipeline
+import document_pipeline_output_validation
 
 
 class AssetStub:
@@ -363,3 +364,117 @@ def test_run_document_processing_accepts_heading_only_output_for_plaintext_banne
     assert runtime["state"]["latest_docx_bytes"] == b"docx-bytes"
     assert runtime["finalize"][-1][0] == "Обработка завершена"
     assert runtime["log"][-1]["status"] == "DONE"
+
+
+def test_validate_translated_toc_block_accepts_translated_toc_lines():
+    toc_result = document_pipeline_output_validation.validate_translated_toc_block(
+        source_text="Contents\n\nIntroduction ........ 1\n\nPart II ........ 83",
+        processed_chunk="Содержание\n\nВведение ........ 1\n\nЧасть II ........ 83",
+        structural_roles=["toc_header", "toc_entry", "toc_entry"],
+        source_language="en",
+        target_language="ru",
+    )
+
+    assert toc_result.is_valid is True
+
+
+def test_validate_translated_toc_block_rejects_unchanged_header_and_entries():
+    toc_result = document_pipeline_output_validation.validate_translated_toc_block(
+        source_text="Contents\n\nIntroduction ........ 1\n\nConclusion ........ 9",
+        processed_chunk="Contents\n\nIntroduction ........ 1\n\nConclusion ........ 9",
+        structural_roles=["toc_header", "toc_entry", "toc_entry"],
+        source_language="en",
+        target_language="ru",
+    )
+
+    assert toc_result.is_valid is False
+    assert toc_result.reason == "unchanged_toc_header"
+
+
+def test_is_page_reference_like_detects_numbers_and_delimiters_only():
+    assert document_pipeline_output_validation._is_page_reference_like("xiv") is True
+    assert document_pipeline_output_validation._is_page_reference_like("........") is True
+    assert document_pipeline_output_validation._is_page_reference_like("Part II") is False
+
+
+def test_has_page_reference_suffix_detects_suffix_and_rejects_plain_text():
+    assert document_pipeline_output_validation._has_page_reference_suffix("Chapter 1 ........ 12") is True
+    assert document_pipeline_output_validation._has_page_reference_suffix("Chapter 1") is False
+
+
+def test_is_substantive_toc_line_rejects_page_reference_only_lines():
+    assert document_pipeline_output_validation._is_substantive_toc_line("12") is False
+    assert document_pipeline_output_validation._is_substantive_toc_line("........") is False
+    assert document_pipeline_output_validation._is_substantive_toc_line("Introduction ........ 1") is True
+
+
+def test_is_allowlisted_unchanged_toc_line_accepts_acronym_labels_but_not_contents():
+    assert document_pipeline_output_validation._is_allowlisted_unchanged_toc_line("IMF", "IMF") is True
+    assert document_pipeline_output_validation._is_allowlisted_unchanged_toc_line("UNESCO", "UNESCO") is True
+    assert document_pipeline_output_validation._is_allowlisted_unchanged_toc_line("NASDAQ", "NASDAQ") is True
+    assert document_pipeline_output_validation._is_allowlisted_unchanged_toc_line("Part II", "Part II") is False
+    assert document_pipeline_output_validation._is_allowlisted_unchanged_toc_line("CONTENTS", "CONTENTS") is False
+
+
+def test_validate_translated_toc_block_rejects_too_many_unchanged_entries():
+    toc_result = document_pipeline_output_validation.validate_translated_toc_block(
+        source_text="Preface\n\nIntroduction ........ 1\n\nConclusion ........ 9\n\nAppendix ........ 14",
+        processed_chunk="Предисловие\n\nIntroduction ........ 1\n\nConclusion ........ 9\n\nAppendix ........ 14",
+        structural_roles=["toc_header", "toc_entry", "toc_entry", "toc_entry"],
+        source_language="en",
+        target_language="ru",
+    )
+
+    assert toc_result.is_valid is False
+    assert toc_result.reason == "too_many_unchanged_toc_entries"
+
+
+def test_validate_translated_toc_block_rejects_lost_page_markers():
+    toc_result = document_pipeline_output_validation.validate_translated_toc_block(
+        source_text="Contents\n\nIntroduction ........ 1\n\nConclusion ........ 9",
+        processed_chunk="Содержание\n\nВведение\n\nЗаключение",
+        structural_roles=["toc_header", "toc_entry", "toc_entry"],
+        source_language="en",
+        target_language="ru",
+    )
+
+    assert toc_result.is_valid is False
+    assert toc_result.reason == "lost_toc_page_markers"
+
+
+def test_validate_translated_toc_block_rejects_empty_toc_block():
+    toc_result = document_pipeline_output_validation.validate_translated_toc_block(
+        source_text="Contents",
+        processed_chunk="   ",
+        structural_roles=["toc_header"],
+        source_language="en",
+        target_language="ru",
+    )
+
+    assert toc_result.is_valid is False
+    assert toc_result.reason == "empty_toc_block"
+
+
+def test_validate_translated_toc_block_rejects_paragraph_count_drift():
+    toc_result = document_pipeline_output_validation.validate_translated_toc_block(
+        source_text="Contents\n\nIntroduction ........ 1",
+        processed_chunk="Содержание",
+        structural_roles=["toc_header", "toc_entry"],
+        source_language="en",
+        target_language="ru",
+    )
+
+    assert toc_result.is_valid is False
+    assert toc_result.reason == "toc_paragraph_count_drift"
+
+
+def test_validate_translated_toc_block_does_not_reject_when_only_two_substantive_entries_are_unchanged():
+    toc_result = document_pipeline_output_validation.validate_translated_toc_block(
+        source_text="Contents\n\nIntroduction ........ 1\n\n........\n\nConclusion ........ 9",
+        processed_chunk="Содержание\n\nIntroduction ........ 1\n\n........\n\nConclusion ........ 9",
+        structural_roles=["toc_header", "toc_entry", "toc_entry", "toc_entry"],
+        source_language="en",
+        target_language="ru",
+    )
+
+    assert toc_result.is_valid is True

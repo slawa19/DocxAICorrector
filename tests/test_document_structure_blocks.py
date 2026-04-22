@@ -6,7 +6,7 @@ from document import (
     build_paragraph_relations,
     build_semantic_blocks,
 )
-from models import ParagraphUnit
+from models import DocumentBlock, ParagraphUnit
 
 
 def test_build_semantic_blocks_keeps_heading_with_following_body():
@@ -132,6 +132,63 @@ def test_build_editing_jobs_marks_toc_only_blocks_as_passthrough():
 
     assert [job["job_kind"] for job in jobs] == ["passthrough", "llm"]
     assert jobs[0]["paragraph_ids"] == ["p0000", "p0001", "p0002"]
+    assert jobs[0]["toc_dominant"] is True
+    assert jobs[0]["toc_paragraph_count"] == 3
+    assert jobs[0]["structural_roles"] == ["toc_header", "toc_entry", "toc_entry"]
+
+
+def test_build_editing_jobs_routes_toc_only_blocks_through_llm_in_translate_mode():
+    paragraphs = [
+        ParagraphUnit(text="Contents", role="body", structural_role="toc_header", paragraph_id="p0000"),
+        ParagraphUnit(text="Chapter 1........ 12", role="body", structural_role="toc_entry", paragraph_id="p0001"),
+        ParagraphUnit(text="Chapter 2........ 18", role="body", structural_role="toc_entry", paragraph_id="p0002"),
+    ]
+
+    blocks = build_semantic_blocks(paragraphs, max_chars=80, relations=[])
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="translate")
+
+    assert [job["job_kind"] for job in jobs] == ["llm"]
+    assert jobs[0]["toc_dominant"] is True
+
+
+def test_build_editing_jobs_marks_mixed_toc_majority_blocks_as_toc_dominant():
+    paragraphs = [
+        ParagraphUnit(text="Contents", role="body", structural_role="toc_header", paragraph_id="p0000"),
+        ParagraphUnit(text="Chapter 1........ 12", role="body", structural_role="toc_entry", paragraph_id="p0001"),
+        ParagraphUnit(text="Chapter 2........ 18", role="body", structural_role="toc_entry", paragraph_id="p0002"),
+        ParagraphUnit(text="Note on sources", role="body", paragraph_id="p0003"),
+    ]
+
+    blocks = [DocumentBlock(paragraphs=paragraphs)]
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="translate")
+
+    assert [job["job_kind"] for job in jobs] == ["llm"]
+    assert jobs[0]["toc_dominant"] is True
+    assert jobs[0]["toc_paragraph_count"] == 3
+    assert jobs[0]["paragraph_count"] == 4
+
+
+def test_build_editing_jobs_uses_explicit_seventy_percent_toc_dominance_threshold():
+    dominant_paragraphs = [
+        ParagraphUnit(text=f"Entry {index}", role="body", structural_role="toc_entry", paragraph_id=f"p{index:04d}")
+        for index in range(7)
+    ] + [
+        ParagraphUnit(text=f"Body {index}", role="body", paragraph_id=f"p{index + 7:04d}")
+        for index in range(3)
+    ]
+    non_dominant_paragraphs = [
+        ParagraphUnit(text=f"Entry {index}", role="body", structural_role="toc_entry", paragraph_id=f"q{index:04d}")
+        for index in range(6)
+    ] + [
+        ParagraphUnit(text=f"Body {index}", role="body", paragraph_id=f"q{index + 6:04d}")
+        for index in range(4)
+    ]
+
+    dominant_jobs = build_editing_jobs([DocumentBlock(paragraphs=dominant_paragraphs)], max_chars=3000, processing_operation="translate")
+    non_dominant_jobs = build_editing_jobs([DocumentBlock(paragraphs=non_dominant_paragraphs)], max_chars=3000, processing_operation="translate")
+
+    assert dominant_jobs[0]["toc_dominant"] is True
+    assert non_dominant_jobs[0]["toc_dominant"] is False
 
 
 def test_build_paragraph_relations_detects_caption_epigraph_and_toc_groups():

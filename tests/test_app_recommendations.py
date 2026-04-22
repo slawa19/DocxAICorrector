@@ -610,8 +610,8 @@ def test_build_recommended_text_settings_notice_lists_changed_settings(monkeypat
         recommended_text_settings_notice_details={
             "file_token": "report.docx:3:token",
             "changes": [
-                "режим: Литературное редактирование -> Перевод",
-                "язык оригинала: English -> Авто",
+                "режим: изменено с Литературное редактирование на Перевод",
+                "язык оригинала: изменено с English на Авто",
             ],
         },
     )
@@ -622,7 +622,7 @@ def test_build_recommended_text_settings_notice_lists_changed_settings(monkeypat
 
     assert notice == (
         "После анализа файла приложение скорректировало текстовые настройки: "
-        "режим: Литературное редактирование -> Перевод; язык оригинала: English -> Авто."
+        "режим: изменено с Литературное редактирование на Перевод; язык оригинала: изменено с English на Авто."
     )
 
 
@@ -656,8 +656,8 @@ def test_main_places_recommended_text_settings_notice_inside_preparation_summary
         recommended_text_settings_notice_details={
             "file_token": prepared_run_context.uploaded_file_token,
             "changes": [
-                "режим: Литературное редактирование -> Перевод",
-                "язык оригинала: English -> Авто",
+                "режим: изменено с Литературное редактирование на Перевод",
+                "язык оригинала: изменено с English на Авто",
             ],
         },
     )
@@ -701,7 +701,7 @@ def test_main_places_recommended_text_settings_notice_inside_preparation_summary
     assert summary_calls[0]["status_notes"] == [
         "Структура: AI выключен, использованы текущие правила.",
         "После анализа файла приложение скорректировало текстовые настройки: "
-        "режим: Литературное редактирование -> Перевод; язык оригинала: en -> Авто.",
+        "режим: изменено с Литературное редактирование на Перевод; язык оригинала: изменено с en на Авто.",
     ]
     assert caption_calls == []
 

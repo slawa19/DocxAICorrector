@@ -331,7 +331,7 @@ def test_main_keeps_processing_panel_visible_while_outcome_is_running(monkeypatc
 
     app.main()
 
-    assert calls == ["live_status", "run_log", "image_summary", "partial_result"]
+    assert calls == ["intro", "live_status", "run_log", "image_summary", "partial_result"]
 
 
 def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):

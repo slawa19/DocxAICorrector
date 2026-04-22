@@ -2,8 +2,173 @@ import logging
 import time
 from typing import Any, Literal, TypeAlias
 
+from document_pipeline_output_validation import validate_translated_toc_block
+
 
 PipelineResult: TypeAlias = Literal["succeeded", "failed", "stopped"]
+TOC_VALIDATION_RETRY_BUDGET = 2
+TOC_RETRY_HARDENING_ATTEMPT = 2
+
+
+def _is_toc_dominant_payload(*, payload: Any) -> bool:
+    return bool(getattr(payload, "toc_dominant", False))
+
+
+def _should_route_toc_through_llm(*, context: Any, payload: Any) -> bool:
+    return context.processing_operation == "translate" and _is_toc_dominant_payload(payload=payload)
+
+
+def _resolve_block_prompt_variant(*, context: Any, payload: Any) -> str:
+    if _should_route_toc_through_llm(context=context, payload=payload):
+        return "toc_translate"
+    return "default"
+
+
+def _get_cached_system_prompt(*, context: Any, dependencies: Any, state: Any, resolve_system_prompt_fn: Any, prompt_variant: str) -> str:
+    if prompt_variant == "toc_translate":
+        if state.toc_system_prompt is None:
+            state.toc_system_prompt = resolve_system_prompt_fn(
+                dependencies.load_system_prompt,
+                operation=context.processing_operation,
+                source_language=context.source_language,
+                target_language=context.target_language,
+                editorial_intensity=str(context.app_config.get("editorial_intensity_default", "literary")),
+                prompt_variant="toc_translate",
+            )
+        return state.toc_system_prompt
+
+    if state.system_prompt is None:
+        state.system_prompt = resolve_system_prompt_fn(
+            dependencies.load_system_prompt,
+            operation=context.processing_operation,
+            source_language=context.source_language,
+            target_language=context.target_language,
+            editorial_intensity=str(context.app_config.get("editorial_intensity_default", "literary")),
+        )
+    return state.system_prompt
+
+
+def _build_toc_retry_system_prompt(*, system_prompt: str, source_language: str, target_language: str) -> str:
+    return (
+        f"{system_prompt}\n\n"
+        "TOC retry hardening.\n"
+        f"Translate each input paragraph from {source_language} to {target_language} as a table-of-contents entry, not as prose.\n"
+        "Keep one output paragraph for each input paragraph.\n"
+        "Preserve ordering, numbering, Roman numerals, and page-reference-like suffixes.\n"
+        "Do not leave the TOC header or substantive entries unchanged unless they are proper names or acronyms."
+    )
+
+
+def _generate_block_chunk(
+    *,
+    context: Any,
+    dependencies: Any,
+    initialization: Any,
+    payload: Any,
+    marker_mode_enabled: bool,
+    system_prompt: str,
+) -> str:
+    return dependencies.generate_markdown_block(
+        client=initialization.client,
+        model=context.model,
+        system_prompt=system_prompt,
+        target_text=payload.target_text_with_markers if marker_mode_enabled else payload.target_text,
+        context_before=payload.context_before,
+        context_after=payload.context_after,
+        max_retries=context.max_retries,
+        expected_paragraph_ids=payload.paragraph_ids if marker_mode_enabled else None,
+        marker_mode=marker_mode_enabled,
+    )
+
+
+def _validate_toc_chunk_with_retries(
+    *,
+    context: Any,
+    dependencies: Any,
+    state: Any,
+    initialization: Any,
+    index: int,
+    payload: Any,
+    marker_mode_enabled: bool,
+    resolve_system_prompt_fn: Any,
+) -> str:
+    prompt_variant = _resolve_block_prompt_variant(context=context, payload=payload)
+    retry_budget = TOC_VALIDATION_RETRY_BUDGET
+    rejection_reasons: list[str] = []
+
+    for attempt in range(retry_budget + 1):
+        base_prompt = _get_cached_system_prompt(
+            context=context,
+            dependencies=dependencies,
+            state=state,
+            resolve_system_prompt_fn=resolve_system_prompt_fn,
+            prompt_variant=prompt_variant,
+        )
+        system_prompt = (
+            _build_toc_retry_system_prompt(
+                system_prompt=base_prompt,
+                source_language=context.source_language,
+                target_language=context.target_language,
+            )
+            if attempt == TOC_RETRY_HARDENING_ATTEMPT
+            else base_prompt
+        )
+        dependencies.log_event(
+            logging.INFO,
+            "toc_prompt_routing_selected",
+            "Для блока выбран TOC-ориентированный prompt path.",
+            filename=context.uploaded_filename,
+            block_index=index,
+            block_count=initialization.job_count,
+            prompt_variant=prompt_variant,
+            retry_attempt=attempt,
+            toc_paragraph_count=getattr(payload, "toc_paragraph_count", 0),
+            paragraph_count=getattr(payload, "paragraph_count", 0),
+            structural_roles=list(getattr(payload, "structural_roles", []) or []),
+        )
+        processed_chunk = _generate_block_chunk(
+            context=context,
+            dependencies=dependencies,
+            initialization=initialization,
+            payload=payload,
+            marker_mode_enabled=marker_mode_enabled,
+            system_prompt=system_prompt,
+        )
+        validation_result = validate_translated_toc_block(
+            source_text=payload.target_text,
+            processed_chunk=processed_chunk,
+            structural_roles=getattr(payload, "structural_roles", None),
+            source_language=context.source_language,
+            target_language=context.target_language,
+        )
+        if validation_result.is_valid:
+            return processed_chunk
+
+        dependencies.log_event(
+            logging.WARNING,
+            "toc_validation_rejected",
+            "TOC-блок отклонён deterministic validation и будет перегенерирован или завершится ошибкой.",
+            filename=context.uploaded_filename,
+            block_index=index,
+            block_count=initialization.job_count,
+            prompt_variant=prompt_variant,
+            retry_attempt=attempt,
+            rejection_reason=validation_result.reason,
+            toc_paragraph_count=getattr(payload, "toc_paragraph_count", 0),
+            paragraph_count=getattr(payload, "paragraph_count", 0),
+            structural_roles=list(getattr(payload, "structural_roles", []) or []),
+            input_preview=payload.target_text[:300],
+            output_preview=processed_chunk[:300],
+        )
+        rejection_reasons.append(str(validation_result.reason or "unknown"))
+        if attempt >= retry_budget:
+            raise RuntimeError(
+                "toc_language_validation_failed:"
+                f"{validation_result.reason};attempt={attempt};history={'|'.join(rejection_reasons)}"
+            )
+        prompt_variant = "toc_translate"
+
+    raise RuntimeError("toc_language_validation_failed:retry_budget_exhausted;attempt=2;history=retry_budget_exhausted")
 
 
 def _should_run_translation_second_pass(*, context: Any) -> bool:
@@ -157,7 +322,7 @@ def execute_processing_block(
     is_marker_mode_enabled_fn: Any,
     resolve_system_prompt_fn: Any,
 ) -> tuple[str, bool]:
-    if payload.job_kind == "passthrough":
+    if payload.job_kind == "passthrough" and not _should_route_toc_through_llm(context=context, payload=payload):
         emitters.emit_status(
             context.runtime,
             stage="Passthrough блока",
@@ -174,14 +339,6 @@ def execute_processing_block(
         return payload.target_text, False
 
     marker_mode_enabled = is_marker_mode_enabled_fn(context, payload)
-    if state.system_prompt is None:
-        state.system_prompt = resolve_system_prompt_fn(
-            dependencies.load_system_prompt,
-            operation=context.processing_operation,
-            source_language=context.source_language,
-            target_language=context.target_language,
-            editorial_intensity=str(context.app_config.get("editorial_intensity_default", "literary")),
-        )
     emitters.emit_status(
         context.runtime,
         stage="Ожидание ответа OpenAI",
@@ -195,17 +352,33 @@ def execute_processing_block(
     )
     emitters.emit_activity(context.runtime, f"Блок {index} отправлен в OpenAI.")
     context.on_progress(preview_title="Текущий Markdown")
-    processed_chunk = dependencies.generate_markdown_block(
-        client=initialization.client,
-        model=context.model,
-        system_prompt=state.system_prompt,
-        target_text=payload.target_text_with_markers if marker_mode_enabled else payload.target_text,
-        context_before=payload.context_before,
-        context_after=payload.context_after,
-        max_retries=context.max_retries,
-        expected_paragraph_ids=payload.paragraph_ids if marker_mode_enabled else None,
-        marker_mode=marker_mode_enabled,
-    )
+    if _should_route_toc_through_llm(context=context, payload=payload):
+        processed_chunk = _validate_toc_chunk_with_retries(
+            context=context,
+            dependencies=dependencies,
+            state=state,
+            initialization=initialization,
+            index=index,
+            payload=payload,
+            marker_mode_enabled=marker_mode_enabled,
+            resolve_system_prompt_fn=resolve_system_prompt_fn,
+        )
+    else:
+        system_prompt = _get_cached_system_prompt(
+            context=context,
+            dependencies=dependencies,
+            state=state,
+            resolve_system_prompt_fn=resolve_system_prompt_fn,
+            prompt_variant="default",
+        )
+        processed_chunk = _generate_block_chunk(
+            context=context,
+            dependencies=dependencies,
+            initialization=initialization,
+            payload=payload,
+            marker_mode_enabled=marker_mode_enabled,
+            system_prompt=system_prompt,
+        )
     if _should_run_translation_second_pass(context=context):
         processed_chunk = _run_translation_second_pass(
             context=context,

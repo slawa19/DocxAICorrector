@@ -417,6 +417,24 @@ def test_load_system_prompt_supports_literary_polish_variant():
     assert "словно заново выдумывал себя у всех на глазах" in prompt
 
 
+def test_load_system_prompt_supports_toc_translate_variant():
+    config.load_system_prompt.cache_clear()
+    try:
+        prompt = config.load_system_prompt(
+            operation="translate",
+            source_language="en",
+            target_language="ru",
+            editorial_intensity="literary",
+            prompt_variant="toc_translate",
+        )
+    finally:
+        config.load_system_prompt.cache_clear()
+
+    assert "Переведите блок как оглавление" in prompt
+    assert "Содержание" in prompt
+    assert "Part II: The Dynamics of Extraction ........ 83" in prompt
+
+
 def test_load_app_config_applies_env_override_for_paragraph_boundary_mode(monkeypatch, tmp_path):
     cfg = tmp_path / "config.toml"
     cfg.write_text(

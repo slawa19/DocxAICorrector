@@ -157,6 +157,53 @@ def test_extract_document_content_from_docx_merges_false_body_boundary_in_public
     )
 
 
+def test_extract_document_content_from_docx_flattens_inline_break_wrapped_prose():
+    doc = Document()
+    paragraph = doc.add_paragraph()
+    paragraph.add_run("For centuries, economists and policymakers")
+    paragraph.add_run().add_break()
+    paragraph.add_run("divided activities by whether they created value.")
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert len(paragraphs) == 1
+    assert paragraphs[0].text == (
+        "For centuries, economists and policymakers divided activities by whether they created value."
+    )
+
+
+def test_extract_document_content_from_docx_splits_toc_like_inline_break_cluster_and_marks_toc_roles():
+    doc = Document()
+    doc.add_paragraph("Contents")
+    paragraph = doc.add_paragraph()
+    paragraph.add_run("Common Critiques of Value Extraction")
+    paragraph.add_run().add_break()
+    paragraph.add_run("What is Value?")
+    paragraph.add_run().add_break()
+    paragraph.add_run("Meet the Production Boundary")
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.text for paragraph in paragraphs] == [
+        "Contents",
+        "Common Critiques of Value Extraction",
+        "What is Value?",
+        "Meet the Production Boundary",
+    ]
+    assert [paragraph.structural_role for paragraph in paragraphs] == [
+        "toc_header",
+        "toc_entry",
+        "toc_entry",
+        "toc_entry",
+    ]
+
+
 def test_extract_document_content_from_docx_inserts_image_placeholders(tmp_path):
     image_path = tmp_path / "image.png"
     image_path.write_bytes(PNG_BYTES)

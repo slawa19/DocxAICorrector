@@ -1,7 +1,7 @@
 # TOC Translation And Minimal Formatting Spec
 
 Date: 2026-04-21
-Status: Active specification pending implementation
+Status: Implemented and verified on 2026-04-22
 Scope type: document-structure translation and post-Pandoc formatting hardening
 Primary inputs:
 
@@ -22,6 +22,15 @@ This specification defines a focused follow-up workstream for three linked defec
 3. the current post-Pandoc formatter still replays more source-specific geometry than the product should preserve by default.
 
 The intended direction is reference-DOCX-first and minimal post-formatting, not broader source-style replay.
+
+Implementation closure note:
+
+1. TOC-dominant translate blocks now route deterministically through a dedicated `toc_translate` prompt path.
+2. Deterministic TOC validation plus bounded retry rejects unchanged TOC output before DOCX assembly.
+3. Preparation and cache seams now preserve operation-aware TOC planning behavior.
+4. Direct paragraph alignment replay is guarded by explicit allowlist rules and heading protection.
+5. Formatter diagnostics now record alignment restoration decisions alongside existing mismatch and list-restoration artifacts.
+6. Regression coverage includes pure-TOC routing, mixed TOC-dominant routing, dedicated TOC terminal failure, heading/list alignment deny cases, and constrained list/table preservation behavior.
 
 ## 2. Problem Statement
 
