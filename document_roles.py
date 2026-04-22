@@ -252,6 +252,39 @@ def promote_short_standalone_headings(paragraphs: list[ParagraphUnit]) -> None:
         paragraph.heading_level = _infer_contextual_heading_level(paragraphs, index)
 
 
+def normalize_front_matter_display_title(paragraphs: list[ParagraphUnit]) -> None:
+    scan_limit = min(len(paragraphs), 12)
+    if scan_limit == 0:
+        return
+
+    candidate_index = _find_front_matter_display_title_candidate(paragraphs[:scan_limit])
+    if candidate_index is None:
+        return
+
+    candidate = paragraphs[candidate_index]
+    candidate.role = "heading"
+    candidate.structural_role = "heading"
+    candidate.role_confidence = "heuristic"
+    candidate.heading_source = "heuristic"
+    candidate.heading_level = 1
+
+    candidate_font_size = candidate.font_size_pt
+    for index in range(scan_limit):
+        if index == candidate_index:
+            continue
+        paragraph = paragraphs[index]
+        if paragraph.role != "heading":
+            continue
+        if not _is_front_matter_metadata_heading_candidate(paragraph, candidate_font_size):
+            continue
+
+        paragraph.role = "body"
+        paragraph.structural_role = "body"
+        paragraph.role_confidence = "heuristic"
+        paragraph.heading_source = None
+        paragraph.heading_level = None
+
+
 def reclassify_adjacent_captions(paragraphs: list[ParagraphUnit]) -> None:
     for index, paragraph in enumerate(paragraphs):
         if index == 0:
@@ -422,3 +455,70 @@ def _infer_contextual_heading_level(paragraphs: list[ParagraphUnit], index: int)
             return 2
         return previous_paragraph.heading_level
     return 2
+
+
+def _find_front_matter_display_title_candidate(paragraphs: list[ParagraphUnit]) -> int | None:
+    best_index: int | None = None
+    best_score: tuple[float, int, int] | None = None
+
+    for index, paragraph in enumerate(paragraphs):
+        if not _is_front_matter_display_title_candidate(paragraph):
+            continue
+
+        normalized = _normalize_text_for_heading_heuristics(paragraph.text)
+        alpha_chars = sum(1 for char in normalized if char.isalpha())
+        font_size = float(paragraph.font_size_pt or 0.0)
+        score = (font_size, alpha_chars, len(normalized))
+        if best_score is None or score > best_score:
+            best_index = index
+            best_score = score
+
+    return best_index
+
+
+def _is_front_matter_display_title_candidate(paragraph: ParagraphUnit) -> bool:
+    if paragraph.role in {"image", "table", "caption", "list"}:
+        return False
+    if paragraph.attached_to_asset_id is not None:
+        return False
+    if paragraph.structural_role in {"toc_header", "toc_entry", "image", "table", "caption"}:
+        return False
+
+    normalized = _normalize_text_for_heading_heuristics(paragraph.text)
+    if not normalized or len(normalized) > 180:
+        return False
+    if is_likely_caption_text(normalized):
+        return False
+    if normalized.endswith((".", ";", "!", "?")):
+        return False
+
+    alpha_chars = sum(1 for char in normalized if char.isalpha())
+    if alpha_chars < 8:
+        return False
+    if all(not char.isalpha() for char in normalized):
+        return False
+
+    font_size = paragraph.font_size_pt
+    if font_size is None or font_size < 18.0:
+        return False
+    return True
+
+
+def _is_front_matter_metadata_heading_candidate(paragraph: ParagraphUnit, title_font_size: float | None) -> bool:
+    if paragraph.heading_level != 1:
+        return False
+
+    normalized = _normalize_text_for_heading_heuristics(paragraph.text)
+    if not normalized:
+        return False
+    if _has_heading_text_signal(normalized):
+        return False
+    if len(normalized.split()) > 6:
+        return False
+
+    alpha_chars = sum(1 for char in normalized if char.isalpha())
+    if alpha_chars == 0:
+        return False
+    if title_font_size is not None and paragraph.font_size_pt is not None and paragraph.font_size_pt > title_font_size:
+        return False
+    return True

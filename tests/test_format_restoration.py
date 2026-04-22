@@ -13,6 +13,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches
+from docx.shared import Pt
 
 from document import build_document_text, extract_document_content_from_docx
 from formatting_transfer import (
@@ -533,12 +534,15 @@ def test_apply_output_formatting_restores_toc_paragraph_properties_from_source_m
             role_confidence="heuristic",
             style_name="Normal",
             paragraph_alignment="end",
+            font_size_pt=15.0,
             paragraph_properties_xml=(
                 '<w:pPr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
                 '<w:pStyle w:val="Normal"/>'
                 '<w:spacing w:before="153" w:after="10" w:line="272" w:lineRule="exact"/>'
                 '<w:ind w:start="1519" w:end="0" w:hanging="0"/>'
+                '<w:tabs><w:tab w:val="right" w:leader="dot" w:pos="9350"/></w:tabs>'
                 '<w:jc w:val="end"/>'
+                '<w:keepNext/>'
                 '</w:pPr>'
             ),
         ),
@@ -549,12 +553,15 @@ def test_apply_output_formatting_restores_toc_paragraph_properties_from_source_m
             structural_role="toc_entry",
             role_confidence="heuristic",
             style_name="Normal",
+            font_size_pt=11.0,
             paragraph_properties_xml=(
                 '<w:pPr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
                 '<w:pStyle w:val="Normal"/>'
                 '<w:spacing w:before="281" w:after="10" w:line="272" w:lineRule="exact"/>'
                 '<w:ind w:start="1588" w:end="4878" w:hanging="0"/>'
+                '<w:tabs><w:tab w:val="right" w:leader="dot" w:pos="9350"/></w:tabs>'
                 '<w:jc w:val="end"/>'
+                '<w:keepLines/>'
                 '</w:pPr>'
             ),
         ),
@@ -584,14 +591,176 @@ def test_apply_output_formatting_restores_toc_paragraph_properties_from_source_m
 
     assert first.style is not None
     assert second.style is not None
-    assert first.style.name == "Normal"
-    assert second.style.name == "Normal"
+    assert first.style.name == "Body Text"
+    assert second.style.name == "Body Text"
     first_ppr = first._p.pPr
     second_ppr = second._p.pPr
-    assert first_ppr is not None and first_ppr.jc is not None and first_ppr.jc.get(qn("w:val")) == "end"
-    assert second_ppr is not None and second_ppr.jc is not None and second_ppr.jc.get(qn("w:val")) == "end"
-    assert first_ppr.ind is not None and first_ppr.ind.get(qn("w:start")) == "1519"
-    assert second_ppr.ind is not None and second_ppr.ind.get(qn("w:end")) == "4878"
+    assert first_ppr is not None
+    assert second_ppr is not None
+    assert first_ppr.find(qn("w:jc")) is None
+    assert second_ppr.find(qn("w:jc")) is None
+    assert first_ppr.find(qn("w:ind")) is None
+    assert second_ppr.find(qn("w:ind")) is None
+    assert first_ppr.find(qn("w:tabs")) is None
+    assert second_ppr.find(qn("w:tabs")) is None
+    assert first_ppr.find(qn("w:spacing")) is None
+    assert second_ppr.find(qn("w:spacing")) is None
+    assert first_ppr.find(qn("w:keepNext")) is not None
+    assert second_ppr.find(qn("w:keepLines")) is not None
+    first_run = next(run for run in first.runs if run.text.strip())
+    second_run = next(run for run in second.runs if run.text.strip())
+    assert first_run.font.size is not None and round(first_run.font.size.pt, 2) == 15.0
+    assert second_run.font.size is not None and round(second_run.font.size.pt, 2) == 11.0
+
+
+def test_apply_output_formatting_restores_toc_paragraph_properties_via_positional_fallback_without_registry():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0000",
+            text="Contents",
+            role="body",
+            structural_role="toc_header",
+            role_confidence="heuristic",
+            style_name="Normal",
+            paragraph_properties_xml=(
+                '<w:pPr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:pStyle w:val="Normal"/>'
+                '<w:spacing w:before="153" w:after="10" w:line="272" w:lineRule="exact"/>'
+                '<w:ind w:start="1519" w:end="0" w:hanging="0"/>'
+                '<w:tabs><w:tab w:val="right" w:leader="dot" w:pos="9350"/></w:tabs>'
+                '<w:jc w:val="end"/>'
+                '<w:keepNext/>'
+                '</w:pPr>'
+            ),
+        ),
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="Introduction: Making versus Taking",
+            role="body",
+            structural_role="toc_entry",
+            role_confidence="heuristic",
+            style_name="Normal",
+            is_italic=True,
+            font_size_pt=11.0,
+            paragraph_properties_xml=(
+                '<w:pPr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:pStyle w:val="Normal"/>'
+                '<w:spacing w:before="281" w:after="10" w:line="272" w:lineRule="exact"/>'
+                '<w:ind w:start="1588" w:end="4878" w:hanging="0"/>'
+                '<w:tabs><w:tab w:val="right" w:leader="dot" w:pos="9350"/></w:tabs>'
+                '<w:jc w:val="end"/>'
+                '<w:keepLines/>'
+                '</w:pPr>'
+            ),
+        ),
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("Содержание", style="Body Text")
+    target_doc.add_paragraph("Введение: создание и извлечение", style="Body Text")
+    output = BytesIO()
+    target_doc.save(output)
+
+    restored_bytes = apply_output_formatting(
+        output.getvalue(),
+        source_paragraphs,
+        generated_paragraph_registry=None,
+        mismatch_event_name="test_mismatch",
+        mismatch_log_message="test mismatch",
+    )
+
+    restored_doc = Document(BytesIO(restored_bytes))
+    first = restored_doc.paragraphs[0]
+    second = restored_doc.paragraphs[1]
+
+    assert first.style is not None
+    assert second.style is not None
+    assert first.style.name == "Body Text"
+    assert second.style.name == "Body Text"
+    first_ppr = first._p.pPr
+    second_ppr = second._p.pPr
+    assert first_ppr is not None
+    assert second_ppr is not None
+    assert first_ppr.find(qn("w:jc")) is None
+    assert second_ppr.find(qn("w:jc")) is None
+    assert first_ppr.find(qn("w:ind")) is None
+    assert second_ppr.find(qn("w:ind")) is None
+    assert first_ppr.find(qn("w:tabs")) is None
+    assert second_ppr.find(qn("w:tabs")) is None
+    assert first_ppr.find(qn("w:spacing")) is None
+    assert second_ppr.find(qn("w:spacing")) is None
+    assert first_ppr.find(qn("w:keepNext")) is not None
+    assert second_ppr.find(qn("w:keepLines")) is not None
+    second_run = next(run for run in second.runs if run.text.strip())
+    assert second_run.font.size is not None and round(second_run.font.size.pt, 2) == 11.0
+    assert second_run.italic is True
+
+
+def test_apply_output_formatting_restores_safe_toc_run_formatting_without_geometry_replay():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0000",
+            text="1. A Brief History of Value",
+            role="body",
+            structural_role="toc_entry",
+            role_confidence="heuristic",
+            font_size_pt=15.0,
+            paragraph_properties_xml=(
+                '<w:pPr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:ind w:start="1588" w:end="4878" w:hanging="0"/>'
+                '<w:tabs><w:tab w:val="right" w:leader="dot" w:pos="9350"/></w:tabs>'
+                '<w:jc w:val="end"/>'
+                '</w:pPr>'
+            ),
+        ),
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="Preface: Stories about the Creation of Wealth",
+            role="body",
+            structural_role="toc_entry",
+            role_confidence="heuristic",
+            is_italic=True,
+            font_size_pt=11.0,
+            paragraph_properties_xml=(
+                '<w:pPr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:ind w:start="1588" w:end="4878" w:hanging="0"/>'
+                '<w:tabs><w:tab w:val="right" w:leader="dot" w:pos="9350"/></w:tabs>'
+                '<w:jc w:val="end"/>'
+                '</w:pPr>'
+            ),
+        ),
+    ]
+
+    target_doc = Document()
+    first = target_doc.add_paragraph("1. Краткая история стоимости", style="Body Text")
+    second = target_doc.add_paragraph("Предисловие: истории о создании богатства", style="Body Text")
+    first.runs[0].font.size = Pt(12)
+    second.runs[0].font.size = Pt(12)
+    output = BytesIO()
+    target_doc.save(output)
+
+    restored_bytes = apply_output_formatting(
+        output.getvalue(),
+        source_paragraphs,
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0000", "text": "1. Краткая история стоимости"},
+            {"paragraph_id": "p0001", "text": "Предисловие: истории о создании богатства"},
+        ],
+        mismatch_event_name="test_mismatch",
+        mismatch_log_message="test mismatch",
+    )
+
+    restored_doc = Document(BytesIO(restored_bytes))
+    restored_first = next(run for run in restored_doc.paragraphs[0].runs if run.text.strip())
+    restored_second = next(run for run in restored_doc.paragraphs[1].runs if run.text.strip())
+    restored_first_ppr = restored_doc.paragraphs[0]._p.pPr
+    restored_second_ppr = restored_doc.paragraphs[1]._p.pPr
+
+    assert restored_first.font.size is not None and round(restored_first.font.size.pt, 2) == 15.0
+    assert restored_second.font.size is not None and round(restored_second.font.size.pt, 2) == 11.0
+    assert restored_second.italic is True
+    assert restored_first_ppr is not None and restored_first_ppr.find(qn("w:ind")) is None
+    assert restored_second_ppr is not None and restored_second_ppr.find(qn("w:tabs")) is None
 
 
 def test_formatting_diagnostics_include_relation_metadata_and_registry_membership():

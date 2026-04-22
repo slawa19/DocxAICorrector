@@ -15,6 +15,7 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import qn
+from docx.shared import Pt
 from docx.text.paragraph import Paragraph
 
 from document import (
@@ -90,6 +91,11 @@ def _build_generated_registry_candidates(source_paragraph: ParagraphUnit, genera
     for line in lines:
         add_candidate(line)
     return candidates
+
+
+def _is_toc_source_paragraph(paragraph: ParagraphUnit) -> bool:
+    structural_role = str(getattr(paragraph, "structural_role", "") or "").strip().lower()
+    return structural_role in {"toc_header", "toc_entry"}
 
 
 def _collect_target_paragraphs(document) -> list[Paragraph]:
@@ -545,6 +551,26 @@ def _map_source_target_paragraphs(
                     available_target_indexes=available_target_indexes,
                 )
 
+    if len(source_paragraphs) == len(target_paragraphs):
+        for source_index, source_paragraph in enumerate(source_paragraphs):
+            if source_index in mapped_target_by_source or source_index not in available_target_indexes:
+                continue
+            if not _is_toc_source_paragraph(source_paragraph):
+                continue
+
+            target_paragraph = target_paragraphs[source_index]
+            if not target_paragraph.text.strip() or IMAGE_PLACEHOLDER_PATTERN.search(target_paragraph.text):
+                continue
+
+            _register_mapping(
+                source_index,
+                source_index,
+                "positional_toc_fallback",
+                mapped_target_by_source=mapped_target_by_source,
+                strategy_by_source=strategy_by_source,
+                available_target_indexes=available_target_indexes,
+            )
+
     mapping_pairs = [
         (source_paragraphs[source_index], target_paragraphs[target_index])
         for source_index, target_index in sorted(mapped_target_by_source.items())
@@ -728,6 +754,7 @@ def apply_output_formatting(
         generated_paragraph_registry=generated_paragraph_registry,
     )
     diagnostics["toc_format_restoration_decisions"] = _restore_toc_paragraph_properties_for_mapped_pairs(document, mapping_pairs)
+    diagnostics["toc_run_format_restoration_decisions"] = _restore_toc_run_formatting_for_mapped_pairs(mapping_pairs)
     diagnostics["alignment_restoration_decisions"] = _restore_direct_paragraph_alignment_for_mapped_pairs(mapping_pairs)
     _restore_semantic_quote_formatting_for_mapped_pairs(mapping_pairs)
 
@@ -1107,6 +1134,19 @@ def _replace_paragraph_properties_from_xml(paragraph, paragraph_properties_xml: 
     return True
 
 
+def _sanitize_toc_paragraph_properties_xml(paragraph_properties_xml: str) -> str:
+    if not paragraph_properties_xml.strip():
+        return ""
+
+    paragraph_properties = parse_xml(paragraph_properties_xml)
+    unsafe_geometry_names = {"ind", "tabs", "spacing", "jc", "pStyle"}
+    for child in list(paragraph_properties):
+        if xml_local_name(child.tag) in unsafe_geometry_names:
+            paragraph_properties.remove(child)
+
+    return paragraph_properties.xml if len(paragraph_properties) > 0 else ""
+
+
 def _restore_toc_paragraph_properties_for_mapped_pairs(document, mapping_pairs: list[tuple[ParagraphUnit, Paragraph]]) -> list[dict[str, object]]:
     decisions: list[dict[str, object]] = []
     for source_paragraph, target_paragraph in mapping_pairs:
@@ -1128,14 +1168,76 @@ def _restore_toc_paragraph_properties_for_mapped_pairs(document, mapping_pairs: 
             decisions.append({**decision, "action": "skipped", "reason": "missing_source_paragraph_properties"})
             continue
 
-        restored = _replace_paragraph_properties_from_xml(target_paragraph, paragraph_properties_xml)
+        sanitized_paragraph_properties_xml = _sanitize_toc_paragraph_properties_xml(paragraph_properties_xml)
+        if not sanitized_paragraph_properties_xml:
+            decisions.append({**decision, "action": "skipped", "reason": "source_toc_properties_only_contained_unsafe_geometry"})
+            continue
+
+        original_target_style_name = _target_paragraph_style_name(target_paragraph)
+        restored = _replace_paragraph_properties_from_xml(target_paragraph, sanitized_paragraph_properties_xml)
         if not restored:
             decisions.append({**decision, "action": "skipped", "reason": "invalid_source_paragraph_properties"})
             continue
 
-        if decision["source_style_name"] and _style_exists(document, cast(str, decision["source_style_name"])):
-            target_paragraph.style = document.styles[cast(str, decision["source_style_name"])]
-        decisions.append({**decision, "action": "restored", "reason": "copied_source_toc_paragraph_properties"})
+        if original_target_style_name and _style_exists(document, original_target_style_name):
+            target_paragraph.style = document.styles[original_target_style_name]
+
+        decisions.append({**decision, "action": "restored", "reason": "copied_sanitized_source_toc_paragraph_properties"})
+    return decisions
+
+
+def _restore_toc_run_formatting_for_mapped_pairs(mapping_pairs: list[tuple[ParagraphUnit, Paragraph]]) -> list[dict[str, object]]:
+    decisions: list[dict[str, object]] = []
+    for source_paragraph, target_paragraph in mapping_pairs:
+        structural_role = str(getattr(source_paragraph, "structural_role", "") or "").strip().lower()
+        if structural_role not in {"toc_header", "toc_entry"}:
+            continue
+
+        font_size_pt = getattr(source_paragraph, "font_size_pt", None)
+        should_apply_bold = bool(getattr(source_paragraph, "is_bold", False))
+        should_apply_italic = bool(getattr(source_paragraph, "is_italic", False))
+        nonempty_runs = [run for run in target_paragraph.runs if run.text and run.text.strip()]
+        if not nonempty_runs:
+            decisions.append(
+                {
+                    "paragraph_id": source_paragraph.paragraph_id,
+                    "structural_role": structural_role,
+                    "action": "skipped",
+                    "reason": "no_nonempty_target_runs",
+                }
+            )
+            continue
+
+        if font_size_pt is None and not should_apply_bold and not should_apply_italic:
+            decisions.append(
+                {
+                    "paragraph_id": source_paragraph.paragraph_id,
+                    "structural_role": structural_role,
+                    "action": "skipped",
+                    "reason": "no_safe_toc_run_formatting_to_restore",
+                }
+            )
+            continue
+
+        for run in nonempty_runs:
+            if font_size_pt is not None:
+                run.font.size = Pt(font_size_pt)
+            if should_apply_bold:
+                run.bold = True
+            if should_apply_italic:
+                run.italic = True
+
+        decisions.append(
+            {
+                "paragraph_id": source_paragraph.paragraph_id,
+                "structural_role": structural_role,
+                "action": "restored",
+                "reason": "copied_safe_toc_run_formatting",
+                "font_size_pt": font_size_pt,
+                "applied_bold": should_apply_bold,
+                "applied_italic": should_apply_italic,
+            }
+        )
     return decisions
 
 

@@ -46,6 +46,7 @@ from document_roles import (
     is_caption_style,
     is_likely_caption_text,
     is_probable_heading,
+    normalize_front_matter_display_title,
     paragraph_is_effectively_bold,
     paragraph_is_effectively_italic,
     promote_short_standalone_headings,
@@ -179,6 +180,7 @@ def extract_document_content_with_normalization_reports(
     paragraphs = _build_logical_paragraph_units(normalized_blocks)
     paragraphs = _normalize_inline_break_paragraphs(paragraphs)
     promote_short_standalone_headings(paragraphs)
+    normalize_front_matter_display_title(paragraphs)
     (
         relation_enabled,
         relation_profile,
@@ -499,16 +501,17 @@ def _is_compact_toc_run_cluster(segments: list[str]) -> bool:
 
     word_counts = [len(_TOC_CANDIDATE_WORD_PATTERN.findall(segment)) for segment in normalized_segments]
     total_words = sum(word_counts)
-    if total_words > 14:
-        return False
-
     if len(normalized_segments) == 2:
+        if total_words > 20:
+            return False
         if min(word_counts) < 3:
             return False
         if not (any(count >= 4 for count in word_counts) or any(has_heading_text_signal(segment) for segment in normalized_segments)):
             return False
         return True
 
+    if total_words > 14:
+        return False
     return all(count <= 5 for count in word_counts)
 
 

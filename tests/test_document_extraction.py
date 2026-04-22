@@ -244,6 +244,31 @@ def test_extract_document_content_from_docx_splits_compact_toc_run_clusters_with
     ]
 
 
+def test_extract_document_content_from_docx_splits_long_two_entry_compact_toc_run_clusters():
+    doc = Document()
+    doc.add_paragraph("Contents")
+    paragraph = doc.add_paragraph()
+    paragraph.add_run("Something Odd About the National Accounts: GDP Facit Saltus!")
+    paragraph.add_run(" ")
+    paragraph.add_run("Patching Up the National Accounts isn't Enough")
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.text for paragraph in paragraphs] == [
+        "Contents",
+        "Something Odd About the National Accounts: GDP Facit Saltus!",
+        "Patching Up the National Accounts isn't Enough",
+    ]
+    assert [paragraph.structural_role for paragraph in paragraphs] == [
+        "toc_header",
+        "toc_entry",
+        "toc_entry",
+    ]
+
+
 def test_extract_document_content_from_docx_keeps_regular_body_run_clusters_as_one_paragraph():
     doc = Document()
     paragraph = doc.add_paragraph()
@@ -882,6 +907,53 @@ def test_extract_document_content_from_docx_detects_heading_from_base_style_chai
     assert paragraphs[0].role == "heading"
     assert paragraphs[0].heading_source == "heuristic"
     assert paragraphs[0].heading_level == 1
+
+
+def test_extract_document_content_from_docx_promotes_front_matter_display_title_to_h1():
+    doc = Document()
+    author = doc.add_paragraph("Mariana Mazzucato", style="Heading 1")
+    author.runs[0].font.size = Pt(28)
+
+    title = doc.add_paragraph("T H E VALUE O F E V E RY T H I NG")
+    title.runs[0].font.size = Pt(28)
+
+    subtitle = doc.add_paragraph()
+    subtitle_run = subtitle.add_run("Making and Taking in the Global Economy")
+    subtitle_run.italic = True
+    subtitle_run.font.size = Pt(18)
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert paragraphs[0].text == "Mariana Mazzucato"
+    assert paragraphs[0].role == "body"
+    assert paragraphs[0].heading_level is None
+    assert paragraphs[1].text == "T H E VALUE O F E V E RY T H I NG"
+    assert paragraphs[1].role == "heading"
+    assert paragraphs[1].heading_source == "heuristic"
+    assert paragraphs[1].heading_level == 1
+    assert paragraphs[2].role == "body"
+    assert paragraphs[2].is_italic is True
+
+
+def test_extract_document_content_from_docx_keeps_true_structural_h1_when_no_cover_title_exists():
+    doc = Document()
+    heading = doc.add_paragraph("Chapter 1 Value", style="Heading 1")
+    heading.runs[0].font.size = Pt(20)
+    body = doc.add_paragraph("This opening paragraph provides ordinary narrative context after the heading.")
+    body.runs[0].font.size = Pt(11)
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert paragraphs[0].role == "heading"
+    assert paragraphs[0].heading_level == 1
+    assert paragraphs[0].text == "Chapter 1 Value"
 
 
 def test_extract_document_content_from_docx_paragraph_alignment_override_beats_inherited_center_for_heading_detection():

@@ -599,6 +599,59 @@ def test_reinsert_inline_images_restores_anchor_container_from_source_forensics(
     assert updated_doc._element.xpath(".//wp:docPr")[0].get("descr") == "Исходный anchor"
 
 
+def test_reinsert_inline_images_keeps_inline_container_for_page_relative_anchor_source_forensics():
+    doc = Document()
+    doc.add_paragraph("[[DOCX_IMAGE_img_001]]")
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    source_anchor_xml = """
+    <wp:anchor xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+               xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+               xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"
+               simplePos="0" relativeHeight="0" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">
+        <wp:simplePos x="0" y="0"/>
+        <wp:positionH relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionH>
+        <wp:positionV relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionV>
+        <wp:extent cx="914400" cy="914400"/>
+        <wp:wrapNone/>
+        <wp:docPr id="7" name="Source Anchor" descr="Исходный anchor"/>
+        <wp:cNvGraphicFramePr/>
+        <a:graphic>
+            <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                <pic:pic/>
+            </a:graphicData>
+        </a:graphic>
+    </wp:anchor>
+    """
+
+    updated_bytes = reinsert_inline_images(
+        buffer.getvalue(),
+        [
+            ImageAsset(
+                image_id="img_001",
+                placeholder="[[DOCX_IMAGE_img_001]]",
+                original_bytes=PNG_BYTES,
+                mime_type="image/png",
+                position_index=0,
+                width_emu=914400,
+                height_emu=914400,
+                final_variant="original",
+                source_forensics={
+                    "drawing_container": "anchor",
+                    "drawing_container_xml": source_anchor_xml,
+                    "doc_properties": {"descr": "Исходный anchor", "name": "Source Anchor"},
+                },
+            )
+        ],
+    )
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    assert len(updated_doc._element.xpath(".//wp:anchor")) == 0
+    assert len(updated_doc._element.xpath(".//wp:inline")) == 1
+    assert updated_doc._element.xpath(".//wp:docPr")[0].get("descr") == "Исходный anchor"
+
+
 def test_reinsert_inline_images_replaces_placeholder_with_picture_inside_nested_table_cell():
     doc = Document()
     outer_table = doc.add_table(rows=1, cols=1)

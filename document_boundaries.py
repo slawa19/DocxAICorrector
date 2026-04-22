@@ -11,6 +11,30 @@ from runtime_artifact_retention import prune_artifact_dir
 
 STRONG_PARAGRAPH_TERMINATOR_PATTERN = re.compile(r"[.!?…]\s*$")
 TOC_ENTRY_PATTERN = re.compile(r"^.{1,120}(?:\.{2,}|\s{2,})\d+\s*$")
+_TOC_HEADING_TOKEN_PATTERN = re.compile(r"[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9'’`.-]*")
+_TOC_TITLECASE_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "as",
+    "at",
+    "but",
+    "by",
+    "for",
+    "from",
+    "in",
+    "into",
+    "is",
+    "of",
+    "on",
+    "or",
+    "the",
+    "through",
+    "to",
+    "vs",
+    "versus",
+    "with",
+}
 
 
 def resolve_paragraph_boundary_normalization_settings(
@@ -213,6 +237,8 @@ def evaluate_paragraph_boundary(
         blocked_reasons.append("caption_like_boundary")
     if is_likely_attribution_text(right.text):
         blocked_reasons.append("right_attribution_like")
+    if are_adjacent_toc_like_entries(left.text, right.text):
+        blocked_reasons.append("adjacent_toc_like_entries")
     if is_likely_toc_entry_text(right.text):
         blocked_reasons.append("right_toc_like")
     if style_transition_implies_structure(left, right):
@@ -418,6 +444,48 @@ def is_likely_attribution_text(text: str) -> bool:
 
 def is_likely_toc_entry_text(text: str) -> bool:
     return TOC_ENTRY_PATTERN.match(text.strip()) is not None
+
+
+def are_adjacent_toc_like_entries(left_text: str, right_text: str) -> bool:
+    return is_likely_toc_heading_line(left_text) and is_likely_toc_heading_line(right_text)
+
+
+def is_likely_toc_heading_line(text: str) -> bool:
+    stripped = _normalize_toc_heading_candidate(text)
+    if not stripped:
+        return False
+    if len(stripped) > 140:
+        return False
+    if stripped.endswith((".", ";", ":")):
+        return False
+
+    tokens = _TOC_HEADING_TOKEN_PATTERN.findall(stripped)
+    if not 2 <= len(tokens) <= 14:
+        return False
+
+    titlecase_like = 0
+    significant_tokens = 0
+    for index, token in enumerate(tokens):
+        lowered = token.lower()
+        if lowered in _TOC_TITLECASE_STOPWORDS and index != 0:
+            continue
+        significant_tokens += 1
+        if token[0].isdigit() or token.isupper() or token[0].isupper():
+            titlecase_like += 1
+
+    if significant_tokens == 0:
+        return False
+    if titlecase_like / significant_tokens < 0.8:
+        return False
+
+    return True
+
+
+def _normalize_toc_heading_candidate(text: str) -> str:
+    stripped = re.sub(r"</?[^>]+>", " ", text or "")
+    stripped = stripped.replace("*", " ").replace("_", " ")
+    stripped = re.sub(r"\s+", " ", stripped)
+    return stripped.strip()
 
 
 def write_paragraph_boundary_report_artifact(

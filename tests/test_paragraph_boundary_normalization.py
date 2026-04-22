@@ -161,6 +161,33 @@ def test_high_only_promotes_medium_chain_lead_when_followed_by_mergeable_continu
     assert report.decisions[0].reasons[-1] == "chain_continuation_supported"
 
 
+def test_toc_like_entries_are_not_merged_by_boundary_normalization():
+    document = make_document()
+    document.add_paragraph("Contents")
+    document.add_paragraph("Meet the Production Boundary")
+    document.add_paragraph("Why Value Theory Matters")
+    document.add_paragraph("The Structure of the Book")
+
+    paragraphs, _, report = extract_document_content_with_boundary_report(_save_document(document))
+
+    assert [paragraph.text for paragraph in paragraphs] == [
+        "Contents",
+        "Meet the Production Boundary",
+        "Why Value Theory Matters",
+        "The Structure of the Book",
+    ]
+    assert [paragraph.structural_role for paragraph in paragraphs] == [
+        "toc_header",
+        "toc_entry",
+        "toc_entry",
+        "toc_entry",
+    ]
+    assert report.merged_group_count == 0
+    assert report.decisions[1].decision == "keep"
+    assert report.decisions[1].confidence == "blocked"
+    assert "adjacent_toc_like_entries" in report.decisions[1].reasons
+
+
 def test_debug_artifact_report_writes_expected_path_and_payload(monkeypatch, tmp_path):
     reports_dir = tmp_path / "paragraph-boundary-reports"
     monkeypatch.setattr(document_module, "PARAGRAPH_BOUNDARY_REPORTS_DIR", reports_dir)

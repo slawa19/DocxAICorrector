@@ -761,6 +761,9 @@ def _apply_source_drawing_container(run_element, source_forensics: dict[str, obj
     except etree.XMLSyntaxError:
         return
 
+    if _is_page_relative_anchor_container(source_container):
+        return
+
     current_graphic = current_container.find(f"{{{drawingml_ns}}}graphic")
     source_graphic = source_container.find(f"{{{drawingml_ns}}}graphic")
     if current_graphic is not None:
@@ -788,6 +791,15 @@ def _apply_source_drawing_container(run_element, source_forensics: dict[str, obj
             source_doc_properties.set("id", current_id)
 
     drawing.replace(current_container, source_container)
+
+
+def _is_page_relative_anchor_container(source_container) -> bool:
+    wordprocessing_drawing_ns = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+    for position_local_name in ("positionH", "positionV"):
+        position_element = source_container.find(f"{{{wordprocessing_drawing_ns}}}{position_local_name}")
+        if position_element is not None and position_element.get("relativeFrom") == "page":
+            return True
+    return False
 
 
 def _apply_picture_source_rect(run_element, source_rect_payload: object) -> None:
