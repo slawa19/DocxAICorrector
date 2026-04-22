@@ -1001,7 +1001,7 @@ def test_preserve_source_paragraph_properties_uses_content_heuristics_for_captio
     assert updated_doc.paragraphs[1].alignment == WD_ALIGN_PARAGRAPH.CENTER
 
 
-def test_preserve_source_paragraph_properties_restores_direct_center_alignment_for_mapped_paragraphs():
+def test_preserve_source_paragraph_properties_restores_direct_center_alignment_only_for_non_headings():
     source_paragraphs = [
         ParagraphUnit(text="ГЛАВА 1", role="heading", heading_level=1, paragraph_alignment="center", paragraph_id="p0000"),
         ParagraphUnit(text="Богатство заключается не в том, чтобы иметь много имущества.", role="body", paragraph_alignment="center", paragraph_id="p0001"),
@@ -1015,8 +1015,24 @@ def test_preserve_source_paragraph_properties_restores_direct_center_alignment_f
     updated_bytes = preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
     updated_doc = Document(BytesIO(updated_bytes))
 
-    assert updated_doc.paragraphs[0].alignment == WD_ALIGN_PARAGRAPH.CENTER
+    assert updated_doc.paragraphs[0].alignment is None
     assert updated_doc.paragraphs[1].alignment == WD_ALIGN_PARAGRAPH.CENTER
+
+
+def test_preserve_source_paragraph_properties_does_not_restore_right_alignment_for_heading():
+    source_paragraphs = [
+        ParagraphUnit(text="WHAT IS VALUE?", role="heading", heading_level=2, paragraph_alignment="end", paragraph_id="p0000"),
+    ]
+    target_doc = Document()
+    paragraph = target_doc.add_paragraph("WHAT IS VALUE?")
+    paragraph.style = "Heading 2"
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    updated_bytes = preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    assert updated_doc.paragraphs[0].alignment is None
 
 
 def test_preserve_source_paragraph_properties_does_not_promote_generated_registry_text_to_heading():

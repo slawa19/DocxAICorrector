@@ -263,7 +263,7 @@ def test_run_document_processing_does_not_fail_when_ui_result_artifact_save_fail
 
 
 def test_resolve_system_prompt_does_not_mask_internal_type_errors():
-    def broken_loader(*, operation: str = "edit", source_language: str = "en", target_language: str = "ru", editorial_intensity: str = "literary"):
+    def broken_loader(*, operation: str = "edit", source_language: str = "en", target_language: str = "ru", editorial_intensity: str = "literary", prompt_variant: str = "default"):
         raise TypeError("broken template")
 
     with pytest.raises(TypeError, match="broken template"):
@@ -288,7 +288,7 @@ def test_resolve_system_prompt_falls_back_for_legacy_loader_without_editorial_in
         return "system"
 
     resolved = document_pipeline._resolve_system_prompt(
-        legacy_loader,
+        legacy_loader,  # type: ignore[arg-type]  # intentional: testing backward-compat fallback for pre-prompt_variant loaders
         operation="translate",
         source_language="en",
         target_language="de",
@@ -450,6 +450,73 @@ def test_run_document_processing_fails_when_second_pass_raises():
 
     assert result == "failed"
     assert "second pass exploded" in runtime["state"]["last_error"]
+
+
+def test_run_document_processing_routes_toc_dominant_translate_block_through_toc_prompt_variant_and_retries():
+    runtime = _build_runtime_capture()
+    prompts = []
+    generated_calls = []
+    events, log_event = _capture_log_events()
+
+    def generate_markdown_block(**kwargs):
+        generated_calls.append(dict(kwargs))
+        if len(generated_calls) == 1:
+            return "Contents\n\nIntroduction ........ 1\n\nConclusion ........ 9"
+        return "Содержание\n\nВведение ........ 1\n\nЗаключение ........ 9"
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{
+            "job_kind": "passthrough",
+            "target_text": "Contents\n\nIntroduction ........ 1\n\nConclusion ........ 9",
+            "target_text_with_markers": "Contents\n\nIntroduction ........ 1\n\nConclusion ........ 9",
+            "paragraph_ids": ["p0000", "p0001", "p0002"],
+            "structural_roles": ["toc_header", "toc_entry", "toc_entry"],
+            "toc_dominant": True,
+            "toc_paragraph_count": 3,
+            "paragraph_count": 3,
+            "context_before": "",
+            "context_after": "",
+            "target_chars": 58,
+            "context_chars": 0,
+        }],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4-mini",
+        max_retries=1,
+        processing_operation="translate",
+        source_language="en",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **kwargs: prompts.append(dict(kwargs)) or f"system:{kwargs.get('prompt_variant', 'default')}",
+        log_event=log_event,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=generate_markdown_block,
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
+    )
+
+    assert result == "succeeded"
+    assert prompts[0]["prompt_variant"] == "toc_translate"
+    assert len(generated_calls) == 2
+    assert runtime["state"]["latest_markdown"].startswith("Содержание")
+    warning_events = [event for event in events if event["level"] == logging.WARNING]
+    assert any(event["event_id"] == "toc_validation_rejected" for event in warning_events)
 
 
 def test_run_document_processing_applies_semantic_output_normalization_before_image_reinsertion():
