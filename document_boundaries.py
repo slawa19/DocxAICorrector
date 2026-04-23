@@ -387,7 +387,9 @@ def starts_with_continuation_signal(text: str) -> bool:
     if not stripped:
         return False
     for char in stripped:
-        if char in {'"', "'", "«", "(", "["}:
+        if char.isspace():
+            continue
+        if char in {'"', "'", "«", "(", "[", "—", "–", "-"}:
             continue
         if char.islower() or char.isdigit():
             return True
@@ -401,6 +403,8 @@ def starts_with_new_sentence_signal(text: str, *, has_heading_text_signal) -> bo
     if not stripped:
         return False
     for char in stripped:
+        if char.isspace():
+            continue
         if char in {'"', "'", "«", "(", "["}:
             continue
         if char.isupper():

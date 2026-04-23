@@ -107,6 +107,31 @@ def test_merged_text_spacing_is_normalized_conservatively():
     assert paragraphs[0].text == "Это важное продолжение текста"
 
 
+def test_dash_led_continuation_after_superscript_note_is_merged():
+    document = make_document()
+    first = document.add_paragraph()
+    first.add_run("Apple held cash worth $187 billion")
+    note = first.add_run("4")
+    note.font.superscript = True
+    document.add_paragraph(
+        "— about the same size as the Czech economy that year, which made the tax arrangement especially visible in public debate."
+    )
+
+    paragraphs, _, report = extract_document_content_with_boundary_report(_save_document(document))
+
+    assert len(paragraphs) == 1
+    assert paragraphs[0].text == (
+        "Apple held cash worth $187 billion<sup>4</sup> — about the same size as the Czech economy "
+        "that year, which made the tax arrangement especially visible in public debate."
+    )
+    assert paragraphs[0].origin_raw_indexes == [0, 1]
+    assert paragraphs[0].boundary_source == "normalized_merge"
+    assert paragraphs[0].boundary_confidence == "high"
+    assert report.decisions[0].decision == "merge"
+    assert report.decisions[0].confidence == "high"
+    assert "right_starts_continuation" in report.decisions[0].reasons
+
+
 def test_high_confidence_merge_chain_collapses_three_adjacent_body_paragraphs():
     document = make_document()
     document.add_paragraph("Это особенно важно")
