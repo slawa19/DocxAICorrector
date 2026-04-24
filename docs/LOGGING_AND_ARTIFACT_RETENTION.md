@@ -1,7 +1,7 @@
 # Logging and Artifact Retention Contract
 
 Статус: каноническая документация.
-Последняя ревизия: 2026-04-19.
+Последняя ревизия: 2026-04-23.
 Связанные документы: `README.md` (раздел «Логи»), `docs/AI_AGENT_DEVELOPMENT_RULES.md`, `docs/archive/specs/LOGGING_AND_DISK_RETENTION_SPEC_2026-03-27.md` (исходная спецификация).
 
 Назначение документа: зафиксировать единый источник правды по логированию и retention runtime-артефактов, чтобы ИИ-агент при добавлении новых фич:
@@ -110,6 +110,8 @@ bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && python3 scripts/_list_lo
 - `docx_build_failed`, `empty_docx_bytes`.
 - `formatting_diagnostics_artifacts_detected`.
 - `invalid_processing_job`, `invalid_processing_plan`, `processing_init_failed`.
+- `ui_result_artifacts_saved`, `ui_audiobook_artifact_saved`.
+- `audiobook_postprocess_chunk_started`, `audiobook_postprocess_chunk_completed`.
 - `processing_completed` (INFO, run boundary).
 
 ### 3.4 Generation
@@ -187,7 +189,7 @@ bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && python3 scripts/_list_lo
 | `.run/paragraph_boundary_ai_review/*.json` | TTL 14 дней, max 200 файлов, pruning при каждой записи | `document._write_paragraph_boundary_ai_review_artifact()` → `prune_artifact_dir()` |
 | `.run/structure_maps/*.json` | TTL 30 дней, max 200 файлов, pruning при каждой записи | `preparation._write_structure_map_debug_artifact()` → `prune_artifact_dir()` |
 | `.run/structure_validation/*.json` | TTL 30 дней, max 200 файлов, pruning при каждой записи | `structure_validation.write_structure_validation_debug_artifact()` → `prune_artifact_dir()` |
-| `.run/ui_results/*` | TTL 7 дней, max 80 файлов, pruning при каждой записи | `runtime_artifacts.write_ui_result_artifacts()` → `prune_artifact_dir(glob="*")` |
+| `.run/ui_results/*` | TTL 7 дней, max 80 result stems, pruning grouped by stem при каждой записи | `runtime_artifacts.write_ui_result_artifacts()` → `prune_ui_result_artifact_groups()` |
 | `.run/restart_*`, `.run/completed_*` | TTL 12 часов, cleanup при старте приложения | `restart_store.cleanup_stale_persisted_sources`, вызов из `app._schedule_stale_persisted_sources_cleanup` |
 | `.run/project.log` | Size-rollover на PowerShell-стороне (`Invoke-ProjectLogRollover`), backupCount=5, порог `256 KiB` | `scripts/_shared.ps1` |
 | `.run/streamlit.log` | Size-rollover в WSL control-скрипте, backupCount=5, порог `256 KiB`, check каждые 30s | `scripts/project-control-wsl.sh :: rotate_streamlit_log_if_needed` |
@@ -205,6 +207,7 @@ bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && python3 scripts/_list_lo
 - No-op если директория не существует или не содержит matching файлов.
 - На каждом фактическом удалении (если было хоть одно) эмитит DEBUG-event `artifact_pruned` с контекстом `{dir, removed_count, max_age_seconds, max_count}`. Writers могут отключить логирование через `emit_log=False`, если артефакт-путь уже освещён событием более высокого уровня.
 - Сначала отбрасываются файлы старше `max_age_seconds`; затем, если превышен `max_count`, удаляются самые старые по mtime (tiebreaker — имя файла). Это делает pruning детерминистичным.
+- Для `.run/ui_results/` retention действует по stem-group: `.result.md`, `.result.docx` и optional `.result.tts.txt` сохраняются и удаляются как единая группа, чтобы не оставлять orphaned narration/download artifacts.
 
 ### 5.3 Опциональный `.run`-guardrail (пока не реализовано)
 
@@ -227,7 +230,8 @@ bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && python3 scripts/_list_lo
 
 - `.run/restart_*` и `.run/completed_*` относятся к persisted source cache и содержат байты исходного загруженного файла, а не итоговый результат обработки.
 - Итоговые user-visible output files для обычных UI-прогонов живут в `.run/ui_results/`.
-- Канонический runtime-event для итоговых UI output files: `ui_result_artifacts_saved` с контекстом `artifact_paths={markdown_path, docx_path}`.
+- Канонический runtime-event для итоговых UI output files: `ui_result_artifacts_saved` с контекстом `artifact_paths={markdown_path, docx_path}` или `artifact_paths={markdown_path, docx_path, tts_text_path}`.
+- Дополнительный narration-specific signal: `ui_audiobook_artifact_saved` использует тот же envelope-style контекст с `filename` и `artifact_paths`, а дополнительно несёт `tts_text_path`, `char_count`, `tag_count`, `excluded_blocks`, `mode`.
 - Если нужно восстановить, что именно пользователь видел в финальном download path, начинать надо с `.run/ui_results/` и `ui_result_artifacts_saved`, а не с root-level `.run/completed_*`.
 
 ---
@@ -265,3 +269,4 @@ bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && python3 scripts/_list_lo
 
 - 2026-04-19: первая ревизия. Канонизирует текущее состояние `logger.py`, runtime-retention механик и фиксирует гэпы в retention для `paragraph_boundary_reports/`, `relation_normalization_reports/`, `paragraph_boundary_ai_review/`, `structure_maps/`, `structure_validation/`. Описан паттерн добавления новых событий.
 - 2026-04-19 (follow-up): гэп закрыт. Введён `runtime_artifact_retention.py` с `prune_artifact_dir()` и per-family константами. Writers подключены. Добавлено DEBUG-событие `artifact_pruned`. Ручной скрипт `scripts/clean-stale-run-artifacts.sh` очищает whitelisted stale root-файлы `.run/`. Тесты: `tests/test_runtime_artifact_retention.py`. Применена первичная cleanup-волна: `.run/` с 24 MiB сжат до 5.5 MiB, 39 stale артефактов удалено, bounded-директории в пределах квот.
+- 2026-04-23: добавлен audiobook/narration contract. `.run/ui_results/` retention переведён на grouped stem pruning для `.result.md` / `.result.docx` / optional `.result.tts.txt`. Зафиксированы события `ui_audiobook_artifact_saved`, `audiobook_postprocess_chunk_started`, `audiobook_postprocess_chunk_completed` и расширенный payload `ui_result_artifacts_saved`.

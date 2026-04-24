@@ -191,6 +191,8 @@ def test_prepare_document_for_processing_keeps_toc_jobs_operation_aware_across_c
     assert calls["count"] == 2
     assert edit_result.jobs[0]["job_kind"] == "passthrough"
     assert translate_result.jobs[0]["job_kind"] == "llm"
+    assert edit_result.jobs[0]["narration_include"] is False
+    assert translate_result.jobs[0]["narration_include"] is False
 
 
 def test_prepare_document_for_processing_cache_key_changes_with_ai_review_mode(monkeypatch):
@@ -241,6 +243,52 @@ def test_prepare_document_for_processing_cache_key_changes_with_ai_review_mode(m
     assert list(session_state["preparation_cache"].keys()) == [
         "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:sr=off",
         "report.docx:10:hash:6000:high_only:review_only:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:sr=off",
+    ]
+
+
+def test_prepare_document_for_processing_jobs_include_narration_metadata_without_affecting_cache_key(monkeypatch):
+    session_state = {"preparation_cache": {}}
+    paragraphs = [
+        ParagraphUnit(text="Contents", role="body", structural_role="toc_header", source_index=0),
+        ParagraphUnit(text="Chapter 1........ 12", role="body", structural_role="toc_entry", source_index=1),
+        ParagraphUnit(text="Actual body", role="body", source_index=2),
+    ]
+    config_state = {
+        "paragraph_boundary_normalization_enabled": True,
+        "paragraph_boundary_normalization_mode": "high_only",
+        "paragraph_boundary_ai_review_enabled": False,
+        "paragraph_boundary_ai_review_mode": "off",
+        "relation_normalization_enabled": True,
+        "relation_normalization_profile": "phase2_default",
+        "relation_normalization_enabled_relation_kinds": (
+            "image_caption",
+            "table_caption",
+            "epigraph_attribution",
+            "toc_region",
+        ),
+        "structure_recognition_enabled": False,
+        "structure_recognition_mode": "off",
+        "structure_validation_enabled": True,
+    }
+
+    monkeypatch.setattr(
+        preparation,
+        "extract_document_content_with_normalization_reports",
+        lambda uploaded_file: _build_extract_result(paragraphs, [], None),
+    )
+    monkeypatch.setattr(preparation, "build_document_text", lambda items: "\n\n".join(paragraph.text for paragraph in items))
+    monkeypatch.setattr(preparation, "load_app_config", lambda: dict(config_state))
+
+    prepared = preparation.prepare_document_for_processing(
+        uploaded_payload=_build_uploaded_payload("report.docx", b"docx-bytes", "report.docx:10:hash"),
+        chunk_size=6000,
+        processing_operation="edit",
+        session_state=session_state,
+    )
+
+    assert [job["narration_include"] for job in prepared.jobs] == [False, True]
+    assert list(session_state["preparation_cache"].keys()) == [
+        "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:sr=off"
     ]
 
 

@@ -1,3 +1,5 @@
+import re
+
 from document_relations import build_paragraph_relations, resolve_effective_relation_kinds
 from models import DocumentBlock, ParagraphRelation, ParagraphUnit
 
@@ -5,6 +7,13 @@ from models import DocumentBlock, ParagraphRelation, ParagraphUnit
 # Spec TOC/minimal-formatting 2026-04-21: a block becomes TOC-dominant at 70%+
 # TOC structural-role composition unless all paragraphs are TOC lines.
 TOC_DOMINANCE_THRESHOLD = 0.7
+_INTERNAL_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_[A-Za-z0-9_]+\]\]")
+_BIBLIOGRAPHY_LEAD_PATTERN = re.compile(r"^\s*(?:\[\d+\]|\(\d+\)|\d+[.)]\s+)")
+_BIBLIOGRAPHY_TOKEN_PATTERN = re.compile(r"(?:https?://|www\.|\b(?:doi|isbn|issn|arxiv)\b)", re.IGNORECASE)
+_BIBLIOGRAPHY_HEADING_PATTERN = re.compile(
+    r"\b(?:references|bibliography|works cited|литература|список литературы|bibliographie)\b",
+    re.IGNORECASE,
+)
 
 
 def build_marker_wrapped_block_text(paragraphs: list[ParagraphUnit], *, paragraph_ids: list[str] | None = None) -> str:
@@ -174,6 +183,7 @@ def build_editing_jobs(blocks: list[DocumentBlock], max_chars: int, processing_o
     context_after_chars = max(300, min(800, int(max_chars * 0.12)))
     jobs: list[dict[str, object]] = []
     fallback_paragraph_index = 0
+    bibliography_tail_indexes = _resolve_bibliography_tail_indexes(blocks)
 
     for index, block in enumerate(blocks):
         context_before = build_context_excerpt(blocks, index, context_before_chars, reverse=True)
@@ -186,11 +196,17 @@ def build_editing_jobs(blocks: list[DocumentBlock], max_chars: int, processing_o
             or (toc_paragraph_count / paragraph_count) >= TOC_DOMINANCE_THRESHOLD
         )
         normalized_operation = str(processing_operation or "edit").strip().lower() or "edit"
+        narration_include = _resolve_narration_include(
+            block,
+            block_index=index,
+            bibliography_tail_indexes=bibliography_tail_indexes,
+        )
         job_kind = (
             "passthrough"
             if block.paragraphs
             and (
                 all(paragraph.role == "image" for paragraph in block.paragraphs)
+                or (normalized_operation == "audiobook" and not narration_include)
                 or (normalized_operation != "translate" and all(_is_toc_structural_role(paragraph) for paragraph in block.paragraphs))
             )
             else "llm"
@@ -206,6 +222,7 @@ def build_editing_jobs(blocks: list[DocumentBlock], max_chars: int, processing_o
                 "target_text_with_markers": build_marker_wrapped_block_text(block.paragraphs, paragraph_ids=paragraph_ids),
                 "paragraph_ids": paragraph_ids,
                 "structural_roles": structural_roles,
+                "narration_include": narration_include,
                 "toc_dominant": toc_dominant,
                 "toc_paragraph_count": toc_paragraph_count,
                 "paragraph_count": paragraph_count,
@@ -290,3 +307,86 @@ def _is_quote_structural_role(paragraph: ParagraphUnit) -> bool:
 
 def _is_toc_structural_role(paragraph: ParagraphUnit) -> bool:
     return _paragraph_structural_kind(paragraph) in {"toc_header", "toc_entry"}
+
+
+def _strip_internal_placeholders(text: str) -> str:
+    return _INTERNAL_PLACEHOLDER_PATTERN.sub("", text).strip()
+
+
+def _iter_block_text_lines(block: DocumentBlock) -> list[str]:
+    lines: list[str] = []
+    for paragraph in block.paragraphs:
+        raw_text = _strip_internal_placeholders(paragraph.text)
+        if not raw_text:
+            continue
+        lines.extend(line.strip() for line in raw_text.splitlines() if line.strip())
+    return lines
+
+
+def _is_bibliography_like_line(line: str) -> bool:
+    normalized = line.strip()
+    if not normalized:
+        return False
+    return bool(
+        _BIBLIOGRAPHY_LEAD_PATTERN.match(normalized)
+        or _BIBLIOGRAPHY_TOKEN_PATTERN.search(normalized)
+        or _BIBLIOGRAPHY_HEADING_PATTERN.search(normalized)
+    )
+
+
+def _is_heading_like_block(block: DocumentBlock) -> bool:
+    if not block.paragraphs:
+        return False
+    if all(_is_toc_structural_role(paragraph) for paragraph in block.paragraphs):
+        return False
+    if not any(paragraph.role == "heading" for paragraph in block.paragraphs):
+        return False
+    lines = _iter_block_text_lines(block)
+    if not lines:
+        return False
+    matches = sum(1 for line in lines if _is_bibliography_like_line(line))
+    return (matches / len(lines)) < TOC_DOMINANCE_THRESHOLD
+
+
+def _is_bibliography_like_block(block: DocumentBlock) -> bool:
+    lines = _iter_block_text_lines(block)
+    if not lines:
+        return False
+    matches = sum(1 for line in lines if _is_bibliography_like_line(line))
+    return (matches / len(lines)) >= TOC_DOMINANCE_THRESHOLD
+
+
+def _resolve_bibliography_tail_indexes(blocks: list[DocumentBlock]) -> set[int]:
+    last_narrative_heading_index = -1
+    for index, block in enumerate(blocks):
+        if _is_heading_like_block(block):
+            last_narrative_heading_index = index
+    if last_narrative_heading_index < 0 or last_narrative_heading_index >= len(blocks) - 1:
+        return set()
+
+    for start_index in range(last_narrative_heading_index + 1, len(blocks)):
+        candidate_blocks = blocks[start_index:]
+        if not candidate_blocks:
+            continue
+        if all(_is_bibliography_like_block(block) for block in candidate_blocks):
+            return set(range(start_index, len(blocks)))
+    return set()
+
+
+def _resolve_narration_include(
+    block: DocumentBlock,
+    *,
+    block_index: int,
+    bibliography_tail_indexes: set[int],
+) -> bool:
+    if not block.paragraphs:
+        return False
+    if all(_is_toc_structural_role(paragraph) for paragraph in block.paragraphs):
+        return False
+    if all(_paragraph_structural_kind(paragraph) == "image" for paragraph in block.paragraphs):
+        return False
+    if not _iter_block_text_lines(block):
+        return False
+    if block_index in bibliography_tail_indexes:
+        return False
+    return True

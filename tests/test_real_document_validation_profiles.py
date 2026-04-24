@@ -35,6 +35,8 @@ def test_resolve_runtime_resolution_reports_explicit_overrides() -> None:
     assert resolution.effective.enable_paragraph_markers is True
     assert resolution.effective.structure_recognition_mode == "always"
     assert resolution.effective.structure_recognition_enabled is True
+    assert resolution.effective.processing_operation == app_config.processing_operation_default
+    assert resolution.effective.audiobook_postprocess_enabled is app_config.audiobook_postprocess_default
     assert resolution.ui_defaults.structure_recognition_mode == "auto"
     assert resolution.ui_defaults.model == app_config.models.text.default
     assert resolution.overrides["enable_paragraph_markers"] is True
@@ -82,3 +84,22 @@ def test_load_validation_registry_reads_second_corpus_profile_and_soak_run_profi
     assert run_profile.tier == "full"
     assert structural_run_profile.tier == "structural"
     assert structural_run_profile.structure_recognition_mode == "off"
+
+
+def test_load_validation_registry_reads_mazzucato_audiobook_profile_and_run_profile() -> None:
+    registry = load_validation_registry()
+
+    document_profile = registry.get_document_profile("mazzucato-audiobook-core")
+    run_profile = registry.get_run_profile("ui-parity-translate-audiobook-postprocess")
+    baseline_run_profile = registry.get_run_profile("ui-parity-translate-baseline")
+
+    assert document_profile.default_run_profile == "ui-parity-translate-audiobook-postprocess"
+    assert document_profile.source_path.endswith("Mariana Mazzucato (z-lib.org).docx")
+    assert "audiobook" in document_profile.tags
+    assert run_profile.tier == "full"
+    assert run_profile.enable_paragraph_markers is True
+    assert run_profile.repeat_count == 1
+    assert run_profile.processing_operation == "translate"
+    assert run_profile.audiobook_postprocess_enabled is True
+    assert baseline_run_profile.processing_operation == "translate"
+    assert baseline_run_profile.audiobook_postprocess_enabled is False

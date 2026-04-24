@@ -124,7 +124,14 @@ class ImageReinserter(Protocol):
 
 
 class ResultArtifactWriter(Protocol):
-    def __call__(self, *, source_name: str, markdown_text: str, docx_bytes: bytes) -> Mapping[str, str]: ...
+    def __call__(
+        self,
+        *,
+        source_name: str,
+        markdown_text: str,
+        docx_bytes: bytes,
+        narration_text: str | None = None,
+    ) -> Mapping[str, str]: ...
 
 
 class ProcessingJobs(Sized, Protocol):
@@ -179,6 +186,8 @@ class ProcessingContext:
 @dataclass
 class ProcessingState:
     processed_chunks: list[str] = field(default_factory=list)
+    narration_chunks: list[str] = field(default_factory=list)
+    excluded_narration_block_count: int = 0
     generated_paragraph_registry: list[dict[str, object]] = field(default_factory=list)
     system_prompt: str | None = None
     toc_system_prompt: str | None = None
@@ -215,6 +224,7 @@ class BlockExecutionPayload:
     context_before: str
     context_after: str
     structural_roles: list[str] | None = None
+    narration_include: bool = True
     toc_dominant: bool = False
     toc_paragraph_count: int = 0
     paragraph_count: int = 0

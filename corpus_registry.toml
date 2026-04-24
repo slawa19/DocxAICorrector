@@ -55,6 +55,35 @@ tags = ["legacy-doc", "headings", "manual-regression"]
 provenance = "Canonical legacy DOC corpus sample processed through project-level auto-conversion during validation runs."
 tolerance_reason = "Current normalized legacy-DOC sample preserves structure and text but retains one page-separator artifact that maps to a single formatting diagnostics entry during deterministic passthrough."
 
+[[documents]]
+id = "mazzucato-audiobook-core"
+source_path = "tests/sources/The Value of Everything. Making and Taking in the Global Economy by Mariana Mazzucato (z-lib.org).docx"
+artifact_prefix = "mazzucato_audiobook_validation"
+output_basename = "The Value of Everything_audiobook_validated"
+structural_mode = "strict"
+min_paragraphs = 150
+has_headings = true
+min_headings = 5
+has_numbered_lists = false
+min_numbered_items = 0
+has_images = false
+min_images = 0
+has_tables = false
+min_tables = 0
+max_formatting_diagnostics = 2
+max_unmapped_source_paragraphs = 6
+max_unmapped_target_paragraphs = 2
+max_heading_level_drift = 1
+min_text_similarity = 0.97
+min_merged_groups = 1
+min_merged_raw_paragraphs = 2
+require_numbered_lists_preserved = false
+require_nonempty_output = true
+forbid_heading_only_collapse = true
+default_run_profile = "ui-parity-translate-audiobook-postprocess"
+tags = ["audiobook", "translation", "manual-regression"]
+provenance = "Canonical Mariana Mazzucato real-document sample for translate plus audiobook postprocess sanity checks."
+
 [[run_profiles]]
 id = "ui-parity-default"
 tier = "full"
@@ -85,3 +114,25 @@ tier = "full"
 mode = "soak"
 enable_paragraph_markers = true
 repeat_count = 3
+
+[[run_profiles]]
+id = "ui-parity-translate-audiobook-postprocess"
+tier = "full"
+mode = "regression"
+processing_operation = "translate"
+source_language = "auto"
+target_language = "ru"
+audiobook_postprocess_enabled = true
+enable_paragraph_markers = true
+repeat_count = 1
+
+[[run_profiles]]
+id = "ui-parity-translate-baseline"
+tier = "full"
+mode = "regression"
+processing_operation = "translate"
+source_language = "auto"
+target_language = "ru"
+audiobook_postprocess_enabled = false
+enable_paragraph_markers = true
+repeat_count = 1

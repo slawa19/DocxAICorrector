@@ -206,8 +206,9 @@ echo START && powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Users\
 ## UI result artifacts
 
 - Не путайте `.run/completed_*` с итоговым результатом обработки: `completed_*` — это persisted cache исходного загруженного файла для restart/reuse после успешного прогона, а не output DOCX.
-- Для обычных UI-прогонов итоговые user-visible output artifacts пишутся в `.run/ui_results/` как пара файлов одного stem: `.result.md` и `.result.docx`.
-- Канонический лог-сигнал для этих файлов: `ui_result_artifacts_saved`. В его `artifact_paths` лежат точные пути к итоговому Markdown и итоговому DOCX.
+- Для обычных UI-прогонов итоговые user-visible output artifacts пишутся в `.run/ui_results/` как stem-группа: `.result.md`, `.result.docx` и optional `.result.tts.txt` для audiobook/narration сценариев.
+- Канонический лог-сигнал для этих файлов: `ui_result_artifacts_saved`. В его `artifact_paths` лежат точные пути к итоговому Markdown, DOCX и при наличии narration text.
+- Для narration-specific анализа используйте `ui_audiobook_artifact_saved`: он указывает точный `tts_text_path`, mode (`standalone` / `postprocess`) и базовые counters (`char_count`, `tag_count`, `excluded_blocks`).
 - Если нужно анализировать качество последнего UI-прогона, сначала ищите `ui_result_artifacts_saved` и соответствующие файлы в `.run/ui_results/`, а уже потом fallback'айтесь к промежуточным diagnostics.
 
 ## Streamlit Layout Contract

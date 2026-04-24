@@ -6,7 +6,7 @@ from constants import UI_RESULT_ARTIFACTS_DIR
 from runtime_artifact_retention import (
     UI_RESULT_ARTIFACTS_MAX_AGE_SECONDS,
     UI_RESULT_ARTIFACTS_MAX_COUNT,
-    prune_artifact_dir,
+    prune_ui_result_artifact_groups,
 )
 
 
@@ -48,6 +48,7 @@ def write_ui_result_artifacts(
     source_name: str,
     markdown_text: str,
     docx_bytes: bytes,
+    narration_text: str | None = None,
     output_dir: Path = UI_RESULT_ARTIFACTS_DIR,
     created_at: float | None = None,
 ) -> dict[str, str]:
@@ -55,26 +56,35 @@ def write_ui_result_artifacts(
     artifact_stem = _build_ui_result_stem(source_name, created_at=created_at)
     markdown_path = output_dir / f"{artifact_stem}.md"
     docx_path = output_dir / f"{artifact_stem}.docx"
+    tts_path = output_dir / f"{artifact_stem}.tts.txt"
 
     markdown_path.write_text(markdown_text, encoding="utf-8")
     try:
         docx_path.write_bytes(docx_bytes)
+        if narration_text is not None:
+            tts_path.write_text(narration_text, encoding="utf-8")
     except OSError:
         try:
             if markdown_path.exists():
                 markdown_path.unlink()
+            if docx_path.exists():
+                docx_path.unlink()
+            if tts_path.exists():
+                tts_path.unlink()
         except OSError:
             pass
         raise
 
-    prune_artifact_dir(
+    prune_ui_result_artifact_groups(
         target_dir=output_dir,
         max_age_seconds=UI_RESULT_ARTIFACTS_MAX_AGE_SECONDS,
         max_count=UI_RESULT_ARTIFACTS_MAX_COUNT,
-        glob="*",
         emit_log=False,
     )
-    return {
+    artifact_paths = {
         "markdown_path": str(markdown_path),
         "docx_path": str(docx_path),
     }
+    if narration_text is not None:
+        artifact_paths["tts_text_path"] = str(tts_path)
+    return artifact_paths

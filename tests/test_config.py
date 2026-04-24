@@ -166,6 +166,38 @@ def test_load_app_config_applies_translation_second_pass_env_overrides(monkeypat
     assert app_config["translation_second_pass_model"] == "gpt-5.4"
 
 
+def test_load_app_config_resolves_audiobook_defaults_from_text_model(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+
+    app_config = config.load_app_config()
+
+    assert app_config["audiobook_postprocess_default"] is False
+    assert app_config["audiobook_model"] == app_config["default_model"]
+
+
+def test_load_app_config_honors_audiobook_model_override_from_toml(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[models.text]\ndefault = "gpt-5.4-mini"\noptions = ["gpt-5.4-mini", "gpt-5.4"]\n\n'
+        '[models.audiobook]\ndefault = "gpt-5.4"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+
+    app_config = config.load_app_config()
+
+    assert app_config["audiobook_model"] == "gpt-5.4"
+
+
+def test_load_app_config_applies_audiobook_postprocess_env_override(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.setenv("DOCX_AI_AUDIOBOOK_POSTPROCESS_DEFAULT", "true")
+
+    app_config = config.load_app_config()
+
+    assert app_config["audiobook_postprocess_default"] is True
+
+
 def test_load_system_prompt_varies_by_editorial_intensity():
     literary_prompt = config.load_system_prompt(
         operation="translate",
@@ -343,6 +375,28 @@ def test_load_system_prompt_translate_includes_hardening_rules():
     assert "предпочитайте консервативный результат" in prompt
 
 
+def test_load_system_prompt_supports_audiobook_operation():
+    config.load_system_prompt.cache_clear()
+    try:
+        prompt = config.load_system_prompt(operation="audiobook", source_language="en", target_language="ru")
+    finally:
+        config.load_system_prompt.cache_clear()
+
+    assert "ElevenLabs Audiobooks" in prompt
+    assert "[thoughtful]" in prompt
+    assert "готовый для TTS" in prompt
+
+
+def test_load_system_prompt_supports_auto_source_language_for_audiobook():
+    config.load_system_prompt.cache_clear()
+    try:
+        prompt = config.load_system_prompt(operation="audiobook", source_language="auto", target_language="ru")
+    finally:
+        config.load_system_prompt.cache_clear()
+
+    assert "определи автоматически по тексту" in prompt
+
+
 def test_load_system_prompt_translate_includes_editorial_intensity_fragment_and_example_rules():
     config.load_system_prompt.cache_clear()
     try:
@@ -433,6 +487,19 @@ def test_load_system_prompt_supports_toc_translate_variant():
     assert "Переведите блок как оглавление" in prompt
     assert "Содержание" in prompt
     assert "Part II: The Dynamics of Extraction ........ 83" in prompt
+
+
+def test_load_app_config_accepts_audiobook_processing_operation_default(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        'processing_operation_default = "audiobook"\nsource_language_default = "auto"\ntarget_language_default = "ru"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+
+    app_config = config.load_app_config()
+
+    assert app_config["processing_operation_default"] == "audiobook"
 
 
 def test_load_app_config_applies_env_override_for_paragraph_boundary_mode(monkeypatch, tmp_path):

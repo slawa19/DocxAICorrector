@@ -106,6 +106,18 @@ pandoc --version
 - `semantic_redraw_structured` остаётся generation-first/conservative режимом, при этом deterministic reconstruction допустим как внутренний delivery path без смены пользовательского mode label.
 - `compare_all` готовит несколько candidate-вариантов в одном проходе и не требует отдельной финальной пересборки из compare-panel.
 
+## Audiobook Mode And Post-Pass
+
+- `processing_operation="audiobook"` является отдельным text mode наряду с `edit` и `translate`.
+- Для standalone audiobook runtime принудительно коэрсит effective `image_mode` в `no_change`, даже если non-UI caller передал другое значение.
+- Для `edit` и `translate` в sidebar доступен checkbox `Подготовить для ElevenLabs аудиокниги`; он включает отдельный sibling post-pass и не меняет базовый DOCX/Markdown branch.
+- `audiobook_postprocess_enabled` не участвует в preparation cache key: narratability metadata вычисляется заранее и не требует отдельной preparation-ветки.
+- Narration artifact строится только из narratable blocks и исключает TOC, bibliography tails и image-only blocks.
+- Итоговый narration artifact пишется в `.run/ui_results/` как `<stem>.result.tts.txt` рядом с `.result.md` и `.result.docx`.
+- Для `audiobook` UI показывает `Текст для ElevenLabs (.txt)`, `Markdown (для инспекции)` и `DOCX (для инспекции)`.
+- Для `edit` / `translate` без post-pass UI сохраняет обычные labels `Отредактированный ...` или `Переведённый ...`; при включённом post-pass добавляется отдельная кнопка `Текст для ElevenLabs (.txt)`.
+- Deterministic writer pass удаляет остаточный Markdown, placeholders и link syntax из narration artifact, но не подменяет будущие richer prompt-level transformations.
+
 ## Delivery Contract
 
 - UI mode не равен автоматически внутренней стратегии генерации: delivery определяется совместно analysis, policy и validation.

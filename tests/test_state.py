@@ -63,12 +63,15 @@ def test_init_session_state_initializes_image_processing_summary(monkeypatch):
         "validation_errors": [],
     }
     assert session_state.latest_source_token == ""
+    assert session_state.latest_processing_operation == "edit"
+    assert session_state.latest_audiobook_postprocess_enabled is False
     assert session_state.selected_source_token == ""
     assert session_state.last_background_error is None
     assert session_state.processing_stop_requested is False
     assert session_state.processing_worker is None
     assert session_state.processing_event_queue is None
     assert session_state.processing_stop_event is None
+    assert session_state.latest_narration_text is None
     assert session_state.preparation_worker is None
     assert session_state.preparation_event_queue is None
     assert session_state.prepared_run_context is None
@@ -207,6 +210,7 @@ def test_reset_run_state_can_preserve_preparation_state(monkeypatch):
             "target_language": False,
         },
         latest_markdown="stale",
+        latest_narration_text="stale narration",
         run_log=[{"message": "stale"}],
         activity_feed=[{"message": "stale"}],
     )
@@ -221,6 +225,7 @@ def test_reset_run_state_can_preserve_preparation_state(monkeypatch):
     assert session_state.preparation_input_marker == "report.docx:3:token:6000"
     assert session_state.prepared_source_key == "report.docx:3:token:6000"
     assert session_state.preparation_cache == {"report.docx:3:token:6000": {"cached": True}}
+    assert session_state.latest_narration_text is None
     assert session_state.recommended_text_settings["file_token"] == "report.docx:3:abc"
     assert session_state.recommended_text_settings_applied_for_token == "report.docx:3:abc"
     assert session_state.recommended_text_settings_applied_snapshot["file_token"] == "report.docx:3:abc"
@@ -463,6 +468,8 @@ def test_processing_session_snapshot_exposes_p1a_owned_keys(monkeypatch):
         processing_stop_requested=True,
         latest_source_name="report.docx",
         latest_source_token="report.docx:3:abc",
+        latest_processing_operation="translate",
+        latest_audiobook_postprocess_enabled=True,
         selected_source_token="report.docx:3:abc",
         latest_image_mode="safe",
     )
@@ -477,10 +484,14 @@ def test_processing_session_snapshot_exposes_p1a_owned_keys(monkeypatch):
     assert snapshot.stop_requested is True
     assert snapshot.latest_source_name == "report.docx"
     assert snapshot.latest_source_token == "report.docx:3:abc"
+    assert snapshot.latest_processing_operation == "translate"
+    assert snapshot.latest_audiobook_postprocess_enabled is True
     assert snapshot.selected_source_token == "report.docx:3:abc"
     assert snapshot.latest_image_mode == "safe"
     assert state.get_latest_source_name() == "report.docx"
     assert state.get_latest_source_token() == "report.docx:3:abc"
+    assert state.get_latest_processing_operation() == "translate"
+    assert state.get_latest_audiobook_postprocess_enabled() is True
     assert state.get_selected_source_token() == "report.docx:3:abc"
     assert state.get_latest_image_mode() == "safe"
     assert state.get_processing_worker() is worker
@@ -602,6 +613,8 @@ def test_apply_processing_start_updates_owned_p1a_keys(monkeypatch):
         uploaded_filename="report.docx",
         uploaded_token="report.docx:3:abc",
         image_mode="safe",
+        processing_operation="translate",
+        audiobook_postprocess_enabled=True,
         worker=worker,
         event_queue=event_queue,
         stop_event=stop_event,
@@ -609,6 +622,8 @@ def test_apply_processing_start_updates_owned_p1a_keys(monkeypatch):
 
     assert session_state.latest_source_name == "report.docx"
     assert session_state.latest_source_token == "report.docx:3:abc"
+    assert session_state.latest_processing_operation == "translate"
+    assert session_state.latest_audiobook_postprocess_enabled is True
     assert session_state.selected_source_token == "report.docx:3:abc"
     assert session_state.latest_image_mode == "safe"
     assert session_state.processing_outcome == "running"

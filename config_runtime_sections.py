@@ -1,4 +1,5 @@
 import os
+from collections.abc import Mapping
 from typing import Any
 
 
@@ -336,9 +337,46 @@ def resolve_image_output_settings(
     }
 
 
+def _resolve_audiobook_model_default(
+    *,
+    config_data: dict[str, object],
+    model_registry_settings: Mapping[str, Any],
+    config_path: Any,
+) -> str:
+    models_value = config_data.get("models")
+    if models_value is None:
+        models_config: dict[str, object] = {}
+    elif isinstance(models_value, dict):
+        models_config = models_value
+    else:
+        raise RuntimeError(f"Некорректное поле models в {config_path}: ожидается таблица")
+
+    audiobook_value = models_config.get("audiobook")
+    if audiobook_value is None:
+        audiobook_config: dict[str, object] = {}
+    elif isinstance(audiobook_value, dict):
+        audiobook_config = audiobook_value
+    else:
+        raise RuntimeError(f"Некорректное поле models.audiobook в {config_path}: ожидается таблица")
+
+    raw_audiobook_model = audiobook_config.get("default")
+    if raw_audiobook_model is not None:
+        if not isinstance(raw_audiobook_model, str) or not raw_audiobook_model.strip():
+            raise RuntimeError(f"Некорректное поле models.audiobook.default в {config_path}: ожидается непустая строка")
+        return raw_audiobook_model.strip()
+
+    models = model_registry_settings.get("models")
+    text_model = getattr(models, "text", None)
+    text_default_model = str(getattr(text_model, "default", "")).strip()
+    if not text_default_model:
+        raise RuntimeError("Text default model is not resolved for audiobook fallback.")
+    return text_default_model
+
+
 def resolve_text_runtime_defaults(
     *,
     config_data: dict[str, object],
+    model_registry_settings: Mapping[str, Any],
     default_chunk_size: int,
     default_max_retries: int,
     config_path: Any,
@@ -378,6 +416,7 @@ def resolve_text_runtime_defaults(
     target_language_default = parse_config_str_fn(config_data, "target_language_default", "ru").strip().lower()
     editorial_intensity_default = parse_config_str_fn(config_data, "editorial_intensity_default", "literary").strip().lower()
     translation_second_pass_default = parse_config_bool_fn(config_data, "translation_second_pass_default", False)
+    audiobook_postprocess_default = parse_config_bool_fn(config_data, "audiobook_postprocess_default", False)
     raw_translation_second_pass_model = config_data.get("translation_second_pass_model")
     if raw_translation_second_pass_model is None:
         translation_second_pass_model = ""
@@ -385,6 +424,11 @@ def resolve_text_runtime_defaults(
         raise RuntimeError(f"Некорректное поле translation_second_pass_model в {config_path}: ожидается строка")
     else:
         translation_second_pass_model = raw_translation_second_pass_model.strip()
+    audiobook_model = _resolve_audiobook_model_default(
+        config_data=config_data,
+        model_registry_settings=model_registry_settings,
+        config_path=config_path,
+    )
     validate_text_transform_context_fn(
         operation=processing_operation_default,
         source_language=source_language_default,
@@ -416,6 +460,10 @@ def resolve_text_runtime_defaults(
         "DOCX_AI_TRANSLATION_SECOND_PASS_DEFAULT",
         translation_second_pass_default,
     )
+    audiobook_postprocess_default = parse_bool_env_fn(
+        "DOCX_AI_AUDIOBOOK_POSTPROCESS_DEFAULT",
+        audiobook_postprocess_default,
+    )
     translation_second_pass_model = parse_optional_str_env_fn("DOCX_AI_TRANSLATION_SECOND_PASS_MODEL") or translation_second_pass_model
     validate_text_transform_context_fn(
         operation=processing_operation_default,
@@ -438,6 +486,8 @@ def resolve_text_runtime_defaults(
         "editorial_intensity_default": editorial_intensity_default,
         "translation_second_pass_default": translation_second_pass_default,
         "translation_second_pass_model": translation_second_pass_model,
+        "audiobook_postprocess_default": audiobook_postprocess_default,
+        "audiobook_model": audiobook_model,
         "enable_paragraph_markers": enable_paragraph_markers,
     }
 

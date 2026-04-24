@@ -1,8 +1,25 @@
 # Audiobook ElevenLabs Preparation Spec
 
 Date: 2026-04-23
-Status: Ready for development
+Status: Implemented; final polish tracked in-place
 Scope type: new processing operation + composable post-pass + new user-visible artifact
+
+## Implementation Status Snapshot (2026-04-24)
+
+Closed in code and covered by tests:
+
+1. stale narration state clearing on failure paths;
+2. completed-view mode drift via persisted result-bundle metadata;
+3. audiobook prompt and deterministic stripper contract hardening;
+4. standalone audiobook guard against translation second pass;
+5. bibliography-tail false exclusion for mixed final narrative blocks;
+6. stronger §10.4 real-document sanity coverage with normalized paragraph-signature comparison and per-section tag assertions;
+7. grouped `.result.md` / `.result.docx` / optional `.result.tts.txt` retention and dedicated narration artifact logging.
+
+Remaining non-blocking polish after this update:
+
+1. no architectural gaps remain for this spec;
+2. log payload consistency is aligned to the shared `filename` / `artifact_paths` envelope while preserving the existing narration-specific fields.
 
 Primary inputs:
 
@@ -284,7 +301,13 @@ The log event `ui_audiobook_artifact_saved` is emitted with payload conceptually
 ```json
 {
   "event": "ui_audiobook_artifact_saved",
+  "filename": "...",
   "source_name": "...",
+  "artifact_paths": {
+    "markdown_path": ".../.run/ui_results/...result.md",
+    "docx_path": ".../.run/ui_results/...result.docx",
+    "tts_text_path": ".../.run/ui_results/...tts.txt"
+  },
   "tts_text_path": ".../.run/ui_results/...tts.txt",
   "char_count": 12345,
   "tag_count": 42,
@@ -294,6 +317,8 @@ The log event `ui_audiobook_artifact_saved` is emitted with payload conceptually
 ```
 
 or the same payload with `"mode": "postprocess"`. The `mode` field is a string enum, not TypeScript union syntax.
+
+For log-schema consistency with `ui_result_artifacts_saved`, the event also carries `filename` and the full `artifact_paths` mapping. `source_name` may remain as a compatibility alias while existing consumers converge.
 
 ### 7.4 Runtime result-bundle and session-state contract
 
@@ -405,6 +430,18 @@ Model rules:
 1. standalone `audiobook` base pass uses the user-selected runtime model, consistent with current `edit` / `translate` behavior;
 2. audiobook post-pass defaults to `AppConfig.audiobook_model`;
 3. if `AppConfig.audiobook_model` resolves empty for any reason, fall back to the current base model.
+
+### 7.8 Follow-up-ready speech-clarity adaptation point
+
+The current architecture should preserve a narrow extension point for future spoken-clarity rewriting without introducing a new pipeline axis.
+
+1. Any future "make it easier to listen to" behavior must remain a narration-only concern inside the audiobook prompt contract and/or narration-only post-pass semantics; it must not become a fourth `processing_operation` and must not mutate the base `.result.md` / `.result.docx` branch.
+2. The recommended shape is a narration-only profile such as `narration_adaptation_profile`, with `narration_adapted` as the effective default for both standalone `audiobook` and `audiobook_postprocess`.
+3. The first rollout should be prompt-level, not pipeline-level: implement it by tightening `prompts/operation_audiobook.txt`, `prompts/example_audiobook.txt`, and narration-specific tests rather than by changing preparation, semantic-block planning, cache keys, or result-bundle structure.
+4. If the profile remains implicit in v1, encode `narration_adapted` directly in the audiobook prompt assets. If it later becomes user-configurable, that setting must affect only the narration branch and must stay out of preparation cache keys and base-operation planning invariants.
+5. `narration_adapted` means: split overly long or nested sentences, allow light paraphrase for oral clarity, preserve factual meaning, argument direction, polarity, named entities, quantities, and materially relevant qualifiers; no summarization, no omission of load-bearing clauses, no author-position softening.
+
+This keeps the current spec additive: the audiobook pipeline can land first, and spoken-clarity adaptation can be strengthened later without reopening core runtime contracts.
 
 ## 8. Narration Transformation Rules (Prompt Contract)
 
@@ -612,6 +649,25 @@ Each step is independently reviewable and must pass `bash scripts/test.sh tests/
 9. **Docs.** Per §13.
 10. **Real-document sanity.** Run the Mazzucato fixture scenario in §10.4 and attach results to the PR.
 
+### 14.1 Review Follow-Up Checklist
+
+The following review findings were discovered during implementation verification and are now part of the must-close checklist for this spec. A step is not considered complete while any item that applies to that step remains open.
+
+1. [closed] Failure paths that terminate processing after a previous successful audiobook-capable run explicitly clear `latest_narration_text` together with `latest_docx_bytes` / `latest_markdown`.
+2. [closed] Completed-result rendering derives labels and button sets from persisted result-bundle metadata for that run, not from mutable session-local mode flags.
+3. [closed] The normative audiobook prompt contract in §8 is encoded explicitly in `prompts/operation_audiobook.txt`.
+4. [closed] The deterministic narration writer pass removes raw URLs and normalizes tabs / repeated internal whitespace in addition to Markdown cleanup.
+5. [closed] Post-pass structured logs use the spec-defined field `pass="postprocess"`.
+6. [closed] The real-document sanity path in §10.4 compares `translate + audiobook_postprocess` against a baseline `translate` run using a normalized semantic comparator for DOCX content.
+7. [closed] The real-document sanity path in §10.4 verifies a stronger per-section tag condition, not just a single global tag hit.
+8. [closed] The bibliography-tail heuristic keeps mixed final narrative blocks out of the excluded terminal bibliography region.
+9. [closed] Standalone `audiobook` UI presents image mode as effectively fixed to `no_change`.
+10. [closed] Regression coverage explicitly guards that standalone `processing_operation="audiobook"` never executes translation second pass even under stale config/session state.
+
+Post-implementation polish note:
+
+1. [closed] `ui_audiobook_artifact_saved` now follows the same `filename` / `artifact_paths` envelope style as `ui_result_artifacts_saved`, while retaining narration-specific counters and mode metadata.
+
 ## 15. Open Questions Deferred to Follow-Ups
 
 1. chapter-level JSON indexing (`.tts.chapters.json`) for ElevenLabs chapter navigation;
@@ -619,3 +675,38 @@ Each step is independently reviewable and must pass `bash scripts/test.sh tests/
 3. SSML alternative output for TTS engines other than ElevenLabs;
 4. per-language tag vocabularies beyond the language-agnostic v1 set defined in §8.4;
 5. a preview pane in the UI that plays the first paragraph via the ElevenLabs API.
+6. a narration-only spoken-clarity profile with `narration_adapted` as the default for both standalone `audiobook` and `audiobook_postprocess`; see §15.1.
+
+### 15.1 Planned Follow-Up: `narration_adapted`
+
+Recommended implementation shape:
+
+1. Keep this as a narration-only prompt behavior, not a new processing operation, pipeline branch, image-mode axis, or document-level rewrite mode.
+2. Treat `narration_adapted` as the default behavior for both standalone `audiobook` and `audiobook_postprocess`, but scope its output strictly to `.tts.txt`.
+3. Land the first version by refining `prompts/operation_audiobook.txt` and `prompts/example_audiobook.txt`, then add narration-only regression coverage for sentence splitting and light paraphrase that preserves meaning.
+4. Limit the transformation to splitting long, nested, or parenthetical sentences and lightly rephrasing bookish or over-compressed constructions for oral clarity.
+5. Preserve factual claims, causal links, polarity, dates, quantities, names, and author stance; forbid summarization, deletion of materially relevant qualifiers, or weakening of the original claim.
+6. Keep base-operation invariants unchanged: enabling or refining `narration_adapted` must not affect preparation cache keys, semantic-block detection, base DOCX semantic equivalence, or the standard artifact contract.
+7. Recommended landing point: immediately after §14 step 7. By then the standalone audiobook path, narration chunks, and audiobook post-pass branch already exist, so the change stays localized to prompt contract, prompt examples, and narration-specific tests instead of reopening core pipeline work.
+
+Prompt-contract requirements for this follow-up:
+
+1. `prompts/operation_audiobook.txt` must explicitly state that the default narration style is `narration_adapted`: narration should sound easier to follow by ear than the source, while preserving meaning.
+2. The prompt must allow sentence splitting when a sentence is long, multi-clausal, parenthetical, or difficult to parse on first hearing.
+3. The prompt must allow only light paraphrase for spoken clarity: replacing bookish, compressed, or overly abstract constructions with simpler spoken equivalents is allowed when the meaning stays materially identical.
+4. The prompt must explicitly forbid summarization, omission of load-bearing clauses, deletion of important qualifiers, softening or strengthening the author's claim, and insertion of new interpretation.
+5. The prompt must explicitly require preservation of: named entities, dates, numbers, quantitative claims, causal links, polarity, attribution, and overall argument direction.
+6. The prompt should instruct the model to keep terminology when it is semantically important, and simplify surrounding syntax before simplifying domain terms.
+7. The prompt should instruct the model not to simplify sentences that are already clear enough for oral delivery; adaptation is selective, not mandatory on every paragraph.
+8. The prompt should instruct the model to prefer two or three shorter spoken sentences over one overloaded sentence, but not to fragment prose into choppy one-clause lines when the original already flows naturally.
+9. The prompt should instruct the model to keep paragraph order and local rhetorical progression intact; no reordering of claims across sentences or paragraphs.
+10. The prompt must make tag placement compatible with sentence splitting: tags may appear at paragraph openings or between resulting sentences per §8.4, but adaptation must not increase tag density beyond the existing ceiling.
+11. `prompts/example_audiobook.txt` should include at least two worked examples where a long academic or analytical sentence is split into shorter spoken sentences while preserving all factual content and argumentative force.
+12. At least one example pair should be negative-by-contrast: show that an over-aggressive simplification would be wrong because it drops a qualifier, causal step, or evaluative nuance.
+
+Recommended regression coverage for this follow-up:
+
+1. Add a prompt-contract regression that checks a dense, nested sentence produces a narration output with more sentence boundaries than the source while preserving required entities and quantities.
+2. Add a meaning-preservation regression that fails if a materially relevant qualifier or causal link disappears from the narration output.
+3. Add a selective-adaptation regression that a short, already clear sentence is not unnecessarily paraphrased into a looser or more colloquial formulation.
+4. Add a post-pass regression proving `translate + audiobook_postprocess` may simplify narration wording in `.tts.txt` while the translated `.result.docx` remains semantically equivalent to the baseline translate run.

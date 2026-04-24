@@ -485,10 +485,12 @@ def _write_latest_alias_artifacts(
     summary_path: Path,
     markdown_artifact: Path | None,
     docx_artifact: Path | None,
+    tts_artifact: Path | None,
     latest_report_path: Path,
     latest_summary_path: Path,
     latest_markdown_path: Path | None,
     latest_docx_path: Path | None,
+    latest_tts_path: Path | None,
     latest_manifest_path: Path,
     run_id: str,
     run_dir: Path,
@@ -501,6 +503,8 @@ def _write_latest_alias_artifacts(
         shutil.copy2(markdown_artifact, latest_markdown_path)
     if docx_artifact is not None and latest_docx_path is not None:
         shutil.copy2(docx_artifact, latest_docx_path)
+    if tts_artifact is not None and latest_tts_path is not None:
+        shutil.copy2(tts_artifact, latest_tts_path)
 
     latest_manifest = dict(manifest_payload)
     latest_manifest.update(
@@ -511,6 +515,7 @@ def _write_latest_alias_artifacts(
             "latest_summary": _path_for_report(latest_summary_path),
             "latest_markdown": _path_for_report(latest_markdown_path) if latest_markdown_path is not None else None,
             "latest_docx": _path_for_report(latest_docx_path) if latest_docx_path is not None else None,
+            "latest_tts_text": _path_for_report(latest_tts_path) if latest_tts_path is not None else None,
         }
     )
     _write_json_atomic(latest_manifest_path, latest_manifest)
@@ -623,6 +628,7 @@ def _select_repeat_artifact_references(repeat_runs: Sequence[Mapping[str, object
                 f"{prefix}_summary_txt": None,
                 f"{prefix}_markdown_path": None,
                 f"{prefix}_docx_path": None,
+                f"{prefix}_tts_text_path": None,
             }
         output_artifacts = cast(Mapping[str, object], run.get("output_artifacts") or {})
         return {
@@ -631,6 +637,7 @@ def _select_repeat_artifact_references(repeat_runs: Sequence[Mapping[str, object
             f"{prefix}_summary_txt": run.get("summary_path"),
             f"{prefix}_markdown_path": output_artifacts.get("markdown_path"),
             f"{prefix}_docx_path": output_artifacts.get("docx_path"),
+            f"{prefix}_tts_text_path": output_artifacts.get("tts_text_path"),
         }
 
     artifact_references = {}
@@ -659,11 +666,13 @@ def _run_repeat_validation(
     progress_path = artifact_dir / f"{artifact_prefix}_progress.json"
     markdown_artifact = artifact_dir / f"{output_basename}.md"
     docx_artifact = artifact_dir / f"{output_basename}.docx"
+    tts_artifact = artifact_dir / f"{output_basename}.tts.txt"
     latest_report_path = artifact_root / f"{artifact_prefix}_report.json"
     latest_summary_path = artifact_root / f"{artifact_prefix}_summary.txt"
     latest_progress_path = artifact_root / f"{artifact_prefix}_progress.json"
     latest_markdown_path = artifact_root / f"{output_basename}.md"
     latest_docx_path = artifact_root / f"{output_basename}.docx"
+    latest_tts_path = artifact_root / f"{output_basename}.tts.txt"
     latest_manifest_path = artifact_root / f"{artifact_prefix}_latest.json"
 
     run_started_at_utc = datetime.now(UTC)
@@ -876,6 +885,7 @@ def _run_repeat_validation(
             f"acceptance_failed_checks={','.join(_as_string_list(acceptance['failed_checks']))}",
             f"markdown_path={report['output_artifacts']['markdown_path']}",
             f"docx_path={report['output_artifacts']['docx_path']}",
+            f"tts_text_path={report['output_artifacts'].get('tts_text_path')}",
             f"latest_manifest_json={report['output_artifacts']['latest_manifest_json']}",
         ]
 
@@ -886,10 +896,12 @@ def _run_repeat_validation(
             summary_path=summary_path,
             markdown_artifact=last_markdown_artifact,
             docx_artifact=last_docx_artifact,
+            tts_artifact=None,
             latest_report_path=latest_report_path,
             latest_summary_path=latest_summary_path,
             latest_markdown_path=latest_markdown_path if last_markdown_artifact is not None else None,
             latest_docx_path=latest_docx_path if last_docx_artifact is not None else None,
+            latest_tts_path=None,
             latest_manifest_path=latest_manifest_path,
             run_id=parent_run_id,
             run_dir=artifact_dir,
@@ -1775,6 +1787,7 @@ def main() -> None:
     state = runtime_snapshot.get("state", {})
     final_markdown = str(state.get("latest_markdown") or "")
     latest_docx_bytes = state.get("latest_docx_bytes")
+    latest_narration_text = str(state.get("latest_narration_text") or "")
     last_error = str(state.get("last_error") or "") or str((exception_payload or {}).get("message") or "")
     source_chars = len(prepared.source_text) if prepared is not None else 0
     final_markdown_chars = len(final_markdown)
@@ -1800,6 +1813,9 @@ def main() -> None:
 
     markdown_artifact_path: Path | None = None
     docx_artifact_path: Path | None = None
+    tts_artifact = artifact_dir / f"{output_basename}.tts.txt"
+    latest_tts_path = artifact_root / f"{output_basename}.tts.txt"
+    tts_artifact_path: Path | None = None
 
     if final_markdown:
         markdown_artifact.write_text(final_markdown, encoding="utf-8")
@@ -1822,6 +1838,10 @@ def main() -> None:
             )
         except Exception:
             openable_output = False
+
+    if latest_narration_text:
+        tts_artifact.write_text(latest_narration_text, encoding="utf-8")
+        tts_artifact_path = tts_artifact
 
     formatting_diagnostics_after = _snapshot_formatting_diagnostics_paths()
     snapshot_discovered_paths = _collect_new_formatting_diagnostics_paths(
@@ -1912,6 +1932,7 @@ def main() -> None:
         "output_artifacts": {
             "markdown_path": _path_for_report(markdown_artifact_path),
             "docx_path": _path_for_report(docx_artifact_path),
+            "tts_text_path": _path_for_report(tts_artifact_path),
             "output_docx_openable": openable_output,
             "output_paragraphs": output_paragraphs,
             "output_inline_shapes": output_inline_shapes,
@@ -1923,6 +1944,7 @@ def main() -> None:
             "latest_summary_txt": _path_for_report(latest_summary_path),
             "latest_markdown_path": _path_for_report(latest_markdown_path) if markdown_artifact_path is not None else None,
             "latest_docx_path": _path_for_report(latest_docx_path) if docx_artifact_path is not None else None,
+            "latest_tts_text_path": _path_for_report(latest_tts_path) if tts_artifact_path is not None else None,
             "latest_manifest_json": _path_for_report(latest_manifest_path),
         },
         "formatting_diagnostics_paths": [_path_for_report(Path(path)) for path in formatting_diagnostics_paths],
@@ -1990,6 +2012,7 @@ def main() -> None:
         f"last_error={last_error}",
         f"markdown_path={report['output_artifacts']['markdown_path']}",
         f"docx_path={report['output_artifacts']['docx_path']}",
+        f"tts_text_path={report['output_artifacts']['tts_text_path']}",
         f"latest_manifest_json={report['output_artifacts']['latest_manifest_json']}",
         f"python_executable={report['run']['environment']['python_executable']}",
         f"python_version={report['run']['environment']['python_version']}",
@@ -2009,10 +2032,12 @@ def main() -> None:
         summary_path=summary_path,
         markdown_artifact=markdown_artifact_path,
         docx_artifact=docx_artifact_path,
+        tts_artifact=tts_artifact_path,
         latest_report_path=latest_report_path,
         latest_summary_path=latest_summary_path,
         latest_markdown_path=latest_markdown_path if markdown_artifact_path is not None else None,
         latest_docx_path=latest_docx_path if docx_artifact_path is not None else None,
+        latest_tts_path=latest_tts_path if tts_artifact_path is not None else None,
         latest_manifest_path=latest_manifest_path,
         run_id=run_id,
         run_dir=artifact_dir,

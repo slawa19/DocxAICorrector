@@ -226,13 +226,15 @@ def _start_background_processing(
 
 
 def _resolve_sidebar_settings(sidebar_result):
-    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 9:
+    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 10:
         return sidebar_result
-    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 8:
+    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 9:
         return (*sidebar_result, False)
+    if isinstance(sidebar_result, tuple) and len(sidebar_result) == 8:
+        return (*sidebar_result, False, False)
     if isinstance(sidebar_result, tuple) and len(sidebar_result) == 5:
         model, chunk_size, max_retries, image_mode, keep_all_image_variants = sidebar_result
-        return model, chunk_size, max_retries, image_mode, keep_all_image_variants, "edit", "en", "ru", False
+        return model, chunk_size, max_retries, image_mode, keep_all_image_variants, "edit", "en", "ru", False, False
     raise RuntimeError("Некорректный контракт render_sidebar().")
 
 
@@ -565,6 +567,7 @@ def main() -> None:
         source_language,
         target_language,
         translation_second_pass_enabled,
+        audiobook_postprocess_enabled,
     ) = _resolve_sidebar_settings(render_sidebar(app_config))
     app_config = dict(app_config)
     app_config["keep_all_image_variants"] = keep_all_image_variants
@@ -572,6 +575,7 @@ def main() -> None:
     app_config["source_language"] = source_language
     app_config["target_language"] = target_language
     app_config["translation_second_pass_enabled"] = translation_second_pass_enabled
+    app_config["audiobook_postprocess_enabled"] = audiobook_postprocess_enabled
 
     processing_active = _processing_worker_is_active()
     processing_outcome = get_processing_outcome()
@@ -579,8 +583,7 @@ def main() -> None:
     preparation_active = _preparation_worker_is_active()
     current_result = get_current_result_bundle()
 
-    if current_result is None:
-        render_intro_layout_styles()
+    render_intro_layout_styles()
 
     st.title("AI-редактор DOCX/DOC через Markdown")
     st.write(
@@ -708,9 +711,12 @@ def main() -> None:
             render_image_validation_summary()
             render_markdown_preview(title="Предпросмотр Markdown")
             render_result_bundle(
-                docx_bytes=cast(bytes, completed_result["docx_bytes"]),
+                docx_bytes=cast(bytes | None, completed_result["docx_bytes"]),
                 markdown_text=str(completed_result["markdown_text"]),
                 original_filename=str(completed_result["source_name"]),
+                narration_text=cast(str | None, completed_result.get("narration_text")),
+                processing_operation=str(completed_result.get("processing_operation", "edit")),
+                audiobook_postprocess_enabled=bool(completed_result.get("audiobook_postprocess_enabled", False)),
             )
         elif idle_view_state == IdleViewState.RESTARTABLE:
             processing_outcome = get_processing_outcome()
@@ -821,7 +827,8 @@ def main() -> None:
 
     processing_snapshot = get_processing_session_snapshot()
     has_completed_result = bool(
-        st.session_state.latest_docx_bytes and processing_snapshot.latest_source_token == uploaded_file_token
+        (st.session_state.latest_docx_bytes or st.session_state.get("latest_narration_text"))
+        and processing_snapshot.latest_source_token == uploaded_file_token
     )
     if not restartable_outcome:
         preparation_summary = get_latest_preparation_summary()
@@ -845,7 +852,14 @@ def main() -> None:
 
     if has_completed_result:
         render_markdown_preview(title="Предпросмотр Markdown")
-        render_result(st.session_state.latest_docx_bytes, st.session_state.latest_markdown, uploaded_filename)
+        render_result(
+            st.session_state.latest_docx_bytes,
+            st.session_state.latest_markdown,
+            uploaded_filename,
+            st.session_state.get("latest_narration_text"),
+            processing_operation=processing_snapshot.latest_processing_operation,
+            audiobook_postprocess_enabled=processing_snapshot.latest_audiobook_postprocess_enabled,
+        )
 
     _finalize_app_frame(add_section_gap=True)
     action = _render_processing_controls(

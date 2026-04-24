@@ -57,6 +57,9 @@ class ProcessingSessionSnapshot:
     stop_requested: bool
     latest_source_name: str
     latest_source_token: str
+    latest_narration_text: str | None
+    latest_processing_operation: str
+    latest_audiobook_postprocess_enabled: bool
     selected_source_token: str
     latest_image_mode: str
 
@@ -84,6 +87,11 @@ def get_processing_session_snapshot(*, session_state=None) -> ProcessingSessionS
         stop_requested=bool(resolved_session_state.get("processing_stop_requested", False)),
         latest_source_name=str(resolved_session_state.get("latest_source_name", "")),
         latest_source_token=str(resolved_session_state.get("latest_source_token", "")),
+        latest_narration_text=resolved_session_state.get("latest_narration_text"),
+        latest_processing_operation=str(resolved_session_state.get("latest_processing_operation", "edit") or "edit"),
+        latest_audiobook_postprocess_enabled=bool(
+            resolved_session_state.get("latest_audiobook_postprocess_enabled", False)
+        ),
         selected_source_token=str(resolved_session_state.get("selected_source_token", "")),
         latest_image_mode=str(resolved_session_state.get("latest_image_mode", "no_change") or "no_change"),
     )
@@ -126,12 +134,25 @@ def get_latest_docx_bytes():
     return st.session_state.get("latest_docx_bytes")
 
 
+def get_latest_narration_text(*, session_state=None) -> str | None:
+    value = _resolve_session_state(session_state).get("latest_narration_text")
+    return value if isinstance(value, str) else None
+
+
 def get_latest_source_name(*, session_state=None) -> str:
     return get_processing_session_snapshot(session_state=session_state).latest_source_name
 
 
 def get_latest_source_token(*, session_state=None) -> str:
     return get_processing_session_snapshot(session_state=session_state).latest_source_token
+
+
+def get_latest_processing_operation(*, session_state=None) -> str:
+    return get_processing_session_snapshot(session_state=session_state).latest_processing_operation
+
+
+def get_latest_audiobook_postprocess_enabled(*, session_state=None) -> bool:
+    return get_processing_session_snapshot(session_state=session_state).latest_audiobook_postprocess_enabled
 
 
 def get_selected_source_token(*, session_state=None) -> str:
@@ -350,6 +371,8 @@ def apply_processing_start(
     uploaded_filename: str,
     uploaded_token: str,
     image_mode: str,
+    processing_operation: str,
+    audiobook_postprocess_enabled: bool,
     worker,
     event_queue,
     stop_event,
@@ -358,6 +381,8 @@ def apply_processing_start(
     st.session_state.latest_source_token = uploaded_token
     st.session_state.selected_source_token = uploaded_token
     st.session_state.latest_image_mode = image_mode
+    st.session_state.latest_processing_operation = processing_operation
+    st.session_state.latest_audiobook_postprocess_enabled = audiobook_postprocess_enabled
     st.session_state.processing_outcome = ProcessingOutcome.RUNNING.value
     st.session_state.processing_worker = worker
     st.session_state.processing_event_queue = event_queue
@@ -498,9 +523,12 @@ def init_session_state() -> None:
     st.session_state.setdefault("latest_markdown", "")
     st.session_state.setdefault("processed_block_markdowns", [])
     st.session_state.setdefault("latest_docx_bytes", None)
+    st.session_state.setdefault("latest_narration_text", None)
     st.session_state.setdefault("latest_result_notice", None)
     st.session_state.setdefault("latest_source_name", "")
     st.session_state.setdefault("latest_source_token", "")
+    st.session_state.setdefault("latest_processing_operation", "edit")
+    st.session_state.setdefault("latest_audiobook_postprocess_enabled", False)
     st.session_state.setdefault("selected_source_token", "")
     st.session_state.setdefault("last_error", "")
     st.session_state.setdefault("last_background_error", None)
@@ -609,9 +637,12 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
         if isinstance(_key, str) and _key.startswith("mdpreview_"):
             del st.session_state[_key]
     st.session_state.latest_docx_bytes = None
+    st.session_state.latest_narration_text = None
     st.session_state.latest_result_notice = None
     st.session_state.latest_source_name = ""
     st.session_state.latest_source_token = ""
+    st.session_state.latest_processing_operation = "edit"
+    st.session_state.latest_audiobook_postprocess_enabled = False
     st.session_state.last_error = ""
     st.session_state.last_background_error = None
     reset_image_state()

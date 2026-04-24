@@ -20,11 +20,14 @@ from state import (
     apply_preparation_complete,
     apply_preparation_failure,
     apply_processing_completion,
+    get_latest_audiobook_postprocess_enabled,
     get_processing_event_queue,
+    get_latest_processing_operation,
     get_processing_stop_event,
     get_processing_worker,
     get_preparation_event_queue,
     get_preparation_worker,
+    get_latest_narration_text,
     get_latest_source_name,
     get_latest_source_token,
     get_restart_source,
@@ -61,6 +64,7 @@ _ALLOWED_SET_STATE_EVENT_KEYS = {
     "last_error",
     "latest_docx_bytes",
     "latest_markdown",
+    "latest_narration_text",
     "latest_marker_diagnostics_artifact",
     "latest_result_notice",
     "processed_block_markdowns",
@@ -501,12 +505,24 @@ def normalize_background_error(
     }
 
 
-def build_result_bundle(*, source_name: str, source_token: str, docx_bytes: bytes, markdown_text: str) -> dict[str, object]:
+def build_result_bundle(
+    *,
+    source_name: str,
+    source_token: str,
+    docx_bytes: bytes | None,
+    markdown_text: str,
+    narration_text: str | None = None,
+    processing_operation: str = "edit",
+    audiobook_postprocess_enabled: bool = False,
+) -> dict[str, object]:
     return {
         "source_name": source_name,
         "source_token": source_token,
         "docx_bytes": docx_bytes,
         "markdown_text": markdown_text,
+        "narration_text": narration_text,
+        "processing_operation": processing_operation,
+        "audiobook_postprocess_enabled": audiobook_postprocess_enabled,
     }
 
 
@@ -516,13 +532,17 @@ def should_cache_completed_source(*, source_bytes: bytes) -> bool:
 
 def get_current_result_bundle() -> dict[str, object] | None:
     latest_docx_bytes = st.session_state.get("latest_docx_bytes")
-    if not latest_docx_bytes:
+    latest_narration_text = get_latest_narration_text()
+    if not latest_docx_bytes and latest_narration_text is None:
         return None
     return build_result_bundle(
         source_name=get_latest_source_name(),
         source_token=get_latest_source_token(),
         docx_bytes=latest_docx_bytes,
         markdown_text=st.session_state.get("latest_markdown", ""),
+        narration_text=latest_narration_text,
+        processing_operation=get_latest_processing_operation(),
+        audiobook_postprocess_enabled=get_latest_audiobook_postprocess_enabled(),
     )
 
 
@@ -840,6 +860,8 @@ def start_background_processing(
         uploaded_filename=uploaded_filename,
         uploaded_token=uploaded_token,
         image_mode=image_mode,
+        processing_operation=processing_operation,
+        audiobook_postprocess_enabled=bool(app_config.get("audiobook_postprocess_enabled", False)),
         worker=worker,
         event_queue=processing_events,
         stop_event=stop_event,

@@ -56,6 +56,8 @@ def build_app_config_payload(
         "editorial_intensity_default": text_runtime_defaults["editorial_intensity_default"],
         "translation_second_pass_default": text_runtime_defaults["translation_second_pass_default"],
         "translation_second_pass_model": text_runtime_defaults["translation_second_pass_model"],
+        "audiobook_postprocess_default": text_runtime_defaults["audiobook_postprocess_default"],
+        "audiobook_model": text_runtime_defaults["audiobook_model"],
         "supported_languages": text_runtime_defaults["supported_languages"],
         "enable_paragraph_markers": text_runtime_defaults["enable_paragraph_markers"],
         "paragraph_boundary_normalization_enabled": paragraph_boundary_settings["paragraph_boundary_normalization_enabled"],
@@ -239,6 +241,7 @@ def resolve_app_config_sections(
         model_registry_settings=model_registry_settings,
         text_runtime_defaults=resolve_text_runtime_defaults_fn(
             config_data=config_data,
+            model_registry_settings=model_registry_settings,
         ),
         output_font_settings=resolve_output_font_settings_fn(
             config_data=config_data,

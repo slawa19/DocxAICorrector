@@ -2,6 +2,8 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal
 
+from models import ImageMode
+
 
 PipelineResult = Literal["succeeded", "failed", "stopped"]
 
@@ -93,13 +95,14 @@ def build_processing_context(
     dependencies: Any,
     context_factory_fn: Callable[..., Any],
 ) -> Any:
+    effective_image_mode = ImageMode.NO_CHANGE.value if processing_operation == "audiobook" else image_mode
     return context_factory_fn(
         uploaded_file=uploaded_file,
         uploaded_filename=dependencies.resolve_uploaded_filename(uploaded_file),
         jobs=jobs,
         source_paragraphs=source_paragraphs,
         image_assets=image_assets,
-        image_mode=image_mode,
+        image_mode=effective_image_mode,
         app_config=app_config,
         model=model,
         max_retries=max_retries,

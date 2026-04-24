@@ -56,6 +56,8 @@ STRUCTURE_VALIDATION_MAX_COUNT = 200
 UI_RESULT_ARTIFACTS_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 UI_RESULT_ARTIFACTS_MAX_COUNT = 80
 
+_UI_RESULT_GROUP_SUFFIXES = (".result.tts.txt", ".result.docx", ".result.md")
+
 
 def prune_artifact_dir(
     *,
@@ -130,6 +132,88 @@ def prune_artifact_dir(
         )
 
     return pruned_paths
+
+
+def prune_ui_result_artifact_groups(
+    *,
+    target_dir: Path,
+    max_age_seconds: int | None,
+    max_count: int | None,
+    now_epoch_seconds: float | None = None,
+    emit_log: bool = True,
+) -> list[str]:
+    """Prune UI result artifacts by timestamped stem, not by individual file.
+
+    Each successful run may produce ``.result.md``, ``.result.docx`` and optional
+    ``.result.tts.txt``. This helper retains or removes the entire group
+    atomically so the directory never ends up with orphaned siblings from the
+    same run.
+    """
+    if not target_dir.exists() or not target_dir.is_dir():
+        return []
+
+    reference_now = time.time() if now_epoch_seconds is None else float(now_epoch_seconds)
+    grouped_paths: dict[str, list[tuple[float, Path]]] = {}
+    passthrough_paths: list[tuple[float, Path]] = []
+    pruned_paths: list[str] = []
+
+    for artifact_path in target_dir.iterdir():
+        if not artifact_path.is_file():
+            continue
+        try:
+            mtime = artifact_path.stat().st_mtime
+        except OSError:
+            continue
+
+        group_key = _resolve_ui_result_group_key(artifact_path)
+        if group_key is None:
+            passthrough_paths.append((mtime, artifact_path))
+            continue
+        grouped_paths.setdefault(group_key, []).append((mtime, artifact_path))
+
+    retained_groups: list[tuple[float, str, list[tuple[float, Path]]]] = []
+    for group_key, members in grouped_paths.items():
+        group_mtime = max(mtime for mtime, _ in members)
+        age_seconds = max(0.0, reference_now - group_mtime)
+        if max_age_seconds is not None and max_age_seconds >= 0 and age_seconds > max_age_seconds:
+            pruned_paths.extend(_unlink_artifact_paths(path for _, path in members))
+            continue
+        retained_groups.append((group_mtime, group_key, members))
+
+    if max_count is not None and max_count >= 0 and len(retained_groups) > max_count:
+        retained_groups.sort(key=lambda item: (item[0], item[1]))
+        overflow = len(retained_groups) - max_count
+        for _, _, members in retained_groups[:overflow]:
+            pruned_paths.extend(_unlink_artifact_paths(path for _, path in members))
+
+    if emit_log and pruned_paths:
+        _emit_prune_event(
+            target_dir=target_dir,
+            pruned_paths=pruned_paths,
+            max_age_seconds=max_age_seconds,
+            max_count=max_count,
+        )
+
+    return pruned_paths
+
+
+def _resolve_ui_result_group_key(path: Path) -> str | None:
+    file_name = path.name
+    for suffix in _UI_RESULT_GROUP_SUFFIXES:
+        if file_name.endswith(suffix):
+            return file_name[: -len(suffix)]
+    return None
+
+
+def _unlink_artifact_paths(paths) -> list[str]:
+    removed_paths: list[str] = []
+    for artifact_path in paths:
+        try:
+            artifact_path.unlink()
+            removed_paths.append(str(artifact_path))
+        except OSError:
+            continue
+    return removed_paths
 
 
 def _emit_prune_event(

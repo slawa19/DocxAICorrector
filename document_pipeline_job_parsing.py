@@ -71,6 +71,7 @@ def parse_processing_job(*, job: Any, payload_factory: Any) -> Any:
     structural_roles = coerce_optional_string_list(job, "structural_roles")
     context_before = coerce_required_text_field(job, "context_before")
     context_after = coerce_required_text_field(job, "context_after")
+    narration_include = coerce_optional_bool(job, "narration_include")
     toc_dominant = coerce_optional_bool(job, "toc_dominant")
     toc_paragraph_count = int(job.get("toc_paragraph_count", 0) or 0)
     paragraph_count = int(job.get("paragraph_count", 0) or 0)
@@ -84,6 +85,7 @@ def parse_processing_job(*, job: Any, payload_factory: Any) -> Any:
         context_before=context_before,
         context_after=context_after,
         structural_roles=structural_roles,
+        narration_include=True if narration_include is None else narration_include,
         toc_dominant=bool(toc_dominant),
         toc_paragraph_count=toc_paragraph_count,
         paragraph_count=paragraph_count,

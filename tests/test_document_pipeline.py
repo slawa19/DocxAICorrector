@@ -246,6 +246,351 @@ def test_run_document_processing_persists_final_ui_result_artifacts_and_logs_pat
     }
 
 
+def test_run_document_processing_builds_standalone_audiobook_artifact_and_coerces_image_mode():
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+    captured = {}
+
+    def write_ui_result_artifacts(**kwargs):
+        captured["artifact_kwargs"] = kwargs
+        return {
+            "markdown_path": "/tmp/report.result.md",
+            "docx_path": "/tmp/report.result.docx",
+            "tts_text_path": "/tmp/report.result.tts.txt",
+        }
+
+    processed_image_modes = []
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{
+            "target_text": "# Title\n\n[thoughtful] Body text",
+            "context_before": "",
+            "context_after": "",
+            "target_chars": 29,
+            "context_chars": 0,
+            "narration_include": True,
+        }],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="audiobook",
+        source_language="auto",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=log_event,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "# Title\n\n[thoughtful] Body text",
+        process_document_images=lambda **kwargs: processed_image_modes.append(kwargs["image_mode"]) or [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
+        write_ui_result_artifacts=write_ui_result_artifacts,
+    )
+
+    assert result == "succeeded"
+    assert processed_image_modes == ["no_change"]
+    assert runtime["state"]["latest_narration_text"] == "Title\n\n[thoughtful] Body text"
+    assert captured["artifact_kwargs"]["narration_text"] == "Title\n\n[thoughtful] Body text"
+    info_events = [event for event in events if event["level"] == logging.INFO]
+    saved_event = next(event for event in info_events if event["event_id"] == "ui_audiobook_artifact_saved")
+    assert saved_event["context"]["mode"] == "standalone"
+    assert saved_event["context"]["filename"] == "report.docx"
+    assert saved_event["context"]["artifact_paths"] == {
+        "markdown_path": "/tmp/report.result.md",
+        "docx_path": "/tmp/report.result.docx",
+        "tts_text_path": "/tmp/report.result.tts.txt",
+    }
+    assert saved_event["context"]["tts_text_path"] == "/tmp/report.result.tts.txt"
+
+
+def test_run_document_processing_runs_audiobook_postprocess_without_mutating_base_docx_branch():
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+    generated_calls = []
+    artifact_calls = {}
+
+    def generate_markdown_block(**kwargs):
+        generated_calls.append(dict(kwargs))
+        if kwargs["system_prompt"] == "system:translate":
+            return f"TRANSLATED::{kwargs['target_text']}"
+        return f"# Narration\n\n[thoughtful] {kwargs['target_text']}"
+
+    def write_ui_result_artifacts(**kwargs):
+        artifact_calls["kwargs"] = dict(kwargs)
+        return {
+            "markdown_path": "/tmp/report.result.md",
+            "docx_path": "/tmp/report.result.docx",
+            "tts_text_path": "/tmp/report.result.tts.txt",
+        }
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[
+            {
+                "target_text": "Chapter one text",
+                "context_before": "",
+                "context_after": "Chapter two text",
+                "target_chars": 16,
+                "context_chars": 16,
+                "narration_include": True,
+            },
+            {
+                "target_text": "Index tail",
+                "context_before": "Chapter two text",
+                "context_after": "",
+                "target_chars": 10,
+                "context_chars": 16,
+                "narration_include": False,
+            },
+            {
+                "target_text": "Chapter two text",
+                "context_before": "Chapter one text",
+                "context_after": "",
+                "target_chars": 16,
+                "context_chars": 16,
+                "narration_include": True,
+            },
+        ],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={
+            "audiobook_postprocess_enabled": True,
+            "audiobook_model": "gpt-5.4-audio",
+            "chunk_size": 20,
+            "editorial_intensity_default": "literary",
+        },
+        model="gpt-5.4-translate",
+        max_retries=1,
+        processing_operation="translate",
+        source_language="en",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **kwargs: f"system:{kwargs['operation']}",
+        log_event=log_event,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=generate_markdown_block,
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+        write_ui_result_artifacts=write_ui_result_artifacts,
+    )
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_markdown"] == "TRANSLATED::Chapter one text\n\nTRANSLATED::Index tail\n\nTRANSLATED::Chapter two text"
+    assert runtime["state"]["latest_docx_bytes"] == runtime["state"]["latest_markdown"].encode("utf-8")
+    narration_text = runtime["state"]["latest_narration_text"]
+    assert narration_text is not None
+    assert "TRANSLATED::Chapter one text" in narration_text
+    assert "TRANSLATED::Chapter two text" in narration_text
+    assert "TRANSLATED::Index tail" not in narration_text
+    assert narration_text.count("[thoughtful]") == 2
+    assert artifact_calls["kwargs"]["markdown_text"] == runtime["state"]["latest_markdown"]
+    assert artifact_calls["kwargs"]["docx_bytes"] == runtime["state"]["latest_docx_bytes"]
+    assert artifact_calls["kwargs"]["narration_text"] == narration_text
+
+    assert [call["model"] for call in generated_calls] == [
+        "gpt-5.4-translate",
+        "gpt-5.4-translate",
+        "gpt-5.4-translate",
+        "gpt-5.4-audio",
+        "gpt-5.4-audio",
+    ]
+    assert [call["target_text"] for call in generated_calls[3:]] == [
+        "TRANSLATED::Chapter one text",
+        "TRANSLATED::Chapter two text",
+    ]
+    assert generated_calls[3]["context_before"] == ""
+    assert generated_calls[3]["context_after"] == "TRANSLATED::Chapter two text"
+    assert generated_calls[4]["context_before"] == "TRANSLATED::Chapter one text"
+    assert generated_calls[4]["context_after"] == ""
+
+    info_events = [event for event in events if event["level"] == logging.INFO]
+    saved_event = next(event for event in info_events if event["event_id"] == "ui_audiobook_artifact_saved")
+    assert saved_event["context"]["mode"] == "postprocess"
+    assert saved_event["context"]["filename"] == "report.docx"
+    assert saved_event["context"]["artifact_paths"] == {
+        "markdown_path": "/tmp/report.result.md",
+        "docx_path": "/tmp/report.result.docx",
+        "tts_text_path": "/tmp/report.result.tts.txt",
+    }
+    postprocess_started = [event for event in info_events if event["event_id"] == "audiobook_postprocess_chunk_started"]
+    postprocess_completed = [event for event in info_events if event["event_id"] == "audiobook_postprocess_chunk_completed"]
+    assert len(postprocess_started) == 2
+    assert len(postprocess_completed) == 2
+    assert all(event["context"]["operation"] == "audiobook" for event in postprocess_started)
+    assert all(event["context"]["pass"] == "postprocess" for event in postprocess_started)
+    completed_event = next(event for event in info_events if event["event_id"] == "processing_completed")
+    assert completed_event["context"]["audiobook_postprocess_enabled"] is True
+
+
+def test_run_document_processing_clears_stale_narration_on_docx_build_failure():
+    runtime = _build_runtime_capture()
+    runtime["state"]["latest_narration_text"] = "stale narration"
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="edit",
+        source_language="en",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "edited",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: (_ for _ in ()).throw(RuntimeError("docx exploded")),
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+    )
+
+    assert result == "failed"
+    assert runtime["state"]["latest_narration_text"] is None
+
+
+def test_run_document_processing_does_not_run_translation_second_pass_for_audiobook_even_if_flag_is_stale():
+    runtime = _build_runtime_capture()
+    generated_calls = []
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0, "narration_include": True}],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={"translation_second_pass_enabled": True},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="audiobook",
+        source_language="auto",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: generated_calls.append(dict(kwargs)) or "[thoughtful] edited",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+    )
+
+    assert result == "succeeded"
+    assert len(generated_calls) == 1
+
+
+def test_run_document_processing_uses_base_model_for_audiobook_postprocess_when_configured_model_blank():
+    runtime = _build_runtime_capture()
+    generated_calls = []
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{
+            "target_text": "block",
+            "context_before": "",
+            "context_after": "",
+            "target_chars": 5,
+            "context_chars": 0,
+            "narration_include": True,
+        }],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={
+            "audiobook_postprocess_enabled": True,
+            "audiobook_model": "   ",
+            "chunk_size": 6000,
+        },
+        model="gpt-5.4-base",
+        max_retries=1,
+        processing_operation="edit",
+        source_language="en",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **kwargs: "system:audiobook" if kwargs["operation"] == "audiobook" else "system:edit",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: generated_calls.append(dict(kwargs)) or ("edited" if len(generated_calls) == 1 else "[thoughtful] edited"),
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
+    )
+
+    assert result == "succeeded"
+    assert len(generated_calls) == 2
+    assert generated_calls[1]["model"] == "gpt-5.4-base"
+    assert runtime["state"]["latest_narration_text"] == "[thoughtful] edited"
+
+
 def test_run_document_processing_does_not_fail_when_ui_result_artifact_save_fails():
     runtime = _build_runtime_capture()
     events, log_event = _capture_log_events()

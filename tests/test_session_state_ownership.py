@@ -32,6 +32,8 @@ OWNED_KEYS = {
     "preparation_event_queue",
     "latest_source_name",
     "latest_source_token",
+    "latest_processing_operation",
+    "latest_audiobook_postprocess_enabled",
     "selected_source_token",
     "latest_image_mode",
     "latest_preparation_summary",

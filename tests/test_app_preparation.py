@@ -334,6 +334,59 @@ def test_main_keeps_processing_panel_visible_while_outcome_is_running(monkeypatc
     assert calls == ["intro", "live_status", "run_log", "image_summary", "partial_result"]
 
 
+def test_main_keeps_completed_view_with_shared_layout(monkeypatch):
+    session_state = SessionState(
+        app_start_logged=True,
+        processing_status={},
+        activity_feed=[],
+        image_assets=[],
+        latest_docx_bytes=b"docx-bytes",
+        latest_source_token="report.docx:3:token",
+        latest_markdown="# markdown",
+        latest_image_mode="safe",
+        last_error="",
+        last_log_hint="",
+        processing_outcome="succeeded",
+    )
+    calls = []
+    completed_result = {
+        "docx_bytes": b"docx-bytes",
+        "markdown_text": "# markdown",
+        "source_name": "report.docx",
+        "processing_operation": "edit",
+        "audiobook_postprocess_enabled": False,
+    }
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app, "init_session_state", lambda: None)
+    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
+    monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
+    monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
+    monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "get_current_result_bundle", lambda: completed_result)
+    monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_file_uploader_state_styles", lambda **kwargs: None)
+    monkeypatch.setattr(app, "render_intro_layout_styles", lambda: calls.append("intro"))
+    monkeypatch.setattr(app.st, "button", lambda *args, **kwargs: False)
+    monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: calls.append("run_log"))
+    monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: calls.append("image_summary"))
+    monkeypatch.setattr(app, "render_markdown_preview", lambda *args, **kwargs: calls.append("markdown_preview"))
+    monkeypatch.setattr(app, "render_result_bundle", lambda **kwargs: calls.append("result_bundle"))
+    monkeypatch.setattr(app, "_finalize_app_frame", lambda **kwargs: calls.append("finalize"))
+    monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: None)
+    monkeypatch.setattr(application_flow, "has_resettable_state", lambda **kwargs: True)
+    monkeypatch.setattr(application_flow, "derive_app_idle_view_state", lambda **kwargs: "completed")
+
+    app.main()
+
+    assert calls == ["intro", "run_log", "image_summary", "markdown_preview", "result_bundle", "finalize"]
+
+
 def test_main_renders_preparation_summary_for_prepared_file(monkeypatch):
     prepared_run_context = _build_prepared_run_context(
         preparation_cached=True,

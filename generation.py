@@ -30,6 +30,15 @@ _WORD_TOKEN_PATTERN = re.compile(r"\w+(?:[-']\w+)*", re.UNICODE)
 _INLINE_HTML_SUP_PATTERN = re.compile(r"<sup>(.*?)</sup>", re.IGNORECASE | re.DOTALL)
 _INLINE_HTML_SUB_PATTERN = re.compile(r"<sub>(.*?)</sub>", re.IGNORECASE | re.DOTALL)
 _INLINE_HTML_BREAK_PATTERN = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_NARRATION_INTERNAL_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_[A-Za-z0-9_]+\]\]")
+_NARRATION_MARKDOWN_LINK_PATTERN = re.compile(r"\[([^\]\n]+)\]\(([^)\n]+)\)")
+_NARRATION_HEADING_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s*", re.MULTILINE)
+_NARRATION_BLOCKQUOTE_PATTERN = re.compile(r"^\s{0,3}>\s?", re.MULTILINE)
+_NARRATION_LIST_PATTERN = re.compile(r"^\s{0,3}(?:[-*+]\s+|\d+\.\s+)", re.MULTILINE)
+_NARRATION_STRONG_PATTERN = re.compile(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1")
+_NARRATION_EMPHASIS_PATTERN = re.compile(r"(\*|_)(?=\S)(.+?)(?<=\S)\1")
+_NARRATION_RAW_URL_PATTERN = re.compile(r"(?:https?://\S+|www\.\S+)", re.IGNORECASE)
+_NARRATION_INTERNAL_WHITESPACE_PATTERN = re.compile(r"[\t ]+")
 _INCOMPLETE_RESPONSE_RETRY_MIN_OUTPUT_TOKENS = 1024
 _INCOMPLETE_RESPONSE_RECOVERY_MIN_OUTPUT_TOKENS = 1536
 _CONTEXT_LEAKAGE_RETRY_WARNING = (
@@ -64,6 +73,41 @@ def normalize_model_output(text: str) -> str:
     if cleaned.endswith("```"):
         cleaned = cleaned[:-3].strip()
     return cleaned
+
+
+def strip_markdown_for_narration(text: str) -> str:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = _NARRATION_INTERNAL_PLACEHOLDER_PATTERN.sub("", normalized)
+    normalized = _NARRATION_MARKDOWN_LINK_PATTERN.sub(r"\1", normalized)
+    normalized = _NARRATION_HEADING_PATTERN.sub("", normalized)
+    normalized = _NARRATION_BLOCKQUOTE_PATTERN.sub("", normalized)
+    normalized = _NARRATION_LIST_PATTERN.sub("", normalized)
+    normalized = normalized.replace("`", "")
+    normalized = _strip_narration_inline_emphasis(normalized)
+    normalized = _NARRATION_RAW_URL_PATTERN.sub("", normalized)
+
+    collapsed_lines: list[str] = []
+    previous_blank = True
+    for raw_line in normalized.split("\n"):
+        line = _NARRATION_INTERNAL_WHITESPACE_PATTERN.sub(" ", raw_line).strip()
+        if not line:
+            if not previous_blank:
+                collapsed_lines.append("")
+            previous_blank = True
+            continue
+        collapsed_lines.append(line)
+        previous_blank = False
+    return "\n".join(collapsed_lines).strip()
+
+
+def _strip_narration_inline_emphasis(text: str) -> str:
+    stripped = text
+    while True:
+        updated = _NARRATION_STRONG_PATTERN.sub(r"\2", stripped)
+        updated = _NARRATION_EMPHASIS_PATTERN.sub(r"\2", updated)
+        if updated == stripped:
+            return updated
+        stripped = updated
 
 
 def _normalize_context_text(text: str | None) -> str:

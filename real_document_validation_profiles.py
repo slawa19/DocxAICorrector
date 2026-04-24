@@ -60,6 +60,10 @@ class RunProfile:
     chunk_size: int | None = None
     max_retries: int | None = None
     image_mode: str | None = None
+    processing_operation: str | None = None
+    source_language: str | None = None
+    target_language: str | None = None
+    audiobook_postprocess_enabled: bool | None = None
     enable_paragraph_markers: bool | None = None
     keep_all_image_variants: bool | None = None
     structure_recognition_mode: str | None = None
@@ -98,6 +102,10 @@ class ResolvedRuntimeConfig:
     chunk_size: int
     max_retries: int
     image_mode: str
+    processing_operation: str
+    source_language: str
+    target_language: str
+    audiobook_postprocess_enabled: bool
     enable_paragraph_markers: bool
     keep_all_image_variants: bool
     structure_recognition_mode: str
@@ -109,11 +117,19 @@ class ResolvedRuntimeConfig:
             "chunk_size": self.chunk_size,
             "max_retries": self.max_retries,
             "image_mode": self.image_mode,
+            "processing_operation": self.processing_operation,
+            "source_language": self.source_language,
+            "target_language": self.target_language,
+            "audiobook_postprocess_enabled": self.audiobook_postprocess_enabled,
             "enable_paragraph_markers": self.enable_paragraph_markers,
             "keep_all_image_variants": self.keep_all_image_variants,
             "structure_recognition_mode": self.structure_recognition_mode,
             "structure_recognition_enabled": self.structure_recognition_enabled,
         }
+
+
+def _resolve_run_profile_field(value: object, default: object) -> object:
+    return default if value is None else value
 
 
 @dataclass(frozen=True)
@@ -146,6 +162,10 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         chunk_size=int(app_config.chunk_size),
         max_retries=int(app_config.max_retries),
         image_mode=str(app_config.image_mode_default),
+        processing_operation=str(getattr(app_config, "processing_operation_default", "edit") or "edit"),
+        source_language=str(getattr(app_config, "source_language_default", "en") or "en"),
+        target_language=str(getattr(app_config, "target_language_default", "ru") or "ru"),
+        audiobook_postprocess_enabled=bool(getattr(app_config, "audiobook_postprocess_default", False)),
         enable_paragraph_markers=bool(app_config.enable_paragraph_markers),
         keep_all_image_variants=bool(app_config.keep_all_image_variants),
         structure_recognition_mode=ui_default_mode,
@@ -165,6 +185,15 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         chunk_size=run_profile.chunk_size if run_profile.chunk_size is not None else ui_defaults.chunk_size,
         max_retries=run_profile.max_retries if run_profile.max_retries is not None else ui_defaults.max_retries,
         image_mode=run_profile.image_mode or ui_defaults.image_mode,
+        processing_operation=str(_resolve_run_profile_field(run_profile.processing_operation, ui_defaults.processing_operation)),
+        source_language=str(_resolve_run_profile_field(run_profile.source_language, ui_defaults.source_language)),
+        target_language=str(_resolve_run_profile_field(run_profile.target_language, ui_defaults.target_language)),
+        audiobook_postprocess_enabled=bool(
+            _resolve_run_profile_field(
+                run_profile.audiobook_postprocess_enabled,
+                ui_defaults.audiobook_postprocess_enabled,
+            )
+        ),
         enable_paragraph_markers=(
             run_profile.enable_paragraph_markers
             if run_profile.enable_paragraph_markers is not None
@@ -183,6 +212,10 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         "chunk_size": run_profile.chunk_size,
         "max_retries": run_profile.max_retries,
         "image_mode": run_profile.image_mode,
+        "processing_operation": run_profile.processing_operation,
+        "source_language": run_profile.source_language,
+        "target_language": run_profile.target_language,
+        "audiobook_postprocess_enabled": run_profile.audiobook_postprocess_enabled,
         "enable_paragraph_markers": run_profile.enable_paragraph_markers,
         "keep_all_image_variants": run_profile.keep_all_image_variants,
         "structure_recognition_mode": run_profile.structure_recognition_mode,
@@ -266,6 +299,10 @@ def _build_run_profile(payload: Any) -> RunProfile:
         chunk_size=_optional_int(payload, "chunk_size"),
         max_retries=_optional_int(payload, "max_retries"),
         image_mode=_optional_str(payload, "image_mode"),
+        processing_operation=_optional_processing_operation(payload, "processing_operation"),
+        source_language=_optional_str(payload, "source_language"),
+        target_language=_optional_str(payload, "target_language"),
+        audiobook_postprocess_enabled=_optional_bool(payload, "audiobook_postprocess_enabled"),
         enable_paragraph_markers=_optional_bool(payload, "enable_paragraph_markers"),
         keep_all_image_variants=_optional_bool(payload, "keep_all_image_variants"),
         structure_recognition_mode=_optional_structure_recognition_mode(payload, "structure_recognition_mode"),
@@ -335,6 +372,15 @@ def _optional_structure_recognition_mode(payload: dict[str, Any], key: str) -> s
         return None
     if not isinstance(value, str) or value.strip() not in _STRUCTURE_RECOGNITION_MODES:
         raise RuntimeError(f"Registry field {key} must be one of: {', '.join(sorted(_STRUCTURE_RECOGNITION_MODES))}")
+    return value.strip()
+
+
+def _optional_processing_operation(payload: dict[str, Any], key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or value.strip() not in {"edit", "translate", "audiobook"}:
+        raise RuntimeError(f"Registry field {key} must be one of: audiobook, edit, translate")
     return value.strip()
 
 

@@ -65,7 +65,7 @@ OpenAI = None
 _CLIENT = None
 _CLIENT_LOCK = Lock()
 _IMAGE_OUTPUT_SIZE_VALUES = {"256x256", "512x512", "1024x1024", "1024x1536", "1536x1024", "1024x1792", "1792x1024"}
-PROCESSING_OPERATION_VALUES = ("edit", "translate")
+PROCESSING_OPERATION_VALUES = ("edit", "translate", "audiobook")
 _MIGRATION_DEFAULT_TEXT_MODEL = "gpt-5.4-mini"
 _MIGRATION_DEFAULT_TEXT_MODEL_OPTIONS = (
     "gpt-5.4",
@@ -131,6 +131,7 @@ DEFAULT_SUPPORTED_LANGUAGES = (
 _PROMPT_OPERATION_PATHS = {
     "edit": PROMPTS_DIR / "operation_edit.txt",
     "translate": PROMPTS_DIR / "operation_translate.txt",
+    "audiobook": PROMPTS_DIR / "operation_audiobook.txt",
 }
 
 _PROMPT_EDITORIAL_INTENSITY_PATHS = {
@@ -141,6 +142,7 @@ _PROMPT_EDITORIAL_INTENSITY_PATHS = {
 _PROMPT_EXAMPLE_PATHS = {
     "edit": PROMPTS_DIR / "example_edit.txt",
     "translate": PROMPTS_DIR / "example_translate.txt",
+    "audiobook": PROMPTS_DIR / "example_audiobook.txt",
 }
 
 if TYPE_CHECKING:
@@ -160,6 +162,8 @@ class AppConfig(Mapping[str, Any]):
     editorial_intensity_default: str
     translation_second_pass_default: bool
     translation_second_pass_model: str
+    audiobook_postprocess_default: bool
+    audiobook_model: str
     supported_languages: tuple[LanguageOption, ...]
     enable_paragraph_markers: bool
     paragraph_boundary_normalization_enabled: bool
@@ -348,8 +352,8 @@ def _validate_text_transform_context(
     if target_language not in supported_language_codes:
         raise RuntimeError(f"Некорректный целевой язык: {target_language}")
     if source_language == "auto":
-        if operation != "translate":
-            raise RuntimeError("source_language='auto' поддерживается только для режима translate")
+        if operation not in {"translate", "audiobook"}:
+            raise RuntimeError("source_language='auto' поддерживается только для режимов translate и audiobook")
         return
     if source_language not in supported_language_codes:
         raise RuntimeError(f"Некорректный язык оригинала: {source_language}")
@@ -757,9 +761,11 @@ def _resolve_image_output_settings(
 def _resolve_text_runtime_defaults(
     *,
     config_data: dict[str, object],
+    model_registry_settings: Mapping[str, Any],
 ) -> dict[str, Any]:
     return _resolve_text_runtime_defaults_impl(
         config_data=config_data,
+        model_registry_settings=model_registry_settings,
         default_chunk_size=DEFAULT_CHUNK_SIZE,
         default_max_retries=DEFAULT_MAX_RETRIES,
         config_path=CONFIG_PATH,

@@ -43,3 +43,20 @@ def test_write_ui_result_artifacts_prunes_oldest_files_for_same_family(tmp_path)
     assert stale_docx.exists()
     assert Path(artifact_paths["markdown_path"]).exists()
     assert Path(artifact_paths["docx_path"]).exists()
+
+
+def test_write_ui_result_artifacts_persists_optional_narration_text(tmp_path):
+    artifact_paths = write_ui_result_artifacts(
+        source_name="The Value of Everything.docx",
+        markdown_text="# Result\n\nTranslated text",
+        docx_bytes=b"docx-bytes",
+        narration_text="[thoughtful] Ready for ElevenLabs",
+        output_dir=tmp_path,
+        created_at=1_766_636_465.0,
+    )
+
+    tts_path = Path(artifact_paths["tts_text_path"])
+
+    assert tts_path.parent == tmp_path
+    assert tts_path.name.endswith(".result.tts.txt")
+    assert tts_path.read_text(encoding="utf-8") == "[thoughtful] Ready for ElevenLabs"

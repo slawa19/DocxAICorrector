@@ -196,6 +196,57 @@ def test_restartable_idle_view_shows_typed_outcome_notice(monkeypatch, outcome):
         assert info_calls == []
 
 
+@pytest.mark.parametrize("outcome", ["stopped", "failed"])
+def test_restartable_idle_view_keeps_shared_layout(monkeypatch, outcome):
+    session_state = SessionState(
+        app_start_logged=True,
+        processing_status={"stage": "Ожидание", "detail": "", "phase": "processing"},
+        activity_feed=[],
+        image_assets=[],
+        latest_docx_bytes=None,
+        latest_source_token="",
+        latest_markdown="",
+        latest_image_mode="safe",
+        processing_outcome=outcome,
+        restart_source={"filename": "report.docx", "storage_path": "/tmp/restart.bin"},
+    )
+    calls = []
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app, "init_session_state", lambda: None)
+    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
+    monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
+    monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
+    monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
+    monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_file_uploader_state_styles", lambda **kwargs: None)
+    monkeypatch.setattr(app, "render_intro_layout_styles", lambda: calls.append("intro"))
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: calls.append("info"))
+    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: calls.append("warning"))
+    monkeypatch.setattr(app.st, "error", lambda *args, **kwargs: calls.append("error"))
+    monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: calls.append("run_log"))
+    monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: calls.append("image_summary"))
+    monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: calls.append("partial_result"))
+    monkeypatch.setattr(app, "_finalize_app_frame", lambda **kwargs: calls.append("finalize"))
+    monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: None)
+    monkeypatch.setattr(application_flow, "has_resettable_state", lambda **kwargs: False)
+    monkeypatch.setattr(application_flow, "derive_app_idle_view_state", lambda **kwargs: "restartable")
+
+    app.main()
+
+    assert calls[0] == "intro"
+    assert "run_log" in calls
+    assert "image_summary" in calls
+    assert "partial_result" in calls
+    assert calls[-1] == "finalize"
+
+
 def test_main_rejects_oversized_upload_before_preparation(monkeypatch):
     session_state = SessionState(app_start_logged=True, processing_status={}, activity_feed=[])
     uploaded_file = UploadedFileStub("report.docx", b"abc")

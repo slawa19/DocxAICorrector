@@ -76,6 +76,7 @@ def test_build_editing_jobs_marks_image_only_blocks_as_passthrough():
     assert [job["job_kind"] for job in jobs] == ["llm", "passthrough", "llm"]
     assert jobs[0]["paragraph_ids"] == ["p0000"]
     assert str(jobs[1]["target_text_with_markers"]).startswith("[[DOCX_PARA_p0001]]")
+    assert jobs[1]["narration_include"] is False
 
 
 def test_build_semantic_blocks_keeps_heading_with_following_epigraph_cluster_even_over_soft_limit():
@@ -135,6 +136,7 @@ def test_build_editing_jobs_marks_toc_only_blocks_as_passthrough():
     assert jobs[0]["toc_dominant"] is True
     assert jobs[0]["toc_paragraph_count"] == 3
     assert jobs[0]["structural_roles"] == ["toc_header", "toc_entry", "toc_entry"]
+    assert jobs[0]["narration_include"] is False
 
 
 def test_build_editing_jobs_routes_toc_only_blocks_through_llm_in_translate_mode():
@@ -149,6 +151,56 @@ def test_build_editing_jobs_routes_toc_only_blocks_through_llm_in_translate_mode
 
     assert [job["job_kind"] for job in jobs] == ["llm"]
     assert jobs[0]["toc_dominant"] is True
+    assert jobs[0]["narration_include"] is False
+
+
+def test_build_editing_jobs_marks_bibliography_tail_and_image_only_blocks_as_excluded_for_narration():
+    blocks = [
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="Chapter 1", role="heading", paragraph_id="p0000", heading_level=1),
+                ParagraphUnit(text="Narrative body paragraph.", role="body", paragraph_id="p0001"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="[[DOCX_IMAGE_img_001]]", role="image", structural_role="image", paragraph_id="p0002"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="References", role="heading", paragraph_id="p0003", heading_level=1),
+                ParagraphUnit(text="[1] Smith, 2009. DOI:10.1000/xyz", role="body", paragraph_id="p0004"),
+            ]
+        ),
+    ]
+
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook")
+
+    assert [job["narration_include"] for job in jobs] == [True, False, False]
+    assert [job["job_kind"] for job in jobs] == ["llm", "passthrough", "passthrough"]
+
+
+def test_build_editing_jobs_keeps_mixed_final_narrative_block_out_of_bibliography_tail():
+    blocks = [
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="Chapter 1", role="heading", paragraph_id="p0000", heading_level=1),
+                ParagraphUnit(text="Narrative body paragraph.", role="body", paragraph_id="p0001"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="Closing reflections", role="heading", paragraph_id="p0002", heading_level=1),
+                ParagraphUnit(text="Final narrative paragraph.", role="body", paragraph_id="p0003"),
+                ParagraphUnit(text="[1] Smith, 2009. DOI:10.1000/xyz", role="body", paragraph_id="p0004"),
+            ]
+        ),
+    ]
+
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook")
+
+    assert [job["narration_include"] for job in jobs] == [True, True]
 
 
 def test_build_editing_jobs_marks_mixed_toc_majority_blocks_as_toc_dominant():

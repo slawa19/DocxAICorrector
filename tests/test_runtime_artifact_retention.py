@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from runtime_artifact_retention import prune_artifact_dir
+from runtime_artifact_retention import prune_artifact_dir, prune_ui_result_artifact_groups
 
 
 def _write_file(path: Path, *, mtime: float, content: str = "{}") -> None:
@@ -187,3 +187,31 @@ def test_prune_artifact_dir_with_glob_star_prunes_non_json_artifacts(tmp_path):
 
     assert [Path(p).name for p in pruned] == ["old.result.md"]
     assert sorted(p.name for p in target.iterdir() if p.is_file()) == ["new.result.docx"]
+
+
+def test_prune_ui_result_artifact_groups_removes_whole_stem_group(tmp_path):
+    target = tmp_path / "ui_results"
+    target.mkdir()
+    _write_file(target / "20260423_101010_old.result.md", mtime=10.0, content="old-md")
+    _write_file(target / "20260423_101010_old.result.docx", mtime=10.0, content="old-docx")
+    _write_file(target / "20260423_101010_old.result.tts.txt", mtime=10.0, content="old-tts")
+    _write_file(target / "20260423_111111_new.result.md", mtime=20.0, content="new-md")
+    _write_file(target / "20260423_111111_new.result.docx", mtime=20.0, content="new-docx")
+
+    pruned = prune_ui_result_artifact_groups(
+        target_dir=target,
+        max_age_seconds=None,
+        max_count=1,
+        now_epoch_seconds=1000.0,
+        emit_log=False,
+    )
+
+    assert sorted(Path(p).name for p in pruned) == [
+        "20260423_101010_old.result.docx",
+        "20260423_101010_old.result.md",
+        "20260423_101010_old.result.tts.txt",
+    ]
+    assert sorted(p.name for p in target.iterdir() if p.is_file()) == [
+        "20260423_111111_new.result.docx",
+        "20260423_111111_new.result.md",
+    ]

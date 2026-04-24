@@ -2,6 +2,7 @@ import pytest
 
 import app
 import state
+import ui
 from conftest import SessionState as SessionState
 
 
@@ -11,21 +12,21 @@ def _session_state_factory(make_session_state):
 
 
 def test_resolve_sidebar_settings_accepts_new_text_transform_tuple():
-    result = app._resolve_sidebar_settings(("gpt-5.4", 6000, 3, "safe", True, "translate", "auto", "de", True))
+    result = app._resolve_sidebar_settings(("gpt-5.4", 6000, 3, "safe", True, "translate", "auto", "de", True, False))
 
-    assert result == ("gpt-5.4", 6000, 3, "safe", True, "translate", "auto", "de", True)
+    assert result == ("gpt-5.4", 6000, 3, "safe", True, "translate", "auto", "de", True, False)
 
 
 def test_resolve_sidebar_settings_keeps_eight_tuple_compatible():
     result = app._resolve_sidebar_settings(("gpt-5.4", 6000, 3, "safe", True, "translate", "auto", "de"))
 
-    assert result == ("gpt-5.4", 6000, 3, "safe", True, "translate", "auto", "de", False)
+    assert result == ("gpt-5.4", 6000, 3, "safe", True, "translate", "auto", "de", False, False)
 
 
 def test_resolve_sidebar_settings_keeps_legacy_tuple_compatible():
     result = app._resolve_sidebar_settings(("gpt-5.4", 6000, 3, "safe", True))
 
-    assert result == ("gpt-5.4", 6000, 3, "safe", True, "edit", "en", "ru", False)
+    assert result == ("gpt-5.4", 6000, 3, "safe", True, "edit", "en", "ru", False, False)
 
 
 def test_assess_text_transform_stores_assessment_in_session_state(monkeypatch):
@@ -44,3 +45,29 @@ def test_assess_text_transform_stores_assessment_in_session_state(monkeypatch):
     assert assessment["target_language_script_match"] is True
 
 
+def test_resolve_result_bundle_passes_mode_flags_for_completed_view(monkeypatch):
+    captured = {}
+    session_state = SessionState(
+        latest_processing_operation="translate",
+        latest_audiobook_postprocess_enabled=True,
+    )
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    monkeypatch.setattr(ui, "render_result_bundle", lambda **kwargs: captured.update(kwargs))
+
+    app.render_result(
+        docx_bytes=b"docx",
+        markdown_text="markdown",
+        original_filename="report.docx",
+        narration_text="[thoughtful] narration",
+        processing_operation="translate",
+        audiobook_postprocess_enabled=True,
+    )
+
+    assert captured["docx_bytes"] == b"docx"
+    assert captured["markdown_text"] == "markdown"
+    assert captured["original_filename"] == "report.docx"
+    assert captured["narration_text"] == "[thoughtful] narration"
+    assert captured["processing_operation"] == "translate"
+    assert captured["audiobook_postprocess_enabled"] is True

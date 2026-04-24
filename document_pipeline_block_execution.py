@@ -566,6 +566,10 @@ def process_single_block(
         )
 
     state.processed_chunks.append(processed_chunk)
+    if payload.narration_include:
+        state.narration_chunks.append(processed_chunk)
+    else:
+        state.excluded_narration_block_count += 1
     if payload.job_kind == "llm" and marker_mode_enabled and payload.paragraph_ids:
         try:
             append_marker_registry_entries_fn(

@@ -607,7 +607,44 @@ def test_get_current_result_bundle_reads_p1a_source_identity_via_state_helpers(m
         "source_token": "report.docx:3:abc",
         "docx_bytes": b"docx",
         "markdown_text": "md",
+        "narration_text": None,
+        "processing_operation": "edit",
+        "audiobook_postprocess_enabled": False,
     }
+
+
+def test_get_current_result_bundle_allows_narration_only_result(monkeypatch):
+    session_state = SessionState(latest_docx_bytes=None, latest_markdown="md", latest_narration_text="[thoughtful] text")
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    monkeypatch.setattr(processing_runtime, "get_latest_source_name", lambda: "report.docx")
+    monkeypatch.setattr(processing_runtime, "get_latest_source_token", lambda: "report.docx:3:abc")
+
+    result = processing_runtime.get_current_result_bundle()
+
+    assert result == {
+        "source_name": "report.docx",
+        "source_token": "report.docx:3:abc",
+        "docx_bytes": None,
+        "markdown_text": "md",
+        "narration_text": "[thoughtful] text",
+        "processing_operation": "edit",
+        "audiobook_postprocess_enabled": False,
+    }
+
+
+def test_build_result_bundle_preserves_explicit_mode_metadata():
+    result = processing_runtime.build_result_bundle(
+        source_name="report.docx",
+        source_token="report.docx:3:abc",
+        docx_bytes=b"docx",
+        markdown_text="md",
+        narration_text="[thoughtful] narration",
+        processing_operation="translate",
+        audiobook_postprocess_enabled=True,
+    )
+
+    assert result["processing_operation"] == "translate"
+    assert result["audiobook_postprocess_enabled"] is True
 
 
 def test_freeze_uploaded_file_normalizes_legacy_doc_payload(monkeypatch):

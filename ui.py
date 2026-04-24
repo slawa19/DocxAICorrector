@@ -17,6 +17,7 @@ from state import (
     get_image_assets,
     get_image_processing_summary,
     get_latest_docx_bytes,
+    get_latest_narration_text,
     get_processed_block_markdowns,
     get_processing_status,
     get_run_log,
@@ -43,6 +44,7 @@ IMAGE_MODE_VALUES_BY_LABEL = {label: value for value, label in IMAGE_MODE_LABELS
 TEXT_OPERATION_LABELS = {
     "edit": "Литературное редактирование",
     "translate": "Перевод",
+    "audiobook": "Подготовка аудиокниги (ElevenLabs)",
 }
 TEXT_OPERATION_VALUES_BY_LABEL = {label: value for value, label in TEXT_OPERATION_LABELS.items()}
 TEXT_SETTING_WIDGET_KEYS = {
@@ -67,6 +69,37 @@ def _build_output_filename(filename: str) -> str:
 
 def _build_markdown_filename(filename: str) -> str:
     return f"{Path(filename).stem}_edited.md"
+
+
+def _build_narration_filename(filename: str) -> str:
+    return f"{Path(filename).stem}.tts.txt"
+
+
+def _resolve_result_download_labels(
+    *,
+    original_filename: str,
+    narration_text: str | None,
+    processing_operation: str = "edit",
+    audiobook_postprocess_enabled: bool = False,
+) -> tuple[str, str, str | None]:
+    operation = str(processing_operation or "edit").strip().lower() or "edit"
+
+    if narration_text is not None and operation == "audiobook":
+        return (
+            "Markdown (для инспекции)",
+            "DOCX (для инспекции)",
+            "Текст для ElevenLabs (.txt)",
+        )
+
+    if operation == "translate":
+        markdown_label = "Переведённый Markdown"
+        docx_label = "Переведённый DOCX"
+    else:
+        markdown_label = "Отредактированный Markdown"
+        docx_label = "Отредактированный DOCX"
+
+    narration_label = "Текст для ElevenLabs (.txt)" if narration_text is not None and audiobook_postprocess_enabled else None
+    return markdown_label, docx_label, narration_label
 
 
 def _render_trusted_html(html_markup: str) -> None:
@@ -203,7 +236,10 @@ def render_sidebar_selectbox(
     *,
     help: str | None = None,
     key: str | None = None,
+    disabled: bool = False,
 ) -> str:
+    if disabled:
+        return st.sidebar.selectbox(label, options, index=index, help=help, key=key, disabled=True)
     return st.sidebar.selectbox(label, options, index=index, help=help, key=key)
 
 
@@ -477,7 +513,7 @@ def _asset_value(asset, field_name: str, default=None):
     return getattr(asset, field_name, default)
 
 
-def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool, str, str, str, bool]:
+def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool, str, str, str, bool, bool]:
     st.sidebar.header("Настройки")
     operation_default = str(config.get("processing_operation_default", "edit"))
     operation_options = list(TEXT_OPERATION_LABELS.values())
@@ -509,7 +545,7 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
     target_language = code_by_label.get(selected_target_label, default_target_code)
 
     source_language = resolve_source_language_from_widget_state(config)
-    if processing_operation == "translate":
+    if processing_operation in {"translate", "audiobook"}:
         source_options = ["Авто", *language_labels]
         source_default_label = "Авто" if source_language == "auto" else label_by_code.get(source_language, source_options[0])
         source_index = source_options.index(source_default_label) if source_default_label in source_options else 0
@@ -521,7 +557,7 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
             key="sidebar_source_language",
         )
         source_language = "auto" if selected_source_label == "Авто" else code_by_label.get(selected_source_label, source_language)
-        if source_language != "auto" and source_language == target_language:
+        if processing_operation == "translate" and source_language != "auto" and source_language == target_language:
             st.sidebar.warning(
                 "Исходный и целевой язык совпадают. Если нужен только стилистический апгрейд, обычно лучше выбрать литературное редактирование."
             )
@@ -536,6 +572,14 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
                 "Обычно улучшает стиль, но увеличивает время и стоимость обработки."
             ),
             key="sidebar_translation_second_pass",
+        )
+    audiobook_postprocess_enabled = False
+    if processing_operation in {"edit", "translate"}:
+        audiobook_postprocess_enabled = st.sidebar.checkbox(
+            "Подготовить для ElevenLabs аудиокниги",
+            value=bool(config.get("audiobook_postprocess_default", False)),
+            help="Готовит отдельный narration text для ElevenLabs без изменения основного DOCX/Markdown результата.",
+            key="sidebar_audiobook_postprocess",
         )
 
     model_options = [*get_text_model_options(config), "custom"]
@@ -560,17 +604,28 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
         max_value=5,
         value=_to_int(config["max_retries"], default=3),
     )
-    image_mode_default = str(config.get("image_mode_default", ImageMode.NO_CHANGE.value))
-    image_mode_options = list(IMAGE_MODE_LABELS.values())
-    image_mode_default_label = IMAGE_MODE_LABELS.get(image_mode_default, IMAGE_MODE_LABELS[ImageMode.NO_CHANGE.value])
-    image_mode_index = image_mode_options.index(image_mode_default_label) if image_mode_default_label in image_mode_options else 0
-    selected_image_mode_label = render_sidebar_selectbox(
-        "Режим обработки изображений",
-        image_mode_options,
-        index=image_mode_index,
-        key="sidebar_image_mode",
-    )
-    image_mode = IMAGE_MODE_VALUES_BY_LABEL.get(selected_image_mode_label, ImageMode.NO_CHANGE.value)
+    if processing_operation == "audiobook":
+        image_mode = ImageMode.NO_CHANGE.value
+        selected_image_mode_label = render_sidebar_selectbox(
+            "Режим обработки изображений",
+            [IMAGE_MODE_LABELS[ImageMode.NO_CHANGE.value]],
+            index=0,
+            key="sidebar_image_mode",
+            disabled=True,
+        )
+        st.sidebar.caption("Для режима аудиокниги изображения всегда оставляются без изменений.")
+    else:
+        image_mode_default = str(config.get("image_mode_default", ImageMode.NO_CHANGE.value))
+        image_mode_options = list(IMAGE_MODE_LABELS.values())
+        image_mode_default_label = IMAGE_MODE_LABELS.get(image_mode_default, IMAGE_MODE_LABELS[ImageMode.NO_CHANGE.value])
+        image_mode_index = image_mode_options.index(image_mode_default_label) if image_mode_default_label in image_mode_options else 0
+        selected_image_mode_label = render_sidebar_selectbox(
+            "Режим обработки изображений",
+            image_mode_options,
+            index=image_mode_index,
+            key="sidebar_image_mode",
+        )
+        image_mode = IMAGE_MODE_VALUES_BY_LABEL.get(selected_image_mode_label, ImageMode.NO_CHANGE.value)
     st.sidebar.caption(IMAGE_MODE_DESCRIPTIONS.get(image_mode, ""))
     keep_all_image_variants = st.sidebar.checkbox(
         "Сохранять все варианты изображений",
@@ -588,6 +643,7 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
         source_language,
         target_language,
         translation_second_pass_enabled,
+        audiobook_postprocess_enabled,
     )
 
 
@@ -646,36 +702,88 @@ def render_markdown_preview(
         )
 
 
-def render_result(docx_bytes: bytes, markdown_text: str, original_filename: str) -> None:
+def render_result(
+    docx_bytes: bytes | None,
+    markdown_text: str,
+    original_filename: str,
+    narration_text: str | None = None,
+    processing_operation: str = "edit",
+    audiobook_postprocess_enabled: bool = False,
+) -> None:
     render_result_bundle(
         docx_bytes=docx_bytes,
         markdown_text=markdown_text,
         original_filename=original_filename,
+        narration_text=narration_text,
+        processing_operation=processing_operation,
+        audiobook_postprocess_enabled=audiobook_postprocess_enabled,
         success_message="Документ обработан.",
     )
 
 
 def render_result_bundle(
     *,
-    docx_bytes: bytes,
+    docx_bytes: bytes | None,
     markdown_text: str,
     original_filename: str,
+    narration_text: str | None = None,
+    processing_operation: str = "edit",
+    audiobook_postprocess_enabled: bool = False,
     success_message: str | None = None,
 ) -> None:
     if success_message:
         st.success(success_message)
-    col_docx, col_md = st.columns(2)
-    col_docx.download_button(
-        label="Скачать итоговый DOCX",
-        data=docx_bytes,
-        file_name=_build_output_filename(original_filename),
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        on_click="ignore",
-        type="primary",
-        use_container_width=True,
+    markdown_label, docx_label, narration_label = _resolve_result_download_labels(
+        original_filename=original_filename,
+        narration_text=narration_text,
+        processing_operation=processing_operation,
+        audiobook_postprocess_enabled=audiobook_postprocess_enabled,
     )
+    if narration_text is not None:
+        col_tts, col_md, col_docx = st.columns(3)
+        col_tts.download_button(
+            label=narration_label or "Текст для ElevenLabs (.txt)",
+            data=narration_text.encode("utf-8"),
+            file_name=_build_narration_filename(original_filename),
+            mime="text/plain",
+            on_click="ignore",
+            type="primary",
+            use_container_width=True,
+        )
+        col_md.download_button(
+            label=markdown_label,
+            data=markdown_text.encode("utf-8"),
+            file_name=_build_markdown_filename(original_filename),
+            mime="text/markdown",
+            on_click="ignore",
+            type="primary",
+            use_container_width=True,
+        )
+        if docx_bytes is not None:
+            col_docx.download_button(
+                label=docx_label,
+                data=docx_bytes,
+                file_name=_build_output_filename(original_filename),
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                on_click="ignore",
+                type="primary",
+                use_container_width=True,
+            )
+        return
+
+    col_docx, col_md = st.columns(2)
+    if docx_bytes is not None:
+        col_docx.download_button(
+            label=docx_label,
+            data=docx_bytes,
+            file_name=_build_output_filename(original_filename),
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            on_click="ignore",
+            type="primary",
+            use_container_width=True,
+        )
     col_md.download_button(
-        label="Скачать итоговый Markdown",
+        label=markdown_label,
         data=markdown_text.encode("utf-8"),
         file_name=_build_markdown_filename(original_filename),
         mime="text/markdown",
@@ -686,7 +794,7 @@ def render_result_bundle(
 
 
 def render_partial_result() -> None:
-    if get_latest_docx_bytes() is not None:
+    if get_latest_docx_bytes() is not None or get_latest_narration_text() is not None:
         return
 
     if not _meaningful_markdown_blocks(get_processed_block_markdowns()):
