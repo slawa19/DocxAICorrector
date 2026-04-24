@@ -84,21 +84,17 @@ def _resolve_result_download_labels(
 ) -> tuple[str, str, str | None]:
     operation = str(processing_operation or "edit").strip().lower() or "edit"
 
-    if narration_text is not None and operation == "audiobook":
-        return (
-            "Markdown (для инспекции)",
-            "DOCX (для инспекции)",
-            "Текст для ElevenLabs (.txt)",
-        )
-
-    if operation == "translate":
+    if operation == "audiobook":
+        markdown_label = "Markdown (для инспекции)"
+        docx_label = "DOCX (для инспекции)"
+    elif operation == "translate":
         markdown_label = "Переведённый Markdown"
         docx_label = "Переведённый DOCX"
     else:
         markdown_label = "Отредактированный Markdown"
         docx_label = "Отредактированный DOCX"
 
-    narration_label = "Текст для ElevenLabs (.txt)" if narration_text is not None and audiobook_postprocess_enabled else None
+    narration_label = "Текст для ElevenLabs (.txt)" if narration_text is not None and (audiobook_postprocess_enabled or operation == "audiobook") else None
     return markdown_label, docx_label, narration_label
 
 
@@ -733,6 +729,7 @@ def render_result_bundle(
 ) -> None:
     if success_message:
         st.success(success_message)
+    operation = str(processing_operation or "edit").strip().lower() or "edit"
     markdown_label, docx_label, narration_label = _resolve_result_download_labels(
         original_filename=original_filename,
         narration_text=narration_text,
@@ -740,7 +737,21 @@ def render_result_bundle(
         audiobook_postprocess_enabled=audiobook_postprocess_enabled,
     )
     if narration_text is not None:
-        col_tts, col_md, col_docx = st.columns(3)
+        columns = st.columns(3)
+        if operation == "audiobook":
+            col_tts, col_md, col_docx = columns
+        else:
+            col_docx, col_md, col_tts = columns
+            if docx_bytes is not None:
+                col_docx.download_button(
+                    label=docx_label,
+                    data=docx_bytes,
+                    file_name=_build_output_filename(original_filename),
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    on_click="ignore",
+                    type="primary",
+                    use_container_width=True,
+                )
         col_tts.download_button(
             label=narration_label or "Текст для ElevenLabs (.txt)",
             data=narration_text.encode("utf-8"),
@@ -759,7 +770,7 @@ def render_result_bundle(
             type="primary",
             use_container_width=True,
         )
-        if docx_bytes is not None:
+        if operation == "audiobook" and docx_bytes is not None:
             col_docx.download_button(
                 label=docx_label,
                 data=docx_bytes,

@@ -564,6 +564,53 @@ def test_render_sidebar_audiobook_forces_no_change_and_hides_pass_checkboxes(mon
     ) in selectbox_calls
 
 
+def test_render_sidebar_audiobook_ignores_stale_translation_second_pass_session_state(monkeypatch):
+    config = {
+        "models": type(
+            "Models",
+            (),
+            {
+                "text": type("TextModels", (), {"default": "gpt-5-mini", "options": ("gpt-5.4", "gpt-5-mini")})(),
+            },
+        )(),
+        "chunk_size": 6000,
+        "max_retries": 3,
+        "processing_operation_default": "audiobook",
+        "source_language_default": "auto",
+        "target_language_default": "ru",
+        "supported_languages": [
+            type("Lang", (), {"code": "ru", "label": "Русский"})(),
+            type("Lang", (), {"code": "en", "label": "English"})(),
+        ],
+        "image_mode_default": "semantic_redraw_direct",
+        "keep_all_image_variants": False,
+    }
+    session_state = SessionState(sidebar_translation_second_pass=True, sidebar_source_language="Авто")
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st.sidebar, "header", lambda text: None)
+    monkeypatch.setattr(ui.st.sidebar, "caption", lambda text: None)
+    monkeypatch.setattr(ui.st.sidebar, "warning", lambda text: None)
+
+    def fake_selectbox(label, options, index=0, format_func=None, help=None, key=None, disabled=False):
+        if label == "Режим обработки текста":
+            return ui.TEXT_OPERATION_LABELS["audiobook"]
+        if label == "Язык оригинала":
+            return "Авто"
+        return options[index]
+
+    monkeypatch.setattr(ui.st.sidebar, "selectbox", fake_selectbox)
+    monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
+    monkeypatch.setattr(ui.st.sidebar, "slider", lambda label, **kwargs: kwargs["value"])
+    monkeypatch.setattr(ui.st.sidebar, "checkbox", lambda label, value, key=None, help=None: value)
+
+    result = ui.render_sidebar(config)
+
+    assert session_state["sidebar_translation_second_pass"] is True
+    assert result[8] is False
+    assert result[9] is False
+
+
 def test_render_sidebar_does_not_add_recommendation_apply_button(monkeypatch):
     config = {
         "models": type(
@@ -1283,6 +1330,35 @@ def test_render_result_bundle_renders_narration_download_when_present(monkeypatc
     assert cols[2].calls[0]["label"] == "DOCX (для инспекции)"
 
 
+def test_render_result_bundle_uses_inspection_labels_for_audiobook_without_narration(monkeypatch):
+    monkeypatch.setattr(
+        ui.st,
+        "session_state",
+        SessionState(latest_processing_operation="audiobook", latest_audiobook_postprocess_enabled=False),
+    )
+    monkeypatch.setattr(ui.st, "success", lambda *args, **kwargs: None)
+
+    class FakeColumn:
+        def __init__(self):
+            self.calls = []
+
+        def download_button(self, *args, **kwargs):
+            self.calls.append(kwargs)
+
+    cols = [FakeColumn(), FakeColumn()]
+    monkeypatch.setattr(ui.st, "columns", lambda n: cols)
+
+    ui.render_result_bundle(
+        docx_bytes=b"docx",
+        markdown_text="markdown",
+        original_filename="report.docx",
+        processing_operation="audiobook",
+    )
+
+    assert cols[0].calls[0]["label"] == "DOCX (для инспекции)"
+    assert cols[1].calls[0]["label"] == "Markdown (для инспекции)"
+
+
 def test_render_result_bundle_shows_downloads_in_columns(monkeypatch):
     success_calls = []
 
@@ -1344,9 +1420,9 @@ def test_render_result_bundle_uses_translate_postprocess_labels(monkeypatch):
         audiobook_postprocess_enabled=True,
     )
 
-    assert cols[0].calls[0]["label"] == "Текст для ElevenLabs (.txt)"
+    assert cols[0].calls[0]["label"] == "Переведённый DOCX"
     assert cols[1].calls[0]["label"] == "Переведённый Markdown"
-    assert cols[2].calls[0]["label"] == "Переведённый DOCX"
+    assert cols[2].calls[0]["label"] == "Текст для ElevenLabs (.txt)"
 
 
 def test_render_result_bundle_uses_explicit_mode_metadata_instead_of_session_flags(monkeypatch):
@@ -1376,9 +1452,9 @@ def test_render_result_bundle_uses_explicit_mode_metadata_instead_of_session_fla
         audiobook_postprocess_enabled=True,
     )
 
-    assert cols[0].calls[0]["label"] == "Текст для ElevenLabs (.txt)"
+    assert cols[0].calls[0]["label"] == "Переведённый DOCX"
     assert cols[1].calls[0]["label"] == "Переведённый Markdown"
-    assert cols[2].calls[0]["label"] == "Переведённый DOCX"
+    assert cols[2].calls[0]["label"] == "Текст для ElevenLabs (.txt)"
 
 
 def test_render_markdown_preview_renders_native_widgets(monkeypatch):

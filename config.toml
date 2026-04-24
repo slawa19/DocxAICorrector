@@ -70,6 +70,11 @@ options = [
   "gpt-5-mini",
 ]
 
+# Optional override for the dedicated audiobook post-pass / standalone audiobook mode.
+# When omitted, the app falls back to [models.text].default.
+# [models.audiobook]
+# default = "gpt-5.4"
+
 [models.structure_recognition]
 default = "gpt-5-mini"
 

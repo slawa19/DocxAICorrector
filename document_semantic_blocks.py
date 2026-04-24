@@ -178,7 +178,12 @@ def build_context_excerpt(blocks: list[DocumentBlock], block_index: int, limit_c
     return "\n\n".join(collected).strip()
 
 
-def build_editing_jobs(blocks: list[DocumentBlock], max_chars: int, processing_operation: str = "edit") -> list[dict[str, object]]:
+def build_editing_jobs(
+    blocks: list[DocumentBlock],
+    *,
+    max_chars: int,
+    processing_operation: str = "edit",
+) -> list[dict[str, object]]:
     context_before_chars = max(600, min(1400, int(max_chars * 0.2)))
     context_after_chars = max(300, min(800, int(max_chars * 0.12)))
     jobs: list[dict[str, object]] = []
@@ -356,6 +361,16 @@ def _is_bibliography_like_block(block: DocumentBlock) -> bool:
     return (matches / len(lines)) >= TOC_DOMINANCE_THRESHOLD
 
 
+def _is_bibliography_like_region(blocks: list[DocumentBlock]) -> bool:
+    region_lines: list[str] = []
+    for block in blocks:
+        region_lines.extend(_iter_block_text_lines(block))
+    if not region_lines:
+        return False
+    matches = sum(1 for line in region_lines if _is_bibliography_like_line(line))
+    return (matches / len(region_lines)) >= TOC_DOMINANCE_THRESHOLD
+
+
 def _resolve_bibliography_tail_indexes(blocks: list[DocumentBlock]) -> set[int]:
     last_narrative_heading_index = -1
     for index, block in enumerate(blocks):
@@ -368,7 +383,7 @@ def _resolve_bibliography_tail_indexes(blocks: list[DocumentBlock]) -> set[int]:
         candidate_blocks = blocks[start_index:]
         if not candidate_blocks:
             continue
-        if all(_is_bibliography_like_block(block) for block in candidate_blocks):
+        if _is_bibliography_like_region(candidate_blocks):
             return set(range(start_index, len(blocks)))
     return set()
 

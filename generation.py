@@ -32,9 +32,9 @@ _INLINE_HTML_SUB_PATTERN = re.compile(r"<sub>(.*?)</sub>", re.IGNORECASE | re.DO
 _INLINE_HTML_BREAK_PATTERN = re.compile(r"<br\s*/?>", re.IGNORECASE)
 _NARRATION_INTERNAL_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_[A-Za-z0-9_]+\]\]")
 _NARRATION_MARKDOWN_LINK_PATTERN = re.compile(r"\[([^\]\n]+)\]\(([^)\n]+)\)")
-_NARRATION_HEADING_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s*", re.MULTILINE)
-_NARRATION_BLOCKQUOTE_PATTERN = re.compile(r"^\s{0,3}>\s?", re.MULTILINE)
-_NARRATION_LIST_PATTERN = re.compile(r"^\s{0,3}(?:[-*+]\s+|\d+\.\s+)", re.MULTILINE)
+_NARRATION_HEADING_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s*(.*)$")
+_NARRATION_BLOCKQUOTE_PATTERN = re.compile(r"^\s{0,3}>\s?(.*)$")
+_NARRATION_LIST_PATTERN = re.compile(r"^\s{0,3}(?:[-*+]\s+|\d+\.\s+)(.*)$")
 _NARRATION_STRONG_PATTERN = re.compile(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1")
 _NARRATION_EMPHASIS_PATTERN = re.compile(r"(\*|_)(?=\S)(.+?)(?<=\S)\1")
 _NARRATION_RAW_URL_PATTERN = re.compile(r"(?:https?://\S+|www\.\S+)", re.IGNORECASE)
@@ -79,17 +79,30 @@ def strip_markdown_for_narration(text: str) -> str:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     normalized = _NARRATION_INTERNAL_PLACEHOLDER_PATTERN.sub("", normalized)
     normalized = _NARRATION_MARKDOWN_LINK_PATTERN.sub(r"\1", normalized)
-    normalized = _NARRATION_HEADING_PATTERN.sub("", normalized)
-    normalized = _NARRATION_BLOCKQUOTE_PATTERN.sub("", normalized)
-    normalized = _NARRATION_LIST_PATTERN.sub("", normalized)
-    normalized = normalized.replace("`", "")
-    normalized = _strip_narration_inline_emphasis(normalized)
-    normalized = _NARRATION_RAW_URL_PATTERN.sub("", normalized)
 
     collapsed_lines: list[str] = []
     previous_blank = True
     for raw_line in normalized.split("\n"):
-        line = _NARRATION_INTERNAL_WHITESPACE_PATTERN.sub(" ", raw_line).strip()
+        line_source = raw_line
+        is_heading = False
+
+        heading_match = _NARRATION_HEADING_PATTERN.match(line_source)
+        if heading_match is not None:
+            is_heading = True
+            line_source = heading_match.group(1)
+        else:
+            blockquote_match = _NARRATION_BLOCKQUOTE_PATTERN.match(line_source)
+            if blockquote_match is not None:
+                line_source = blockquote_match.group(1)
+            else:
+                list_match = _NARRATION_LIST_PATTERN.match(line_source)
+                if list_match is not None:
+                    line_source = list_match.group(1)
+
+        line = line_source.replace("`", "")
+        line = _strip_narration_inline_emphasis(line)
+        line = _NARRATION_RAW_URL_PATTERN.sub("", line)
+        line = _NARRATION_INTERNAL_WHITESPACE_PATTERN.sub(" ", line).strip()
         if not line:
             if not previous_blank:
                 collapsed_lines.append("")
@@ -97,6 +110,9 @@ def strip_markdown_for_narration(text: str) -> str:
             continue
         collapsed_lines.append(line)
         previous_blank = False
+        if is_heading:
+            collapsed_lines.append("")
+            previous_blank = True
     return "\n".join(collapsed_lines).strip()
 
 

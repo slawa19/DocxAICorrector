@@ -15,8 +15,8 @@ def test_strip_markdown_for_narration_removes_markdown_and_placeholders_but_pres
 
     assert stripped == (
         "Chapter 1\n\n"
-        "[thoughtful] Bold and italic text with link.\n"
-        "Quoted line\n"
+        "[thoughtful] Bold and italic text with link.\n\n"
+        "Quoted line\n\n"
         "First item\n"
         "Second item\n\n"
         "inline code"
@@ -30,6 +30,14 @@ def test_strip_markdown_for_narration_is_idempotent():
     twice = generation.strip_markdown_for_narration(once)
 
     assert once == twice
+
+
+def test_strip_markdown_for_narration_inserts_blank_line_after_heading_when_missing():
+    source = "# Title\nNext line"
+
+    stripped = generation.strip_markdown_for_narration(source)
+
+    assert stripped == "Title\n\nNext line"
 
 
 def test_strip_markdown_for_narration_removes_raw_urls_and_normalizes_internal_whitespace():

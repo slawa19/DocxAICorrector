@@ -103,6 +103,7 @@ def _run_processing(runtime, **overrides):
 def test_run_document_processing_fails_on_empty_processing_plan():
     runtime = _build_runtime_capture()
     runtime["state"]["latest_docx_bytes"] = b"stale-docx"
+    runtime["state"]["latest_narration_text"] = "stale narration"
 
     result = document_pipeline.run_document_processing(
         uploaded_file="report.docx",
@@ -139,6 +140,7 @@ def test_run_document_processing_fails_on_empty_processing_plan():
     assert runtime["state"]["latest_markdown"] == ""
     assert runtime["state"]["processed_block_markdowns"] == []
     assert runtime["state"]["latest_docx_bytes"] is None
+    assert runtime["state"]["latest_narration_text"] is None
     assert runtime["state"]["last_error"] == "Ошибка подготовки обработки: План обработки документа пуст."
     assert runtime["finalize"][-1] == (
         "Ошибка подготовки обработки",
@@ -157,6 +159,7 @@ def test_run_document_processing_fails_on_initialization_and_clears_stale_runtim
         {
             "latest_docx_bytes": b"stale-docx",
             "latest_markdown": "stale-markdown",
+            "latest_narration_text": "stale narration",
             "processed_block_markdowns": ["stale-block"],
         }
     )
@@ -196,6 +199,7 @@ def test_run_document_processing_fails_on_initialization_and_clears_stale_runtim
     assert runtime["state"]["latest_markdown"] == ""
     assert runtime["state"]["processed_block_markdowns"] == []
     assert runtime["state"]["latest_docx_bytes"] is None
+    assert runtime["state"]["latest_narration_text"] is None
     assert runtime["state"]["last_error"] == "Ошибка инициализации обработки: pandoc is unavailable"
     assert runtime["finalize"][-1] == (
         "Ошибка инициализации",
@@ -556,6 +560,7 @@ def test_run_document_processing_passthrough_only_does_not_require_system_prompt
 
 def test_run_document_processing_detects_processed_block_count_mismatch():
     runtime = _build_runtime_capture()
+    runtime["state"]["latest_narration_text"] = "stale narration"
     jobs = PlannedJobs(
         [{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
         planned_len=2,
@@ -593,6 +598,7 @@ def test_run_document_processing_detects_processed_block_count_mismatch():
     )
 
     assert result == "failed"
+    assert runtime["state"]["latest_narration_text"] is None
     assert runtime["finalize"][-1][0] == "Критическая ошибка"
     assert runtime["activity"][-1] == "Обнаружено несоответствие количества обработанных блоков."
 

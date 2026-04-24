@@ -203,6 +203,31 @@ def test_build_editing_jobs_keeps_mixed_final_narrative_block_out_of_bibliograph
     assert [job["narration_include"] for job in jobs] == [True, True]
 
 
+def test_build_editing_jobs_excludes_terminal_region_when_bibliography_ratio_is_met_across_suffix():
+    blocks = [
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="Chapter 1", role="heading", paragraph_id="p0000", heading_level=1),
+                ParagraphUnit(text="Narrative body paragraph.", role="body", paragraph_id="p0001"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="Overview of sources used in this chapter.", role="body", paragraph_id="p0002"),
+                ParagraphUnit(text="[1] Smith, 2009. DOI:10.1000/xyz", role="body", paragraph_id="p0003"),
+            ]
+        ),
+        DocumentBlock(
+            paragraphs=[
+                ParagraphUnit(text="https://example.com/ref", role="body", paragraph_id="p0004"),
+                ParagraphUnit(text="ISBN 978-1-4028-9462-6", role="body", paragraph_id="p0005"),
+            ]
+        ),
+    ]
+
+    jobs = build_editing_jobs(blocks, max_chars=3000, processing_operation="audiobook")
+
+    assert [job["narration_include"] for job in jobs] == [True, False, False]
 def test_build_editing_jobs_marks_mixed_toc_majority_blocks_as_toc_dominant():
     paragraphs = [
         ParagraphUnit(text="Contents", role="body", structural_role="toc_header", paragraph_id="p0000"),

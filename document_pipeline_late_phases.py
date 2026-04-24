@@ -607,8 +607,8 @@ def finalize_processing_success(
         final_markdown_chars=len(final_markdown),
         narration_chars=len(narration_text or ""),
         elapsed_seconds=round(time.perf_counter() - state.started_at, 2),
-        translation_second_pass_enabled=bool(context.app_config.get("translation_second_pass_enabled", False)),
-        audiobook_postprocess_enabled=bool(context.app_config.get("audiobook_postprocess_enabled", False)),
+        translation_second_pass_enabled=_is_translation_second_pass_effectively_enabled(context=context),
+        audiobook_postprocess_enabled=_should_run_audiobook_postprocess(context=context),
     )
     emitters.emit_log(
         context.runtime,
@@ -644,6 +644,12 @@ def _should_run_audiobook_postprocess(*, context: Any) -> bool:
     )
 
 
+def _is_translation_second_pass_effectively_enabled(*, context: Any) -> bool:
+    return context.processing_operation == "translate" and bool(
+        context.app_config.get("translation_second_pass_enabled", False)
+    )
+
+
 def _collect_narration_chunks(*, state: Any) -> list[str]:
     return [str(chunk).strip() for chunk in getattr(state, "narration_chunks", []) if str(chunk).strip()]
 
@@ -656,7 +662,7 @@ def _resolve_audiobook_postprocess_model(*, context: Any) -> str:
 def _resolve_audiobook_postprocess_chunk_size(*, context: Any) -> int:
     configured_chunk_size = context.app_config.get("chunk_size", 6000)
     try:
-        return max(int(configured_chunk_size), 1)
+        return max(int(configured_chunk_size), 3000)
     except (TypeError, ValueError):
         return 6000
 

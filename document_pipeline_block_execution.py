@@ -652,7 +652,12 @@ def run_block_processing_phase(
             planned_count=initialization.job_count,
             incomplete_count=max(initialization.job_count - len(state.processed_chunks), 0),
         )
-        emitters.emit_state(context.runtime, last_error=critical_message, latest_docx_bytes=None)
+        emitters.emit_state(
+            context.runtime,
+            last_error=critical_message,
+            latest_docx_bytes=None,
+            latest_narration_text=None,
+        )
         return emit_failed_result_fn(
             emitters=emitters,
             runtime=context.runtime,

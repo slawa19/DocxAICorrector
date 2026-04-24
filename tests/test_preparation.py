@@ -10,7 +10,7 @@ from models import ParagraphBoundaryNormalizationReport
 from models import ParagraphClassification, ParagraphUnit, StructureMap
 from models import StructureRecognitionSummary
 import preparation
-from processing_runtime import FrozenUploadPayload
+from processing_runtime import FrozenUploadPayload, build_in_memory_uploaded_file, build_preparation_request_marker
 
 
 def setup_function():
@@ -290,6 +290,69 @@ def test_prepare_document_for_processing_jobs_include_narration_metadata_without
     assert list(session_state["preparation_cache"].keys()) == [
         "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:sr=off"
     ]
+
+
+def test_prepare_document_for_processing_postprocess_toggle_does_not_change_cache_key_or_request_marker(monkeypatch):
+    session_state = {"preparation_cache": {}}
+    paragraphs = [
+        ParagraphUnit(text="Chapter 1", role="heading", source_index=0),
+        ParagraphUnit(text="Actual body", role="body", source_index=1),
+    ]
+    config_state = {
+        "paragraph_boundary_normalization_enabled": True,
+        "paragraph_boundary_normalization_mode": "high_only",
+        "paragraph_boundary_ai_review_enabled": False,
+        "paragraph_boundary_ai_review_mode": "off",
+        "relation_normalization_enabled": True,
+        "relation_normalization_profile": "phase2_default",
+        "relation_normalization_enabled_relation_kinds": (
+            "image_caption",
+            "table_caption",
+            "epigraph_attribution",
+            "toc_region",
+        ),
+        "structure_recognition_enabled": False,
+        "structure_recognition_mode": "off",
+        "structure_validation_enabled": True,
+        "audiobook_postprocess_enabled": False,
+    }
+
+    monkeypatch.setattr(
+        preparation,
+        "extract_document_content_with_normalization_reports",
+        lambda uploaded_file: _build_extract_result(paragraphs, [], None),
+    )
+    monkeypatch.setattr(preparation, "build_document_text", lambda items: "\n\n".join(paragraph.text for paragraph in items))
+    monkeypatch.setattr(preparation, "load_app_config", lambda: dict(config_state))
+
+    uploaded_payload = _build_uploaded_payload("report.docx", b"docx-bytes", "report.docx:10:hash")
+    request_marker = build_preparation_request_marker(
+        build_in_memory_uploaded_file(source_name=uploaded_payload.filename, source_bytes=uploaded_payload.content_bytes),
+        chunk_size=6000,
+    )
+
+    first = preparation.prepare_document_for_processing(
+        uploaded_payload=uploaded_payload,
+        chunk_size=6000,
+        processing_operation="edit",
+        session_state=session_state,
+    )
+
+    config_state["audiobook_postprocess_enabled"] = True
+
+    second = preparation.prepare_document_for_processing(
+        uploaded_payload=uploaded_payload,
+        chunk_size=6000,
+        processing_operation="edit",
+        session_state=session_state,
+    )
+
+    assert first.prepared_source_key == second.prepared_source_key
+    assert list(session_state["preparation_cache"].keys()) == [first.prepared_source_key]
+    assert request_marker == build_preparation_request_marker(
+        build_in_memory_uploaded_file(source_name=uploaded_payload.filename, source_bytes=uploaded_payload.content_bytes),
+        chunk_size=6000,
+    )
 
 
 def test_prepare_document_for_processing_returns_independent_copies():

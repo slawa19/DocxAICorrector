@@ -533,6 +533,12 @@ def should_cache_completed_source(*, source_bytes: bytes) -> bool:
 def get_current_result_bundle() -> dict[str, object] | None:
     latest_docx_bytes = st.session_state.get("latest_docx_bytes")
     latest_narration_text = get_latest_narration_text()
+    processing_operation = get_latest_processing_operation()
+    if latest_docx_bytes is None:
+        if latest_narration_text is None:
+            return None
+        if processing_operation == "audiobook":
+            return None
     if not latest_docx_bytes and latest_narration_text is None:
         return None
     return build_result_bundle(
@@ -541,7 +547,7 @@ def get_current_result_bundle() -> dict[str, object] | None:
         docx_bytes=latest_docx_bytes,
         markdown_text=st.session_state.get("latest_markdown", ""),
         narration_text=latest_narration_text,
-        processing_operation=get_latest_processing_operation(),
+        processing_operation=processing_operation,
         audiobook_postprocess_enabled=get_latest_audiobook_postprocess_enabled(),
     )
 

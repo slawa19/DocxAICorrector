@@ -387,6 +387,48 @@ def test_load_system_prompt_supports_audiobook_operation():
     assert "готовый для TTS" in prompt
 
 
+def test_load_system_prompt_audiobook_includes_narration_adapted_rules():
+    config.load_system_prompt.cache_clear()
+    try:
+        prompt = config.load_system_prompt(operation="audiobook", source_language="en", target_language="ru")
+    finally:
+        config.load_system_prompt.cache_clear()
+
+    assert "narration_adapted" in prompt
+    assert "разбивайте его на два или три более коротких spoken sentences" in prompt
+    assert "light paraphrase for spoken clarity" in prompt
+    assert "Не делайте summarization" in prompt
+    assert "load-bearing clauses" in prompt
+    assert "causal links" in prompt
+    assert "Adaptation is selective, not mandatory" in prompt
+
+
+def test_load_system_prompt_audiobook_preserves_meaning_guardrails():
+    config.load_system_prompt.cache_clear()
+    try:
+        prompt = config.load_system_prompt(operation="audiobook", source_language="en", target_language="ru")
+    finally:
+        config.load_system_prompt.cache_clear()
+
+    assert "named entities, даты, числа, quantitative claims" in prompt
+    assert "Не смягчайте и не усиливайте тезис автора" in prompt
+    assert "Не добавляйте новую интерпретацию от себя" in prompt
+    assert "Если термин semantically important, сохраняйте его" in prompt
+
+
+def test_load_system_prompt_audiobook_examples_include_sentence_splitting_and_negative_contrast():
+    config.load_system_prompt.cache_clear()
+    try:
+        prompt = config.load_system_prompt(operation="audiobook", source_language="en", target_language="ru")
+    finally:
+        config.load_system_prompt.cache_clear()
+
+    assert "Финансовые операции и порождаемая ими ментальность" in prompt
+    assert "Это видно по решениям менеджеров." in prompt
+    assert "Некорректно" in prompt
+    assert "потеряны qualifier `может`" in prompt
+
+
 def test_load_system_prompt_supports_auto_source_language_for_audiobook():
     config.load_system_prompt.cache_clear()
     try:

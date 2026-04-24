@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import document_pipeline
+import document_pipeline_late_phases
 from docx import Document
 
 from document import extract_document_content_from_docx
@@ -412,7 +413,7 @@ def test_run_document_processing_runs_audiobook_postprocess_without_mutating_bas
     assert "TRANSLATED::Chapter one text" in narration_text
     assert "TRANSLATED::Chapter two text" in narration_text
     assert "TRANSLATED::Index tail" not in narration_text
-    assert narration_text.count("[thoughtful]") == 2
+    assert narration_text.count("[thoughtful]") == 1
     assert artifact_calls["kwargs"]["markdown_text"] == runtime["state"]["latest_markdown"]
     assert artifact_calls["kwargs"]["docx_bytes"] == runtime["state"]["latest_docx_bytes"]
     assert artifact_calls["kwargs"]["narration_text"] == narration_text
@@ -422,16 +423,12 @@ def test_run_document_processing_runs_audiobook_postprocess_without_mutating_bas
         "gpt-5.4-translate",
         "gpt-5.4-translate",
         "gpt-5.4-audio",
-        "gpt-5.4-audio",
     ]
     assert [call["target_text"] for call in generated_calls[3:]] == [
-        "TRANSLATED::Chapter one text",
-        "TRANSLATED::Chapter two text",
+        "TRANSLATED::Chapter one text\n\nTRANSLATED::Chapter two text",
     ]
     assert generated_calls[3]["context_before"] == ""
-    assert generated_calls[3]["context_after"] == "TRANSLATED::Chapter two text"
-    assert generated_calls[4]["context_before"] == "TRANSLATED::Chapter one text"
-    assert generated_calls[4]["context_after"] == ""
+    assert generated_calls[3]["context_after"] == ""
 
     info_events = [event for event in events if event["level"] == logging.INFO]
     saved_event = next(event for event in info_events if event["event_id"] == "ui_audiobook_artifact_saved")
@@ -444,8 +441,8 @@ def test_run_document_processing_runs_audiobook_postprocess_without_mutating_bas
     }
     postprocess_started = [event for event in info_events if event["event_id"] == "audiobook_postprocess_chunk_started"]
     postprocess_completed = [event for event in info_events if event["event_id"] == "audiobook_postprocess_chunk_completed"]
-    assert len(postprocess_started) == 2
-    assert len(postprocess_completed) == 2
+    assert len(postprocess_started) == 1
+    assert len(postprocess_completed) == 1
     assert all(event["context"]["operation"] == "audiobook" for event in postprocess_started)
     assert all(event["context"]["pass"] == "postprocess" for event in postprocess_started)
     completed_event = next(event for event in info_events if event["event_id"] == "processing_completed")
@@ -536,6 +533,59 @@ def test_run_document_processing_does_not_run_translation_second_pass_for_audiob
     assert len(generated_calls) == 1
 
 
+def test_run_document_processing_logs_effective_second_pass_flags_for_standalone_audiobook():
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0, "narration_include": True}],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={
+            "translation_second_pass_enabled": True,
+            "audiobook_postprocess_enabled": True,
+        },
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="audiobook",
+        source_language="auto",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=log_event,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "[thoughtful] edited",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+    )
+
+    assert result == "succeeded"
+    info_events = [event for event in events if event["level"] == logging.INFO]
+    started_event = next(event for event in info_events if event["event_id"] == "processing_started")
+    summary_event = next(event for event in info_events if event["event_id"] == "block_plan_summary")
+    completed_event = next(event for event in info_events if event["event_id"] == "processing_completed")
+
+    assert started_event["context"]["translation_second_pass_enabled"] is False
+    assert summary_event["context"]["translation_second_pass_enabled"] is False
+    assert completed_event["context"]["translation_second_pass_enabled"] is False
+    assert completed_event["context"]["audiobook_postprocess_enabled"] is False
+
+
 def test_run_document_processing_uses_base_model_for_audiobook_postprocess_when_configured_model_blank():
     runtime = _build_runtime_capture()
     generated_calls = []
@@ -589,6 +639,12 @@ def test_run_document_processing_uses_base_model_for_audiobook_postprocess_when_
     assert len(generated_calls) == 2
     assert generated_calls[1]["model"] == "gpt-5.4-base"
     assert runtime["state"]["latest_narration_text"] == "[thoughtful] edited"
+
+
+def test_resolve_audiobook_postprocess_chunk_size_clamps_to_config_minimum():
+    context = type("Context", (), {"app_config": {"chunk_size": 1200}})()
+
+    assert document_pipeline_late_phases._resolve_audiobook_postprocess_chunk_size(context=context) == 3000
 
 
 def test_run_document_processing_does_not_fail_when_ui_result_artifact_save_fails():

@@ -632,6 +632,14 @@ def test_get_current_result_bundle_allows_narration_only_result(monkeypatch):
     }
 
 
+def test_get_current_result_bundle_rejects_incomplete_standalone_audiobook_result(monkeypatch):
+    session_state = SessionState(latest_docx_bytes=None, latest_markdown="md", latest_narration_text="[thoughtful] text")
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    monkeypatch.setattr(processing_runtime, "get_latest_processing_operation", lambda: "audiobook")
+
+    assert processing_runtime.get_current_result_bundle() is None
+
+
 def test_build_result_bundle_preserves_explicit_mode_metadata():
     result = processing_runtime.build_result_bundle(
         source_name="report.docx",
