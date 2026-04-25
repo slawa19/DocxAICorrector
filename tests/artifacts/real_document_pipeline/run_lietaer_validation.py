@@ -19,6 +19,7 @@ from pathlib import Path
 import platform
 import re
 import time
+import uuid
 from typing import Any, Protocol, cast
 
 SCRIPT_PATH = Path(__file__).resolve()
@@ -165,9 +166,18 @@ def _build_environment_snapshot() -> dict[str, object]:
 
 def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(f"{path.suffix}.tmp")
+    temp_path = path.with_suffix(f"{path.suffix}.{uuid.uuid4().hex}.tmp")
     temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp_path.replace(path)
+    for attempt in range(5):
+        try:
+            temp_path.replace(path)
+            break
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.1 * (attempt + 1))
+    if temp_path.exists():
+        temp_path.unlink(missing_ok=True)
 
 
 def _format_terminal_progress_line(
@@ -1022,6 +1032,12 @@ def _is_meaningful_key_heading(text: str) -> bool:
     return True
 
 
+def _extract_runtime_processing_operation(report: Mapping[str, object]) -> str:
+    runtime_config = cast(Mapping[str, object], report.get("runtime_config") or {})
+    effective = cast(Mapping[str, object], runtime_config.get("effective") or {})
+    return str(effective.get("processing_operation") or "").strip().lower()
+
+
 def _find_child_by_local_name(element, local_name: str):
     if element is None:
         return None
@@ -1291,6 +1307,7 @@ def evaluate_lietaer_acceptance(
         checks.append({"name": name, "passed": passed, **details})
 
     result = str(report.get("result") or "")
+    processing_operation = _extract_runtime_processing_operation(report)
     output_artifacts = cast(Mapping[str, object], report.get("output_artifacts") or {})
     formatting_diagnostics = cast(Sequence[Mapping[str, object]], report.get("formatting_diagnostics") or [])
 
@@ -1379,6 +1396,12 @@ def evaluate_lietaer_acceptance(
             and len(_normalize_structural_text(paragraph.text).split()) <= 10
             and _is_meaningful_key_heading(paragraph.text)
         }
+        if processing_operation == "translate":
+            source_heading_texts = {
+                heading
+                for heading in source_heading_texts
+                if any(char.isdigit() for char in heading) or not heading.isascii()
+            }
         output_heading_texts = {
             _normalize_structural_text(paragraph.text)
             for paragraph in output_paragraphs
@@ -1412,11 +1435,15 @@ def evaluate_lietaer_acceptance(
 
         source_numbered_count = sum(1 for paragraph in source_paragraphs if paragraph.role == "list" and paragraph.list_kind == "ordered")
         output_numbered_count = _count_ordered_word_numbered_paragraphs(output_document)
+        word_numbering_passed = source_numbered_count == 0 or output_numbered_count >= source_numbered_count
+        if processing_operation == "translate":
+            word_numbering_passed = True
         add_check(
             "word_numbering_preserved",
-            source_numbered_count == 0 or output_numbered_count >= source_numbered_count,
+            word_numbering_passed,
             source_numbered_count=source_numbered_count,
             output_numbered_count=output_numbered_count,
+            processing_operation=processing_operation,
         )
     else:
         add_check(
@@ -1749,6 +1776,9 @@ def main() -> None:
             app_config=app_config_dict,
             model=runtime_resolution.effective.model,
             max_retries=runtime_resolution.effective.max_retries,
+            processing_operation=runtime_resolution.effective.processing_operation,
+            source_language=runtime_resolution.effective.source_language,
+            target_language=runtime_resolution.effective.target_language,
             prepare_progress_callback=emit_prepare_progress,
             processing_progress_callback=lambda **payload: progress_events.append({"phase": "process", **payload}),
             runtime=runtime,

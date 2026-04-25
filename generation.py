@@ -33,6 +33,7 @@ _INLINE_HTML_BREAK_PATTERN = re.compile(r"<br\s*/?>", re.IGNORECASE)
 _NARRATION_INTERNAL_PLACEHOLDER_PATTERN = re.compile(r"\[\[DOCX_[A-Za-z0-9_]+\]\]")
 _NARRATION_MARKDOWN_LINK_PATTERN = re.compile(r"\[([^\]\n]+)\]\(([^)\n]+)\)")
 _NARRATION_HEADING_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s*(.*)$")
+_NARRATION_TAGGED_HEADING_PATTERN = re.compile(r"^(\s*(?:\[[^\]\n]+\]\s*)+)#{1,6}\s*(.*)$")
 _NARRATION_BLOCKQUOTE_PATTERN = re.compile(r"^\s{0,3}>\s?(.*)$")
 _NARRATION_LIST_PATTERN = re.compile(r"^\s{0,3}(?:[-*+]\s+|\d+\.\s+)(.*)$")
 _NARRATION_STRONG_PATTERN = re.compile(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1")
@@ -86,18 +87,25 @@ def strip_markdown_for_narration(text: str) -> str:
         line_source = raw_line
         is_heading = False
 
-        heading_match = _NARRATION_HEADING_PATTERN.match(line_source)
-        if heading_match is not None:
+        tagged_heading_match = _NARRATION_TAGGED_HEADING_PATTERN.match(line_source)
+        if tagged_heading_match is not None:
             is_heading = True
-            line_source = heading_match.group(1)
+            tag_prefix = _NARRATION_INTERNAL_WHITESPACE_PATTERN.sub(" ", tagged_heading_match.group(1)).strip()
+            heading_text = tagged_heading_match.group(2).strip()
+            line_source = f"{tag_prefix} {heading_text}".strip()
         else:
-            blockquote_match = _NARRATION_BLOCKQUOTE_PATTERN.match(line_source)
-            if blockquote_match is not None:
-                line_source = blockquote_match.group(1)
+            heading_match = _NARRATION_HEADING_PATTERN.match(line_source)
+            if heading_match is not None:
+                is_heading = True
+                line_source = heading_match.group(1)
             else:
-                list_match = _NARRATION_LIST_PATTERN.match(line_source)
-                if list_match is not None:
-                    line_source = list_match.group(1)
+                blockquote_match = _NARRATION_BLOCKQUOTE_PATTERN.match(line_source)
+                if blockquote_match is not None:
+                    line_source = blockquote_match.group(1)
+                else:
+                    list_match = _NARRATION_LIST_PATTERN.match(line_source)
+                    if list_match is not None:
+                        line_source = list_match.group(1)
 
         line = line_source.replace("`", "")
         line = _strip_narration_inline_emphasis(line)

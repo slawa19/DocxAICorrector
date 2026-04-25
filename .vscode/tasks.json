@@ -86,6 +86,37 @@
 			"group": "none"
 		},
 		{
+			"label": "Tail Streamlit Log",
+			"type": "shell",
+			"command": "${workspaceFolder}\\scripts\\tail-streamlit-log.ps1",
+			"args": [
+				"-Lines",
+				"${input:streamlitLogLines}"
+			],
+			"options": {
+				"cwd": "${workspaceFolder}",
+				"shell": {
+					"executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+					"args": [
+						"-NoProfile",
+						"-ExecutionPolicy",
+						"Bypass",
+						"-File"
+					]
+				}
+			},
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated",
+				"focus": true,
+				"clear": true,
+				"showReuseMessage": false,
+				"close": false
+			},
+			"group": "none"
+		},
+		{
 			"label": "Restart Project",
 			"type": "shell",
 			"command": "${workspaceFolder}\\scripts\\restart-project.ps1",
@@ -140,46 +171,9 @@
 			"group": "test"
 		},
 		{
-			"label": "Run Docker CI Parity Pytest",
-			"type": "shell",
-			"command": "bash",
-			"args": [
-				"-lc",
-				"docker run --rm -v \"$PWD\":/src -w /src python:3.12 bash -lc '\npython -m venv /tmp/docxai-venv &&\n. /tmp/docxai-venv/bin/activate &&\npython -m pip install --upgrade pip &&\npip install -r requirements.txt &&\npytest tests/ -q\n'"
-			],
-			"options": {
-				"shell": {
-					"executable": "wsl.exe",
-					"args": [
-						"-d",
-						"Debian",
-						"--cd",
-						"${workspaceFolder}",
-						"--"
-					]
-				}
-			},
-			"problemMatcher": [],
-			"presentation": {
-				"reveal": "always",
-				"panel": "dedicated",
-				"focus": true,
-				"clear": true,
-				"showReuseMessage": false,
-				"close": false
-			},
-			"group": "test"
-		},
-		{
 			"label": "Run Current Test File",
 			"type": "shell",
-			"command": "bash",
-			"args": [
-				"-lc",
-				"path=\"$1\"; path=\"${path//\\//}\"; bash scripts/test.sh \"$path\"",
-				"_",
-				"${relativeFile}"
-			],
+			"command": "bash scripts/test.sh \"${relativeFile}\"",
 			"options": {
 				"shell": {
 					"executable": "wsl.exe",
@@ -206,13 +200,64 @@
 		{
 			"label": "Run Current Test Node",
 			"type": "shell",
+			"command": "bash scripts/test.sh \"${relativeFile}::${input:pytestNodeSuffix}\"",
+			"options": {
+				"shell": {
+					"executable": "wsl.exe",
+					"args": [
+						"-d",
+						"Debian",
+						"--cd",
+						"${workspaceFolder}",
+						"--"
+					]
+				}
+			},
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated",
+				"focus": true,
+				"clear": true,
+				"showReuseMessage": false,
+				"close": false
+			},
+			"group": "test"
+		},
+		{
+			"label": "Run Docker CI Parity Pytest",
+			"type": "shell",
+			"command": "bash -lc 'docker run --rm -v \"$(pwd)\":/src -w /src python:3.12 bash -lc \"python -m venv /tmp/docxai-venv && . /tmp/docxai-venv/bin/activate && python -m pip install --upgrade pip && pip install -r requirements.txt && pytest tests/ -q\"'",
+			"options": {
+				"shell": {
+					"executable": "wsl.exe",
+					"args": [
+						"-d",
+						"Debian",
+						"--cd",
+						"${workspaceFolder}",
+						"--"
+					]
+				}
+			},
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated",
+				"focus": true,
+				"clear": true,
+				"showReuseMessage": false,
+				"close": false
+			},
+			"group": "test"
+		},
+		{
+			"label": "Run Lietaer Real Validation",
+			"type": "shell",
 			"command": "bash",
 			"args": [
 				"-lc",
-				"path=\"$1\"; node_suffix=\"$2\"; path=\"${path//\\//}\"; bash scripts/test.sh \"${path}::${node_suffix}\"",
-				"_",
-				"${relativeFile}",
-				"${input:pytestNodeSuffix}"
+				"export DOCXAI_REAL_DOCUMENT_PROFILE=lietaer-core; export DOCXAI_REAL_DOCUMENT_RUN_PROFILE=ui-parity-default; bash scripts/run-real-document-validation.sh"
 			],
 			"options": {
 				"shell": {
@@ -238,30 +283,30 @@
 			"group": "test"
 		},
 		{
-			"label": "Tail Streamlit Log",
+			"label": "Run Lietaer Real Validation AI",
 			"type": "shell",
-			"command": "${workspaceFolder}\\scripts\\tail-streamlit-log.ps1",
+			"command": "bash",
 			"args": [
-				"-Lines",
-				"${input:streamlitLogLines}"
+				"-lc",
+				"export DOCXAI_REAL_DOCUMENT_PROFILE=lietaer-core; export DOCXAI_REAL_DOCUMENT_RUN_PROFILE=ui-parity-ai-default; bash scripts/run-real-document-validation.sh"
 			],
 			"options": {
-				"cwd": "${workspaceFolder}",
 				"shell": {
-					"executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+					"executable": "wsl.exe",
 					"args": [
-						"-NoProfile",
-						"-ExecutionPolicy",
-						"Bypass",
-						"-File"
+						"-d",
+						"Debian",
+						"--cd",
+						"${workspaceFolder}",
+						"--"
 					]
 				}
 			},
 			"problemMatcher": [],
 			"presentation": {
-				"reveal": "silent",
+				"reveal": "always",
 				"panel": "dedicated",
-				"focus": false,
+				"focus": true,
 				"clear": true,
 				"showReuseMessage": false,
 				"close": false

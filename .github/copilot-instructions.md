@@ -22,6 +22,14 @@ Never use PowerShell `.ps1` wrappers to run tests. They pipe output through WSLâ
 
 Before concluding that imports are broken, dependencies are missing, or Pandoc is unavailable, first verify the project runtime contract in WSL and prefer the canonical path `bash scripts/test.sh ...` over Windows `py`/`python`.
 
+Critical distinction:
+
+- `bash scripts/test.sh ...`, `bash scripts/run-real-document-validation.sh`, `bash scripts/run-real-document-quality-gate.sh`, and the matching VS Code tasks are **canonical contract paths**.
+- Direct `python -m pytest ...` without those shell entry points is only a **debug path**.
+- If the workspace factually has a working Windows `.venv\Scripts\python.exe`, agents may use it only for debugging ordinary pytest selectors that do not themselves depend on a shell-bound contract.
+- For `real`, `spec`, `ui-parity`, `validation`, `quality-gate`, or any shell-driven scenario, a debug path does not count as executing the requested canonical verification path.
+- If the canonical shell path is unavailable, state that limitation explicitly instead of silently substituting an underlying Python runner and reporting it as equivalent verification.
+
 When an AI agent runs tests for verification inside VS Code, the final user-facing verification path must be user-visible:
 
 - use the existing VS Code tasks `Run Full Pytest`, `Run Current Test File`, or `Run Current Test Node` whenever one of them matches the requested scope;

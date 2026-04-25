@@ -12,12 +12,18 @@
 - Единственный runtime для Python, pytest, Streamlit и Pandoc: WSL `.venv`.
 - Windows PowerShell используется только как thin wrapper и transport layer для lifecycle/diagnostic scripts и соответствующих VS Code tasks.
 - Каталог `.venv-win/` допустим только для editor tooling и статического анализа; он не должен участвовать в runtime auto-selection.
+- Агентам и automation запрещено предполагать layout `.venv` заранее: сначала нужно проверять, существует ли WSL/Linux layout (`.venv/bin/activate`) или Windows layout (`.venv\Scripts\python.exe`).
 - Upload contract больше не DOCX-only: пользовательский вход может быть `.docx` или legacy `.doc`; после boundary в `processing_runtime.py` downstream-слои обязаны работать с normalized DOCX bytes, но для legacy `.doc` token identity остаётся привязанной к исходным source bytes.
 - Предпочтительный backend автоконвертации legacy `.doc` внутри WSL: `LibreOffice` / `soffice`; fallback backend: `antiword` + `pandoc`.
 - Официальные entry points для запуска и диагностики: `Project Status`, `Start Project`, `Stop Project`, `Run Full Pytest`, `Run Current Test File`, `Run Current Test Node`, `Tail Streamlit Log`.
 - Официальные видимые real-document entry points: `Run Lietaer Real Validation`, `Run Real Document Validation Profile`, `Run Real Document Quality Gate`.
 - Полный `Run Full Pytest` не должен неявно запускать дорогой real-document AI smoke только потому, что в `.env` присутствует `OPENAI_API_KEY`; для такого smoke требуется явный opt-in.
 - Официальный тестовый entry point: `bash scripts/test.sh ...` из WSL или VS Code tasks, которые вызывают WSL/bash напрямую.
+- `bash scripts/test.sh ...`, `bash scripts/run-real-document-validation.sh`, `bash scripts/run-real-document-quality-gate.sh` и соответствующие VS Code tasks являются **canonical contract path**.
+- Прямой `pytest` через `python -m pytest` без этих shell entry points является только **debug path**.
+- Если текущий workspace фактически содержит Windows layout `.venv` и `.venv\Scripts\python.exe -m pytest ...` реально работает, этот путь допустим только для локального debugging обычных pytest selector-ов.
+- Для `real`, `spec`, `ui-parity`, `validation`, `quality-gate` и любых shell-driven сценариев debug path не заменяет canonical verification path.
+- Если requested selector сам вызывает shell-bound contract, нельзя описывать direct Python rerun как выполнение исходного selector-а; такой rerun должен маркироваться как `debug-only`.
 - Для agent-side debug запусков pytest должен выполняться по одному selector за команду; нельзя склеивать несколько прогонов через `&&` или уводить их в hidden/background terminal, если нужен полный и наблюдаемый результат.
 - Официальные PowerShell wrappers: `scripts/start-project.ps1`, `scripts/stop-project.ps1`, `scripts/status-project.ps1`, `scripts/tail-streamlit-log.ps1`.
 - Вся command logic живёт в `scripts/project-control-wsl.sh` и `scripts/test.sh`; lifecycle wrappers и tasks не должны дублировать raw streamlit or pytest command chains.

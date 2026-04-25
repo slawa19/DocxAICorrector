@@ -46,3 +46,11 @@ def test_strip_markdown_for_narration_removes_raw_urls_and_normalizes_internal_w
     stripped = generation.strip_markdown_for_narration(source)
 
     assert stripped == "[thoughtful] Text with raw URL and inside."
+
+
+def test_strip_markdown_for_narration_removes_heading_marker_after_audio_tag():
+    source = "[serious] # Introduction\nNext line"
+
+    stripped = generation.strip_markdown_for_narration(source)
+
+    assert stripped == "[serious] Introduction\n\nNext line"

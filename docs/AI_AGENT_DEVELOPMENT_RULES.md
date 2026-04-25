@@ -81,6 +81,15 @@ Startup contract считается отдельной защищённой по
 - не делать выводы о зависимостях, import health, доступности Pandoc или общем состоянии окружения на основании случайного `python`, `py`, Windows virtualenv или иного системного интерпретатора, пока не проверен project runtime;
 - при расхождении между системным интерпретатором и project runtime считать источником истины project runtime;
 - предпочитать существующие project entry points вместо ad-hoc команд: `bash scripts/test.sh ...`, `scripts/start-project.ps1`, `scripts/status-project.ps1`, `scripts/project-control-wsl.sh`.
+- не подменять shell-bound validation/spec entry point direct Python runner-ом и не описывать такой обход как эквивалент requested verification.
+
+Критическое различие для агентов:
+
+- `bash scripts/test.sh ...`, `bash scripts/run-real-document-validation.sh`, `bash scripts/run-real-document-quality-gate.sh` и соответствующие VS Code tasks — это **canonical contract path**.
+- Прямой `python -m pytest ...` или запуск internal runner module без shell entry point — это только **debug path**.
+- Если текущий workspace фактически содержит Windows `.venv\Scripts\python.exe` и этот interpreter реально запускает обычные pytest selector-ы, такой путь допустим только для локального debugging и только там, где selector сам не зависит от shell-bound contract.
+- Для `real`, `spec`, `ui-parity`, `validation`, `quality-gate` и других shell-script driven сценариев debug path не считается доказательством requested verification.
+- Если canonical path недоступен, агент обязан явно сообщить это как ограничение canonical verification, а не выдавать debug run за эквивалент requested test.
 
 Короткие корректные примеры:
 

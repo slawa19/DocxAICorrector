@@ -5,9 +5,9 @@
 ## Runtime Contract
 
 - Канонический project runtime: WSL project runtime по пути `/mnt/d/www/projects/2025/DocxAICorrector`.
-- `.venv` в корне репозитория — это WSL/Linux virtualenv, а не Windows env.
 - Для тестов, диагностических импортов, проверки зависимостей и runtime-выводов источником истины считается project runtime внутри WSL.
-- Если системный interpreter, Windows `py`/`python` или случайный shell показывают другое состояние, приоритет всегда у project runtime.
+- Но агент НЕ имеет права предполагать layout `.venv` заранее: сначала нужно фактологически проверить, это WSL/Linux env (`.venv/bin/activate`) или Windows env (`.venv\Scripts\python.exe`).
+- Если фактический layout `.venv` расходится с ожидаемым контрактом, агент должен явно зафиксировать это как состояние workspace и выбрать рабочий runnable path вместо ложного вывода, что тесты "не запускаются".
 
 ## Canonical Test Commands
 
@@ -21,6 +21,11 @@ bash scripts/test.sh tests/test_file.py::test_name -vv -x
 
 Не запускайте тесты через `py -m pytest`, `python -m pytest` или PowerShell, если явно не подтверждено, что команда выполняется именно внутри project WSL runtime.
 
+Критическое различие:
+
+- `bash scripts/test.sh ...`, `bash scripts/run-real-document-validation.sh`, `bash scripts/run-real-document-quality-gate.sh` и любые тесты/spec-paths, которые сами завязаны на shell entrypoint, считаются **canonical contract path**.
+- Прямой запуск `pytest` или underlying Python runner без этого shell entrypoint считается только **debug path**, а не эквивалентом canonical contract path.
+
 Если нужен низкоуровневый fallback, сначала активируйте project env внутри WSL:
 
 ```bash
@@ -32,8 +37,11 @@ pytest tests/ -q
 
 - Сначала решите, нужен ли вообще shell-run: для финальной верификации в VS Code сначала предпочитайте existing tasks `Run Full Pytest`, `Run Current Test File`, `Run Current Test Node`.
 - Перед первым ручным test command обязательно определите текущий shell через `uname` и `pwd`, а не по предположению.
+- До любого вывода о broken env обязательно проверьте layout `.venv`: наличие `.venv/bin/activate`, `.venv/bin/python`, `.venv/Scripts/python.exe`, `.venv/Scripts/pytest.exe`.
 - Если `uname` показывает Linux и рабочий каталог уже под `/mnt/d/www/projects/2025/DocxAICorrector`, вы уже внутри WSL runtime: запускайте `bash scripts/test.sh ...` напрямую.
 - Если shell показывает `MSYS_NT`, `MINGW64_NT`, Windows PowerShell или иной не-WSL runtime, используйте `wsl.exe -d Debian ...` только как transport layer до project WSL runtime.
+- Если shell не WSL, но `.venv/Scripts/python.exe` и `pytest.exe` существуют и реально запускают тесты, это допустимый agent-side debug path для локальной проверки изменённого кода. Не называйте такой env broken только потому, что он не WSL-layout.
+- Если конкретный selector/test helper внутри себя жёстко вызывает canonical shell script или WSL-only validation path, Windows `.venv/Scripts/python.exe -m pytest ...` НЕ является заменой этого selector-а. В таком случае Windows path допустим только для исследования кода вокруг проблемы, но не как выполнение исходного shell-bound test contract.
 - Никогда не вкладывайте `wsl.exe` внутрь shell, который уже находится в WSL: это даёт ложные path/stdio проблемы и ломает диагностику.
 - Для одного расследования держите только один активный pytest run на один selector и дождитесь его окончания перед следующим запуском.
 - Для CI-parity сначала подтвердите SHA failing run. Если локальный worktree грязный или уже ушёл вперёд относительно tested commit, используйте clean worktree или готовый Docker CI-parity path прежде чем трактовать результат как репрезентативный.
@@ -45,6 +53,16 @@ pytest tests/ -q
 - Не считайте вывод из agent terminal, даже если он корректный, эквивалентом user-visible verification в VS Code terminal panel.
 - Если shell capture на отдельных pytest node-ах нестабилен или неполон, не упирайтесь в него как в финальный источник истины; переходите на user-visible task path.
 - Shell/Python reruns можно использовать для debugging, но финальное утверждение о результате должно опираться на user-visible task path, когда для этого есть подходящий task.
+- Для shell-bound validation/spec/UI-parity сценариев debug run через другой entrypoint никогда не должен описываться как выполнение исходного requested test. Он может подтверждать только внутреннюю гипотезу, но не заменяет canonical validation result.
+
+## Canonical vs Debug Path
+
+- **Canonical path**: именно тот entrypoint, который просит репозиторный контракт или сам тестовый selector: `scripts/test.sh`, `scripts/run-real-document-validation.sh`, `scripts/run-real-document-quality-gate.sh`, существующие VS Code tasks или прямой WSL-run того же shell entrypoint.
+- **Debug path**: любой обходной запуск, используемый для локальной диагностики, например `./.venv/Scripts/python.exe -m pytest ...`, прямой импорт runner-модуля или узкий internal helper.
+- Если requested selector сам проверяет shell-bound contract, debug path не является доказательством выполнения requested selector-а.
+- Нельзя подменять canonical path на debug path молча. В ответе нужно явно маркировать это как `debug-only`, если пользователь не просил именно обходной запуск.
+- Для `real`, `spec`, `ui-parity`, `validation`, `quality-gate` и shell-script driven сценариев canonical path имеет абсолютный приоритет над debug path.
+- Если canonical path недоступен в текущем runtime, агент должен сообщить именно это ограничение, а не писать, что requested test был выполнен эквивалентно другим способом.
 
 ### Если pytest output неполный или обрывается
 
@@ -78,6 +96,14 @@ pytest tests/ -q
 bash scripts/test.sh tests/ -q
 ```
 
+Если shell не WSL, но `.venv/Scripts/python.exe` существует и `pytest` установлен:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/ -q
+```
+
+Этот путь допустим только для обычных pytest selector-ов, которые не зависят от shell-bound contract внутри себя.
+
 Если shell не WSL и нужен agent-side debug run:
 
 ```bash
@@ -105,11 +131,17 @@ echo START && wsl.exe -d Debian bash -c "cd /mnt/d/www/projects/2025/DocxAICorre
 
 `scripts/test.sh` НЕ работает из Bash tool напрямую — скрипт вызывает `exec pytest`, и `pytest` не находится в PATH MSYS окружения.
 
+Если `wsl.exe` path неработоспособен из-за отсутствия `.venv/bin/activate`, но Windows `.venv\Scripts\python.exe` реально запускает тесты с проектными зависимостями, используйте Windows venv для debugging вместо ложного вывода, что runtime verification полностью заблокирована.
+
+Исключение: если проверяемый сценарий привязан к canonical shell script, real-document validation, UI-parity harness, quality gate или другому WSL-only contract path, Windows venv не заменяет requested verification и может использоваться только как debug-only path.
+
 ## Запрещено
 
 - `py -m pytest` из Windows shell.
 - Запуск `pytest` через PowerShell bridge / PowerShell wrapper.
-- Создание Windows virtualenv в `.venv`.
+- Заявлять, что тесты "не запускаются" или что env broken, не проверив фактические executable paths в `.venv`.
+- Подменять shell-bound spec/validation test другим underlying Python runner-ом и описывать это как эквивалент requested test execution.
+- Подменять `real`, `spec`, `ui-parity`, `validation`, `quality-gate` сценарий debug path-ом без явной маркировки, что canonical path не был выполнен.
 - Запуск `bash scripts/test.sh ...` или `source .venv/bin/activate && pytest` напрямую из Bash tool без `wsl.exe -d Debian bash -c '...'`.
 - Голое `wsl` вместо `wsl.exe` из агентского терминала.
 - WSL-команды без echo-маркеров (вывод теряется).

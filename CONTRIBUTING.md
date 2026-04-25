@@ -2,7 +2,7 @@
 
 ## Локальная разработка
 
-Проект использует основной Python runtime в WSL. Для штатной разработки, запуска приложения и тестов используйте `.venv/bin/activate` внутри WSL.
+Проект использует основной Python runtime в WSL. Для штатной разработки, запуска приложения и shell-driven validation используйте `.venv/bin/activate` внутри WSL. Но перед выводом о broken env сначала фактологически проверьте layout `.venv`: в некоторых workspace агент может увидеть Windows layout (`.venv\Scripts\python.exe`) вместо Linux layout (`.venv/bin/activate`).
 
 Startup performance contract считается частью канонической документации. Перед изменениями, затрагивающими старт приложения, сверяйтесь с `docs/STARTUP_PERFORMANCE_CONTRACT.md` и не меняйте startup path без явной задачи на performance или lifecycle.
 
@@ -61,6 +61,19 @@ bash scripts/test.sh tests/ -q
 bash scripts/test.sh tests/test_config.py -vv
 bash scripts/test.sh tests/test_config.py::test_name -vv -x
 ```
+
+Важно различать два класса запуска:
+
+- `bash scripts/test.sh ...` и shell-driven validation scripts являются **canonical contract path**.
+- `python -m pytest ...` без этих shell entry points является только **debug path**.
+
+Если текущий shell не WSL, но `.venv\Scripts\python.exe` и `pytest.exe` реально существуют и запускают тесты, агент может использовать этот путь только для обычных pytest selector-ов во время локального debugging:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_config.py -vv
+```
+
+Этот путь не заменяет shell-bound сценарии.
 
 Низкоуровневый fallback во встроенном WSL-терминале VS Code:
 
@@ -146,6 +159,12 @@ bash scripts/run-real-document-quality-gate.sh
 ```
 
 Не вызывайте `run_lietaer_validation.py` через Windows Python из WSL и не надейтесь на случайный shell cwd. Используйте только WSL `.venv` и репозиторный root.
+
+Для AI agents и automation это правило расширяется:
+
+- нельзя подменять `bash scripts/run-real-document-validation.sh` или `bash scripts/run-real-document-quality-gate.sh` прямым underlying Python runner-ом и описывать это как эквивалентный прогон;
+- если canonical shell path недоступен в текущем runtime, это нужно явно сообщить как ограничение canonical verification;
+- любой обходной прямой Python-запуск в таком сценарии может использоваться только как `debug-only`, а не как requested validation result.
 
 Каждый прогон пишет уникальные артефакты в `tests/artifacts/real_document_pipeline/runs/<run_id>/`, обновляет latest manifest в `tests/artifacts/real_document_pipeline/lietaer_validation_latest.json` и live progress snapshot в `tests/artifacts/real_document_pipeline/lietaer_validation_progress.json`.
 

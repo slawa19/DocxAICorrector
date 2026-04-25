@@ -195,6 +195,44 @@ def test_evaluate_lietaer_acceptance_passes_for_clean_structural_output(tmp_path
     assert acceptance["failed_checks"] == []
 
 
+def test_evaluate_lietaer_acceptance_translate_mode_relaxes_source_language_heading_and_numbering_checks() -> None:
+    validation = _load_validation_module()
+
+    source_doc = Document()
+    source_doc.add_paragraph("Introduction: Making versus Taking", style="Heading 1")
+    source_doc.add_paragraph("First item", style="List Number")
+    source_doc.add_paragraph("Second item", style="List Number")
+
+    output_doc = Document()
+    output_doc.add_paragraph("Введение: созидание и присвоение", style="Heading 1")
+    output_doc.add_paragraph("Первый пункт")
+    output_doc.add_paragraph("Второй пункт")
+
+    report = {
+        "result": "succeeded",
+        "runtime_config": {"effective": {"processing_operation": "translate"}},
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [],
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+    )
+
+    heading_check = next(check for check in acceptance["checks"] if check["name"] == "key_headings_preserved")
+    numbering_check = next(check for check in acceptance["checks"] if check["name"] == "word_numbering_preserved")
+
+    assert heading_check["passed"] is True
+    assert heading_check["missing"] == []
+    assert numbering_check["passed"] is True
+    assert numbering_check["processing_operation"] == "translate"
+
+
 def test_normalize_structural_text_strips_markdown_wrappers() -> None:
     validation = _load_validation_module()
 
@@ -504,10 +542,12 @@ def test_write_latest_alias_artifacts_preserves_stable_manifest_schema(tmp_path)
         summary_path=summary_path,
         markdown_artifact=markdown_path,
         docx_artifact=docx_path,
+        tts_artifact=None,
         latest_report_path=latest_report_path,
         latest_summary_path=latest_summary_path,
         latest_markdown_path=latest_markdown_path,
         latest_docx_path=latest_docx_path,
+        latest_tts_path=None,
         latest_manifest_path=latest_manifest_path,
         run_id="run-123",
         run_dir=tmp_path,
@@ -595,6 +635,9 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
             uploaded_file = kwargs["uploaded_file"]
             captured["uploaded_filename"] = uploaded_file.name
             captured["uploaded_bytes"] = uploaded_file.getvalue()
+            captured["processing_operation"] = kwargs["processing_operation"]
+            captured["source_language"] = kwargs["source_language"]
+            captured["target_language"] = kwargs["target_language"]
             kwargs["runtime"].emit(
                 validation.SetStateEvent(
                     values={
@@ -636,6 +679,9 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
                 keep_all_image_variants=False,
                 model="gpt-5.4",
                 max_retries=1,
+                processing_operation="translate",
+                source_language="en",
+                target_language="ru",
             ),
             ui_defaults=_resolution_payload(
                 chunk_size=6000,
@@ -643,6 +689,9 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
                 keep_all_image_variants=False,
                 model="gpt-5.4",
                 max_retries=1,
+                processing_operation="edit",
+                source_language="en",
+                target_language="ru",
             ),
             overrides={},
         ),
@@ -679,6 +728,9 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
 
     assert captured["uploaded_filename"] == "legacy.doc"
     assert captured["uploaded_bytes"] == source_bytes
+    assert captured["processing_operation"] == "translate"
+    assert captured["source_language"] == "en"
+    assert captured["target_language"] == "ru"
     assert report["runtime_config"]["effective"]["image_mode"] == "safe"
     assert report["preparation"]["ai_classified_count"] == 7
     assert report["preparation"]["ai_heading_count"] == 3

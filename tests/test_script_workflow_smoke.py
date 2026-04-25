@@ -26,7 +26,8 @@ def _to_windows_path(path: Path) -> str:
 
     raw = str(resolved)
     if len(raw) >= 8 and raw.startswith("/mnt/") and raw[5].isalpha() and raw[6] == "/":
-        return f"{raw[5].upper()}:\\{raw[7:].replace('/', '\\')}"
+        suffix = raw[7:].replace("/", "\\")
+        return f"{raw[5].upper()}:\\{suffix}"
     return str(resolved)
 
 
@@ -238,29 +239,48 @@ def test_runtime_status_recovers_repo_owned_pid_when_pid_file_is_missing() -> No
 def test_vscode_test_tasks_normalize_windows_relative_paths() -> None:
     tasks_by_label = {task["label"]: task for task in _load_vscode_tasks()}
 
+    tail_log_task = tasks_by_label["Tail Streamlit Log"]
     full_task = tasks_by_label["Run Full Pytest"]
+    docker_parity_task = tasks_by_label["Run Docker CI Parity Pytest"]
     file_task = tasks_by_label["Run Current Test File"]
     node_task = tasks_by_label["Run Current Test Node"]
+    lietaer_task = tasks_by_label["Run Lietaer Real Validation"]
+    lietaer_ai_task = tasks_by_label["Run Lietaer Real Validation AI"]
     real_document_task = tasks_by_label["Run Real Document Validation Profile"]
+
+    assert tail_log_task["command"].endswith("scripts\\tail-streamlit-log.ps1")
+    assert tail_log_task["args"] == ["-Lines", "${input:streamlitLogLines}"]
 
     assert full_task["command"] == "bash scripts/test.sh"
 
-    assert file_task["command"] == "bash"
-    file_args = file_task["args"]
-    assert file_args[0] == "-lc"
-    assert 'path="$1"' in file_args[1]
-    assert '${path//' in file_args[1]
-    assert 'bash scripts/test.sh "$path"' in file_args[1]
-    assert file_args[2:] == ["_", "${relativeFile}"]
+    assert docker_parity_task["command"].startswith(
+        'bash -lc \'docker run --rm -v "$(pwd)":/src -w /src python:3.12 bash -lc "'
+    )
+    assert docker_parity_task.get("args", []) == []
+    assert "pip install -r requirements.txt" in docker_parity_task["command"]
+    assert "pytest tests/ -q" in docker_parity_task["command"]
 
-    assert node_task["command"] == "bash"
-    node_args = node_task["args"]
-    assert node_args[0] == "-lc"
-    assert 'path="$1"' in node_args[1]
-    assert 'node_suffix="$2"' in node_args[1]
-    assert '${path//' in node_args[1]
-    assert 'bash scripts/test.sh "${path}::${node_suffix}"' in node_args[1]
-    assert node_args[2:] == ["_", "${relativeFile}", "${input:pytestNodeSuffix}"]
+    assert file_task["command"] == 'bash scripts/test.sh "${relativeFile}"'
+    assert file_task.get("args", []) == []
+
+    assert node_task["command"] == (
+        'bash scripts/test.sh "${relativeFile}::${input:pytestNodeSuffix}"'
+    )
+    assert node_task.get("args", []) == []
+
+    assert lietaer_task["command"] == "bash"
+    lietaer_args = lietaer_task["args"]
+    assert lietaer_args == [
+        "-lc",
+        "export DOCXAI_REAL_DOCUMENT_PROFILE=lietaer-core; export DOCXAI_REAL_DOCUMENT_RUN_PROFILE=ui-parity-default; bash scripts/run-real-document-validation.sh",
+    ]
+
+    assert lietaer_ai_task["command"] == "bash"
+    lietaer_ai_args = lietaer_ai_task["args"]
+    assert lietaer_ai_args == [
+        "-lc",
+        "export DOCXAI_REAL_DOCUMENT_PROFILE=lietaer-core; export DOCXAI_REAL_DOCUMENT_RUN_PROFILE=ui-parity-ai-default; bash scripts/run-real-document-validation.sh",
+    ]
 
     assert real_document_task["command"] == "bash"
     real_document_args = real_document_task["args"]
