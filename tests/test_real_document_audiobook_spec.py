@@ -22,7 +22,7 @@ def _load_json(path: Path) -> dict:
 def _extract_paragraph_text_signature(docx_path: Path, *, limit: int = 80) -> list[str]:
     from docx import Document
 
-    document = Document(docx_path)
+    document = Document(str(docx_path))
     paragraphs = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
     return paragraphs[:limit]
 

@@ -24,6 +24,13 @@ _NARRATION_DISALLOWED_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
+def _require_group_int(group: Mapping[str, object], key: str) -> int:
+    value = group[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"Narration postprocess group field '{key}' must be int, got {type(value).__name__}")
+    return value
+
+
 def collect_recent_formatting_diagnostics_artifacts(*, since_epoch_seconds: float, diagnostics_dir: Path) -> list[str]:
     return collect_recent_formatting_diagnostics(
         since_epoch_seconds=since_epoch_seconds,
@@ -851,7 +858,9 @@ def _run_audiobook_postprocess(*, context: Any, dependencies: Any, emitters: Any
         target_text = str(group["target_text"])
         context_before = str(group["context_before"])
         context_after = str(group["context_after"])
-        group_index = int(group["group_index"])
+        group_index = _require_group_int(group, "group_index")
+        start_index = _require_group_int(group, "start_index")
+        end_index = _require_group_int(group, "end_index")
         dependencies.log_event(
             logging.INFO,
             "audiobook_postprocess_chunk_started",
@@ -865,8 +874,8 @@ def _run_audiobook_postprocess(*, context: Any, dependencies: Any, emitters: Any
             target_chars=len(target_text),
             context_before_chars=len(context_before),
             context_after_chars=len(context_after),
-            start_index=int(group["start_index"]),
-            end_index=int(group["end_index"]),
+            start_index=start_index,
+            end_index=end_index,
         )
         processed_chunk = dependencies.generate_markdown_block(
             client=client,

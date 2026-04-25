@@ -37,8 +37,13 @@ def _run_pyright() -> dict:
     except subprocess.TimeoutExpired:
         pytest.skip("pyright timed out")
 
+    stdout = result.stdout
+    json_start = stdout.find("{")
+    if json_start > 0:
+        stdout = stdout[json_start:]
+
     try:
-        return json.loads(result.stdout)
+        return json.loads(stdout)
     except json.JSONDecodeError:
         pytest.fail(
             f"pyright produced invalid JSON.\nstdout: {result.stdout[:500]}\nstderr: {result.stderr[:500]}"

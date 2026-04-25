@@ -595,6 +595,52 @@ def _map_source_target_paragraphs(
     for relation in accepted_relations:
         for paragraph_id in relation.member_paragraph_ids:
             relation_ids_by_paragraph.setdefault(paragraph_id, []).append(relation.relation_id)
+    paragraph_index_by_id = {
+        (paragraph.paragraph_id or f"p{index:04d}"): index for index, paragraph in enumerate(source_paragraphs)
+    }
+
+    for relation in accepted_relations:
+        if relation.relation_kind != "epigraph_attribution":
+            continue
+        if len(relation.member_paragraph_ids) != 2:
+            continue
+
+        first_id, second_id = relation.member_paragraph_ids
+        first_index = paragraph_index_by_id.get(first_id)
+        second_index = paragraph_index_by_id.get(second_id)
+        if first_index is None or second_index is None:
+            continue
+        if first_index not in mapped_target_by_source or second_index in mapped_target_by_source:
+            continue
+
+        anchor_target_index = mapped_target_by_source[first_index]
+        candidate_target_index = anchor_target_index + 1
+        if candidate_target_index not in available_target_indexes:
+            continue
+        if candidate_target_index >= len(target_paragraphs):
+            continue
+
+        candidate_target = target_paragraphs[candidate_target_index]
+        candidate_text = candidate_target.text.strip()
+        if not candidate_text or IMAGE_PLACEHOLDER_PATTERN.search(candidate_text):
+            continue
+        if _target_paragraph_has_heading_style(candidate_target):
+            continue
+
+        source_paragraph = source_paragraphs[second_index]
+        structural_role = str(getattr(source_paragraph, "structural_role", "") or "").strip().lower()
+        if structural_role != "attribution":
+            continue
+
+        _register_mapping(
+            second_index,
+            candidate_target_index,
+            "adjacent_epigraph_attribution",
+            mapped_target_by_source=mapped_target_by_source,
+            strategy_by_source=strategy_by_source,
+            available_target_indexes=available_target_indexes,
+        )
+
     accepted_split_target_indexes = {entry["target_index"] for entry in accepted_split_targets}
 
     diagnostics = {
@@ -1299,6 +1345,38 @@ def _is_short_non_heading_paragraph(source_paragraph: ParagraphUnit) -> bool:
     return len(words) <= CENTER_SHORT_NON_HEADING_MAX_WORDS
 
 
+def _is_short_centered_caption_paragraph(source_paragraph: ParagraphUnit) -> bool:
+    role = str(getattr(source_paragraph, "role", "") or "").strip().lower()
+    if role != "caption":
+        return False
+    normalized = re.sub(r"\s+", " ", str(getattr(source_paragraph, "text", "") or "")).strip()
+    if not normalized:
+        return False
+    if len(normalized) > CENTER_SHORT_NON_HEADING_MAX_CHARS:
+        return False
+    words = [token for token in normalized.split(" ") if token]
+    return len(words) <= CENTER_SHORT_NON_HEADING_MAX_WORDS
+
+
+def _is_short_centered_attribution_paragraph(source_paragraph: ParagraphUnit) -> bool:
+    role = str(getattr(source_paragraph, "role", "") or "").strip().lower()
+    structural_role = str(getattr(source_paragraph, "structural_role", "") or "").strip().lower()
+    if structural_role in ALLOWED_CENTERED_QUOTE_STRUCTURAL_ROLES:
+        return True
+    if role not in {"body", "quote"}:
+        return False
+    normalized = re.sub(r"\s+", " ", str(getattr(source_paragraph, "text", "") or "")).strip()
+    if not normalized:
+        return False
+    if len(normalized) > 60:
+        return False
+    words = [token for token in normalized.split(" ") if token]
+    if len(words) > 4:
+        return False
+    letters_only = re.sub(r"[^A-Za-zА-Яа-яЁё]", "", normalized)
+    return bool(letters_only) and letters_only.upper() == letters_only
+
+
 def _resolve_direct_alignment_restoration_decision(
     source_paragraph: ParagraphUnit,
     target_paragraph: Paragraph,
@@ -1323,6 +1401,10 @@ def _resolve_direct_alignment_restoration_decision(
         return {**decision, "action": "skipped", "reason": "unsupported_alignment_value"}
     if str(getattr(source_paragraph, "role", "") or "").strip().lower() == "list":
         return {**decision, "action": "skipped", "reason": "list_item_not_allowlisted"}
+    if _is_short_centered_caption_paragraph(source_paragraph):
+        return {**decision, "action": "restored", "reason": "center_caption_allowlisted"}
+    if _is_short_centered_attribution_paragraph(source_paragraph):
+        return {**decision, "action": "restored", "reason": "center_attribution_allowlisted"}
     if _is_allowlisted_centered_quote_paragraph(source_paragraph):
         return {**decision, "action": "restored", "reason": "center_quote_allowlisted"}
     if not _is_short_non_heading_paragraph(source_paragraph):

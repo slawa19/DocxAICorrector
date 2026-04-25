@@ -195,6 +195,56 @@ def test_evaluate_lietaer_acceptance_passes_for_clean_structural_output(tmp_path
     assert acceptance["failed_checks"] == []
 
 
+def test_evaluate_lietaer_acceptance_ignores_centered_heading_alignment_for_minimal_formatter_contract() -> None:
+    validation = _load_validation_module()
+
+    source_doc = Document()
+    source_heading = source_doc.add_paragraph("Глава 1", style="Heading 1")
+    source_heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    source_attribution = source_doc.add_paragraph("ЭПИКТЕТ")
+    source_attribution.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    output_doc = Document()
+    output_doc.add_paragraph("Глава 1", style="Heading 1")
+    output_doc.add_paragraph("ЭПИКТЕТ")
+
+    report = {
+        "result": "succeeded",
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [],
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+    )
+
+    centered_check = next(check for check in acceptance["checks"] if check["name"] == "centered_short_paragraphs_preserved")
+    heading_check = next(check for check in acceptance["checks"] if check["name"] == "key_headings_preserved")
+
+    assert heading_check["passed"] is True
+    assert heading_check["missing"] == []
+    assert centered_check["passed"] is False
+    assert centered_check["missing"] == ["эпиктет"]
+    assert centered_check["source_centered_count"] == 1
+
+
+def test_extract_allowlisted_centered_paragraph_texts_excludes_centered_chapter_marker_without_heading_style() -> None:
+    validation = _load_validation_module()
+
+    document = Document()
+    chapter_marker = document.add_paragraph("ГЛАВА 1")
+    chapter_marker.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    attribution = document.add_paragraph("ЭПИКТЕТ")
+    attribution.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    assert sorted(validation._extract_allowlisted_centered_paragraph_texts(document)) == ["эпиктет"]
+
+
 def test_evaluate_lietaer_acceptance_translate_mode_relaxes_source_language_heading_and_numbering_checks() -> None:
     validation = _load_validation_module()
 
@@ -396,6 +446,31 @@ def test_evaluate_lietaer_acceptance_allows_centered_text_edits_when_alignment_i
     centered_check = next(check for check in acceptance["checks"] if check["name"] == "centered_short_paragraphs_preserved")
     assert centered_check["passed"] is True
     assert len(centered_check["matches"]) == 2
+
+
+def test_centered_quote_similarity_allows_anchored_paraphrase_but_not_unrelated_short_text() -> None:
+    validation = _load_validation_module()
+
+    paraphrase_score = validation._centered_quote_similarity(
+        "богатство заключается не в том, чтобы иметь много имущества, а в том, чтобы иметь мало желаний.",
+        "богатство не в обилии имущества, а в умении довольствоваться малым.",
+    )
+    unrelated_score = validation._centered_quote_similarity(
+        "богатство заключается не в том, чтобы иметь много имущества, а в том, чтобы иметь мало желаний.",
+        "эпиктет",
+    )
+
+    assert paraphrase_score >= 0.55
+    assert unrelated_score < 0.55
+
+
+def test_match_centered_structural_texts_matches_normalized_single_token_attribution() -> None:
+    validation = _load_validation_module()
+
+    missing, matches = validation._match_centered_structural_texts(["эпиктет"], ["эпиктет"])
+
+    assert missing == []
+    assert matches == [{"source": "эпиктет", "output": "эпиктет", "similarity": 1.0}]
 
 
 def test_count_ordered_word_numbered_paragraphs_handles_multilevel_numbering() -> None:

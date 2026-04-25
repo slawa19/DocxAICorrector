@@ -1394,6 +1394,68 @@ def test_preserve_source_paragraph_properties_restores_direct_center_alignment_o
     assert updated_doc.paragraphs[1].alignment == WD_ALIGN_PARAGRAPH.CENTER
 
 
+def test_preserve_source_paragraph_properties_restores_center_for_all_caps_attribution_after_epigraph() -> None:
+    source_paragraphs = [
+        ParagraphUnit(
+            text="Богатство заключается не в том, чтобы иметь много имущества.",
+            role="body",
+            structural_role="epigraph",
+            paragraph_alignment="center",
+            paragraph_id="p0000",
+            is_italic=True,
+        ),
+        ParagraphUnit(
+            text="ЭПИКТЕТ",
+            role="body",
+            structural_role="attribution",
+            paragraph_alignment="center",
+            paragraph_id="p0001",
+        ),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("Богатство заключается не в том, чтобы иметь много имущества.")
+    target_doc.add_paragraph("ЭПИКТЕТ")
+    target_buffer = BytesIO()
+    target_doc.save(target_buffer)
+
+    updated_bytes = preserve_source_paragraph_properties(target_buffer.getvalue(), source_paragraphs)
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    assert updated_doc.paragraphs[0].alignment == WD_ALIGN_PARAGRAPH.CENTER
+    assert updated_doc.paragraphs[1].alignment == WD_ALIGN_PARAGRAPH.CENTER
+
+
+def test_mapping_maps_adjacent_attribution_after_mapped_epigraph_relation() -> None:
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0000",
+            text="Богатство заключается не в том, чтобы иметь много имущества.",
+            role="body",
+            structural_role="epigraph",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="ЭПИКТЕТ",
+            role="body",
+            structural_role="attribution",
+            paragraph_alignment="center",
+        ),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("Богатство заключается не в том, чтобы иметь много имущества.")
+    target_doc.add_paragraph("Эпиктет")
+
+    mapping_pairs, diagnostics = _map_source_target_paragraphs(source_paragraphs, target_doc.paragraphs)
+
+    assert [(source.paragraph_id, target.text) for source, target in mapping_pairs] == [
+        ("p0000", "Богатство заключается не в том, чтобы иметь много имущества."),
+        ("p0001", "Эпиктет"),
+    ]
+    source_registry = cast(list[dict[str, object]], diagnostics["source_registry"])
+    assert source_registry[1]["mapping_strategy"] in {"exact_text", "adjacent_epigraph_attribution"}
+    assert diagnostics["unmapped_source_ids"] == []
+
+
 def test_preserve_source_paragraph_properties_does_not_restore_right_alignment_for_heading():
     source_paragraphs = [
         ParagraphUnit(text="WHAT IS VALUE?", role="heading", heading_level=2, paragraph_alignment="end", paragraph_id="p0000"),

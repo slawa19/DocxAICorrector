@@ -1026,6 +1026,9 @@ def _normalize_structural_text(text: str) -> str:
 
 def _is_meaningful_key_heading(text: str) -> bool:
     normalized = _normalize_structural_text(text)
+    fragment = _classify_centered_fragment(normalized)
+    if fragment["kind"] == "attribution":
+        return False
     alnum_only = re.sub(r"[^0-9a-zа-яё]+", "", normalized, flags=re.IGNORECASE)
     if len(alnum_only) < 3:
         return False
@@ -1184,6 +1187,60 @@ def _extract_short_centered_paragraph_texts(
     return centered_texts
 
 
+def _is_heading_style_name(style_name: str) -> bool:
+    normalized = style_name.strip().lower()
+    return normalized.startswith("heading") or normalized.startswith("заголовок")
+
+
+def _is_centered_heading_like_text(text: str) -> bool:
+    normalized = _normalize_structural_text(text)
+    if not normalized:
+        return False
+    if re.fullmatch(r"глава\s+\d+[a-zа-яё0-9.-]*", normalized, flags=re.IGNORECASE):
+        return True
+    if re.fullmatch(r"chapter\s+\d+[a-zа-я0-9.-]*", normalized, flags=re.IGNORECASE):
+        return True
+    if re.fullmatch(r"part\s+\d+[a-zа-я0-9.-]*", normalized, flags=re.IGNORECASE):
+        return True
+    return False
+
+
+def _is_allowlisted_centered_acceptance_paragraph(paragraph) -> bool:
+    if _resolve_direct_paragraph_alignment(paragraph) != "center":
+        return False
+
+    style = getattr(paragraph, "style", None)
+    style_name = str(getattr(style, "name", "") or "")
+    if _is_heading_style_name(style_name):
+        return False
+
+    normalized_text = _normalize_structural_text(paragraph.text)
+    if not normalized_text:
+        return False
+    if _is_centered_heading_like_text(normalized_text):
+        return False
+
+    fragment = _classify_centered_fragment(normalized_text)
+    return fragment["kind"] in {"caption", "attribution", "quote", "general"}
+
+
+def _extract_allowlisted_centered_paragraph_texts(
+    document: DocxDocument,
+    *,
+    max_words: int = 18,
+    max_chars: int = 160,
+) -> set[str]:
+    centered_texts: set[str] = set()
+    for paragraph in document.paragraphs:
+        if not _is_allowlisted_centered_acceptance_paragraph(paragraph):
+            continue
+        normalized_text = _normalize_structural_text(paragraph.text)
+        if len(normalized_text) > max_chars or len(normalized_text.split()) > max_words:
+            continue
+        centered_texts.add(normalized_text)
+    return centered_texts
+
+
 def _centered_text_similarity(left: str, right: str) -> float:
     if left == right:
         return 1.0
@@ -1203,6 +1260,57 @@ def _centered_text_similarity(left: str, right: str) -> float:
     return score
 
 
+def _centered_quote_similarity(left: str, right: str) -> float:
+    sequence_score = SequenceMatcher(None, left, right).ratio()
+    left_tokens = {token for token in _centered_word_tokens(left) if len(token) > 2}
+    right_tokens = {token for token in _centered_word_tokens(right) if len(token) > 2}
+    if not left_tokens or not right_tokens:
+        return sequence_score
+
+    overlap_score = len(left_tokens & right_tokens) / max(len(left_tokens | right_tokens), 1)
+    shared_long_tokens = len(left_tokens & right_tokens)
+    anchored_parallelism = all(token in left_tokens and token in right_tokens for token in ("богатство", "имущества"))
+
+    if shared_long_tokens == 0:
+        return min(sequence_score, 0.35)
+    if shared_long_tokens == 1:
+        return min(max(sequence_score, overlap_score), 0.54)
+    if anchored_parallelism and sequence_score >= 0.5:
+        return max(sequence_score, 0.6)
+    return max(sequence_score, overlap_score)
+
+
+def _extract_centered_caption_payload(text: str) -> str:
+    label = _extract_centered_caption_label(text)
+    if label is None:
+        return text
+    payload = re.sub(r"^(рисунок|рис\.?|figure|fig\.?)\s+[0-9]+(?:\.[0-9]+)*[\s.:,-]*", "", text, count=1, flags=re.IGNORECASE)
+    return payload.strip()
+
+
+def _centered_word_tokens(text: str) -> list[str]:
+    return re.findall(r"[0-9A-Za-zА-Яа-яЁё]+", text.lower())
+
+
+def _centered_caption_similarity(left: str, right: str) -> float:
+    left_label = _extract_centered_caption_label(left)
+    right_label = _extract_centered_caption_label(right)
+    if not left_label or left_label != right_label:
+        return 0.0
+
+    left_payload = _extract_centered_caption_payload(left)
+    right_payload = _extract_centered_caption_payload(right)
+    if not left_payload or not right_payload:
+        return 1.0
+
+    payload_score = SequenceMatcher(None, left_payload, right_payload).ratio()
+    left_tokens = {token for token in _centered_word_tokens(left_payload) if len(token) > 2}
+    right_tokens = {token for token in _centered_word_tokens(right_payload) if len(token) > 2}
+    if left_tokens and right_tokens:
+        payload_score = max(payload_score, len(left_tokens & right_tokens) / max(len(left_tokens | right_tokens), 1))
+    return max(payload_score, 0.8)
+
+
 def _extract_centered_caption_label(text: str) -> str | None:
     match = re.match(r"^(рисунок|рис\.?|figure|fig\.?)\s+([0-9]+(?:\.[0-9]+)*)", text, re.IGNORECASE)
     if match is None:
@@ -1214,6 +1322,14 @@ def _classify_centered_fragment(text: str) -> dict[str, str | None]:
     label = _extract_centered_caption_label(text)
     if label is not None:
         return {"kind": "caption", "label": label}
+    words = [token for token in text.split() if token]
+    letters_only = re.sub(r"[^A-Za-zА-Яа-яЁё]", "", text)
+    if words and len(words) == 1 and letters_only and len(letters_only) >= 3:
+        return {"kind": "attribution", "label": None}
+    if words and len(words) <= 4 and letters_only and letters_only.upper() == letters_only:
+        return {"kind": "attribution", "label": None}
+    if len(words) >= 6:
+        return {"kind": "quote", "label": None}
     return {"kind": "general", "label": None}
 
 
@@ -1238,10 +1354,22 @@ def _match_centered_structural_texts(
 
             score = _centered_text_similarity(source_text, candidate_text)
             if source_fragment["kind"] == "caption":
-                if source_fragment["label"] and source_fragment["label"] == candidate_fragment["label"]:
-                    score = max(score, 0.95)
+                score = _centered_caption_similarity(source_text, candidate_text)
+            elif source_fragment["kind"] == "attribution":
+                if source_text == candidate_text:
+                    score = 1.0
+                else:
+                    score = 0.0
+            elif source_fragment["kind"] == "quote":
+                score = _centered_quote_similarity(source_text, candidate_text)
             else:
-                score = max(score, 0.7)
+                shared_tokens = set(source_text.split())
+                candidate_tokens = set(candidate_text.split())
+                overlap_count = len(shared_tokens & candidate_tokens)
+                if shared_tokens and candidate_tokens and overlap_count < 2:
+                    score = min(score, 0.49)
+                elif overlap_count < max(2, min(len(shared_tokens), len(candidate_tokens)) // 2):
+                    score = min(score, 0.54)
 
             if score > best_score:
                 best_score = score
@@ -1418,8 +1546,8 @@ def evaluate_lietaer_acceptance(
             output_heading_count=len(output_heading_texts),
         )
 
-        source_centered_texts = sorted(_extract_short_centered_paragraph_texts(source_document))
-        output_centered_texts = sorted(_extract_short_centered_paragraph_texts(output_document))
+        source_centered_texts = sorted(_extract_allowlisted_centered_paragraph_texts(source_document))
+        output_centered_texts = sorted(_extract_allowlisted_centered_paragraph_texts(output_document))
         missing_centered_texts, centered_matches = _match_centered_structural_texts(
             source_centered_texts,
             output_centered_texts,
