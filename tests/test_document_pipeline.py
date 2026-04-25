@@ -449,6 +449,103 @@ def test_run_document_processing_runs_audiobook_postprocess_without_mutating_bas
     assert completed_event["context"]["audiobook_postprocess_enabled"] is True
 
 
+def test_run_document_processing_preserves_base_result_when_audiobook_postprocess_fails():
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+    artifact_calls = {}
+
+    def generate_markdown_block(**kwargs):
+        if kwargs["system_prompt"] == "system:audiobook":
+            raise RuntimeError("postprocess exploded")
+        return "edited"
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0, "narration_include": True}],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={"audiobook_postprocess_enabled": True, "audiobook_model": "gpt-5.4-audio"},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="edit",
+        source_language="en",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **kwargs: f"system:{kwargs['operation']}",
+        log_event=log_event,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=generate_markdown_block,
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+        write_ui_result_artifacts=lambda **kwargs: artifact_calls.setdefault("kwargs", dict(kwargs)) or {"markdown_path": "/tmp/report.result.md", "docx_path": "/tmp/report.result.docx"},
+    )
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_markdown"] == "edited"
+    assert runtime["state"]["latest_docx_bytes"] == b"edited"
+    assert runtime["state"]["latest_narration_text"] is None
+    assert "narration_text" not in artifact_calls["kwargs"]
+    warning_events = [event for event in events if event["level"] == logging.WARNING]
+    assert any(event["event_id"] == "audiobook_postprocess_failed_base_result_preserved" for event in warning_events)
+
+
+def test_run_document_processing_fails_standalone_audiobook_with_invalid_narration_artifact():
+    runtime = _build_runtime_capture()
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0, "narration_include": True}],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="audiobook",
+        source_language="auto",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "[angry] text with DOI:10.1000/xyz",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+    )
+
+    assert result == "failed"
+    assert runtime["state"]["latest_docx_bytes"] is None
+    assert runtime["state"]["latest_narration_text"] is None
+    assert runtime["finalize"][-1][0] == "Ошибка проверки narration"
+
+
 def test_run_document_processing_clears_stale_narration_on_docx_build_failure():
     runtime = _build_runtime_capture()
     runtime["state"]["latest_narration_text"] = "stale narration"

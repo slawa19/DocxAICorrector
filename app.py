@@ -245,6 +245,8 @@ def _start_background_preparation(
     chunk_size: int,
     image_mode: str,
     keep_all_image_variants: bool,
+    processing_operation: str = "edit",
+    app_config: dict[str, object] | None = None,
 ) -> None:
     start_background_preparation(
         worker_target=application_flow.prepare_run_context_for_background,
@@ -253,6 +255,8 @@ def _start_background_preparation(
         chunk_size=chunk_size,
         image_mode=image_mode,
         keep_all_image_variants=keep_all_image_variants,
+        processing_operation=processing_operation,
+        app_config=app_config,
     )
 
 
@@ -651,7 +655,11 @@ def main() -> None:
     uploaded_widget_payload = None
     if uploaded_widget_file is not None:
         uploaded_widget_payload = freeze_uploaded_file(uploaded_widget_file)
-        preparation_request_marker = build_preparation_request_marker(uploaded_widget_payload, chunk_size=chunk_size)
+        preparation_request_marker = build_preparation_request_marker(
+            uploaded_widget_payload,
+            chunk_size=chunk_size,
+            processing_operation=processing_operation,
+        )
         prepared_run_context = get_prepared_run_context_for_marker(preparation_request_marker)
         if should_start_preparation_for_marker(preparation_request_marker):
             _start_background_preparation(
@@ -660,6 +668,8 @@ def main() -> None:
                 chunk_size=chunk_size,
                 image_mode=image_mode,
                 keep_all_image_variants=keep_all_image_variants,
+                processing_operation=processing_operation,
+                app_config=app_config,
             )
             render_preparation_panel()
             return
@@ -681,7 +691,11 @@ def main() -> None:
 
     prepared_run_context = None
     if uploaded_widget_payload is not None:
-        current_preparation_request_marker = build_preparation_request_marker(uploaded_widget_payload, chunk_size=chunk_size)
+        current_preparation_request_marker = build_preparation_request_marker(
+            uploaded_widget_payload,
+            chunk_size=chunk_size,
+            processing_operation=processing_operation,
+        )
         prepared_run_context = get_prepared_run_context_for_marker(current_preparation_request_marker)
         if prepared_run_context is None:
             st.warning(get_preparation_state_unavailable_message())

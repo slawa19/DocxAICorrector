@@ -483,8 +483,10 @@ def build_uploaded_file_selection_marker(uploaded_file) -> str:
     return build_uploaded_file_token(uploaded_file)
 
 
-def build_preparation_request_marker(uploaded_file, *, chunk_size: int) -> str:
-    return f"{build_uploaded_file_selection_marker(uploaded_file)}:{chunk_size}"
+def build_preparation_request_marker(uploaded_file, *, chunk_size: int, processing_operation: str = "edit") -> str:
+    resolved_operation = str(processing_operation or "edit").strip().lower() or "edit"
+    operation_suffix = "" if resolved_operation == "edit" else f":op={resolved_operation}"
+    return f"{build_uploaded_file_selection_marker(uploaded_file)}:{chunk_size}{operation_suffix}"
 
 
 def normalize_background_error(
@@ -886,6 +888,8 @@ def start_background_preparation(
     chunk_size: int,
     image_mode: str,
     keep_all_image_variants: bool,
+    processing_operation: str = "edit",
+    app_config: dict[str, object] | None = None,
 ) -> None:
     reset_run_state(keep_restart_source=False)
     mark_preparation_started(upload_marker)
@@ -933,6 +937,8 @@ def start_background_preparation(
                 chunk_size=chunk_size,
                 image_mode=image_mode,
                 keep_all_image_variants=keep_all_image_variants,
+                processing_operation=processing_operation,
+                app_config=app_config,
                 progress_callback=report_progress,
             )
         except Exception as exc:

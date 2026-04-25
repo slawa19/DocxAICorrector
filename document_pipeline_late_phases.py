@@ -11,6 +11,17 @@ from generation import strip_markdown_for_narration
 
 PipelineResult = Literal["succeeded", "failed", "stopped"]
 _ELEVENLABS_TAG_PATTERN = re.compile(r"\[(?:thoughtful|curious|serious|sad|excited|annoyed|sarcastic|whispers|short pause|long pause|sighs|laughs|chuckles|exhales)\]")
+_NARRATION_ANY_TAG_PATTERN = re.compile(r"\[[^\]\n]{1,40}\]")
+_NARRATION_DISALLOWED_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("internal_placeholder", re.compile(r"\[\[DOCX_[A-Za-z0-9_]+\]\]")),
+    ("raw_url", re.compile(r"(?:https?://\S+|www\.\S+)", re.IGNORECASE)),
+    ("doi", re.compile(r"\bdoi\s*[:/]?\s*10\.\d{4,9}/\S+", re.IGNORECASE)),
+    ("isbn", re.compile(r"\bisbn\b", re.IGNORECASE)),
+    ("arxiv", re.compile(r"\barxiv\b", re.IGNORECASE)),
+    ("inline_citation", re.compile(r"\((?:ibid\.|там же|[A-ZА-ЯЁ][^()]{0,80}?,\s*(?:19|20)\d{2})[^()]*\)", re.IGNORECASE)),
+    ("superscript_footnote", re.compile(r"[\u00B9\u00B2\u00B3\u2070-\u2079]")),
+    ("markdown_heading", re.compile(r"^\s{0,3}#", re.MULTILINE)),
+)
 
 
 def collect_recent_formatting_diagnostics_artifacts(*, since_epoch_seconds: float, diagnostics_dir: Path) -> list[str]:
@@ -506,6 +517,7 @@ def finalize_processing_success(
     current_markdown_fn: Callable[[Sequence[str]], str],
 ) -> PipelineResult:
     final_markdown = current_markdown_fn(state.processed_chunks)
+    narration_error_message = ""
     try:
         narration_text = _build_narration_text(
             context=context,
@@ -521,33 +533,105 @@ def finalize_processing_success(
             filename=context.uploaded_filename,
             processing_operation=context.processing_operation,
         )
-        emitters.emit_state(
-            context.runtime,
-            latest_markdown=final_markdown,
-            latest_docx_bytes=None,
-            latest_narration_text=None,
-            last_error=error_message,
-        )
-        return emit_failed_result(
-            emitters=emitters,
-            runtime=context.runtime,
-            finalize_stage="Ошибка подготовки narration",
-            detail=error_message,
-            progress=1.0,
-            activity_message="Ошибка на этапе подготовки текста для ElevenLabs.",
-            block_index=job_count,
-            block_count=job_count,
-            target_chars=len(final_markdown),
-            context_chars=0,
-            log_details=error_message,
-        )
+        if context.processing_operation in {"edit", "translate"}:
+            narration_text = None
+            narration_error_message = error_message
+            emitters.emit_state(
+                context.runtime,
+                latest_docx_bytes=docx_phase["docx_bytes"],
+                latest_markdown=final_markdown,
+                latest_narration_text=None,
+                latest_result_notice=docx_phase["latest_result_notice"],
+                last_error=error_message,
+            )
+            dependencies.log_event(
+                logging.WARNING,
+                "audiobook_postprocess_failed_base_result_preserved",
+                "Audiobook post-pass failed; base DOCX/Markdown result is preserved.",
+                filename=context.uploaded_filename,
+                processing_operation=context.processing_operation,
+                error_message=str(exc),
+            )
+        else:
+            emitters.emit_state(
+                context.runtime,
+                latest_markdown=final_markdown,
+                latest_docx_bytes=None,
+                latest_narration_text=None,
+                last_error=error_message,
+            )
+            return emit_failed_result(
+                emitters=emitters,
+                runtime=context.runtime,
+                finalize_stage="Ошибка подготовки narration",
+                detail=error_message,
+                progress=1.0,
+                activity_message="Ошибка на этапе подготовки текста для ElevenLabs.",
+                block_index=job_count,
+                block_count=job_count,
+                target_chars=len(final_markdown),
+                context_chars=0,
+                log_details=error_message,
+            )
+
+    if narration_text is not None:
+        try:
+            _validate_narration_artifact_text(narration_text)
+        except Exception as exc:
+            error_message = dependencies.present_error(
+                "audiobook_artifact_validation_failed",
+                exc,
+                "Ошибка проверки текста для ElevenLabs",
+                filename=context.uploaded_filename,
+                processing_operation=context.processing_operation,
+            )
+            if context.processing_operation in {"edit", "translate"}:
+                narration_text = None
+                narration_error_message = error_message
+                emitters.emit_state(
+                    context.runtime,
+                    latest_docx_bytes=docx_phase["docx_bytes"],
+                    latest_markdown=final_markdown,
+                    latest_narration_text=None,
+                    latest_result_notice=docx_phase["latest_result_notice"],
+                    last_error=error_message,
+                )
+                dependencies.log_event(
+                    logging.WARNING,
+                    "audiobook_artifact_validation_failed_base_result_preserved",
+                    "Narration artifact validation failed; base DOCX/Markdown result is preserved.",
+                    filename=context.uploaded_filename,
+                    processing_operation=context.processing_operation,
+                    error_message=str(exc),
+                )
+            else:
+                emitters.emit_state(
+                    context.runtime,
+                    latest_markdown=final_markdown,
+                    latest_docx_bytes=None,
+                    latest_narration_text=None,
+                    last_error=error_message,
+                )
+                return emit_failed_result(
+                    emitters=emitters,
+                    runtime=context.runtime,
+                    finalize_stage="Ошибка проверки narration",
+                    detail=error_message,
+                    progress=1.0,
+                    activity_message="Текст для ElevenLabs не прошёл deterministic validation.",
+                    block_index=job_count,
+                    block_count=job_count,
+                    target_chars=len(final_markdown),
+                    context_chars=0,
+                    log_details=error_message,
+                )
     emitters.emit_state(
         context.runtime,
         latest_docx_bytes=docx_phase["docx_bytes"],
         latest_markdown=final_markdown,
         latest_narration_text=narration_text,
         latest_result_notice=docx_phase["latest_result_notice"],
-        last_error="",
+        last_error=narration_error_message,
     )
     try:
         artifact_writer_kwargs = {
@@ -636,6 +720,21 @@ def _build_narration_text(*, context: Any, dependencies: Any, emitters: Any, sta
     if not narration_source:
         return None
     return strip_markdown_for_narration(narration_source)
+
+
+def _validate_narration_artifact_text(narration_text: str) -> None:
+    violations = [name for name, pattern in _NARRATION_DISALLOWED_PATTERNS if pattern.search(narration_text)]
+    disallowed_tags = sorted(
+        {
+            tag
+            for tag in _NARRATION_ANY_TAG_PATTERN.findall(narration_text)
+            if _ELEVENLABS_TAG_PATTERN.fullmatch(tag) is None
+        }
+    )
+    if disallowed_tags:
+        violations.append(f"disallowed_tags={','.join(disallowed_tags[:5])}")
+    if violations:
+        raise RuntimeError("narration_artifact_validation_failed:" + ";".join(violations))
 
 
 def _should_run_audiobook_postprocess(*, context: Any) -> bool:

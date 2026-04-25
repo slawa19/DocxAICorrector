@@ -265,6 +265,7 @@ def test_run_prepared_background_document_uses_preparation_and_job_mutator(monke
         app_config={"x": 1},
         model="gpt-5.4",
         max_retries=2,
+        processing_operation="audiobook",
         job_mutator=lambda job: {**job, "job_kind": "passthrough"},
         progress_callback=None,
         runtime={"state": {}},
@@ -273,6 +274,7 @@ def test_run_prepared_background_document_uses_preparation_and_job_mutator(monke
     assert captured["prepare"]["uploaded_payload"] == {"frozen": "report.docx"}
     assert captured["prepare"]["chunk_size"] == 123
     assert captured["prepare"]["app_config"] == {"x": 1}
+    assert captured["prepare"]["processing_operation"] == "audiobook"
     assert result == "succeeded"
     assert returned_prepared is prepared
 

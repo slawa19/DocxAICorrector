@@ -615,6 +615,7 @@ def test_prepare_run_context_for_background_uses_frozen_upload_payload(monkeypat
         chunk_size=6000,
         image_mode="safe",
         keep_all_image_variants=True,
+        processing_operation="audiobook",
         app_config={"structure_recognition_mode": "always", "structure_recognition_enabled": True},
         prepare_document_for_processing_fn=lambda **kwargs: (captured.setdefault("prepare", kwargs), prepared_document)[1],
     )
@@ -623,6 +624,7 @@ def test_prepare_run_context_for_background_uses_frozen_upload_payload(monkeypat
     assert result.uploaded_file_bytes == b"abc"
     assert result.uploaded_file_token == payload.file_token
     assert captured["prepare"]["app_config"] == {"structure_recognition_mode": "always", "structure_recognition_enabled": True}
+    assert captured["prepare"]["processing_operation"] == "audiobook"
 
 
 def test_prepare_run_context_for_background_uses_real_cache(monkeypatch):

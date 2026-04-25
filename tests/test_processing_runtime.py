@@ -76,6 +76,16 @@ def test_build_preparation_request_marker_includes_chunk_size():
     assert marker == "report.docx:3:ba7816bf8f01cfea:6000"
 
 
+def test_build_preparation_request_marker_includes_non_default_operation():
+    marker = processing_runtime.build_preparation_request_marker(
+        UploadedFileStub("report.docx", b"abc"),
+        chunk_size=6000,
+        processing_operation="audiobook",
+    )
+
+    assert marker == "report.docx:3:ba7816bf8f01cfea:6000:op=audiobook"
+
+
 def test_build_preparation_request_marker_uses_content_hash_for_same_name_same_size_files():
     marker_one = processing_runtime.build_preparation_request_marker(UploadedFileStub("report.docx", b"abc"), chunk_size=6000)
     marker_two = processing_runtime.build_preparation_request_marker(UploadedFileStub("report.docx", b"xyz"), chunk_size=6000)
@@ -300,7 +310,7 @@ def test_start_background_preparation_creates_worker_and_status(monkeypatch):
     uploaded_payload = processing_runtime.freeze_uploaded_file(uploaded_file)
 
     processing_runtime.start_background_preparation(
-        worker_target=lambda **kwargs: payloads.append(kwargs["uploaded_payload"]),
+        worker_target=lambda **kwargs: payloads.append(kwargs),
         reset_run_state=lambda **kwargs: None,
         push_activity=lambda message: activities.append(message),
         set_processing_status=lambda **payload: statuses.append(payload),
@@ -309,6 +319,8 @@ def test_start_background_preparation_creates_worker_and_status(monkeypatch):
         chunk_size=6000,
         image_mode="safe",
         keep_all_image_variants=True,
+        processing_operation="audiobook",
+        app_config={"processing_operation": "audiobook"},
     )
 
     session_state.preparation_worker.join(timeout=5)
@@ -319,7 +331,9 @@ def test_start_background_preparation_creates_worker_and_status(monkeypatch):
     assert statuses[0]["phase"] == "preparing"
     assert statuses[0]["stage"] == "Файл получен"
     assert activities == ["Файл получен сервером. Запускаю анализ DOCX."]
-    assert payloads[0] == uploaded_payload
+    assert payloads[0]["uploaded_payload"] == uploaded_payload
+    assert payloads[0]["processing_operation"] == "audiobook"
+    assert payloads[0]["app_config"] == {"processing_operation": "audiobook"}
 
 
 def test_start_background_preparation_propagates_cached_flag(monkeypatch):

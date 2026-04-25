@@ -471,6 +471,7 @@ def prepare_run_context_for_background(
     chunk_size: int,
     image_mode: str,
     keep_all_image_variants: bool,
+    processing_operation: str = "edit",
     app_config: dict[str, object] | None = None,
     prepare_document_for_processing_fn=None,
     resolve_uploaded_filename_fn=None,
@@ -479,6 +480,7 @@ def prepare_run_context_for_background(
     uploaded_filename, uploaded_file_bytes, uploaded_file_token, prepared_document, elapsed_seconds = _prepare_run_context_core(
         uploaded_payload=uploaded_payload,
         chunk_size=chunk_size,
+        processing_operation=processing_operation,
         app_config=app_config,
         session_state=None,
         progress_callback=progress_callback,

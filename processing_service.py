@@ -270,6 +270,7 @@ class ProcessingService:
             chunk_size=chunk_size,
             image_mode=image_mode,
             keep_all_image_variants=keep_all_image_variants,
+            processing_operation=processing_operation,
             app_config=app_config,
             progress_callback=resolved_prepare_progress_callback,
         )

@@ -150,7 +150,7 @@ def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatc
     monkeypatch.setattr(app, "init_session_state", lambda: None)
     monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
     monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
-    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 7000, 3, "safe", True))
+    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 7000, 3, "safe", True, "audiobook", "auto", "ru", False, False))
     monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
     monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
     monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
@@ -179,10 +179,12 @@ def test_main_restarts_background_preparation_when_chunk_size_changes(monkeypatc
         raise AssertionError("Expected rerun after starting background preparation")
 
     assert len(start_calls) == 1
-    assert start_calls[0]["upload_marker"] == "report.docx:3:ba7816bf8f01cfea:7000"
+    assert start_calls[0]["upload_marker"] == "report.docx:3:ba7816bf8f01cfea:7000:op=audiobook"
     assert start_calls[0]["chunk_size"] == 7000
     assert start_calls[0]["image_mode"] == "safe"
     assert start_calls[0]["keep_all_image_variants"] is True
+    assert start_calls[0]["processing_operation"] == "audiobook"
+    assert start_calls[0]["app_config"]["processing_operation"] == "audiobook"
     assert isinstance(start_calls[0]["uploaded_payload"], processing_runtime.FrozenUploadPayload)
     assert start_calls[0]["uploaded_payload"].filename == "report.docx"
     assert start_calls[0]["uploaded_payload"].content_bytes == b"abc"
