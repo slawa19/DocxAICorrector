@@ -29,7 +29,8 @@ def _to_windows_path(path: Path) -> str:
     resolved = path.resolve()
     raw = str(resolved)
     if len(raw) >= 8 and raw.startswith("/mnt/") and raw[5].isalpha() and raw[6] == "/":
-        return f"{raw[5].upper()}:\\{raw[7:].replace('/', '\\')}"
+        suffix = raw[7:].replace("/", "\\")
+        return f"{raw[5].upper()}:\\{suffix}"
     return raw
 
 
