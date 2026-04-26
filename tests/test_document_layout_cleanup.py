@@ -84,6 +84,18 @@ def test_disabled_mode_returns_original_list_and_report():
     assert report.removed_paragraph_count == 0
 
 
+def test_disabled_mode_emits_structured_outcome_log(monkeypatch):
+    paragraphs = [_paragraph("1")]
+    logged_reports = []
+
+    monkeypatch.setattr(document_layout_cleanup, "_log_cleanup_outcome", lambda report, **kwargs: logged_reports.append(report))
+
+    cleaned, report = clean_paragraph_layout_artifacts(paragraphs, enabled=False)
+
+    assert cleaned is paragraphs
+    assert logged_reports == [report]
+
+
 def test_fail_open_when_internal_cleanup_raises(monkeypatch):
     paragraphs = [_paragraph("1")]
 
@@ -98,6 +110,37 @@ def test_fail_open_when_internal_cleanup_raises(monkeypatch):
     assert report.cleanup_applied is False
     assert report.skipped_reason == "cleanup_failed"
     assert report.error_code == "cleanup_runtime_error"
+
+
+def test_repeated_cleanup_does_not_remove_non_candidate_terminal_paragraphs():
+    paragraphs = [
+        _paragraph("www.example.com", source_index=0),
+        _paragraph("www.example.com", source_index=1),
+        _paragraph("www.example.com", source_index=2),
+        _paragraph("www.example.com.", source_index=3),
+    ]
+
+    cleaned, report = clean_paragraph_layout_artifacts(paragraphs)
+
+    assert [paragraph.text for paragraph in cleaned] == ["www.example.com."]
+    assert report.removed_repeated_artifact_count == 3
+    assert report.decisions[3].action == "keep"
+    assert report.decisions[3].reason == "keep"
+
+
+def test_repeated_title_header_uses_medium_confidence_in_report():
+    paragraphs = [
+        _paragraph("Are We In the End Times?", role="heading", structural_role="heading", source_index=0),
+        _paragraph("Are We In the End Times?", source_index=1),
+        _paragraph("Are We In the End Times?", source_index=2),
+        _paragraph("Are We In the End Times?", source_index=3),
+    ]
+
+    _cleaned, report = clean_paragraph_layout_artifacts(paragraphs)
+
+    removed_decisions = [decision for decision in report.decisions if decision.reason == "repeated_title_header"]
+    assert removed_decisions
+    assert {decision.confidence for decision in removed_decisions} == {"medium"}
 
 
 def test_protected_structural_whitespace_is_preserved():

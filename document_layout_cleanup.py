@@ -52,11 +52,13 @@ def clean_paragraph_layout_artifacts(
     max_repeated_text_chars: int = DEFAULT_MAX_REPEATED_TEXT_CHARS,
 ) -> tuple[list[ParagraphUnit], LayoutArtifactCleanupReport]:
     if not enabled:
-        return paragraphs, _empty_report(
+        report = _empty_report(
             paragraphs,
             cleanup_applied=False,
             skipped_reason="disabled",
         )
+        _log_cleanup_outcome(report)
+        return paragraphs, report
 
     try:
         return _clean_paragraph_layout_artifacts(
@@ -92,6 +94,7 @@ def _clean_paragraph_layout_artifacts(
 ) -> tuple[list[ParagraphUnit], LayoutArtifactCleanupReport]:
     normalized_by_index: dict[int, str] = {}
     frequency: dict[str, int] = {}
+    candidate_indexes: set[int] = set()
     title_fingerprints = _collect_title_fingerprints(paragraphs)
 
     for index, paragraph in enumerate(paragraphs):
@@ -103,6 +106,7 @@ def _clean_paragraph_layout_artifacts(
             max_repeated_text_chars=max_repeated_text_chars,
             title_fingerprints=title_fingerprints,
         ):
+            candidate_indexes.add(index)
             frequency[normalized] = frequency.get(normalized, 0) + 1
 
     cleaned: list[ParagraphUnit] = []
@@ -128,7 +132,7 @@ def _clean_paragraph_layout_artifacts(
             action = "remove"
             reason = "page_number_pattern"
             removed_page_numbers += 1
-        elif repeat_count >= min_repeat_count:
+        elif index in candidate_indexes and repeat_count >= min_repeat_count:
             repeated_reason = _repeated_artifact_reason(
                 paragraph,
                 normalized_text=normalized,
@@ -291,10 +295,18 @@ def _build_decision(
         text_preview=str(getattr(paragraph, "text", "") or "")[:120],
         action=action,
         reason=reason,
-        confidence="high" if action == "remove" else "medium",
+        confidence=_decision_confidence(action=action, reason=reason),
         normalized_text=normalized_text,
         repeat_count=repeat_count,
     )
+
+
+def _decision_confidence(*, action: str, reason: str) -> str:
+    if action != "remove":
+        return "medium"
+    if reason in {"repeated_title_header", "repeated_running_header"}:
+        return "medium"
+    return "high"
 
 
 def _empty_report(

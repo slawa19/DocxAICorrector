@@ -788,6 +788,30 @@ def test_convert_legacy_doc_to_docx_falls_back_to_antiword_when_soffice_fails(mo
     assert calls == ["soffice", "antiword"]
 
 
+def test_convert_legacy_doc_with_soffice_cleans_process_group(monkeypatch, tmp_path):
+    docx_bytes = b"PK\x03\x04converted-docx"
+    cleanup_flags = []
+
+    def fake_run_completed_process(command, *, error_message, text=True, timeout_seconds=120, cleanup_process_group=False):
+        cleanup_flags.append(cleanup_process_group)
+        outdir = Path(command[command.index("--outdir") + 1])
+        input_path = Path(command[-1])
+        output_path = outdir / input_path.with_suffix(".docx").name
+        output_path.write_bytes(docx_bytes)
+        return object()
+
+    monkeypatch.setattr(processing_runtime, "_run_completed_process", fake_run_completed_process)
+
+    converted = processing_runtime._convert_legacy_doc_with_soffice(
+        soffice_path="/usr/bin/soffice",
+        filename="legacy.doc",
+        source_bytes=bytes.fromhex("D0CF11E0A1B11AE1") + b"legacy",
+    )
+
+    assert converted == docx_bytes
+    assert cleanup_flags == [True]
+
+
 def test_legacy_doc_conversion_available_requires_pandoc_for_antiword_path(monkeypatch):
     monkeypatch.setattr(
         processing_runtime.shutil,

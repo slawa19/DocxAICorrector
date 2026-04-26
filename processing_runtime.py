@@ -354,6 +354,7 @@ def _convert_legacy_doc_with_soffice(*, soffice_path: str, filename: str, source
                 str(input_path),
             ],
             error_message="Не удалось конвертировать legacy DOC через LibreOffice.",
+            cleanup_process_group=True,
         )
         output_path = _resolve_converted_docx_output(
             temp_dir=temp_dir,
