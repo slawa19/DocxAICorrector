@@ -239,6 +239,7 @@ def test_runtime_status_recovers_repo_owned_pid_when_pid_file_is_missing() -> No
 def test_vscode_test_tasks_normalize_windows_relative_paths() -> None:
     tasks_by_label = {task["label"]: task for task in _load_vscode_tasks()}
 
+    setup_task = tasks_by_label["Setup Project"]
     tail_log_task = tasks_by_label["Tail Streamlit Log"]
     full_task = tasks_by_label["Run Full Pytest"]
     docker_parity_task = tasks_by_label["Run Docker CI Parity Pytest"]
@@ -248,6 +249,7 @@ def test_vscode_test_tasks_normalize_windows_relative_paths() -> None:
     lietaer_ai_task = tasks_by_label["Run Lietaer Real Validation AI"]
     real_document_task = tasks_by_label["Run Real Document Validation Profile"]
 
+    assert setup_task["command"].endswith("scripts\\setup-project.ps1")
     assert tail_log_task["command"].endswith("scripts\\tail-streamlit-log.ps1")
     assert tail_log_task["args"] == ["-Lines", "${input:streamlitLogLines}"]
 
@@ -343,6 +345,30 @@ def test_dispatcher_rejects_legacy_test_actions() -> None:
 
     assert result.returncode == 2
     assert "Unsupported action: run-test-file" in (result.stdout + result.stderr)
+
+
+def test_setup_contract_declares_required_system_packages() -> None:
+    apt_requirements = (REPO_ROOT / "system-requirements.apt").read_text(encoding="utf-8")
+    setup_script = (REPO_ROOT / "scripts" / "setup-wsl.sh").read_text(encoding="utf-8")
+    status_script = (REPO_ROOT / "scripts" / "project-control-wsl.sh").read_text(encoding="utf-8")
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    contributing = (REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    workflow_doc = (REPO_ROOT / "docs" / "WORKFLOW_AND_IMAGE_MODES.md").read_text(encoding="utf-8")
+    agent_rules = (REPO_ROOT / "docs" / "AI_AGENT_DEVELOPMENT_RULES.md").read_text(encoding="utf-8")
+    copilot_instructions = (REPO_ROOT / ".github" / "copilot-instructions.md").read_text(encoding="utf-8")
+
+    assert "pandoc" in apt_requirements
+    assert "libreoffice" in apt_requirements
+    assert "antiword" in apt_requirements
+    assert "apt-get install" in setup_script
+    assert "DOCXAI_APT_TIMEOUT_SECONDS" in setup_script
+    assert "system-requirements.apt" in setup_script
+    assert "libreoffice_ok" in status_script
+    assert "bash scripts/setup-wsl.sh" in readme
+    assert "bash scripts/setup-wsl.sh" in contributing
+    assert "system-requirements.apt" in workflow_doc
+    assert "system-requirements.apt" in agent_rules
+    assert "Setup Project" in copilot_instructions
 
 
 def test_legacy_powershell_test_wrappers_are_removed() -> None:

@@ -1,6 +1,8 @@
+import hashlib
 import queue
 import sys
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -296,7 +298,7 @@ def test_drain_preparation_events_marks_failure(monkeypatch):
     assert session_state.preparation_worker is None
     assert session_state.preparation_event_queue is None
     assert finalized == [("Ошибка подготовки", "boom", 1.0, "error")]
-    assert activities == ["Не удалось прочитать и проанализировать DOCX-файл."]
+    assert activities == ["Не удалось прочитать и проанализировать документ."]
 
 
 def test_start_background_preparation_creates_worker_and_status(monkeypatch):
@@ -330,7 +332,7 @@ def test_start_background_preparation_creates_worker_and_status(monkeypatch):
     assert session_state.preparation_worker is not None
     assert statuses[0]["phase"] == "preparing"
     assert statuses[0]["stage"] == "Файл получен"
-    assert activities == ["Файл получен сервером. Запускаю анализ DOCX."]
+    assert activities == ["Файл получен сервером. Запускаю анализ документа."]
     assert payloads[0]["uploaded_payload"] == uploaded_payload
     assert payloads[0]["processing_operation"] == "audiobook"
     assert payloads[0]["app_config"] == {"processing_operation": "audiobook"}
@@ -716,6 +718,42 @@ def test_run_completed_process_raises_timeout_error(monkeypatch):
         processing_runtime._run_completed_process(["soffice"], error_message="boom")
 
 
+def test_run_completed_process_cleans_process_group_on_timeout(monkeypatch):
+    process_instances = []
+    terminated = []
+
+    class PopenStub:
+        pid = 1234
+        returncode = None
+
+        def __init__(self, command, **kwargs):
+            self.command = command
+            self.kwargs = kwargs
+            self.communicate_calls = 0
+            process_instances.append(self)
+
+        def communicate(self, timeout=None):
+            self.communicate_calls += 1
+            if self.communicate_calls == 1:
+                raise subprocess.TimeoutExpired(cmd=self.command, timeout=timeout)
+            self.returncode = -15
+            return "", ""
+
+    monkeypatch.setattr(processing_runtime.subprocess, "Popen", PopenStub)
+    monkeypatch.setattr(processing_runtime, "_terminate_process_tree", lambda process: terminated.append(process))
+
+    with pytest.raises(RuntimeError, match="Превышено время ожидания"):
+        processing_runtime._run_completed_process(
+            ["soffice"],
+            error_message="boom",
+            cleanup_process_group=True,
+            timeout_seconds=1,
+        )
+
+    assert terminated == process_instances
+    assert process_instances[0].communicate_calls == 2
+
+
 def test_convert_legacy_doc_to_docx_falls_back_to_antiword_when_soffice_fails(monkeypatch):
     calls = []
 
@@ -798,6 +836,172 @@ def test_build_uploaded_file_token_for_legacy_doc_is_stable_across_converter_out
     second = processing_runtime.build_uploaded_file_token(source_name="legacy.doc", source_bytes=source_bytes)
 
     assert first == second
+
+
+def test_detect_uploaded_document_format_recognizes_pdf_magic_bytes() -> None:
+    detected = processing_runtime._detect_uploaded_document_format(
+        filename="source.bin",
+        source_bytes=b"%PDF-1.7\ncontent",
+    )
+
+    assert detected == "pdf"
+
+
+def test_detect_uploaded_document_format_recognizes_pdf_suffix_fallback() -> None:
+    detected = processing_runtime._detect_uploaded_document_format(
+        filename="source.pdf",
+        source_bytes=b"not-really-a-pdf-header",
+    )
+
+    assert detected == "pdf"
+
+
+def test_normalize_uploaded_pdf_converts_to_docx(monkeypatch):
+    pdf_bytes = b"%PDF-1.7\ncontent"
+    docx_bytes = b"PK\x03\x04converted-docx"
+    cleanup_flags = []
+
+    monkeypatch.setattr(
+        processing_runtime.shutil,
+        "which",
+        lambda name: "/usr/bin/soffice" if name == "soffice" else None,
+    )
+
+    def fake_run_completed_process(command, *, error_message, text=True, timeout_seconds=120, cleanup_process_group=False):
+        cleanup_flags.append(cleanup_process_group)
+        outdir = Path(command[command.index("--outdir") + 1])
+        input_path = Path(command[-1])
+        output_path = outdir / input_path.with_suffix(".docx").name
+        output_path.write_bytes(docx_bytes)
+        return object()
+
+    monkeypatch.setattr(processing_runtime, "_run_completed_process", fake_run_completed_process)
+
+    normalized = processing_runtime.normalize_uploaded_document(filename="source.pdf", source_bytes=pdf_bytes)
+
+    assert normalized.original_filename == "source.pdf"
+    assert normalized.filename == "source.docx"
+    assert normalized.content_bytes == docx_bytes
+    assert normalized.source_format == "pdf"
+    assert normalized.conversion_backend == "libreoffice"
+    assert cleanup_flags == [True]
+
+
+def test_convert_pdf_to_docx_uses_writer_pdf_import_filter(monkeypatch):
+    pdf_bytes = b"%PDF-1.7\ncontent"
+    docx_bytes = b"PK\x03\x04converted-docx"
+    commands = []
+
+    monkeypatch.setattr(
+        processing_runtime.shutil,
+        "which",
+        lambda name: "/usr/bin/soffice" if name == "soffice" else None,
+    )
+
+    def fake_run_completed_process(command, *, error_message, text=True, timeout_seconds=120, cleanup_process_group=False):
+        commands.append(command)
+        outdir = Path(command[command.index("--outdir") + 1])
+        input_path = Path(command[-1])
+        output_path = outdir / input_path.with_suffix(".docx").name
+        output_path.write_bytes(docx_bytes)
+        return object()
+
+    monkeypatch.setattr(processing_runtime, "_run_completed_process", fake_run_completed_process)
+
+    converted_bytes, backend = processing_runtime._convert_pdf_to_docx(filename="source.pdf", source_bytes=pdf_bytes)
+
+    assert converted_bytes == docx_bytes
+    assert backend == "libreoffice"
+    assert commands[0][2] == "--infilter=writer_pdf_import"
+
+
+def test_normalize_uploaded_pdf_raises_clear_error_when_converter_missing(monkeypatch):
+    monkeypatch.setattr(processing_runtime.shutil, "which", lambda name: None)
+
+    with pytest.raises(RuntimeError, match="Загружен PDF-файл, но автоконвертация недоступна"):
+        processing_runtime.normalize_uploaded_document(
+            filename="source.pdf",
+            source_bytes=b"%PDF-1.7\ncontent",
+        )
+
+
+def test_build_uploaded_file_token_for_pdf_is_stable_across_converter_outputs(monkeypatch):
+    converted_outputs = [b"PK\x03\x04converted-docx-a", b"PK\x03\x04converted-docx-b"]
+
+    def convert_stub(**kwargs):
+        return converted_outputs.pop(0), "libreoffice"
+
+    monkeypatch.setattr(processing_runtime, "_convert_pdf_to_docx", convert_stub)
+
+    source_bytes = b"%PDF-1.7\nsame-pdf"
+    first = processing_runtime.build_uploaded_file_token(source_name="source.pdf", source_bytes=source_bytes)
+    second = processing_runtime.build_uploaded_file_token(source_name="source.pdf", source_bytes=source_bytes)
+
+    assert first == second
+
+
+def test_resolve_upload_contract_uses_original_pdf_bytes_for_source_identity(monkeypatch):
+    source_bytes = b"%PDF-1.7\nsame-pdf"
+    converted_bytes = b"PK\x03\x04converted-docx"
+    monkeypatch.setattr(
+        processing_runtime,
+        "_convert_pdf_to_docx",
+        lambda **kwargs: (converted_bytes, "libreoffice"),
+    )
+
+    contract = processing_runtime.resolve_upload_contract(filename="source.pdf", source_bytes=source_bytes)
+
+    assert contract.normalized_document.filename == "source.docx"
+    assert contract.normalized_document.content_bytes == converted_bytes
+    assert contract.source_identity.original_filename == "source.pdf"
+    assert contract.source_identity.source_bytes == source_bytes
+    assert contract.source_identity.token_size == len(source_bytes)
+    assert contract.source_identity.token_hash == hashlib.sha256(source_bytes).hexdigest()[:16]
+
+
+def test_convert_pdf_to_docx_falls_back_to_single_generated_docx(monkeypatch):
+    pdf_bytes = b"%PDF-1.7\ncontent"
+    generated_bytes = b"PK\x03\x04generated-docx"
+
+    monkeypatch.setattr(
+        processing_runtime.shutil,
+        "which",
+        lambda name: "/usr/bin/soffice" if name == "soffice" else None,
+    )
+
+    def fake_run_completed_process(command, *, error_message, text=True, timeout_seconds=120, cleanup_process_group=False):
+        outdir = Path(command[command.index("--outdir") + 1])
+        (outdir / "unexpected-name.docx").write_bytes(generated_bytes)
+        return object()
+
+    monkeypatch.setattr(processing_runtime, "_run_completed_process", fake_run_completed_process)
+
+    converted_bytes, backend = processing_runtime._convert_pdf_to_docx(
+        filename="source.pdf",
+        source_bytes=pdf_bytes,
+    )
+
+    assert converted_bytes == generated_bytes
+    assert backend == "libreoffice"
+
+
+def test_convert_pdf_to_docx_surfaces_converter_failure(monkeypatch):
+    monkeypatch.setattr(
+        processing_runtime.shutil,
+        "which",
+        lambda name: "/usr/bin/soffice" if name == "soffice" else None,
+    )
+    monkeypatch.setattr(
+        processing_runtime,
+        "_run_completed_process",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("Не удалось конвертировать PDF через LibreOffice. broken pdf")),
+    )
+
+    with pytest.raises(RuntimeError, match="Не удалось конвертировать PDF через LibreOffice"):
+        processing_runtime._convert_pdf_to_docx(
+            filename="broken.pdf",
+            source_bytes=b"%PDF-1.7\nbroken",
+        )
 
 
 def test_resolve_upload_contract_separates_source_identity_from_normalized_payload(monkeypatch):

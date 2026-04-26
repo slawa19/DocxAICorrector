@@ -365,6 +365,55 @@ def test_prepare_run_context_normalizes_legacy_doc_before_validation(monkeypatch
     assert result.uploaded_file_token == "legacy.docx:6:mocked"
 
 
+def test_prepare_run_context_normalizes_pdf_before_validation(monkeypatch):
+    session_state = SessionState(selected_source_token="", prepared_source_key="")
+    validated = []
+    received = {}
+    freeze_calls = []
+
+    monkeypatch.setattr(
+        application_flow,
+        "freeze_uploaded_file",
+        lambda uploaded_file: freeze_calls.append(uploaded_file.name)
+        or SimpleNamespace(filename="source.docx", content_bytes=b"PK\x03\x04converted-docx", file_token="source.docx:16:mocked"),
+    )
+    monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: validated.append(source_bytes) or None)
+
+    prepared_document = SimpleNamespace(
+        source_text="text",
+        paragraphs=["p1"],
+        image_assets=[],
+        jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
+        prepared_source_key="source.docx:hash:6000",
+        cached=False,
+    )
+
+    def prepare_document_for_processing_stub(**kwargs):
+        received.update(kwargs)
+        return prepared_document
+
+    result = application_flow.prepare_run_context(
+        uploaded_file=UploadedFileStub("source.pdf", b"%PDF-1.7\nsource"),
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=True,
+        session_state=session_state,
+        reset_run_state_fn=lambda **kwargs: None,
+        fail_critical_fn=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected critical error")),
+        log_event_fn=lambda *args, **kwargs: None,
+        prepare_document_for_processing_fn=prepare_document_for_processing_stub,
+    )
+
+    assert freeze_calls == ["source.pdf"]
+    assert validated == [b"PK\x03\x04converted-docx"]
+    assert received["uploaded_payload"].filename == "source.docx"
+    assert received["uploaded_payload"].content_bytes == b"PK\x03\x04converted-docx"
+    assert received["uploaded_payload"].file_token == "source.docx:16:mocked"
+    assert result.uploaded_filename == "source.docx"
+    assert result.uploaded_file_bytes == b"PK\x03\x04converted-docx"
+    assert result.uploaded_file_token == "source.docx:16:mocked"
+
+
 def test_prepare_run_context_reports_doc_conversion_failure_via_fail_critical(monkeypatch):
     session_state = SessionState(selected_source_token="", prepared_source_key="")
     failures = []
@@ -393,6 +442,36 @@ def test_prepare_run_context_reports_doc_conversion_failure_via_fail_critical(mo
         )
 
     assert failures == [("doc_conversion_failed", "converter missing", {"filename": "legacy.doc"})]
+
+
+def test_prepare_run_context_reports_pdf_conversion_failure_via_fail_critical(monkeypatch):
+    session_state = SessionState(selected_source_token="", prepared_source_key="")
+    failures = []
+
+    monkeypatch.setattr(
+        application_flow,
+        "freeze_uploaded_file",
+        lambda uploaded_file: (_ for _ in ()).throw(RuntimeError("pdf converter missing")),
+    )
+
+    def fail_critical_stub(event, message, **context):
+        failures.append((event, message, context))
+        raise RuntimeError(message)
+
+    with pytest.raises(RuntimeError, match="pdf converter missing"):
+        application_flow.prepare_run_context(
+            uploaded_file=UploadedFileStub("source.pdf", b"%PDF-1.7\nsource"),
+            chunk_size=6000,
+            image_mode="safe",
+            keep_all_image_variants=True,
+            session_state=session_state,
+            reset_run_state_fn=lambda **kwargs: None,
+            fail_critical_fn=fail_critical_stub,
+            log_event_fn=lambda *args, **kwargs: None,
+            prepare_document_for_processing_fn=lambda **kwargs: (_ for _ in ()).throw(AssertionError("unexpected")),
+        )
+
+    assert failures == [("doc_conversion_failed", "pdf converter missing", {"filename": "source.pdf"})]
 
 
 def test_prepare_run_context_sync_path_freezes_upload_once(monkeypatch):

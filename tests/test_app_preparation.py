@@ -273,6 +273,139 @@ def test_main_normalizes_legacy_doc_before_starting_background_preparation(monke
     assert start_calls[0]["upload_marker"].startswith("legacy.docx:")
 
 
+def test_main_supports_pdf_upload_and_updates_user_facing_copy(monkeypatch):
+    session_state = SessionState(
+        app_start_logged=True,
+        processing_status={},
+        activity_feed=[],
+    )
+    uploader_calls = []
+    title_calls = []
+    write_calls = []
+    caption_calls = []
+
+    def file_uploader_stub(*args, **kwargs):
+        uploader_calls.append((args, kwargs))
+        return None
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app, "init_session_state", lambda: None)
+    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
+    monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
+    monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
+    monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
+    monkeypatch.setattr(app.st, "title", lambda value, *args, **kwargs: title_calls.append(value))
+    monkeypatch.setattr(app.st, "write", lambda value, *args, **kwargs: write_calls.append(value))
+    monkeypatch.setattr(app.st, "caption", lambda value, *args, **kwargs: caption_calls.append(value))
+    monkeypatch.setattr(app.st, "file_uploader", file_uploader_stub)
+    monkeypatch.setattr(app.st, "fragment", lambda **kw: (lambda fn: fn))
+    monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_finalize_app_frame", lambda **kwargs: None)
+
+    app.main()
+
+    assert title_calls == ["AI-редактор DOCX/DOC/PDF через Markdown"]
+    assert any("PDF" in call for call in write_calls)
+    assert caption_calls == [
+        "PDF импортируется через преобразование в DOCX; качество структуры и форматирования зависит от исходного PDF и конвертера."
+    ]
+    assert len(uploader_calls) == 1
+    assert uploader_calls[0][0][0] == "Загрузите DOCX/DOC/PDF-файл"
+    assert uploader_calls[0][1]["type"] == ["docx", "doc", "pdf"]
+
+
+def test_main_shows_pdf_size_limit_error_copy(monkeypatch):
+    session_state = SessionState(
+        app_start_logged=True,
+        processing_status={},
+        activity_feed=[],
+    )
+    uploaded_file = UploadedFileStub("source.pdf", b"%PDF-1.7\ncontent")
+    uploaded_file.size = app.MAX_DOCX_ARCHIVE_SIZE_BYTES + 1
+    error_calls = []
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app, "init_session_state", lambda: None)
+    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
+    monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
+    monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
+    monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
+    monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
+    monkeypatch.setattr(app.st, "error", lambda value, *args, **kwargs: error_calls.append(value))
+    monkeypatch.setattr(app.st, "fragment", lambda **kw: (lambda fn: fn))
+    monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_finalize_app_frame", lambda **kwargs: None)
+
+    app.main()
+
+    assert error_calls == [
+        f"Размер DOCX/DOC/PDF превышает допустимый предел {app.MAX_DOCX_ARCHIVE_SIZE_BYTES // (1024 * 1024)} МБ. Загрузите файл меньшего размера."
+    ]
+
+
+def test_main_reports_pdf_freeze_failure_without_uncaught_streamlit_error(monkeypatch):
+    session_state = SessionState(
+        app_start_logged=True,
+        processing_status={},
+        activity_feed=[],
+    )
+    uploaded_file = UploadedFileStub("source.pdf", b"%PDF-1.7\ncontent")
+    error_calls = []
+    present_error_calls = []
+    finalized = []
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app, "init_session_state", lambda: None)
+    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
+    monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
+    monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
+    monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
+    monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
+    monkeypatch.setattr(app.st, "error", lambda value, *args, **kwargs: error_calls.append(value))
+    monkeypatch.setattr(app.st, "fragment", lambda **kw: (lambda fn: fn))
+    monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_finalize_app_frame", lambda **kwargs: finalized.append(kwargs))
+    monkeypatch.setattr(app, "freeze_uploaded_file", lambda uploaded_file: (_ for _ in ()).throw(RuntimeError("pdf converter missing")))
+    monkeypatch.setattr(
+        app,
+        "present_error",
+        lambda event, exc, message, **context: present_error_calls.append((event, str(exc), message, context)) or str(exc),
+    )
+
+    app.main()
+
+    assert present_error_calls == [
+        (
+            "document_read_failed",
+            "pdf converter missing",
+            "Ошибка чтения документа",
+            {"filename": "source.pdf"},
+        )
+    ]
+    assert error_calls == ["Ошибка чтения документа: pdf converter missing"]
+    assert finalized == [{}]
+
+
 def test_main_renders_live_status_during_active_preparation(monkeypatch):
     session_state = SessionState(app_start_logged=True, processing_status={}, activity_feed=[])
     calls = []

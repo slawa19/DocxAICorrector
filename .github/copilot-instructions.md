@@ -20,7 +20,9 @@ bash scripts/test.sh tests/ -q -x --tb=short
 
 Never use PowerShell `.ps1` wrappers to run tests. They pipe output through WSL→PowerShell bridge which causes hangs and lost output.
 
-Before concluding that imports are broken, dependencies are missing, or Pandoc is unavailable, first verify the project runtime contract in WSL and prefer the canonical path `bash scripts/test.sh ...` over Windows `py`/`python`.
+Before concluding that imports are broken, dependencies are missing, or Pandoc/LibreOffice is unavailable, first verify the project runtime contract in WSL and prefer the canonical path `bash scripts/test.sh ...` over Windows `py`/`python`.
+
+For fresh WSL/server setup, use `bash scripts/setup-wsl.sh` or the VS Code task `Setup Project`. System dependencies live in `system-requirements.apt`; Python dependencies live in `requirements.txt`. PDF import requires LibreOffice (`soffice` or `libreoffice`) in WSL and uses `--infilter=writer_pdf_import` before DOCX export.
 
 Critical distinction:
 
@@ -63,7 +65,7 @@ Clarification for AI agents:
 ## Project Lifecycle (app start/stop)
 
 App lifecycle uses PowerShell tasks — those are fine:
-- **Start Project** / **Stop Project** / **Project Status** — VS Code tasks
+- **Setup Project** / **Start Project** / **Stop Project** / **Project Status** — VS Code tasks
 
 ## Integrated Browser Debugging
 

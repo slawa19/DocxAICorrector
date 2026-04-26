@@ -8,6 +8,8 @@
 - Для тестов, диагностических импортов, проверки зависимостей и runtime-выводов источником истины считается project runtime внутри WSL.
 - Но агент НЕ имеет права предполагать layout `.venv` заранее: сначала нужно фактологически проверить, это WSL/Linux env (`.venv/bin/activate`) или Windows env (`.venv\Scripts\python.exe`).
 - Если фактический layout `.venv` расходится с ожидаемым контрактом, агент должен явно зафиксировать это как состояние workspace и выбрать рабочий runnable path вместо ложного вывода, что тесты "не запускаются".
+- Canonical setup для нового WSL/server runtime: `bash scripts/setup-wsl.sh` или VS Code task `Setup Project`; Python dependencies живут в `requirements.txt`, WSL system dependencies — в `system-requirements.apt`.
+- PDF import требует LibreOffice (`soffice`/`libreoffice`) внутри WSL и использует Writer PDF import filter `--infilter=writer_pdf_import`; не называйте env готовым для PDF без проверки LibreOffice availability.
 
 ## Canonical Test Commands
 
@@ -232,6 +234,7 @@ echo START && powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Users\
 - `CONTRIBUTING.md`
 - `docs/WORKFLOW_AND_IMAGE_MODES.md`
 - `docs/AI_AGENT_DEVELOPMENT_RULES.md`
+- `docs/STARTUP_PERFORMANCE_CONTRACT.md`
 - `docs/LOGGING_AND_ARTIFACT_RETENTION.md`
 - `.github/copilot-instructions.md`
 

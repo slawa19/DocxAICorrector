@@ -9,13 +9,15 @@
 
 ## Runtime Workflow
 
-- Единственный runtime для Python, pytest, Streamlit и Pandoc: WSL `.venv`.
+- Единственный runtime для Python, pytest, Streamlit, Pandoc и LibreOffice-конвертации: WSL `.venv` плюс WSL system packages.
 - Windows PowerShell используется только как thin wrapper и transport layer для lifecycle/diagnostic scripts и соответствующих VS Code tasks.
 - Каталог `.venv-win/` допустим только для editor tooling и статического анализа; он не должен участвовать в runtime auto-selection.
 - Агентам и automation запрещено предполагать layout `.venv` заранее: сначала нужно проверять, существует ли WSL/Linux layout (`.venv/bin/activate`) или Windows layout (`.venv\Scripts\python.exe`).
-- Upload contract больше не DOCX-only: пользовательский вход может быть `.docx` или legacy `.doc`; после boundary в `processing_runtime.py` downstream-слои обязаны работать с normalized DOCX bytes, но для legacy `.doc` token identity остаётся привязанной к исходным source bytes.
+- Setup source of truth для нового WSL/server runtime: `system-requirements.apt` для apt-пакетов, `requirements.txt` для Python-пакетов, `scripts/setup-wsl.sh` как canonical bootstrap, VS Code task `Setup Project` как user-visible wrapper.
+- Upload contract больше не DOCX-only: пользовательский вход может быть `.docx`, legacy `.doc` или `PDF`; после boundary в `processing_runtime.py` downstream-слои обязаны работать с normalized DOCX bytes, но для legacy `.doc` и `PDF` token identity остаётся привязанной к исходным source bytes.
 - Предпочтительный backend автоконвертации legacy `.doc` внутри WSL: `LibreOffice` / `soffice`; fallback backend: `antiword` + `pandoc`.
-- Официальные entry points для запуска и диагностики: `Project Status`, `Start Project`, `Stop Project`, `Run Full Pytest`, `Run Current Test File`, `Run Current Test Node`, `Tail Streamlit Log`.
+- PDF import требует LibreOffice (`soffice` или `libreoffice`) и использует Writer PDF import filter (`--infilter=writer_pdf_import`) перед DOCX export; OCR для scanned PDF не входит в текущий контракт.
+- Официальные entry points для setup, запуска и диагностики: `Setup Project`, `Project Status`, `Start Project`, `Stop Project`, `Run Full Pytest`, `Run Current Test File`, `Run Current Test Node`, `Tail Streamlit Log`.
 - Официальные видимые real-document entry points: `Run Lietaer Real Validation`, `Run Real Document Validation Profile`, `Run Real Document Quality Gate`.
 - Полный `Run Full Pytest` не должен неявно запускать дорогой real-document AI smoke только потому, что в `.env` присутствует `OPENAI_API_KEY`; для такого smoke требуется явный opt-in.
 - Официальный тестовый entry point: `bash scripts/test.sh ...` из WSL или VS Code tasks, которые вызывают WSL/bash напрямую.
@@ -32,7 +34,7 @@
 
 - Локальный WSL `.venv` остаётся source of truth для обычной разработки, но сам по себе не доказывает CI-совместимость.
 - Для расследования CI-only regressions нужен отдельный clean-environment parity run на Python 3.12, потому что CI job `tests` выполняется именно на таком runtime.
-- Для багов вокруг legacy `.doc`, corpus validation и real-document extraction проверяйте не только Python packages, но и системные бинарники: `soffice`, `antiword`, `pandoc`.
+- Для багов вокруг upload normalization (`.doc`, `PDF`), corpus validation и real-document extraction проверяйте не только Python packages, но и системные бинарники: `soffice`, `antiword`, `pandoc`.
 - Отсутствие этих бинарников на чистом runner может дать red CI даже при зелёном локальном WSL pytest, если локальная машина уже имеет нужный toolchain.
 - Real-document и corpus tests следует считать environment-sensitive: они должны либо работать в текущем runtime, либо явно проверять capability contract и пропускаться по нему, а не падать как будто это business-logic regression.
 
@@ -40,7 +42,7 @@
 
 1. Быстрый локальный прогон в WSL через `Run Full Pytest`.
 2. Отдельный parity run через VS Code task `Run Docker CI Parity Pytest`.
-3. Если менялись legacy `.doc`, corpus validation, real-document extraction или runtime normalization paths, отдельно гоняйте `tests/test_real_document_validation_corpus.py` в том же clean environment.
+3. Если менялись legacy `.doc`, PDF import, corpus validation, real-document extraction или runtime normalization paths, отдельно гоняйте relevant runtime/application-flow tests и corpus selectors в том же clean environment.
 
 ### Minimal CI-Parity Checks
 
@@ -70,7 +72,7 @@ docker run --rm -v "$PWD":/src -w /src python:3.12 bash -lc '
 '
 ```
 
-### Capability Probes For Legacy DOC Paths
+### Capability Probes For Upload Conversion Paths
 
 Перед выводом, что проблема в коде, а не в runtime toolchain:
 
@@ -80,15 +82,16 @@ command -v antiword
 pandoc --version
 ```
 
-Если legacy `.doc` path зависит от conversion backend, а эти команды недоступны, локальный green run в уже настроенной WSL среде не гарантирует green CI на чистом Ubuntu runner.
+Если legacy `.doc` или PDF path зависит от conversion backend, а эти команды недоступны, локальный green run в уже настроенной WSL среде не гарантирует green CI на чистом Ubuntu runner.
 
 ## Upload Normalization Contract
 
 - `freeze_uploaded_file` и preparation path должны строиться на одном canonical normalized payload contract.
-- `build_uploaded_file_token` для legacy `.doc` обязан сохранять source-byte-based identity; normalized DOCX bytes используются как processing payload, а не как canonical identity source.
-- `document.py` не должен самостоятельно изобретать отдельный conversion path для legacy `.doc`; его boundary проходит через общий normalizer helper.
+- `build_uploaded_file_token` для legacy `.doc` и `PDF` обязан сохранять source-byte-based identity; normalized DOCX bytes используются как processing payload, а не как canonical identity source.
+- `document.py` не должен самостоятельно изобретать отдельный conversion path для legacy `.doc` или `PDF`; его boundary проходит через общий normalizer helper.
 - Structural tier, full-tier validator и UI path должны переиспользовать один и тот же conversion contract, чтобы real-document corpus отражал реальные пользовательские upload paths.
 - Любое будущее расширение форматов входа должно добавляться на этот boundary, а не в отдельные feature-specific обходные пути.
+- PDF является только input format, не internal document model: запрещены parallel PDF extraction, отдельный PDF paragraph/image builder и PDF-specific ветвления в core document pipeline без новой спецификации.
 
 ## Image Modes
 
@@ -140,4 +143,5 @@ pandoc --version
 - Детали startup performance contract: `docs/STARTUP_PERFORMANCE_CONTRACT.md`.
 - Детали cleanup тестового контракта: `plans/TEST_WORKFLOW_CONTRACT_CLEANUP_SPEC_2026-03-14.md`.
 - Детали DOCX formatting hardening: `docs/DOCX_FORMATTING_HARDENING_SPEC_2026-03-13.md`.
+- Детали PDF input normalization: `docs/specs/PDF_SOURCE_IMPORT_SPEC_2026-04-26.md`.
 - Исторические, superseded и point-in-time документы перечислены в `docs/ARCHIVE_INDEX.md`.

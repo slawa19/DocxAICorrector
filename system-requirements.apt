@@ -1,0 +1,5 @@
+# System packages required by the canonical WSL runtime.
+# Installed by scripts/setup-wsl.sh.
+antiword
+libreoffice
+pandoc

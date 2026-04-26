@@ -1,6 +1,8 @@
 import hashlib
 import logging
+import os
 import queue
+import signal
 import shutil
 import subprocess
 import tempfile
@@ -56,6 +58,7 @@ from workflow_state import ProcessingOutcome
 MAX_COMPLETED_SOURCE_BYTES = 8 * 1024 * 1024
 _DOCX_ZIP_MAGIC = b"PK\x03\x04"
 _LEGACY_DOC_MAGIC = bytes.fromhex("D0CF11E0A1B11AE1")
+_PDF_MAGIC = b"%PDF-"
 _DEFAULT_UPLOADED_FILENAME = "document.docx"
 _DOC_CONVERSION_TIMEOUT_SECONDS = 120
 _ALLOWED_SET_STATE_EVENT_KEYS = {
@@ -219,10 +222,14 @@ def _detect_uploaded_document_format(*, filename: str, source_bytes: bytes) -> s
         return "docx"
     if source_bytes.startswith(_LEGACY_DOC_MAGIC):
         return "doc" if suffix == ".doc" else "unknown"
+    if source_bytes.startswith(_PDF_MAGIC):
+        return "pdf"
     if suffix == ".docx":
         return "docx"
     if suffix == ".doc":
         return "doc"
+    if suffix == ".pdf":
+        return "pdf"
     return "unknown"
 
 
@@ -243,7 +250,44 @@ def _run_completed_process(
     error_message: str,
     text: bool = True,
     timeout_seconds: int = _DOC_CONVERSION_TIMEOUT_SECONDS,
+    cleanup_process_group: bool = False,
 ):
+    if cleanup_process_group:
+        process = None
+        try:
+            popen_kwargs = {
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+                "text": text,
+            }
+            if text:
+                popen_kwargs["encoding"] = "utf-8"
+                popen_kwargs["errors"] = "replace"
+            if os.name == "nt":
+                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                popen_kwargs["start_new_session"] = True
+            process = subprocess.Popen(command, **popen_kwargs)
+            stdout, stderr = process.communicate(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as exc:
+            if process is not None:
+                _terminate_process_tree(process)
+                process.communicate()
+            raise RuntimeError(
+                f"{error_message} Превышено время ожидания {timeout_seconds} сек."
+            ) from exc
+        except OSError as exc:
+            raise RuntimeError(error_message) from exc
+
+        if process is None:
+            raise RuntimeError(error_message)
+        if process.returncode != 0:
+            stderr_text = (stderr or "").strip() if text else ""
+            stdout_text = (stdout or "").strip() if text else ""
+            detail = stderr_text or stdout_text or f"exit_code={process.returncode}"
+            raise RuntimeError(f"{error_message} {detail}")
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
     try:
         result = subprocess.run(
             command,
@@ -269,6 +313,29 @@ def _run_completed_process(
     return result
 
 
+def _terminate_process_tree(process: subprocess.Popen) -> None:
+    try:
+        if os.name == "nt":
+            process.kill()
+            return
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except OSError:
+        process.kill()
+        return
+
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        except OSError:
+            process.kill()
+
+
 def _convert_legacy_doc_with_soffice(*, soffice_path: str, filename: str, source_bytes: bytes) -> bytes:
     normalized_filename = _build_normalized_docx_filename(filename)
     with tempfile.TemporaryDirectory(prefix="docxaicorrector_doc_") as temp_dir_name:
@@ -288,12 +355,63 @@ def _convert_legacy_doc_with_soffice(*, soffice_path: str, filename: str, source
             ],
             error_message="Не удалось конвертировать legacy DOC через LibreOffice.",
         )
-        if not output_path.exists():
-            raise RuntimeError("Не удалось конвертировать legacy DOC через LibreOffice: выходной DOCX не создан.")
+        output_path = _resolve_converted_docx_output(
+            temp_dir=temp_dir,
+            expected_output_path=output_path,
+            missing_output_message="Не удалось конвертировать legacy DOC через LibreOffice: выходной DOCX не создан.",
+        )
         output_bytes = output_path.read_bytes()
         if not output_bytes:
             raise RuntimeError("Не удалось конвертировать legacy DOC через LibreOffice: выходной DOCX пуст.")
         return output_bytes
+
+
+def _resolve_converted_docx_output(*, temp_dir: Path, expected_output_path: Path, missing_output_message: str) -> Path:
+    if expected_output_path.exists():
+        return expected_output_path
+    fallback_matches = sorted(temp_dir.glob("*.docx"))
+    if len(fallback_matches) == 1:
+        return fallback_matches[0]
+    raise RuntimeError(missing_output_message)
+
+
+def _convert_pdf_to_docx(*, filename: str, source_bytes: bytes) -> tuple[bytes, str]:
+    soffice_path = shutil.which("soffice") or shutil.which("libreoffice")
+    if not soffice_path:
+        raise RuntimeError(
+            "Загружен PDF-файл, но автоконвертация недоступна. "
+            "Установите LibreOffice (`soffice`) внутри WSL."
+        )
+
+    normalized_filename = _build_normalized_docx_filename(filename)
+    with tempfile.TemporaryDirectory(prefix="docxaicorrector_pdf_") as temp_dir_name:
+        temp_dir = Path(temp_dir_name)
+        input_path = temp_dir / (Path(filename).name or "document.pdf")
+        output_path = temp_dir / Path(normalized_filename).name
+        input_path.write_bytes(source_bytes)
+        _run_completed_process(
+            [
+                soffice_path,
+                "--headless",
+                "--infilter=writer_pdf_import",
+                "--convert-to",
+                "docx",
+                "--outdir",
+                str(temp_dir),
+                str(input_path),
+            ],
+            error_message="Не удалось конвертировать PDF через LibreOffice.",
+            cleanup_process_group=True,
+        )
+        output_path = _resolve_converted_docx_output(
+            temp_dir=temp_dir,
+            expected_output_path=output_path,
+            missing_output_message="Не удалось конвертировать PDF через LibreOffice: выходной DOCX не создан.",
+        )
+        output_bytes = output_path.read_bytes()
+        if not output_bytes:
+            raise RuntimeError("Не удалось конвертировать PDF через LibreOffice: выходной DOCX пуст.")
+        return output_bytes, "libreoffice"
 
 
 def _convert_legacy_doc_with_antiword(*, antiword_path: str, filename: str, source_bytes: bytes) -> bytes:
@@ -382,10 +500,23 @@ def legacy_doc_conversion_available() -> bool:
 
 def normalize_uploaded_document(*, filename: str, source_bytes: bytes) -> NormalizedUploadedDocument:
     source_format = _detect_uploaded_document_format(filename=filename, source_bytes=source_bytes)
-    normalized_filename = _build_normalized_docx_filename(filename) if source_format in {"doc", "docx"} else filename
+    normalized_filename = _build_normalized_docx_filename(filename) if source_format in {"doc", "docx", "pdf"} else filename
 
     if source_format == "doc":
         converted_bytes, conversion_backend = _convert_legacy_doc_to_docx(
+            filename=filename,
+            source_bytes=source_bytes,
+        )
+        return NormalizedUploadedDocument(
+            original_filename=filename,
+            filename=normalized_filename,
+            content_bytes=converted_bytes,
+            source_format=source_format,
+            conversion_backend=conversion_backend,
+        )
+
+    if source_format == "pdf":
+        converted_bytes, conversion_backend = _convert_pdf_to_docx(
             filename=filename,
             source_bytes=source_bytes,
         )
@@ -407,7 +538,7 @@ def normalize_uploaded_document(*, filename: str, source_bytes: bytes) -> Normal
 
 
 def _build_uploaded_file_token_components(*, normalized_document: NormalizedUploadedDocument, source_bytes: bytes) -> tuple[int, str]:
-    identity_bytes = source_bytes if normalized_document.source_format == "doc" else normalized_document.content_bytes
+    identity_bytes = source_bytes if normalized_document.source_format in {"doc", "pdf"} else normalized_document.content_bytes
     identity_hash = hashlib.sha256(identity_bytes).hexdigest()[:16]
     return len(identity_bytes), identity_hash
 
@@ -772,7 +903,7 @@ def drain_preparation_events(*, reset_run_state, set_processing_status, finalize
                 1.0,
                 "error",
             )
-            push_activity("Не удалось прочитать и проанализировать DOCX-файл.")
+            push_activity("Не удалось прочитать и проанализировать документ.")
 
 
 def preparation_worker_is_active() -> bool:
@@ -897,7 +1028,7 @@ def start_background_preparation(
     preparation_events = queue.Queue()
     runtime = BackgroundRuntime(preparation_events, threading.Event())
 
-    push_activity("Файл получен сервером. Запускаю анализ DOCX.")
+    push_activity("Файл получен сервером. Запускаю анализ документа.")
     set_processing_status(
         stage="Файл получен",
         detail="Файл передан на сервер. Запускаю анализ документа.",

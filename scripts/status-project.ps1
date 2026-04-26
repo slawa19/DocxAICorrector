@@ -14,6 +14,7 @@ try {
     $venvOk = ConvertTo-BoolFlag $status['venv_ok']
     $depsOk = ConvertTo-BoolFlag $status['deps_ok']
     $pandocOk = ConvertTo-BoolFlag $status['pandoc_ok']
+    $libreOfficeOk = ConvertTo-BoolFlag $status['libreoffice_ok']
     $apiKeyOk = ConvertTo-BoolFlag $status['api_key_ok']
     $managedPid = $status['managed_pid']
 
@@ -51,6 +52,13 @@ try {
         Write-Warn 'Pandoc is unavailable'
     }
 
+    if ($libreOfficeOk) {
+        Write-Ok 'LibreOffice is available'
+    }
+    else {
+        Write-Warn 'LibreOffice is unavailable; PDF import and preferred legacy DOC conversion will fail'
+    }
+
     if ($apiKeyOk) {
         Write-Ok 'OPENAI_API_KEY is configured'
     }
@@ -68,7 +76,7 @@ try {
     elseif ($portOpen) {
         $finalStatus = 'CONFLICT'
     }
-    elseif (-not ($venvOk -and $depsOk -and $pandocOk -and $apiKeyOk)) {
+    elseif (-not ($venvOk -and $depsOk -and $pandocOk -and $libreOfficeOk -and $apiKeyOk)) {
         $finalStatus = 'DEGRADED'
     }
 

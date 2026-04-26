@@ -268,11 +268,22 @@ print_runtime_status() {
 
 print_environment_status() {
     local venv_ok="false"
+    local libreoffice_ok="false"
+    local libreoffice_path=""
     if venv_ready; then
         venv_ok="true"
     fi
+    if libreoffice_path="$(command -v soffice 2>/dev/null)" && [[ -n "$libreoffice_path" ]]; then
+        libreoffice_ok="true"
+    elif libreoffice_path="$(command -v libreoffice 2>/dev/null)" && [[ -n "$libreoffice_path" ]]; then
+        libreoffice_ok="true"
+    else
+        libreoffice_path=""
+    fi
 
     printf 'venv_ok=%s\n' "$venv_ok"
+    printf 'libreoffice_ok=%s\n' "$libreoffice_ok"
+    printf 'libreoffice_path=%s\n' "$libreoffice_path"
 
     if [[ "$venv_ok" != "true" ]]; then
         printf 'deps_ok=false\n'
@@ -373,6 +384,23 @@ import pypandoc
 pypandoc.get_pandoc_version()
 print(pypandoc.get_pandoc_path())
 PY
+}
+
+check_libreoffice() {
+    if command -v soffice >/dev/null 2>&1; then
+        soffice --headless --version
+        return 0
+    fi
+    if command -v libreoffice >/dev/null 2>&1; then
+        libreoffice --headless --version
+        return 0
+    fi
+    echo "LibreOffice executable not found: expected soffice or libreoffice" >&2
+    return 1
+}
+
+setup_project() {
+    bash "$PROJECT_ROOT/scripts/setup-wsl.sh"
 }
 
 check_api_key() {
@@ -633,8 +661,14 @@ case "${1:-}" in
     check-pandoc)
         check_pandoc
         ;;
+    check-libreoffice)
+        check_libreoffice
+        ;;
     check-api-key)
         check_api_key
+        ;;
+    setup)
+        setup_project
         ;;
     status)
         status "${2:-$DEFAULT_PORT}"

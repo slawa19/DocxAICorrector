@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-04-26
+
+- Добавлен PDF как входной формат через upload normalization boundary: PDF конвертируется LibreOffice Writer import filter в canonical DOCX, после чего существующий DOCX pipeline продолжает работу без PDF-specific document model.
+- Source token для PDF строится по original PDF bytes, чтобы cache/restart identity не зависела от nondeterministic DOCX output LibreOffice.
+- UI upload flow теперь принимает `DOCX/DOC/PDF` и показывает best-effort предупреждение о PDF import.
+- Добавлен setup contract для нового WSL/server runtime: `system-requirements.apt`, `scripts/setup-wsl.sh`, `scripts/setup-project.ps1`, VS Code task `Setup Project`, а `Project Status` проверяет LibreOffice availability.
+- Подтверждена реальная PDF -> DOCX normalization на `tests/sources/Are_We_In_The_End_Times.pdf`; targeted WSL tests проходят для runtime, app preparation, application flow и setup workflow smoke.
+
 ## 2026-03-22
 
 - Завершён и зафиксирован Phase 1 document-entity round-trip hardening: mainline DOCX output теперь опирается на dynamic reference DOCX baseline и минимальный post-Pandoc formatting pass вместо broad source-XML replay.

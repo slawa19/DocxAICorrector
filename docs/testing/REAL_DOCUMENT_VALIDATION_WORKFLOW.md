@@ -108,6 +108,7 @@ bash scripts/test.sh tests/test_real_document_structure_recognition_integration.
 - Do not assume the standalone validator inherits the correct import root from the shell.
 - The validator now self-bootstraps the repository root into `sys.path`, but the canonical runtime remains WSL `.venv`.
 - Legacy `.doc` validation requires either LibreOffice (`soffice`) or the fallback pair `antiword` + `pandoc` inside WSL.
+- PDF import validation requires LibreOffice (`soffice`/`libreoffice`) inside WSL and uses Writer PDF import filter (`--infilter=writer_pdf_import`) before DOCX export.
 
 ## CI-Parity Notes For Corpus Debugging
 
@@ -117,9 +118,9 @@ Consequences for debugging:
 
 - green local pytest in a developer WSL environment does not automatically prove green CI;
 - CI may fail only because a clean Ubuntu runner lacks `soffice` or `antiword` + `pandoc`;
-- extraction-tier and structural-tier corpus tests for legacy `.doc` should be treated as capability-sensitive, not as pure business-logic tests.
+- extraction-tier and structural-tier corpus tests for legacy `.doc` and any future PDF corpus profiles should be treated as capability-sensitive, not as pure business-logic tests.
 
-When a CI run fails on corpus extraction or structural passthrough for a legacy `.doc` profile, check capability first:
+When a CI run fails on corpus extraction or structural passthrough for a legacy `.doc` or PDF profile, check capability first:
 
 ```bash
 command -v soffice || command -v libreoffice

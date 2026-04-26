@@ -32,6 +32,7 @@
 - System prompt должен читаться из файла один раз на процесс.
 - Проверка доступности Pandoc должна выполняться один раз на процесс.
 - OpenAI client должен переиспользоваться как singleton в пределах процесса.
+- Тяжёлый setup system packages (`apt-get`, LibreOffice install, bootstrap `.venv`) не должен попадать в startup path приложения; он выполняется только через `scripts/setup-wsl.sh` / `Setup Project`.
 
 ### 3. Startup не должен деградировать из-за Streamlit file watching
 
@@ -44,7 +45,7 @@
 
 ### 4. WSL-first runtime остаётся обязательным contract
 
-- Единственный штатный runtime для Python, Streamlit, Pandoc и pytest: WSL `.venv`.
+- Единственный штатный runtime для Python, Streamlit, Pandoc, LibreOffice conversion и pytest: WSL `.venv` плюс WSL system packages.
 - Windows PowerShell допустим только как thin wrapper для lifecycle/diagnostic scripts.
 - `.venv-win/` допустим только для editor tooling и статического анализа.
 

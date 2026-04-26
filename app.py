@@ -589,12 +589,15 @@ def main() -> None:
 
     render_intro_layout_styles()
 
-    st.title("AI-редактор DOCX/DOC через Markdown")
+    st.title("AI-редактор DOCX/DOC/PDF через Markdown")
     st.write(
-        "Загрузите DOCX или legacy DOC, приложение при необходимости автоконвертирует его в DOCX, "
+        "Загрузите DOCX, legacy DOC или PDF. Приложение при необходимости автоконвертирует исходник в DOCX, "
         "соберет смысловые блоки из нескольких абзацев, добавит соседний контекст для модели и соберет новый DOCX."
     )
-    uploaded_widget_file = st.file_uploader("Загрузите DOCX/DOC-файл", type=["docx", "doc"])
+    st.caption(
+        "PDF импортируется через преобразование в DOCX; качество структуры и форматирования зависит от исходного PDF и конвертера."
+    )
+    uploaded_widget_file = st.file_uploader("Загрузите DOCX/DOC/PDF-файл", type=["docx", "doc", "pdf"])
     render_file_uploader_state_styles(has_uploaded_file=uploaded_widget_file is not None)
 
     if processing_in_progress:
@@ -631,7 +634,7 @@ def main() -> None:
 
     if uploaded_widget_file is not None and _is_uploaded_file_too_large(uploaded_widget_file):
         st.error(
-            f"Размер DOCX/DOC превышает допустимый предел {MAX_DOCX_ARCHIVE_SIZE_BYTES // (1024 * 1024)} МБ. Загрузите файл меньшего размера."
+            f"Размер DOCX/DOC/PDF превышает допустимый предел {MAX_DOCX_ARCHIVE_SIZE_BYTES // (1024 * 1024)} МБ. Загрузите файл меньшего размера."
         )
         render_run_log()
         _finalize_app_frame()
@@ -654,7 +657,19 @@ def main() -> None:
 
     uploaded_widget_payload = None
     if uploaded_widget_file is not None:
-        uploaded_widget_payload = freeze_uploaded_file(uploaded_widget_file)
+        try:
+            uploaded_widget_payload = freeze_uploaded_file(uploaded_widget_file)
+        except Exception as exc:
+            user_message = present_error(
+                "document_read_failed",
+                exc,
+                "Ошибка чтения документа",
+                filename=resolve_uploaded_filename(uploaded_widget_file),
+            )
+            st.error(f"Ошибка чтения документа: {user_message}")
+            render_run_log()
+            _finalize_app_frame()
+            return
         preparation_request_marker = build_preparation_request_marker(
             uploaded_widget_payload,
             chunk_size=chunk_size,

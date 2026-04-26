@@ -242,15 +242,37 @@ def extract_document_content_with_boundary_report(
     return paragraphs, image_assets, boundary_report
 
 
-def _build_paragraph_text_with_placeholders(paragraph, image_assets: list[ImageAsset]) -> str:
+def _build_paragraph_text_with_placeholders(
+    paragraph,
+    image_assets: list[ImageAsset],
+    *,
+    include_image_placeholders: bool = True,
+    allow_run_markdown: bool = True,
+) -> str:
     parts: list[str] = []
     for child in paragraph._element:
         local_name = xml_local_name(child.tag)
         if local_name == "r":
-            parts.append(_render_run_element(child, paragraph.part, image_assets))
+            parts.append(
+                _render_run_element(
+                    child,
+                    paragraph.part,
+                    image_assets,
+                    allow_hyperlink_markdown=allow_run_markdown,
+                    include_image_placeholders=include_image_placeholders,
+                )
+            )
             continue
         if local_name == "hyperlink":
-            parts.append(_render_hyperlink_element(child, paragraph, image_assets))
+            parts.append(
+                _render_hyperlink_element(
+                    child,
+                    paragraph,
+                    image_assets,
+                    allow_hyperlink_markdown=allow_run_markdown,
+                    include_image_placeholders=include_image_placeholders,
+                )
+            )
     return "".join(parts)
 
 
@@ -260,15 +282,16 @@ def _build_raw_document_blocks(document) -> tuple[list[RawBlock], list[ImageAsse
     table_count = 0
 
     for block_kind, block in _iter_document_block_items(document):
-        raw_index = len(raw_blocks)
         if block_kind == "paragraph":
-            raw_block = _build_raw_paragraph(cast(Paragraph, block), image_assets, raw_index=raw_index)
+            for raw_block in _build_raw_paragraph_blocks(cast(Paragraph, block), image_assets, raw_index=len(raw_blocks)):
+                raw_blocks.append(raw_block)
+            continue
         else:
             table_count += 1
             raw_block = _build_raw_table(
                 cast(Table, block),
                 image_assets,
-                raw_index=raw_index,
+                raw_index=len(raw_blocks),
                 asset_id=f"table_{table_count:03d}",
             )
         if raw_block is not None:
@@ -277,8 +300,49 @@ def _build_raw_document_blocks(document) -> tuple[list[RawBlock], list[ImageAsse
     return raw_blocks, image_assets
 
 
-def _build_raw_paragraph(paragraph, image_assets: list[ImageAsset], *, raw_index: int) -> RawParagraph | None:
-    text = _build_paragraph_text_with_placeholders(paragraph, image_assets).strip()
+def _build_raw_paragraph_blocks(paragraph, image_assets: list[ImageAsset], *, raw_index: int) -> list[RawParagraph]:
+    raw_blocks: list[RawParagraph] = []
+    has_textboxes = _paragraph_has_textbox_content(paragraph)
+    direct_text = _build_paragraph_text_with_placeholders(paragraph, image_assets, include_image_placeholders=not has_textboxes)
+
+    if direct_text.strip():
+        raw_block = _build_raw_paragraph(
+            paragraph,
+            image_assets,
+            raw_index=raw_index,
+            text_override=direct_text,
+        )
+        if raw_block is not None:
+            raw_blocks.append(raw_block)
+
+    for textbox_paragraph in _iter_textbox_paragraphs(paragraph):
+        raw_block = _build_raw_paragraph(
+            textbox_paragraph,
+            image_assets,
+            raw_index=raw_index + len(raw_blocks),
+            allow_run_markdown=False,
+        )
+        if raw_block is not None:
+            if raw_blocks and raw_blocks[-1].text == raw_block.text:
+                continue
+            raw_blocks.append(raw_block)
+
+    return raw_blocks
+
+
+def _build_raw_paragraph(
+    paragraph,
+    image_assets: list[ImageAsset],
+    *,
+    raw_index: int,
+    text_override: str | None = None,
+    allow_run_markdown: bool = True,
+) -> RawParagraph | None:
+    text = (
+        text_override
+        if text_override is not None
+        else _build_paragraph_text_with_placeholders(paragraph, image_assets, allow_run_markdown=allow_run_markdown)
+    ).strip()
     if not text:
         return None
 
@@ -806,19 +870,53 @@ def _read_uploaded_docx_bytes(uploaded_file) -> bytes:
     )
 
 
-def _render_hyperlink_element(hyperlink_element, paragraph, image_assets: list[ImageAsset]) -> str:
+def _paragraph_has_textbox_content(paragraph) -> bool:
+    return any(True for _ in _iter_textbox_content_elements(paragraph._element))
+
+
+def _iter_textbox_content_elements(element):
+    for descendant in element.iter():
+        if descendant is element:
+            continue
+        if xml_local_name(descendant.tag) == "txbxContent":
+            yield descendant
+
+
+def _iter_textbox_paragraphs(paragraph):
+    for textbox_content in _iter_textbox_content_elements(paragraph._element):
+        for child in textbox_content:
+            if xml_local_name(child.tag) == "p":
+                yield Paragraph(child, paragraph.part)
+
+
+def _render_hyperlink_element(
+    hyperlink_element,
+    paragraph,
+    image_assets: list[ImageAsset],
+    *,
+    include_image_placeholders: bool = True,
+    allow_hyperlink_markdown: bool = True,
+) -> str:
     text_parts: list[str] = []
     for child in hyperlink_element:
         if xml_local_name(child.tag) != "r":
             continue
-        text_parts.append(_render_run_element(child, paragraph.part, image_assets, allow_hyperlink_markdown=False))
+        text_parts.append(
+            _render_run_element(
+                child,
+                paragraph.part,
+                image_assets,
+                allow_hyperlink_markdown=False,
+                include_image_placeholders=include_image_placeholders,
+            )
+        )
 
     text = "".join(text_parts)
     if not text.strip():
         return text
 
     relationship_id = hyperlink_element.get(f"{{{RELATIONSHIP_NAMESPACE}}}id")
-    if not relationship_id:
+    if not allow_hyperlink_markdown or not relationship_id:
         return text
 
     relationship = paragraph.part.rels.get(relationship_id)
@@ -828,10 +926,17 @@ def _render_hyperlink_element(hyperlink_element, paragraph, image_assets: list[I
     return f"[{text}]({url})"
 
 
-def _render_run_element(run_element, part, image_assets: list[ImageAsset], *, allow_hyperlink_markdown: bool = True) -> str:
+def _render_run_element(
+    run_element,
+    part,
+    image_assets: list[ImageAsset],
+    *,
+    allow_hyperlink_markdown: bool = True,
+    include_image_placeholders: bool = True,
+) -> str:
     text = _extract_run_text(run_element)
     formatted_text = _apply_run_markdown(text, run_element) if allow_hyperlink_markdown else text
-    image_placeholders = _extract_run_image_placeholders(run_element, part, image_assets)
+    image_placeholders = _extract_run_image_placeholders(run_element, part, image_assets) if include_image_placeholders else []
     return formatted_text + "".join(image_placeholders)
 
 
@@ -851,7 +956,7 @@ def _extract_run_text(run_element) -> str:
 
 
 def _apply_run_markdown(text: str, run_element) -> str:
-    if not text:
+    if not text or not text.strip():
         return text
 
     run_properties = find_child_element(run_element, "rPr")

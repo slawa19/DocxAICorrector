@@ -10,7 +10,7 @@ from docx import Document
 from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.opc.constants import RELATIONSHIP_TYPE
-from docx.oxml import OxmlElement
+from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
 
@@ -43,6 +43,48 @@ def _add_hyperlink(paragraph, text: str, url: str) -> None:
 
 def _append_tab(run) -> None:
     run._element.append(OxmlElement("w:tab"))
+
+
+def _append_textbox_with_paragraphs(paragraph, texts: list[str]) -> None:
+    textbox_paragraphs = "".join(
+        f"""
+        <w:p>
+            <w:r>
+                <w:t>{text}</w:t>
+            </w:r>
+        </w:p>
+        """
+        for text in texts
+    )
+    paragraph._p.append(
+        parse_xml(
+            f"""
+            <w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+                 xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+                 xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+                 xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+                <w:drawing>
+                    <wp:inline>
+                        <wp:extent cx="914400" cy="914400"/>
+                        <wp:docPr id="1" name="TextBox 1"/>
+                        <a:graphic>
+                            <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+                                <wps:wsp>
+                                    <wps:txbx>
+                                        <w:txbxContent>
+                                            {textbox_paragraphs}
+                                        </w:txbxContent>
+                                    </wps:txbx>
+                                    <wps:bodyPr/>
+                                </wps:wsp>
+                            </a:graphicData>
+                        </a:graphic>
+                    </wp:inline>
+                </w:drawing>
+            </w:r>
+            """
+        )
+    )
 
 
 def _set_raw_paragraph_alignment(paragraph, value: str) -> None:
@@ -188,6 +230,39 @@ def test_extract_document_content_from_docx_drops_break_only_spacer_paragraphs()
     paragraphs, _ = extract_document_content_from_docx(buffer)
 
     assert [paragraph.text for paragraph in paragraphs] == ["Before", "After"]
+
+
+def test_extract_document_content_from_docx_extracts_textbox_paragraphs():
+    doc = Document()
+    doc.add_paragraph("Before")
+    host = doc.add_paragraph()
+    _append_textbox_with_paragraphs(host, ["Inside text box", "Second textbox paragraph"])
+    doc.add_paragraph("Middle")
+    doc.add_paragraph("After")
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, image_assets = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.text for paragraph in paragraphs] == [
+        "Before Inside text box Second textbox paragraph Middle",
+        "After",
+    ]
+    assert image_assets == []
+
+
+def test_extract_document_content_from_docx_deduplicates_adjacent_textbox_paragraphs():
+    doc = Document()
+    host = doc.add_paragraph()
+    _append_textbox_with_paragraphs(host, ["Duplicated line", "Duplicated line", "Next line"])
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.text for paragraph in paragraphs] == ["Duplicated line", "Next line"]
 
 
 def test_extract_document_content_from_docx_splits_toc_like_inline_break_cluster_and_marks_toc_roles():

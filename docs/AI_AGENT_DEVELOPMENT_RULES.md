@@ -83,6 +83,14 @@ Startup contract считается отдельной защищённой по
 - предпочитать существующие project entry points вместо ad-hoc команд: `bash scripts/test.sh ...`, `scripts/start-project.ps1`, `scripts/status-project.ps1`, `scripts/project-control-wsl.sh`.
 - не подменять shell-bound validation/spec entry point direct Python runner-ом и не описывать такой обход как эквивалент requested verification.
 
+Setup/runtime dependencies являются отдельным защищённым контрактом:
+
+- Python packages задаются в `requirements.txt`;
+- WSL system packages задаются в `system-requirements.apt`;
+- canonical bootstrap для нового WSL/server runtime — `bash scripts/setup-wsl.sh` или VS Code task `Setup Project`;
+- `Project Status` должен проверять не только `.venv` и Pandoc, но и LibreOffice availability для PDF import;
+- если меняется upload conversion backend (`soffice`, `antiword`, `pandoc`) или список system dependencies, нужно синхронно обновить `system-requirements.apt`, setup scripts, README/CONTRIBUTING/workflow docs и `tests/test_script_workflow_smoke.py`.
+
 Критическое различие для агентов:
 
 - `bash scripts/test.sh ...`, `bash scripts/run-real-document-validation.sh`, `bash scripts/run-real-document-quality-gate.sh` и соответствующие VS Code tasks — это **canonical contract path**.
@@ -145,6 +153,16 @@ bash -lc 'cd /mnt/d/www/projects/2025/DocxAICorrector && . .venv/bin/activate &&
 - `metadata можно не сохранять, потом восстановим по месту`.
 
 Каждый этап обязан быть корректным сам по себе.
+
+### 1.3a. PDF — это input normalization, не отдельная document model
+
+PDF support должен оставаться на upload normalization boundary:
+
+- `processing_runtime.py` распознаёт PDF, конвертирует его в canonical DOCX bytes и сохраняет source identity по original PDF bytes;
+- downstream (`application_flow.py`, `document.py`, `document_pipeline.py`, `formatting_transfer.py`) получает DOCX payload и не должен знать PDF-specific details;
+- запрещено добавлять direct PDF extraction, отдельный PDF paragraph/image builder или PDF-specific formatting restoration path без новой спецификации;
+- LibreOffice PDF import должен использовать Writer import filter (`--infilter=writer_pdf_import`) перед DOCX export;
+- scanned/password-protected PDF без OCR/password flow считаются unsupported MVP cases и должны проходить через существующий error path.
 
 ---
 
