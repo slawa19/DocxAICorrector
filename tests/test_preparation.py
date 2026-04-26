@@ -6,7 +6,7 @@ from docx import Document
 from config import ModelRegistry, TextModelConfig
 from models import ImageAsset, ImageVariantCandidate
 from models import DocumentBlock
-from models import ParagraphBoundaryNormalizationReport
+from models import LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport
 from models import ParagraphClassification, ParagraphUnit, StructureMap
 from models import StructureRecognitionSummary
 import preparation
@@ -24,8 +24,159 @@ def _build_report(*, raw=0, logical=0, merged_groups=0, merged_raw=0):
         merged_group_count=merged_groups,
         merged_raw_paragraph_count=merged_raw,
     )
-def _build_extract_result(paragraphs, image_assets, report, relations=None, relation_report=None):
-    return paragraphs, image_assets, report, ([] if relations is None else relations), relation_report
+
+
+def _build_cleanup_report(*, original=0, cleaned=0, removed=0, page_numbers=0, repeated=0):
+    return LayoutArtifactCleanupReport(
+        original_paragraph_count=original,
+        cleaned_paragraph_count=cleaned,
+        removed_paragraph_count=removed,
+        removed_page_number_count=page_numbers,
+        removed_repeated_artifact_count=repeated,
+        removed_empty_or_whitespace_count=0,
+        cleanup_applied=True,
+    )
+
+
+def test_build_layout_cleanup_status_note_includes_empty_paragraphs():
+    note = preparation.build_layout_cleanup_status_note(
+        LayoutArtifactCleanupReport(
+            original_paragraph_count=5,
+            cleaned_paragraph_count=2,
+            removed_paragraph_count=3,
+            removed_page_number_count=1,
+            removed_repeated_artifact_count=1,
+            removed_empty_or_whitespace_count=1,
+            cleanup_applied=True,
+        )
+    )
+
+    assert note == "Очистка: удалено 3 служебных элементов (1 номеров страниц, 1 повторяющихся колонтитулов, 1 пустых абзацев)."
+
+
+def test_flatten_layout_cleanup_metrics_includes_empty_paragraphs():
+    metrics = preparation.flatten_layout_cleanup_metrics(
+        LayoutArtifactCleanupReport(
+            original_paragraph_count=5,
+            cleaned_paragraph_count=2,
+            removed_paragraph_count=3,
+            removed_page_number_count=1,
+            removed_repeated_artifact_count=1,
+            removed_empty_or_whitespace_count=1,
+            cleanup_applied=True,
+        )
+    )
+
+    assert metrics == {
+        "layout_cleanup_removed_count": 3,
+        "layout_cleanup_page_number_count": 1,
+        "layout_cleanup_repeated_artifact_count": 1,
+        "layout_cleanup_empty_or_whitespace_count": 1,
+    }
+
+
+def test_prepare_document_for_processing_normalizes_layout_cleanup_cache_key(monkeypatch):
+    calls = {"count": 0}
+    session_state = {"preparation_cache": {}}
+    config_state = {
+        "paragraph_boundary_normalization_enabled": True,
+        "paragraph_boundary_normalization_mode": "high_only",
+        "paragraph_boundary_ai_review_enabled": False,
+        "paragraph_boundary_ai_review_mode": "off",
+        "relation_normalization_enabled": True,
+        "relation_normalization_profile": "phase2_default",
+        "relation_normalization_enabled_relation_kinds": (
+            "image_caption",
+            "table_caption",
+            "epigraph_attribution",
+            "toc_region",
+        ),
+        "layout_artifact_cleanup_enabled": True,
+        "layout_artifact_cleanup_min_repeat_count": 1,
+        "layout_artifact_cleanup_max_repeated_text_chars": 0,
+        "structure_recognition_enabled": False,
+        "structure_recognition_mode": "off",
+        "structure_validation_enabled": True,
+    }
+
+    def fake_extract(uploaded_file, *, app_config=None):
+        calls["count"] += 1
+        assert app_config is not None
+        assert app_config["layout_artifact_cleanup_min_repeat_count"] == 1
+        assert app_config["layout_artifact_cleanup_max_repeated_text_chars"] == 0
+        return _build_extract_result([], [], None)
+
+    monkeypatch.setattr(preparation, "extract_document_content_with_normalization_reports", fake_extract)
+    monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "")
+    monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars, relations=None: [])
+    monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [])
+    monkeypatch.setattr(preparation, "load_app_config", lambda: dict(config_state))
+
+    first = preparation.prepare_document_for_processing(
+        uploaded_payload=_build_uploaded_payload("report.docx", b"docx-bytes", "report.docx:10:hash"),
+        chunk_size=6000,
+        session_state=session_state,
+    )
+
+    config_state["layout_artifact_cleanup_min_repeat_count"] = 2
+    config_state["layout_artifact_cleanup_max_repeated_text_chars"] = 80
+
+    second = preparation.prepare_document_for_processing(
+        uploaded_payload=_build_uploaded_payload("report.docx", b"docx-bytes", "report.docx:10:hash"),
+        chunk_size=6000,
+        session_state=session_state,
+    )
+
+    assert calls["count"] == 1
+    assert first.prepared_source_key == second.prepared_source_key
+    assert first.prepared_source_key.endswith(":lc=1:2:80:sr=off")
+
+
+def test_prepare_document_for_processing_passes_app_config_to_extraction(monkeypatch):
+    captured = {}
+    config_state = {
+        "paragraph_boundary_normalization_enabled": True,
+        "paragraph_boundary_normalization_mode": "high_only",
+        "paragraph_boundary_ai_review_enabled": False,
+        "paragraph_boundary_ai_review_mode": "off",
+        "relation_normalization_enabled": True,
+        "relation_normalization_profile": "phase2_default",
+        "relation_normalization_enabled_relation_kinds": (
+            "image_caption",
+            "table_caption",
+            "epigraph_attribution",
+            "toc_region",
+        ),
+        "layout_artifact_cleanup_enabled": False,
+        "structure_recognition_enabled": False,
+        "structure_recognition_mode": "off",
+        "structure_validation_enabled": True,
+    }
+
+    def fake_extract(uploaded_file, *, app_config=None):
+        captured["app_config"] = app_config
+        return _build_extract_result([], [], None)
+
+    monkeypatch.setattr(preparation, "extract_document_content_with_normalization_reports", fake_extract)
+    monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "")
+    monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars, relations=None: [])
+    monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [])
+    monkeypatch.setattr(preparation, "load_app_config", lambda: dict(config_state))
+
+    preparation.prepare_document_for_processing(
+        uploaded_payload=_build_uploaded_payload("report.docx", b"docx-bytes", "report.docx:10:hash"),
+        chunk_size=6000,
+        session_state={"preparation_cache": {}},
+    )
+
+    assert captured["app_config"] is not None
+    assert captured["app_config"]["layout_artifact_cleanup_enabled"] is False
+
+
+def _build_extract_result(paragraphs, image_assets, report, relations=None, relation_report=None, cleanup_report=None):
+    if cleanup_report is None:
+        cleanup_report = _build_cleanup_report(original=len(paragraphs), cleaned=len(paragraphs))
+    return paragraphs, image_assets, report, ([] if relations is None else relations), relation_report, cleanup_report
 
 
 def _build_docx_bytes(paragraphs: list[str]) -> bytes:
@@ -101,7 +252,7 @@ def test_build_prepared_source_key_includes_normalization_mode():
         "report.docx:10:hash",
         6000,
         paragraph_boundary_normalization_mode="high_only",
-    ) == "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:sr=off"
+    ) == "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=off"
 
 
 def test_build_prepared_source_key_adds_structure_recognition_suffix_when_enabled():
@@ -110,7 +261,7 @@ def test_build_prepared_source_key_adds_structure_recognition_suffix_when_enable
         6000,
         paragraph_boundary_normalization_mode="high_only",
         structure_recognition_enabled=True,
-    ) == "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:sr=always"
+    ) == "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=always"
 
 
 def test_build_prepared_source_key_includes_auto_mode_and_validation_flag():
@@ -120,7 +271,7 @@ def test_build_prepared_source_key_includes_auto_mode_and_validation_flag():
         paragraph_boundary_normalization_mode="high_only",
         structure_recognition_mode="auto",
         structure_validation_enabled=False,
-    ) == "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:sr=auto:sv=0"
+    ) == "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=auto:sv=0"
 
 
 def test_build_prepared_source_key_includes_translate_operation_suffix_when_not_default():
@@ -129,7 +280,7 @@ def test_build_prepared_source_key_includes_translate_operation_suffix_when_not_
         6000,
         processing_operation="translate",
         paragraph_boundary_normalization_mode="high_only",
-    ) == "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:sr=off:op=translate"
+    ) == "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=off:op=translate"
 
 
 def test_prepare_document_for_processing_passes_processing_operation_to_job_builder(monkeypatch):
@@ -241,8 +392,8 @@ def test_prepare_document_for_processing_cache_key_changes_with_ai_review_mode(m
 
     assert calls["count"] == 2
     assert list(session_state["preparation_cache"].keys()) == [
-        "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:sr=off",
-        "report.docx:10:hash:6000:high_only:review_only:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:sr=off",
+        "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=off",
+        "report.docx:10:hash:6000:high_only:review_only:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=off",
     ]
 
 
@@ -288,7 +439,7 @@ def test_prepare_document_for_processing_jobs_include_narration_metadata_without
 
     assert [job["narration_include"] for job in prepared.jobs] == [False, True]
     assert list(session_state["preparation_cache"].keys()) == [
-        "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:sr=off"
+        "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=off"
     ]
 
 
@@ -489,8 +640,8 @@ def test_prepare_document_for_processing_limits_session_cache_size(monkeypatch):
     )
 
     assert list(session_state["preparation_cache"].keys()) == [
-        "two:3:b:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:sr=auto:sv=1",
-        "three:5:c:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:sr=auto:sv=1",
+        "two:3:b:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=auto:sv=1",
+        "three:5:c:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=auto:sv=1",
     ]
 
 
@@ -630,7 +781,7 @@ def test_prepare_document_for_processing_miss_returns_clone_separate_from_cached
         session_state=session_state,
     )
 
-    cached_entry = session_state["preparation_cache"]["report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:sr=auto:sv=1"]
+    cached_entry = session_state["preparation_cache"]["report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=auto:sv=1"]
 
     assert result is not cached_entry
     assert result.paragraphs is not cached_entry.paragraphs
@@ -908,12 +1059,12 @@ def test_prepare_document_for_processing_logs_cache_miss_and_hit(monkeypatch):
     assert relevant_events == [
         (
             "preparation_cache_miss",
-            {"prepared_source_key": "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:sr=auto:sv=1"},
+            {"prepared_source_key": "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=auto:sv=1"},
         ),
         (
             "preparation_cache_hit",
             {
-                "prepared_source_key": "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:sr=auto:sv=1",
+                "prepared_source_key": "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=auto:sv=1",
                 "cache_level": "session",
                 "structure_status_note": "Структура: auto-режим, эскалация в AI не потребовалась; структурный риск не найден.",
                 "structure_recognition_mode": "auto",

@@ -56,6 +56,7 @@ def _build_prepared_run_context(**overrides):
         "preparation_elapsed_seconds": 1.4,
         "normalization_report": None,
         "relation_report": None,
+        "cleanup_report": None,
         "structure_map": None,
         "structure_recognition_summary": StructureRecognitionSummary(),
         "structure_validation_report": None,
@@ -97,6 +98,12 @@ def test_store_preparation_summary_uses_preparation_context_not_processing_statu
             "merged_group_count": 1,
             "merged_raw_paragraph_count": 2,
         })(),
+        "cleanup_report": type("CleanupReportStub", (), {
+            "removed_paragraph_count": 3,
+            "removed_page_number_count": 2,
+            "removed_repeated_artifact_count": 1,
+            "removed_empty_or_whitespace_count": 0,
+        })(),
     })()
 
     monkeypatch.setattr(app.st, "session_state", session_state)
@@ -120,7 +127,10 @@ def test_store_preparation_summary_uses_preparation_context_not_processing_statu
         "ai_structural_role_changes": 1,
         "elapsed": "1.2 c",
         "progress": 1.0,
-        "status_notes": ["Структура: AI выключен, использованы текущие правила."],
+        "status_notes": [
+            "Структура: AI выключен, использованы текущие правила.",
+            "Очистка: удалено 3 служебных элементов (2 номеров страниц, 1 повторяющихся колонтитулов, 0 пустых абзацев).",
+        ],
         "raw_paragraph_count": 3,
         "logical_paragraph_count": 2,
         "merged_group_count": 1,
@@ -128,6 +138,10 @@ def test_store_preparation_summary_uses_preparation_context_not_processing_statu
         "high_confidence_merge_count": 0,
         "medium_accepted_merge_count": 0,
         "medium_rejected_candidate_count": 0,
+        "layout_cleanup_removed_count": 3,
+        "layout_cleanup_page_number_count": 2,
+        "layout_cleanup_repeated_artifact_count": 1,
+        "layout_cleanup_empty_or_whitespace_count": 0,
     }
 
 

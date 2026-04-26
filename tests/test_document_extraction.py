@@ -6,6 +6,7 @@ from typing import Any, cast
 import pytest
 
 import document
+import document_extraction
 from docx import Document
 from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -22,6 +23,7 @@ from document import (
     paragraph_has_strong_heading_format,
     resolve_effective_paragraph_font_size,
 )
+from document_extraction import extract_document_content_with_normalization_reports
 from models import ImageAsset, ParagraphUnit
 
 
@@ -121,6 +123,33 @@ def _set_style_alignment(style, value: str) -> None:
         alignment = OxmlElement("w:jc")
         style_properties.append(alignment)
     alignment.set(qn("w:val"), value)
+
+
+def test_extraction_cleanup_removes_textbox_artifacts_and_reassigns_identity(tmp_path, monkeypatch):
+    monkeypatch.setattr(document_extraction, "_resolve_paragraph_boundary_normalization_settings", lambda: ("off", False))
+    document_obj = Document()
+    document_obj.add_heading("Synthetic Title", level=1)
+    for page_number in range(1, 5):
+        document_obj.add_paragraph(f"Body content {page_number}.")
+        document_obj.add_paragraph(str(page_number))
+        holder = document_obj.add_paragraph()
+        _append_textbox_with_paragraphs(holder, ["www.example.com"])
+
+    source_path = tmp_path / "textbox-artifacts.docx"
+    document_obj.save(source_path)
+
+    with source_path.open("rb") as source_file:
+        paragraphs, _, _, _, _, cleanup_report = extract_document_content_with_normalization_reports(source_file)
+
+    texts = [paragraph.text for paragraph in paragraphs]
+    assert "www.example.com" not in texts
+    assert not any(text in {"1", "2", "3", "4"} for text in texts)
+    assert "Synthetic Title" in texts
+    assert "Body content 1." in texts
+    assert cleanup_report.removed_page_number_count == 4
+    assert cleanup_report.removed_repeated_artifact_count == 4
+    assert [paragraph.source_index for paragraph in paragraphs] == list(range(len(paragraphs)))
+    assert [paragraph.paragraph_id for paragraph in paragraphs] == [f"p{index:04d}" for index in range(len(paragraphs))]
 
 
 def _extract_source_rects(element) -> list[dict[str, str]]:

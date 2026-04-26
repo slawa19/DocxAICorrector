@@ -62,6 +62,7 @@ def _build_prepared_run_context(**overrides):
         "preparation_elapsed_seconds": 1.4,
         "normalization_report": None,
         "relation_report": None,
+        "cleanup_report": None,
         "structure_map": None,
         "structure_recognition_summary": StructureRecognitionSummary(),
         "structure_validation_report": None,

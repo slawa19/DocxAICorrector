@@ -66,6 +66,7 @@ class RawParagraph:
     source_xml_fingerprint: str | None = None
     origin_raw_indexes: tuple[int, ...] = ()
     origin_raw_texts: tuple[str, ...] = ()
+    layout_origin: str = "paragraph"
     boundary_source: str = "raw"
     boundary_confidence: str = "explicit"
     boundary_rationale: str | None = None
@@ -126,6 +127,33 @@ class RelationNormalizationReport:
     decisions: list[ParagraphRelationDecision] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class LayoutArtifactCleanupDecision:
+    original_source_index: int
+    original_paragraph_id: str
+    origin_raw_indexes: tuple[int, ...]
+    text_preview: str
+    action: str
+    reason: str
+    confidence: str
+    normalized_text: str
+    repeat_count: int = 1
+
+
+@dataclass
+class LayoutArtifactCleanupReport:
+    original_paragraph_count: int
+    cleaned_paragraph_count: int
+    removed_paragraph_count: int
+    removed_page_number_count: int
+    removed_repeated_artifact_count: int
+    removed_empty_or_whitespace_count: int
+    decisions: list[LayoutArtifactCleanupDecision] = field(default_factory=list)
+    cleanup_applied: bool = False
+    skipped_reason: str | None = None
+    error_code: str | None = None
+
+
 @dataclass
 class ParagraphUnit:
     text: str
@@ -153,6 +181,7 @@ class ParagraphUnit:
     font_size_pt: float | None = None
     origin_raw_indexes: list[int] = field(default_factory=list)
     origin_raw_texts: list[str] = field(default_factory=list)
+    layout_origin: str = "paragraph"
     boundary_source: str = "raw"
     boundary_confidence: str = "explicit"
     boundary_rationale: str | None = None

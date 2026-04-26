@@ -714,7 +714,7 @@ def test_prepare_run_context_for_background_uses_real_cache(monkeypatch):
 
     def fake_extract(uploaded_file):
         calls["extract"] += 1
-        return ["paragraph"], [], None, [], None
+        return ["paragraph"], [], None, [], None, None
 
     monkeypatch.setattr(preparation, "extract_document_content_with_normalization_reports", fake_extract)
     monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "text")
@@ -738,7 +738,7 @@ def test_prepare_run_context_for_background_uses_real_cache(monkeypatch):
     )
 
     assert calls["extract"] == 1
-    assert second.prepared_source_key.endswith(":6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:sr=auto:sv=1")
+    assert second.prepared_source_key.endswith(":6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=auto:sv=1")
     assert second.preparation_cached is True
     assert second.preparation_stage == "Документ подготовлен"
     assert progress_events[-1]["stage"] == "Документ подготовлен"

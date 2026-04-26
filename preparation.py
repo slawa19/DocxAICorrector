@@ -19,7 +19,7 @@ from document import (
     summarize_boundary_normalization_metrics,
 )
 from logger import log_event
-from models import ParagraphBoundaryNormalizationReport, ParagraphRelation, RelationNormalizationReport
+from models import LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport, ParagraphRelation, RelationNormalizationReport
 from models import StructureRecognitionSummary
 from models import clone_prepared_image_asset
 from models import StructureMap
@@ -43,6 +43,7 @@ class PreparedDocumentData:
     prepared_source_key: str
     normalization_report: ParagraphBoundaryNormalizationReport | None = None
     relation_report: RelationNormalizationReport | None = None
+    cleanup_report: LayoutArtifactCleanupReport | None = None
     structure_map: StructureMap | None = None
     structure_recognition_summary: StructureRecognitionSummary = StructureRecognitionSummary()
     structure_validation_report: StructureValidationReport | None = None
@@ -78,6 +79,7 @@ class PreparedDocumentData:
 def _build_normalization_metrics(
     normalization_report: ParagraphBoundaryNormalizationReport | None,
     relation_report: RelationNormalizationReport | None = None,
+    cleanup_report: LayoutArtifactCleanupReport | None = None,
 ) -> dict[str, int]:
     metrics: dict[str, int] = {}
     if normalization_report is not None:
@@ -99,7 +101,22 @@ def _build_normalization_metrics(
         )
         for relation_kind, count in relation_report.relation_counts.items():
             metrics[f"relation_{relation_kind}_count"] = count
+    if cleanup_report is not None:
+        metrics.update(flatten_layout_cleanup_metrics(cleanup_report))
     return metrics
+
+
+def flatten_layout_cleanup_metrics(cleanup_report) -> dict[str, int]:
+    if cleanup_report is None:
+        return {}
+    return {
+        "layout_cleanup_removed_count": int(getattr(cleanup_report, "removed_paragraph_count", 0) or 0),
+        "layout_cleanup_page_number_count": int(getattr(cleanup_report, "removed_page_number_count", 0) or 0),
+        "layout_cleanup_repeated_artifact_count": int(getattr(cleanup_report, "removed_repeated_artifact_count", 0) or 0),
+        "layout_cleanup_empty_or_whitespace_count": int(
+            getattr(cleanup_report, "removed_empty_or_whitespace_count", 0) or 0
+        ),
+    }
 
 
 def _build_preparation_stage_metrics(
@@ -108,6 +125,7 @@ def _build_preparation_stage_metrics(
     image_count: int,
     normalization_report: ParagraphBoundaryNormalizationReport | None,
     relation_report: RelationNormalizationReport | None,
+    cleanup_report: LayoutArtifactCleanupReport | None = None,
     structure_map: StructureMap | None = None,
     structure_summary: StructureRecognitionSummary | None = None,
     source_text: str | None = None,
@@ -116,7 +134,7 @@ def _build_preparation_stage_metrics(
     metrics = {
         "paragraph_count": paragraph_count,
         "image_count": image_count,
-        **_build_normalization_metrics(normalization_report, relation_report),
+        **_build_normalization_metrics(normalization_report, relation_report, cleanup_report),
     }
     if source_text is not None:
         metrics["source_chars"] = len(source_text)
@@ -305,12 +323,13 @@ def _write_structure_map_debug_artifact(*, cache_key: str, structure_map: Struct
     return str(artifact_path)
 
 
-def _run_structure_recognition(*, paragraphs: list, image_assets: list, app_config: Mapping[str, Any], progress_callback, normalization_report, relation_report) -> tuple[StructureMap | None, StructureRecognitionSummary]:
+def _run_structure_recognition(*, paragraphs: list, image_assets: list, app_config: Mapping[str, Any], progress_callback, normalization_report, relation_report, cleanup_report=None) -> tuple[StructureMap | None, StructureRecognitionSummary]:
     base_metrics = _build_preparation_stage_metrics(
         paragraph_count=len(paragraphs),
         image_count=len(image_assets),
         normalization_report=normalization_report,
         relation_report=relation_report,
+        cleanup_report=cleanup_report,
     )
     emit_preparation_progress(
         progress_callback,
@@ -409,6 +428,29 @@ def _resolve_structure_recognition_mode(app_config: Mapping[str, Any]) -> str:
     return "always" if bool(app_config.get("structure_recognition_enabled", False)) else "off"
 
 
+def build_layout_cleanup_status_note(cleanup_report) -> str:
+    if cleanup_report is None:
+        return ""
+    removed_count = int(getattr(cleanup_report, "removed_paragraph_count", 0) or 0)
+    if removed_count <= 0:
+        return ""
+    page_numbers = int(getattr(cleanup_report, "removed_page_number_count", 0) or 0)
+    repeated = int(getattr(cleanup_report, "removed_repeated_artifact_count", 0) or 0)
+    empty = int(getattr(cleanup_report, "removed_empty_or_whitespace_count", 0) or 0)
+    return (
+        f"Очистка: удалено {removed_count} служебных элементов "
+        f"({page_numbers} номеров страниц, {repeated} повторяющихся колонтитулов, {empty} пустых абзацев)."
+    )
+
+
+def _resolve_layout_cleanup_cache_key(app_config: Mapping[str, Any]) -> str:
+    if not bool(app_config.get("layout_artifact_cleanup_enabled", True)):
+        return "off"
+    min_repeat_count = max(2, int(app_config.get("layout_artifact_cleanup_min_repeat_count", 3) or 3))
+    max_repeated_text_chars = max(1, int(app_config.get("layout_artifact_cleanup_max_repeated_text_chars", 80) or 80))
+    return f"1:{min_repeat_count}:{max_repeated_text_chars}"
+
+
 def _run_structure_validation(
     *,
     paragraphs: list,
@@ -417,12 +459,14 @@ def _run_structure_validation(
     progress_callback,
     normalization_report,
     relation_report,
+    cleanup_report=None,
 ) -> StructureValidationReport:
     base_metrics = _build_preparation_stage_metrics(
         paragraph_count=len(paragraphs),
         image_count=len(image_assets),
         normalization_report=normalization_report,
         relation_report=relation_report,
+        cleanup_report=cleanup_report,
     )
     emit_preparation_progress(
         progress_callback,
@@ -452,6 +496,7 @@ def build_prepared_source_key(
     paragraph_boundary_normalization_mode: str = "high_only",
     paragraph_boundary_ai_review_mode: str = "off",
     relation_normalization_key: str = "phase2_default:epigraph_attribution,image_caption,table_caption,toc_region",
+    layout_artifact_cleanup_key: str = "1:3:80",
     structure_recognition_enabled: bool = False,
     structure_recognition_mode: str | None = None,
     structure_validation_enabled: bool = True,
@@ -464,7 +509,8 @@ def build_prepared_source_key(
     operation_suffix = "" if resolved_operation == "edit" else f":op={resolved_operation}"
     return (
         f"{uploaded_file_token}:{chunk_size}:{paragraph_boundary_normalization_mode}:"
-        f"{paragraph_boundary_ai_review_mode}:{relation_normalization_key}{structure_recognition_suffix}{operation_suffix}"
+        f"{paragraph_boundary_ai_review_mode}:{relation_normalization_key}:lc={layout_artifact_cleanup_key}"
+        f"{structure_recognition_suffix}{operation_suffix}"
     )
 
 
@@ -478,6 +524,14 @@ def _build_editing_jobs_with_optional_operation(*, blocks, max_chars: int, proce
         return build_editing_jobs(blocks, max_chars=max_chars, processing_operation=processing_operation)
     except TypeError:
         return build_editing_jobs(blocks, max_chars=max_chars)
+
+
+def _extract_document_content_with_optional_app_config(*, uploaded_file, app_config: Mapping[str, Any]):
+    signature = inspect.signature(extract_document_content_with_normalization_reports)
+    accepts_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values())
+    if accepts_kwargs or "app_config" in signature.parameters:
+        return extract_document_content_with_normalization_reports(uploaded_file, app_config=app_config)
+    return extract_document_content_with_normalization_reports(uploaded_file)
 
 
 def _prepare_document_for_processing(
@@ -496,7 +550,10 @@ def _prepare_document_for_processing(
         progress=0.2,
     )
     uploaded_file = build_in_memory_uploaded_file(source_name=source_name, source_bytes=source_bytes)
-    paragraphs, image_assets, normalization_report, relations, relation_report = extract_document_content_with_normalization_reports(uploaded_file)
+    paragraphs, image_assets, normalization_report, relations, relation_report, cleanup_report = _extract_document_content_with_optional_app_config(
+        uploaded_file=uploaded_file,
+        app_config=app_config,
+    )
     emit_preparation_progress(
         progress_callback,
         stage="Структура извлечена",
@@ -505,7 +562,7 @@ def _prepare_document_for_processing(
         metrics={
             "paragraph_count": len(paragraphs),
             "image_count": len(image_assets),
-            **_build_normalization_metrics(normalization_report, relation_report),
+            **_build_normalization_metrics(normalization_report, relation_report, cleanup_report),
         },
     )
     structure_validation_report = None
@@ -522,6 +579,7 @@ def _prepare_document_for_processing(
             progress_callback=progress_callback,
             normalization_report=normalization_report,
             relation_report=relation_report,
+            cleanup_report=cleanup_report,
         )
         if not bool(app_config.get("structure_validation_enabled", True)):
             emit_preparation_progress(
@@ -534,6 +592,7 @@ def _prepare_document_for_processing(
                     image_count=len(image_assets),
                     normalization_report=normalization_report,
                     relation_report=relation_report,
+                    cleanup_report=cleanup_report,
                 ),
             )
         else:
@@ -549,6 +608,7 @@ def _prepare_document_for_processing(
                         image_count=len(image_assets),
                         normalization_report=normalization_report,
                         relation_report=relation_report,
+                        cleanup_report=cleanup_report,
                     ),
                 )
     structure_ai_attempted = should_run_ai
@@ -560,6 +620,7 @@ def _prepare_document_for_processing(
             progress_callback=progress_callback,
             normalization_report=normalization_report,
             relation_report=relation_report,
+            cleanup_report=cleanup_report,
         )
         if should_run_ai
         else (None, StructureRecognitionSummary())
@@ -589,6 +650,7 @@ def _prepare_document_for_processing(
         ai_classified_count=structure_summary.ai_classified_count,
         ai_heading_count=structure_summary.ai_heading_count,
         structure_status_note=structure_status_note,
+        **flatten_layout_cleanup_metrics(cleanup_report),
     )
     source_text = build_document_text(paragraphs)
     emit_preparation_progress(
@@ -601,6 +663,7 @@ def _prepare_document_for_processing(
             image_count=len(image_assets),
             normalization_report=normalization_report,
             relation_report=relation_report,
+            cleanup_report=cleanup_report,
             structure_map=structure_map,
             structure_summary=structure_summary,
             source_text=source_text,
@@ -617,6 +680,7 @@ def _prepare_document_for_processing(
             image_count=len(image_assets),
             normalization_report=normalization_report,
             relation_report=relation_report,
+            cleanup_report=cleanup_report,
             structure_map=structure_map,
             structure_summary=structure_summary,
             source_text=source_text,
@@ -638,6 +702,7 @@ def _prepare_document_for_processing(
             image_count=len(image_assets),
             normalization_report=normalization_report,
             relation_report=relation_report,
+            cleanup_report=cleanup_report,
             structure_map=structure_map,
             structure_summary=structure_summary,
             source_text=source_text,
@@ -653,6 +718,7 @@ def _prepare_document_for_processing(
         prepared_source_key="",
         normalization_report=normalization_report,
         relation_report=relation_report,
+        cleanup_report=cleanup_report,
         structure_map=structure_map,
         structure_recognition_summary=structure_summary,
         structure_validation_report=structure_validation_report,
@@ -701,6 +767,7 @@ def _clone_prepared_document(data: PreparedDocumentData, prepared_source_key: st
         prepared_source_key=prepared_source_key,
         normalization_report=deepcopy(data.normalization_report),
         relation_report=deepcopy(data.relation_report),
+        cleanup_report=deepcopy(data.cleanup_report),
         structure_map=deepcopy(data.structure_map),
         structure_recognition_summary=data.structure_recognition_summary,
         structure_validation_report=deepcopy(data.structure_validation_report),
@@ -798,6 +865,7 @@ def prepare_document_for_processing(
             sorted(str(kind) for kind in configured_relation_kinds)
         )
         relation_normalization_key = f"{relation_profile}:{enabled_relation_kinds}"
+    layout_cleanup_key = _resolve_layout_cleanup_cache_key(resolved_config)
     prepared_source_key = build_prepared_source_key(
         uploaded_payload.file_token,
         chunk_size,
@@ -805,6 +873,7 @@ def prepare_document_for_processing(
         paragraph_boundary_normalization_mode=normalization_mode,
         paragraph_boundary_ai_review_mode=ai_review_mode,
         relation_normalization_key=relation_normalization_key,
+        layout_artifact_cleanup_key=layout_cleanup_key,
         structure_recognition_enabled=bool(resolved_config.get("structure_recognition_enabled", False)),
         structure_recognition_mode=str(resolved_config.get("structure_recognition_mode", "") or ""),
         structure_validation_enabled=bool(resolved_config.get("structure_validation_enabled", True)),
@@ -838,7 +907,7 @@ def prepare_document_for_processing(
                 "source_chars": len(cached.source_text),
                 "block_count": len(cached.jobs),
                 "cached": cached.cached,
-                **_build_normalization_metrics(cached.normalization_report, cached.relation_report),
+                **_build_normalization_metrics(cached.normalization_report, cached.relation_report, cached.cleanup_report),
                 **cached.structure_recognition_summary.as_progress_metrics(structure_map=cached.structure_map),
             },
         )

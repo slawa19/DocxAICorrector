@@ -3,6 +3,7 @@ import zipfile
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
+from collections.abc import Mapping
 from typing import cast
 
 from docx import Document
@@ -34,6 +35,10 @@ from document_relations import (
     apply_relation_side_effects,
     build_paragraph_relations,
     write_relation_normalization_report_artifact as _write_relation_normalization_report_artifact_impl,
+)
+from document_layout_cleanup import (
+    clean_paragraph_layout_artifacts,
+    write_layout_cleanup_report_artifact as _write_layout_cleanup_report_artifact_impl,
 )
 from document_roles import (
     detect_explicit_list_kind,
@@ -76,6 +81,7 @@ from models import (
     RawParagraph,
     RawTable,
     RelationNormalizationReport,
+    LayoutArtifactCleanupReport,
 )
 from processing_runtime import read_uploaded_file_bytes, resolve_uploaded_filename
 from runtime_artifact_retention import (
@@ -83,6 +89,8 @@ from runtime_artifact_retention import (
     PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_COUNT,
     PARAGRAPH_BOUNDARY_REPORTS_MAX_AGE_SECONDS,
     PARAGRAPH_BOUNDARY_REPORTS_MAX_COUNT,
+    LAYOUT_CLEANUP_REPORTS_MAX_AGE_SECONDS,
+    LAYOUT_CLEANUP_REPORTS_MAX_COUNT,
     RELATION_NORMALIZATION_REPORTS_MAX_AGE_SECONDS,
     RELATION_NORMALIZATION_REPORTS_MAX_COUNT,
 )
@@ -140,6 +148,7 @@ ORDERED_LIST_FORMATS = {
 UNORDERED_LIST_FORMATS = {"bullet", "none"}
 PARAGRAPH_BOUNDARY_REPORTS_DIR = Path(".run") / "paragraph_boundary_reports"
 RELATION_NORMALIZATION_REPORTS_DIR = Path(".run") / "relation_normalization_reports"
+LAYOUT_CLEANUP_REPORTS_DIR = Path(".run") / "layout_cleanup_reports"
 PARAGRAPH_BOUNDARY_AI_REVIEW_DIR = Path(".run") / "paragraph_boundary_ai_review"
 _TYPOGRAPHIC_BULLET_CHARS = {"\u2014", "\u2013"}
 _INLINE_BREAK_PATTERN = re.compile(r"<br\s*/?>", re.IGNORECASE)
@@ -158,18 +167,21 @@ def extract_inline_images(uploaded_file) -> list[ImageAsset]:
 
 
 def extract_document_content_from_docx(uploaded_file) -> tuple[list[ParagraphUnit], list[ImageAsset]]:
-    paragraphs, image_assets, _, _, _ = extract_document_content_with_normalization_reports(uploaded_file)
+    paragraphs, image_assets, _, _, _, _ = extract_document_content_with_normalization_reports(uploaded_file)
     return paragraphs, image_assets
 
 
 def extract_document_content_with_normalization_reports(
     uploaded_file,
+    *,
+    app_config: Mapping[str, object] | None = None,
 ) -> tuple[
     list[ParagraphUnit],
     list[ImageAsset],
     ParagraphBoundaryNormalizationReport,
     list[ParagraphRelation],
     RelationNormalizationReport,
+    LayoutArtifactCleanupReport,
 ]:
     source_bytes = _read_uploaded_docx_bytes(uploaded_file)
     validate_docx_source_bytes(source_bytes)
@@ -181,6 +193,19 @@ def extract_document_content_with_normalization_reports(
     paragraphs = _normalize_inline_break_paragraphs(paragraphs)
     promote_short_standalone_headings(paragraphs)
     normalize_front_matter_display_title(paragraphs)
+    (
+        cleanup_enabled,
+        cleanup_min_repeat_count,
+        cleanup_max_repeated_text_chars,
+        cleanup_save_debug_artifacts,
+    ) = _resolve_layout_artifact_cleanup_settings(app_config=app_config)
+    paragraphs, cleanup_report = clean_paragraph_layout_artifacts(
+        paragraphs,
+        enabled=cleanup_enabled,
+        min_repeat_count=cleanup_min_repeat_count,
+        max_repeated_text_chars=cleanup_max_repeated_text_chars,
+    )
+    _reassign_paragraph_identities(paragraphs)
     (
         relation_enabled,
         relation_profile,
@@ -232,13 +257,19 @@ def extract_document_content_with_normalization_reports(
             enabled_relation_kinds=enabled_relation_kinds,
             report=relation_report,
         )
-    return paragraphs, image_assets, boundary_report, relations, relation_report
+    if cleanup_save_debug_artifacts:
+        _write_layout_cleanup_report_artifact(
+            source_name=resolve_uploaded_filename(uploaded_file),
+            source_bytes=source_bytes,
+            report=cleanup_report,
+        )
+    return paragraphs, image_assets, boundary_report, relations, relation_report, cleanup_report
 
 
 def extract_document_content_with_boundary_report(
     uploaded_file,
 ) -> tuple[list[ParagraphUnit], list[ImageAsset], ParagraphBoundaryNormalizationReport]:
-    paragraphs, image_assets, boundary_report, _, _ = extract_document_content_with_normalization_reports(uploaded_file)
+    paragraphs, image_assets, boundary_report, _, _, _ = extract_document_content_with_normalization_reports(uploaded_file)
     return paragraphs, image_assets, boundary_report
 
 
@@ -311,6 +342,7 @@ def _build_raw_paragraph_blocks(paragraph, image_assets: list[ImageAsset], *, ra
             image_assets,
             raw_index=raw_index,
             text_override=direct_text,
+            layout_origin="paragraph",
         )
         if raw_block is not None:
             raw_blocks.append(raw_block)
@@ -321,6 +353,7 @@ def _build_raw_paragraph_blocks(paragraph, image_assets: list[ImageAsset], *, ra
             image_assets,
             raw_index=raw_index + len(raw_blocks),
             allow_run_markdown=False,
+            layout_origin="textbox",
         )
         if raw_block is not None:
             if raw_blocks and raw_blocks[-1].text == raw_block.text:
@@ -337,6 +370,7 @@ def _build_raw_paragraph(
     raw_index: int,
     text_override: str | None = None,
     allow_run_markdown: bool = True,
+    layout_origin: str = "paragraph",
 ) -> RawParagraph | None:
     text = (
         text_override
@@ -397,6 +431,7 @@ def _build_raw_paragraph(
         source_xml_fingerprint=build_source_xml_fingerprint(paragraph),
         origin_raw_indexes=(raw_index,),
         origin_raw_texts=(text,),
+        layout_origin=layout_origin,
         boundary_source="raw",
         boundary_confidence="explicit" if role_confidence == "explicit" else "high",
     )
@@ -445,6 +480,7 @@ def _build_logical_paragraph_units(raw_blocks: list[RawBlock]) -> list[Paragraph
                 font_size_pt=block.font_size_pt,
                 origin_raw_indexes=list(block.origin_raw_indexes or (block.raw_index,)),
                 origin_raw_texts=list(block.origin_raw_texts or (block.text,)),
+                layout_origin=block.layout_origin,
                 boundary_source=block.boundary_source,
                 boundary_confidence=block.boundary_confidence,
                 boundary_rationale=block.boundary_rationale,
@@ -681,6 +717,19 @@ def _resolve_relation_normalization_settings() -> tuple[bool, str, tuple[str, ..
     return _resolve_relation_normalization_settings_impl()
 
 
+def _resolve_layout_artifact_cleanup_settings(*, app_config: Mapping[str, object] | None = None) -> tuple[bool, int, int, bool]:
+    from config import load_app_config
+
+    if app_config is None:
+        app_config = load_app_config()
+    return (
+        bool(app_config.get("layout_artifact_cleanup_enabled", True)),
+        int(app_config.get("layout_artifact_cleanup_min_repeat_count", 3) or 3),
+        int(app_config.get("layout_artifact_cleanup_max_repeated_text_chars", 80) or 80),
+        bool(app_config.get("layout_artifact_cleanup_save_debug_artifacts", True)),
+    )
+
+
 def _resolve_paragraph_boundary_ai_review_settings() -> tuple[bool, str, int, int, int, str]:
     return _resolve_paragraph_boundary_ai_review_settings_impl(
         allowed_modes=PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES,
@@ -836,6 +885,22 @@ def _write_relation_normalization_report_artifact(
     )
 
 
+def _write_layout_cleanup_report_artifact(
+    *,
+    source_name: str,
+    source_bytes: bytes,
+    report: LayoutArtifactCleanupReport,
+) -> str | None:
+    return _write_layout_cleanup_report_artifact_impl(
+        source_name=source_name,
+        source_bytes=source_bytes,
+        report=report,
+        target_dir=LAYOUT_CLEANUP_REPORTS_DIR,
+        max_age_seconds=LAYOUT_CLEANUP_REPORTS_MAX_AGE_SECONDS,
+        max_count=LAYOUT_CLEANUP_REPORTS_MAX_COUNT,
+    )
+
+
 def _assign_paragraph_identity(paragraph: ParagraphUnit, source_index: int) -> None:
     paragraph.source_index = source_index
     paragraph.paragraph_id = f"p{source_index:04d}"
@@ -845,6 +910,11 @@ def _assign_paragraph_identity(paragraph: ParagraphUnit, source_index: int) -> N
         paragraph.origin_raw_indexes = [source_index]
     if not paragraph.origin_raw_texts:
         paragraph.origin_raw_texts = [paragraph.text]
+
+
+def _reassign_paragraph_identities(paragraphs: list[ParagraphUnit]) -> None:
+    for source_index, paragraph in enumerate(paragraphs):
+        _assign_paragraph_identity(paragraph, source_index)
 
 
 def _iter_document_block_items(document):

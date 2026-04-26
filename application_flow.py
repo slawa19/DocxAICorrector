@@ -6,7 +6,7 @@ from typing import Any, Protocol
 
 from document import summarize_boundary_normalization_metrics, validate_docx_source_bytes
 from models import StructureRecognitionSummary
-from preparation import build_structure_processing_status_note, emit_preparation_progress, prepare_document_for_processing
+from preparation import build_layout_cleanup_status_note, build_structure_processing_status_note, emit_preparation_progress, prepare_document_for_processing
 from processing_runtime import (
     FrozenUploadPayload,
     build_in_memory_uploaded_file,
@@ -51,6 +51,7 @@ class PreparedRunContext:
     preparation_elapsed_seconds: float
     normalization_report: object | None = None
     relation_report: object | None = None
+    cleanup_report: object | None = None
     structure_map: object | None = None
     structure_recognition_summary: StructureRecognitionSummary = StructureRecognitionSummary()
     structure_validation_report: object | None = None
@@ -111,6 +112,19 @@ def flatten_relation_metrics(relation_report) -> dict[str, int]:
     for relation_kind, count in relation_counts.items():
         metrics[f"relation_{relation_kind}_count"] = int(count or 0)
     return metrics
+
+
+def flatten_layout_cleanup_metrics(cleanup_report) -> dict[str, int]:
+    if cleanup_report is None:
+        return {}
+    return {
+        "layout_cleanup_removed_count": int(getattr(cleanup_report, "removed_paragraph_count", 0) or 0),
+        "layout_cleanup_page_number_count": int(getattr(cleanup_report, "removed_page_number_count", 0) or 0),
+        "layout_cleanup_repeated_artifact_count": int(getattr(cleanup_report, "removed_repeated_artifact_count", 0) or 0),
+        "layout_cleanup_empty_or_whitespace_count": int(
+            getattr(cleanup_report, "removed_empty_or_whitespace_count", 0) or 0
+        ),
+    }
 
 
 @dataclass(frozen=True)
@@ -319,6 +333,7 @@ def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: 
         preparation_elapsed_seconds=elapsed_seconds,
         normalization_report=getattr(prepared_document, "normalization_report", None),
         relation_report=getattr(prepared_document, "relation_report", None),
+        cleanup_report=getattr(prepared_document, "cleanup_report", None),
         structure_map=getattr(prepared_document, "structure_map", None),
         structure_recognition_summary=structure_summary,
         structure_validation_report=getattr(prepared_document, "structure_validation_report", None),
@@ -438,6 +453,7 @@ def prepare_run_context(
             keep_all_image_variants=keep_all_image_variants,
             **flatten_normalization_metrics(getattr(prepared_document, "normalization_report", None)),
             **flatten_relation_metrics(getattr(prepared_document, "relation_report", None)),
+            **flatten_layout_cleanup_metrics(getattr(prepared_document, "cleanup_report", None)),
         )
         set_prepared_source_key(prepared_document.prepared_source_key, session_state=session_state)
     emit_preparation_progress(
@@ -454,6 +470,7 @@ def prepare_run_context(
             "cached": prepared_document.cached,
             **flatten_normalization_metrics(getattr(prepared_document, "normalization_report", None)),
             **flatten_relation_metrics(getattr(prepared_document, "relation_report", None)),
+            **flatten_layout_cleanup_metrics(getattr(prepared_document, "cleanup_report", None)),
         },
     )
     return _build_prepared_run_context(
@@ -503,6 +520,7 @@ def prepare_run_context_for_background(
             "cached": prepared_document.cached,
             **flatten_normalization_metrics(getattr(prepared_document, "normalization_report", None)),
             **flatten_relation_metrics(getattr(prepared_document, "relation_report", None)),
+            **flatten_layout_cleanup_metrics(getattr(prepared_document, "cleanup_report", None)),
         },
     )
     return _build_prepared_run_context(

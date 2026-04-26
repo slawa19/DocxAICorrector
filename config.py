@@ -36,6 +36,7 @@ from config_runtime_sections import (
     resolve_text_runtime_defaults as _resolve_text_runtime_defaults_impl,
 )
 from config_structure_sections import (
+    resolve_layout_artifact_cleanup_settings as _resolve_layout_artifact_cleanup_settings_impl,
     resolve_paragraph_boundary_settings as _resolve_paragraph_boundary_settings_impl,
     resolve_relation_normalization_settings as _resolve_relation_normalization_settings_impl,
     resolve_structure_recognition_settings as _resolve_structure_recognition_settings_impl,
@@ -174,6 +175,10 @@ class AppConfig(Mapping[str, Any]):
     paragraph_boundary_ai_review_candidate_limit: int
     paragraph_boundary_ai_review_timeout_seconds: int
     paragraph_boundary_ai_review_max_tokens_per_candidate: int
+    layout_artifact_cleanup_enabled: bool
+    layout_artifact_cleanup_min_repeat_count: int
+    layout_artifact_cleanup_max_repeated_text_chars: int
+    layout_artifact_cleanup_save_debug_artifacts: bool
     relation_normalization_enabled: bool
     relation_normalization_profile: str
     relation_normalization_enabled_relation_kinds: tuple[str, ...]
@@ -679,6 +684,20 @@ def _resolve_relation_normalization_settings(
     )
 
 
+def _resolve_layout_artifact_cleanup_settings(
+    *,
+    layout_artifact_cleanup_config: dict[str, object],
+) -> dict[str, Any]:
+    return _resolve_layout_artifact_cleanup_settings_impl(
+        layout_artifact_cleanup_config=layout_artifact_cleanup_config,
+        parse_config_bool_fn=parse_config_bool,
+        parse_config_int_fn=parse_config_int,
+        parse_bool_env_fn=parse_bool_env,
+        parse_int_env_fn=parse_int_env,
+        clamp_int_fn=_clamp_int,
+    )
+
+
 def _resolve_structure_recognition_settings(
     *,
     structure_recognition_config: dict[str, object],
@@ -828,6 +847,7 @@ def _build_app_config(
     text_runtime_defaults: Mapping[str, Any],
     paragraph_boundary_settings: Mapping[str, Any],
     relation_normalization_settings: Mapping[str, Any],
+    layout_artifact_cleanup_settings: Mapping[str, Any],
     structure_recognition_settings: Mapping[str, Any],
     structure_validation_settings: Mapping[str, Any],
     output_font_settings: Mapping[str, Any],
@@ -839,6 +859,7 @@ def _build_app_config(
             model_registry_settings=model_registry_settings,
             text_runtime_defaults=text_runtime_defaults,
             paragraph_boundary_settings=paragraph_boundary_settings,
+            layout_artifact_cleanup_settings=layout_artifact_cleanup_settings,
             relation_normalization_settings=relation_normalization_settings,
             structure_recognition_settings=structure_recognition_settings,
             structure_validation_settings=structure_validation_settings,
@@ -866,6 +887,7 @@ def load_app_config() -> AppConfig:
         resolve_text_runtime_defaults_fn=_resolve_text_runtime_defaults,
         resolve_output_font_settings_fn=_resolve_output_font_settings,
         resolve_paragraph_boundary_settings_fn=_resolve_paragraph_boundary_settings,
+        resolve_layout_artifact_cleanup_settings_fn=_resolve_layout_artifact_cleanup_settings,
         resolve_relation_normalization_settings_fn=_resolve_relation_normalization_settings,
         resolve_structure_recognition_settings_fn=_resolve_structure_recognition_settings,
         resolve_structure_validation_settings_fn=_resolve_structure_validation_settings,
@@ -881,6 +903,7 @@ def load_app_config() -> AppConfig:
         model_registry_settings=resolved_sections.model_registry_settings,
         text_runtime_defaults=resolved_sections.text_runtime_defaults,
         paragraph_boundary_settings=resolved_sections.paragraph_boundary_settings,
+        layout_artifact_cleanup_settings=resolved_sections.layout_artifact_cleanup_settings,
         relation_normalization_settings=resolved_sections.relation_normalization_settings,
         structure_recognition_settings=resolved_sections.structure_recognition_settings,
         structure_validation_settings=resolved_sections.structure_validation_settings,

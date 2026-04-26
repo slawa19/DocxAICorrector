@@ -69,7 +69,7 @@ def evaluate_extraction_profile(document_profile: DocumentProfile) -> dict[str, 
     source_path = document_profile.resolved_source_path(PROJECT_ROOT)
     source_bytes = source_path.read_bytes()
     normalized_source = processing_runtime.normalize_uploaded_document(filename=source_path.name, source_bytes=source_bytes)
-    paragraphs, image_assets, normalization_report, _, relation_report = extract_document_content_with_normalization_reports(
+    paragraphs, image_assets, normalization_report, _, relation_report, cleanup_report = extract_document_content_with_normalization_reports(
         BytesIO(normalized_source.content_bytes)
     )
     metrics = _build_structural_metrics(
@@ -77,6 +77,7 @@ def evaluate_extraction_profile(document_profile: DocumentProfile) -> dict[str, 
         image_assets=image_assets,
         normalization_report=normalization_report,
         relation_report=relation_report,
+        cleanup_report=cleanup_report,
     )
     checks = _build_extraction_checks(document_profile, metrics)
     return _build_validation_result(
@@ -137,6 +138,7 @@ def run_structural_passthrough_validation(
         source_normalization_report,
         _,
         source_relation_report,
+        source_cleanup_report,
     ) = extract_document_content_with_normalization_reports(BytesIO(prepared.uploaded_file_bytes))
     output_paragraphs = []
     output_image_assets = []
@@ -146,6 +148,8 @@ def run_structural_passthrough_validation(
         paragraphs=source_paragraphs,
         image_assets=source_image_assets,
         normalization_report=source_normalization_report,
+        relation_report=source_relation_report,
+        cleanup_report=source_cleanup_report,
     )
     metrics.update(
         {
@@ -275,6 +279,7 @@ def _build_structural_metrics(
     image_assets: Sequence[object],
     normalization_report: ParagraphBoundaryNormalizationReport | None = None,
     relation_report=None,
+    cleanup_report=None,
 ) -> dict[str, object]:
     paragraph_units = list(paragraphs)
     return {
@@ -295,6 +300,10 @@ def _build_structural_metrics(
         "relation_count": 0 if relation_report is None else relation_report.total_relations,
         "rejected_relation_candidate_count": 0 if relation_report is None else relation_report.rejected_candidate_count,
         "relation_counts": {} if relation_report is None else dict(relation_report.relation_counts),
+        "layout_cleanup_removed_count": 0 if cleanup_report is None else cleanup_report.removed_paragraph_count,
+        "layout_cleanup_page_number_count": 0 if cleanup_report is None else cleanup_report.removed_page_number_count,
+        "layout_cleanup_repeated_artifact_count": 0 if cleanup_report is None else cleanup_report.removed_repeated_artifact_count,
+        "layout_cleanup_empty_or_whitespace_count": 0 if cleanup_report is None else cleanup_report.removed_empty_or_whitespace_count,
     }
 
 

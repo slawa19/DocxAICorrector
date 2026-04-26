@@ -107,6 +107,12 @@ profile = "phase2_default"
 enabled_relation_kinds = ["image_caption", "table_caption", "epigraph_attribution", "toc_region"]
 save_debug_artifacts = true
 
+[layout_artifact_cleanup]
+enabled = true
+min_repeat_count = 3
+max_repeated_text_chars = 80
+save_debug_artifacts = true
+
 [paragraph_boundary_ai_review]
 enabled = false
 mode = "off"

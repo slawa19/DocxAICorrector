@@ -31,6 +31,7 @@ from document_relations import (
     resolve_effective_relation_kinds,
     write_relation_normalization_report_artifact as _write_relation_normalization_report_artifact_impl,
 )
+from document_layout_cleanup import write_layout_cleanup_report_artifact as _write_layout_cleanup_report_artifact_impl
 from document_roles import (
     HEADING_STYLE_PATTERN,
     INLINE_HTML_TAG_PATTERN,
@@ -58,6 +59,8 @@ from runtime_artifact_retention import (
     PARAGRAPH_BOUNDARY_REPORTS_MAX_COUNT,
     RELATION_NORMALIZATION_REPORTS_MAX_AGE_SECONDS,
     RELATION_NORMALIZATION_REPORTS_MAX_COUNT,
+    LAYOUT_CLEANUP_REPORTS_MAX_AGE_SECONDS,
+    LAYOUT_CLEANUP_REPORTS_MAX_COUNT,
 )
 
 
@@ -70,6 +73,7 @@ COMPARE_ALL_VARIANT_LABELS = {
 MANUAL_REVIEW_SAFE_LABEL = "safe"
 PARAGRAPH_BOUNDARY_REPORTS_DIR = Path(".run") / "paragraph_boundary_reports"
 RELATION_NORMALIZATION_REPORTS_DIR = Path(".run") / "relation_normalization_reports"
+LAYOUT_CLEANUP_REPORTS_DIR = Path(".run") / "layout_cleanup_reports"
 PARAGRAPH_BOUNDARY_AI_REVIEW_DIR = Path(".run") / "paragraph_boundary_ai_review"
 EXTRACTION_COMPATIBILITY_OVERRIDE_DEADLINE = "2026-06-30"
 EXTRACTION_COMPATIBILITY_OVERRIDE_TARGETS = (
@@ -79,6 +83,7 @@ EXTRACTION_COMPATIBILITY_OVERRIDE_TARGETS = (
     "MAX_DOCX_UNCOMPRESSED_SIZE_BYTES",
     "PARAGRAPH_BOUNDARY_REPORTS_DIR",
     "RELATION_NORMALIZATION_REPORTS_DIR",
+    "LAYOUT_CLEANUP_REPORTS_DIR",
     "PARAGRAPH_BOUNDARY_AI_REVIEW_DIR",
     "read_uploaded_file_bytes",
     "resolve_uploaded_filename",
@@ -86,9 +91,14 @@ EXTRACTION_COMPATIBILITY_OVERRIDE_TARGETS = (
     "_read_uploaded_docx_bytes",
     "_write_paragraph_boundary_report_artifact",
     "_write_relation_normalization_report_artifact",
+    "_write_layout_cleanup_report_artifact",
     "_request_ai_review_recommendations",
     "_run_paragraph_boundary_ai_review",
 )
+
+
+def _resolve_layout_artifact_cleanup_settings(*, app_config=None) -> tuple[bool, int, int, bool]:
+    return _document_extraction._resolve_layout_artifact_cleanup_settings(app_config=app_config)
 
 
 def _sync_extraction_compatibility_overrides() -> None:
@@ -182,6 +192,17 @@ def _write_relation_normalization_report_artifact(
     )
 
 
+def _write_layout_cleanup_report_artifact(*, source_name: str, source_bytes: bytes, report) -> str | None:
+    return _write_layout_cleanup_report_artifact_impl(
+        source_name=source_name,
+        source_bytes=source_bytes,
+        report=report,
+        target_dir=LAYOUT_CLEANUP_REPORTS_DIR,
+        max_age_seconds=LAYOUT_CLEANUP_REPORTS_MAX_AGE_SECONDS,
+        max_count=LAYOUT_CLEANUP_REPORTS_MAX_COUNT,
+    )
+
+
 def _request_ai_review_recommendations(
     *,
     model: str,
@@ -238,6 +259,7 @@ def _build_extraction_compatibility_overrides() -> dict[str, object]:
         "MAX_DOCX_UNCOMPRESSED_SIZE_BYTES": MAX_DOCX_UNCOMPRESSED_SIZE_BYTES,
         "PARAGRAPH_BOUNDARY_REPORTS_DIR": PARAGRAPH_BOUNDARY_REPORTS_DIR,
         "RELATION_NORMALIZATION_REPORTS_DIR": RELATION_NORMALIZATION_REPORTS_DIR,
+        "LAYOUT_CLEANUP_REPORTS_DIR": LAYOUT_CLEANUP_REPORTS_DIR,
         "PARAGRAPH_BOUNDARY_AI_REVIEW_DIR": PARAGRAPH_BOUNDARY_AI_REVIEW_DIR,
         "read_uploaded_file_bytes": read_uploaded_file_bytes,
         "resolve_uploaded_filename": resolve_uploaded_filename,
@@ -245,6 +267,7 @@ def _build_extraction_compatibility_overrides() -> dict[str, object]:
         "_read_uploaded_docx_bytes": _read_uploaded_docx_bytes,
         "_write_paragraph_boundary_report_artifact": _write_paragraph_boundary_report_artifact,
         "_write_relation_normalization_report_artifact": _write_relation_normalization_report_artifact,
+        "_write_layout_cleanup_report_artifact": _write_layout_cleanup_report_artifact,
         "_request_ai_review_recommendations": _request_ai_review_recommendations,
         "_run_paragraph_boundary_ai_review": _run_paragraph_boundary_ai_review,
     }
@@ -255,9 +278,9 @@ def extract_document_content_from_docx(uploaded_file) -> tuple[list[ParagraphUni
     return _document_extraction.extract_document_content_from_docx(uploaded_file)
 
 
-def extract_document_content_with_normalization_reports(uploaded_file):
+def extract_document_content_with_normalization_reports(uploaded_file, *, app_config=None):
     _sync_extraction_compatibility_overrides()
-    return _document_extraction.extract_document_content_with_normalization_reports(uploaded_file)
+    return _document_extraction.extract_document_content_with_normalization_reports(uploaded_file, app_config=app_config)
 
 
 def extract_document_content_with_boundary_report(uploaded_file):

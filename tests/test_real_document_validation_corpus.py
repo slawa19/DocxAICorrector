@@ -6,7 +6,13 @@ from typing import Any, cast
 import pytest
 
 import processing_runtime
-from models import ParagraphBoundaryNormalizationReport, RelationNormalizationReport
+from models import LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport, RelationNormalizationReport
+
+
+def _cleanup_report() -> LayoutArtifactCleanupReport:
+    return LayoutArtifactCleanupReport(0, 0, 0, 0, 0, 0, cleanup_applied=True)
+
+
 from real_document_validation_profiles import load_validation_registry
 import real_document_validation_structural
 from real_document_validation_structural import evaluate_extraction_profile, run_structural_passthrough_validation
@@ -99,7 +105,7 @@ def test_structural_passthrough_uses_original_legacy_doc_bytes_for_prepared_faca
     monkeypatch.setattr(
         real_document_validation_structural,
         "extract_document_content_with_normalization_reports",
-        lambda uploaded_file: ([], [], ParagraphBoundaryNormalizationReport(0, 0, 0, 0), [], RelationNormalizationReport(0, {}, 0)),
+        lambda uploaded_file: ([], [], ParagraphBoundaryNormalizationReport(0, 0, 0, 0), [], RelationNormalizationReport(0, {}, 0), _cleanup_report()),
     )
     monkeypatch.setattr(
         real_document_validation_structural,
@@ -110,7 +116,7 @@ def test_structural_passthrough_uses_original_legacy_doc_bytes_for_prepared_faca
     monkeypatch.setattr(
         real_document_validation_structural,
         "_build_structural_metrics",
-        lambda *, paragraphs, image_assets, normalization_report=None, relation_report=None: {},
+        lambda *, paragraphs, image_assets, normalization_report=None, relation_report=None, cleanup_report=None: {},
     )
     monkeypatch.setattr(real_document_validation_structural, "_build_extraction_checks", lambda document_profile, metrics: [])
     monkeypatch.setattr(
@@ -212,6 +218,7 @@ def test_evaluate_extraction_profile_reports_merged_boundary_metrics(tmp_path, m
                 relation_counts={"toc_region": 1},
                 rejected_candidate_count=0,
             ),
+            _cleanup_report(),
         ),
     )
 
@@ -317,7 +324,7 @@ def test_structural_passthrough_reports_accepted_merged_source_metrics_from_form
     monkeypatch.setattr(
         real_document_validation_structural,
         "extract_document_content_with_normalization_reports",
-        lambda uploaded_file: ([], [], ParagraphBoundaryNormalizationReport(0, 0, 0, 0), [], RelationNormalizationReport(2, {"image_caption": 1, "epigraph_attribution": 1}, 0)),
+        lambda uploaded_file: ([], [], ParagraphBoundaryNormalizationReport(0, 0, 0, 0), [], RelationNormalizationReport(2, {"image_caption": 1, "epigraph_attribution": 1}, 0), _cleanup_report()),
     )
     monkeypatch.setattr(
         real_document_validation_structural,
@@ -335,7 +342,7 @@ def test_structural_passthrough_reports_accepted_merged_source_metrics_from_form
     monkeypatch.setattr(
         real_document_validation_structural,
         "_build_structural_metrics",
-        lambda *, paragraphs, image_assets, normalization_report=None, relation_report=None: {},
+        lambda *, paragraphs, image_assets, normalization_report=None, relation_report=None, cleanup_report=None: {},
     )
     monkeypatch.setattr(real_document_validation_structural, "_build_extraction_checks", lambda document_profile, metrics: [])
 
@@ -469,7 +476,7 @@ def test_structural_passthrough_uses_latest_formatting_diagnostics_payload_for_t
     monkeypatch.setattr(
         real_document_validation_structural,
         "extract_document_content_with_normalization_reports",
-        lambda uploaded_file: ([], [], ParagraphBoundaryNormalizationReport(0, 0, 0, 0), [], RelationNormalizationReport(0, {}, 0)),
+        lambda uploaded_file: ([], [], ParagraphBoundaryNormalizationReport(0, 0, 0, 0), [], RelationNormalizationReport(0, {}, 0), _cleanup_report()),
     )
     monkeypatch.setattr(
         real_document_validation_structural,
@@ -487,7 +494,7 @@ def test_structural_passthrough_uses_latest_formatting_diagnostics_payload_for_t
     monkeypatch.setattr(
         real_document_validation_structural,
         "_build_structural_metrics",
-        lambda *, paragraphs, image_assets, normalization_report=None, relation_report=None: {},
+        lambda *, paragraphs, image_assets, normalization_report=None, relation_report=None, cleanup_report=None: {},
     )
     monkeypatch.setattr(real_document_validation_structural, "_build_extraction_checks", lambda document_profile, metrics: [])
 

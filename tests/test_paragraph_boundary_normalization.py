@@ -599,7 +599,7 @@ def test_adjacent_caption_candidate_is_attached_after_relation_side_effects_and_
     document.add_paragraph().add_run().add_picture(str(image_path))
     document.add_paragraph("Рисунок 1. Подпись")
 
-    paragraphs, _, _, relations, relation_report = extract_document_content_with_normalization_reports(_save_document(document))
+    paragraphs, _, _, relations, relation_report, _ = extract_document_content_with_normalization_reports(_save_document(document))
 
     assert [paragraph.role for paragraph in paragraphs] == ["image", "caption"]
     assert paragraphs[1].attached_to_asset_id == paragraphs[0].asset_id

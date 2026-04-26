@@ -157,6 +157,39 @@ def resolve_relation_normalization_settings(
     }
 
 
+def resolve_layout_artifact_cleanup_settings(
+    *,
+    layout_artifact_cleanup_config: dict[str, object],
+    parse_config_bool_fn: Any,
+    parse_config_int_fn: Any,
+    parse_bool_env_fn: Any,
+    parse_int_env_fn: Any,
+    clamp_int_fn: Any,
+) -> dict[str, Any]:
+    enabled = parse_config_bool_fn(layout_artifact_cleanup_config, "enabled", True)
+    min_repeat_count = parse_config_int_fn(layout_artifact_cleanup_config, "min_repeat_count", 3)
+    max_repeated_text_chars = parse_config_int_fn(layout_artifact_cleanup_config, "max_repeated_text_chars", 80)
+    save_debug_artifacts = parse_config_bool_fn(layout_artifact_cleanup_config, "save_debug_artifacts", True)
+
+    enabled = parse_bool_env_fn("DOCX_AI_LAYOUT_ARTIFACT_CLEANUP_ENABLED", enabled)
+    min_repeat_count = parse_int_env_fn("DOCX_AI_LAYOUT_ARTIFACT_CLEANUP_MIN_REPEAT_COUNT", min_repeat_count)
+    max_repeated_text_chars = parse_int_env_fn(
+        "DOCX_AI_LAYOUT_ARTIFACT_CLEANUP_MAX_REPEATED_TEXT_CHARS",
+        max_repeated_text_chars,
+    )
+    save_debug_artifacts = parse_bool_env_fn(
+        "DOCX_AI_LAYOUT_ARTIFACT_CLEANUP_SAVE_DEBUG_ARTIFACTS",
+        save_debug_artifacts,
+    )
+
+    return {
+        "layout_artifact_cleanup_enabled": enabled,
+        "layout_artifact_cleanup_min_repeat_count": clamp_int_fn(min_repeat_count, minimum=2, maximum=100),
+        "layout_artifact_cleanup_max_repeated_text_chars": clamp_int_fn(max_repeated_text_chars, minimum=1, maximum=500),
+        "layout_artifact_cleanup_save_debug_artifacts": save_debug_artifacts,
+    }
+
+
 def resolve_structure_recognition_settings(
     *,
     structure_recognition_config: dict[str, object],

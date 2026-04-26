@@ -9,6 +9,7 @@ from typing import Any
 class OptionalSectionConfigs:
     image_output_config: dict[str, object]
     paragraph_boundary_normalization_config: dict[str, object]
+    layout_artifact_cleanup_config: dict[str, object]
     relation_normalization_config: dict[str, object]
     paragraph_boundary_ai_review_config: dict[str, object]
     structure_validation_config: dict[str, object]
@@ -20,6 +21,7 @@ class ResolvedAppConfigSections:
     text_runtime_defaults: Mapping[str, Any]
     output_font_settings: Mapping[str, Any]
     paragraph_boundary_settings: Mapping[str, Any]
+    layout_artifact_cleanup_settings: Mapping[str, Any]
     relation_normalization_settings: Mapping[str, Any]
     structure_recognition_settings: Mapping[str, Any]
     structure_validation_settings: Mapping[str, Any]
@@ -32,6 +34,7 @@ def build_app_config_payload(
     model_registry_settings: Mapping[str, Any],
     text_runtime_defaults: Mapping[str, Any],
     paragraph_boundary_settings: Mapping[str, Any],
+    layout_artifact_cleanup_settings: Mapping[str, Any],
     relation_normalization_settings: Mapping[str, Any],
     structure_recognition_settings: Mapping[str, Any],
     structure_validation_settings: Mapping[str, Any],
@@ -75,6 +78,16 @@ def build_app_config_payload(
         ],
         "paragraph_boundary_ai_review_max_tokens_per_candidate": paragraph_boundary_settings[
             "paragraph_boundary_ai_review_max_tokens_per_candidate"
+        ],
+        "layout_artifact_cleanup_enabled": layout_artifact_cleanup_settings["layout_artifact_cleanup_enabled"],
+        "layout_artifact_cleanup_min_repeat_count": layout_artifact_cleanup_settings[
+            "layout_artifact_cleanup_min_repeat_count"
+        ],
+        "layout_artifact_cleanup_max_repeated_text_chars": layout_artifact_cleanup_settings[
+            "layout_artifact_cleanup_max_repeated_text_chars"
+        ],
+        "layout_artifact_cleanup_save_debug_artifacts": layout_artifact_cleanup_settings[
+            "layout_artifact_cleanup_save_debug_artifacts"
         ],
         "relation_normalization_enabled": relation_normalization_settings["relation_normalization_enabled"],
         "relation_normalization_profile": relation_normalization_settings["relation_normalization_profile"],
@@ -205,6 +218,10 @@ def resolve_optional_section_configs(
             config_data,
             "paragraph_boundary_normalization",
         ),
+        layout_artifact_cleanup_config=parse_optional_config_section_fn(
+            config_data,
+            "layout_artifact_cleanup",
+        ),
         relation_normalization_config=parse_optional_config_section_fn(
             config_data,
             "relation_normalization",
@@ -228,6 +245,7 @@ def resolve_app_config_sections(
     resolve_text_runtime_defaults_fn: Callable[..., Mapping[str, Any]],
     resolve_output_font_settings_fn: Callable[..., Mapping[str, Any]],
     resolve_paragraph_boundary_settings_fn: Callable[..., Mapping[str, Any]],
+    resolve_layout_artifact_cleanup_settings_fn: Callable[..., Mapping[str, Any]],
     resolve_relation_normalization_settings_fn: Callable[..., Mapping[str, Any]],
     resolve_structure_recognition_settings_fn: Callable[..., Mapping[str, Any]],
     resolve_structure_validation_settings_fn: Callable[..., Mapping[str, Any]],
@@ -249,6 +267,9 @@ def resolve_app_config_sections(
         paragraph_boundary_settings=resolve_paragraph_boundary_settings_fn(
             paragraph_boundary_normalization_config=optional_sections.paragraph_boundary_normalization_config,
             paragraph_boundary_ai_review_config=optional_sections.paragraph_boundary_ai_review_config,
+        ),
+        layout_artifact_cleanup_settings=resolve_layout_artifact_cleanup_settings_fn(
+            layout_artifact_cleanup_config=optional_sections.layout_artifact_cleanup_config,
         ),
         relation_normalization_settings=resolve_relation_normalization_settings_fn(
             relation_normalization_config=optional_sections.relation_normalization_config,

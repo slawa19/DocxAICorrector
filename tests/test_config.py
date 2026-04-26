@@ -69,6 +69,10 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
         "toc_region",
     )
     assert app_config["relation_normalization_save_debug_artifacts"] is True
+    assert app_config["layout_artifact_cleanup_enabled"] is True
+    assert app_config["layout_artifact_cleanup_min_repeat_count"] == 3
+    assert app_config["layout_artifact_cleanup_max_repeated_text_chars"] == 80
+    assert app_config["layout_artifact_cleanup_save_debug_artifacts"] is True
 
 
 def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
@@ -108,6 +112,10 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
         "toc_region",
     )
     assert app_config["relation_normalization_save_debug_artifacts"] is True
+    assert app_config["layout_artifact_cleanup_enabled"] is True
+    assert app_config["layout_artifact_cleanup_min_repeat_count"] == 3
+    assert app_config["layout_artifact_cleanup_max_repeated_text_chars"] == 80
+    assert app_config["layout_artifact_cleanup_save_debug_artifacts"] is True
     assert app_config["image_mode_default"] == "no_change"
     assert app_config["semantic_validation_policy"] == "advisory"
     assert app_config["keep_all_image_variants"] is False
@@ -585,6 +593,21 @@ def test_load_app_config_applies_paragraph_boundary_ai_review_env_overrides(monk
     assert app_config["paragraph_boundary_ai_review_candidate_limit"] == 500
     assert app_config["paragraph_boundary_ai_review_timeout_seconds"] == 1
     assert app_config["paragraph_boundary_ai_review_max_tokens_per_candidate"] == 512
+
+
+def test_load_app_config_applies_layout_cleanup_env_overrides(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.setenv("DOCX_AI_LAYOUT_ARTIFACT_CLEANUP_ENABLED", "false")
+    monkeypatch.setenv("DOCX_AI_LAYOUT_ARTIFACT_CLEANUP_MIN_REPEAT_COUNT", "999")
+    monkeypatch.setenv("DOCX_AI_LAYOUT_ARTIFACT_CLEANUP_MAX_REPEATED_TEXT_CHARS", "0")
+    monkeypatch.setenv("DOCX_AI_LAYOUT_ARTIFACT_CLEANUP_SAVE_DEBUG_ARTIFACTS", "false")
+
+    app_config = config.load_app_config()
+
+    assert app_config["layout_artifact_cleanup_enabled"] is False
+    assert app_config["layout_artifact_cleanup_min_repeat_count"] == 100
+    assert app_config["layout_artifact_cleanup_max_repeated_text_chars"] == 1
+    assert app_config["layout_artifact_cleanup_save_debug_artifacts"] is False
 
 
 def test_load_app_config_applies_structure_recognition_env_overrides(monkeypatch):

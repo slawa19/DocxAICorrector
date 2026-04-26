@@ -38,6 +38,10 @@ PARAGRAPH_BOUNDARY_REPORTS_MAX_COUNT = 300
 RELATION_NORMALIZATION_REPORTS_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 RELATION_NORMALIZATION_REPORTS_MAX_COUNT = 300
 
+# Layout artifact cleanup reports (``document_layout_cleanup.py``).
+LAYOUT_CLEANUP_REPORTS_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+LAYOUT_CLEANUP_REPORTS_MAX_COUNT = 300
+
 # Paragraph boundary AI review artifacts (``document.py``). Kept longer because
 # they are produced only when the AI review mode is explicitly enabled.
 PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_AGE_SECONDS = 14 * 24 * 60 * 60

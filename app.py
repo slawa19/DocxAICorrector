@@ -270,7 +270,14 @@ def _store_preparation_summary(*, prepared_run_context) -> None:
     relation_metrics = application_flow.flatten_relation_metrics(
         getattr(prepared_run_context, "relation_report", None)
     )
+    cleanup_metrics = application_flow.flatten_layout_cleanup_metrics(
+        getattr(prepared_run_context, "cleanup_report", None)
+    )
     structure_status_note = application_flow.build_structure_processing_status_note(prepared_run_context)
+    cleanup_status_note = application_flow.build_layout_cleanup_status_note(
+        getattr(prepared_run_context, "cleanup_report", None)
+    )
+    status_notes = [note for note in (structure_status_note, cleanup_status_note) if note]
     set_latest_preparation_summary({
         "stage": str(getattr(prepared_run_context, "preparation_stage", "Документ подготовлен")),
         "detail": str(getattr(prepared_run_context, "preparation_detail", "")),
@@ -283,9 +290,10 @@ def _store_preparation_summary(*, prepared_run_context) -> None:
         **structure_summary.as_preparation_summary_metrics(),
         "elapsed": elapsed,
         "progress": 1.0,
-        "status_notes": [structure_status_note] if structure_status_note else [],
+        "status_notes": status_notes,
         **normalization_metrics,
         **relation_metrics,
+        **cleanup_metrics,
     })
 
 
