@@ -704,7 +704,9 @@ def test_main_places_recommended_text_settings_notice_inside_preparation_summary
         "После анализа файла приложение скорректировало текстовые настройки: "
         "режим: изменено с Литературное редактирование на Перевод; язык оригинала: изменено с en на Авто.",
     ]
-    assert caption_calls == []
+    # Recommendation notice must go into preparation summary, not emitted as a standalone caption.
+    # A static PDF info caption from the file-uploader area is allowed.
+    assert not any("скорректировало" in str(args) for args in caption_calls)
 
 
 def test_apply_pending_recommended_widget_state_applies_before_sidebar(monkeypatch):
