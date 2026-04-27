@@ -33,7 +33,7 @@ source_path = "tests/sources/Собственность и богатство в
 artifact_prefix = "religion_wealth_validation"
 output_basename = "Собственность и богатство в религиях_validated"
 structural_mode = "tolerant"
-min_paragraphs = 34
+min_paragraphs = 29
 has_headings = true
 min_headings = 1
 has_numbered_lists = false
@@ -53,7 +53,7 @@ forbid_heading_only_collapse = true
 default_run_profile = "ui-parity-default"
 tags = ["legacy-doc", "headings", "manual-regression"]
 provenance = "Canonical legacy DOC corpus sample processed through project-level auto-conversion during validation runs."
-tolerance_reason = "Current normalized legacy-DOC sample preserves structure and text but retains one page-separator artifact that maps to a single formatting diagnostics entry during deterministic passthrough."
+tolerance_reason = "Current normalized legacy-DOC sample preserves structure and text after deterministic isolated bullet-marker repair merges five list fragments into logical paragraphs."
 
 [[documents]]
 id = "mazzucato-audiobook-core"
@@ -112,6 +112,9 @@ require_pdf_conversion = true
 require_no_bullet_headings = true
 require_no_toc_body_concat = true
 require_translation_domain = "theology"
+structural_run_profile = "ui-parity-translate-theology-pdf-high-quality"
+structural_expected_result = "fail"
+structural_expected_failed_checks = ["preparation_quality_gate_blocked"]
 default_run_profile = "ui-parity-translate-theology-pdf-high-quality"
 tags = ["pdf", "translation", "theology", "toc", "headings", "lists", "manual-regression"]
 provenance = "Regression source for PDF-derived long-form theological translation quality after 2026-04-27 failure."

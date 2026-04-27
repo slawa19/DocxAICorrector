@@ -4,6 +4,7 @@ from functools import lru_cache
 from collections.abc import Iterable, Sequence
 import json
 from pathlib import Path
+import re
 import time
 from typing import Any, Protocol, cast
 
@@ -17,6 +18,50 @@ SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "structure_re
 _PIPELINE_BODY_STRUCTURAL_ROLES = {"epigraph", "attribution", "toc_entry", "toc_header", "dedication"}
 _VALID_AI_ROLES = {"heading", "body", "caption", "epigraph", "attribution", "toc_entry", "toc_header", "dedication", "list"}
 _VALID_AI_CONFIDENCES = {"high", "medium", "low"}
+_DESCRIPTOR_PREVIEW_CHARS = 600
+_SCRIPTURE_REFERENCE_PATTERN = re.compile(
+    r"\b(?:[1-3]\s*)?(?:Genesis|Exodus|Leviticus|Numbers|Deuteronomy|Joshua|Judges|Ruth|"
+    r"1\s*Samuel|2\s*Samuel|1\s*Kings|2\s*Kings|1\s*Chronicles|2\s*Chronicles|Ezra|"
+    r"Nehemiah|Esther|Job|Psalms?|Proverbs|Ecclesiastes|Song of Solomon|Isaiah|Jeremiah|"
+    r"Lamentations|Ezekiel|Daniel|Hosea|Joel|Amos|Obadiah|Jonah|Micah|Nahum|Habakkuk|"
+    r"Zephaniah|Haggai|Zechariah|Malachi|Matthew|Mark|Luke|John|Acts|Romans|"
+    r"1\s*Corinthians|2\s*Corinthians|Galatians|Ephesians|Philippians|Colossians|"
+    r"1\s*Thessalonians|2\s*Thessalonians|1\s*Timothy|2\s*Timothy|Titus|Philemon|Hebrews|"
+    r"James|1\s*Peter|2\s*Peter|1\s*John|2\s*John|3\s*John|Jude|Revelation|"
+    r"Бытие|Исход|Левит|Числа|Второзаконие|Иисус[а]? Навин|Судей|Руфь|"
+    r"1\s*Царств|2\s*Царств|3\s*Царств|4\s*Царств|1\s*Паралипоменон|2\s*Паралипоменон|Ездра|"
+    r"Неемия|Есфирь|Иов|Пс(?:алом|алмы)?|Притч(?:и)?|Екклесиаст|Песнь Песней|Исаия|Иеремия|"
+    r"Плач Иеремии|Иезекииль|Даниил|Осия|Иоиль|Амос|Авдий|Иона|Михей|Наум|Аввакум|"
+    r"Софония|Аггей|Захария|Малахия|Матфея|Марка|Луки|Иоанна|Деяния|Римлянам|"
+    r"1\s*Коринфянам|2\s*Коринфянам|Галатам|Ефесянам|Филиппийцам|Колоссянам|"
+    r"1\s*Фессалоникийцам|2\s*Фессалоникийцам|1\s*Тимофею|2\s*Тимофею|Титу|Филимону|Евреям|"
+    r"Иакова|1\s*Петра|2\s*Петра|1\s*Иоанна|2\s*Иоанна|3\s*Иоанна|Иуды|Откровение)\s+\d{1,3}[:.]\d{1,3}\b",
+    re.IGNORECASE,
+)
+
+
+def _descriptor_preview_text(text: str) -> str:
+    stripped = text.strip()
+    if len(stripped) <= _DESCRIPTOR_PREVIEW_CHARS:
+        return stripped
+    return stripped[:_DESCRIPTOR_PREVIEW_CHARS].rstrip()
+
+
+def _is_isolated_marker_text(text: str) -> bool:
+    return bool(text in {"●", "•", "-", "*"} or re.match(r"^\d+[\.)]$", text))
+
+
+def _is_toc_candidate_text(text: str) -> bool:
+    normalized = text.strip()
+    if not normalized:
+        return False
+    if re.search(r"\.{2,}\s*\d+\s*$", normalized):
+        return True
+    return len(normalized.split()) <= 12 and normalized.lower() in {"contents", "table of contents", "содержание"}
+
+
+def _is_scripture_reference_text(text: str) -> bool:
+    return bool(_SCRIPTURE_REFERENCE_PATTERN.search(text.strip()))
 
 
 class _ResponsesApi(Protocol):
@@ -35,12 +80,19 @@ def _load_system_prompt() -> str:
 
 def build_paragraph_descriptors(paragraphs: list[ParagraphUnit]) -> list[ParagraphDescriptor]:
     descriptors: list[ParagraphDescriptor] = []
-    for paragraph in paragraphs:
+    nonempty_paragraphs = [paragraph for paragraph in paragraphs if str(paragraph.text or "").strip()]
+    for index, paragraph in enumerate(nonempty_paragraphs):
         text = str(paragraph.text or "").strip()
         if not text:
             continue
-        preview = text[:60]
+        preview = _descriptor_preview_text(text)
         alpha_chars = [char for char in preview if char.isalpha()]
+        context_before = ""
+        context_after = ""
+        if index > 0:
+            context_before = _descriptor_preview_text(str(nonempty_paragraphs[index - 1].text or ""))
+        if index + 1 < len(nonempty_paragraphs):
+            context_after = _descriptor_preview_text(str(nonempty_paragraphs[index + 1].text or ""))
         descriptors.append(
             ParagraphDescriptor(
                 index=paragraph.source_index,
@@ -53,6 +105,11 @@ def build_paragraph_descriptors(paragraphs: list[ParagraphUnit]) -> list[Paragra
                 font_size_pt=paragraph.font_size_pt,
                 has_numbering=paragraph.list_kind is not None,
                 explicit_heading_level=(paragraph.heading_level if paragraph.heading_source == "explicit" else None),
+                context_before_preview=context_before,
+                context_after_preview=context_after,
+                isolated_marker=_is_isolated_marker_text(text),
+                toc_candidate=_is_toc_candidate_text(text),
+                scripture_reference_candidate=_is_scripture_reference_text(text),
             )
         )
     return descriptors
@@ -201,9 +258,11 @@ def _normalize_heading_level(raw_level: object, *, role: str) -> int | None:
 def _build_user_prompt(descriptor_payload: Sequence[dict[str, object]]) -> str:
     return (
         "Classify each paragraph. Metadata format:\n"
-        '{"i": index, "t": "text preview (first 60 chars)", "len": full_length, '
+        '{"i": index, "t": "text preview (up to 600 chars)", "len": full_length, '
         '"s": "DOCX style", "b": bold, "ctr": centered, "caps": all_caps, '
-        '"pt": font_size, "num": has_numbering, "hl": explicit_heading_level_or_null}\n\n'
+        '"pt": font_size, "num": has_numbering, "hl": explicit_heading_level_or_null, '
+        '"prev": "previous paragraph preview", "next": "next paragraph preview", '
+        '"iso": isolated_marker, "toc": toc_candidate, "scr": scripture_reference_candidate}\n\n'
         "Paragraphs:\n"
         f"{json.dumps(list(descriptor_payload), ensure_ascii=False)}"
     )

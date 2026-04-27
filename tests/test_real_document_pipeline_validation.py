@@ -283,6 +283,108 @@ def test_evaluate_lietaer_acceptance_translate_mode_relaxes_source_language_head
     assert numbering_check["processing_operation"] == "translate"
 
 
+def test_evaluate_lietaer_acceptance_translate_mode_ignores_numeric_and_english_heading_renames() -> None:
+    validation = _load_validation_module()
+
+    source_doc = Document()
+    source_doc.add_paragraph("Bowl Judgment #1 (Revelation 16:3):", style="Heading 2")
+    source_doc.add_paragraph("Year 3 (sometime between 2028-2036:)", style="Heading 2")
+    source_doc.add_paragraph("In Conclusion", style="Heading 2")
+
+    output_doc = Document()
+    output_doc.add_paragraph("Суд над чашей № 1 (Откровение 16:3):", style="Heading 2")
+    output_doc.add_paragraph("Год 3 (где-то между 2028 и 2036)", style="Heading 2")
+    output_doc.add_paragraph("В заключение", style="Heading 2")
+
+    report = {
+        "result": "succeeded",
+        "runtime_config": {"effective": {"processing_operation": "translate"}},
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [],
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+    )
+
+    heading_check = next(check for check in acceptance["checks"] if check["name"] == "key_headings_preserved")
+
+    assert heading_check["passed"] is True
+    assert heading_check["missing"] == []
+
+
+def test_evaluate_lietaer_acceptance_translate_mode_only_enforces_translation_stable_scripture_heading() -> None:
+    validation = _load_validation_module()
+
+    source_doc = Document()
+    source_doc.add_paragraph("(Matthew 24:36)", style="Heading 2")
+    source_doc.add_paragraph("Year 3 (sometime between 2028-2036:)", style="Heading 2")
+    source_doc.add_paragraph("A Secular Timeline for AI's Destruction of Humanity", style="Heading 2")
+
+    output_doc = Document()
+    output_doc.add_paragraph("(Матфея 24:36)", style="Heading 2")
+    output_doc.add_paragraph("Год 3 (примерно между 2028 и 2036:)", style="Heading 2")
+    output_doc.add_paragraph("Светская хронология уничтожения человечества ИИ", style="Heading 2")
+
+    report = {
+        "result": "succeeded",
+        "runtime_config": {"effective": {"processing_operation": "translate"}},
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [],
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+    )
+
+    heading_check = next(check for check in acceptance["checks"] if check["name"] == "key_headings_preserved")
+
+    assert heading_check["passed"] is True
+    assert heading_check["source_heading_count"] == 1
+    assert heading_check["missing"] == []
+
+
+def test_evaluate_lietaer_acceptance_translate_mode_matches_scripture_heading_by_reference_anchor() -> None:
+    validation = _load_validation_module()
+
+    source_doc = Document()
+    source_doc.add_paragraph("(Matthew 24:36)", style="Heading 2")
+
+    output_doc = Document()
+    output_doc.add_paragraph("(Матфея 24:36)", style="Heading 2")
+
+    report = {
+        "result": "succeeded",
+        "runtime_config": {"effective": {"processing_operation": "translate"}},
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [],
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+    )
+
+    heading_check = next(check for check in acceptance["checks"] if check["name"] == "key_headings_preserved")
+
+    assert heading_check["passed"] is True
+    assert heading_check["missing"] == []
+
+
 def test_normalize_structural_text_strips_markdown_wrappers() -> None:
     validation = _load_validation_module()
 

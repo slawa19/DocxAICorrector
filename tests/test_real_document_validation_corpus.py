@@ -23,10 +23,26 @@ REGISTRY = load_validation_registry()
 STRUCTURAL_RUN_PROFILE = REGISTRY.get_run_profile("structural-passthrough-default")
 
 
+def _resolve_structural_run_profile(document_profile):
+    run_profile_id = getattr(document_profile, "structural_run_profile", None) or STRUCTURAL_RUN_PROFILE.id
+    return REGISTRY.get_run_profile(run_profile_id)
+
+
 def test_registry_includes_end_times_pdf_regression_profile() -> None:
     profile_ids = {profile.id for profile in REGISTRY.documents}
 
     assert "end-times-pdf-core" in profile_ids
+
+
+def test_end_times_pdf_structural_run_profile_uses_theology_full_profile() -> None:
+    document_profile = REGISTRY.get_document_profile("end-times-pdf-core")
+    run_profile = _resolve_structural_run_profile(document_profile)
+
+    assert run_profile.id == "ui-parity-translate-theology-pdf-high-quality"
+    assert document_profile.structural_expected_result == "fail"
+    assert document_profile.structural_expected_failed_checks == (
+        "preparation_quality_gate_blocked",
+    )
 
 
 def _skip_if_legacy_doc_conversion_unavailable(source_path: Path) -> None:
@@ -60,22 +76,33 @@ def test_corpus_extraction(document_profile) -> None:
 
 @pytest.mark.parametrize("document_profile", REGISTRY.documents, ids=[profile.id for profile in REGISTRY.documents])
 def test_corpus_structural_passthrough(document_profile) -> None:
-    if getattr(document_profile, "id", "") == "end-times-pdf-core":
-        pytest.skip("PDF regression profile is expected to fail generic structural passthrough until recovery path is fully productionized.")
     source_path = document_profile.resolved_source_path()
     if not source_path.exists():
         pytest.skip(f"missing real-document source: {source_path}")
     _skip_if_legacy_doc_conversion_unavailable(source_path)
     _skip_if_structural_passthrough_runtime_unavailable()
 
-    result = cast(dict[str, Any], run_structural_passthrough_validation(document_profile, STRUCTURAL_RUN_PROFILE))
+    run_profile = _resolve_structural_run_profile(document_profile)
+
+    result = cast(dict[str, Any], run_structural_passthrough_validation(document_profile, run_profile))
 
     assert result["validation_tier"] == "structural"
-    assert result["run_profile_id"] == STRUCTURAL_RUN_PROFILE.id
-    assert result["runtime_config"]["effective"]["image_mode"] == STRUCTURAL_RUN_PROFILE.image_mode
+    assert result["run_profile_id"] == run_profile.id
+    expected_image_mode = run_profile.image_mode or result["runtime_config"]["ui_defaults"]["image_mode"]
+    assert result["runtime_config"]["effective"]["image_mode"] == expected_image_mode
     assert "source_file" not in result
     assert "runtime_configuration" not in result
-    assert result["passed"] is True, json.dumps(result, ensure_ascii=False, indent=2)
+    expected_result = getattr(document_profile, "structural_expected_result", "pass")
+    expected_failed_checks = list(getattr(document_profile, "structural_expected_failed_checks", ()))
+    if expected_result == "fail":
+        assert result["passed"] is False, json.dumps(result, ensure_ascii=False, indent=2)
+        assert sorted(result["failed_checks"]) == sorted(expected_failed_checks), json.dumps(
+            result,
+            ensure_ascii=False,
+            indent=2,
+        )
+    else:
+        assert result["passed"] is True, json.dumps(result, ensure_ascii=False, indent=2)
 
 
 def test_structural_passthrough_uses_original_legacy_doc_bytes_for_prepared_facade(tmp_path, monkeypatch) -> None:
@@ -589,9 +616,12 @@ def test_build_structural_checks_enforces_pdf_translation_quality_specific_const
         "heading_only_output_detected": False,
         "source_toc_detected": True,
         "output_toc_detected": False,
+        "structure_repair_bounded_toc_regions": 1,
+        "source_toc_region_count": 1,
         "require_pdf_conversion_satisfied": True,
         "bullet_heading_count": 0,
         "toc_body_concat_detected": False,
+        "structure_repair_toc_body_boundary_repairs": 1,
         "runtime_translation_domain": "theology",
     }
     output_artifacts = {"output_docx_openable": True, "output_visible_text_chars": 100}
@@ -609,3 +639,226 @@ def test_build_structural_checks_enforces_pdf_translation_quality_specific_const
     assert by_name["no_bullet_headings_required"]["passed"] is True
     assert by_name["no_toc_body_concat_required"]["passed"] is True
     assert by_name["translation_domain_required"]["passed"] is True
+
+
+def test_build_structural_checks_requires_bounded_toc_and_source_boundary_repair_for_pdf_constraints() -> None:
+    document_profile = SimpleNamespace(
+        max_formatting_diagnostics=5,
+        max_unmapped_source_paragraphs=0,
+        max_unmapped_target_paragraphs=3,
+        max_heading_level_drift=1,
+        min_text_similarity=0.95,
+        require_numbered_lists_preserved=False,
+        require_nonempty_output=False,
+        forbid_heading_only_collapse=False,
+        require_toc_detected=True,
+        require_pdf_conversion=False,
+        require_no_bullet_headings=False,
+        require_no_toc_body_concat=True,
+        require_translation_domain=None,
+    )
+    metrics = {
+        "formatting_diagnostics_count": 0,
+        "max_unmapped_source_paragraphs": 0,
+        "max_unmapped_target_paragraphs": 0,
+        "heading_level_drift": 0,
+        "text_similarity": 0.99,
+        "heading_only_output_detected": False,
+        "source_toc_detected": False,
+        "output_toc_detected": False,
+        "structure_repair_bounded_toc_regions": 0,
+        "source_toc_region_count": 0,
+        "toc_body_concat_detected": False,
+        "structure_repair_toc_body_boundary_repairs": 0,
+    }
+    output_artifacts = {"output_docx_openable": True, "output_visible_text_chars": 100}
+
+    checks = real_document_validation_structural._build_structural_checks(
+        document_profile=cast(Any, document_profile),
+        result="succeeded",
+        metrics=metrics,
+        output_artifacts=output_artifacts,
+    )
+
+    by_name = {check["name"]: check for check in checks}
+    assert by_name["toc_detected_required"]["passed"] is False
+    assert by_name["no_toc_body_concat_required"]["passed"] is False
+
+
+def test_structural_passthrough_surfaces_structure_repair_and_event_metrics(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project-root"
+    source_dir = project_root / "tests" / "sources"
+    source_dir.mkdir(parents=True)
+    source_path = source_dir / "sample.pdf"
+    source_path.write_bytes(b"%PDF-1.4 sample")
+
+    document_profile = SimpleNamespace(
+        id="end-times-pdf-core",
+        resolved_source_path=lambda project_root=None: source_path,
+        min_paragraphs=0,
+        min_merged_groups=0,
+        min_merged_raw_paragraphs=0,
+        has_headings=False,
+        min_headings=0,
+        has_numbered_lists=False,
+        min_numbered_items=0,
+        has_images=False,
+        min_images=0,
+        has_tables=False,
+        min_tables=0,
+        max_formatting_diagnostics=5,
+        max_unmapped_source_paragraphs=0,
+        max_unmapped_target_paragraphs=3,
+        max_heading_level_drift=1,
+        min_text_similarity=0.0,
+        require_numbered_lists_preserved=False,
+        require_nonempty_output=False,
+        forbid_heading_only_collapse=False,
+        require_toc_detected=False,
+        require_pdf_conversion=True,
+        require_no_bullet_headings=False,
+        require_no_toc_body_concat=False,
+        require_translation_domain="theology",
+    )
+    run_profile = SimpleNamespace(id="ui-parity-translate-theology-pdf-high-quality", image_mode="safe")
+
+    def _resolution_payload(**values):
+        return SimpleNamespace(**values, to_dict=lambda: dict(values))
+
+    class _RelationReport:
+        total_relations = 3
+        relation_counts = {"toc_region": 2}
+        rejected_candidate_count = 0
+
+    class _StructureRepairReport:
+        repaired_bullet_items = 4
+        repaired_numbered_items = 5
+        bounded_toc_regions = 1
+        toc_body_boundary_repairs = 1
+        heading_candidates_from_toc = 7
+        remaining_isolated_marker_count = 0
+
+    formatting_payload = {
+        "unmapped_source_ids": [],
+        "unmapped_target_indexes": [],
+    }
+
+    monkeypatch.setattr(real_document_validation_structural, "PROJECT_ROOT", Path(project_root))
+    monkeypatch.setattr(real_document_validation_structural, "load_app_config", lambda: object())
+    monkeypatch.setattr(
+        real_document_validation_structural,
+        "resolve_runtime_resolution",
+        lambda app_config, run_profile: SimpleNamespace(
+            effective=_resolution_payload(
+                chunk_size=6000,
+                image_mode="safe",
+                keep_all_image_variants=False,
+                model="gpt-5.4",
+                max_retries=1,
+                translation_domain="theology",
+            ),
+            ui_defaults=_resolution_payload(
+                chunk_size=6000,
+                image_mode="safe",
+                keep_all_image_variants=False,
+                model="gpt-5.4",
+                max_retries=1,
+                translation_domain="general",
+            ),
+            overrides={"translation_domain": "theology"},
+        ),
+    )
+    monkeypatch.setattr(real_document_validation_structural, "apply_runtime_resolution_to_app_config", lambda app_config, resolution: {})
+    monkeypatch.setattr(real_document_validation_structural, "_snapshot_formatting_diagnostics_paths", lambda: set())
+    monkeypatch.setattr(real_document_validation_structural, "_collect_new_formatting_diagnostics_paths", lambda before, after: [])
+    monkeypatch.setattr(real_document_validation_structural, "_load_formatting_diagnostics_payloads", lambda paths: [formatting_payload])
+    monkeypatch.setattr(
+        real_document_validation_structural,
+        "extract_document_content_with_normalization_reports",
+        lambda uploaded_file: (
+            [],
+            [],
+            ParagraphBoundaryNormalizationReport(0, 0, 0, 0),
+            [],
+            _RelationReport(),
+            _cleanup_report(),
+            _StructureRepairReport(),
+        ),
+    )
+    monkeypatch.setattr(real_document_validation_structural, "extract_document_content_from_docx", lambda uploaded_file: ([], []))
+    monkeypatch.setattr(
+        real_document_validation_structural,
+        "_build_output_artifacts",
+        lambda docx_bytes, markdown_text: {
+            "output_docx_openable": True,
+            "output_visible_text_chars": 120,
+        },
+    )
+    monkeypatch.setattr(real_document_validation_structural, "_build_extraction_checks", lambda document_profile, metrics: [])
+
+    def _run_prepared_background_document(**kwargs):
+        runtime = kwargs["runtime"]
+        runtime["state"]["latest_docx_bytes"] = b"PK\x03\x04output"
+        runtime["state"]["latest_markdown"] = "markdown"
+        return "succeeded", SimpleNamespace(
+            uploaded_file_bytes=b"PK\x03\x04normalized-source",
+            source_text="text",
+            paragraphs=[],
+            image_assets=[],
+            jobs=[{"job_kind": "llm"}],
+        )
+
+    monkeypatch.setattr(
+        real_document_validation_structural,
+        "_build_validation_processing_service",
+        lambda event_log: SimpleNamespace(
+            run_prepared_background_document=lambda **kwargs: (
+                event_log.append(
+                    {
+                        "event_id": "structure_processing_outcome",
+                        "context": {
+                            "quality_gate_status": "pass",
+                            "quality_gate_reasons": [],
+                            "readiness_status": "ready",
+                        },
+                    }
+                ),
+                event_log.append(
+                    {
+                        "event_id": "block_plan_summary",
+                        "context": {
+                            "block_count": 3,
+                            "llm_block_count": 2,
+                            "passthrough_block_count": 1,
+                            "first_block_target_chars": [3891, 946, 935],
+                        },
+                    }
+                ),
+                _run_prepared_background_document(**kwargs),
+            )[-1]
+        ),
+    )
+
+    result = cast(
+        dict[str, Any],
+        run_structural_passthrough_validation(cast(Any, document_profile), cast(Any, run_profile)),
+    )
+
+    assert result["metrics"]["structure_repair_bullet_items"] == 4
+    assert result["metrics"]["structure_repair_numbered_items"] == 5
+    assert result["metrics"]["structure_repair_bounded_toc_regions"] == 1
+    assert result["metrics"]["structure_repair_toc_body_boundary_repairs"] == 1
+    assert result["metrics"]["structure_repair_heading_candidates_from_toc"] == 7
+    assert result["metrics"]["structure_repair_remaining_isolated_markers"] == 0
+    assert result["metrics"]["source_toc_region_count"] == 2
+    assert result["metrics"]["quality_gate_status"] == "pass"
+    assert result["metrics"]["quality_gate_reasons"] == []
+    assert result["metrics"]["readiness_status"] == "ready"
+    assert result["metrics"]["block_count"] == 3
+    assert result["metrics"]["llm_block_count"] == 2
+    assert result["metrics"]["passthrough_block_count"] == 1
+    assert result["metrics"]["first_block_target_chars"] == [3891, 946, 935]
+    by_name = {check["name"]: check for check in result["checks"]}
+    assert by_name["pdf_conversion_required"]["passed"] is True
+    assert by_name["translation_domain_required"]["passed"] is True
+    assert by_name["bounded_toc_repair_detected"]["passed"] is True

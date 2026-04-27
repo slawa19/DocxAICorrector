@@ -26,6 +26,10 @@ _NARRATION_DISALLOWED_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 QUALITY_REPORTS_DIR = Path(".run") / "quality_reports"
 QUALITY_REPORTS_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 QUALITY_REPORTS_MAX_COUNT = 100
+_BULLET_MARKDOWN_HEADING_PATTERN = re.compile(r"(?m)^\s{0,3}#{1,6}\s*[\u2022\u25cf\u25e6\u2023*\-]\s*$")
+_TOC_BODY_CONCAT_MARKDOWN_PATTERN = re.compile(
+    r"(?:\.{2,}|[\u2024\u2025\u2026\u2027\u2219\u22c5\u00b7]{2,}|\s{2,})\s*[0-9ivxlcdmIVXLCDM]+\s+[А-Яа-яЁёA-Za-z]"
+)
 
 
 def _require_group_int(group: Mapping[str, object], key: str) -> int:
@@ -167,6 +171,32 @@ def _resolve_translation_quality_gate_policy(*, context: Any) -> str:
     return "advisory"
 
 
+def _count_bullet_markdown_headings(markdown_text: str) -> int:
+    return len(_BULLET_MARKDOWN_HEADING_PATTERN.findall(markdown_text or ""))
+
+
+def _has_toc_body_concat_markdown(markdown_text: str) -> bool:
+    for paragraph in re.split(r"\n\s*\n", markdown_text or ""):
+        if _TOC_BODY_CONCAT_MARKDOWN_PATTERN.search(paragraph):
+            return True
+    return False
+
+
+def _apply_quality_gate_reason(
+    *,
+    quality_status: str,
+    gate_reasons: list[str],
+    policy: str,
+    reason: str,
+) -> str:
+    if policy == "strict":
+        quality_status = "fail"
+    elif quality_status != "fail":
+        quality_status = "warn"
+    gate_reasons.append(reason)
+    return quality_status
+
+
 def _build_translation_quality_report(
     *,
     context: Any,
@@ -182,6 +212,8 @@ def _build_translation_quality_report(
     policy = _resolve_translation_quality_gate_policy(context=context)
     quality_status = "pass"
     gate_reasons: list[str] = []
+    bullet_heading_count = _count_bullet_markdown_headings(final_markdown)
+    toc_body_concat_detected = _has_toc_body_concat_markdown(final_markdown)
     if context.processing_operation == "translate":
         if policy == "strict" and isinstance(unmapped_source_ids, list) and unmapped_source_ids:
             quality_status = "fail"
@@ -191,6 +223,20 @@ def _build_translation_quality_report(
             if isinstance(source_count, int) and source_count > 0 and (len(unmapped_source_ids) / source_count) > 0.01:
                 quality_status = "warn"
                 gate_reasons.append("unmapped_source_paragraphs_above_advisory_threshold")
+        if bullet_heading_count > 0:
+            quality_status = _apply_quality_gate_reason(
+                quality_status=quality_status,
+                gate_reasons=gate_reasons,
+                policy=policy,
+                reason="bullet_marker_headings_present",
+            )
+        if toc_body_concat_detected:
+            quality_status = _apply_quality_gate_reason(
+                quality_status=quality_status,
+                gate_reasons=gate_reasons,
+                policy=policy,
+                reason="toc_body_concatenation_detected",
+            )
 
     report = {
         "version": 1,
@@ -204,6 +250,8 @@ def _build_translation_quality_report(
         "unmapped_target_count": len(unmapped_target_indexes) if isinstance(unmapped_target_indexes, list) else 0,
         "accepted_merged_sources_count": len(accepted_merged_sources) if isinstance(accepted_merged_sources, list) else 0,
         "caption_heading_conflicts_count": len(caption_heading_conflicts) if isinstance(caption_heading_conflicts, list) else 0,
+        "bullet_heading_count": bullet_heading_count,
+        "toc_body_concat_detected": toc_body_concat_detected,
         "formatting_diagnostics_artifact_count": len(formatting_diagnostics_artifacts),
         "final_markdown_chars": len(final_markdown),
         "quality_status": quality_status,
@@ -211,6 +259,22 @@ def _build_translation_quality_report(
         "formatting_diagnostics_artifact_paths": list(formatting_diagnostics_artifacts),
     }
     return report
+
+
+def _build_result_quality_warning(
+    *,
+    quality_report: Mapping[str, object],
+    latest_result_notice: Mapping[str, str] | None,
+) -> dict[str, object] | None:
+    quality_status = str(quality_report.get("quality_status", "") or "")
+    if quality_status not in {"warn", "fail"}:
+        return None
+    return {
+        "kind": "translation_quality_gate",
+        "quality_status": quality_status,
+        "gate_reasons": list(cast(Sequence[str], quality_report.get("gate_reasons") or [])),
+        "message": str((latest_result_notice or {}).get("message", "") or ""),
+    }
 
 
 def _emit_terminal_result(
@@ -637,7 +701,7 @@ def finalize_processing_success(
         docx_phase = dict(docx_phase)
         docx_phase["latest_result_notice"] = {
             "level": "warning",
-            "message": "Результат собран, но quality report зафиксировал заметный paragraph mapping drift.",
+            "message": "Результат собран, но quality report зафиксировал document-level structural warnings.",
         }
     quality_report_path = _write_quality_report_artifact(source_name=context.uploaded_filename, payload=quality_report)
     if quality_report_path is not None:
@@ -654,7 +718,7 @@ def finalize_processing_success(
         error_message = dependencies.present_error(
             "translation_quality_gate_failed",
             RuntimeError(
-                "Итоговый перевод не прошёл quality gate: strict paragraph mapping contract violated (translation_quality_gate_failed)."
+                "Итоговый перевод не прошёл document-level quality gate (translation_quality_gate_failed)."
             ),
             "Критическая ошибка качества перевода",
             filename=context.uploaded_filename,
@@ -669,7 +733,7 @@ def finalize_processing_success(
             latest_narration_text=None,
             latest_result_notice={
                 "level": "error",
-                "message": "Результат заблокирован quality gate из-за потери paragraph mapping.",
+                "message": "Результат заблокирован document-level quality gate.",
             },
             last_error=error_message,
         )
@@ -817,6 +881,12 @@ def finalize_processing_success(
             "markdown_text": final_markdown,
             "docx_bytes": docx_phase["docx_bytes"],
         }
+        quality_warning = _build_result_quality_warning(
+            quality_report=quality_report,
+            latest_result_notice=cast(Mapping[str, str] | None, docx_phase.get("latest_result_notice")),
+        )
+        if quality_warning is not None:
+            artifact_writer_kwargs["quality_warning"] = quality_warning
         if narration_text is not None:
             artifact_writer_kwargs["narration_text"] = narration_text
         result_artifact_paths = dict(

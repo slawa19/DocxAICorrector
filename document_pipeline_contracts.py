@@ -133,6 +133,7 @@ class ResultArtifactWriter(Protocol):
         markdown_text: str,
         docx_bytes: bytes,
         narration_text: str | None = None,
+        quality_warning: Mapping[str, object] | None = None,
     ) -> Mapping[str, str]: ...
 
 

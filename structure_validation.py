@@ -5,6 +5,7 @@ from datetime import datetime
 import json
 from pathlib import Path
 from collections.abc import Mapping, Sequence
+import re
 from typing import Any
 
 from models import ParagraphUnit, StructureRepairReport
@@ -173,6 +174,30 @@ def _count_toc_entries(paragraphs: Sequence[ParagraphLike]) -> int:
     return sum(1 for paragraph in paragraphs if str(_paragraph_value(paragraph, "structural_role", "") or "") == "toc_entry")
 
 
+def _looks_like_front_matter_paragraph(paragraph: ParagraphLike) -> bool:
+    structural_role = str(_paragraph_value(paragraph, "structural_role", "") or "")
+    text = _normalized_text(paragraph)
+    if structural_role in {"toc_header", "toc_entry", "epigraph", "attribution", "dedication"}:
+        return True
+    if not text:
+        return False
+    if _paragraph_value(paragraph, "role") == "heading" and _paragraph_value(paragraph, "heading_source") is not None:
+        return True
+    return bool(re.search(r"\.{2,}\s*\d+\s*$", text) or text.lower() in {"contents", "table of contents", "содержание"})
+
+
+def _has_large_front_matter_block_risk(paragraphs: Sequence[ParagraphLike]) -> bool:
+    if len(paragraphs) < 4:
+        return False
+    front_matter_count = 0
+    for paragraph in paragraphs:
+        if _looks_like_front_matter_paragraph(paragraph):
+            front_matter_count += 1
+            continue
+        break
+    return front_matter_count >= 4
+
+
 def _resolve_structure_quality_risk_level(*, escalation_reasons: Sequence[str]) -> str:
     if not escalation_reasons:
         return "low"
@@ -186,14 +211,24 @@ def _build_readiness_status(
     toc_like_sequence_count: int,
     toc_region_bounded_count: int,
     isolated_marker_paragraph_count: int,
+    large_front_matter_block_risk: bool,
+    expected_heading_candidates_from_toc: int,
+    heading_count: int,
     structure_quality_risk_level: str,
     structure_repair_report: StructureRepairReport | None,
 ) -> tuple[str, tuple[str, ...]]:
     reasons: list[str] = []
+    unsafe_best_effort_reasons: list[str] = []
     if toc_like_sequence_count > 0 and toc_region_bounded_count == 0:
-        reasons.append("toc_like_sequence_without_bounded_region")
+        unsafe_best_effort_reasons.append("toc_like_sequence_without_bounded_region")
     if isolated_marker_paragraph_count > 0:
-        reasons.append("isolated_list_markers_remaining")
+        unsafe_best_effort_reasons.append("isolated_list_markers_remaining")
+    if large_front_matter_block_risk and toc_region_bounded_count == 0:
+        unsafe_best_effort_reasons.append("large_front_matter_block_risk")
+    if expected_heading_candidates_from_toc >= 6 and heading_count < max(3, expected_heading_candidates_from_toc // 3):
+        unsafe_best_effort_reasons.append("heading_count_far_below_toc_expectation")
+    if unsafe_best_effort_reasons:
+        return "blocked_unsafe_best_effort_only", tuple(dict.fromkeys(unsafe_best_effort_reasons))
     if structure_quality_risk_level == "high" and structure_repair_report is not None and not structure_repair_report.applied:
         reasons.append("high_risk_without_structure_repair")
     if reasons:
@@ -263,6 +298,7 @@ def validate_structure_quality(
     isolated_marker_paragraph_count = sum(1 for paragraph in nonempty_paragraphs if _is_isolated_marker_paragraph(paragraph))
     toc_region_bounded_count = _count_bounded_toc_regions(paragraphs)
     expected_heading_candidates_from_toc = _count_toc_entries(paragraphs)
+    large_front_matter_block_risk = _has_large_front_matter_block_risk(paragraphs)
 
     escalation_reasons: list[str] = []
     min_paragraphs_for_auto_gate = int(app_config.get("structure_validation_min_paragraphs_for_auto_gate", 40) or 40)
@@ -292,6 +328,9 @@ def validate_structure_quality(
         toc_like_sequence_count=toc_like_sequence_count,
         toc_region_bounded_count=toc_region_bounded_count,
         isolated_marker_paragraph_count=isolated_marker_paragraph_count,
+        large_front_matter_block_risk=large_front_matter_block_risk,
+        expected_heading_candidates_from_toc=expected_heading_candidates_from_toc,
+        heading_count=explicit_heading_count + heuristic_heading_count,
         structure_quality_risk_level=structure_quality_risk_level,
         structure_repair_report=structure_repair_report,
     )
@@ -312,7 +351,7 @@ def validate_structure_quality(
         escalation_recommended=bool(escalation_reasons),
         escalation_reasons=tuple(escalation_reasons),
         isolated_marker_paragraph_count=isolated_marker_paragraph_count,
-        large_front_matter_block_risk=False,
+        large_front_matter_block_risk=large_front_matter_block_risk,
         toc_region_bounded_count=toc_region_bounded_count,
         expected_heading_candidates_from_toc=expected_heading_candidates_from_toc,
         structure_quality_risk_level=structure_quality_risk_level,

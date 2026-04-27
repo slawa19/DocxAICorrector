@@ -1,5 +1,6 @@
 import threading
 import time
+import json
 from pathlib import Path
 
 from constants import UI_RESULT_ARTIFACTS_DIR
@@ -49,6 +50,7 @@ def write_ui_result_artifacts(
     markdown_text: str,
     docx_bytes: bytes,
     narration_text: str | None = None,
+    quality_warning: dict[str, object] | None = None,
     output_dir: Path = UI_RESULT_ARTIFACTS_DIR,
     created_at: float | None = None,
 ) -> dict[str, str]:
@@ -57,12 +59,18 @@ def write_ui_result_artifacts(
     markdown_path = output_dir / f"{artifact_stem}.md"
     docx_path = output_dir / f"{artifact_stem}.docx"
     tts_path = output_dir / f"{artifact_stem}.tts.txt"
+    meta_path = output_dir / f"{artifact_stem}.meta.json"
 
     markdown_path.write_text(markdown_text, encoding="utf-8")
     try:
         docx_path.write_bytes(docx_bytes)
         if narration_text is not None:
             tts_path.write_text(narration_text, encoding="utf-8")
+        if quality_warning:
+            meta_path.write_text(
+                json.dumps({"version": 1, "quality_warning": quality_warning}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
     except OSError:
         try:
             if markdown_path.exists():
@@ -71,6 +79,8 @@ def write_ui_result_artifacts(
                 docx_path.unlink()
             if tts_path.exists():
                 tts_path.unlink()
+            if meta_path.exists():
+                meta_path.unlink()
         except OSError:
             pass
         raise
@@ -87,4 +97,6 @@ def write_ui_result_artifacts(
     }
     if narration_text is not None:
         artifact_paths["tts_text_path"] = str(tts_path)
+    if quality_warning:
+        artifact_paths["metadata_path"] = str(meta_path)
     return artifact_paths

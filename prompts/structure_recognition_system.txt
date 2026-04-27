@@ -46,6 +46,16 @@ Assign each paragraph exactly one role:
 - TOC entries are recognizable as a continuous sequence of short lines listing
 	chapter/section names, usually between "Содержание" and the first real chapter.
 
+- Isolated bullet glyphs (`●`, `•`, `-`, `*`) or standalone numeric markers (`1.`,
+	`2)`) are never headings by themselves. Prefer `list` only when surrounding
+	context confirms a list item, otherwise keep them as `body`.
+- Use `prev` and `next` context to detect TOC/body boundaries. Do not merge the
+	final TOC entry with epigraph, scripture citation, dedication, or first body heading.
+- Scripture references such as `Mark 13:13` / `Марк 13:13` are usually epigraph or
+	body citations, not headings, unless surrounding context clearly indicates a title.
+- For ambiguous PDF-derived fragments, rely on the full preview text, not only the
+	first words.
+
 ## Output Format
 
 Return a JSON array. For EACH input paragraph, return one object:

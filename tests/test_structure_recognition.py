@@ -49,7 +49,26 @@ def test_build_paragraph_descriptors_skips_blank_paragraphs_and_preserves_metada
     assert descriptors[0].explicit_heading_level == 1
     assert descriptors[0].is_centered is True
     assert descriptors[0].is_all_caps is True
+    assert descriptors[0].context_after_preview == "Первый пункт"
     assert descriptors[1].has_numbering is True
+
+
+def test_build_paragraph_descriptors_includes_richer_context_and_risk_flags():
+    paragraphs = [
+        _paragraph(source_index=0, text="Содержание"),
+        _paragraph(source_index=1, text="Mark 13:13"),
+        _paragraph(source_index=2, text="●"),
+        _paragraph(source_index=3, text="Очень длинный абзац " + ("текста " * 200)),
+    ]
+
+    descriptors = structure_recognition.build_paragraph_descriptors(paragraphs)
+
+    assert descriptors[0].toc_candidate is True
+    assert descriptors[0].context_after_preview == "Mark 13:13"
+    assert descriptors[1].scripture_reference_candidate is True
+    assert descriptors[1].context_before_preview == "Содержание"
+    assert descriptors[2].isolated_marker is True
+    assert len(descriptors[3].text_preview) == 600
 
 
 def test_apply_structure_map_respects_explicit_and_adjacent_priority_rules():

@@ -246,6 +246,8 @@ def test_run_prepared_background_document_uses_preparation_and_job_mutator(monke
             "jobs": [{"target_text": "one"}],
             "paragraphs": ["p1"],
             "image_assets": ["img1"],
+            "translation_domain": "theology",
+            "translation_domain_instructions": "TERM PLAN",
         },
     )()
     captured = {}
@@ -292,6 +294,8 @@ def test_run_prepared_background_document_passes_prepared_payload_into_processin
             "jobs": [{"target_text": "one"}],
             "paragraphs": ["p1"],
             "image_assets": ["img1"],
+            "translation_domain": "theology",
+            "translation_domain_instructions": "TERM PLAN",
         },
     )()
 
@@ -321,6 +325,8 @@ def test_run_prepared_background_document_passes_prepared_payload_into_processin
     assert captured["run"]["image_assets"] == ["img1"]
     assert captured["run"]["app_config"]["translation_second_pass_enabled"] is True
     assert captured["run"]["app_config"]["translation_second_pass_model"] == "gpt-5.4"
+    assert captured["run"]["app_config"]["translation_domain_default"] == "theology"
+    assert captured["run"]["app_config"]["translation_domain_instructions"] == "TERM PLAN"
 
 
 def test_run_prepared_background_document_supports_distinct_prepare_and_processing_callbacks(monkeypatch):
@@ -373,6 +379,44 @@ def test_run_prepared_background_document_supports_distinct_prepare_and_processi
 
     assert prepare_progress_calls == [{"stage": "prepare", "detail": "prepared", "progress": 0.25}]
     assert processing_progress_calls == [{"stage": "process", "detail": "running", "progress": 0.75}]
+
+
+def test_run_prepared_background_document_emits_controlled_failure_when_preparation_blocks(monkeypatch):
+    emitted_events = []
+
+    class RuntimeStub:
+        def emit(self, event):
+            emitted_events.append(event)
+
+    service = _build_service(run_document_processing_impl_fn=lambda **kwargs: "succeeded")
+
+    monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: uploaded_file)
+    monkeypatch.setattr(
+        processing_service.application_flow,
+        "prepare_run_context_for_background",
+        lambda **kwargs: (_ for _ in ()).throw(ValueError("quality gate blocked")),
+    )
+
+    try:
+        service.run_prepared_background_document(
+            uploaded_file="report.docx",
+            chunk_size=123,
+            image_mode="safe",
+            keep_all_image_variants=True,
+            app_config={"x": 1},
+            model="gpt-5.4",
+            max_retries=2,
+            runtime=RuntimeStub(),
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Expected preparation exception to be re-raised")
+
+    assert emitted_events[-1] == WorkerCompleteEvent(outcome="failed")
+    assert any(isinstance(event, SetStateEvent) and event.values["last_background_error"]["stage"] == "preparation" for event in emitted_events)
+    assert any(isinstance(event, FinalizeProcessingStatusEvent) and event.stage == "Ошибка подготовки" for event in emitted_events)
+    assert any(isinstance(event, AppendLogEvent) and event.payload["status"] == "ERROR" for event in emitted_events)
 
 
 def test_clone_processing_service_returns_overridden_copy_without_mutating_singleton(monkeypatch):

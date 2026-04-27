@@ -239,6 +239,11 @@ class ParagraphDescriptor:
     font_size_pt: float | None
     has_numbering: bool
     explicit_heading_level: int | None
+    context_before_preview: str = ""
+    context_after_preview: str = ""
+    isolated_marker: bool = False
+    toc_candidate: bool = False
+    scripture_reference_candidate: bool = False
 
     def to_prompt_dict(self) -> dict[str, object]:
         return {
@@ -252,6 +257,11 @@ class ParagraphDescriptor:
             "pt": self.font_size_pt,
             "num": self.has_numbering,
             "hl": self.explicit_heading_level,
+            "prev": self.context_before_preview,
+            "next": self.context_after_preview,
+            "iso": self.isolated_marker,
+            "toc": self.toc_candidate,
+            "scr": self.scripture_reference_candidate,
         }
 
 

@@ -279,7 +279,7 @@ def build_structure_processing_status_note(source: object | None) -> str:
                 f"классифицировано {structure_summary.ai_classified_count} абзацев, "
                 f"найдено {structure_summary.ai_heading_count} заголовков.{reason_suffix}"
             )
-        if readiness_status == "blocked_needs_structure_repair":
+        if readiness_status in {"blocked_needs_structure_repair", "blocked_unsafe_best_effort_only"}:
             return (
                 "Структура: auto-режим, выполнена эскалация в AI; AI не внёс изменений, документ помечен как "
                 f"требующий structural repair.{reason_suffix}"
@@ -556,7 +556,7 @@ def _resolve_pre_translation_quality_gate(
 
     reasons: list[str] = []
     readiness_status = str(getattr(structure_validation_report, "readiness_status", "") or "")
-    if readiness_status == "blocked_needs_structure_repair":
+    if readiness_status in {"blocked_needs_structure_repair", "blocked_unsafe_best_effort_only"}:
         reasons.extend(str(reason) for reason in getattr(structure_validation_report, "readiness_reasons", ()) or ())
 
     if (
@@ -651,9 +651,7 @@ def _prepare_document_for_processing(
     structure_mode = _resolve_structure_recognition_mode(app_config)
     should_run_ai = False
     structure_ai_attempted = False
-    if structure_mode == "always":
-        should_run_ai = True
-    elif structure_mode == "auto":
+    if structure_mode in {"auto", "always"}:
         structure_validation_report = _run_structure_validation(
             paragraphs=paragraphs,
             image_assets=image_assets,
@@ -679,8 +677,9 @@ def _prepare_document_for_processing(
                     structure_repair_report=structure_repair_report,
                 ),
             )
+            should_run_ai = structure_mode == "always"
         else:
-            should_run_ai = structure_validation_report.escalation_recommended
+            should_run_ai = True if structure_mode == "always" else structure_validation_report.escalation_recommended
             if not should_run_ai:
                 emit_preparation_progress(
                     progress_callback,
@@ -748,7 +747,7 @@ def _prepare_document_for_processing(
         **flatten_structure_repair_metrics(structure_repair_report),
     )
     if (
-        structure_mode == "auto"
+        structure_mode in {"auto", "always"}
         and bool(getattr(structure_validation_report, "escalation_recommended", False))
         and structure_ai_attempted
         and structure_summary.ai_classified_count == 0

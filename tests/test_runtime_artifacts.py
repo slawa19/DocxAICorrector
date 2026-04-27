@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from runtime_artifacts import write_ui_result_artifacts
@@ -60,3 +61,33 @@ def test_write_ui_result_artifacts_persists_optional_narration_text(tmp_path):
     assert tts_path.parent == tmp_path
     assert tts_path.name.endswith(".result.tts.txt")
     assert tts_path.read_text(encoding="utf-8") == "[thoughtful] Ready for ElevenLabs"
+
+
+def test_write_ui_result_artifacts_persists_machine_readable_quality_warning(tmp_path):
+    artifact_paths = write_ui_result_artifacts(
+        source_name="report.docx",
+        markdown_text="body",
+        docx_bytes=b"docx-bytes",
+        quality_warning={
+            "kind": "translation_quality_gate",
+            "quality_status": "warn",
+            "gate_reasons": ["unmapped_source_paragraphs_above_advisory_threshold"],
+            "message": "Paragraph mapping drift detected.",
+        },
+        output_dir=tmp_path,
+        created_at=1_766_636_465.0,
+    )
+
+    metadata_path = Path(artifact_paths["metadata_path"])
+
+    assert metadata_path.parent == tmp_path
+    assert metadata_path.name.endswith(".result.meta.json")
+    assert json.loads(metadata_path.read_text(encoding="utf-8")) == {
+        "version": 1,
+        "quality_warning": {
+            "kind": "translation_quality_gate",
+            "quality_status": "warn",
+            "gate_reasons": ["unmapped_source_paragraphs_above_advisory_threshold"],
+            "message": "Paragraph mapping drift detected.",
+        },
+    }

@@ -60,7 +60,7 @@ STRUCTURE_VALIDATION_MAX_COUNT = 200
 UI_RESULT_ARTIFACTS_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 UI_RESULT_ARTIFACTS_MAX_COUNT = 80
 
-_UI_RESULT_GROUP_SUFFIXES = (".result.tts.txt", ".result.docx", ".result.md")
+_UI_RESULT_GROUP_SUFFIXES = (".result.meta.json", ".result.tts.txt", ".result.docx", ".result.md")
 
 
 def prune_artifact_dir(
@@ -148,8 +148,8 @@ def prune_ui_result_artifact_groups(
 ) -> list[str]:
     """Prune UI result artifacts by timestamped stem, not by individual file.
 
-    Each successful run may produce ``.result.md``, ``.result.docx`` and optional
-    ``.result.tts.txt``. This helper retains or removes the entire group
+    Each successful run may produce ``.result.md``, ``.result.docx``, optional
+    ``.result.tts.txt`` and optional ``.result.meta.json``. This helper retains or removes the entire group
     atomically so the directory never ends up with orphaned siblings from the
     same run.
     """

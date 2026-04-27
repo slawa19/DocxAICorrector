@@ -3,7 +3,7 @@ from pathlib import Path
 
 from config import load_app_config
 from real_document_validation_common import build_validation_runtime_config
-from real_document_validation_profiles import PROJECT_ROOT, load_validation_registry, resolve_runtime_resolution
+from real_document_validation_profiles import PROJECT_ROOT, apply_runtime_resolution_to_app_config, load_validation_registry, resolve_runtime_resolution
 
 
 def test_load_validation_registry_reads_lietaer_profile() -> None:
@@ -119,7 +119,24 @@ def test_load_validation_registry_reads_end_times_pdf_profile_and_theology_run_p
     assert document_profile.require_no_bullet_headings is True
     assert document_profile.require_no_toc_body_concat is True
     assert document_profile.require_translation_domain == "theology"
+    assert document_profile.structural_run_profile == "ui-parity-translate-theology-pdf-high-quality"
+    assert document_profile.structural_expected_result == "fail"
+    assert document_profile.structural_expected_failed_checks == (
+        "unmapped_source_threshold",
+        "unmapped_target_threshold",
+    )
     assert document_profile.default_run_profile == "ui-parity-translate-theology-pdf-high-quality"
     assert run_profile.processing_operation == "translate"
     assert run_profile.translation_domain == "theology"
     assert run_profile.structure_recognition_mode == "always"
+
+
+def test_apply_runtime_resolution_maps_translation_domain_to_pipeline_config() -> None:
+    registry = load_validation_registry()
+    app_config = load_app_config()
+    run_profile = registry.get_run_profile("ui-parity-translate-theology-pdf-high-quality")
+
+    runtime_config = apply_runtime_resolution_to_app_config(app_config, resolve_runtime_resolution(app_config, run_profile))
+
+    assert runtime_config["translation_domain"] == "theology"
+    assert runtime_config["translation_domain_default"] == "theology"

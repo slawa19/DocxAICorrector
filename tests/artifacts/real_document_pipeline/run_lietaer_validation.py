@@ -1024,6 +1024,80 @@ def _normalize_structural_text(text: str) -> str:
     return normalized
 
 
+def _contains_cyrillic(text: str) -> bool:
+    return any("а" <= char <= "я" or char == "ё" for char in text.lower())
+
+
+def _contains_latin(text: str) -> bool:
+    return any("a" <= char <= "z" for char in text.lower())
+
+
+def _is_translation_stable_key_heading(text: str) -> bool:
+    normalized = _normalize_structural_text(text)
+    if not normalized:
+        return False
+    if re.fullmatch(r"\(?matthew\s+\d+:\d+(?:-\d+)?\)?", normalized, flags=re.IGNORECASE):
+        return True
+    if re.fullmatch(r"\(?матфея\s+\d+:\d+(?:-\d+)?\)?", normalized, flags=re.IGNORECASE):
+        return True
+    return False
+
+
+def _should_enforce_source_heading_in_translate_mode(text: str) -> bool:
+    normalized = _normalize_structural_text(text)
+    if not normalized:
+        return False
+    if _contains_cyrillic(normalized):
+        return True
+    if _contains_latin(normalized):
+        return _is_translation_stable_key_heading(normalized)
+    return True
+
+
+def _extract_scripture_anchor(text: str) -> str | None:
+    normalized = _normalize_structural_text(text)
+    match = re.search(r"(\d+:\d+(?:[-–]\d+)?)", normalized)
+    if match is None:
+        return None
+    return match.group(1).replace("–", "-")
+
+
+def _scripture_heading_matches(source_heading: str, output_heading: str) -> bool:
+    source_anchor = _extract_scripture_anchor(source_heading)
+    output_anchor = _extract_scripture_anchor(output_heading)
+    if not source_anchor or not output_anchor or source_anchor != output_anchor:
+        return False
+    return _is_translation_stable_key_heading(source_heading) or _is_translation_stable_key_heading(output_heading)
+
+
+def _resolve_missing_key_headings(
+    source_heading_texts: set[str],
+    output_heading_texts: set[str],
+    *,
+    processing_operation: str,
+) -> list[str]:
+    missing = sorted(source_heading_texts - output_heading_texts)
+    if processing_operation != "translate" or not missing:
+        return missing
+
+    unmatched_output = set(output_heading_texts)
+    resolved_missing: list[str] = []
+    for source_heading in missing:
+        matched_output = next(
+            (
+                output_heading
+                for output_heading in unmatched_output
+                if _scripture_heading_matches(source_heading, output_heading)
+            ),
+            None,
+        )
+        if matched_output is not None:
+            unmatched_output.discard(matched_output)
+            continue
+        resolved_missing.append(source_heading)
+    return resolved_missing
+
+
 def _is_meaningful_key_heading(text: str) -> bool:
     normalized = _normalize_structural_text(text)
     fragment = _classify_centered_fragment(normalized)
@@ -1528,7 +1602,7 @@ def evaluate_lietaer_acceptance(
             source_heading_texts = {
                 heading
                 for heading in source_heading_texts
-                if any(char.isdigit() for char in heading) or not heading.isascii()
+                if _should_enforce_source_heading_in_translate_mode(heading)
             }
         output_heading_texts = {
             _normalize_structural_text(paragraph.text)
@@ -1537,7 +1611,11 @@ def evaluate_lietaer_acceptance(
             and _normalize_structural_text(paragraph.text)
             and _is_meaningful_key_heading(paragraph.text)
         }
-        missing_key_headings = sorted(source_heading_texts - output_heading_texts)
+        missing_key_headings = _resolve_missing_key_headings(
+            source_heading_texts,
+            output_heading_texts,
+            processing_operation=processing_operation,
+        )
         add_check(
             "key_headings_preserved",
             not missing_key_headings,

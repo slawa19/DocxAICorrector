@@ -3,6 +3,7 @@ import json
 import logging
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -246,6 +247,77 @@ def test_run_document_processing_persists_final_ui_result_artifacts_and_logs_pat
     assert saved_event["context"]["artifact_paths"] == {
         "markdown_path": "/tmp/mariana.result.md",
         "docx_path": "/tmp/mariana.result.docx",
+    }
+
+
+def test_run_document_processing_passes_machine_readable_quality_warning_to_artifact_writer(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    diagnostics_dir = tmp_path / "formatting_diagnostics"
+    quality_dir = tmp_path / "quality_reports"
+    artifact_calls = {}
+
+    monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
+    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    quality_dir.mkdir(parents=True, exist_ok=True)
+
+    def preserve_with_unmapped_artifact(docx_bytes, paragraphs, generated_paragraph_registry=None):
+        (diagnostics_dir / "preserve_001.json").write_text(
+            json.dumps(
+                {
+                    "stage": "restore",
+                    "source_count": 50,
+                    "target_count": 48,
+                    "mapped_count": 48,
+                    "unmapped_source_ids": ["p0048", "p0049"],
+                    "unmapped_target_indexes": [],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return docx_bytes
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
+        source_paragraphs=[ParagraphStub()],
+        image_assets=[],
+        image_mode="safe",
+        app_config={"translation_output_quality_gate_policy": "advisory"},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="translate",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "Обработанный блок",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: b"docx-bytes",
+        preserve_source_paragraph_properties=preserve_with_unmapped_artifact,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+        write_ui_result_artifacts=lambda **kwargs: artifact_calls.setdefault("kwargs", dict(kwargs)) or {"markdown_path": "/tmp/report.result.md", "docx_path": "/tmp/report.result.docx", "metadata_path": "/tmp/report.result.meta.json"},
+    )
+
+    assert result == "succeeded"
+    assert artifact_calls["kwargs"]["quality_warning"] == {
+        "kind": "translation_quality_gate",
+        "quality_status": "warn",
+        "gate_reasons": ["unmapped_source_paragraphs_above_advisory_threshold"],
+        "message": "Результат собран, но quality report зафиксировал document-level structural warnings.",
     }
 
 
@@ -1448,6 +1520,8 @@ def test_run_document_processing_fails_on_strict_unmapped_source_quality_gate(tm
     payload = json.loads(report_files[0].read_text(encoding="utf-8"))
     assert payload["quality_status"] == "fail"
     assert payload["gate_reasons"] == ["unmapped_source_paragraphs_present"]
+    assert payload["bullet_heading_count"] == 0
+    assert payload["toc_body_concat_detected"] is False
 
 
 def test_run_document_processing_surfaces_advisory_quality_notice_on_mapping_drift(tmp_path, monkeypatch):
@@ -1511,13 +1585,82 @@ def test_run_document_processing_surfaces_advisory_quality_notice_on_mapping_dri
     assert result == "succeeded"
     assert runtime["state"]["latest_result_notice"] == {
         "level": "warning",
-        "message": "Результат собран, но quality report зафиксировал заметный paragraph mapping drift.",
+        "message": "Результат собран, но quality report зафиксировал document-level structural warnings.",
     }
     report_files = list(quality_dir.glob("*.json"))
     assert len(report_files) == 1
     payload = json.loads(report_files[0].read_text(encoding="utf-8"))
     assert payload["quality_status"] == "warn"
     assert payload["gate_reasons"] == ["unmapped_source_paragraphs_above_advisory_threshold"]
+
+
+def test_build_translation_quality_report_flags_bullet_marker_headings_in_strict_translate_mode():
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+        ),
+        final_markdown="## ●\n\nПереведённый абзац",
+        formatting_diagnostics_artifacts=[],
+    )
+
+    assert report["quality_status"] == "fail"
+    assert report["gate_reasons"] == ["bullet_marker_headings_present"]
+    assert report["bullet_heading_count"] == 1
+
+
+def test_run_document_processing_fails_on_strict_structural_markdown_quality_gate(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    quality_dir = tmp_path / "quality_reports"
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+
+    result = _run_processing(
+        runtime,
+        app_config={"translation_output_quality_gate_policy": "strict"},
+        processing_operation="translate",
+        generate_markdown_block=lambda **kwargs: "Заключение........ 29 Введение",
+    )
+
+    assert result == "failed"
+    assert "translation_quality_gate_failed" in runtime["state"]["last_error"]
+    report_files = list(quality_dir.glob("*.json"))
+    assert len(report_files) == 1
+    payload = json.loads(report_files[0].read_text(encoding="utf-8"))
+    assert payload["quality_status"] == "fail"
+    assert payload["gate_reasons"] == ["toc_body_concatenation_detected"]
+    assert payload["bullet_heading_count"] == 0
+    assert payload["toc_body_concat_detected"] is True
+
+
+def test_run_document_processing_warns_on_advisory_structural_markdown_quality_gate(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    quality_dir = tmp_path / "quality_reports"
+    artifact_calls = {}
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+
+    result = _run_processing(
+        runtime,
+        app_config={"translation_output_quality_gate_policy": "advisory"},
+        processing_operation="translate",
+        generate_markdown_block=lambda **kwargs: "Заключение……29 Введение",
+        write_ui_result_artifacts=lambda **kwargs: artifact_calls.setdefault("kwargs", dict(kwargs)) or {"markdown_path": "/tmp/report.result.md", "docx_path": "/tmp/report.result.docx", "metadata_path": "/tmp/report.result.meta.json"},
+    )
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_result_notice"] == {
+        "level": "warning",
+        "message": "Результат собран, но quality report зафиксировал document-level structural warnings.",
+    }
+    assert artifact_calls["kwargs"]["quality_warning"]["gate_reasons"] == ["toc_body_concatenation_detected"]
+    report_files = list(quality_dir.glob("*.json"))
+    assert len(report_files) == 1
+    payload = json.loads(report_files[0].read_text(encoding="utf-8"))
+    assert payload["quality_status"] == "warn"
+    assert payload["gate_reasons"] == ["toc_body_concatenation_detected"]
+    assert payload["toc_body_concat_detected"] is True
 
 
 def test_run_document_processing_logs_compact_block_plan_summary_at_info() -> None:

@@ -13,6 +13,7 @@ DEFAULT_REGISTRY_PATH = PROJECT_ROOT / "corpus_registry.toml"
 _SUPPORTED_TIERS = {"extraction", "structural", "full"}
 _SUPPORTED_STRUCTURAL_MODES = {"strict", "tolerant"}
 _STRUCTURE_RECOGNITION_MODES = {"off", "auto", "always"}
+_STRUCTURAL_EXPECTATION_VALUES = {"pass", "fail"}
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,9 @@ class DocumentProfile:
     require_no_bullet_headings: bool = False
     require_no_toc_body_concat: bool = False
     require_translation_domain: str | None = None
+    structural_run_profile: str | None = None
+    structural_expected_result: str = "pass"
+    structural_expected_failed_checks: tuple[str, ...] = ()
     default_run_profile: str | None = None
     tags: tuple[str, ...] = ()
     provenance: str = ""
@@ -245,6 +249,10 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
 def apply_runtime_resolution_to_app_config(app_config, resolution: RuntimeResolution) -> dict[str, object]:
     app_config_dict = app_config.to_dict()
     app_config_dict.update(resolution.effective.to_dict())
+    app_config_dict["translation_domain_default"] = resolution.effective.translation_domain
+    app_config_dict["audiobook_postprocess_enabled"] = resolution.effective.audiobook_postprocess_enabled
+    app_config_dict["keep_all_image_variants"] = resolution.effective.keep_all_image_variants
+    app_config_dict["enable_paragraph_markers"] = resolution.effective.enable_paragraph_markers
     return app_config_dict
 
 
@@ -258,6 +266,9 @@ def _build_document_profile(payload: Any) -> DocumentProfile:
     has_numbered_lists = _coerce_bool(payload, "has_numbered_lists", False)
     has_images = _coerce_bool(payload, "has_images", False)
     has_tables = _coerce_bool(payload, "has_tables", False)
+    structural_expected_result = _require_str(payload, "structural_expected_result", default="pass")
+    if structural_expected_result not in _STRUCTURAL_EXPECTATION_VALUES:
+        raise RuntimeError(f"Unsupported structural_expected_result: {structural_expected_result}")
     profile = DocumentProfile(
         id=_require_str(payload, "id"),
         source_path=_require_str(payload, "source_path"),
@@ -288,11 +299,22 @@ def _build_document_profile(payload: Any) -> DocumentProfile:
         require_no_bullet_headings=_coerce_bool(payload, "require_no_bullet_headings", False),
         require_no_toc_body_concat=_coerce_bool(payload, "require_no_toc_body_concat", False),
         require_translation_domain=_optional_str(payload, "require_translation_domain"),
+        structural_run_profile=_optional_str(payload, "structural_run_profile"),
+        structural_expected_result=structural_expected_result,
+        structural_expected_failed_checks=tuple(_coerce_str_list(payload, "structural_expected_failed_checks")),
         default_run_profile=_optional_str(payload, "default_run_profile"),
         tags=tuple(_coerce_str_list(payload, "tags")),
         provenance=_require_str(payload, "provenance", default=""),
         tolerance_reason=_optional_str(payload, "tolerance_reason"),
     )
+    if profile.structural_expected_result == "pass" and profile.structural_expected_failed_checks:
+        raise RuntimeError(
+            f"Pass profile {profile.id} cannot declare structural_expected_failed_checks"
+        )
+    if profile.structural_expected_result == "fail" and not profile.structural_expected_failed_checks:
+        raise RuntimeError(
+            f"Fail profile {profile.id} requires structural_expected_failed_checks"
+        )
     if profile.structural_mode == "tolerant" and not profile.tolerance_reason:
         raise RuntimeError(f"Tolerant profile {profile.id} requires tolerance_reason")
     return profile

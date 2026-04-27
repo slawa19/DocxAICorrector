@@ -29,6 +29,7 @@ from models import ParagraphBoundaryNormalizationReport
 from processing_service import clone_processing_service
 from real_document_validation_common import build_validation_event_logger, build_validation_runtime_config
 from real_document_validation_profiles import DocumentProfile, RunProfile, apply_runtime_resolution_to_app_config, resolve_runtime_resolution
+from preparation import flatten_structure_repair_metrics
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 FORMATTING_DIAGNOSTICS_DIR = PROJECT_ROOT / ".run" / "formatting_diagnostics"
@@ -126,18 +127,40 @@ def run_structural_passthrough_validation(
     runtime = _build_runtime_capture()
     event_log: list[dict[str, object]] = []
     formatting_before = _snapshot_formatting_diagnostics_paths()
-    result, prepared = _build_validation_processing_service(event_log).run_prepared_background_document(
-        uploaded_file=UploadedFileStub(source_path.name, source_bytes),
-        chunk_size=int(runtime_resolution.effective.chunk_size),
-        image_mode=str(runtime_resolution.effective.image_mode),
-        keep_all_image_variants=bool(runtime_resolution.effective.keep_all_image_variants),
-        app_config=runtime_config,
-        model=str(runtime_resolution.effective.model),
-        max_retries=int(runtime_resolution.effective.max_retries),
-        job_mutator=_build_passthrough_job,
-        progress_callback=None,
-        runtime=runtime,
-    )
+    try:
+        result, prepared = _build_validation_processing_service(event_log).run_prepared_background_document(
+            uploaded_file=UploadedFileStub(source_path.name, source_bytes),
+            chunk_size=int(runtime_resolution.effective.chunk_size),
+            image_mode=str(runtime_resolution.effective.image_mode),
+            keep_all_image_variants=bool(runtime_resolution.effective.keep_all_image_variants),
+            app_config=runtime_config,
+            model=str(runtime_resolution.effective.model),
+            max_retries=int(runtime_resolution.effective.max_retries),
+            job_mutator=_build_passthrough_job,
+            progress_callback=None,
+            runtime=runtime,
+        )
+    except Exception as exc:
+        checks = [
+            {
+                "name": "preparation_quality_gate_blocked",
+                "passed": False,
+                "error": str(exc),
+            }
+        ]
+        return _build_validation_result(
+            document_profile=document_profile,
+            run_profile=run_profile,
+            tier="structural",
+            source_path=source_path,
+            result="failed",
+            metrics={"preparation_error": str(exc)},
+            checks=checks,
+            runtime_config=build_validation_runtime_config(runtime_resolution),
+            output_artifacts=None,
+            formatting_diagnostics=[],
+            event_log=event_log,
+        )
 
     formatting_after = _snapshot_formatting_diagnostics_paths()
     formatting_paths = _collect_new_formatting_diagnostics_paths(formatting_before, formatting_after)
@@ -159,7 +182,7 @@ def run_structural_passthrough_validation(
         _,
         source_relation_report,
         source_cleanup_report,
-        _,
+        source_structure_repair_report,
     ) = _unpack_extraction_result(extract_document_content_with_normalization_reports(BytesIO(prepared.uploaded_file_bytes)))
     output_paragraphs = []
     output_image_assets = []
@@ -172,6 +195,7 @@ def run_structural_passthrough_validation(
         relation_report=source_relation_report,
         cleanup_report=source_cleanup_report,
     )
+    metrics.update(flatten_structure_repair_metrics(source_structure_repair_report))
     metrics.update(
         {
             "output_paragraph_count": len(output_paragraphs),
@@ -195,10 +219,22 @@ def run_structural_passthrough_validation(
             "output_docx_openable": bool(output_artifacts["output_docx_openable"]),
             "source_toc_detected": _has_toc_structural_roles(source_paragraphs),
             "output_toc_detected": _has_toc_structural_roles(output_paragraphs),
+            "source_toc_region_count": _relation_count(source_relation_report, "toc_region"),
             "bullet_heading_count": _count_bullet_headings(latest_markdown),
             "toc_body_concat_detected": _has_toc_body_concat_markdown(latest_markdown),
             "require_pdf_conversion_satisfied": source_path.suffix.lower() == ".pdf",
             "runtime_translation_domain": str(runtime_resolution.effective.translation_domain),
+            "quality_gate_status": _extract_event_context_value(event_log, "structure_processing_outcome", "quality_gate_status"),
+            "quality_gate_reasons": _extract_event_context_list(event_log, "structure_processing_outcome", "quality_gate_reasons"),
+            "readiness_status": _extract_event_context_value(event_log, "structure_processing_outcome", "readiness_status"),
+            "block_count": _extract_event_context_int(event_log, "block_plan_summary", "block_count"),
+            "llm_block_count": _extract_event_context_int(event_log, "block_plan_summary", "llm_block_count"),
+            "passthrough_block_count": _extract_event_context_int(event_log, "block_plan_summary", "passthrough_block_count"),
+            "first_block_target_chars": _extract_event_context_int_list(
+                event_log,
+                "block_plan_summary",
+                "first_block_target_chars",
+            ),
         }
     )
     checks = _build_extraction_checks(document_profile, metrics)
@@ -442,12 +478,20 @@ def _build_structural_checks(
             }
         )
     if document_profile.require_toc_detected:
+        bounded_toc_detected = bool(
+            metrics.get("source_toc_detected")
+            or metrics.get("output_toc_detected")
+            or _as_int(metrics, "structure_repair_bounded_toc_regions") > 0
+            or _as_int(metrics, "source_toc_region_count") > 0
+        )
         checks.append(
             {
                 "name": "toc_detected_required",
-                "passed": bool(metrics.get("source_toc_detected") or metrics.get("output_toc_detected")),
+                "passed": bounded_toc_detected,
                 "source_toc_detected": metrics.get("source_toc_detected"),
                 "output_toc_detected": metrics.get("output_toc_detected"),
+                "structure_repair_bounded_toc_regions": metrics.get("structure_repair_bounded_toc_regions"),
+                "source_toc_region_count": metrics.get("source_toc_region_count"),
             }
         )
     if document_profile.require_pdf_conversion:
@@ -467,11 +511,13 @@ def _build_structural_checks(
             }
         )
     if document_profile.require_no_toc_body_concat:
+        source_toc_boundary_repaired = _as_int(metrics, "structure_repair_toc_body_boundary_repairs") > 0
         checks.append(
             {
                 "name": "no_toc_body_concat_required",
-                "passed": not bool(metrics.get("toc_body_concat_detected")),
+                "passed": not bool(metrics.get("toc_body_concat_detected")) and source_toc_boundary_repaired,
                 "toc_body_concat_detected": metrics.get("toc_body_concat_detected"),
+                "structure_repair_toc_body_boundary_repairs": metrics.get("structure_repair_toc_body_boundary_repairs"),
             }
         )
     if document_profile.require_translation_domain:
@@ -481,6 +527,15 @@ def _build_structural_checks(
                 "passed": str(metrics.get("runtime_translation_domain", "")) == document_profile.require_translation_domain,
                 "actual": metrics.get("runtime_translation_domain"),
                 "required": document_profile.require_translation_domain,
+            }
+        )
+    if int(metrics.get("structure_repair_bounded_toc_regions", 0) or 0) > 0:
+        checks.append(
+            {
+                "name": "bounded_toc_repair_detected",
+                "passed": True,
+                "bounded_toc_regions": metrics.get("structure_repair_bounded_toc_regions"),
+                "source_toc_region_count": metrics.get("source_toc_region_count"),
             }
         )
     return checks
@@ -631,6 +686,65 @@ def _has_toc_body_concat_markdown(markdown_text: str) -> bool:
         if re.search(r"(?:\.{2,}|…|\s{2,})\s*[0-9ivxlcdmIVXLCDM]+\s+[А-Яа-яЁёA-Za-z]", paragraph):
             return True
     return False
+
+
+def _relation_count(relation_report: object, key: str) -> int:
+    relation_counts = getattr(relation_report, "relation_counts", {}) or {}
+    if not isinstance(relation_counts, Mapping):
+        return 0
+    value = relation_counts.get(key, 0)
+    try:
+        return int(cast(Any, value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _extract_event_context(event_log: Sequence[Mapping[str, object]], event_id: str) -> Mapping[str, object]:
+    for event in reversed(event_log):
+        if str(event.get("event_id") or "") != event_id:
+            continue
+        context = event.get("context")
+        if isinstance(context, Mapping):
+            return context
+        break
+    return {}
+
+
+def _extract_event_context_value(event_log: Sequence[Mapping[str, object]], event_id: str, key: str) -> str:
+    context = _extract_event_context(event_log, event_id)
+    value = context.get(key)
+    return "" if value is None else str(value)
+
+
+def _extract_event_context_list(event_log: Sequence[Mapping[str, object]], event_id: str, key: str) -> list[str]:
+    context = _extract_event_context(event_log, event_id)
+    values = context.get(key)
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes, bytearray)):
+        return []
+    return [str(value) for value in values]
+
+
+def _extract_event_context_int(event_log: Sequence[Mapping[str, object]], event_id: str, key: str) -> int:
+    context = _extract_event_context(event_log, event_id)
+    value = context.get(key)
+    try:
+        return int(cast(Any, value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _extract_event_context_int_list(event_log: Sequence[Mapping[str, object]], event_id: str, key: str) -> list[int]:
+    context = _extract_event_context(event_log, event_id)
+    values = context.get(key)
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes, bytearray)):
+        return []
+    result: list[int] = []
+    for value in values:
+        try:
+            result.append(int(cast(Any, value)))
+        except (TypeError, ValueError):
+            continue
+    return result
 
 
 def _build_output_artifacts(docx_bytes: bytes, markdown_text: str) -> dict[str, object]:

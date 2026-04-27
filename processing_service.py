@@ -265,23 +265,39 @@ class ProcessingService:
         resolved_prepare_progress_callback = prepare_progress_callback or progress_callback
         resolved_processing_progress_callback = processing_progress_callback or progress_callback or (lambda **kwargs: None)
         uploaded_payload = freeze_uploaded_file(uploaded_file)
-        prepared = application_flow.prepare_run_context_for_background(
-            uploaded_payload=uploaded_payload,
-            chunk_size=chunk_size,
-            image_mode=image_mode,
-            keep_all_image_variants=keep_all_image_variants,
-            processing_operation=processing_operation,
-            app_config=app_config,
-            progress_callback=resolved_prepare_progress_callback,
-        )
+        try:
+            prepared = application_flow.prepare_run_context_for_background(
+                uploaded_payload=uploaded_payload,
+                chunk_size=chunk_size,
+                image_mode=image_mode,
+                keep_all_image_variants=keep_all_image_variants,
+                processing_operation=processing_operation,
+                app_config=app_config,
+                progress_callback=resolved_prepare_progress_callback,
+            )
+        except Exception as exc:
+            error_message = self.dependencies.present_error_fn(
+                "preparation_worker_crashed",
+                exc,
+                "Ошибка подготовки документа",
+            )
+            _emit_prepared_background_preparation_failure(
+                runtime=runtime,
+                error_message=error_message,
+                exc=exc,
+            )
+            raise
         jobs = _mutate_processing_jobs(prepared.jobs, job_mutator=job_mutator)
+        processing_app_config = dict(app_config)
+        processing_app_config["translation_domain_default"] = str(getattr(prepared, "translation_domain", "general") or "general")
+        processing_app_config["translation_domain_instructions"] = str(getattr(prepared, "translation_domain_instructions", "") or "")
         result = self.run_document_processing(
             uploaded_file=prepared.uploaded_filename,
             jobs=cast(Sequence[Mapping[str, object]], jobs),
             source_paragraphs=prepared.paragraphs,
             image_assets=prepared.image_assets,
             image_mode=image_mode,
-            app_config=app_config,
+            app_config=processing_app_config,
             model=model,
             max_retries=max_retries,
             processing_operation=processing_operation,
@@ -291,6 +307,32 @@ class ProcessingService:
             runtime=runtime,
         )
         return result, prepared
+
+
+def _emit_prepared_background_preparation_failure(*, runtime, error_message: str, exc: Exception) -> None:
+    if runtime is None or not hasattr(runtime, "emit"):
+        return
+    background_error = normalize_background_error(
+        stage="preparation",
+        exc=exc,
+        user_message=error_message,
+    )
+    runtime.emit(SetStateEvent(values={"last_error": error_message, "last_background_error": background_error}))
+    runtime.emit(FinalizeProcessingStatusEvent(stage="Ошибка подготовки", detail=error_message, progress=1.0, terminal_kind="error"))
+    runtime.emit(PushActivityEvent(message="Подготовка документа остановлена quality gate или завершилась ошибкой."))
+    runtime.emit(
+        AppendLogEvent(
+            payload={
+                "status": "ERROR",
+                "block_index": 0,
+                "block_count": 0,
+                "target_chars": 0,
+                "context_chars": 0,
+                "details": error_message,
+            }
+        )
+    )
+    runtime.emit(WorkerCompleteEvent(outcome="failed"))
 
 
 def _mutate_processing_jobs(

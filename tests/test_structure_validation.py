@@ -102,7 +102,40 @@ def test_validate_structure_quality_triggers_on_toc_like_region():
 
     assert report.escalation_recommended is True
     assert "toc_like_sequence_detected" in report.escalation_reasons
-    assert report.readiness_status == "blocked_needs_structure_repair"
+    assert report.readiness_status == "blocked_unsafe_best_effort_only"
+
+
+def test_validate_structure_quality_marks_large_front_matter_block_risk():
+    paragraphs = [
+        _paragraph(0, "Содержание", structural_role="toc_header"),
+        _paragraph(1, "Глава 1........ 10", structural_role="toc_entry"),
+        _paragraph(2, "Глава 2........ 20", structural_role="toc_entry"),
+        _paragraph(3, "Марк 13:13", structural_role="epigraph"),
+        _paragraph(4, "Введение", role="heading", heading_source="heuristic", structural_role="body"),
+    ]
+
+    report = validate_structure_quality(paragraphs=paragraphs, app_config=_config())
+
+    assert report.large_front_matter_block_risk is True
+    assert report.toc_region_bounded_count == 1
+    assert report.readiness_status == "ready"
+    assert "large_front_matter_block_risk" not in report.readiness_reasons
+
+
+def test_validate_structure_quality_blocks_large_front_matter_without_bounded_toc():
+    paragraphs = [
+        _paragraph(0, "Содержание", structural_role="toc_header"),
+        _paragraph(1, "Глава 1........ 10", structural_role="toc_entry"),
+        _paragraph(2, "Марк 13:13", structural_role="epigraph"),
+        _paragraph(3, "Введение", role="heading", heading_source="heuristic", structural_role="body"),
+    ]
+
+    report = validate_structure_quality(paragraphs=paragraphs, app_config=_config())
+
+    assert report.large_front_matter_block_risk is True
+    assert report.toc_region_bounded_count == 0
+    assert report.readiness_status == "blocked_unsafe_best_effort_only"
+    assert "large_front_matter_block_risk" in report.readiness_reasons
 
 
 def test_validate_structure_quality_heading_only_collapse_boundary_119_and_3():
@@ -161,7 +194,7 @@ def test_write_structure_validation_debug_artifact_writes_json_payload(tmp_path,
         toc_region_bounded_count=0,
         expected_heading_candidates_from_toc=4,
         structure_quality_risk_level="high",
-        readiness_status="blocked_needs_structure_repair",
+        readiness_status="blocked_unsafe_best_effort_only",
         readiness_reasons=("toc_like_sequence_without_bounded_region",),
     )
 
@@ -203,7 +236,7 @@ def test_write_structure_validation_debug_artifact_writes_json_payload(tmp_path,
         "toc_region_bounded_count": 0,
         "expected_heading_candidates_from_toc": 4,
         "structure_quality_risk_level": "high",
-        "readiness_status": "blocked_needs_structure_repair",
+        "readiness_status": "blocked_unsafe_best_effort_only",
         "readiness_reasons": ["toc_like_sequence_without_bounded_region"],
         "structure_repair_report": None,
     }
