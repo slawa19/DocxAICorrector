@@ -34,6 +34,20 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 FORMATTING_DIAGNOSTICS_DIR = PROJECT_ROOT / ".run" / "formatting_diagnostics"
 
 
+def _unpack_extraction_result(extraction_result):
+    paragraphs, image_assets, normalization_report, relations, relation_report, cleanup_report = extraction_result[:6]
+    structure_repair_report = extraction_result[6] if len(extraction_result) > 6 else None
+    return (
+        paragraphs,
+        image_assets,
+        normalization_report,
+        relations,
+        relation_report,
+        cleanup_report,
+        structure_repair_report,
+    )
+
+
 @dataclass
 class UploadedFileStub:
     name: str
@@ -69,9 +83,15 @@ def evaluate_extraction_profile(document_profile: DocumentProfile) -> dict[str, 
     source_path = document_profile.resolved_source_path(PROJECT_ROOT)
     source_bytes = source_path.read_bytes()
     normalized_source = processing_runtime.normalize_uploaded_document(filename=source_path.name, source_bytes=source_bytes)
-    paragraphs, image_assets, normalization_report, _, relation_report, cleanup_report = extract_document_content_with_normalization_reports(
-        BytesIO(normalized_source.content_bytes)
-    )
+    (
+        paragraphs,
+        image_assets,
+        normalization_report,
+        _,
+        relation_report,
+        cleanup_report,
+        _,
+    ) = _unpack_extraction_result(extract_document_content_with_normalization_reports(BytesIO(normalized_source.content_bytes)))
     metrics = _build_structural_metrics(
         paragraphs=paragraphs,
         image_assets=image_assets,
@@ -139,7 +159,8 @@ def run_structural_passthrough_validation(
         _,
         source_relation_report,
         source_cleanup_report,
-    ) = extract_document_content_with_normalization_reports(BytesIO(prepared.uploaded_file_bytes))
+        _,
+    ) = _unpack_extraction_result(extract_document_content_with_normalization_reports(BytesIO(prepared.uploaded_file_bytes)))
     output_paragraphs = []
     output_image_assets = []
     if output_artifacts["output_docx_openable"]:

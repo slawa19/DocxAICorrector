@@ -6,6 +6,7 @@ from typing import Any, cast
 import pytest
 
 import processing_runtime
+from generation import ensure_pandoc_available
 from models import LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport, RelationNormalizationReport
 
 
@@ -30,6 +31,13 @@ def _skip_if_legacy_doc_conversion_unavailable(source_path: Path) -> None:
     pytest.skip(f"legacy DOC auto-conversion unavailable in current runtime: {source_path}")
 
 
+def _skip_if_structural_passthrough_runtime_unavailable() -> None:
+    try:
+        ensure_pandoc_available()
+    except RuntimeError as exc:
+        pytest.skip(f"structural passthrough runtime unavailable: {exc}")
+
+
 @pytest.mark.parametrize("document_profile", REGISTRY.documents, ids=[profile.id for profile in REGISTRY.documents])
 def test_corpus_extraction(document_profile) -> None:
     source_path = document_profile.resolved_source_path()
@@ -50,6 +58,7 @@ def test_corpus_structural_passthrough(document_profile) -> None:
     if not source_path.exists():
         pytest.skip(f"missing real-document source: {source_path}")
     _skip_if_legacy_doc_conversion_unavailable(source_path)
+    _skip_if_structural_passthrough_runtime_unavailable()
 
     result = cast(dict[str, Any], run_structural_passthrough_validation(document_profile, STRUCTURAL_RUN_PROFILE))
 

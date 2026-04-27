@@ -35,14 +35,16 @@ def _to_windows_path(path: Path) -> str:
 
 
 def _run_powershell(command: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    if POWERSHELL_EXE is None:
+    powershell_exe = POWERSHELL_EXE
+    if powershell_exe is None:
         pytest.skip("requires PowerShell interop")
+    assert powershell_exe is not None
     merged_env = os.environ.copy()
     if env:
         merged_env.update(env)
     return subprocess.run(
         [
-            POWERSHELL_EXE,
+            powershell_exe,
             "-NoProfile",
             "-NoLogo",
             "-ExecutionPolicy",

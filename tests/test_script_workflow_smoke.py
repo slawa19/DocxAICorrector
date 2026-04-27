@@ -46,15 +46,17 @@ def _quote_for_powershell(value: str) -> str:
 
 
 def _run_powershell_command(command: str, env_overrides: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    if POWERSHELL_EXE is None:
+    powershell_exe = POWERSHELL_EXE
+    if powershell_exe is None:
         pytest.skip("requires PowerShell interop")
+    assert powershell_exe is not None
 
     env = os.environ.copy()
     if env_overrides:
         env.update(env_overrides)
     return subprocess.run(
         [
-            POWERSHELL_EXE,
+            powershell_exe,
             "-NoProfile",
             "-NoLogo",
             "-ExecutionPolicy",
@@ -72,15 +74,17 @@ def _run_powershell_command(command: str, env_overrides: dict[str, str] | None =
 
 
 def _run_powershell_script(script_name: str, *args: str, env_overrides: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    if POWERSHELL_EXE is None:
+    powershell_exe = POWERSHELL_EXE
+    if powershell_exe is None:
         pytest.skip("requires PowerShell interop")
+    assert powershell_exe is not None
 
     env = os.environ.copy()
     if env_overrides:
         env.update(env_overrides)
     return subprocess.run(
         [
-            POWERSHELL_EXE,
+            powershell_exe,
             "-NoProfile",
             "-NoLogo",
             "-ExecutionPolicy",

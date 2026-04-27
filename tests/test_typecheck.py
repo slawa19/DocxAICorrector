@@ -57,6 +57,7 @@ def _run_pyright() -> dict:
         pytest.fail(
             f"pyright produced invalid JSON.\nstdout: {result.stdout[:500]}\nstderr: {result.stderr[:500]}"
         )
+        raise AssertionError("unreachable")
 
 
 @pytest.mark.integration
