@@ -38,12 +38,21 @@ def _run_pyright() -> dict:
         pytest.skip("pyright timed out")
 
     stdout = result.stdout
-    json_start = stdout.find("{")
-    if json_start > 0:
-        stdout = stdout[json_start:]
+    # Some environments print a non-JSON preamble before the actual
+    # --outputjson payload (for example nodeenv architecture diagnostics).
+    # Anchor parsing to the object containing the standard "version" key.
+    version_index = stdout.find('"version"')
+    if version_index >= 0:
+        json_start = stdout.rfind("{", 0, version_index + 1)
+        if json_start >= 0:
+            stdout = stdout[json_start:]
+    else:
+        json_start = stdout.find("{")
+        if json_start > 0:
+            stdout = stdout[json_start:]
 
     try:
-        return json.loads(stdout)
+        return json.JSONDecoder().raw_decode(stdout.lstrip())[0]
     except json.JSONDecodeError:
         pytest.fail(
             f"pyright produced invalid JSON.\nstdout: {result.stdout[:500]}\nstderr: {result.stderr[:500]}"

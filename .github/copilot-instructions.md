@@ -60,6 +60,10 @@ Clarification for AI agents:
 - do not invoke Windows Python executables from WSL bash using mixed `d:/...` paths; prefer VS Code Python tools or a verified environment-native command path.
 - if a Python snippet or file inspection can be done with workspace Python tools, prefer that over cross-environment shell invocation.
 - when reproducing GitHub Actions, verify the failing run SHA first; if the local worktree is dirty or no longer matches that commit, use a clean worktree or the Docker CI-parity path before trusting the result.
+- when validating a specific GitHub Actions run, do not report pass/fail until that exact run is explicitly shown as completed with a final conclusion.
+- if Actions pages are fetched without authentication and job logs are unavailable, treat web status as provisional and confirm failures via the canonical local command path.
+- if fetched web content says a run is still queued/in progress, never claim that the run is fixed or failed; report it as pending and continue with local reproduction.
+- when user-provided evidence (for example email/job summary) conflicts with fetched page snapshots, prioritize reproducing the failing scope locally and report the discrepancy explicitly.
 - do not hardcode a Windows-only virtualenv such as `.venv-win` in shared static-analysis config consumed by Linux CI; pass interpreter paths explicitly or keep editor-only environments opt-in.
 
 ## Project Lifecycle (app start/stop)
