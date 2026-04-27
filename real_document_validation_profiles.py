@@ -41,6 +41,11 @@ class DocumentProfile:
     require_numbered_lists_preserved: bool = False
     require_nonempty_output: bool = True
     forbid_heading_only_collapse: bool = False
+    require_toc_detected: bool = False
+    require_pdf_conversion: bool = False
+    require_no_bullet_headings: bool = False
+    require_no_toc_body_concat: bool = False
+    require_translation_domain: str | None = None
     default_run_profile: str | None = None
     tags: tuple[str, ...] = ()
     provenance: str = ""
@@ -63,6 +68,7 @@ class RunProfile:
     processing_operation: str | None = None
     source_language: str | None = None
     target_language: str | None = None
+    translation_domain: str | None = None
     audiobook_postprocess_enabled: bool | None = None
     enable_paragraph_markers: bool | None = None
     keep_all_image_variants: bool | None = None
@@ -105,6 +111,7 @@ class ResolvedRuntimeConfig:
     processing_operation: str
     source_language: str
     target_language: str
+    translation_domain: str
     audiobook_postprocess_enabled: bool
     enable_paragraph_markers: bool
     keep_all_image_variants: bool
@@ -120,6 +127,7 @@ class ResolvedRuntimeConfig:
             "processing_operation": self.processing_operation,
             "source_language": self.source_language,
             "target_language": self.target_language,
+            "translation_domain": self.translation_domain,
             "audiobook_postprocess_enabled": self.audiobook_postprocess_enabled,
             "enable_paragraph_markers": self.enable_paragraph_markers,
             "keep_all_image_variants": self.keep_all_image_variants,
@@ -165,6 +173,7 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         processing_operation=str(getattr(app_config, "processing_operation_default", "edit") or "edit"),
         source_language=str(getattr(app_config, "source_language_default", "en") or "en"),
         target_language=str(getattr(app_config, "target_language_default", "ru") or "ru"),
+        translation_domain=str(getattr(app_config, "translation_domain_default", "general") or "general"),
         audiobook_postprocess_enabled=bool(getattr(app_config, "audiobook_postprocess_default", False)),
         enable_paragraph_markers=bool(app_config.enable_paragraph_markers),
         keep_all_image_variants=bool(app_config.keep_all_image_variants),
@@ -188,6 +197,7 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         processing_operation=str(_resolve_run_profile_field(run_profile.processing_operation, ui_defaults.processing_operation)),
         source_language=str(_resolve_run_profile_field(run_profile.source_language, ui_defaults.source_language)),
         target_language=str(_resolve_run_profile_field(run_profile.target_language, ui_defaults.target_language)),
+        translation_domain=str(_resolve_run_profile_field(run_profile.translation_domain, ui_defaults.translation_domain)),
         audiobook_postprocess_enabled=bool(
             _resolve_run_profile_field(
                 run_profile.audiobook_postprocess_enabled,
@@ -215,6 +225,7 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         "processing_operation": run_profile.processing_operation,
         "source_language": run_profile.source_language,
         "target_language": run_profile.target_language,
+        "translation_domain": run_profile.translation_domain,
         "audiobook_postprocess_enabled": run_profile.audiobook_postprocess_enabled,
         "enable_paragraph_markers": run_profile.enable_paragraph_markers,
         "keep_all_image_variants": run_profile.keep_all_image_variants,
@@ -272,6 +283,11 @@ def _build_document_profile(payload: Any) -> DocumentProfile:
         require_numbered_lists_preserved=_coerce_bool(payload, "require_numbered_lists_preserved", has_numbered_lists),
         require_nonempty_output=_coerce_bool(payload, "require_nonempty_output", True),
         forbid_heading_only_collapse=_coerce_bool(payload, "forbid_heading_only_collapse", False),
+        require_toc_detected=_coerce_bool(payload, "require_toc_detected", False),
+        require_pdf_conversion=_coerce_bool(payload, "require_pdf_conversion", False),
+        require_no_bullet_headings=_coerce_bool(payload, "require_no_bullet_headings", False),
+        require_no_toc_body_concat=_coerce_bool(payload, "require_no_toc_body_concat", False),
+        require_translation_domain=_optional_str(payload, "require_translation_domain"),
         default_run_profile=_optional_str(payload, "default_run_profile"),
         tags=tuple(_coerce_str_list(payload, "tags")),
         provenance=_require_str(payload, "provenance", default=""),
@@ -302,6 +318,7 @@ def _build_run_profile(payload: Any) -> RunProfile:
         processing_operation=_optional_processing_operation(payload, "processing_operation"),
         source_language=_optional_str(payload, "source_language"),
         target_language=_optional_str(payload, "target_language"),
+        translation_domain=_optional_str(payload, "translation_domain"),
         audiobook_postprocess_enabled=_optional_bool(payload, "audiobook_postprocess_enabled"),
         enable_paragraph_markers=_optional_bool(payload, "enable_paragraph_markers"),
         keep_all_image_variants=_optional_bool(payload, "keep_all_image_variants"),

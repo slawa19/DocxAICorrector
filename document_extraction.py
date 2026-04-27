@@ -40,6 +40,7 @@ from document_layout_cleanup import (
     clean_paragraph_layout_artifacts,
     write_layout_cleanup_report_artifact as _write_layout_cleanup_report_artifact_impl,
 )
+from document_structure_repair import repair_pdf_derived_structure
 from document_roles import (
     detect_explicit_list_kind,
     extract_explicit_heading_level,
@@ -82,6 +83,7 @@ from models import (
     RawTable,
     RelationNormalizationReport,
     LayoutArtifactCleanupReport,
+    StructureRepairReport,
 )
 from processing_runtime import read_uploaded_file_bytes, resolve_uploaded_filename
 from runtime_artifact_retention import (
@@ -167,7 +169,7 @@ def extract_inline_images(uploaded_file) -> list[ImageAsset]:
 
 
 def extract_document_content_from_docx(uploaded_file) -> tuple[list[ParagraphUnit], list[ImageAsset]]:
-    paragraphs, image_assets, _, _, _, _ = extract_document_content_with_normalization_reports(uploaded_file)
+    paragraphs, image_assets, _, _, _, _, _ = extract_document_content_with_normalization_reports(uploaded_file)
     return paragraphs, image_assets
 
 
@@ -182,6 +184,7 @@ def extract_document_content_with_normalization_reports(
     list[ParagraphRelation],
     RelationNormalizationReport,
     LayoutArtifactCleanupReport,
+    StructureRepairReport,
 ]:
     source_bytes = _read_uploaded_docx_bytes(uploaded_file)
     validate_docx_source_bytes(source_bytes)
@@ -205,6 +208,7 @@ def extract_document_content_with_normalization_reports(
         min_repeat_count=cleanup_min_repeat_count,
         max_repeated_text_chars=cleanup_max_repeated_text_chars,
     )
+    paragraphs, structure_repair_report = repair_pdf_derived_structure(paragraphs, app_config=app_config)
     _reassign_paragraph_identities(paragraphs)
     (
         relation_enabled,
@@ -263,13 +267,13 @@ def extract_document_content_with_normalization_reports(
             source_bytes=source_bytes,
             report=cleanup_report,
         )
-    return paragraphs, image_assets, boundary_report, relations, relation_report, cleanup_report
+    return paragraphs, image_assets, boundary_report, relations, relation_report, cleanup_report, structure_repair_report
 
 
 def extract_document_content_with_boundary_report(
     uploaded_file,
 ) -> tuple[list[ParagraphUnit], list[ImageAsset], ParagraphBoundaryNormalizationReport]:
-    paragraphs, image_assets, boundary_report, _, _, _ = extract_document_content_with_normalization_reports(uploaded_file)
+    paragraphs, image_assets, boundary_report, _, _, _, _ = extract_document_content_with_normalization_reports(uploaded_file)
     return paragraphs, image_assets, boundary_report
 
 

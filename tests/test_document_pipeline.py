@@ -212,6 +212,8 @@ def test_run_document_processing_passes_text_transform_context_to_system_prompt_
         "target_language": "de",
         "editorial_intensity": "conservative",
         "prompt_variant": "default",
+        "translation_domain": "general",
+        "source_text": "",
     }
 
 
@@ -791,6 +793,8 @@ def test_resolve_system_prompt_falls_back_for_legacy_loader_without_editorial_in
         source_language="en",
         target_language="de",
         editorial_intensity="conservative",
+        translation_domain="theology",
+        source_text="Great Tribulation",
     )
 
     assert resolved == "system"
@@ -815,6 +819,8 @@ def test_run_document_processing_runs_second_pass_only_when_enabled():
         image_mode="safe",
         app_config={
             "editorial_intensity_default": "conservative",
+            "translation_domain_default": "theology",
+            "translation_domain_instructions": "ДОМЕН ПЕРЕВОДА: богословие / эсхатология.",
             "translation_second_pass_enabled": True,
             "translation_second_pass_model": "gpt-5.4",
         },
@@ -849,6 +855,9 @@ def test_run_document_processing_runs_second_pass_only_when_enabled():
     assert len(prompts) == 2
     assert prompts[0]["prompt_variant"] == "default"
     assert prompts[1]["prompt_variant"] == "literary_polish"
+    assert prompts[0]["translation_domain"] == "theology"
+    assert "богословие" in prompts[0]["source_text"]
+    assert prompts[1]["translation_domain"] == "theology"
     assert generated_calls[0]["model"] == "gpt-5.4-mini"
     assert generated_calls[0]["target_text"] == "block"
     assert generated_calls[0]["context_before"] == "before"
@@ -981,7 +990,7 @@ def test_run_document_processing_routes_toc_dominant_translate_block_through_toc
         source_paragraphs=[],
         image_assets=[],
         image_mode="safe",
-        app_config={},
+        app_config={"translation_domain_default": "theology", "translation_domain_instructions": "ДОМЕН ПЕРЕВОДА: богословие / эсхатология."},
         model="gpt-5.4-mini",
         max_retries=1,
         processing_operation="translate",
@@ -1011,6 +1020,7 @@ def test_run_document_processing_routes_toc_dominant_translate_block_through_toc
 
     assert result == "succeeded"
     assert prompts[0]["prompt_variant"] == "toc_translate"
+    assert prompts[0]["translation_domain"] == "theology"
     assert len(generated_calls) == 2
     assert runtime["state"]["latest_markdown"].startswith("Содержание")
     info_events = [event for event in events if event["level"] == logging.INFO]
@@ -1370,6 +1380,144 @@ def test_run_document_processing_warns_user_only_for_conflicting_formatting_diag
     assert "спорные места форматирования" in runtime["log"][-2]["details"]
     assert "Конфликтов подписи/заголовка: 1." in runtime["log"][-2]["details"]
     assert runtime["state"].get("latest_result_notice") is None
+
+
+def test_run_document_processing_fails_on_strict_unmapped_source_quality_gate(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    diagnostics_dir = tmp_path / "formatting_diagnostics"
+    quality_dir = tmp_path / "quality_reports"
+    monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [str(diagnostics_dir / "preserve_001.json")])
+    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+
+    def preserve_with_unmapped_artifact(docx_bytes, paragraphs, generated_paragraph_registry=None):
+        diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        (diagnostics_dir / "preserve_001.json").write_text(
+            json.dumps(
+                {
+                    "stage": "restore",
+                    "source_count": 5,
+                    "target_count": 4,
+                    "mapped_count": 4,
+                    "unmapped_source_ids": ["p0004"],
+                    "unmapped_target_indexes": [],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return docx_bytes
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
+        source_paragraphs=[ParagraphStub()],
+        image_assets=[],
+        image_mode="safe",
+        app_config={"translation_output_quality_gate_policy": "strict"},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="translate",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "Обработанный блок",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: b"docx-bytes",
+        preserve_source_paragraph_properties=preserve_with_unmapped_artifact,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+    )
+
+    assert result == "failed"
+    assert "translation_quality_gate_failed" in runtime["state"]["last_error"]
+    assert runtime["activity"][-1] == "Итоговый перевод отклонён quality gate из-за потери paragraph mapping."
+    report_files = list(quality_dir.glob("*.json"))
+    assert len(report_files) == 1
+    payload = json.loads(report_files[0].read_text(encoding="utf-8"))
+    assert payload["quality_status"] == "fail"
+    assert payload["gate_reasons"] == ["unmapped_source_paragraphs_present"]
+
+
+def test_run_document_processing_surfaces_advisory_quality_notice_on_mapping_drift(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    diagnostics_dir = tmp_path / "formatting_diagnostics"
+    quality_dir = tmp_path / "quality_reports"
+    monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [str(diagnostics_dir / "preserve_001.json")])
+    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+
+    def preserve_with_unmapped_artifact(docx_bytes, paragraphs, generated_paragraph_registry=None):
+        diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        (diagnostics_dir / "preserve_001.json").write_text(
+            json.dumps(
+                {
+                    "stage": "restore",
+                    "source_count": 50,
+                    "target_count": 48,
+                    "mapped_count": 48,
+                    "unmapped_source_ids": ["p0048", "p0049"],
+                    "unmapped_target_indexes": [],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return docx_bytes
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
+        source_paragraphs=[ParagraphStub()],
+        image_assets=[],
+        image_mode="safe",
+        app_config={"translation_output_quality_gate_policy": "advisory"},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="translate",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "Обработанный блок",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: b"docx-bytes",
+        preserve_source_paragraph_properties=preserve_with_unmapped_artifact,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+    )
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_result_notice"] == {
+        "level": "warning",
+        "message": "Результат собран, но quality report зафиксировал заметный paragraph mapping drift.",
+    }
+    report_files = list(quality_dir.glob("*.json"))
+    assert len(report_files) == 1
+    payload = json.loads(report_files[0].read_text(encoding="utf-8"))
+    assert payload["quality_status"] == "warn"
+    assert payload["gate_reasons"] == ["unmapped_source_paragraphs_above_advisory_threshold"]
 
 
 def test_run_document_processing_logs_compact_block_plan_summary_at_info() -> None:

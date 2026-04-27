@@ -98,7 +98,14 @@ from runtime_artifacts import write_ui_result_artifacts as write_ui_result_artif
 JobValue: TypeAlias = object
 ProcessingJob: TypeAlias = Mapping[str, JobValue]
 PipelineResult: TypeAlias = ContractsPipelineResult
-ProcessedBlockStatus: TypeAlias = Literal["valid", "empty", "heading_only_output"]
+ProcessedBlockStatus: TypeAlias = Literal[
+    "valid",
+    "empty",
+    "heading_only_output",
+    "bullet_heading_output",
+    "toc_body_concat",
+    "english_residual_output",
+]
 FORMATTING_DIAGNOSTICS_DIR = get_formatting_diagnostics_dir()
 
 
@@ -130,6 +137,8 @@ def _resolve_system_prompt(
     target_language: str,
     editorial_intensity: str = "literary",
     prompt_variant: str = "default",
+    translation_domain: str = "general",
+    source_text: str = "",
 ) -> str:
     return _resolve_system_prompt_impl(
         load_system_prompt,
@@ -138,6 +147,8 @@ def _resolve_system_prompt(
         target_language=target_language,
         editorial_intensity=editorial_intensity,
         prompt_variant=prompt_variant,
+        translation_domain=translation_domain,
+        source_text=source_text,
     )
 
 
@@ -817,6 +828,7 @@ def _run_docx_build_phase(
     return DocxBuildPhaseResult(
         docx_bytes=phase_result["docx_bytes"],
         latest_result_notice=phase_result["latest_result_notice"],
+        formatting_diagnostics_artifacts=list(phase_result.get("formatting_diagnostics_artifacts") or []),
     )
 
 
@@ -837,6 +849,7 @@ def _finalize_processing_success(
         docx_phase={
             "docx_bytes": docx_phase.docx_bytes,
             "latest_result_notice": docx_phase.latest_result_notice,
+            "formatting_diagnostics_artifacts": list(docx_phase.formatting_diagnostics_artifacts),
         },
         job_count=job_count,
         current_markdown_fn=_current_markdown,

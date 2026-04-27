@@ -8,7 +8,7 @@ from models import ImageAsset, ImageVariantCandidate
 from models import DocumentBlock
 from models import LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport
 from models import ParagraphClassification, ParagraphUnit, StructureMap
-from models import StructureRecognitionSummary
+from models import StructureRecognitionSummary, StructureRepairReport
 import preparation
 from processing_runtime import FrozenUploadPayload, build_in_memory_uploaded_file, build_preparation_request_marker
 
@@ -176,7 +176,23 @@ def test_prepare_document_for_processing_passes_app_config_to_extraction(monkeyp
 def _build_extract_result(paragraphs, image_assets, report, relations=None, relation_report=None, cleanup_report=None):
     if cleanup_report is None:
         cleanup_report = _build_cleanup_report(original=len(paragraphs), cleaned=len(paragraphs))
-    return paragraphs, image_assets, report, ([] if relations is None else relations), relation_report, cleanup_report
+    return (
+        paragraphs,
+        image_assets,
+        report,
+        ([] if relations is None else relations),
+        relation_report,
+        cleanup_report,
+        StructureRepairReport(
+            applied=False,
+            repaired_bullet_items=0,
+            repaired_numbered_items=0,
+            bounded_toc_regions=0,
+            toc_body_boundary_repairs=0,
+            heading_candidates_from_toc=0,
+            remaining_isolated_marker_count=0,
+        ),
+    )
 
 
 def _build_docx_bytes(paragraphs: list[str]) -> bytes:
@@ -1117,6 +1133,7 @@ def test_prepare_document_for_processing_auto_mode_runs_validation_and_skips_ai_
             "structure_validation_toc_like_sequence_min_length": 4,
             "structure_validation_forbid_heading_only_collapse": True,
             "structure_validation_save_debug_artifacts": False,
+            "structure_validation_block_on_high_risk_noop": True,
             "models": _build_runtime_model_registry(structure_recognition_model="gpt-5-mini"),
         },
     )
@@ -1196,6 +1213,7 @@ def test_prepare_document_for_processing_auto_mode_runs_ai_when_gate_escalates(m
             "structure_validation_toc_like_sequence_min_length": 4,
             "structure_validation_forbid_heading_only_collapse": True,
             "structure_validation_save_debug_artifacts": False,
+            "structure_validation_block_on_high_risk_noop": True,
             "models": _build_runtime_model_registry(structure_recognition_model="gpt-5-mini"),
         },
     )
@@ -1221,6 +1239,77 @@ def test_prepare_document_for_processing_auto_mode_runs_ai_when_gate_escalates(m
     assert result.structure_ai_attempted is True
 
 
+def test_prepare_document_for_processing_marks_quality_gate_blocked_on_high_risk_ai_noop(monkeypatch):
+    session_state = {"preparation_cache": {}}
+    paragraphs = [_build_paragraph(source_index=index, text=f"Section {index}") for index in range(50)]
+
+    monkeypatch.setattr(
+        preparation,
+        "extract_document_content_with_normalization_reports",
+        lambda uploaded_file: _build_extract_result(paragraphs, [], _build_report(raw=50, logical=50)),
+    )
+    monkeypatch.setattr(preparation, "get_client", lambda: object())
+    monkeypatch.setattr(
+        preparation,
+        "build_structure_map",
+        lambda *args, **kwargs: StructureMap(
+            classifications={},
+            model_used="gpt-5-mini",
+            total_tokens_used=12,
+            processing_time_seconds=0.1,
+            window_count=1,
+        ),
+    )
+    monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "text")
+    monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars, relations=None: ["block"])
+    monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [{"target_text": "block", "target_chars": 5, "context_chars": 0}])
+    monkeypatch.setattr(
+        preparation,
+        "load_app_config",
+        lambda: {
+            "paragraph_boundary_normalization_enabled": True,
+            "paragraph_boundary_normalization_mode": "high_only",
+            "paragraph_boundary_ai_review_enabled": False,
+            "paragraph_boundary_ai_review_mode": "off",
+            "relation_normalization_enabled": True,
+            "relation_normalization_profile": "phase2_default",
+            "relation_normalization_enabled_relation_kinds": ("epigraph_attribution", "image_caption", "table_caption", "toc_region"),
+            "structure_recognition_mode": "auto",
+            "structure_recognition_enabled": False,
+            "structure_recognition_model": "gpt-5-mini",
+            "structure_recognition_max_window_paragraphs": 1800,
+            "structure_recognition_overlap_paragraphs": 50,
+            "structure_recognition_timeout_seconds": 60,
+            "structure_recognition_min_confidence": "medium",
+            "structure_recognition_cache_enabled": False,
+            "structure_recognition_save_debug_artifacts": False,
+            "structure_validation_enabled": True,
+            "structure_validation_min_paragraphs_for_auto_gate": 40,
+            "structure_validation_min_explicit_heading_density": 0.5,
+            "structure_validation_max_suspicious_short_body_ratio_without_escalation": 0.05,
+            "structure_validation_max_all_caps_or_centered_body_ratio_without_escalation": 0.03,
+            "structure_validation_toc_like_sequence_min_length": 4,
+            "structure_validation_forbid_heading_only_collapse": True,
+            "structure_validation_save_debug_artifacts": False,
+            "structure_validation_block_on_high_risk_noop": True,
+            "models": _build_runtime_model_registry(structure_recognition_model="gpt-5-mini"),
+        },
+    )
+
+    result = preparation.prepare_document_for_processing(
+        uploaded_payload=_build_uploaded_payload("report.docx", b"docx-bytes", "report.docx:10:hash"),
+        chunk_size=6000,
+        session_state=session_state,
+    )
+
+    assert result.quality_gate_status == "blocked"
+    assert result.quality_gate_reasons == (
+        "toc_like_sequence_without_bounded_region",
+        "high_risk_without_structure_repair",
+        "structure_recognition_noop_on_high_risk",
+    )
+
+
 def test_build_structure_processing_status_note_describes_auto_escalation():
     report = preparation.StructureValidationReport(
         paragraph_count=50,
@@ -1237,6 +1326,13 @@ def test_build_structure_processing_status_note_describes_auto_escalation():
         all_caps_or_centered_body_ratio=0.0,
         escalation_recommended=True,
         escalation_reasons=("low_explicit_heading_density", "toc_like_sequence_detected"),
+        isolated_marker_paragraph_count=0,
+        large_front_matter_block_risk=False,
+        toc_region_bounded_count=0,
+        expected_heading_candidates_from_toc=3,
+        structure_quality_risk_level="high",
+        readiness_status="blocked_needs_structure_repair",
+        readiness_reasons=("toc_like_sequence_without_bounded_region",),
     )
     source = type(
         "StructureSource",
@@ -1255,6 +1351,50 @@ def test_build_structure_processing_status_note_describes_auto_escalation():
     assert note == (
         "Структура: auto-режим, выполнена эскалация в AI; классифицировано 6 абзацев, найдено 2 заголовков. "
         "Причины: мало явных заголовков, обнаружен TOC-подобный фрагмент."
+    )
+
+
+def test_build_structure_processing_status_note_marks_high_risk_noop_as_blocked():
+    report = preparation.StructureValidationReport(
+        paragraph_count=50,
+        nonempty_paragraph_count=50,
+        explicit_heading_count=0,
+        heuristic_heading_count=0,
+        suspicious_short_body_count=8,
+        all_caps_body_count=0,
+        centered_body_count=0,
+        toc_like_sequence_count=1,
+        ambiguous_paragraph_count=8,
+        explicit_heading_density=0.0,
+        suspicious_short_body_ratio=0.16,
+        all_caps_or_centered_body_ratio=0.0,
+        escalation_recommended=True,
+        escalation_reasons=("low_explicit_heading_density", "toc_like_sequence_detected"),
+        isolated_marker_paragraph_count=1,
+        large_front_matter_block_risk=False,
+        toc_region_bounded_count=0,
+        expected_heading_candidates_from_toc=3,
+        structure_quality_risk_level="high",
+        readiness_status="blocked_needs_structure_repair",
+        readiness_reasons=("toc_like_sequence_without_bounded_region",),
+    )
+    source = type(
+        "StructureSource",
+        (),
+        {
+            "structure_recognition_mode": "auto",
+            "structure_validation_report": report,
+            "structure_map": object(),
+            "structure_ai_attempted": True,
+            "structure_recognition_summary": StructureRecognitionSummary(ai_classified_count=0, ai_heading_count=0),
+        },
+    )()
+
+    note = preparation.build_structure_processing_status_note(source)
+
+    assert note == (
+        "Структура: auto-режим, выполнена эскалация в AI; AI не внёс изменений, документ помечен как "
+        "требующий structural repair. Причины: мало явных заголовков, обнаружен TOC-подобный фрагмент."
     )
 
 

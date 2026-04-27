@@ -7,7 +7,7 @@ from pathlib import Path
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from models import ParagraphUnit
+from models import ParagraphUnit, StructureRepairReport
 from runtime_artifact_retention import (
     STRUCTURE_VALIDATION_MAX_AGE_SECONDS,
     STRUCTURE_VALIDATION_MAX_COUNT,
@@ -36,6 +36,14 @@ class StructureValidationReport:
     all_caps_or_centered_body_ratio: float
     escalation_recommended: bool
     escalation_reasons: tuple[str, ...] = ()
+    isolated_marker_paragraph_count: int = 0
+    large_front_matter_block_risk: bool = False
+    toc_region_bounded_count: int = 0
+    expected_heading_candidates_from_toc: int = 0
+    structure_quality_risk_level: str = "low"
+    readiness_status: str = "ready"
+    readiness_reasons: tuple[str, ...] = ()
+    structure_repair_report: StructureRepairReport | None = None
 
 
 def _paragraph_value(paragraph: ParagraphLike, key: str, default: object = None) -> object:
@@ -130,6 +138,71 @@ def _count_toc_like_sequences(paragraphs: Sequence[ParagraphLike], *, min_length
     return sequence_count
 
 
+def _is_isolated_marker_paragraph(paragraph: ParagraphLike) -> bool:
+    text = _normalized_text(paragraph)
+    if not text:
+        return False
+    if _paragraph_value(paragraph, "role") == "heading":
+        return False
+    if _paragraph_value(paragraph, "list_kind") is not None:
+        return False
+    return bool(text in {"●", "•", "-", "*"} or __import__("re").match(r"^\d+[\.)]$", text))
+
+
+def _count_bounded_toc_regions(paragraphs: Sequence[ParagraphLike]) -> int:
+    count = 0
+    index = 0
+    while index < len(paragraphs):
+        structural_role = str(_paragraph_value(paragraphs[index], "structural_role", "") or "")
+        if structural_role != "toc_header":
+            index += 1
+            continue
+        look_ahead = index + 1
+        while look_ahead < len(paragraphs) and str(_paragraph_value(paragraphs[look_ahead], "structural_role", "") or "") == "toc_entry":
+            look_ahead += 1
+        if look_ahead - index >= 3:
+            count += 1
+            index = look_ahead
+            continue
+        index += 1
+
+    return count
+
+
+def _count_toc_entries(paragraphs: Sequence[ParagraphLike]) -> int:
+    return sum(1 for paragraph in paragraphs if str(_paragraph_value(paragraph, "structural_role", "") or "") == "toc_entry")
+
+
+def _resolve_structure_quality_risk_level(*, escalation_reasons: Sequence[str]) -> str:
+    if not escalation_reasons:
+        return "low"
+    if len(escalation_reasons) >= 3 or "toc_like_sequence_detected" in escalation_reasons:
+        return "high"
+    return "medium"
+
+
+def _build_readiness_status(
+    *,
+    toc_like_sequence_count: int,
+    toc_region_bounded_count: int,
+    isolated_marker_paragraph_count: int,
+    structure_quality_risk_level: str,
+    structure_repair_report: StructureRepairReport | None,
+) -> tuple[str, tuple[str, ...]]:
+    reasons: list[str] = []
+    if toc_like_sequence_count > 0 and toc_region_bounded_count == 0:
+        reasons.append("toc_like_sequence_without_bounded_region")
+    if isolated_marker_paragraph_count > 0:
+        reasons.append("isolated_list_markers_remaining")
+    if structure_quality_risk_level == "high" and structure_repair_report is not None and not structure_repair_report.applied:
+        reasons.append("high_risk_without_structure_repair")
+    if reasons:
+        return "blocked_needs_structure_repair", tuple(reasons)
+    if structure_quality_risk_level == "medium":
+        return "ready_with_warnings", ()
+    return "ready", ()
+
+
 def _max_body_run_length(paragraphs: Sequence[ParagraphLike]) -> int:
     current = 0
     maximum = 0
@@ -147,6 +220,7 @@ def validate_structure_quality(
     *,
     paragraphs: Sequence[ParagraphLike],
     app_config: Mapping[str, Any],
+    structure_repair_report: StructureRepairReport | None = None,
 ) -> StructureValidationReport:
     paragraph_count = len(paragraphs)
     nonempty_paragraphs = [paragraph for paragraph in paragraphs if _normalized_text(paragraph)]
@@ -186,6 +260,9 @@ def validate_structure_quality(
     explicit_heading_density = explicit_heading_count / divisor
     suspicious_short_body_ratio = suspicious_short_body_count / divisor
     all_caps_or_centered_body_ratio = all_caps_or_centered_count / divisor
+    isolated_marker_paragraph_count = sum(1 for paragraph in nonempty_paragraphs if _is_isolated_marker_paragraph(paragraph))
+    toc_region_bounded_count = _count_bounded_toc_regions(paragraphs)
+    expected_heading_candidates_from_toc = _count_toc_entries(paragraphs)
 
     escalation_reasons: list[str] = []
     min_paragraphs_for_auto_gate = int(app_config.get("structure_validation_min_paragraphs_for_auto_gate", 40) or 40)
@@ -207,6 +284,17 @@ def validate_structure_quality(
     if bool(app_config.get("structure_validation_forbid_heading_only_collapse", True)):
         if _max_body_run_length(paragraphs) >= 120 and explicit_heading_count < 3:
             escalation_reasons.append("heading_only_collapse_risk")
+    if isolated_marker_paragraph_count > 0:
+        escalation_reasons.append("isolated_list_marker_fragments")
+
+    structure_quality_risk_level = _resolve_structure_quality_risk_level(escalation_reasons=escalation_reasons)
+    readiness_status, readiness_reasons = _build_readiness_status(
+        toc_like_sequence_count=toc_like_sequence_count,
+        toc_region_bounded_count=toc_region_bounded_count,
+        isolated_marker_paragraph_count=isolated_marker_paragraph_count,
+        structure_quality_risk_level=structure_quality_risk_level,
+        structure_repair_report=structure_repair_report,
+    )
 
     return StructureValidationReport(
         paragraph_count=paragraph_count,
@@ -223,6 +311,14 @@ def validate_structure_quality(
         all_caps_or_centered_body_ratio=all_caps_or_centered_body_ratio,
         escalation_recommended=bool(escalation_reasons),
         escalation_reasons=tuple(escalation_reasons),
+        isolated_marker_paragraph_count=isolated_marker_paragraph_count,
+        large_front_matter_block_risk=False,
+        toc_region_bounded_count=toc_region_bounded_count,
+        expected_heading_candidates_from_toc=expected_heading_candidates_from_toc,
+        structure_quality_risk_level=structure_quality_risk_level,
+        readiness_status=readiness_status,
+        readiness_reasons=readiness_reasons,
+        structure_repair_report=structure_repair_report,
     )
 
 

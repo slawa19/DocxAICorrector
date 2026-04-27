@@ -1,4 +1,5 @@
 import logging
+import json
 import re
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -22,6 +23,9 @@ _NARRATION_DISALLOWED_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("superscript_footnote", re.compile(r"[\u00B9\u00B2\u00B3\u2070-\u2079]")),
     ("markdown_heading", re.compile(r"^\s{0,3}#", re.MULTILINE)),
 )
+QUALITY_REPORTS_DIR = Path(".run") / "quality_reports"
+QUALITY_REPORTS_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+QUALITY_REPORTS_MAX_COUNT = 100
 
 
 def _require_group_int(group: Mapping[str, object], key: str) -> int:
@@ -112,6 +116,101 @@ def build_formatting_diagnostics_user_feedback(artifact_paths: Sequence[str]) ->
         "Сборка DOCX завершена; сохранена служебная диагностика форматирования.",
         _build_formatting_diagnostics_user_message(payloads[0], warn_user=False),
     )
+
+
+def _prune_quality_reports(*, target_dir: Path, now_epoch_seconds: float | None = None) -> None:
+    if not target_dir.exists():
+        return
+    reference_now = time.time() if now_epoch_seconds is None else now_epoch_seconds
+    retained: list[tuple[float, Path]] = []
+    for artifact_path in target_dir.glob("*.json"):
+        try:
+            mtime = artifact_path.stat().st_mtime
+        except OSError:
+            continue
+        if max(0.0, reference_now - mtime) > QUALITY_REPORTS_MAX_AGE_SECONDS:
+            try:
+                artifact_path.unlink()
+            except OSError:
+                pass
+            continue
+        retained.append((mtime, artifact_path))
+    if len(retained) <= QUALITY_REPORTS_MAX_COUNT:
+        return
+    retained.sort(key=lambda item: (item[0], item[1].name))
+    for _, artifact_path in retained[: len(retained) - QUALITY_REPORTS_MAX_COUNT]:
+        try:
+            artifact_path.unlink()
+        except OSError:
+            continue
+
+
+def _write_quality_report_artifact(*, source_name: str, payload: Mapping[str, object]) -> str | None:
+    try:
+        QUALITY_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", source_name or "document").strip("_") or "document"
+        generated_at_epoch_ms = int(time.time() * 1000)
+        artifact_path = QUALITY_REPORTS_DIR / f"{safe_name}_{generated_at_epoch_ms}.json"
+        artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        _prune_quality_reports(target_dir=QUALITY_REPORTS_DIR)
+        return str(artifact_path)
+    except Exception:
+        return None
+
+
+def _resolve_translation_quality_gate_policy(*, context: Any) -> str:
+    configured = str(context.app_config.get("translation_output_quality_gate_policy", "")).strip().lower()
+    if configured in {"strict", "advisory"}:
+        return configured
+    if context.processing_operation == "translate":
+        return "strict"
+    return "advisory"
+
+
+def _build_translation_quality_report(
+    *,
+    context: Any,
+    final_markdown: str,
+    formatting_diagnostics_artifacts: Sequence[str],
+) -> dict[str, object]:
+    payloads = _load_formatting_diagnostics_payloads(formatting_diagnostics_artifacts)
+    latest_payload = payloads[-1] if payloads else {}
+    unmapped_source_ids = latest_payload.get("unmapped_source_ids") if isinstance(latest_payload, Mapping) else []
+    unmapped_target_indexes = latest_payload.get("unmapped_target_indexes") if isinstance(latest_payload, Mapping) else []
+    accepted_merged_sources = latest_payload.get("accepted_merged_sources") if isinstance(latest_payload, Mapping) else []
+    caption_heading_conflicts = latest_payload.get("caption_heading_conflicts") if isinstance(latest_payload, Mapping) else []
+    policy = _resolve_translation_quality_gate_policy(context=context)
+    quality_status = "pass"
+    gate_reasons: list[str] = []
+    if context.processing_operation == "translate":
+        if policy == "strict" and isinstance(unmapped_source_ids, list) and unmapped_source_ids:
+            quality_status = "fail"
+            gate_reasons.append("unmapped_source_paragraphs_present")
+        elif policy == "advisory" and isinstance(unmapped_source_ids, list) and unmapped_source_ids:
+            source_count = latest_payload.get("source_count")
+            if isinstance(source_count, int) and source_count > 0 and (len(unmapped_source_ids) / source_count) > 0.01:
+                quality_status = "warn"
+                gate_reasons.append("unmapped_source_paragraphs_above_advisory_threshold")
+
+    report = {
+        "version": 1,
+        "source_name": context.uploaded_filename,
+        "processing_operation": context.processing_operation,
+        "quality_gate_policy": policy,
+        "source_paragraph_count": latest_payload.get("source_count") if isinstance(latest_payload, Mapping) else None,
+        "target_paragraph_count": latest_payload.get("target_count") if isinstance(latest_payload, Mapping) else None,
+        "mapped_count": latest_payload.get("mapped_count") if isinstance(latest_payload, Mapping) else None,
+        "unmapped_source_count": len(unmapped_source_ids) if isinstance(unmapped_source_ids, list) else 0,
+        "unmapped_target_count": len(unmapped_target_indexes) if isinstance(unmapped_target_indexes, list) else 0,
+        "accepted_merged_sources_count": len(accepted_merged_sources) if isinstance(accepted_merged_sources, list) else 0,
+        "caption_heading_conflicts_count": len(caption_heading_conflicts) if isinstance(caption_heading_conflicts, list) else 0,
+        "formatting_diagnostics_artifact_count": len(formatting_diagnostics_artifacts),
+        "final_markdown_chars": len(final_markdown),
+        "quality_status": quality_status,
+        "gate_reasons": gate_reasons,
+        "formatting_diagnostics_artifact_paths": list(formatting_diagnostics_artifacts),
+    }
+    return report
 
 
 def _emit_terminal_result(
@@ -510,6 +609,7 @@ def run_docx_build_phase(
     return {
         "docx_bytes": docx_bytes,
         "latest_result_notice": latest_result_notice,
+        "formatting_diagnostics_artifacts": list(formatting_diagnostics_artifacts),
     }
 
 
@@ -524,6 +624,77 @@ def finalize_processing_success(
     current_markdown_fn: Callable[[Sequence[str]], str],
 ) -> PipelineResult:
     final_markdown = current_markdown_fn(state.processed_chunks)
+    formatting_diagnostics_artifacts = cast(
+        Sequence[str],
+        docx_phase.get("formatting_diagnostics_artifacts") or [],
+    )
+    quality_report = _build_translation_quality_report(
+        context=context,
+        final_markdown=final_markdown,
+        formatting_diagnostics_artifacts=formatting_diagnostics_artifacts,
+    )
+    if quality_report.get("quality_status") == "warn":
+        docx_phase = dict(docx_phase)
+        docx_phase["latest_result_notice"] = {
+            "level": "warning",
+            "message": "Результат собран, но quality report зафиксировал заметный paragraph mapping drift.",
+        }
+    quality_report_path = _write_quality_report_artifact(source_name=context.uploaded_filename, payload=quality_report)
+    if quality_report_path is not None:
+        dependencies.log_event(
+            logging.INFO,
+            "quality_report_saved",
+            "Сохранён quality report для итогового результата обработки.",
+            filename=context.uploaded_filename,
+            artifact_path=quality_report_path,
+            quality_status=quality_report.get("quality_status"),
+            gate_reasons=list(cast(Sequence[str], quality_report.get("gate_reasons") or [])),
+        )
+    if quality_report.get("quality_status") == "fail":
+        error_message = dependencies.present_error(
+            "translation_quality_gate_failed",
+            RuntimeError(
+                "Итоговый перевод не прошёл quality gate: strict paragraph mapping contract violated (translation_quality_gate_failed)."
+            ),
+            "Критическая ошибка качества перевода",
+            filename=context.uploaded_filename,
+            quality_status=quality_report.get("quality_status"),
+            gate_reasons=list(cast(Sequence[str], quality_report.get("gate_reasons") or [])),
+            quality_report_path=quality_report_path,
+        )
+        emitters.emit_state(
+            context.runtime,
+            latest_markdown=final_markdown,
+            latest_docx_bytes=None,
+            latest_narration_text=None,
+            latest_result_notice={
+                "level": "error",
+                "message": "Результат заблокирован quality gate из-за потери paragraph mapping.",
+            },
+            last_error=error_message,
+        )
+        dependencies.log_event(
+            logging.WARNING,
+            "translation_quality_gate_failed",
+            "Итоговый перевод отклонён document-level quality gate.",
+            filename=context.uploaded_filename,
+            quality_report_path=quality_report_path,
+            gate_reasons=list(cast(Sequence[str], quality_report.get("gate_reasons") or [])),
+            quality_status=quality_report.get("quality_status"),
+        )
+        return emit_failed_result(
+            emitters=emitters,
+            runtime=context.runtime,
+            finalize_stage="Критическая ошибка качества перевода",
+            detail=error_message,
+            progress=1.0,
+            activity_message="Итоговый перевод отклонён quality gate из-за потери paragraph mapping.",
+            block_index=job_count,
+            block_count=job_count,
+            target_chars=len(final_markdown),
+            context_chars=0,
+            log_details=error_message,
+        )
     narration_error_message = ""
     try:
         narration_text = _build_narration_text(

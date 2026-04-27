@@ -193,6 +193,12 @@ def run_structural_passthrough_validation(
             "heading_level_drift": _calculate_heading_level_drift(source_paragraphs, output_paragraphs),
             "heading_only_output_detected": _is_heading_only_markdown(latest_markdown),
             "output_docx_openable": bool(output_artifacts["output_docx_openable"]),
+            "source_toc_detected": _has_toc_structural_roles(source_paragraphs),
+            "output_toc_detected": _has_toc_structural_roles(output_paragraphs),
+            "bullet_heading_count": _count_bullet_headings(latest_markdown),
+            "toc_body_concat_detected": _has_toc_body_concat_markdown(latest_markdown),
+            "require_pdf_conversion_satisfied": source_path.suffix.lower() == ".pdf",
+            "runtime_translation_domain": str(runtime_resolution.effective.translation_domain),
         }
     )
     checks = _build_extraction_checks(document_profile, metrics)
@@ -435,6 +441,48 @@ def _build_structural_checks(
                 "heading_only_output_detected": metrics["heading_only_output_detected"],
             }
         )
+    if document_profile.require_toc_detected:
+        checks.append(
+            {
+                "name": "toc_detected_required",
+                "passed": bool(metrics.get("source_toc_detected") or metrics.get("output_toc_detected")),
+                "source_toc_detected": metrics.get("source_toc_detected"),
+                "output_toc_detected": metrics.get("output_toc_detected"),
+            }
+        )
+    if document_profile.require_pdf_conversion:
+        checks.append(
+            {
+                "name": "pdf_conversion_required",
+                "passed": bool(metrics.get("require_pdf_conversion_satisfied")),
+                "require_pdf_conversion_satisfied": metrics.get("require_pdf_conversion_satisfied"),
+            }
+        )
+    if document_profile.require_no_bullet_headings:
+        checks.append(
+            {
+                "name": "no_bullet_headings_required",
+                "passed": _as_int(metrics, "bullet_heading_count") == 0,
+                "bullet_heading_count": metrics.get("bullet_heading_count"),
+            }
+        )
+    if document_profile.require_no_toc_body_concat:
+        checks.append(
+            {
+                "name": "no_toc_body_concat_required",
+                "passed": not bool(metrics.get("toc_body_concat_detected")),
+                "toc_body_concat_detected": metrics.get("toc_body_concat_detected"),
+            }
+        )
+    if document_profile.require_translation_domain:
+        checks.append(
+            {
+                "name": "translation_domain_required",
+                "passed": str(metrics.get("runtime_translation_domain", "")) == document_profile.require_translation_domain,
+                "actual": metrics.get("runtime_translation_domain"),
+                "required": document_profile.require_translation_domain,
+            }
+        )
     return checks
 
 
@@ -560,6 +608,29 @@ def _normalize_text(text: str) -> str:
 def _is_heading_only_markdown(text: str) -> bool:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     return bool(lines) and all(line.startswith("#") and len(line.split()) >= 2 for line in lines)
+
+
+def _has_toc_structural_roles(paragraphs: Sequence[object]) -> bool:
+    for paragraph in paragraphs:
+        structural_role = str(getattr(paragraph, "structural_role", "") or "").strip().lower()
+        if structural_role in {"toc_header", "toc_entry"}:
+            return True
+    return False
+
+
+def _count_bullet_headings(markdown_text: str) -> int:
+    return sum(
+        1
+        for line in markdown_text.splitlines()
+        if re.match(r"^#{1,6}\s*[●•\-*]\s*$", line.strip())
+    )
+
+
+def _has_toc_body_concat_markdown(markdown_text: str) -> bool:
+    for paragraph in [chunk.strip() for chunk in re.split(r"\n\s*\n", markdown_text) if chunk.strip()]:
+        if re.search(r"(?:\.{2,}|…|\s{2,})\s*[0-9ivxlcdmIVXLCDM]+\s+[А-Яа-яЁёA-Za-z]", paragraph):
+            return True
+    return False
 
 
 def _build_output_artifacts(docx_bytes: bytes, markdown_text: str) -> dict[str, object]:

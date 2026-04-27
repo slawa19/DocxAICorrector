@@ -154,6 +154,27 @@ class LayoutArtifactCleanupReport:
     error_code: str | None = None
 
 
+@dataclass(frozen=True)
+class StructureRepairDecision:
+    action: str
+    paragraph_indexes: tuple[int, ...]
+    reason: str
+    confidence: str = "high"
+    details: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass
+class StructureRepairReport:
+    applied: bool
+    repaired_bullet_items: int
+    repaired_numbered_items: int
+    bounded_toc_regions: int
+    toc_body_boundary_repairs: int
+    heading_candidates_from_toc: int
+    remaining_isolated_marker_count: int
+    decisions: list[StructureRepairDecision] = field(default_factory=list)
+
+
 @dataclass
 class ParagraphUnit:
     text: str

@@ -36,6 +36,7 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     assert app_config["source_language_default"] == "en"
     assert app_config["target_language_default"] == "ru"
     assert app_config["editorial_intensity_default"] == "literary"
+    assert app_config["translation_domain_default"] == "general"
     supported_languages = cast(list[config.LanguageOption], app_config["supported_languages"])
     assert supported_languages[0].code == "ru"
     assert app_config["enable_paragraph_markers"] is False
@@ -60,6 +61,7 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     assert app_config["structure_validation_toc_like_sequence_min_length"] == 4
     assert app_config["structure_validation_forbid_heading_only_collapse"] is True
     assert app_config["structure_validation_save_debug_artifacts"] is True
+    assert app_config["structure_validation_block_on_high_risk_noop"] is True
     assert app_config["relation_normalization_enabled"] is True
     assert app_config["relation_normalization_profile"] == "phase2_default"
     assert app_config["relation_normalization_enabled_relation_kinds"] == (
@@ -86,6 +88,7 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["source_language_default"] == "en"
     assert app_config["target_language_default"] == "ru"
     assert app_config["editorial_intensity_default"] == "literary"
+    assert app_config["translation_domain_default"] == "general"
     supported_languages = cast(list[config.LanguageOption], app_config["supported_languages"])
     assert [language.code for language in supported_languages] == ["ru", "en", "de", "fr", "es", "it", "pl", "zh", "ja"]
     assert app_config["paragraph_boundary_normalization_enabled"] is True
@@ -103,6 +106,7 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["structure_recognition_min_confidence"] == "medium"
     assert app_config["structure_recognition_cache_enabled"] is True
     assert app_config["structure_recognition_save_debug_artifacts"] is True
+    assert app_config["structure_validation_block_on_high_risk_noop"] is True
     assert app_config["relation_normalization_enabled"] is True
     assert app_config["relation_normalization_profile"] == "phase2_default"
     assert app_config["relation_normalization_enabled_relation_kinds"] == (
@@ -161,6 +165,15 @@ def test_load_app_config_applies_editorial_intensity_env_override(monkeypatch):
     app_config = config.load_app_config()
 
     assert app_config["editorial_intensity_default"] == "conservative"
+
+
+def test_load_app_config_applies_translation_domain_env_override(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.setenv("DOCX_AI_TRANSLATION_DOMAIN_DEFAULT", "theology")
+
+    app_config = config.load_app_config()
+
+    assert app_config["translation_domain_default"] == "theology"
 
 
 def test_load_app_config_applies_translation_second_pass_env_overrides(monkeypatch):
@@ -224,6 +237,21 @@ def test_load_system_prompt_varies_by_editorial_intensity():
     assert "словно заново выдумывал себя у всех на глазах" in literary_prompt
     assert "Работайте с текстом сдержанно и аккуратно." in conservative_prompt
     assert "Preserve every marker [[DOCX_PARA_...]] exactly as it appears" not in literary_prompt
+
+
+def test_load_system_prompt_includes_theology_domain_instructions():
+    theology_prompt = config.load_system_prompt(
+        operation="translate",
+        source_language="en",
+        target_language="ru",
+        editorial_intensity="literary",
+        translation_domain="theology",
+        source_text="The Great Tribulation and the rapture precede the rise of the Antichrist.",
+    )
+
+    assert "ДОМЕН ПЕРЕВОДА: богословие / эсхатология." in theology_prompt
+    assert "Great Tribulation -> Великая скорбь" in theology_prompt
+    assert "rapture -> восхищение Церкви / восхищение верующих" in theology_prompt
 
 
 def test_load_system_prompt_rejects_unsupported_editorial_intensity():

@@ -36,6 +36,7 @@ def test_resolve_runtime_resolution_reports_explicit_overrides() -> None:
     assert resolution.effective.structure_recognition_mode == "always"
     assert resolution.effective.structure_recognition_enabled is True
     assert resolution.effective.processing_operation == app_config.processing_operation_default
+    assert resolution.effective.translation_domain == app_config.translation_domain_default
     assert resolution.effective.audiobook_postprocess_enabled is app_config.audiobook_postprocess_default
     assert resolution.ui_defaults.structure_recognition_mode == "auto"
     assert resolution.ui_defaults.model == app_config.models.text.default
@@ -66,6 +67,7 @@ def test_build_validation_runtime_config_keeps_canonical_nested_shape() -> None:
     assert runtime_config["effective"]["structure_recognition_mode"] == "always"
     assert runtime_config["effective"]["structure_recognition_enabled"] is True
     assert runtime_config["overrides"]["structure_recognition_mode"] == "always"
+    assert runtime_config["effective"]["translation_domain"] == runtime_config["ui_defaults"]["translation_domain"]
 
 
 def test_load_validation_registry_reads_second_corpus_profile_and_soak_run_profile() -> None:
@@ -103,3 +105,21 @@ def test_load_validation_registry_reads_mazzucato_audiobook_profile_and_run_prof
     assert run_profile.audiobook_postprocess_enabled is True
     assert baseline_run_profile.processing_operation == "translate"
     assert baseline_run_profile.audiobook_postprocess_enabled is False
+
+
+def test_load_validation_registry_reads_end_times_pdf_profile_and_theology_run_profile() -> None:
+    registry = load_validation_registry()
+
+    document_profile = registry.get_document_profile("end-times-pdf-core")
+    run_profile = registry.get_run_profile("ui-parity-translate-theology-pdf-high-quality")
+
+    assert document_profile.source_path == "tests/sources/Are_We_In_The_End_Times.pdf"
+    assert document_profile.require_toc_detected is True
+    assert document_profile.require_pdf_conversion is True
+    assert document_profile.require_no_bullet_headings is True
+    assert document_profile.require_no_toc_body_concat is True
+    assert document_profile.require_translation_domain == "theology"
+    assert document_profile.default_run_profile == "ui-parity-translate-theology-pdf-high-quality"
+    assert run_profile.processing_operation == "translate"
+    assert run_profile.translation_domain == "theology"
+    assert run_profile.structure_recognition_mode == "always"

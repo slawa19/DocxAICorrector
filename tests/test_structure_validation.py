@@ -53,6 +53,7 @@ def test_validate_structure_quality_does_not_escalate_low_risk_document():
 
     assert report.escalation_recommended is False
     assert report.escalation_reasons == ()
+    assert report.readiness_status == "ready"
 
 
 def test_validate_structure_quality_triggers_on_low_explicit_heading_density():
@@ -101,6 +102,7 @@ def test_validate_structure_quality_triggers_on_toc_like_region():
 
     assert report.escalation_recommended is True
     assert "toc_like_sequence_detected" in report.escalation_reasons
+    assert report.readiness_status == "blocked_needs_structure_repair"
 
 
 def test_validate_structure_quality_heading_only_collapse_boundary_119_and_3():
@@ -154,6 +156,13 @@ def test_write_structure_validation_debug_artifact_writes_json_payload(tmp_path,
             "high_suspicious_short_body_ratio",
             "toc_like_sequence_detected",
         ),
+        isolated_marker_paragraph_count=2,
+        large_front_matter_block_risk=False,
+        toc_region_bounded_count=0,
+        expected_heading_candidates_from_toc=4,
+        structure_quality_risk_level="high",
+        readiness_status="blocked_needs_structure_repair",
+        readiness_reasons=("toc_like_sequence_without_bounded_region",),
     )
 
     artifact_path = structure_validation.write_structure_validation_debug_artifact(
@@ -189,4 +198,12 @@ def test_write_structure_validation_debug_artifact_writes_json_payload(tmp_path,
             "high_suspicious_short_body_ratio",
             "toc_like_sequence_detected",
         ],
+        "isolated_marker_paragraph_count": 2,
+        "large_front_matter_block_risk": False,
+        "toc_region_bounded_count": 0,
+        "expected_heading_candidates_from_toc": 4,
+        "structure_quality_risk_level": "high",
+        "readiness_status": "blocked_needs_structure_repair",
+        "readiness_reasons": ["toc_like_sequence_without_bounded_region"],
+        "structure_repair_report": None,
     }

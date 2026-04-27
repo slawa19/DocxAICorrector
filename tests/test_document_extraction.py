@@ -139,7 +139,7 @@ def test_extraction_cleanup_removes_textbox_artifacts_and_reassigns_identity(tmp
     document_obj.save(source_path)
 
     with source_path.open("rb") as source_file:
-        paragraphs, _, _, _, _, cleanup_report = extract_document_content_with_normalization_reports(source_file)
+        paragraphs, _, _, _, _, cleanup_report, _ = extract_document_content_with_normalization_reports(source_file)
 
     texts = [paragraph.text for paragraph in paragraphs]
     assert "www.example.com" not in texts

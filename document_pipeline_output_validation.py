@@ -3,7 +3,14 @@ from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
 
-ProcessedBlockStatus: TypeAlias = Literal["valid", "empty", "heading_only_output"]
+ProcessedBlockStatus: TypeAlias = Literal[
+    "valid",
+    "empty",
+    "heading_only_output",
+    "bullet_heading_output",
+    "toc_body_concat",
+    "english_residual_output",
+]
 
 # Spec TOC/minimal-formatting 2026-04-21 constants.
 TOC_UPPERCASE_LABEL_MAX_CHARS = 10
@@ -15,6 +22,10 @@ TOC_PAGE_MARKER_LOSS_REJECTION_THRESHOLD = 2
 # narrower non-substantive tolerance is explicitly specified and validated.
 TOC_PARAGRAPH_COUNT_TOLERANCE = 0
 DISALLOWED_GENERIC_TOC_LABELS = {"CONTENTS"}
+_BULLET_HEADING_PATTERN = re.compile(r"^#{1,6}\s*[●•\-*]\s*$")
+_MARKDOWN_HEADING_PATTERN = re.compile(r"^#{1,6}\s+\S")
+_ENGLISH_WORD_PATTERN = re.compile(r"\b[A-Za-z]{4,}\b")
+_CYRILLIC_CHAR_PATTERN = re.compile(r"[А-Яа-яЁё]")
 
 
 @dataclass(frozen=True)
@@ -28,7 +39,7 @@ def iter_nonempty_markdown_lines(text: str) -> list[str]:
 
 
 def is_markdown_heading_line(line: str) -> bool:
-    return bool(re.match(r"#{1,6}\s+\S", line))
+    return bool(_MARKDOWN_HEADING_PATTERN.match(line))
 
 
 def is_heading_only_markdown(text: str) -> bool:
@@ -111,9 +122,51 @@ def input_has_body_text_signal(text: str) -> bool:
 def classify_processed_block(target_text: str, processed_chunk: str) -> ProcessedBlockStatus:
     if not processed_chunk.strip():
         return "empty"
+    if has_bullet_heading_output(processed_chunk):
+        return "bullet_heading_output"
     if is_heading_only_markdown(processed_chunk) and input_has_body_text_signal(target_text):
         return "heading_only_output"
+    if has_toc_body_concat_signal(target_text=target_text, processed_chunk=processed_chunk):
+        return "toc_body_concat"
+    if has_unexplained_english_residuals(processed_chunk):
+        return "english_residual_output"
     return "valid"
+
+
+def has_bullet_heading_output(text: str) -> bool:
+    return any(_BULLET_HEADING_PATTERN.match(line) for line in iter_nonempty_markdown_lines(text))
+
+
+def has_toc_body_concat_signal(*, target_text: str, processed_chunk: str) -> bool:
+    source_has_toc_markers = _has_page_reference_suffix(target_text) or "contents" in target_text.casefold() or "содержание" in target_text.casefold()
+    if not source_has_toc_markers:
+        return False
+
+    paragraphs = _split_markdown_paragraphs(processed_chunk)
+    if not paragraphs:
+        return False
+    for paragraph in paragraphs:
+        if re.search(r"(?:\.{2,}|…|\s{2,})\s*[0-9ivxlcdmIVXLCDM]+\s+[А-Яа-яЁёA-Za-z]", paragraph):
+            return True
+    return False
+
+
+def has_unexplained_english_residuals(text: str) -> bool:
+    if not _CYRILLIC_CHAR_PATTERN.search(text):
+        return False
+    lines = iter_nonempty_markdown_lines(text)
+    english_hits = 0
+    for line in lines:
+        normalized = line.lstrip("#> -*0123456789.\t ")
+        for word in _ENGLISH_WORD_PATTERN.findall(normalized):
+            upper_word = word.upper()
+            if upper_word in DISALLOWED_GENERIC_TOC_LABELS:
+                english_hits += 1
+                continue
+            if word.lower() in {"chapter", "contents", "introduction", "conclusion", "judgment"}:
+                english_hits += 1
+                continue
+    return english_hits > 0
 
 
 def _normalize_toc_comparison_text(text: str) -> str:

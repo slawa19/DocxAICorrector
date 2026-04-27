@@ -84,6 +84,38 @@ default_run_profile = "ui-parity-translate-audiobook-postprocess"
 tags = ["audiobook", "translation", "manual-regression"]
 provenance = "Canonical Mariana Mazzucato real-document sample for translate plus audiobook postprocess sanity checks."
 
+[[documents]]
+id = "end-times-pdf-core"
+source_path = "tests/sources/Are_We_In_The_End_Times.pdf"
+artifact_prefix = "end_times_pdf_validation"
+output_basename = "Are_We_In_The_End_Times_validated"
+structural_mode = "strict"
+min_paragraphs = 250
+has_headings = true
+min_headings = 10
+has_numbered_lists = true
+min_numbered_items = 10
+has_images = false
+min_images = 0
+has_tables = false
+min_tables = 0
+max_formatting_diagnostics = 5
+max_unmapped_source_paragraphs = 0
+max_unmapped_target_paragraphs = 3
+max_heading_level_drift = 1
+min_text_similarity = 0.96
+require_numbered_lists_preserved = true
+require_nonempty_output = true
+forbid_heading_only_collapse = true
+require_toc_detected = true
+require_pdf_conversion = true
+require_no_bullet_headings = true
+require_no_toc_body_concat = true
+require_translation_domain = "theology"
+default_run_profile = "ui-parity-translate-theology-pdf-high-quality"
+tags = ["pdf", "translation", "theology", "toc", "headings", "lists", "manual-regression"]
+provenance = "Regression source for PDF-derived long-form theological translation quality after 2026-04-27 failure."
+
 [[run_profiles]]
 id = "ui-parity-default"
 tier = "full"
@@ -135,4 +167,17 @@ source_language = "auto"
 target_language = "ru"
 audiobook_postprocess_enabled = false
 enable_paragraph_markers = true
+repeat_count = 1
+
+[[run_profiles]]
+id = "ui-parity-translate-theology-pdf-high-quality"
+tier = "full"
+mode = "regression"
+processing_operation = "translate"
+source_language = "auto"
+target_language = "ru"
+translation_domain = "theology"
+audiobook_postprocess_enabled = false
+enable_paragraph_markers = true
+structure_recognition_mode = "always"
 repeat_count = 1

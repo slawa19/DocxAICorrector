@@ -21,8 +21,10 @@ from document import (
 from logger import log_event
 from models import LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport, ParagraphRelation, RelationNormalizationReport
 from models import StructureRecognitionSummary
+from models import StructureRepairReport
 from models import clone_prepared_image_asset
 from models import StructureMap
+from translation_domains import build_translation_domain_instructions
 from processing_runtime import FrozenUploadPayload, build_in_memory_uploaded_file
 from runtime_artifact_retention import (
     STRUCTURE_MAPS_MAX_AGE_SECONDS,
@@ -44,11 +46,16 @@ class PreparedDocumentData:
     normalization_report: ParagraphBoundaryNormalizationReport | None = None
     relation_report: RelationNormalizationReport | None = None
     cleanup_report: LayoutArtifactCleanupReport | None = None
+    structure_repair_report: StructureRepairReport | None = None
     structure_map: StructureMap | None = None
     structure_recognition_summary: StructureRecognitionSummary = StructureRecognitionSummary()
     structure_validation_report: StructureValidationReport | None = None
     structure_recognition_mode: str = "off"
     structure_ai_attempted: bool = False
+    quality_gate_status: str = "pass"
+    quality_gate_reasons: tuple[str, ...] = ()
+    translation_domain: str = "general"
+    translation_domain_instructions: str = ""
     cached: bool = False
 
     @property
@@ -80,6 +87,7 @@ def _build_normalization_metrics(
     normalization_report: ParagraphBoundaryNormalizationReport | None,
     relation_report: RelationNormalizationReport | None = None,
     cleanup_report: LayoutArtifactCleanupReport | None = None,
+    structure_repair_report: StructureRepairReport | None = None,
 ) -> dict[str, int]:
     metrics: dict[str, int] = {}
     if normalization_report is not None:
@@ -103,6 +111,8 @@ def _build_normalization_metrics(
             metrics[f"relation_{relation_kind}_count"] = count
     if cleanup_report is not None:
         metrics.update(flatten_layout_cleanup_metrics(cleanup_report))
+    if structure_repair_report is not None:
+        metrics.update(flatten_structure_repair_metrics(structure_repair_report))
     return metrics
 
 
@@ -119,6 +129,25 @@ def flatten_layout_cleanup_metrics(cleanup_report) -> dict[str, int]:
     }
 
 
+def flatten_structure_repair_metrics(structure_repair_report) -> dict[str, int]:
+    if structure_repair_report is None:
+        return {}
+    return {
+        "structure_repair_bullet_items": int(getattr(structure_repair_report, "repaired_bullet_items", 0) or 0),
+        "structure_repair_numbered_items": int(getattr(structure_repair_report, "repaired_numbered_items", 0) or 0),
+        "structure_repair_bounded_toc_regions": int(getattr(structure_repair_report, "bounded_toc_regions", 0) or 0),
+        "structure_repair_toc_body_boundary_repairs": int(
+            getattr(structure_repair_report, "toc_body_boundary_repairs", 0) or 0
+        ),
+        "structure_repair_heading_candidates_from_toc": int(
+            getattr(structure_repair_report, "heading_candidates_from_toc", 0) or 0
+        ),
+        "structure_repair_remaining_isolated_markers": int(
+            getattr(structure_repair_report, "remaining_isolated_marker_count", 0) or 0
+        ),
+    }
+
+
 def _build_preparation_stage_metrics(
     *,
     paragraph_count: int,
@@ -126,6 +155,7 @@ def _build_preparation_stage_metrics(
     normalization_report: ParagraphBoundaryNormalizationReport | None,
     relation_report: RelationNormalizationReport | None,
     cleanup_report: LayoutArtifactCleanupReport | None = None,
+    structure_repair_report: StructureRepairReport | None = None,
     structure_map: StructureMap | None = None,
     structure_summary: StructureRecognitionSummary | None = None,
     source_text: str | None = None,
@@ -134,7 +164,7 @@ def _build_preparation_stage_metrics(
     metrics = {
         "paragraph_count": paragraph_count,
         "image_count": image_count,
-        **_build_normalization_metrics(normalization_report, relation_report, cleanup_report),
+        **_build_normalization_metrics(normalization_report, relation_report, cleanup_report, structure_repair_report),
     }
     if source_text is not None:
         metrics["source_chars"] = len(source_text)
@@ -203,8 +233,22 @@ def _format_structure_escalation_reasons(report: StructureValidationReport | Non
         "high_all_caps_or_centered_body_ratio": "много CAPS/центрированных body-абзацев",
         "toc_like_sequence_detected": "обнаружен TOC-подобный фрагмент",
         "heading_only_collapse_risk": "есть риск потери заголовочной структуры",
+        "isolated_list_marker_fragments": "остались изолированные маркеры списков",
     }
     return ", ".join(labels.get(reason, reason) for reason in report.escalation_reasons)
+
+
+def build_structure_repair_status_note(structure_repair_report) -> str:
+    if structure_repair_report is None or not bool(getattr(structure_repair_report, "applied", False)):
+        return ""
+    bullet_items = int(getattr(structure_repair_report, "repaired_bullet_items", 0) or 0)
+    numbered_items = int(getattr(structure_repair_report, "repaired_numbered_items", 0) or 0)
+    toc_regions = int(getattr(structure_repair_report, "bounded_toc_regions", 0) or 0)
+    heading_candidates = int(getattr(structure_repair_report, "heading_candidates_from_toc", 0) or 0)
+    return (
+        "Восстановление структуры: "
+        f"списки {bullet_items + numbered_items}, TOC-регионов {toc_regions}, подсказок заголовков {heading_candidates}."
+    )
 
 
 def build_structure_processing_status_note(source: object | None) -> str:
@@ -217,6 +261,7 @@ def build_structure_processing_status_note(source: object | None) -> str:
     structure_summary = StructureRecognitionSummary.from_source(getattr(source, "structure_recognition_summary", None))
     ai_attempted = bool(getattr(source, "structure_ai_attempted", False))
     escalation_reasons = _format_structure_escalation_reasons(validation_report)
+    readiness_status = str(getattr(validation_report, "readiness_status", "") or "")
 
     if mode == "off":
         return "Структура: AI выключен, использованы текущие правила."
@@ -233,6 +278,11 @@ def build_structure_processing_status_note(source: object | None) -> str:
                 "Структура: auto-режим, выполнена эскалация в AI; "
                 f"классифицировано {structure_summary.ai_classified_count} абзацев, "
                 f"найдено {structure_summary.ai_heading_count} заголовков.{reason_suffix}"
+            )
+        if readiness_status == "blocked_needs_structure_repair":
+            return (
+                "Структура: auto-режим, выполнена эскалация в AI; AI не внёс изменений, документ помечен как "
+                f"требующий structural repair.{reason_suffix}"
             )
         return f"Структура: auto-режим, выполнена эскалация в AI; AI не внёс изменений.{reason_suffix}"
     if mode == "always":
@@ -460,6 +510,7 @@ def _run_structure_validation(
     normalization_report,
     relation_report,
     cleanup_report=None,
+    structure_repair_report: StructureRepairReport | None = None,
 ) -> StructureValidationReport:
     base_metrics = _build_preparation_stage_metrics(
         paragraph_count=len(paragraphs),
@@ -467,6 +518,7 @@ def _run_structure_validation(
         normalization_report=normalization_report,
         relation_report=relation_report,
         cleanup_report=cleanup_report,
+        structure_repair_report=structure_repair_report,
     )
     emit_preparation_progress(
         progress_callback,
@@ -475,7 +527,11 @@ def _run_structure_validation(
         progress=0.30,
         metrics=base_metrics,
     )
-    report = validate_structure_quality(paragraphs=paragraphs, app_config=app_config)
+    report = validate_structure_quality(
+        paragraphs=paragraphs,
+        app_config=app_config,
+        structure_repair_report=structure_repair_report,
+    )
     if bool(app_config.get("structure_validation_save_debug_artifacts", True)):
         artifact_path = write_structure_validation_debug_artifact(report=report, app_config=app_config)
         log_event(
@@ -486,6 +542,33 @@ def _run_structure_validation(
             escalation_recommended=report.escalation_recommended,
         )
     return report
+
+
+def _resolve_pre_translation_quality_gate(
+    *,
+    structure_validation_report: StructureValidationReport | None,
+    structure_ai_attempted: bool,
+    structure_summary: StructureRecognitionSummary,
+    app_config: Mapping[str, Any],
+) -> tuple[str, tuple[str, ...]]:
+    if structure_validation_report is None:
+        return "pass", ()
+
+    reasons: list[str] = []
+    readiness_status = str(getattr(structure_validation_report, "readiness_status", "") or "")
+    if readiness_status == "blocked_needs_structure_repair":
+        reasons.extend(str(reason) for reason in getattr(structure_validation_report, "readiness_reasons", ()) or ())
+
+    if (
+        bool(app_config.get("structure_validation_block_on_high_risk_noop", True))
+        and bool(getattr(structure_validation_report, "escalation_recommended", False))
+        and structure_ai_attempted
+        and structure_summary.ai_classified_count == 0
+    ):
+        reasons.append("structure_recognition_noop_on_high_risk")
+
+    unique_reasons = tuple(dict.fromkeys(reason for reason in reasons if reason))
+    return ("blocked" if unique_reasons else "pass", unique_reasons)
 
 
 def build_prepared_source_key(
@@ -550,10 +633,9 @@ def _prepare_document_for_processing(
         progress=0.2,
     )
     uploaded_file = build_in_memory_uploaded_file(source_name=source_name, source_bytes=source_bytes)
-    paragraphs, image_assets, normalization_report, relations, relation_report, cleanup_report = _extract_document_content_with_optional_app_config(
-        uploaded_file=uploaded_file,
-        app_config=app_config,
-    )
+    extraction_result = _extract_document_content_with_optional_app_config(uploaded_file=uploaded_file, app_config=app_config)
+    paragraphs, image_assets, normalization_report, relations, relation_report, cleanup_report = extraction_result[:6]
+    structure_repair_report = extraction_result[6] if len(extraction_result) > 6 else None
     emit_preparation_progress(
         progress_callback,
         stage="Структура извлечена",
@@ -562,7 +644,7 @@ def _prepare_document_for_processing(
         metrics={
             "paragraph_count": len(paragraphs),
             "image_count": len(image_assets),
-            **_build_normalization_metrics(normalization_report, relation_report, cleanup_report),
+            **_build_normalization_metrics(normalization_report, relation_report, cleanup_report, structure_repair_report),
         },
     )
     structure_validation_report = None
@@ -580,6 +662,7 @@ def _prepare_document_for_processing(
             normalization_report=normalization_report,
             relation_report=relation_report,
             cleanup_report=cleanup_report,
+            structure_repair_report=structure_repair_report,
         )
         if not bool(app_config.get("structure_validation_enabled", True)):
             emit_preparation_progress(
@@ -593,6 +676,7 @@ def _prepare_document_for_processing(
                     normalization_report=normalization_report,
                     relation_report=relation_report,
                     cleanup_report=cleanup_report,
+                    structure_repair_report=structure_repair_report,
                 ),
             )
         else:
@@ -609,6 +693,7 @@ def _prepare_document_for_processing(
                         normalization_report=normalization_report,
                         relation_report=relation_report,
                         cleanup_report=cleanup_report,
+                        structure_repair_report=structure_repair_report,
                     ),
                 )
     structure_ai_attempted = should_run_ai
@@ -624,6 +709,12 @@ def _prepare_document_for_processing(
         )
         if should_run_ai
         else (None, StructureRecognitionSummary())
+    )
+    quality_gate_status, quality_gate_reasons = _resolve_pre_translation_quality_gate(
+        structure_validation_report=structure_validation_report,
+        structure_ai_attempted=structure_ai_attempted,
+        structure_summary=structure_summary,
+        app_config=app_config,
     )
     structure_status_note = build_structure_processing_status_note(
         type(
@@ -647,12 +738,34 @@ def _prepare_document_for_processing(
         structure_ai_succeeded=structure_map is not None,
         escalation_recommended=bool(getattr(structure_validation_report, "escalation_recommended", False)),
         escalation_reasons=list(getattr(structure_validation_report, "escalation_reasons", ())),
+        readiness_status=str(getattr(structure_validation_report, "readiness_status", "") or ""),
+        quality_gate_status=quality_gate_status,
+        quality_gate_reasons=list(quality_gate_reasons),
         ai_classified_count=structure_summary.ai_classified_count,
         ai_heading_count=structure_summary.ai_heading_count,
         structure_status_note=structure_status_note,
         **flatten_layout_cleanup_metrics(cleanup_report),
+        **flatten_structure_repair_metrics(structure_repair_report),
     )
+    if (
+        structure_mode == "auto"
+        and bool(getattr(structure_validation_report, "escalation_recommended", False))
+        and structure_ai_attempted
+        and structure_summary.ai_classified_count == 0
+    ):
+        log_event(
+            logging.WARNING,
+            "structure_recognition_noop_on_high_risk",
+            "AI-распознавание структуры не внесло изменений для high-risk документа.",
+            escalation_reasons=list(getattr(structure_validation_report, "escalation_reasons", ())),
+            readiness_status=str(getattr(structure_validation_report, "readiness_status", "") or ""),
+        )
     source_text = build_document_text(paragraphs)
+    translation_domain = str(app_config.get("translation_domain_default", "general") or "general").strip().lower() or "general"
+    translation_domain_instructions = build_translation_domain_instructions(
+        translation_domain=translation_domain,
+        source_text=source_text,
+    )
     emit_preparation_progress(
         progress_callback,
         stage="Текст собран",
@@ -664,6 +777,7 @@ def _prepare_document_for_processing(
             normalization_report=normalization_report,
             relation_report=relation_report,
             cleanup_report=cleanup_report,
+            structure_repair_report=structure_repair_report,
             structure_map=structure_map,
             structure_summary=structure_summary,
             source_text=source_text,
@@ -681,6 +795,7 @@ def _prepare_document_for_processing(
             normalization_report=normalization_report,
             relation_report=relation_report,
             cleanup_report=cleanup_report,
+            structure_repair_report=structure_repair_report,
             structure_map=structure_map,
             structure_summary=structure_summary,
             source_text=source_text,
@@ -703,6 +818,7 @@ def _prepare_document_for_processing(
             normalization_report=normalization_report,
             relation_report=relation_report,
             cleanup_report=cleanup_report,
+            structure_repair_report=structure_repair_report,
             structure_map=structure_map,
             structure_summary=structure_summary,
             source_text=source_text,
@@ -719,13 +835,18 @@ def _prepare_document_for_processing(
         normalization_report=normalization_report,
         relation_report=relation_report,
         cleanup_report=cleanup_report,
+        structure_repair_report=structure_repair_report,
         structure_map=structure_map,
         structure_recognition_summary=structure_summary,
         structure_validation_report=structure_validation_report,
-        structure_recognition_mode=structure_mode,
-        structure_ai_attempted=structure_ai_attempted,
-        cached=False,
-    )
+            structure_recognition_mode=structure_mode,
+            structure_ai_attempted=structure_ai_attempted,
+            quality_gate_status=quality_gate_status,
+            quality_gate_reasons=quality_gate_reasons,
+            translation_domain=translation_domain,
+            translation_domain_instructions=translation_domain_instructions,
+            cached=False,
+        )
 
 
 def _get_preparation_cache(session_state) -> dict[str, PreparedDocumentData]:
@@ -768,11 +889,16 @@ def _clone_prepared_document(data: PreparedDocumentData, prepared_source_key: st
         normalization_report=deepcopy(data.normalization_report),
         relation_report=deepcopy(data.relation_report),
         cleanup_report=deepcopy(data.cleanup_report),
+        structure_repair_report=deepcopy(data.structure_repair_report),
         structure_map=deepcopy(data.structure_map),
         structure_recognition_summary=data.structure_recognition_summary,
         structure_validation_report=deepcopy(data.structure_validation_report),
         structure_recognition_mode=data.structure_recognition_mode,
         structure_ai_attempted=data.structure_ai_attempted,
+        quality_gate_status=data.quality_gate_status,
+        quality_gate_reasons=tuple(data.quality_gate_reasons),
+        translation_domain=data.translation_domain,
+        translation_domain_instructions=data.translation_domain_instructions,
         cached=cached,
     )
 
@@ -907,7 +1033,12 @@ def prepare_document_for_processing(
                 "source_chars": len(cached.source_text),
                 "block_count": len(cached.jobs),
                 "cached": cached.cached,
-                **_build_normalization_metrics(cached.normalization_report, cached.relation_report, cached.cleanup_report),
+                **_build_normalization_metrics(
+                    cached.normalization_report,
+                    cached.relation_report,
+                    cached.cleanup_report,
+                    cached.structure_repair_report,
+                ),
                 **cached.structure_recognition_summary.as_progress_metrics(structure_map=cached.structure_map),
             },
         )

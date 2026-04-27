@@ -57,6 +57,7 @@ def build_app_config_payload(
         "source_language_default": text_runtime_defaults["source_language_default"],
         "target_language_default": text_runtime_defaults["target_language_default"],
         "editorial_intensity_default": text_runtime_defaults["editorial_intensity_default"],
+        "translation_domain_default": text_runtime_defaults["translation_domain_default"],
         "translation_second_pass_default": text_runtime_defaults["translation_second_pass_default"],
         "translation_second_pass_model": text_runtime_defaults["translation_second_pass_model"],
         "audiobook_postprocess_default": text_runtime_defaults["audiobook_postprocess_default"],
@@ -135,6 +136,9 @@ def build_app_config_payload(
         ],
         "structure_validation_save_debug_artifacts": structure_validation_settings[
             "structure_validation_save_debug_artifacts"
+        ],
+        "structure_validation_block_on_high_risk_noop": structure_validation_settings[
+            "structure_validation_block_on_high_risk_noop"
         ],
         "output_body_font": output_font_settings["output_body_font"],
         "output_heading_font": output_font_settings["output_heading_font"],

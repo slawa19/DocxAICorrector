@@ -38,6 +38,8 @@ class SystemPromptLoader(Protocol):
         target_language: str = "ru",
         editorial_intensity: str = "literary",
         prompt_variant: str = "default",
+        translation_domain: str = "general",
+        source_text: str = "",
     ) -> str: ...
 
 
@@ -179,6 +181,8 @@ class ProcessingContext:
     processing_operation: str
     source_language: str
     target_language: str
+    translation_domain: str
+    translation_domain_instructions: str
     on_progress: ProgressCallback
     runtime: object
 
@@ -211,6 +215,7 @@ class ImageProcessingPhaseResult:
 class DocxBuildPhaseResult:
     docx_bytes: bytes
     latest_result_notice: dict[str, str] | None
+    formatting_diagnostics_artifacts: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

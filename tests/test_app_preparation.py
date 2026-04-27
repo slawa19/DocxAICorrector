@@ -3,6 +3,7 @@ import application_flow
 import compare_panel
 import processing_runtime
 from models import StructureRecognitionSummary
+from models import StructureRepairReport
 from structure_validation import StructureValidationReport
 from conftest import SessionState as SessionState
 
@@ -57,6 +58,7 @@ def _build_prepared_run_context(**overrides):
         "normalization_report": None,
         "relation_report": None,
         "cleanup_report": None,
+        "structure_repair_report": None,
         "structure_map": None,
         "structure_recognition_summary": StructureRecognitionSummary(),
         "structure_validation_report": None,
@@ -104,6 +106,15 @@ def test_store_preparation_summary_uses_preparation_context_not_processing_statu
             "removed_repeated_artifact_count": 1,
             "removed_empty_or_whitespace_count": 0,
         })(),
+        "structure_repair_report": StructureRepairReport(
+            applied=True,
+            repaired_bullet_items=1,
+            repaired_numbered_items=1,
+            bounded_toc_regions=1,
+            toc_body_boundary_repairs=1,
+            heading_candidates_from_toc=3,
+            remaining_isolated_marker_count=0,
+        ),
     })()
 
     monkeypatch.setattr(app.st, "session_state", session_state)
@@ -119,6 +130,7 @@ def test_store_preparation_summary_uses_preparation_context_not_processing_statu
         "source_chars": len("text-value"),
         "block_count": 1,
         "cached": True,
+        "quality_gate_status": "pass",
         "ai_classified": 4,
         "ai_headings": 2,
         "ai_role_changes": 1,
@@ -129,6 +141,7 @@ def test_store_preparation_summary_uses_preparation_context_not_processing_statu
         "progress": 1.0,
         "status_notes": [
             "Структура: AI выключен, использованы текущие правила.",
+            "Восстановление структуры: списки 2, TOC-регионов 1, подсказок заголовков 3.",
             "Очистка: удалено 3 служебных элементов (2 номеров страниц, 1 повторяющихся колонтитулов, 0 пустых абзацев).",
         ],
         "raw_paragraph_count": 3,
@@ -765,6 +778,13 @@ def test_store_preparation_summary_includes_auto_structure_status_note(monkeypat
             all_caps_or_centered_body_ratio=0.0,
             escalation_recommended=True,
             escalation_reasons=("low_explicit_heading_density", "toc_like_sequence_detected"),
+            isolated_marker_paragraph_count=0,
+            large_front_matter_block_risk=False,
+            toc_region_bounded_count=1,
+            expected_heading_candidates_from_toc=4,
+            structure_quality_risk_level="high",
+            readiness_status="ready_with_warnings",
+            readiness_reasons=(),
         ),
     )
 

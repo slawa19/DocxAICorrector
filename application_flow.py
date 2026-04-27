@@ -6,7 +6,13 @@ from typing import Any, Protocol
 
 from document import summarize_boundary_normalization_metrics, validate_docx_source_bytes
 from models import StructureRecognitionSummary
-from preparation import build_layout_cleanup_status_note, build_structure_processing_status_note, emit_preparation_progress, prepare_document_for_processing
+from preparation import (
+    build_layout_cleanup_status_note,
+    build_structure_processing_status_note,
+    build_structure_repair_status_note,
+    emit_preparation_progress,
+    prepare_document_for_processing,
+)
 from processing_runtime import (
     FrozenUploadPayload,
     build_in_memory_uploaded_file,
@@ -52,11 +58,16 @@ class PreparedRunContext:
     normalization_report: object | None = None
     relation_report: object | None = None
     cleanup_report: object | None = None
+    structure_repair_report: object | None = None
     structure_map: object | None = None
     structure_recognition_summary: StructureRecognitionSummary = StructureRecognitionSummary()
     structure_validation_report: object | None = None
     structure_recognition_mode: str = "off"
     structure_ai_attempted: bool = False
+    quality_gate_status: str = "pass"
+    quality_gate_reasons: tuple[str, ...] = ()
+    translation_domain: str = "general"
+    translation_domain_instructions: str = ""
 
     @property
     def ai_classified_count(self) -> int:
@@ -306,6 +317,16 @@ def _prepare_run_context_core(
 
 
 def _raise_or_fail_preparation(*, prepared_document, uploaded_filename: str, fail_critical_fn=None) -> None:
+    if str(getattr(prepared_document, "quality_gate_status", "pass") or "pass") == "blocked":
+        message = "Подготовка заблокирована quality gate: документ требует structural repair перед обработкой."
+        if fail_critical_fn is not None:
+            fail_critical_fn(
+                "quality_gate_blocked",
+                message,
+                filename=uploaded_filename,
+                quality_gate_reasons=list(getattr(prepared_document, "quality_gate_reasons", ()) or ()),
+            )
+        raise ValueError(message)
     if not prepared_document.jobs:
         if fail_critical_fn is not None:
             fail_critical_fn("no_jobs_built", "Не удалось собрать ни одного блока для обработки.", filename=uploaded_filename)
@@ -334,11 +355,18 @@ def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: 
         normalization_report=getattr(prepared_document, "normalization_report", None),
         relation_report=getattr(prepared_document, "relation_report", None),
         cleanup_report=getattr(prepared_document, "cleanup_report", None),
+        structure_repair_report=getattr(prepared_document, "structure_repair_report", None),
         structure_map=getattr(prepared_document, "structure_map", None),
         structure_recognition_summary=structure_summary,
         structure_validation_report=getattr(prepared_document, "structure_validation_report", None),
         structure_recognition_mode=str(getattr(prepared_document, "structure_recognition_mode", "off") or "off"),
         structure_ai_attempted=bool(getattr(prepared_document, "structure_ai_attempted", False)),
+        quality_gate_status=str(getattr(prepared_document, "quality_gate_status", "pass") or "pass"),
+        quality_gate_reasons=tuple(getattr(prepared_document, "quality_gate_reasons", ()) or ()),
+        translation_domain=str(getattr(prepared_document, "translation_domain", "general") or "general"),
+        translation_domain_instructions=str(
+            getattr(prepared_document, "translation_domain_instructions", "") or ""
+        ),
     )
 
 

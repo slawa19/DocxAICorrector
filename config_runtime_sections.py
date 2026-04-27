@@ -415,6 +415,7 @@ def resolve_text_runtime_defaults(
     source_language_default = parse_config_str_fn(config_data, "source_language_default", "en").strip().lower()
     target_language_default = parse_config_str_fn(config_data, "target_language_default", "ru").strip().lower()
     editorial_intensity_default = parse_config_str_fn(config_data, "editorial_intensity_default", "literary").strip().lower()
+    translation_domain_default = parse_config_str_fn(config_data, "translation_domain_default", "general").strip().lower()
     translation_second_pass_default = parse_config_bool_fn(config_data, "translation_second_pass_default", False)
     audiobook_postprocess_default = parse_config_bool_fn(config_data, "audiobook_postprocess_default", False)
     raw_translation_second_pass_model = config_data.get("translation_second_pass_model")
@@ -456,6 +457,10 @@ def resolve_text_runtime_defaults(
         os.getenv("DOCX_AI_EDITORIAL_INTENSITY_DEFAULT", editorial_intensity_default).strip().lower()
         or editorial_intensity_default
     )
+    translation_domain_default = (
+        os.getenv("DOCX_AI_TRANSLATION_DOMAIN_DEFAULT", translation_domain_default).strip().lower()
+        or translation_domain_default
+    )
     translation_second_pass_default = parse_bool_env_fn(
         "DOCX_AI_TRANSLATION_SECOND_PASS_DEFAULT",
         translation_second_pass_default,
@@ -484,6 +489,7 @@ def resolve_text_runtime_defaults(
         "source_language_default": source_language_default,
         "target_language_default": target_language_default,
         "editorial_intensity_default": editorial_intensity_default,
+        "translation_domain_default": translation_domain_default,
         "translation_second_pass_default": translation_second_pass_default,
         "translation_second_pass_model": translation_second_pass_model,
         "audiobook_postprocess_default": audiobook_postprocess_default,

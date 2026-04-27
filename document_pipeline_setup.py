@@ -109,6 +109,8 @@ def build_processing_context(
         processing_operation=processing_operation,
         source_language=source_language,
         target_language=target_language,
+        translation_domain=str(app_config.get("translation_domain_default", "general") or "general"),
+        translation_domain_instructions=str(app_config.get("translation_domain_instructions", "") or ""),
         on_progress=on_progress,
         runtime=runtime,
     )

@@ -366,6 +366,141 @@ def test_run_document_processing_accepts_heading_only_output_for_plaintext_banne
     assert runtime["log"][-1]["status"] == "DONE"
 
 
+def test_run_document_processing_rejects_bullet_heading_output():
+    runtime = _build_runtime_capture()
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{
+            "target_text": "Нормальный абзац с содержанием и несколькими словами.",
+            "context_before": "",
+            "context_after": "",
+            "target_chars": 48,
+            "context_chars": 0,
+        }],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "## ●",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
+    )
+
+    assert result == "failed"
+    assert "bullet_heading_output" in runtime["state"]["last_error"]
+    assert runtime["activity"][-1] == "Блок 1: отклонён из-за bullet heading в результате."
+
+
+def test_run_document_processing_rejects_toc_body_concat_output():
+    runtime = _build_runtime_capture()
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{
+            "target_text": "Содержание\n\nВведение ........ 1\n\nЗаключение ........ 29",
+            "context_before": "",
+            "context_after": "",
+            "target_chars": 52,
+            "context_chars": 0,
+        }],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "Содержание\n\nЗаключение ........ 29 Марка 13:13 Введение",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
+    )
+
+    assert result == "failed"
+    assert "toc_body_concat" in runtime["state"]["last_error"]
+    assert runtime["activity"][-1] == "Блок 1: отклонён из-за склейки TOC и body."
+
+
+def test_run_document_processing_rejects_english_residual_output():
+    runtime = _build_runtime_capture()
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{
+            "target_text": "Первый абзац с нормальным содержанием.",
+            "context_before": "",
+            "context_after": "",
+            "target_chars": 36,
+            "context_chars": 0,
+        }],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "Суд Judgment #1 уже начался.",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
+    )
+
+    assert result == "failed"
+    assert "english_residual_output" in runtime["state"]["last_error"]
+    assert runtime["activity"][-1] == "Блок 1: отклонён из-за английских остатков в результате."
+
+
 def test_validate_translated_toc_block_accepts_translated_toc_lines():
     toc_result = document_pipeline_output_validation.validate_translated_toc_block(
         source_text="Contents\n\nIntroduction ........ 1\n\nPart II ........ 83",
@@ -478,3 +613,20 @@ def test_validate_translated_toc_block_does_not_reject_when_only_two_substantive
     )
 
     assert toc_result.is_valid is True
+
+
+def test_has_bullet_heading_output_detects_bullet_only_heading():
+    assert document_pipeline_output_validation.has_bullet_heading_output("## ●") is True
+    assert document_pipeline_output_validation.has_bullet_heading_output("## Раздел") is False
+
+
+def test_has_toc_body_concat_signal_detects_toc_entry_merged_with_body():
+    assert document_pipeline_output_validation.has_toc_body_concat_signal(
+        target_text="Contents\n\nIntroduction ........ 1",
+        processed_chunk="Содержание\n\nЗаключение ........ 29 Марка 13:13 Введение",
+    ) is True
+
+
+def test_has_unexplained_english_residuals_detects_english_word_inside_cyrillic_output():
+    assert document_pipeline_output_validation.has_unexplained_english_residuals("Суд Judgment #1 уже начался.") is True
+    assert document_pipeline_output_validation.has_unexplained_english_residuals("Полностью русский абзац без остатков.") is False

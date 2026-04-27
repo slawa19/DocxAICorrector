@@ -61,6 +61,7 @@ from models import (
     STRUCTURE_RECOGNITION_MIN_CONFIDENCE_VALUES,
     ImageMode,
 )
+from translation_domains import build_translation_domain_instructions
 
 OpenAI = None
 _CLIENT = None
@@ -161,6 +162,7 @@ class AppConfig(Mapping[str, Any]):
     source_language_default: str
     target_language_default: str
     editorial_intensity_default: str
+    translation_domain_default: str
     translation_second_pass_default: bool
     translation_second_pass_model: str
     audiobook_postprocess_default: bool
@@ -200,6 +202,7 @@ class AppConfig(Mapping[str, Any]):
     structure_validation_toc_like_sequence_min_length: int
     structure_validation_forbid_heading_only_collapse: bool
     structure_validation_save_debug_artifacts: bool
+    structure_validation_block_on_high_risk_noop: bool
     output_body_font: str | None
     output_heading_font: str | None
     image_mode_default: str
@@ -951,12 +954,15 @@ def load_system_prompt(
     target_language: str = "ru",
     editorial_intensity: str = "literary",
     prompt_variant: str = "default",
+    translation_domain: str = "general",
+    source_text: str = "",
 ) -> str:
     normalized_operation = operation.strip().lower() or "edit"
     normalized_source_language = source_language.strip().lower() or "en"
     normalized_target_language = target_language.strip().lower() or "ru"
     normalized_editorial_intensity = _resolve_editorial_intensity(editorial_intensity)
     normalized_prompt_variant = prompt_variant.strip().lower() or "default"
+    normalized_translation_domain = str(translation_domain or "general").strip().lower() or "general"
     _validate_text_transform_context(
         operation=normalized_operation,
         source_language=normalized_source_language,
@@ -998,6 +1004,13 @@ def load_system_prompt(
         target_language=_resolve_language_label(normalized_target_language),
         operation_instructions=operation_instructions,
         editorial_intensity_instructions=editorial_intensity_instructions,
+        translation_domain_instructions=(
+            build_translation_domain_instructions(
+                translation_domain=normalized_translation_domain,
+                source_text=source_text,
+            )
+            or "Специальные доменные инструкции не заданы."
+        ),
         example_block=example_block,
     )
 

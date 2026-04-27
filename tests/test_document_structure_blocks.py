@@ -443,3 +443,24 @@ def test_build_marker_wrapped_block_text_preserves_paragraph_ids_and_boundaries(
     result = build_marker_wrapped_block_text(paragraphs)
 
     assert result == "[[DOCX_PARA_p0001]]\n# Глава\n\n[[DOCX_PARA_p0002]]\nОсновной текст"
+
+
+def test_build_semantic_blocks_splits_front_matter_megablock_between_toc_epigraph_and_heading():
+    paragraphs = [
+        ParagraphUnit(text="Название документа", role="heading", paragraph_id="p0000", heading_level=1),
+        ParagraphUnit(text="Содержание", role="body", structural_role="toc_header", paragraph_id="p0001"),
+        ParagraphUnit(text="Введение........ 1", role="body", structural_role="toc_entry", paragraph_id="p0002"),
+        ParagraphUnit(text="Заключение........ 29", role="body", structural_role="toc_entry", paragraph_id="p0003"),
+        ParagraphUnit(text="Вас будут ненавидеть всеми за имя Мое", role="body", structural_role="epigraph", paragraph_id="p0004"),
+        ParagraphUnit(text="— Марка 13:13", role="body", structural_role="attribution", paragraph_id="p0005"),
+        ParagraphUnit(text="Введение", role="heading", paragraph_id="p0006", heading_level=1),
+        ParagraphUnit(text="Первый абзац главы.", role="body", paragraph_id="p0007"),
+    ]
+
+    blocks = build_semantic_blocks(paragraphs, max_chars=4000, relations=[])
+
+    assert len(blocks) == 4
+    assert [paragraph.text for paragraph in blocks[0].paragraphs] == ["Название документа"]
+    assert [paragraph.text for paragraph in blocks[1].paragraphs] == ["Содержание", "Введение........ 1", "Заключение........ 29"]
+    assert [paragraph.text for paragraph in blocks[2].paragraphs] == ["Вас будут ненавидеть всеми за имя Мое", "— Марка 13:13"]
+    assert [paragraph.text for paragraph in blocks[3].paragraphs] == ["Введение", "Первый абзац главы."]

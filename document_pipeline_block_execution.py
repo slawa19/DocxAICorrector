@@ -34,6 +34,8 @@ def _get_cached_system_prompt(*, context: Any, dependencies: Any, state: Any, re
                 target_language=context.target_language,
                 editorial_intensity=str(context.app_config.get("editorial_intensity_default", "literary")),
                 prompt_variant="toc_translate",
+                translation_domain=context.translation_domain,
+                source_text=context.translation_domain_instructions,
             )
         return state.toc_system_prompt
 
@@ -44,6 +46,8 @@ def _get_cached_system_prompt(*, context: Any, dependencies: Any, state: Any, re
             source_language=context.source_language,
             target_language=context.target_language,
             editorial_intensity=str(context.app_config.get("editorial_intensity_default", "literary")),
+            translation_domain=context.translation_domain,
+            source_text=context.translation_domain_instructions,
         )
     return state.system_prompt
 
@@ -203,6 +207,8 @@ def _run_translation_second_pass(
             target_language=context.target_language,
             editorial_intensity="literary",
             prompt_variant="literary_polish",
+            translation_domain=context.translation_domain,
+            source_text=context.translation_domain_instructions,
         )
 
     second_pass_model = _resolve_translation_second_pass_model(context=context)

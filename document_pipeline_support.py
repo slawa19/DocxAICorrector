@@ -14,6 +14,8 @@ def resolve_system_prompt(
     target_language: str,
     editorial_intensity: str = "literary",
     prompt_variant: str = "default",
+    translation_domain: str = "general",
+    source_text: str = "",
 ) -> str:
     try:
         signature = inspect.signature(load_system_prompt)
@@ -27,6 +29,8 @@ def resolve_system_prompt(
             target_language=target_language,
             editorial_intensity=editorial_intensity,
             prompt_variant=prompt_variant,
+            translation_domain=translation_domain,
+            source_text=source_text,
         )
 
     parameters = signature.parameters.values()
@@ -37,9 +41,22 @@ def resolve_system_prompt(
             target_language=target_language,
             editorial_intensity=editorial_intensity,
             prompt_variant=prompt_variant,
+            translation_domain=translation_domain,
+            source_text=source_text,
         )
 
     parameter_names = {parameter.name for parameter in parameters}
+    if {"operation", "source_language", "target_language", "editorial_intensity", "prompt_variant", "translation_domain", "source_text"}.issubset(parameter_names):
+        return load_system_prompt(
+            operation=operation,
+            source_language=source_language,
+            target_language=target_language,
+            editorial_intensity=editorial_intensity,
+            prompt_variant=prompt_variant,
+            translation_domain=translation_domain,
+            source_text=source_text,
+        )
+
     if {"operation", "source_language", "target_language", "editorial_intensity", "prompt_variant"}.issubset(parameter_names):
         return load_system_prompt(
             operation=operation,

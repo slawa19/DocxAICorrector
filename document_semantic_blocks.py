@@ -142,7 +142,7 @@ def build_semantic_blocks(
         append_unit(unit_paragraphs)
 
     flush_current()
-    return blocks
+    return _split_unsafe_front_matter_blocks(blocks, max_chars=max_chars)
 
 
 def build_context_excerpt(blocks: list[DocumentBlock], block_index: int, limit_chars: int, *, reverse: bool) -> str:
@@ -405,3 +405,67 @@ def _resolve_narration_include(
     if block_index in bibliography_tail_indexes:
         return False
     return True
+
+
+def _split_unsafe_front_matter_blocks(blocks: list[DocumentBlock], *, max_chars: int) -> list[DocumentBlock]:
+    split_blocks: list[DocumentBlock] = []
+    for block in blocks:
+        split_blocks.extend(_split_single_unsafe_block(block, max_chars=max_chars))
+    return split_blocks
+
+
+def _split_single_unsafe_block(block: DocumentBlock, *, max_chars: int) -> list[DocumentBlock]:
+    paragraphs = list(block.paragraphs)
+    if len(paragraphs) < 2:
+        return [block]
+
+    boundary_indexes: set[int] = set()
+    for index in range(1, len(paragraphs)):
+        previous = paragraphs[index - 1]
+        current = paragraphs[index]
+        previous_kind = _paragraph_structural_kind(previous)
+        current_kind = _paragraph_structural_kind(current)
+
+        if previous_kind in {"toc_header", "toc_entry"} and current_kind not in {"toc_header", "toc_entry"}:
+            boundary_indexes.add(index)
+            continue
+        if previous_kind not in {"toc_header", "toc_entry"} and current_kind in {"toc_header", "toc_entry"}:
+            boundary_indexes.add(index)
+            continue
+        if previous_kind in {"epigraph", "attribution", "dedication"} and current_kind not in {"epigraph", "attribution", "dedication"}:
+            boundary_indexes.add(index)
+            continue
+        if current.role == "heading" and any(
+            _paragraph_structural_kind(paragraph) in {"toc_header", "toc_entry", "epigraph", "attribution", "dedication"}
+            for paragraph in paragraphs[:index]
+        ):
+            boundary_indexes.add(index)
+            continue
+
+    if not boundary_indexes:
+        return [block]
+
+    chunks: list[DocumentBlock] = []
+    start = 0
+    for boundary in sorted(boundary_indexes):
+        if boundary <= start:
+            continue
+        chunks.append(DocumentBlock(paragraphs=paragraphs[start:boundary]))
+        start = boundary
+    if start < len(paragraphs):
+        chunks.append(DocumentBlock(paragraphs=paragraphs[start:]))
+
+    if len(chunks) <= 1:
+        return [block]
+
+    # Keep extremely small chunks only when they isolate a real structural boundary.
+    normalized_chunks: list[DocumentBlock] = []
+    for chunk in chunks:
+        if not normalized_chunks:
+            normalized_chunks.append(chunk)
+            continue
+        if len(chunk.text) < 30 and len(chunk.paragraphs) == 1 and chunk.paragraphs[0].role != "heading":
+            normalized_chunks[-1] = DocumentBlock(paragraphs=[*normalized_chunks[-1].paragraphs, *chunk.paragraphs])
+            continue
+        normalized_chunks.append(chunk)
+    return normalized_chunks
