@@ -724,8 +724,8 @@ def _resolve_layout_artifact_cleanup_settings(*, app_config: Mapping[str, object
         app_config = load_app_config()
     return (
         bool(app_config.get("layout_artifact_cleanup_enabled", True)),
-        int(app_config.get("layout_artifact_cleanup_min_repeat_count", 3) or 3),
-        int(app_config.get("layout_artifact_cleanup_max_repeated_text_chars", 80) or 80),
+        _coerce_int_config_value_impl(app_config.get("layout_artifact_cleanup_min_repeat_count", 3), 3),
+        _coerce_int_config_value_impl(app_config.get("layout_artifact_cleanup_max_repeated_text_chars", 80), 80),
         bool(app_config.get("layout_artifact_cleanup_save_debug_artifacts", True)),
     )
 

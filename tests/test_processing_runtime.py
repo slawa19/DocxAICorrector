@@ -735,7 +735,10 @@ def test_run_completed_process_cleans_process_group_on_timeout(monkeypatch):
         def communicate(self, timeout=None):
             self.communicate_calls += 1
             if self.communicate_calls == 1:
-                raise subprocess.TimeoutExpired(cmd=self.command, timeout=timeout)
+                raise subprocess.TimeoutExpired(
+                    cmd=self.command,
+                    timeout=float(timeout if timeout is not None else 0),
+                )
             self.returncode = -15
             return "", ""
 
