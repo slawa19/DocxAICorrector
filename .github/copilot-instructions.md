@@ -31,6 +31,25 @@ Critical distinction:
 - If the workspace factually has a working Windows `.venv\Scripts\python.exe`, agents may use it only for debugging ordinary pytest selectors that do not themselves depend on a shell-bound contract.
 - For `real`, `spec`, `ui-parity`, `validation`, `quality-gate`, or any shell-driven scenario, a debug path does not count as executing the requested canonical verification path.
 - If the canonical shell path is unavailable, state that limitation explicitly instead of silently substituting an underlying Python runner and reporting it as equivalent verification.
+- For structural preparation snapshots from `real_document_validation_structural.py`, prefer the module's own CLI through `bash scripts/run-structural-preparation-diagnostic.sh ...` or the VS Code task `Run Structural Preparation Diagnostic` instead of building nested `python -c` commands.
+
+Verified command set for structural preparation snapshots:
+
+```bash
+# Preferred user-visible task path
+# Task: Run Structural Preparation Diagnostic
+# Prompt 1: end-times-pdf-core
+# Prompt 2: leave blank to use the profile declared on the document profile
+
+# Direct WSL shell path with explicit override
+bash scripts/run-structural-preparation-diagnostic.sh end-times-pdf-core --run-profile-id ui-parity-pdf-structural-recovery
+
+# File-capture fallback when terminal stdout capture is unreliable
+bash scripts/run-structural-preparation-diagnostic.sh end-times-pdf-core --run-profile-id ui-parity-pdf-structural-recovery > .run/end_times_structural_snapshot.json 2>&1
+
+# Inspect the saved payload from the same WSL shell
+tail -n 40 .run/end_times_structural_snapshot.json
+```
 
 When an AI agent runs tests for verification inside VS Code, the final user-facing verification path must be user-visible:
 
@@ -47,6 +66,8 @@ Clarification for AI agents:
 - before any ad-hoc shell test command, identify the current shell with `uname` and `pwd` instead of assuming it is WSL or Git Bash;
 - if the shell is already Linux inside `/mnt/d/www/projects/2025/DocxAICorrector`, run `bash scripts/test.sh ...` directly and do not nest `wsl.exe` inside that shell;
 - if the shell is MSYS/Git Bash or PowerShell, use `wsl.exe -d Debian ...` only as a transport wrapper into the project WSL runtime, and treat that path as debugging rather than final proof;
+- if the requested output is a structural preparation diagnostic snapshot, prefer the dedicated script/task entrypoint and do not hand-roll JSON printing with inline imports unless you are debugging the CLI itself;
+- for `Run Structural Preparation Diagnostic`, leave the optional second prompt blank for the default profile on the document; if you need an explicit `--run-profile-id ...`, prefer the direct shell command instead of relying on task quoting;
 - if the user explicitly wants to see the test run in the VS Code terminal, the final verification MUST use the existing VS Code tasks rather than agent-only shell capture or foreground tool terminals;
 - if an agent uses shell test runs for debugging, run exactly one selector per command and wait for its full output; do not chain multiple pytest invocations with `&&` or other collapsed command patterns that make the result partial or ambiguous;
 - do not start overlapping pytest runs for the same investigation in multiple terminals; keep one active selector, wait for completion, then narrow or broaden intentionally;

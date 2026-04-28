@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from document_pipeline_output_validation import has_toc_body_concat_markdown
 from formatting_diagnostics_retention import collect_recent_formatting_diagnostics, load_formatting_diagnostics_payloads
 from generation import strip_markdown_for_narration
 
@@ -27,9 +28,6 @@ QUALITY_REPORTS_DIR = Path(".run") / "quality_reports"
 QUALITY_REPORTS_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 QUALITY_REPORTS_MAX_COUNT = 100
 _BULLET_MARKDOWN_HEADING_PATTERN = re.compile(r"(?m)^\s{0,3}#{1,6}\s*[\u2022\u25cf\u25e6\u2023*\-]\s*$")
-_TOC_BODY_CONCAT_MARKDOWN_PATTERN = re.compile(
-    r"(?:\.{2,}|[\u2024\u2025\u2026\u2027\u2219\u22c5\u00b7]{2,}|\s{2,})\s*[0-9ivxlcdmIVXLCDM]+\s+[А-Яа-яЁёA-Za-z]"
-)
 
 
 def _require_group_int(group: Mapping[str, object], key: str) -> int:
@@ -176,10 +174,7 @@ def _count_bullet_markdown_headings(markdown_text: str) -> int:
 
 
 def _has_toc_body_concat_markdown(markdown_text: str) -> bool:
-    for paragraph in re.split(r"\n\s*\n", markdown_text or ""):
-        if _TOC_BODY_CONCAT_MARKDOWN_PATTERN.search(paragraph):
-            return True
-    return False
+    return has_toc_body_concat_markdown(markdown_text)
 
 
 def _apply_quality_gate_reason(

@@ -1610,6 +1610,31 @@ def test_build_translation_quality_report_flags_bullet_marker_headings_in_strict
     assert report["bullet_heading_count"] == 1
 
 
+@pytest.mark.parametrize(
+    "markdown_text",
+    [
+        "Заключение ........ 29 Введение",
+        "Заключение……29 Введение",
+        "Заключение··29 Введение",
+        "Заключение  29 Введение",
+    ],
+)
+def test_build_translation_quality_report_detects_toc_body_concat_across_leader_variants(markdown_text):
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+        ),
+        final_markdown=markdown_text,
+        formatting_diagnostics_artifacts=[],
+    )
+
+    assert report["quality_status"] == "fail"
+    assert report["gate_reasons"] == ["toc_body_concatenation_detected"]
+    assert report["toc_body_concat_detected"] is True
+
+
 def test_run_document_processing_fails_on_strict_structural_markdown_quality_gate(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"

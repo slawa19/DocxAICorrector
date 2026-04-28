@@ -1,3 +1,5 @@
+import pytest
+
 import document_pipeline
 import document_pipeline_output_validation
 
@@ -625,6 +627,27 @@ def test_has_toc_body_concat_signal_detects_toc_entry_merged_with_body():
         target_text="Contents\n\nIntroduction ........ 1",
         processed_chunk="Содержание\n\nЗаключение ........ 29 Марка 13:13 Введение",
     ) is True
+
+
+@pytest.mark.parametrize(
+    ("processed_chunk", "expected"),
+    [
+        ("Содержание\n\nЗаключение ........ 29 Введение", True),
+        ("Содержание\n\nЗаключение……29 Введение", True),
+        ("Содержание\n\nЗаключение··29 Введение", True),
+        ("Содержание\n\nЗаключение  29 Введение", True),
+        ("Содержание\n\nЗаключение. 29\n\nВведение", False),
+    ],
+)
+def test_has_toc_body_concat_markdown_handles_representative_leader_variants(processed_chunk, expected):
+    assert document_pipeline_output_validation.has_toc_body_concat_markdown(processed_chunk) is expected
+
+
+def test_has_toc_body_concat_signal_requires_source_toc_markers():
+    assert document_pipeline_output_validation.has_toc_body_concat_signal(
+        target_text="Обычный абзац без TOC",
+        processed_chunk="Заключение........ 29 Введение",
+    ) is False
 
 
 def test_has_unexplained_english_residuals_detects_english_word_inside_cyrillic_output():

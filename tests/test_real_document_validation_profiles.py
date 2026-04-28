@@ -107,11 +107,11 @@ def test_load_validation_registry_reads_mazzucato_audiobook_profile_and_run_prof
     assert baseline_run_profile.audiobook_postprocess_enabled is False
 
 
-def test_load_validation_registry_reads_end_times_pdf_profile_and_theology_run_profile() -> None:
+def test_load_validation_registry_reads_end_times_pdf_profile_and_structural_recovery_run_profile() -> None:
     registry = load_validation_registry()
 
     document_profile = registry.get_document_profile("end-times-pdf-core")
-    run_profile = registry.get_run_profile("ui-parity-translate-theology-pdf-high-quality")
+    run_profile = registry.get_run_profile("ui-parity-pdf-structural-recovery")
 
     assert document_profile.source_path == "tests/sources/Are_We_In_The_End_Times.pdf"
     assert document_profile.require_toc_detected is True
@@ -119,22 +119,20 @@ def test_load_validation_registry_reads_end_times_pdf_profile_and_theology_run_p
     assert document_profile.require_no_bullet_headings is True
     assert document_profile.require_no_toc_body_concat is True
     assert document_profile.require_translation_domain == "theology"
-    assert document_profile.structural_run_profile == "ui-parity-translate-theology-pdf-high-quality"
+    assert document_profile.structural_run_profile == "ui-parity-pdf-structural-recovery"
     assert document_profile.structural_expected_result == "fail"
-    assert document_profile.structural_expected_failed_checks == (
-        "unmapped_source_threshold",
-        "unmapped_target_threshold",
-    )
-    assert document_profile.default_run_profile == "ui-parity-translate-theology-pdf-high-quality"
+    assert document_profile.structural_expected_failed_checks == ("unmapped_source_threshold",)
+    assert document_profile.structural_optional_failed_checks == ()
+    assert document_profile.default_run_profile == "ui-parity-pdf-structural-recovery"
     assert run_profile.processing_operation == "translate"
     assert run_profile.translation_domain == "theology"
-    assert run_profile.structure_recognition_mode == "always"
+    assert run_profile.structure_recognition_mode == "off"
 
 
 def test_apply_runtime_resolution_maps_translation_domain_to_pipeline_config() -> None:
     registry = load_validation_registry()
     app_config = load_app_config()
-    run_profile = registry.get_run_profile("ui-parity-translate-theology-pdf-high-quality")
+    run_profile = registry.get_run_profile("ui-parity-pdf-structural-recovery")
 
     runtime_config = apply_runtime_resolution_to_app_config(app_config, resolve_runtime_resolution(app_config, run_profile))
 

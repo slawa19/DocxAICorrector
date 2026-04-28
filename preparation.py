@@ -571,6 +571,52 @@ def _resolve_pre_translation_quality_gate(
     return ("blocked" if unique_reasons else "pass", unique_reasons)
 
 
+def _apply_first_block_composition_quality_gate(
+    *,
+    blocks: list,
+    processing_operation: str,
+    quality_gate_status: str,
+    quality_gate_reasons: tuple[str, ...],
+) -> tuple[str, tuple[str, ...]]:
+    if processing_operation != "translate" or not blocks:
+        return quality_gate_status, quality_gate_reasons
+    first_block_paragraphs = list(getattr(blocks[0], "paragraphs", ()) or ())
+    if not first_block_paragraphs:
+        return quality_gate_status, quality_gate_reasons
+
+    additional_reasons: list[str] = []
+    if _block_has_toc_roles(first_block_paragraphs):
+        if _block_has_epigraph_roles(first_block_paragraphs):
+            additional_reasons.append("first_block_mixed_toc_and_epigraph")
+        if _block_has_body_start_roles(first_block_paragraphs):
+            additional_reasons.append("first_block_mixed_toc_and_body_start")
+    if not additional_reasons:
+        return quality_gate_status, quality_gate_reasons
+
+    merged_reasons = tuple(dict.fromkeys([*quality_gate_reasons, *additional_reasons]))
+    return "blocked", merged_reasons
+
+
+def _block_has_toc_roles(paragraphs: list) -> bool:
+    return any(str(getattr(paragraph, "structural_role", "") or "").strip().lower() in {"toc_header", "toc_entry"} for paragraph in paragraphs)
+
+
+def _block_has_epigraph_roles(paragraphs: list) -> bool:
+    return any(
+        str(getattr(paragraph, "structural_role", "") or "").strip().lower() in {"epigraph", "attribution", "dedication"}
+        for paragraph in paragraphs
+    )
+
+
+def _block_has_body_start_roles(paragraphs: list) -> bool:
+    for paragraph in paragraphs:
+        role = str(getattr(paragraph, "role", "") or "").strip().lower()
+        structural_role = str(getattr(paragraph, "structural_role", "body") or "body").strip().lower() or "body"
+        if role in {"heading", "body", "list"} and structural_role not in {"toc_header", "toc_entry", "epigraph", "attribution", "dedication"}:
+            return True
+    return False
+
+
 def build_prepared_source_key(
     uploaded_file_token: str,
     chunk_size: int,
@@ -715,50 +761,6 @@ def _prepare_document_for_processing(
         structure_summary=structure_summary,
         app_config=app_config,
     )
-    structure_status_note = build_structure_processing_status_note(
-        type(
-            "StructureProcessingStatusSource",
-            (),
-            {
-                "structure_recognition_mode": structure_mode,
-                "structure_validation_report": structure_validation_report,
-                "structure_map": structure_map,
-                "structure_recognition_summary": structure_summary,
-                "structure_ai_attempted": structure_ai_attempted,
-            },
-        )()
-    )
-    log_event(
-        logging.INFO,
-        "structure_processing_outcome",
-        "Определён итог обработки структуры документа.",
-        structure_recognition_mode=structure_mode,
-        structure_ai_attempted=structure_ai_attempted,
-        structure_ai_succeeded=structure_map is not None,
-        escalation_recommended=bool(getattr(structure_validation_report, "escalation_recommended", False)),
-        escalation_reasons=list(getattr(structure_validation_report, "escalation_reasons", ())),
-        readiness_status=str(getattr(structure_validation_report, "readiness_status", "") or ""),
-        quality_gate_status=quality_gate_status,
-        quality_gate_reasons=list(quality_gate_reasons),
-        ai_classified_count=structure_summary.ai_classified_count,
-        ai_heading_count=structure_summary.ai_heading_count,
-        structure_status_note=structure_status_note,
-        **flatten_layout_cleanup_metrics(cleanup_report),
-        **flatten_structure_repair_metrics(structure_repair_report),
-    )
-    if (
-        structure_mode in {"auto", "always"}
-        and bool(getattr(structure_validation_report, "escalation_recommended", False))
-        and structure_ai_attempted
-        and structure_summary.ai_classified_count == 0
-    ):
-        log_event(
-            logging.WARNING,
-            "structure_recognition_noop_on_high_risk",
-            "AI-распознавание структуры не внесло изменений для high-risk документа.",
-            escalation_reasons=list(getattr(structure_validation_report, "escalation_reasons", ())),
-            readiness_status=str(getattr(structure_validation_report, "readiness_status", "") or ""),
-        )
     source_text = build_document_text(paragraphs)
     translation_domain = str(app_config.get("translation_domain_default", "general") or "general").strip().lower() or "general"
     translation_domain_instructions = build_translation_domain_instructions(
@@ -783,6 +785,60 @@ def _prepare_document_for_processing(
         ),
     )
     blocks = build_semantic_blocks(paragraphs, max_chars=chunk_size, relations=relations)
+    quality_gate_status, quality_gate_reasons = _apply_first_block_composition_quality_gate(
+        blocks=blocks,
+        processing_operation=processing_operation,
+        quality_gate_status=quality_gate_status,
+        quality_gate_reasons=quality_gate_reasons,
+    )
+    structure_status_note = build_structure_processing_status_note(
+        type(
+            "StructureProcessingStatusSource",
+            (),
+            {
+                "structure_recognition_mode": structure_mode,
+                "structure_validation_report": structure_validation_report,
+                "structure_map": structure_map,
+                "structure_recognition_summary": structure_summary,
+                "structure_ai_attempted": structure_ai_attempted,
+            },
+        )()
+    )
+    log_event(
+        logging.INFO,
+        "structure_processing_outcome",
+        "Определён итог обработки структуры документа.",
+        structure_recognition_mode=structure_mode,
+        structure_ai_attempted=structure_ai_attempted,
+        structure_ai_succeeded=structure_map is not None,
+        escalation_recommended=bool(getattr(structure_validation_report, "escalation_recommended", False)),
+        escalation_reasons=list(getattr(structure_validation_report, "escalation_reasons", ())),
+        readiness_status=str(getattr(structure_validation_report, "readiness_status", "") or ""),
+        readiness_reasons=list(getattr(structure_validation_report, "readiness_reasons", ())),
+        quality_gate_status=quality_gate_status,
+        quality_gate_reasons=list(quality_gate_reasons),
+        ai_classified_count=structure_summary.ai_classified_count,
+        ai_heading_count=structure_summary.ai_heading_count,
+        first_block_has_toc=_block_has_toc_roles(list(getattr(blocks[0], "paragraphs", ()) or [])) if blocks else False,
+        first_block_has_epigraph=_block_has_epigraph_roles(list(getattr(blocks[0], "paragraphs", ()) or [])) if blocks else False,
+        first_block_has_body_start=_block_has_body_start_roles(list(getattr(blocks[0], "paragraphs", ()) or [])) if blocks else False,
+        structure_status_note=structure_status_note,
+        **flatten_layout_cleanup_metrics(cleanup_report),
+        **flatten_structure_repair_metrics(structure_repair_report),
+    )
+    if (
+        structure_mode in {"auto", "always"}
+        and bool(getattr(structure_validation_report, "escalation_recommended", False))
+        and structure_ai_attempted
+        and structure_summary.ai_classified_count == 0
+    ):
+        log_event(
+            logging.WARNING,
+            "structure_recognition_noop_on_high_risk",
+            "AI-распознавание структуры не внесло изменений для high-risk документа.",
+            escalation_reasons=list(getattr(structure_validation_report, "escalation_reasons", ())),
+            readiness_status=str(getattr(structure_validation_report, "readiness_status", "") or ""),
+        )
     emit_preparation_progress(
         progress_callback,
         stage="Смысловые блоки",

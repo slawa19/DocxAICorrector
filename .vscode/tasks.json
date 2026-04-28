@@ -400,6 +400,33 @@
 				"close": false
 			},
 			"group": "test"
+		},
+		{
+			"label": "Run Structural Preparation Diagnostic",
+			"type": "shell",
+			"command": "bash scripts/run-structural-preparation-diagnostic.sh \"${input:structuralDiagnosticDocumentProfileId}\" \"${input:structuralDiagnosticRunProfileArg}\"",
+			"options": {
+				"shell": {
+					"executable": "wsl.exe",
+					"args": [
+						"-d",
+						"Debian",
+						"--cd",
+						"${workspaceFolder}",
+						"--"
+					]
+				}
+			},
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated",
+				"focus": true,
+				"clear": true,
+				"showReuseMessage": false,
+				"close": false
+			},
+			"group": "test"
 		}
 	],
 	"inputs": [
@@ -424,6 +451,18 @@
 			"id": "realDocumentRunProfileId",
 			"type": "promptString",
 			"description": "Optional run profile id from corpus_registry.toml",
+			"default": ""
+		},
+		{
+			"id": "structuralDiagnosticDocumentProfileId",
+			"type": "promptString",
+			"description": "Document profile id for structural preparation diagnostic",
+			"default": "end-times-pdf-core"
+		},
+		{
+			"id": "structuralDiagnosticRunProfileArg",
+			"type": "promptString",
+			"description": "Optional literal CLI arg, e.g. --run-profile-id structural-passthrough-default",
 			"default": ""
 		}
 	]

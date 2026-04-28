@@ -751,7 +751,7 @@ def test_full_tier_runtime_contract_is_nested_only() -> None:
 
 def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, monkeypatch) -> None:
     validation = _load_validation_module()
-    from models import ImageAsset
+    from models import ImageAsset, ParagraphUnit
 
     source_path = tmp_path / "legacy.doc"
     source_bytes = bytes.fromhex("D0CF11E0A1B11AE1") + b"legacy-source"
@@ -806,8 +806,26 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
         final_reason="accepted",
     )
     processed_asset.update_runtime_attempt_state(validation_status="passed")
+    prepared_paragraphs = [
+        ParagraphUnit(text="Contents", role="body", structural_role="toc_header", source_index=0),
+        ParagraphUnit(text="Chapter 1........ 12", role="body", structural_role="toc_entry", source_index=1),
+        ParagraphUnit(text="-", role="body", structural_role="body", source_index=2),
+        ParagraphUnit(text="Epigraph line", role="body", structural_role="epigraph", source_index=3),
+        ParagraphUnit(text="Introduction", role="heading", structural_role="body", heading_level=1, source_index=4),
+    ]
+    structure_repair_report = SimpleNamespace(
+        repaired_bullet_items=4,
+        repaired_numbered_items=5,
+        bounded_toc_regions=1,
+        toc_body_boundary_repairs=1,
+        heading_candidates_from_toc=7,
+        remaining_isolated_marker_count=0,
+    )
 
     class _ValidationServiceStub:
+        def __init__(self, log_event_fn):
+            self.log_event_fn = log_event_fn
+
         def run_prepared_background_document(self, **kwargs):
             uploaded_file = kwargs["uploaded_file"]
             captured["uploaded_filename"] = uploaded_file.name
@@ -815,6 +833,27 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
             captured["processing_operation"] = kwargs["processing_operation"]
             captured["source_language"] = kwargs["source_language"]
             captured["target_language"] = kwargs["target_language"]
+            self.log_event_fn(
+                20,
+                "structure_processing_outcome",
+                "structure outcome",
+                structure_ai_attempted=True,
+                quality_gate_status="blocked",
+                quality_gate_reasons=["structure_readiness_blocked_unsafe_best_effort_only"],
+                readiness_status="blocked_unsafe_best_effort_only",
+                readiness_reasons=["heading_count_far_below_toc_expectation"],
+                ai_classified_count=7,
+                ai_heading_count=3,
+            )
+            self.log_event_fn(
+                20,
+                "block_plan_summary",
+                "block summary",
+                block_count=3,
+                llm_block_count=2,
+                passthrough_block_count=1,
+                first_block_target_chars=[3891, 946, 935],
+            )
             kwargs["runtime"].emit(
                 validation.SetStateEvent(
                     values={
@@ -827,7 +866,7 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
             return "succeeded", SimpleNamespace(
                 uploaded_filename="prepared.docx",
                 uploaded_file_bytes=b"PK\x03\x04normalized-source",
-                paragraphs=[],
+                paragraphs=prepared_paragraphs,
                 image_assets=[prepared_asset],
                 jobs=[{"job_kind": "block"}],
                 source_text="source text",
@@ -839,6 +878,7 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
                 ai_heading_promotion_count=1,
                 ai_heading_demotion_count=1,
                 ai_structural_role_change_count=1,
+                structure_repair_report=structure_repair_report,
                 uploaded_file_token="token-1",
             )
 
@@ -881,7 +921,7 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
     monkeypatch.setattr(validation, "_load_recent_formatting_diagnostics", lambda started_at: ([], []))
     monkeypatch.setattr(validation, "_load_formatting_diagnostics_payloads", lambda paths: [])
     monkeypatch.setattr(validation, "_print_terminal_completion_summary", lambda **kwargs: None)
-    monkeypatch.setattr(validation.processing_service, "clone_processing_service", lambda **kwargs: _ValidationServiceStub())
+    monkeypatch.setattr(validation.processing_service, "clone_processing_service", lambda **kwargs: _ValidationServiceStub(kwargs["log_event_fn"]))
     monkeypatch.setattr(
         validation.application_flow,
         "prepare_run_context_for_background",
@@ -901,7 +941,9 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
     validation.main()
 
     report_path = tmp_path / "artifacts" / "runs" / "run-123" / "lietaer_validation_report.json"
+    summary_path = tmp_path / "artifacts" / "runs" / "run-123" / "lietaer_validation_summary.txt"
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    summary_text = summary_path.read_text(encoding="utf-8")
 
     assert captured["uploaded_filename"] == "legacy.doc"
     assert captured["uploaded_bytes"] == source_bytes
@@ -915,9 +957,30 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
     assert report["preparation"]["ai_heading_promotion_count"] == 1
     assert report["preparation"]["ai_heading_demotion_count"] == 1
     assert report["preparation"]["ai_structural_role_change_count"] == 1
+    snapshot = report["preparation_diagnostic_snapshot"]
+    assert snapshot["paragraph_count"] == 5
+    assert snapshot["heading_count"] == 1
+    assert snapshot["toc_header_count"] == 1
+    assert snapshot["toc_entry_count"] == 1
+    assert snapshot["bounded_toc_region_count"] == 1
+    assert snapshot["repaired_bullet_items"] == 4
+    assert snapshot["repaired_numbered_items"] == 5
+    assert snapshot["toc_body_boundary_repairs"] == 1
+    assert snapshot["remaining_isolated_marker_count"] == 0
+    assert snapshot["readiness_status"] == "blocked_unsafe_best_effort_only"
+    assert snapshot["readiness_reasons"] == ["heading_count_far_below_toc_expectation"]
+    assert snapshot["quality_gate_status"] == "blocked"
+    assert snapshot["quality_gate_reasons"] == ["structure_readiness_blocked_unsafe_best_effort_only"]
+    assert snapshot["structure_ai_attempted"] is True
+    assert snapshot["ai_classified_count"] == 7
+    assert snapshot["ai_heading_count"] == 3
+    assert snapshot["semantic_block_count"] >= 1
+    assert snapshot["first_block_target_chars"] == 3891
     assert report["image_forensics"]["prepared_assets"][0]["source"]["source_forensics"]["drawing_container"] == "inline"
     assert report["image_forensics"]["prepared_assets"][0]["source"]["source_sha256"]
     assert report["image_forensics"]["processed_assets"][0]["final_selection"]["final_variant"] == "redrawn"
+    assert 'preparation_diagnostic_snapshot={"ai_classified_count": 7' in summary_text
+    assert '"readiness_status": "blocked_unsafe_best_effort_only"' in summary_text
     assert "source_file" not in report
     assert "runtime_configuration" not in report
 

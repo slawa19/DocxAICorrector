@@ -50,6 +50,7 @@ class DocumentProfile:
     structural_run_profile: str | None = None
     structural_expected_result: str = "pass"
     structural_expected_failed_checks: tuple[str, ...] = ()
+    structural_optional_failed_checks: tuple[str, ...] = ()
     default_run_profile: str | None = None
     tags: tuple[str, ...] = ()
     provenance: str = ""
@@ -302,6 +303,7 @@ def _build_document_profile(payload: Any) -> DocumentProfile:
         structural_run_profile=_optional_str(payload, "structural_run_profile"),
         structural_expected_result=structural_expected_result,
         structural_expected_failed_checks=tuple(_coerce_str_list(payload, "structural_expected_failed_checks")),
+        structural_optional_failed_checks=tuple(_coerce_str_list(payload, "structural_optional_failed_checks")),
         default_run_profile=_optional_str(payload, "default_run_profile"),
         tags=tuple(_coerce_str_list(payload, "tags")),
         provenance=_require_str(payload, "provenance", default=""),
@@ -310,6 +312,10 @@ def _build_document_profile(payload: Any) -> DocumentProfile:
     if profile.structural_expected_result == "pass" and profile.structural_expected_failed_checks:
         raise RuntimeError(
             f"Pass profile {profile.id} cannot declare structural_expected_failed_checks"
+        )
+    if profile.structural_expected_result == "pass" and profile.structural_optional_failed_checks:
+        raise RuntimeError(
+            f"Pass profile {profile.id} cannot declare structural_optional_failed_checks"
         )
     if profile.structural_expected_result == "fail" and not profile.structural_expected_failed_checks:
         raise RuntimeError(

@@ -26,6 +26,9 @@ _BULLET_HEADING_PATTERN = re.compile(r"^#{1,6}\s*[●•\-*]\s*$")
 _MARKDOWN_HEADING_PATTERN = re.compile(r"^#{1,6}\s+\S")
 _ENGLISH_WORD_PATTERN = re.compile(r"\b[A-Za-z]{4,}\b")
 _CYRILLIC_CHAR_PATTERN = re.compile(r"[А-Яа-яЁё]")
+_TOC_BODY_CONCAT_MARKDOWN_PATTERN = re.compile(
+    r"(?:\.{2,}|[\u2024\u2025\u2026\u2027\u2219\u22c5\u00b7]{2,}|\s{2,})\s*[0-9ivxlcdmIVXLCDM]+\s+[А-Яа-яЁёA-Za-z]"
+)
 
 
 @dataclass(frozen=True)
@@ -141,14 +144,14 @@ def has_toc_body_concat_signal(*, target_text: str, processed_chunk: str) -> boo
     source_has_toc_markers = _has_page_reference_suffix(target_text) or "contents" in target_text.casefold() or "содержание" in target_text.casefold()
     if not source_has_toc_markers:
         return False
+    return has_toc_body_concat_markdown(processed_chunk)
 
-    paragraphs = _split_markdown_paragraphs(processed_chunk)
+
+def has_toc_body_concat_markdown(text: str) -> bool:
+    paragraphs = _split_markdown_paragraphs(text)
     if not paragraphs:
         return False
-    for paragraph in paragraphs:
-        if re.search(r"(?:\.{2,}|…|\s{2,})\s*[0-9ivxlcdmIVXLCDM]+\s+[А-Яа-яЁёA-Za-z]", paragraph):
-            return True
-    return False
+    return any(_TOC_BODY_CONCAT_MARKDOWN_PATTERN.search(paragraph) for paragraph in paragraphs)
 
 
 def has_unexplained_english_residuals(text: str) -> bool:

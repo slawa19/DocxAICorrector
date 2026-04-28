@@ -272,6 +272,9 @@ def test_prepare_run_context_raises_when_quality_gate_blocks(monkeypatch):
         raise AssertionError("prepare_run_context must fail when quality gate is blocked")
 
     assert failures[0][0] == "quality_gate_blocked"
+    assert failures[0][1].endswith(
+        "Причины: toc_like_sequence_without_bounded_region, structure_recognition_noop_on_high_risk"
+    )
     assert failures[0][2]["quality_gate_reasons"] == [
         "toc_like_sequence_without_bounded_region",
         "structure_recognition_noop_on_high_risk",

@@ -112,10 +112,11 @@ require_pdf_conversion = true
 require_no_bullet_headings = true
 require_no_toc_body_concat = true
 require_translation_domain = "theology"
-structural_run_profile = "ui-parity-translate-theology-pdf-high-quality"
+structural_run_profile = "ui-parity-pdf-structural-recovery"
 structural_expected_result = "fail"
-structural_expected_failed_checks = ["preparation_quality_gate_blocked"]
-default_run_profile = "ui-parity-translate-theology-pdf-high-quality"
+structural_expected_failed_checks = ["unmapped_source_threshold"]
+structural_optional_failed_checks = []
+default_run_profile = "ui-parity-pdf-structural-recovery"
 tags = ["pdf", "translation", "theology", "toc", "headings", "lists", "manual-regression"]
 provenance = "Regression source for PDF-derived long-form theological translation quality after 2026-04-27 failure."
 
@@ -173,7 +174,7 @@ enable_paragraph_markers = true
 repeat_count = 1
 
 [[run_profiles]]
-id = "ui-parity-translate-theology-pdf-high-quality"
+id = "ui-parity-pdf-structural-recovery"
 tier = "full"
 mode = "regression"
 processing_operation = "translate"
@@ -182,5 +183,5 @@ target_language = "ru"
 translation_domain = "theology"
 audiobook_postprocess_enabled = false
 enable_paragraph_markers = true
-structure_recognition_mode = "always"
+structure_recognition_mode = "off"
 repeat_count = 1

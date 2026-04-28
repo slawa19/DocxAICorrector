@@ -1379,6 +1379,73 @@ def test_prepare_document_for_processing_runs_readiness_gate_in_always_mode(monk
     assert "structure_recognition_noop_on_high_risk" in result.quality_gate_reasons
 
 
+def test_prepare_document_for_processing_blocks_mixed_first_block_toc_and_body_start(monkeypatch):
+    session_state = {"preparation_cache": {}}
+    paragraphs = [
+        ParagraphUnit(text="Contents", role="body", structural_role="toc_header", source_index=0),
+        ParagraphUnit(text="Chapter 1........ 12", role="body", structural_role="toc_entry", source_index=1),
+        ParagraphUnit(text="Epigraph line", role="body", structural_role="epigraph", source_index=2),
+        ParagraphUnit(text="Introduction", role="heading", structural_role="body", heading_source="heuristic", source_index=3),
+        ParagraphUnit(
+            text="Body paragraph with enough words to remain ordinary prose after the heading.",
+            role="body",
+            structural_role="body",
+            source_index=4,
+        ),
+    ]
+
+    monkeypatch.setattr(
+        preparation,
+        "extract_document_content_with_normalization_reports",
+        lambda uploaded_file: _build_extract_result(paragraphs, [], _build_report(raw=5, logical=5)),
+    )
+    monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "text")
+    monkeypatch.setattr(
+        preparation,
+        "build_semantic_blocks",
+        lambda paragraphs, max_chars, relations=None: [DocumentBlock(paragraphs=list(paragraphs))],
+    )
+    monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [{"target_text": "block", "target_chars": 5, "context_chars": 0}])
+    monkeypatch.setattr(
+        preparation,
+        "load_app_config",
+        lambda: {
+            "paragraph_boundary_normalization_enabled": True,
+            "paragraph_boundary_normalization_mode": "high_only",
+            "paragraph_boundary_ai_review_enabled": False,
+            "paragraph_boundary_ai_review_mode": "off",
+            "relation_normalization_enabled": True,
+            "relation_normalization_profile": "phase2_default",
+            "relation_normalization_enabled_relation_kinds": ("epigraph_attribution", "image_caption", "table_caption", "toc_region"),
+            "structure_recognition_mode": "off",
+            "structure_recognition_enabled": False,
+            "structure_validation_enabled": True,
+            "structure_validation_min_paragraphs_for_auto_gate": 40,
+            "structure_validation_min_explicit_heading_density": 0.003,
+            "structure_validation_max_suspicious_short_body_ratio_without_escalation": 0.05,
+            "structure_validation_max_all_caps_or_centered_body_ratio_without_escalation": 0.03,
+            "structure_validation_toc_like_sequence_min_length": 4,
+            "structure_validation_forbid_heading_only_collapse": True,
+            "structure_validation_save_debug_artifacts": False,
+            "structure_validation_block_on_high_risk_noop": True,
+            "models": _build_runtime_model_registry(structure_recognition_model="gpt-5-mini"),
+        },
+    )
+
+    result = preparation.prepare_document_for_processing(
+        uploaded_payload=_build_uploaded_payload("report.docx", b"docx-bytes", "report.docx:10:hash"),
+        chunk_size=6000,
+        processing_operation="translate",
+        session_state=session_state,
+    )
+
+    assert result.quality_gate_status == "blocked"
+    assert result.quality_gate_reasons == (
+        "first_block_mixed_toc_and_epigraph",
+        "first_block_mixed_toc_and_body_start",
+    )
+
+
 def test_build_structure_processing_status_note_describes_auto_escalation():
     report = preparation.StructureValidationReport(
         paragraph_count=50,

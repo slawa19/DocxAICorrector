@@ -1,0 +1,37 @@
+{
+  "validation_tier": "structural",
+  "validation_execution_mode": "proxy",
+  "metric_basis": "benchmark_block_projection",
+  "preparation_gate_basis": "benchmark_structural_proxy",
+  "passed": true,
+  "failed_checks": [],
+  "metrics": {
+    "quality_gate_status": "pass",
+    "readiness_status": "ready",
+    "toc_body_concat_detected": false
+  },
+  "preparation_diagnostic_snapshot": {
+    "paragraph_count": 377,
+    "heading_count": 47,
+    "toc_header_count": 1,
+    "toc_entry_count": 13,
+    "bounded_toc_region_count": 1,
+    "repaired_bullet_items": 19,
+    "repaired_numbered_items": 16,
+    "toc_body_boundary_repairs": 2,
+    "remaining_isolated_marker_count": 0,
+    "readiness_status": "ready",
+    "readiness_reasons": [],
+    "quality_gate_status": "pass",
+    "quality_gate_reasons": [],
+    "structure_ai_attempted": false,
+    "ai_classified_count": 0,
+    "ai_heading_count": 0,
+    "semantic_block_count": 53,
+    "first_block_target_chars": 263,
+    "first_block_has_toc": false,
+    "first_block_has_epigraph": false,
+    "first_block_has_body_start": true,
+    "first_block_has_isolated_marker": false
+  }
+}

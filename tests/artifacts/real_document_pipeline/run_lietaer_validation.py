@@ -46,6 +46,7 @@ from generation import (
     ensure_pandoc_available,
 )
 from real_document_validation_common import build_validation_event_logger, build_validation_runtime_config
+from real_document_validation_structural import build_preparation_diagnostic_snapshot
 from real_document_validation_profiles import (
     apply_runtime_resolution_to_app_config,
     load_validation_registry,
@@ -2127,6 +2128,13 @@ def main() -> None:
         "cached": prepared.preparation_cached if prepared is not None else None,
         "elapsed_seconds": round(prepared.preparation_elapsed_seconds, 3) if prepared is not None else None,
     }
+    preparation_diagnostic_snapshot = build_preparation_diagnostic_snapshot(
+        paragraphs=prepared.paragraphs if prepared is not None else [],
+        relations=None,
+        structure_repair_report=getattr(prepared, "structure_repair_report", None),
+        chunk_size=int(runtime_resolution.effective.chunk_size) if runtime_resolution is not None else 6000,
+        event_log=event_log,
+    )
 
     report = {
         "run": {
@@ -2151,6 +2159,7 @@ def main() -> None:
         "result": result,
         "runtime_config": build_validation_runtime_config(runtime_resolution),
         "preparation": preparation_payload,
+        "preparation_diagnostic_snapshot": preparation_diagnostic_snapshot,
         "runtime": runtime_snapshot,
         "image_forensics": _build_image_forensics_report(prepared, runtime_snapshot),
         "last_error": last_error,
@@ -2230,6 +2239,7 @@ def main() -> None:
         f"ai_heading_promotion_count={report['preparation']['ai_heading_promotion_count']}",
         f"ai_heading_demotion_count={report['preparation']['ai_heading_demotion_count']}",
         f"ai_structural_role_change_count={report['preparation']['ai_structural_role_change_count']}",
+        f"preparation_diagnostic_snapshot={json.dumps(report['preparation_diagnostic_snapshot'], ensure_ascii=False, sort_keys=True)}",
         f"source_chars={report['preparation']['source_chars']}",
         f"final_markdown_chars={final_markdown_chars}",
         f"output_ratio_vs_source_text={report['signals']['output_ratio_vs_source_text']}",

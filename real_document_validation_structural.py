@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -15,6 +16,7 @@ from docx.oxml.ns import qn
 import processing_runtime
 from config import load_app_config
 from document import (
+    build_semantic_blocks,
     build_document_text,
     extract_document_content_from_docx,
     extract_document_content_with_normalization_reports,
@@ -28,8 +30,15 @@ from image_reinsertion import reinsert_inline_images
 from models import ParagraphBoundaryNormalizationReport
 from processing_service import clone_processing_service
 from real_document_validation_common import build_validation_event_logger, build_validation_runtime_config
-from real_document_validation_profiles import DocumentProfile, RunProfile, apply_runtime_resolution_to_app_config, resolve_runtime_resolution
+from real_document_validation_profiles import (
+    DocumentProfile,
+    RunProfile,
+    apply_runtime_resolution_to_app_config,
+    load_validation_registry,
+    resolve_runtime_resolution,
+)
 from preparation import flatten_structure_repair_metrics
+from structure_validation import validate_structure_quality
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 FORMATTING_DIAGNOSTICS_DIR = PROJECT_ROOT / ".run" / "formatting_diagnostics"
@@ -148,6 +157,13 @@ def run_structural_passthrough_validation(
                 "error": str(exc),
             }
         ]
+        preparation_diagnostic_snapshot = _build_preparation_diagnostic_snapshot_from_source(
+            source_path=source_path,
+            source_bytes=source_bytes,
+            chunk_size=int(runtime_resolution.effective.chunk_size),
+            event_log=event_log,
+        )
+        _apply_preparation_error_snapshot_fallback(preparation_diagnostic_snapshot, str(exc))
         return _build_validation_result(
             document_profile=document_profile,
             run_profile=run_profile,
@@ -160,6 +176,8 @@ def run_structural_passthrough_validation(
             output_artifacts=None,
             formatting_diagnostics=[],
             event_log=event_log,
+            preparation_diagnostic_snapshot=preparation_diagnostic_snapshot,
+            validation_execution_mode="passthrough",
         )
 
     formatting_after = _snapshot_formatting_diagnostics_paths()
@@ -179,11 +197,19 @@ def run_structural_passthrough_validation(
         source_paragraphs,
         source_image_assets,
         source_normalization_report,
-        _,
+        source_relations,
         source_relation_report,
         source_cleanup_report,
         source_structure_repair_report,
     ) = _unpack_extraction_result(extract_document_content_with_normalization_reports(BytesIO(prepared.uploaded_file_bytes)))
+    preparation_diagnostic_snapshot = build_preparation_diagnostic_snapshot(
+        paragraphs=source_paragraphs,
+        relations=source_relations,
+        structure_repair_report=source_structure_repair_report,
+        chunk_size=int(runtime_resolution.effective.chunk_size),
+        event_log=event_log,
+    )
+    _apply_prepared_snapshot_fields(preparation_diagnostic_snapshot, prepared)
     output_paragraphs = []
     output_image_assets = []
     if output_artifacts["output_docx_openable"]:
@@ -237,6 +263,7 @@ def run_structural_passthrough_validation(
             ),
         }
     )
+    _apply_prepared_metric_fields(metrics, prepared)
     checks = _build_extraction_checks(document_profile, metrics)
     checks.extend(
         _build_structural_checks(
@@ -258,7 +285,27 @@ def run_structural_passthrough_validation(
         output_artifacts=output_artifacts,
         formatting_diagnostics=formatting_diagnostics,
         event_log=event_log,
+        preparation_diagnostic_snapshot=preparation_diagnostic_snapshot,
+        validation_execution_mode="passthrough",
     )
+
+
+def evaluate_structural_preparation_diagnostic(
+    document_profile: DocumentProfile,
+    run_profile: RunProfile,
+) -> dict[str, object]:
+    result = run_structural_passthrough_validation(document_profile, run_profile)
+    metrics = cast(dict[str, object], result.get("metrics") or {})
+    return {
+        "document_profile_id": document_profile.id,
+        "run_profile_id": run_profile.id,
+        "validation_tier": result.get("validation_tier"),
+        "validation_execution_mode": result.get("validation_execution_mode"),
+        "passed": bool(result.get("passed")),
+        "failed_checks": list(cast(list[str], result.get("failed_checks") or [])),
+        "preparation_error": metrics.get("preparation_error"),
+        "preparation_diagnostic_snapshot": result.get("preparation_diagnostic_snapshot"),
+    }
 
 
 def _build_validation_result(
@@ -274,12 +321,15 @@ def _build_validation_result(
     output_artifacts: dict[str, object] | None,
     formatting_diagnostics: list[dict[str, object]],
     event_log: list[dict[str, object]] | None = None,
+    preparation_diagnostic_snapshot: dict[str, object] | None = None,
+    validation_execution_mode: str | None = None,
 ) -> dict[str, object]:
     failed_checks = [str(check["name"]) for check in checks if not bool(check["passed"])]
     return {
         "document_profile_id": document_profile.id,
         "run_profile_id": None if run_profile is None else run_profile.id,
         "validation_tier": tier,
+        "validation_execution_mode": validation_execution_mode,
         "source_document_path": str(source_path.relative_to(PROJECT_ROOT)).replace("\\", "/"),
         "result": result,
         "passed": not failed_checks,
@@ -290,7 +340,285 @@ def _build_validation_result(
         "output_artifacts": output_artifacts,
         "formatting_diagnostics": formatting_diagnostics,
         "event_log": event_log or [],
+        "preparation_diagnostic_snapshot": preparation_diagnostic_snapshot,
     }
+
+
+def _build_preparation_diagnostic_snapshot_from_source(
+    *,
+    source_path: Path,
+    source_bytes: bytes,
+    chunk_size: int,
+    event_log: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    try:
+        normalized_source = processing_runtime.normalize_uploaded_document(filename=source_path.name, source_bytes=source_bytes)
+        (
+            paragraphs,
+            _,
+            _,
+            relations,
+            _,
+            _,
+            structure_repair_report,
+        ) = _unpack_extraction_result(
+            extract_document_content_with_normalization_reports(BytesIO(normalized_source.content_bytes))
+        )
+    except Exception as exc:
+        snapshot = _build_preparation_diagnostic_defaults(event_log)
+        snapshot["snapshot_error"] = str(exc)
+        return snapshot
+    snapshot = build_preparation_diagnostic_snapshot(
+        paragraphs=paragraphs,
+        relations=relations,
+        structure_repair_report=structure_repair_report,
+        chunk_size=chunk_size,
+        event_log=event_log,
+    )
+    app_config = load_app_config()
+    app_config_mapping = app_config if isinstance(app_config, Mapping) else cast(Mapping[str, Any], app_config.to_dict())
+    structure_validation_report = validate_structure_quality(
+        paragraphs=cast(Sequence[Any], paragraphs),
+        app_config=app_config_mapping,
+        structure_repair_report=structure_repair_report,
+    )
+    _apply_structure_validation_snapshot_fields(snapshot, structure_validation_report)
+    return snapshot
+
+
+def build_preparation_diagnostic_snapshot(
+    *,
+    paragraphs: Sequence[object],
+    relations: Sequence[object] | None,
+    structure_repair_report: object | None,
+    chunk_size: int,
+    event_log: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    snapshot = _build_preparation_diagnostic_defaults(event_log)
+    paragraph_units = list(paragraphs)
+    semantic_blocks = build_semantic_blocks(
+        cast(list[Any], paragraph_units),
+        max_chars=chunk_size,
+        relations=None if relations is None else cast(list[Any], list(relations)),
+    )
+    first_block_paragraphs = [] if not semantic_blocks else list(semantic_blocks[0].paragraphs)
+    first_block_target_chars = _extract_first_block_target_chars(
+        event_log=event_log,
+        semantic_blocks=semantic_blocks,
+    )
+    snapshot.update(
+        {
+            "paragraph_count": len(paragraph_units),
+            "heading_count": sum(1 for paragraph in paragraph_units if getattr(paragraph, "role", None) == "heading"),
+            "toc_header_count": sum(
+                1
+                for paragraph in paragraph_units
+                if str(getattr(paragraph, "structural_role", "") or "").strip().lower() == "toc_header"
+            ),
+            "toc_entry_count": sum(
+                1
+                for paragraph in paragraph_units
+                if str(getattr(paragraph, "structural_role", "") or "").strip().lower() == "toc_entry"
+            ),
+            "bounded_toc_region_count": int(getattr(structure_repair_report, "bounded_toc_regions", 0) or 0),
+            "repaired_bullet_items": int(getattr(structure_repair_report, "repaired_bullet_items", 0) or 0),
+            "repaired_numbered_items": int(getattr(structure_repair_report, "repaired_numbered_items", 0) or 0),
+            "toc_body_boundary_repairs": int(getattr(structure_repair_report, "toc_body_boundary_repairs", 0) or 0),
+            "remaining_isolated_marker_count": int(
+                getattr(structure_repair_report, "remaining_isolated_marker_count", 0) or 0
+            ),
+            "semantic_block_count": len(semantic_blocks),
+            "first_block_target_chars": first_block_target_chars,
+            "first_block_has_toc": _block_has_toc(first_block_paragraphs),
+            "first_block_has_epigraph": _block_has_epigraph(first_block_paragraphs),
+            "first_block_has_body_start": _block_has_body_start(first_block_paragraphs),
+            "first_block_has_isolated_marker": _block_has_isolated_marker(first_block_paragraphs),
+        }
+    )
+    return snapshot
+
+
+def _build_preparation_diagnostic_defaults(event_log: Sequence[Mapping[str, object]]) -> dict[str, object]:
+    return {
+        "paragraph_count": 0,
+        "heading_count": 0,
+        "toc_header_count": 0,
+        "toc_entry_count": 0,
+        "bounded_toc_region_count": 0,
+        "repaired_bullet_items": 0,
+        "repaired_numbered_items": 0,
+        "toc_body_boundary_repairs": 0,
+        "remaining_isolated_marker_count": 0,
+        "readiness_status": _extract_event_context_value(event_log, "structure_processing_outcome", "readiness_status"),
+        "readiness_reasons": _extract_event_context_list(event_log, "structure_processing_outcome", "readiness_reasons"),
+        "quality_gate_status": _extract_event_context_value(event_log, "structure_processing_outcome", "quality_gate_status"),
+        "quality_gate_reasons": _extract_event_context_list(event_log, "structure_processing_outcome", "quality_gate_reasons"),
+        "structure_ai_attempted": _extract_event_context_bool(event_log, "structure_processing_outcome", "structure_ai_attempted"),
+        "ai_classified_count": _extract_event_context_int(event_log, "structure_processing_outcome", "ai_classified_count"),
+        "ai_heading_count": _extract_event_context_int(event_log, "structure_processing_outcome", "ai_heading_count"),
+        "semantic_block_count": 0,
+        "first_block_target_chars": 0,
+        "first_block_has_toc": False,
+        "first_block_has_epigraph": False,
+        "first_block_has_body_start": False,
+        "first_block_has_isolated_marker": False,
+    }
+
+
+def _apply_prepared_snapshot_fields(snapshot: dict[str, object], prepared: object) -> None:
+    structure_validation_report = getattr(prepared, "structure_validation_report", None)
+    _apply_structure_validation_snapshot_fields(snapshot, structure_validation_report)
+    if not str(snapshot.get("quality_gate_status") or ""):
+        snapshot["quality_gate_status"] = str(getattr(prepared, "quality_gate_status", "") or "")
+    if not list(cast(list[str], snapshot.get("quality_gate_reasons") or [])):
+        snapshot["quality_gate_reasons"] = [
+            str(reason)
+            for reason in tuple(getattr(prepared, "quality_gate_reasons", ()) or ())
+            if str(reason).strip()
+        ]
+    if not bool(snapshot.get("structure_ai_attempted")):
+        snapshot["structure_ai_attempted"] = bool(getattr(prepared, "structure_ai_attempted", False))
+    if int(snapshot.get("ai_classified_count") or 0) == 0:
+        snapshot["ai_classified_count"] = int(getattr(prepared, "ai_classified_count", 0) or 0)
+    if int(snapshot.get("ai_heading_count") or 0) == 0:
+        snapshot["ai_heading_count"] = int(getattr(prepared, "ai_heading_count", 0) or 0)
+    _apply_quality_gate_readiness_fallback(snapshot)
+
+
+def _apply_structure_validation_snapshot_fields(snapshot: dict[str, object], structure_validation_report: object) -> None:
+    if not str(snapshot.get("readiness_status") or ""):
+        snapshot["readiness_status"] = str(getattr(structure_validation_report, "readiness_status", "") or "")
+    if not list(cast(list[str], snapshot.get("readiness_reasons") or [])):
+        snapshot["readiness_reasons"] = [
+            str(reason)
+            for reason in tuple(getattr(structure_validation_report, "readiness_reasons", ()) or ())
+            if str(reason).strip()
+        ]
+
+
+def _apply_quality_gate_readiness_fallback(snapshot: dict[str, object]) -> None:
+    if str(snapshot.get("readiness_status") or ""):
+        return
+    quality_gate_status = str(snapshot.get("quality_gate_status") or "").strip().lower()
+    quality_gate_reasons = [str(reason).strip() for reason in list(cast(list[str], snapshot.get("quality_gate_reasons") or [])) if str(reason).strip()]
+    if quality_gate_status == "pass":
+        snapshot["readiness_status"] = "ready"
+        return
+    if quality_gate_status == "blocked":
+        snapshot["readiness_status"] = _infer_readiness_status_from_quality_gate_reasons(quality_gate_reasons)
+
+
+def _apply_prepared_metric_fields(metrics: dict[str, object], prepared: object) -> None:
+    structure_validation_report = getattr(prepared, "structure_validation_report", None)
+    if not str(metrics.get("quality_gate_status") or ""):
+        metrics["quality_gate_status"] = str(getattr(prepared, "quality_gate_status", "") or "")
+    if not list(cast(list[str], metrics.get("quality_gate_reasons") or [])):
+        metrics["quality_gate_reasons"] = [
+            str(reason)
+            for reason in tuple(getattr(prepared, "quality_gate_reasons", ()) or ())
+            if str(reason).strip()
+        ]
+    if not str(metrics.get("readiness_status") or ""):
+        metrics["readiness_status"] = str(getattr(structure_validation_report, "readiness_status", "") or "")
+
+
+def _apply_preparation_error_snapshot_fallback(snapshot: dict[str, object], preparation_error: str) -> None:
+    normalized = preparation_error.strip().casefold()
+    if not normalized:
+        return
+    detailed_reasons = _extract_quality_gate_reasons_from_error(preparation_error)
+    if "quality gate" in normalized and not str(snapshot.get("quality_gate_status") or ""):
+        snapshot["quality_gate_status"] = "blocked"
+    if detailed_reasons:
+        if not list(cast(list[str], snapshot.get("quality_gate_reasons") or [])):
+            snapshot["quality_gate_reasons"] = detailed_reasons
+        if not list(cast(list[str], snapshot.get("readiness_reasons") or [])):
+            snapshot["readiness_reasons"] = detailed_reasons
+    if "structural repair" in normalized:
+        if not str(snapshot.get("readiness_status") or ""):
+            snapshot["readiness_status"] = _infer_readiness_status_from_quality_gate_reasons(detailed_reasons)
+        if not list(cast(list[str], snapshot.get("readiness_reasons") or [])):
+            snapshot["readiness_reasons"] = ["structural_repair_required_before_processing"]
+        if not list(cast(list[str], snapshot.get("quality_gate_reasons") or [])):
+            snapshot["quality_gate_reasons"] = ["structural_repair_required_before_processing"]
+    if "structure_recognition_noop_on_high_risk" in detailed_reasons:
+        snapshot["structure_ai_attempted"] = True
+        if int(snapshot.get("ai_classified_count") or 0) == 0:
+            snapshot["ai_classified_count"] = 0
+        if int(snapshot.get("ai_heading_count") or 0) == 0:
+            snapshot["ai_heading_count"] = 0
+
+
+def _extract_quality_gate_reasons_from_error(preparation_error: str) -> list[str]:
+    match = re.search(r"Причины:\s*(.+)$", preparation_error)
+    if match is None:
+        return []
+    return [reason.strip() for reason in match.group(1).split(",") if reason.strip()]
+
+
+def _infer_readiness_status_from_quality_gate_reasons(reasons: Sequence[str]) -> str:
+    normalized = {str(reason).strip() for reason in reasons if str(reason).strip()}
+    if not normalized:
+        return "blocked_needs_structure_repair"
+    unsafe_best_effort_reasons = {
+        "toc_like_sequence_without_bounded_region",
+        "isolated_list_markers_remaining",
+        "large_front_matter_block_risk",
+        "heading_count_far_below_toc_expectation",
+    }
+    if normalized & unsafe_best_effort_reasons:
+        return "blocked_unsafe_best_effort_only"
+    return "blocked_needs_structure_repair"
+
+
+def _extract_first_block_target_chars(
+    *,
+    event_log: Sequence[Mapping[str, object]],
+    semantic_blocks: Sequence[object],
+) -> int:
+    first_block_target_chars = _extract_event_context_int_list(event_log, "block_plan_summary", "first_block_target_chars")
+    if first_block_target_chars:
+        return first_block_target_chars[0]
+    if not semantic_blocks:
+        return 0
+    return len(str(getattr(semantic_blocks[0], "text", "") or ""))
+
+
+def _block_has_toc(paragraphs: Sequence[object]) -> bool:
+    return any(
+        str(getattr(paragraph, "structural_role", "") or "").strip().lower() in {"toc_header", "toc_entry"}
+        for paragraph in paragraphs
+    )
+
+
+def _block_has_epigraph(paragraphs: Sequence[object]) -> bool:
+    return any(
+        str(getattr(paragraph, "structural_role", "") or "").strip().lower() in {"epigraph", "attribution", "dedication"}
+        for paragraph in paragraphs
+    )
+
+
+def _block_has_body_start(paragraphs: Sequence[object]) -> bool:
+    for paragraph in paragraphs:
+        role = str(getattr(paragraph, "role", "") or "").strip().lower()
+        structural_role = str(getattr(paragraph, "structural_role", "") or "body").strip().lower() or "body"
+        if role in {"heading", "body", "list"} and structural_role not in {"toc_header", "toc_entry", "epigraph", "attribution", "dedication"}:
+            return True
+    return False
+
+
+def _block_has_isolated_marker(paragraphs: Sequence[object]) -> bool:
+    for paragraph in paragraphs:
+        if _is_isolated_marker_text(str(getattr(paragraph, "text", "") or "")):
+            return True
+    return False
+
+
+def _is_isolated_marker_text(text: str) -> bool:
+    normalized = text.strip()
+    if not normalized:
+        return False
+    return bool(re.match(r"^(?:[\-\*•●]|\d+[\.)])$", normalized))
 
 
 def _build_passthrough_job(job: Mapping[str, object]) -> dict[str, object]:
@@ -733,6 +1061,22 @@ def _extract_event_context_int(event_log: Sequence[Mapping[str, object]], event_
         return 0
 
 
+def _extract_event_context_bool(event_log: Sequence[Mapping[str, object]], event_id: str, key: str) -> bool:
+    context = _extract_event_context(event_log, event_id)
+    value = context.get(key)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off", ""}:
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return False
+
+
 def _extract_event_context_int_list(event_log: Sequence[Mapping[str, object]], event_id: str, key: str) -> list[int]:
     context = _extract_event_context(event_log, event_id)
     values = context.get(key)
@@ -818,6 +1162,24 @@ def _inspect_placeholder_integrity_adapter(markdown_text: str, image_assets: Seq
     return inspect_placeholder_integrity(markdown_text, cast(list[Any], list(image_assets)))
 
 
+def _parse_cli_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Print a structural preparation diagnostic snapshot for a validation profile.")
+    parser.add_argument("document_profile_id", help="Validation document profile id, for example end-times-pdf-core.")
+    parser.add_argument("--run-profile-id", dest="run_profile_id", help="Optional run profile override.")
+    return parser.parse_args(list(argv) if argv is not None else None)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parse_cli_args(argv)
+    registry = load_validation_registry()
+    document_profile = registry.get_document_profile(str(args.document_profile_id))
+    run_profile_id = str(args.run_profile_id or getattr(document_profile, "structural_run_profile", "") or "").strip()
+    run_profile = registry.get_run_profile(run_profile_id) if run_profile_id else registry.get_run_profile("structural-passthrough-default")
+    payload = evaluate_structural_preparation_diagnostic(document_profile, run_profile)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _preserve_source_paragraph_properties_adapter(
     docx_bytes: bytes,
     paragraphs: Sequence[object],
@@ -840,3 +1202,7 @@ def _as_int(metrics: Mapping[str, object], key: str) -> int:
 
 def _as_float(metrics: Mapping[str, object], key: str) -> float:
     return float(cast(float, metrics[key]))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,35 @@
+{
+  "document_profile_id": "end-times-pdf-core",
+  "run_profile_id": "ui-parity-pdf-structural-recovery",
+  "validation_tier": "structural",
+  "validation_execution_mode": "passthrough",
+  "passed": false,
+  "failed_checks": [
+    "unmapped_source_threshold"
+  ],
+  "preparation_error": null,
+  "preparation_diagnostic_snapshot": {
+    "paragraph_count": 377,
+    "heading_count": 47,
+    "toc_header_count": 1,
+    "toc_entry_count": 13,
+    "bounded_toc_region_count": 1,
+    "repaired_bullet_items": 19,
+    "repaired_numbered_items": 16,
+    "toc_body_boundary_repairs": 2,
+    "remaining_isolated_marker_count": 0,
+    "readiness_status": "ready",
+    "readiness_reasons": [],
+    "quality_gate_status": "pass",
+    "quality_gate_reasons": [],
+    "structure_ai_attempted": false,
+    "ai_classified_count": 0,
+    "ai_heading_count": 0,
+    "semantic_block_count": 53,
+    "first_block_target_chars": 263,
+    "first_block_has_toc": false,
+    "first_block_has_epigraph": false,
+    "first_block_has_body_start": true,
+    "first_block_has_isolated_marker": false
+  }
+}

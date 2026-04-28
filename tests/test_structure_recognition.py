@@ -172,6 +172,55 @@ def test_build_structure_map_keeps_successful_windows_when_later_window_fails(mo
     assert structure_map.get(0) == ParagraphClassification(index=0, role="heading", heading_level=1, confidence="high")
 
 
+def test_build_structure_map_splits_timeout_windows_and_merges_subwindow_results(monkeypatch):
+    paragraphs = [
+        _paragraph(source_index=0, text="Heading A"),
+        _paragraph(source_index=1, text="Body A"),
+        _paragraph(source_index=2, text="Heading B"),
+        _paragraph(source_index=3, text="Body B"),
+    ]
+    calls: list[list[int]] = []
+
+    class APITimeoutError(Exception):
+        pass
+
+    def _classify(**kwargs):
+        descriptors = list(kwargs["descriptors"])
+        calls.append([descriptor.index for descriptor in descriptors])
+        if len(descriptors) > 2:
+            raise APITimeoutError("Request timed out.")
+        return (
+            [
+                ParagraphClassification(
+                    index=descriptor.index,
+                    role="heading" if descriptor.index % 2 == 0 else "body",
+                    heading_level=1 if descriptor.index % 2 == 0 else None,
+                    confidence="high",
+                )
+                for descriptor in descriptors
+            ],
+            len(descriptors) * 10,
+        )
+
+    monkeypatch.setattr(structure_recognition, "_classify_descriptor_window", _classify)
+
+    structure_map = structure_recognition.build_structure_map(
+        paragraphs,
+        client=object(),
+        model="gpt-4o-mini",
+        max_window_paragraphs=4,
+        overlap_paragraphs=1,
+    )
+
+    assert calls == [[0, 1, 2, 3], [0, 1], [2, 3]]
+    assert structure_map.window_count == 2
+    assert structure_map.total_tokens_used == 40
+    assert structure_map.get(0) == ParagraphClassification(index=0, role="heading", heading_level=1, confidence="high")
+    assert structure_map.get(1) == ParagraphClassification(index=1, role="body", heading_level=None, confidence="high")
+    assert structure_map.get(2) == ParagraphClassification(index=2, role="heading", heading_level=1, confidence="high")
+    assert structure_map.get(3) == ParagraphClassification(index=3, role="body", heading_level=None, confidence="high")
+
+
 def test_classify_descriptor_window_normalizes_fenced_json_output(monkeypatch):
     captured = {}
 

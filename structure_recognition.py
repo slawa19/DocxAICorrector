@@ -19,6 +19,7 @@ _PIPELINE_BODY_STRUCTURAL_ROLES = {"epigraph", "attribution", "toc_entry", "toc_
 _VALID_AI_ROLES = {"heading", "body", "caption", "epigraph", "attribution", "toc_entry", "toc_header", "dedication", "list"}
 _VALID_AI_CONFIDENCES = {"high", "medium", "low"}
 _DESCRIPTOR_PREVIEW_CHARS = 600
+_TIMEOUT_ERROR_NAMES = {"APITimeoutError", "TimeoutError"}
 _SCRIPTURE_REFERENCE_PATTERN = re.compile(
     r"\b(?:[1-3]\s*)?(?:Genesis|Exodus|Leviticus|Numbers|Deuteronomy|Joshua|Judges|Ruth|"
     r"1\s*Samuel|2\s*Samuel|1\s*Kings|2\s*Kings|1\s*Chronicles|2\s*Chronicles|Ezra|"
@@ -163,18 +164,20 @@ def build_structure_map(
     window_count = 0
     total_tokens_used = 0
     for window in _iter_descriptor_windows(descriptors, max_window_paragraphs=max_window_paragraphs, overlap_paragraphs=overlap_paragraphs):
-        window_count += 1
         try:
-            window_classifications, window_tokens = _classify_descriptor_window(
+            resolved_windows, resolved_tokens = _classify_descriptor_window_with_fallback(
                 client=cast(_StructureRecognitionClient, client),
                 model=model,
                 descriptors=window,
                 timeout=timeout,
             )
         except Exception:
+            window_count += 1
             continue
-        total_tokens_used += window_tokens
-        _merge_window_classifications(merged_classifications, window_classifications, window=window)
+        window_count += len(resolved_windows)
+        total_tokens_used += resolved_tokens
+        for resolved_window, window_classifications in resolved_windows:
+            _merge_window_classifications(merged_classifications, window_classifications, window=resolved_window)
     return StructureMap(
         classifications=merged_classifications,
         model_used=model,
@@ -182,6 +185,52 @@ def build_structure_map(
         processing_time_seconds=max(0.0, time.perf_counter() - started_at),
         window_count=window_count,
     )
+
+
+def _classify_descriptor_window_with_fallback(
+    *,
+    client: _StructureRecognitionClient,
+    model: str,
+    descriptors: Sequence[ParagraphDescriptor],
+    timeout: float,
+) -> tuple[list[tuple[list[ParagraphDescriptor], list[ParagraphClassification]]], int]:
+    descriptor_list = list(descriptors)
+    try:
+        classifications, total_tokens = _classify_descriptor_window(
+            client=client,
+            model=model,
+            descriptors=descriptor_list,
+            timeout=timeout,
+        )
+        return [(descriptor_list, classifications)], total_tokens
+    except Exception as exc:
+        if not _should_split_descriptor_window(exc=exc, descriptor_count=len(descriptor_list)):
+            raise
+
+    midpoint = max(1, len(descriptor_list) // 2)
+    left_windows, left_tokens = _classify_descriptor_window_with_fallback(
+        client=client,
+        model=model,
+        descriptors=descriptor_list[:midpoint],
+        timeout=timeout,
+    )
+    right_windows, right_tokens = _classify_descriptor_window_with_fallback(
+        client=client,
+        model=model,
+        descriptors=descriptor_list[midpoint:],
+        timeout=timeout,
+    )
+    return left_windows + right_windows, left_tokens + right_tokens
+
+
+def _should_split_descriptor_window(*, exc: Exception, descriptor_count: int) -> bool:
+    if descriptor_count <= 1:
+        return False
+    error_name = type(exc).__name__
+    if error_name in _TIMEOUT_ERROR_NAMES:
+        return True
+    error_text = str(exc).strip().casefold()
+    return "timed out" in error_text or "timeout" in error_text
 
 
 def _classify_descriptor_window(

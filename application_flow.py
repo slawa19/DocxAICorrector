@@ -318,7 +318,7 @@ def _prepare_run_context_core(
 
 def _raise_or_fail_preparation(*, prepared_document, uploaded_filename: str, fail_critical_fn=None) -> None:
     if str(getattr(prepared_document, "quality_gate_status", "pass") or "pass") == "blocked":
-        message = "Подготовка заблокирована quality gate: документ требует structural repair перед обработкой."
+        message = _build_quality_gate_blocked_message(prepared_document=prepared_document)
         if fail_critical_fn is not None:
             fail_critical_fn(
                 "quality_gate_blocked",
@@ -335,6 +335,14 @@ def _raise_or_fail_preparation(*, prepared_document, uploaded_filename: str, fai
         if fail_critical_fn is not None:
             fail_critical_fn("empty_target_block", "Обнаружен пустой целевой блок перед отправкой в модель.", filename=uploaded_filename)
         raise ValueError("Обнаружен пустой целевой блок перед отправкой в модель.")
+
+
+def _build_quality_gate_blocked_message(*, prepared_document) -> str:
+    reasons = [str(reason).strip() for reason in getattr(prepared_document, "quality_gate_reasons", ()) or () if str(reason).strip()]
+    message = "Подготовка заблокирована quality gate: документ требует structural repair перед обработкой."
+    if not reasons:
+        return message
+    return f"{message} Причины: {', '.join(reasons)}"
 
 
 def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: bytes, uploaded_file_token: str, prepared_document, elapsed_seconds: float) -> PreparedRunContext:

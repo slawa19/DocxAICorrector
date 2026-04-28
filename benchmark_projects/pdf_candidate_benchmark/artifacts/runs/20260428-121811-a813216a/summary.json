@@ -1,0 +1,157 @@
+{
+  "benchmark_run_id": "20260428-121811-a813216a",
+  "source": {
+    "document_profile_id": "end-times-pdf-core",
+    "path": "tests/sources/Are_We_In_The_End_Times.pdf",
+    "sha256": "3ec069404123a46c0a9b398b57334d8ce6db682f98178d8b72f63d97642c6d07"
+  },
+  "thresholds": {
+    "meaningful_relative_improvement": 0.2,
+    "min_visible_text_char_ratio_vs_baseline": 0.9
+  },
+  "candidates": [
+    {
+      "candidate_id": "libreoffice",
+      "candidate_version": "libreoffice",
+      "execution_class": "docx-normalizer",
+      "status": "ok",
+      "dependency_status": "available",
+      "runtime_platform": "linux",
+      "duration_seconds": 1.868,
+      "diagnostic_mode": "debug-only",
+      "metric_basis": "benchmark_block_projection",
+      "preparation_gate_basis": "benchmark_structural_proxy",
+      "artifact_paths": {
+        "normalized_docx": "benchmark_projects/pdf_candidate_benchmark/artifacts/runs/20260428-121811-a813216a/baseline/normalized.docx",
+        "structural_diagnostic": "benchmark_projects/pdf_candidate_benchmark/artifacts/runs/20260428-121811-a813216a/baseline/structural_diagnostic.json",
+        "recovered_preview": "benchmark_projects/pdf_candidate_benchmark/artifacts/runs/20260428-121811-a813216a/baseline/recovered_preview.txt"
+      },
+      "visible_text_chars": 32793,
+      "paragraph_count": 377,
+      "isolated_marker_paragraph_count": 0,
+      "heading_candidates_count": 47,
+      "heading_like_block_count": 47,
+      "list_item_candidates_count": 34,
+      "toc_like_block_count": 14,
+      "preparation_gate_outcome": "pass",
+      "failed_checks": [],
+      "toc_body_concat_detected": false,
+      "toc_body_concat_detector": "benchmark_block_detector",
+      "normalized_text_similarity_to_baseline": 1.0,
+      "first_20_blocks_have_nonempty_text": true,
+      "first_block_risk": "high",
+      "first_block_risk_reasons": [
+        "first_block_has_body_start",
+        "first_block_has_toc"
+      ],
+      "first_block_preview": "Are We In the End Times?\n\nA brief white paper outlining a human oppression scenario involving artificial superintelligence and how one might prepare for such a miserable tribulation Jared Brock Contact: www.jaredbrock.com\n\nThis paper is free to share with others.\n\nTable of Contents\n\nIntroduction………………………..………………………..………………………..………………….4",
+      "notes": [
+        "Baseline uses repository PDF normalization path.",
+        "DOCX candidate used deterministic preparation-snapshot proxy instead of the full structural passthrough runner."
+      ]
+    },
+    {
+      "candidate_id": "pdf2docx",
+      "candidate_version": "unavailable",
+      "execution_class": "docx-normalizer",
+      "status": "unsupported",
+      "dependency_status": "missing_optional_dependency",
+      "runtime_platform": "linux",
+      "duration_seconds": 0.0,
+      "diagnostic_mode": "benchmark-only",
+      "metric_basis": "existing_docx_diagnostics",
+      "preparation_gate_basis": "unavailable",
+      "artifact_paths": {},
+      "visible_text_chars": 0,
+      "paragraph_count": 0,
+      "isolated_marker_paragraph_count": 0,
+      "heading_candidates_count": 0,
+      "heading_like_block_count": 0,
+      "list_item_candidates_count": 0,
+      "toc_like_block_count": 0,
+      "preparation_gate_outcome": "not_applicable",
+      "failed_checks": [],
+      "toc_body_concat_detected": false,
+      "toc_body_concat_detector": "unavailable",
+      "normalized_text_similarity_to_baseline": null,
+      "first_20_blocks_have_nonempty_text": null,
+      "first_block_risk": "unknown",
+      "first_block_risk_reasons": [],
+      "first_block_preview": "",
+      "notes": [
+        "Optional dependency pdf2docx is not installed."
+      ]
+    },
+    {
+      "candidate_id": "docling",
+      "candidate_version": "unavailable",
+      "execution_class": "structural-extractor",
+      "status": "unsupported",
+      "dependency_status": "missing_optional_dependency",
+      "runtime_platform": "linux",
+      "duration_seconds": 0.0,
+      "diagnostic_mode": "benchmark-only",
+      "metric_basis": "benchmark_block_projection",
+      "preparation_gate_basis": "unavailable",
+      "artifact_paths": {},
+      "visible_text_chars": 0,
+      "paragraph_count": 0,
+      "isolated_marker_paragraph_count": 0,
+      "heading_candidates_count": 0,
+      "heading_like_block_count": 0,
+      "list_item_candidates_count": 0,
+      "toc_like_block_count": 0,
+      "preparation_gate_outcome": "not_applicable",
+      "failed_checks": [],
+      "toc_body_concat_detected": false,
+      "toc_body_concat_detector": "unavailable",
+      "normalized_text_similarity_to_baseline": null,
+      "first_20_blocks_have_nonempty_text": null,
+      "first_block_risk": "unknown",
+      "first_block_risk_reasons": [],
+      "first_block_preview": "",
+      "notes": [
+        "Optional dependency docling is not installed."
+      ]
+    },
+    {
+      "candidate_id": "pymupdf",
+      "candidate_version": "unavailable",
+      "execution_class": "structural-extractor",
+      "status": "unsupported",
+      "dependency_status": "missing_optional_dependency",
+      "runtime_platform": "linux",
+      "duration_seconds": 0.0,
+      "diagnostic_mode": "benchmark-only",
+      "metric_basis": "benchmark_block_projection",
+      "preparation_gate_basis": "unavailable",
+      "artifact_paths": {},
+      "visible_text_chars": 0,
+      "paragraph_count": 0,
+      "isolated_marker_paragraph_count": 0,
+      "heading_candidates_count": 0,
+      "heading_like_block_count": 0,
+      "list_item_candidates_count": 0,
+      "toc_like_block_count": 0,
+      "preparation_gate_outcome": "not_applicable",
+      "failed_checks": [],
+      "toc_body_concat_detected": false,
+      "toc_body_concat_detector": "unavailable",
+      "normalized_text_similarity_to_baseline": null,
+      "first_20_blocks_have_nonempty_text": null,
+      "first_block_risk": "unknown",
+      "first_block_risk_reasons": [],
+      "first_block_preview": "",
+      "notes": [
+        "Optional dependency PyMuPDF is not installed."
+      ]
+    }
+  ],
+  "recommendation": {
+    "outcome": "keep_libreoffice_and_continue_structural_repair_work",
+    "promising_candidates": [],
+    "notes": [
+      "No candidate cleared the promising threshold on this run."
+    ]
+  }
+}
