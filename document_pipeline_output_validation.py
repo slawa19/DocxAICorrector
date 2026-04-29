@@ -26,6 +26,34 @@ _BULLET_HEADING_PATTERN = re.compile(r"^#{1,6}\s*[●•\-*]\s*$")
 _MARKDOWN_HEADING_PATTERN = re.compile(r"^#{1,6}\s+\S")
 _ENGLISH_WORD_PATTERN = re.compile(r"\b[A-Za-z]{4,}\b")
 _CYRILLIC_CHAR_PATTERN = re.compile(r"[А-Яа-яЁё]")
+_BULLET_GLYPH_PATTERN = re.compile(r"[●•◦‣]")
+_SCRIPTURE_REFERENCE_HEADING_PATTERN = re.compile(
+    r"^#{1,6}\s+\((?:[1-3]\s*)?[A-ZА-ЯЁ][^()]{0,40}\s+\d{1,3}:\d{1,3}(?:[-–]\d{1,3})?\)$"
+)
+_PARENTHETICAL_ONLY_HEADING_PATTERN = re.compile(r"^#{1,6}\s+\([^\n]+\)$")
+_HEADING_PREFIX_PATTERN = re.compile(r"^#{1,6}\s+")
+_CYRILLIC_LATIN_MIXED_TOKEN_PATTERN = re.compile(r"(?=\w*[A-Za-z])(?=\w*[А-Яа-яЁё])[A-Za-zА-Яа-яЁё]+")
+_HOMOGLYPH_TABLE = str.maketrans({
+    "a": "а",
+    "e": "е",
+    "o": "о",
+    "c": "с",
+    "p": "р",
+    "x": "х",
+    "y": "у",
+    "A": "А",
+    "E": "Е",
+    "O": "О",
+    "C": "С",
+    "P": "Р",
+    "X": "Х",
+    "Y": "У",
+})
+_DANGLING_NUMBER_PATTERN = re.compile(r"(?:^|\s)\d+\.$")
+_RUSSIAN_CONTINUATION_ENDING_PATTERN = re.compile(r"\b(?:ли|что|относительно|с|в|на|к|по|для|о|у|при|об|под|над|между|является)$", re.IGNORECASE)
+_RUSSIAN_HEADING_CONTINUATION_START_PATTERN = re.compile(r"^(?:[а-яё]|[)\],.;:!?-])")
+_LOWERCASE_START_PATTERN = re.compile(r"^[a-zа-яё]")
+_SENTENCE_TERMINAL_PATTERN = re.compile(r"[.!?…:]$")
 _TOC_BODY_CONCAT_MARKDOWN_PATTERN = re.compile(
     r"(?:\.{2,}|[\u2024\u2025\u2026\u2027\u2219\u22c5\u00b7]{2,}|\s{2,})\s*[0-9ivxlcdmIVXLCDM]+\s+[А-Яа-яЁёA-Za-z]"
 )
@@ -37,8 +65,19 @@ class TocValidationResult:
     reason: str | None = None
 
 
+@dataclass(frozen=True)
+class QualityIssueSample:
+    line: int
+    text: str
+    reason: str | None = None
+
+
 def iter_nonempty_markdown_lines(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def iter_markdown_lines_with_numbers(text: str) -> list[tuple[int, str]]:
+    return [(index, line.rstrip()) for index, line in enumerate(text.splitlines(), start=1)]
 
 
 def is_markdown_heading_line(line: str) -> bool:
@@ -170,6 +209,366 @@ def has_unexplained_english_residuals(text: str) -> bool:
                 english_hits += 1
                 continue
     return english_hits > 0
+
+
+def collect_bullet_heading_samples(text: str) -> list[QualityIssueSample]:
+    samples: list[QualityIssueSample] = []
+    for line_number, raw_line in iter_markdown_lines_with_numbers(text):
+        line = raw_line.strip()
+        if _BULLET_HEADING_PATTERN.match(line):
+            samples.append(QualityIssueSample(line=line_number, text=line, reason="bullet_marker_heading"))
+    return samples
+
+
+def _trim_heading_prefix(line: str) -> str:
+    return _HEADING_PREFIX_PATTERN.sub("", line.strip(), count=1).strip()
+
+
+def _normalize_heading_text(text: str) -> str:
+    lowered = text.casefold().strip()
+    lowered = re.sub(r"\s+", " ", lowered)
+    return lowered.strip(" \t\r\n\"'“”‘’«»()[]{}:;,.!?-–—")
+
+
+def _is_continuation_like_previous_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if stripped[-1] in {"(", "[", "{", "-", "—", "–", ":"}:
+        return True
+    return _RUSSIAN_CONTINUATION_ENDING_PATTERN.search(stripped) is not None
+
+
+def _is_continuation_like_next_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if _RUSSIAN_HEADING_CONTINUATION_START_PATTERN.match(stripped):
+        return True
+    return False
+
+
+def _build_quality_sample(*, line: int, text: str, reason: str) -> QualityIssueSample:
+    return QualityIssueSample(line=line, text=text.strip(), reason=reason)
+
+
+def collect_false_fragment_heading_samples(text: str) -> list[QualityIssueSample]:
+    lines = iter_markdown_lines_with_numbers(text)
+    heading_occurrences: list[tuple[int, str, str]] = []
+    samples: list[QualityIssueSample] = []
+
+    for index, (line_number, raw_line) in enumerate(lines):
+        stripped = raw_line.strip()
+        if not is_markdown_heading_line(stripped):
+            continue
+
+        heading_text = _trim_heading_prefix(stripped)
+        normalized_heading = _normalize_heading_text(heading_text)
+        previous_line = ""
+        next_line = ""
+
+        for previous_index in range(index - 1, -1, -1):
+            candidate = lines[previous_index][1].strip()
+            if candidate:
+                previous_line = candidate
+                break
+
+        for next_index in range(index + 1, len(lines)):
+            candidate = lines[next_index][1].strip()
+            if candidate:
+                next_line = candidate
+                break
+
+        if _SCRIPTURE_REFERENCE_HEADING_PATTERN.match(stripped):
+            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="scripture_reference_heading_present"))
+            heading_occurrences.append((line_number, heading_text, normalized_heading))
+            continue
+
+        if _PARENTHETICAL_ONLY_HEADING_PATTERN.match(stripped):
+            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="false_fragment_headings_present"))
+            heading_occurrences.append((line_number, heading_text, normalized_heading))
+            continue
+
+        continuation_prev = _is_continuation_like_previous_line(previous_line)
+        continuation_next = _is_continuation_like_next_line(next_line)
+        if continuation_prev and continuation_next:
+            reason = "sentence_split_heading_present"
+            if len(heading_text.split()) <= 4:
+                reason = "inline_term_heading_present"
+            samples.append(_build_quality_sample(line=line_number, text=stripped, reason=reason))
+        elif heading_text.endswith("?)") or heading_text.endswith(")") and "?" in heading_text:
+            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="sentence_split_heading_present"))
+
+        heading_occurrences.append((line_number, heading_text, normalized_heading))
+
+    grouped: dict[str, list[tuple[int, str]]] = {}
+    for line_number, heading_text, normalized_heading in heading_occurrences:
+        if not normalized_heading:
+            continue
+        grouped.setdefault(normalized_heading, []).append((line_number, heading_text))
+
+    nonempty_non_heading_lines = {line_number for line_number, raw_line in lines if raw_line.strip() and not raw_line.strip().startswith("#")}
+
+    for repeated in grouped.values():
+        if len(repeated) <= 1:
+            continue
+        previous_line_number: int | None = None
+        for line_number, heading_text in repeated:
+            if previous_line_number is None:
+                previous_line_number = line_number
+                continue
+            intervening_body_lines = sum(
+                1 for candidate in nonempty_non_heading_lines if previous_line_number < candidate < line_number
+            )
+            if intervening_body_lines > 0:
+                previous_line_number = line_number
+                continue
+            samples.append(_build_quality_sample(line=line_number, text=heading_text, reason="suspicious_heading_repetition_present"))
+            previous_line_number = line_number
+
+    deduped: list[QualityIssueSample] = []
+    seen: set[tuple[int, str]] = set()
+    for sample in samples:
+        key = (sample.line, sample.reason or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(sample)
+    return deduped
+
+
+def normalize_false_fragment_headings_markdown(text: str) -> str:
+    lines = text.splitlines()
+    numbered_lines = iter_markdown_lines_with_numbers(text)
+
+    for index, (_, raw_line) in enumerate(numbered_lines):
+        stripped = raw_line.strip()
+        if not is_markdown_heading_line(stripped):
+            continue
+
+        heading_text = _trim_heading_prefix(stripped)
+        previous_line = ""
+        next_line = ""
+
+        for previous_index in range(index - 1, -1, -1):
+            candidate = numbered_lines[previous_index][1].strip()
+            if candidate:
+                previous_line = candidate
+                break
+
+        for next_index in range(index + 1, len(numbered_lines)):
+            candidate = numbered_lines[next_index][1].strip()
+            if candidate:
+                next_line = candidate
+                break
+
+        should_demote = False
+        if _SCRIPTURE_REFERENCE_HEADING_PATTERN.match(stripped):
+            should_demote = True
+        elif _PARENTHETICAL_ONLY_HEADING_PATTERN.match(stripped):
+            should_demote = True
+        else:
+            continuation_prev = _is_continuation_like_previous_line(previous_line)
+            continuation_next = _is_continuation_like_next_line(next_line)
+            if continuation_prev and continuation_next:
+                should_demote = True
+            elif heading_text.endswith("?)") or heading_text.endswith(")") and "?" in heading_text:
+                should_demote = True
+
+        if should_demote:
+            lines[index] = heading_text
+
+    return "\n".join(lines)
+
+
+def normalize_residual_bullet_glyphs_markdown(text: str) -> str:
+    normalized_lines: list[str] = []
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            normalized_lines.append(raw_line)
+            continue
+        if stripped.startswith("#") or stripped.startswith(">"):
+            normalized_lines.append(raw_line)
+            continue
+
+        updated = raw_line
+        updated = re.sub(r"^(\s*)[●•◦‣]\s+", r"\1- ", updated)
+        updated = re.sub(r"([,;:])\s*[●•◦‣]\s*", r"\1 ", updated)
+        updated = re.sub(r"\s*[●•◦‣]\s*;\s*", "; ", updated)
+        updated = re.sub(r"\s*[●•◦‣]\s*", " ", updated)
+        updated = re.sub(r" {2,}", " ", updated)
+        normalized_lines.append(updated.rstrip())
+
+    return "\n".join(normalized_lines)
+
+
+def normalize_list_fragment_regressions_markdown(text: str) -> str:
+    lines = text.splitlines()
+
+    def _next_nonempty_index(start_index: int) -> int | None:
+        for candidate_index in range(start_index + 1, len(lines)):
+            if lines[candidate_index].strip():
+                return candidate_index
+        return None
+
+    def _strip_heading_prefix(text_line: str) -> str:
+        stripped_line = text_line.strip()
+        if is_markdown_heading_line(stripped_line):
+            return _trim_heading_prefix(stripped_line)
+        return stripped_line
+
+    for index, raw_line in enumerate(list(lines)):
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+
+        next_index = _next_nonempty_index(index)
+        if next_index is None:
+            continue
+        next_stripped = lines[next_index].strip()
+        if re.match(r"^\d+[.)]\s+", next_stripped):
+            continue
+
+        intro_match = re.match(r"^(?P<prefix>.+?):\s+1\.$", stripped)
+        if intro_match is not None:
+            lines[index] = intro_match.group("prefix") + ":"
+            next_content = _strip_heading_prefix(lines[next_index])
+            lines[next_index] = f"1. {next_content}"
+            continue
+
+        carry_match = re.match(r"^(?:(?P<current>\d+)\.\s+)?(?P<body>.+?)\s+(?P<next>\d+)\.$", stripped)
+        if carry_match is None:
+            continue
+
+        next_number = int(carry_match.group("next"))
+        current_number_group = carry_match.group("current")
+        current_number = int(current_number_group) if current_number_group is not None else max(1, next_number - 1)
+        if current_number_group is not None and next_number != current_number + 1:
+            continue
+
+        body = str(carry_match.group("body") or "").strip()
+        if not body:
+            continue
+
+        body_tokens = body.split()
+        if current_number_group is None and len(body_tokens) <= 2 and not re.search(r"[A-Za-zА-Яа-яЁё]", body):
+            lines[index] = body
+        else:
+            lines[index] = f"{current_number}. {body}"
+        next_content = _strip_heading_prefix(lines[next_index])
+        lines[next_index] = f"{next_number}. {next_content}"
+
+    return "\n".join(lines)
+
+
+def normalize_mixed_script_markdown(text: str) -> str:
+    def _repair_mixed_token(match: re.Match[str]) -> str:
+        token = match.group(0)
+        repaired = token.translate(_HOMOGLYPH_TABLE)
+        return repaired if repaired != token else token
+
+    return _CYRILLIC_LATIN_MIXED_TOKEN_PATTERN.sub(_repair_mixed_token, text)
+
+
+def collect_residual_bullet_glyph_samples(text: str) -> list[QualityIssueSample]:
+    samples: list[QualityIssueSample] = []
+    for line_number, raw_line in iter_markdown_lines_with_numbers(text):
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("- "):
+            content = stripped[2:]
+            if _BULLET_GLYPH_PATTERN.search(content):
+                samples.append(_build_quality_sample(line=line_number, text=stripped, reason="residual_bullet_glyphs_present"))
+            continue
+        if re.match(r"^\d+[.)]\s+", stripped):
+            content = re.sub(r"^\d+[.)]\s+", "", stripped)
+            if _BULLET_GLYPH_PATTERN.search(content):
+                samples.append(_build_quality_sample(line=line_number, text=stripped, reason="residual_bullet_glyphs_present"))
+            continue
+        if stripped.startswith("#"):
+            continue
+        if stripped.startswith(">"):
+            continue
+        if _BULLET_GLYPH_PATTERN.search(stripped):
+            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="residual_bullet_glyphs_present"))
+    return samples
+
+
+def collect_list_fragment_regression_samples(text: str) -> list[QualityIssueSample]:
+    lines = iter_markdown_lines_with_numbers(text)
+    samples: list[QualityIssueSample] = []
+    for index, (line_number, raw_line) in enumerate(lines):
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        next_line = lines[index + 1][1].strip() if index + 1 < len(lines) else ""
+        if stripped.startswith("- ") and _DANGLING_NUMBER_PATTERN.search(stripped):
+            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="list_fragment_regressions_present"))
+            continue
+        if stripped.startswith("- ") and next_line.startswith("- "):
+            next_content = next_line[2:].strip()
+            if next_content and (_LOWERCASE_START_PATTERN.match(next_content) or len(next_content.split()) <= 3):
+                samples.append(_build_quality_sample(line=line_number, text=f"{stripped} || {next_line}", reason="list_fragment_regressions_present"))
+                continue
+        if not stripped.startswith(("- ", "#", ">")) and next_line.startswith("- "):
+            next_content = next_line[2:].strip()
+            if next_content and not _SENTENCE_TERMINAL_PATTERN.search(stripped) and (
+                _LOWERCASE_START_PATTERN.match(next_content) or len(next_content.split()) <= 4
+            ):
+                samples.append(_build_quality_sample(line=line_number, text=f"{stripped} || {next_line}", reason="list_fragment_regressions_present"))
+                continue
+        if not stripped.startswith(("- ", "#", ">")) and _DANGLING_NUMBER_PATTERN.search(stripped):
+            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="list_fragment_regressions_present"))
+    return samples
+
+
+def collect_mixed_script_samples(text: str) -> list[QualityIssueSample]:
+    samples: list[QualityIssueSample] = []
+    for line_number, raw_line in iter_markdown_lines_with_numbers(text):
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        for token in _CYRILLIC_LATIN_MIXED_TOKEN_PATTERN.findall(stripped):
+            samples.append(_build_quality_sample(line=line_number, text=token, reason="mixed_script_term_present"))
+    seen: set[tuple[int, str, str]] = set()
+    deduped: list[QualityIssueSample] = []
+    for sample in samples:
+        key = (sample.line, sample.text, sample.reason or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(sample)
+    return deduped
+
+
+def collect_theology_style_issue_samples(text: str) -> list[QualityIssueSample]:
+    samples: list[QualityIssueSample] = []
+    seen_glossary_terms: dict[str, int] = {}
+    for line_number, raw_line in iter_markdown_lines_with_numbers(text):
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        if "Суд над пятым печатью" in stripped:
+            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="awkward_judgment_heading_present"))
+        if "Четвёртое чашеобразное судилище" in stripped:
+            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="awkward_judgment_heading_present"))
+        lowered = stripped.casefold()
+        for glossary_term in ("imago dei", "koinonia"):
+            if glossary_term in lowered:
+                seen_glossary_terms[glossary_term] = seen_glossary_terms.get(glossary_term, 0) + 1
+                samples.append(_build_quality_sample(line=line_number, text=stripped, reason="unresolved_glossary_term_present"))
+
+    deduped: list[QualityIssueSample] = []
+    seen: set[tuple[int, str, str]] = set()
+    for sample in samples:
+        key = (sample.line, sample.text, sample.reason or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(sample)
+    return deduped
 
 
 def _normalize_toc_comparison_text(text: str) -> str:

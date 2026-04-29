@@ -12,6 +12,7 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from models import ParagraphUnit
 
 
 PNG_BYTES = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK3cAAAAASUVORK5CYII=")
@@ -193,6 +194,39 @@ def test_evaluate_lietaer_acceptance_passes_for_clean_structural_output(tmp_path
 
     assert acceptance["passed"] is True
     assert acceptance["failed_checks"] == []
+
+
+def test_evaluate_lietaer_acceptance_fails_on_translation_quality_report_residual_defects() -> None:
+    validation = _load_validation_module()
+
+    report = {
+        "result": "succeeded",
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [],
+        "translation_quality_report": {
+            "bullet_heading_count": 0,
+            "false_fragment_heading_count": 2,
+            "residual_bullet_glyph_count": 1,
+            "list_fragment_regression_count": 1,
+            "mixed_script_term_count": 1,
+            "theology_style_deterministic_issue_count": 3,
+            "toc_body_concat_detected": False,
+        },
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(report)
+
+    assert acceptance["passed"] is False
+    assert acceptance["failed_checks"] == [
+        "false_fragment_headings_present",
+        "residual_bullet_glyphs_present",
+        "list_fragment_regressions_present",
+        "mixed_script_terms_present",
+        "structural_comparison_available",
+    ]
 
 
 def test_evaluate_lietaer_acceptance_ignores_centered_heading_alignment_for_minimal_formatter_contract() -> None:
@@ -782,6 +816,27 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
         resolve_run_profile=lambda profile, requested_run_profile_id: run_profile,
     )
     captured = {}
+    quality_report_path = tmp_path / ".run" / "quality_reports" / "prepared_quality_report.json"
+    quality_report_path.parent.mkdir(parents=True, exist_ok=True)
+    quality_report_path.write_text(
+        json.dumps(
+            {
+                "quality_status": "fail",
+                "gate_reasons": [
+                    "false_fragment_headings_present",
+                    "residual_bullet_glyphs_present",
+                ],
+                "bullet_heading_count": 0,
+                "false_fragment_heading_count": 2,
+                "residual_bullet_glyph_count": 1,
+                "list_fragment_regression_count": 0,
+                "theology_style_deterministic_issue_count": 0,
+                "toc_body_concat_detected": False,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     prepared_asset = ImageAsset(
         image_id="img_001",
         placeholder="[[DOCX_IMAGE_img_001]]",
@@ -853,6 +908,14 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
                 llm_block_count=2,
                 passthrough_block_count=1,
                 first_block_target_chars=[3891, 946, 935],
+            )
+            self.log_event_fn(
+                20,
+                "quality_report_saved",
+                "quality report saved",
+                artifact_path=str(quality_report_path),
+                quality_status="fail",
+                gate_reasons=["false_fragment_headings_present", "residual_bullet_glyphs_present"],
             )
             kwargs["runtime"].emit(
                 validation.SetStateEvent(
@@ -979,10 +1042,155 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
     assert report["image_forensics"]["prepared_assets"][0]["source"]["source_forensics"]["drawing_container"] == "inline"
     assert report["image_forensics"]["prepared_assets"][0]["source"]["source_sha256"]
     assert report["image_forensics"]["processed_assets"][0]["final_selection"]["final_variant"] == "redrawn"
+    assert report["translation_quality_report_path"] == ".run/quality_reports/prepared_quality_report.json"
+    assert report["translation_quality_report"]["quality_status"] == "fail"
+    assert report["translation_quality_report"]["false_fragment_heading_count"] == 2
     assert 'preparation_diagnostic_snapshot={"ai_classified_count": 7' in summary_text
     assert '"readiness_status": "blocked_unsafe_best_effort_only"' in summary_text
+    assert "translation_quality_status=fail" in summary_text
+    assert "translation_quality_gate_reasons=false_fragment_headings_present,residual_bullet_glyphs_present" in summary_text
     assert "source_file" not in report
     assert "runtime_configuration" not in report
+
+
+def test_main_falls_back_to_prepared_snapshot_statuses_when_event_log_lacks_structure_outcome(tmp_path, monkeypatch):
+    validation = _load_validation_module()
+
+    source_path = tmp_path / "sample.pdf"
+    source_path.write_bytes(b"%PDF-1.4 sample")
+
+    def _resolution_payload(**values):
+        return SimpleNamespace(**values, to_dict=lambda: dict(values))
+
+    document_profile = SimpleNamespace(
+        id="end-times-pdf-core",
+        artifact_prefix="end_times_pdf_validation",
+        output_basename="Are_We_In_The_End_Times_validated",
+        max_unmapped_source_paragraphs=0,
+        resolved_source_path=lambda project_root=None: source_path,
+    )
+    run_profile = SimpleNamespace(
+        id="ui-parity-pdf-structural-recovery",
+        tier="full",
+        repeat_count=1,
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=False,
+        model="gpt-5.4",
+        max_retries=1,
+    )
+    registry = SimpleNamespace(
+        get_document_profile=lambda profile_id: document_profile,
+        resolve_run_profile=lambda profile, requested_run_profile_id: run_profile,
+    )
+
+    prepared_paragraphs = [
+        ParagraphUnit(text="Contents", role="body", structural_role="toc_header", source_index=0, paragraph_id="p0000"),
+        ParagraphUnit(text="Chapter 1........ 12", role="body", structural_role="toc_entry", source_index=1, paragraph_id="p0001"),
+        ParagraphUnit(text="Introduction", role="heading", structural_role="body", heading_level=1, source_index=2, paragraph_id="p0002"),
+    ]
+
+    class _ValidationServiceStub:
+        def __init__(self, log_event_fn):
+            self.log_event_fn = log_event_fn
+
+        def run_prepared_background_document(self, **kwargs):
+            kwargs["runtime"].emit(
+                validation.SetStateEvent(
+                    values={
+                        "latest_markdown": "validated output",
+                        "latest_docx_bytes": _docx_bytes(Document()),
+                        "image_assets": [],
+                    }
+                )
+            )
+            return "succeeded", SimpleNamespace(
+                uploaded_filename="prepared.docx",
+                uploaded_file_bytes=b"PK\x03\x04normalized-source",
+                paragraphs=prepared_paragraphs,
+                image_assets=[],
+                jobs=[{"job_kind": "block"}],
+                source_text="source text",
+                preparation_cached=False,
+                preparation_elapsed_seconds=0.1,
+                ai_classified_count=0,
+                ai_heading_count=0,
+                ai_role_change_count=0,
+                ai_heading_promotion_count=0,
+                ai_heading_demotion_count=0,
+                ai_structural_role_change_count=0,
+                structure_repair_report=SimpleNamespace(
+                    repaired_bullet_items=0,
+                    repaired_numbered_items=0,
+                    bounded_toc_regions=1,
+                    toc_body_boundary_repairs=1,
+                    heading_candidates_from_toc=0,
+                    remaining_isolated_marker_count=0,
+                ),
+                uploaded_file_token="token-1",
+                quality_gate_status="pass",
+                quality_gate_reasons=(),
+                structure_validation_report=SimpleNamespace(readiness_status="ready", readiness_reasons=()),
+                structure_ai_attempted=False,
+            )
+
+    monkeypatch.setattr(validation, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(validation, "REAL_DOCUMENT_ARTIFACT_ROOT", tmp_path / "artifacts")
+    monkeypatch.setattr(validation, "load_validation_registry", lambda: registry)
+    monkeypatch.setattr(validation, "load_app_config", lambda: object())
+    monkeypatch.setattr(
+        validation,
+        "resolve_runtime_resolution",
+        lambda app_config, run_profile: SimpleNamespace(
+            effective=_resolution_payload(
+                chunk_size=6000,
+                image_mode="safe",
+                keep_all_image_variants=False,
+                model="gpt-5.4",
+                max_retries=1,
+                processing_operation="translate",
+                source_language="auto",
+                target_language="ru",
+                translation_domain="theology",
+            ),
+            ui_defaults=_resolution_payload(
+                chunk_size=6000,
+                image_mode="safe",
+                keep_all_image_variants=False,
+                model="gpt-5.4",
+                max_retries=1,
+                processing_operation="edit",
+                source_language="auto",
+                target_language="ru",
+                translation_domain="general",
+            ),
+            overrides={},
+        ),
+    )
+    monkeypatch.setattr(validation, "apply_runtime_resolution_to_app_config", lambda app_config, resolution: {"x": 1})
+    monkeypatch.setattr(validation, "evaluate_lietaer_acceptance", lambda report, **kwargs: {"passed": True, "failed_checks": [], "checks": []})
+    monkeypatch.setattr(validation, "_snapshot_formatting_diagnostics_paths", lambda: set())
+    monkeypatch.setattr(validation, "_collect_new_formatting_diagnostics_paths", lambda before, after: [])
+    monkeypatch.setattr(validation, "_extract_run_formatting_diagnostics_paths", lambda event_log: [])
+    monkeypatch.setattr(validation, "_load_recent_formatting_diagnostics", lambda started_at: ([], []))
+    monkeypatch.setattr(validation, "_load_formatting_diagnostics_payloads", lambda paths: [])
+    monkeypatch.setattr(validation, "_print_terminal_completion_summary", lambda **kwargs: None)
+    monkeypatch.setattr(validation.processing_service, "clone_processing_service", lambda **kwargs: _ValidationServiceStub(kwargs["log_event_fn"]))
+
+    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_PROFILE", "end-times-pdf-core")
+    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_RUN_PROFILE", "ui-parity-pdf-structural-recovery")
+    monkeypatch.delenv("DOCXAI_REAL_DOCUMENT_REPEAT_COUNT_OVERRIDE", raising=False)
+    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_FORCED_RUN_ID", "run-structured-fallback")
+
+    validation.main()
+
+    report_path = tmp_path / "artifacts" / "runs" / "run-structured-fallback" / "end_times_pdf_validation_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+
+    assert report["preparation_diagnostic_snapshot"]["quality_gate_status"] == "pass"
+    assert report["preparation_diagnostic_snapshot"]["readiness_status"] == "ready"
+    assert report["output_artifacts"]["output_docx_openable"] is True
+    assert report["output_artifacts"]["docx_path"] is not None
 
 
 def test_classify_failure_detects_heading_only_output_from_block_rejection_event() -> None:

@@ -19,6 +19,11 @@ _COMPOUND_TOC_ENTRY_PATTERN = re.compile(
 )
 _LIST_LEAD_FRAGMENT_TERMINATOR_PATTERN = re.compile(r"[,;:]$")
 _SCRIPTURE_REFERENCE_PATTERN = re.compile(r"\b(?:[A-Za-zА-Яа-яЁё]+)\s+\d+:\d+(?:-\d+)?\b")
+_INLINE_CONTINUATION_ENDING_PATTERN = re.compile(
+    r"\b(?:is|are|was|were|the|a|an|and|or|of|to|for|with|in|on|at|by|from|about|regarding|called|named|что|относительно|с|в|на|к|по|для|о|у|при|об|под|над|между|является)$",
+    re.IGNORECASE,
+)
+_INLINE_CONTINUATION_START_PATTERN = re.compile(r"^(?:[a-zа-яё]|[)\],.;:!?-])", re.IGNORECASE)
 
 
 def repair_pdf_derived_structure(
@@ -363,7 +368,11 @@ def _split_toc_aligned_compound_paragraph(
     anchor = _find_toc_title_anchor(text, toc_title_variants)
     if anchor is not None and anchor[0] > 0:
         before_title = text[: anchor[0]].strip()
-        text = text[anchor[0] :].strip()
+        anchored_text = text[anchor[0] :].strip()
+        title_match = _match_toc_title_at_start(anchored_text, toc_title_variants)
+        if title_match is not None and _looks_like_inline_continuation_fragment(before_title, title_match[1]):
+            return None
+        text = anchored_text
         if before_title:
             pieces.append(_clone_with_role(paragraph, before_title, structural_role=_infer_structural_role_for_prefix(before_title)))
 
@@ -487,6 +496,18 @@ def _infer_structural_role_for_prefix(text: str) -> str:
     if _looks_like_epigraph_prefix(text):
         return "epigraph"
     return "body"
+
+
+def _looks_like_inline_continuation_fragment(before_title: str, remainder: str) -> bool:
+    before = str(before_title or "").strip()
+    after = str(remainder or "").strip()
+    if not before or not after:
+        return False
+    if _looks_like_citation_or_marker(before) or _looks_like_citation_or_marker(after):
+        return False
+    if not _INLINE_CONTINUATION_ENDING_PATTERN.search(before):
+        return False
+    return bool(_INLINE_CONTINUATION_START_PATTERN.match(after))
 
 
 def _looks_like_epigraph_prefix(text: str) -> bool:

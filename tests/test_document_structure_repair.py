@@ -140,6 +140,24 @@ def test_repair_pdf_derived_structure_splits_heading_prefix_with_punctuation_var
     assert report.heading_candidates_from_toc >= 1
 
 
+def test_repair_pdf_derived_structure_does_not_promote_inline_toc_title_fragment_inside_sentence():
+    paragraphs = [
+        _paragraph(0, "Contents", structural_role="toc_header"),
+        _paragraph(1, "The Mark of the Beast........ 19", structural_role="toc_entry"),
+        _paragraph(2, "Is the Mark of the Beast actually a quantum technology?"),
+    ]
+
+    repaired, report = repair_pdf_derived_structure(paragraphs)
+
+    assert [paragraph.text for paragraph in repaired] == [
+        "Contents",
+        "The Mark of the Beast........ 19",
+        "Is the Mark of the Beast actually a quantum technology?",
+    ]
+    assert repaired[2].role == "body"
+    assert report.heading_candidates_from_toc == 0
+
+
 def test_repair_pdf_derived_structure_accepts_plain_toc_entries_inside_bounded_region():
     paragraphs = [
         _paragraph(0, "Содержание"),
@@ -180,19 +198,38 @@ def test_repair_pdf_derived_structure_keeps_standalone_bullet_before_heading_bou
     assert report.remaining_isolated_marker_count == 1
 
 
-def test_repair_pdf_derived_structure_keeps_standalone_number_before_caption_boundary():
+def test_repair_pdf_derived_structure_keeps_standalone_number_before_structural_boundary():
     paragraphs = [
         _paragraph(0, "1."),
         _paragraph(1, "Figure 1. Market structure", role="caption", structural_role="caption"),
+        _paragraph(2, "2."),
+        _paragraph(3, "Section Heading", role="heading", structural_role="heading"),
+        _paragraph(4, "3."),
+        _paragraph(5, "Contents", role="body", structural_role="toc_header"),
+        _paragraph(6, "4."),
+        _paragraph(7, "Image placeholder", role="image", structural_role="image"),
+        _paragraph(8, "5."),
+        _paragraph(9, "Table placeholder", role="table", structural_role="table"),
     ]
 
     repaired, report = repair_pdf_derived_structure(paragraphs)
 
-    assert [paragraph.text for paragraph in repaired] == ["1.", "Figure 1. Market structure"]
+    assert [paragraph.text for paragraph in repaired] == [
+        "1.",
+        "Figure 1. Market structure",
+        "2.",
+        "Section Heading",
+        "3.",
+        "Contents",
+        "4.",
+        "Image placeholder",
+        "5.",
+        "Table placeholder",
+    ]
     assert repaired[0].role == "body"
     assert repaired[1].role == "caption"
     assert report.repaired_numbered_items == 0
-    assert report.remaining_isolated_marker_count == 1
+    assert report.remaining_isolated_marker_count == 5
 
 
 def test_repair_pdf_derived_structure_does_not_infer_toc_from_short_front_matter_without_header():

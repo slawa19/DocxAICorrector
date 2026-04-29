@@ -318,7 +318,218 @@ def test_run_document_processing_accepts_heading_only_output_for_colon_section_t
     assert runtime["state"]["latest_markdown"] == "## Часть II: Примеры дополнительных валют"
     assert runtime["state"]["latest_docx_bytes"] == b"docx-bytes"
     assert runtime["finalize"][-1][0] == "Обработка завершена"
-    assert runtime["log"][-1]["status"] == "DONE"
+
+
+def test_collect_false_fragment_heading_samples_detects_inline_heading_and_scripture_reference():
+    markdown = (
+        "Является ли\n\n"
+        "## начертание зверя\n\n"
+        "на самом деле - квантовая технология?\n\n"
+        "## (Матфея 24:36)\n\n"
+        "Христос вернётся как вор в ночи."
+    )
+
+    samples = document_pipeline_output_validation.collect_false_fragment_heading_samples(markdown)
+
+    assert [sample.reason for sample in samples] == [
+        "inline_term_heading_present",
+        "scripture_reference_heading_present",
+    ]
+    assert [sample.line for sample in samples] == [3, 7]
+
+
+def test_collect_false_fragment_heading_samples_preserves_legitimate_boundary_heading():
+    markdown = "Введение\n\nТекст раздела.\n\n## Начертание зверя\n\nНовый раздел начинается здесь."
+
+    samples = document_pipeline_output_validation.collect_false_fragment_heading_samples(markdown)
+
+    assert samples == []
+
+
+def test_collect_false_fragment_heading_samples_preserves_repeated_boundary_heading_with_intervening_body():
+    markdown = (
+        "## Начертание зверя\n\n"
+        "Первый раздел с полноценным телом текста и отдельным содержанием.\n\n"
+        "Ещё один абзац, чтобы повтор был самостоятельной секцией.\n\n"
+        "## Начертание зверя\n\n"
+        "Второй самостоятельный раздел."
+    )
+
+    samples = document_pipeline_output_validation.collect_false_fragment_heading_samples(markdown)
+
+    assert samples == []
+
+
+def test_collect_false_fragment_heading_samples_preserves_repeated_boundary_heading_with_single_body_paragraph():
+    markdown = (
+        "## Начертание зверя\n\n"
+        "Полноценный абзац между двумя секциями с одинаковым заголовком.\n\n"
+        "## Начертание зверя\n\n"
+        "Второй самостоятельный раздел."
+    )
+
+    samples = document_pipeline_output_validation.collect_false_fragment_heading_samples(markdown)
+
+    assert samples == []
+
+
+def test_collect_residual_bullet_glyph_samples_detects_inline_glyphs():
+    markdown = "- Есть некий вулкан ... ● пятимесячная атака ...\n\nКитай ... технологическими ● достижениями?"
+
+    samples = document_pipeline_output_validation.collect_residual_bullet_glyph_samples(markdown)
+
+    assert [sample.line for sample in samples] == [1, 3]
+    assert all(sample.reason == "residual_bullet_glyphs_present" for sample in samples)
+
+
+def test_collect_list_fragment_regression_samples_detects_split_bullet_and_dangling_number():
+    markdown = (
+        "- Сторонники мидтрибулационного взгляда считают, что христиане будут восхищены в середине\n"
+        "- Великой скорби.\n\n"
+        "- Поразительно ... схеме: 1.\n"
+        "2. Бог судит их за грех."
+    )
+
+    samples = document_pipeline_output_validation.collect_list_fragment_regression_samples(markdown)
+
+    assert len(samples) == 2
+    assert all(sample.reason == "list_fragment_regressions_present" for sample in samples)
+
+
+def test_collect_list_fragment_regression_samples_detects_body_to_uppercase_bullet_continuation():
+    markdown = "Это связано с Седьмой\n- Судной печатью № 1"
+
+    samples = document_pipeline_output_validation.collect_list_fragment_regression_samples(markdown)
+
+    assert len(samples) == 1
+    assert samples[0].reason == "list_fragment_regressions_present"
+
+
+def test_collect_false_fragment_heading_samples_detects_dangling_question_fragment_heading():
+    markdown = "Это обсуждение подводит к вопросу\n\n## Спутники? Ракеты?)\n\nкоторый дальше раскрывается в тексте."
+
+    samples = document_pipeline_output_validation.collect_false_fragment_heading_samples(markdown)
+
+    assert len(samples) == 1
+    assert samples[0].reason == "sentence_split_heading_present"
+
+
+def test_normalize_false_fragment_headings_markdown_demotes_deterministic_false_headings():
+    markdown = (
+        "Христос предупреждает нас\n\n"
+        "## (Матфея 24:36)\n\n"
+        "что день неизвестен.\n\n"
+        "Это обсуждение подводит к вопросу\n\n"
+        "## Спутники? Ракеты?)\n\n"
+        "который дальше раскрывается в тексте."
+    )
+
+    normalized = document_pipeline_output_validation.normalize_false_fragment_headings_markdown(markdown)
+
+    assert "## (Матфея 24:36)" not in normalized
+    assert "## Спутники? Ракеты?)" not in normalized
+    assert "(Матфея 24:36)" in normalized
+    assert "Спутники? Ракеты?)" in normalized
+
+
+def test_normalize_residual_bullet_glyphs_markdown_rewrites_inline_and_leading_glyphs():
+    markdown = (
+        "Посттрибулационисты считают, что Иисус придёт в конце ● скорби.\n"
+        "● собирают армию в 200 миллионов солдат.\n"
+        "- Соединённые Штаты формируют мировую ● культуру и политику?"
+    )
+
+    normalized = document_pipeline_output_validation.normalize_residual_bullet_glyphs_markdown(markdown)
+
+    assert "●" not in normalized
+    assert "в конце скорби." in normalized
+    assert "- собирают армию в 200 миллионов солдат." in normalized
+    assert "мировую культуру" in normalized
+
+
+def test_normalize_list_fragment_regressions_markdown_repairs_intro_and_carryover_markers():
+    markdown = (
+        "Поразительно, но все петли следуют одной и той же схеме: 1.\n"
+        "Духовные существа восстают против Бога.\n"
+        "2. Бог судит их за грех.\n"
+        "3. Бог спасает остаток верных."
+    )
+
+    normalized = document_pipeline_output_validation.normalize_list_fragment_regressions_markdown(markdown)
+
+    assert "схеме: 1." not in normalized
+    assert "схеме:" in normalized
+    assert "1. Духовные существа восстают против Бога." in normalized
+    assert "2. Бог судит их за грех." in normalized
+    assert "3. Бог спасает остаток верных." in normalized
+
+
+def test_normalize_list_fragment_regressions_markdown_repairs_trailing_next_item_and_heading_target():
+    markdown = (
+        "5. Держитесь подальше от зла. Таковых удаляйся». 6.\n\n"
+        "## Предпримите быстрые шаги, чтобы подготовиться к изоляции:"
+    )
+
+    normalized = document_pipeline_output_validation.normalize_list_fragment_regressions_markdown(markdown)
+
+    assert "Таковых удаляйся». 6." not in normalized
+    assert "5. Держитесь подальше от зла. Таковых удаляйся»." in normalized
+    assert "6. Предпримите быстрые шаги, чтобы подготовиться к изоляции:" in normalized
+
+
+def test_normalize_list_fragment_regressions_markdown_preserves_emoji_marker_line_as_body():
+    markdown = "Представьте, если этим лидером окажется Дональд Трамп.\n\n😂 2.\n\nВ первой половине"
+
+    normalized = document_pipeline_output_validation.normalize_list_fragment_regressions_markdown(markdown)
+
+    assert "1. 😂" not in normalized
+    assert "\n😂\n" in normalized
+    assert "2. В первой половине" in normalized
+
+
+def test_collect_theology_style_issue_samples_detects_awkward_headings_and_glossary_terms():
+    markdown = (
+        "## Суд над пятым печатью\n\n"
+        "## Четвёртое чашеобразное судилище\n\n"
+        "Создавайте кoinonia-сообщества и богословие imago Dei."
+    )
+
+    samples = document_pipeline_output_validation.collect_theology_style_issue_samples(markdown)
+
+    reasons = [sample.reason for sample in samples]
+    assert "awkward_judgment_heading_present" in reasons
+    assert "unresolved_glossary_term_present" in reasons
+    assert "mixed_script_term_present" not in reasons
+
+
+def test_collect_mixed_script_samples_detects_cyrillic_latin_tokens():
+    markdown = "Создавайте кoinonia-сообщества\n\nПрежде чем суперразумa догонит."
+
+    samples = document_pipeline_output_validation.collect_mixed_script_samples(markdown)
+
+    assert len(samples) >= 2
+    assert all(sample.reason == "mixed_script_term_present" for sample in samples)
+    assert any("oinonia" in sample.text for sample in samples)
+    assert any("суперразум" in sample.text for sample in samples)
+
+
+def test_normalize_mixed_script_markdown_repairs_homoglyphs():
+    markdown = "Создавайте общины кoinonia, чтобы поддерживать друг друга.\n\n"
+    markdown += "Прежде чем мы суперразумa догонит квантовый скачок."
+
+    normalized = document_pipeline_output_validation.normalize_mixed_script_markdown(markdown)
+
+    assert "кoinonia" not in normalized
+    assert "суперразумa" not in normalized
+    assert "суперразума" in normalized
+
+
+def test_normalize_mixed_script_markdown_preserves_legitimate_latin_text():
+    markdown = "BMW AG и OpenAI запустили проект."
+
+    normalized = document_pipeline_output_validation.normalize_mixed_script_markdown(markdown)
+
+    assert normalized == markdown
 
 
 def test_run_document_processing_accepts_heading_only_output_for_plaintext_banner_input():

@@ -48,6 +48,27 @@ def test_end_times_pdf_structural_run_profile_is_generic_structural_recovery() -
     assert document_profile.structural_optional_failed_checks == ()
 
 
+def test_end_times_pdf_structural_diagnostic_artifact_matches_current_contract() -> None:
+    artifact_path = Path("tests/artifacts/structural_diagnostics/end-times-pdf-core/structural_diagnostic.json")
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    snapshot = payload["preparation_diagnostic_snapshot"]
+
+    assert payload["document_profile_id"] == "end-times-pdf-core"
+    assert payload["run_profile_id"] == "ui-parity-pdf-structural-recovery"
+    assert payload["validation_tier"] == "structural"
+    assert payload["validation_execution_mode"] == "passthrough"
+    assert payload["passed"] is False
+    assert payload["failed_checks"] == ["unmapped_source_threshold"]
+    assert payload["preparation_error"] is None
+    assert snapshot["readiness_status"] == "ready"
+    assert snapshot["readiness_reasons"] == []
+    assert snapshot["quality_gate_status"] == "pass"
+    assert snapshot["quality_gate_reasons"] == []
+    assert snapshot["structure_ai_attempted"] is False
+    assert snapshot["ai_classified_count"] == 0
+    assert snapshot["ai_heading_count"] == 0
+
+
 def test_evaluate_structural_preparation_diagnostic_returns_snapshot_summary(monkeypatch) -> None:
     document_profile = SimpleNamespace(id="end-times-pdf-core")
     run_profile = SimpleNamespace(id="ui-parity-pdf-structural-recovery")
@@ -668,6 +689,12 @@ def test_build_structural_checks_enforces_pdf_translation_quality_specific_const
         "source_toc_region_count": 1,
         "require_pdf_conversion_satisfied": True,
         "bullet_heading_count": 0,
+        "false_fragment_heading_count": 0,
+        "scripture_reference_heading_count": 0,
+        "suspicious_heading_repetition_count": 0,
+        "residual_bullet_glyph_count": 0,
+        "list_fragment_regression_count": 0,
+        "theology_style_deterministic_issue_count": 0,
         "toc_body_concat_detected": False,
         "structure_repair_toc_body_boundary_repairs": 1,
         "runtime_translation_domain": "theology",
@@ -1109,6 +1136,18 @@ def test_structural_passthrough_success_uses_prepared_context_when_event_log_lac
     assert result["preparation_diagnostic_snapshot"]["structure_ai_attempted"] is True
     assert result["preparation_diagnostic_snapshot"]["ai_classified_count"] == 12
     assert result["preparation_diagnostic_snapshot"]["ai_heading_count"] == 4
+def test_apply_prepared_metric_fields_uses_explicit_unknown_when_statuses_missing() -> None:
+    metrics = {}
+    prepared = SimpleNamespace(
+        quality_gate_status="",
+        quality_gate_reasons=(),
+        structure_validation_report=SimpleNamespace(readiness_status="", readiness_reasons=()),
+    )
+
+    real_document_validation_structural._apply_prepared_metric_fields(metrics, prepared)
+
+    assert metrics["quality_gate_status"] == "unknown"
+    assert metrics["readiness_status"] == "unknown"
 
 
 def test_structural_passthrough_failure_includes_preparation_diagnostic_snapshot(tmp_path, monkeypatch) -> None:

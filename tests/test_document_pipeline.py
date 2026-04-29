@@ -1514,7 +1514,7 @@ def test_run_document_processing_fails_on_strict_unmapped_source_quality_gate(tm
 
     assert result == "failed"
     assert "translation_quality_gate_failed" in runtime["state"]["last_error"]
-    assert runtime["activity"][-1] == "Итоговый перевод отклонён quality gate из-за потери paragraph mapping."
+    assert runtime["activity"][-1] == "Итоговый перевод отклонён quality gate: unmapped_source_paragraphs_present."
     report_files = list(quality_dir.glob("*.json"))
     assert len(report_files) == 1
     payload = json.loads(report_files[0].read_text(encoding="utf-8"))
@@ -1594,12 +1594,125 @@ def test_run_document_processing_surfaces_advisory_quality_notice_on_mapping_dri
     assert payload["gate_reasons"] == ["unmapped_source_paragraphs_above_advisory_threshold"]
 
 
+def test_run_document_processing_normalizes_false_fragment_headings_before_quality_gate(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    quality_dir = tmp_path / "quality_reports"
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+
+    result = _run_processing(
+        runtime,
+        app_config={"translation_output_quality_gate_policy": "strict"},
+        processing_operation="translate",
+        generate_markdown_block=lambda **kwargs: (
+            "Христос предупреждает нас\n\n"
+            "## (Матфея 24:36)\n\n"
+            "что день неизвестен.\n\n"
+            "Это обсуждение подводит к вопросу\n\n"
+            "## Спутники? Ракеты?)\n\n"
+            "который дальше раскрывается в тексте."
+        ),
+    )
+
+    assert result == "succeeded"
+    assert "## (Матфея 24:36)" not in runtime["state"]["latest_markdown"]
+    assert "## Спутники? Ракеты?)" not in runtime["state"]["latest_markdown"]
+    report_files = list(quality_dir.glob("*.json"))
+    assert len(report_files) == 1
+    payload = json.loads(report_files[0].read_text(encoding="utf-8"))
+    assert payload["quality_status"] == "pass"
+    assert payload["false_fragment_heading_count"] == 0
+
+
+def test_run_document_processing_normalizes_residual_bullet_glyphs_before_quality_gate(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    quality_dir = tmp_path / "quality_reports"
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+
+    result = _run_processing(
+        runtime,
+        app_config={"translation_output_quality_gate_policy": "strict"},
+        processing_operation="translate",
+        generate_markdown_block=lambda **kwargs: (
+            "Посттрибулационисты считают, что Иисус придёт в конце ● скорби.\n\n"
+            "● собирают армию в 200 миллионов солдат.\n\n"
+            "- Соединённые Штаты формируют мировую ● культуру и политику?"
+        ),
+    )
+
+    assert result == "succeeded"
+    assert "●" not in runtime["state"]["latest_markdown"]
+    report_files = list(quality_dir.glob("*.json"))
+    assert len(report_files) == 1
+    payload = json.loads(report_files[0].read_text(encoding="utf-8"))
+    assert payload["quality_status"] == "pass"
+    assert payload["residual_bullet_glyph_count"] == 0
+
+
+def test_run_document_processing_normalizes_list_fragment_regressions_before_quality_gate(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    quality_dir = tmp_path / "quality_reports"
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+
+    result = _run_processing(
+        runtime,
+        app_config={"translation_output_quality_gate_policy": "strict"},
+        processing_operation="translate",
+        generate_markdown_block=lambda **kwargs: (
+            "Поразительно, но все петли следуют одной и той же схеме: 1.\n\n"
+            "Духовные существа восстают против Бога.\n\n"
+            "2. Бог судит их за грех.\n\n"
+            "3. Бог спасает остаток верных."
+        ),
+    )
+
+    assert result == "succeeded"
+    assert "схеме: 1." not in runtime["state"]["latest_markdown"]
+    assert "1. Духовные существа восстают против Бога." in runtime["state"]["latest_markdown"]
+    report_files = list(quality_dir.glob("*.json"))
+    assert len(report_files) == 1
+    payload = json.loads(report_files[0].read_text(encoding="utf-8"))
+    assert payload["quality_status"] == "pass"
+    assert payload["list_fragment_regression_count"] == 0
+
+
+def test_run_document_processing_normalizes_mixed_script_before_quality_gate(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    quality_dir = tmp_path / "quality_reports"
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+
+    result = _run_processing(
+        runtime,
+        app_config={"translation_output_quality_gate_policy": "strict"},
+        processing_operation="translate",
+        generate_markdown_block=lambda **kwargs: (
+            "Прежде чем суперразумa догонит квантовый скачок.\n\n"
+            "Это просто тестовая cтрока с латинскими символами."
+        ),
+    )
+
+    assert result == "succeeded"
+    assert "суперразумa" not in runtime["state"]["latest_markdown"]
+    assert "суперразума" in runtime["state"]["latest_markdown"]
+    assert "cтрока" not in runtime["state"]["latest_markdown"]
+    assert "строка" in runtime["state"]["latest_markdown"]
+    report_files = list(quality_dir.glob("*.json"))
+    assert len(report_files) == 1
+    payload = json.loads(report_files[0].read_text(encoding="utf-8"))
+    assert payload["quality_status"] == "pass"
+    assert payload["mixed_script_term_count"] == 0
+
+
 def test_build_translation_quality_report_flags_bullet_marker_headings_in_strict_translate_mode():
     report = document_pipeline_late_phases._build_translation_quality_report(
         context=SimpleNamespace(
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
+            translation_domain="general",
         ),
         final_markdown="## ●\n\nПереведённый абзац",
         formatting_diagnostics_artifacts=[],
@@ -1625,6 +1738,7 @@ def test_build_translation_quality_report_detects_toc_body_concat_across_leader_
             app_config={"translation_output_quality_gate_policy": "strict"},
             processing_operation="translate",
             uploaded_filename="report.docx",
+            translation_domain="general",
         ),
         final_markdown=markdown_text,
         formatting_diagnostics_artifacts=[],
@@ -1633,6 +1747,47 @@ def test_build_translation_quality_report_detects_toc_body_concat_across_leader_
     assert report["quality_status"] == "fail"
     assert report["gate_reasons"] == ["toc_body_concatenation_detected"]
     assert report["toc_body_concat_detected"] is True
+
+
+def test_build_translation_quality_report_exposes_new_residual_quality_metrics_and_gate_reasons():
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict", "translation_domain": "theology"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="theology",
+        ),
+        final_markdown=(
+            "Является ли\n\n"
+            "## начертание зверя\n\n"
+            "на самом деле - квантовая технология?\n\n"
+            "## (Матфея 24:36)\n\n"
+            "- Сторонники мидтрибулационного взгляда считают, что христиане будут восхищены в середине\n"
+            "- Великой скорби.\n\n"
+            "Китай ... технологическими ● достижениями?\n\n"
+            "## Суд над пятым печатью\n\n"
+            "Создавайте кoinonia-сообщества и богословие imago Dei."
+        ),
+        formatting_diagnostics_artifacts=[],
+    )
+
+    assert report["quality_status"] == "fail"
+    assert report["gate_reasons"] == [
+        "false_fragment_headings_present",
+        "residual_bullet_glyphs_present",
+        "list_fragment_regressions_present",
+        "mixed_script_terms_present",
+    ]
+    assert report["bullet_heading_count"] == 0
+    assert report["false_fragment_heading_count"] == 2
+    assert report["scripture_reference_heading_count"] == 1
+    assert report["residual_bullet_glyph_count"] == 1
+    assert report["list_fragment_regression_count"] == 1
+    assert report["mixed_script_term_count"] >= 1
+    assert report["theology_style_deterministic_issue_count"] >= 2
+    assert report["translation_domain"] == "theology"
+    assert report["worst_unmapped_source_count"] == 0
+    assert report["suspicious_heading_repetition_count"] == 0
 
 
 def test_run_document_processing_fails_on_strict_structural_markdown_quality_gate(tmp_path, monkeypatch):
@@ -1650,6 +1805,7 @@ def test_run_document_processing_fails_on_strict_structural_markdown_quality_gat
 
     assert result == "failed"
     assert "translation_quality_gate_failed" in runtime["state"]["last_error"]
+    assert runtime["state"]["latest_docx_bytes"] == b"docx-bytes"
     report_files = list(quality_dir.glob("*.json"))
     assert len(report_files) == 1
     payload = json.loads(report_files[0].read_text(encoding="utf-8"))
@@ -1657,6 +1813,35 @@ def test_run_document_processing_fails_on_strict_structural_markdown_quality_gat
     assert payload["gate_reasons"] == ["toc_body_concatenation_detected"]
     assert payload["bullet_heading_count"] == 0
     assert payload["toc_body_concat_detected"] is True
+    assert runtime["activity"][-1] == "Итоговый перевод отклонён quality gate: toc_body_concatenation_detected."
+
+
+def test_build_translation_quality_report_flags_suspicious_heading_repetition_without_intervening_body():
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+        ),
+        final_markdown=(
+            "## Начертание зверя\n\n"
+            "## Начертание зверя\n\n"
+            "Новый текст после подозрительного дубля."
+        ),
+        formatting_diagnostics_artifacts=[],
+    )
+
+    assert report["quality_status"] == "fail"
+    assert report["gate_reasons"] == ["false_fragment_headings_present"]
+    assert report["suspicious_heading_repetition_count"] == 1
+    assert report["suspicious_heading_repetition_samples"] == [
+        {
+            "line": 3,
+            "text": "Начертание зверя",
+            "reason": "suspicious_heading_repetition_present",
+        }
+    ]
 
 
 def test_run_document_processing_warns_on_advisory_structural_markdown_quality_gate(tmp_path, monkeypatch):

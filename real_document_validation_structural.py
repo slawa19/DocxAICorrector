@@ -15,6 +15,14 @@ from docx.oxml.ns import qn
 
 import processing_runtime
 from config import load_app_config
+from document_pipeline_output_validation import (
+    collect_false_fragment_heading_samples,
+    collect_list_fragment_regression_samples,
+    collect_mixed_script_samples,
+    collect_residual_bullet_glyph_samples,
+    collect_theology_style_issue_samples,
+    has_toc_body_concat_markdown as _shared_has_toc_body_concat_markdown,
+)
 from document import (
     build_semantic_blocks,
     build_document_text,
@@ -42,6 +50,50 @@ from structure_validation import validate_structure_quality
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 FORMATTING_DIAGNOSTICS_DIR = PROJECT_ROOT / ".run" / "formatting_diagnostics"
+
+
+def _build_markdown_quality_metrics(*, latest_markdown: str, translation_domain: str) -> dict[str, object]:
+    false_fragment_heading_samples = collect_false_fragment_heading_samples(latest_markdown)
+    residual_bullet_glyph_samples = collect_residual_bullet_glyph_samples(latest_markdown)
+    list_fragment_regression_samples = collect_list_fragment_regression_samples(latest_markdown)
+    mixed_script_samples = collect_mixed_script_samples(latest_markdown)
+    theology_style_samples = (
+        collect_theology_style_issue_samples(latest_markdown)
+        if str(translation_domain or "").strip().lower() == "theology"
+        else []
+    )
+    suspicious_heading_repetition_count = sum(
+        1
+        for sample in false_fragment_heading_samples
+        if str(getattr(sample, "reason", "") or "") == "suspicious_heading_repetition_present"
+    )
+    scripture_reference_heading_count = sum(
+        1
+        for sample in false_fragment_heading_samples
+        if str(getattr(sample, "reason", "") or "") == "scripture_reference_heading_present"
+    )
+    return {
+        "false_fragment_heading_count": len(false_fragment_heading_samples),
+        "residual_bullet_glyph_count": len(residual_bullet_glyph_samples),
+        "list_fragment_regression_count": len(list_fragment_regression_samples),
+        "mixed_script_term_count": len(mixed_script_samples),
+        "theology_style_deterministic_issue_count": len(theology_style_samples),
+        "suspicious_heading_repetition_count": suspicious_heading_repetition_count,
+        "scripture_reference_heading_count": scripture_reference_heading_count,
+    }
+
+
+def _normalize_snapshot_or_metric_statuses(payload: dict[str, object]) -> None:
+    quality_gate_status = str(payload.get("quality_gate_status") or "").strip()
+    readiness_status = str(payload.get("readiness_status") or "").strip()
+    if not quality_gate_status:
+        payload["quality_gate_status"] = "unknown"
+    if not readiness_status:
+        payload["readiness_status"] = "unknown"
+    if payload.get("quality_gate_reasons") is None:
+        payload["quality_gate_reasons"] = []
+    if payload.get("readiness_reasons") is None:
+        payload["readiness_reasons"] = []
 
 
 def _unpack_extraction_result(extraction_result):
@@ -263,7 +315,14 @@ def run_structural_passthrough_validation(
             ),
         }
     )
+    metrics.update(
+        _build_markdown_quality_metrics(
+            latest_markdown=latest_markdown,
+            translation_domain=str(runtime_resolution.effective.translation_domain),
+        )
+    )
     _apply_prepared_metric_fields(metrics, prepared)
+    _normalize_snapshot_or_metric_statuses(metrics)
     checks = _build_extraction_checks(document_profile, metrics)
     checks.extend(
         _build_structural_checks(
@@ -376,7 +435,12 @@ def _build_preparation_diagnostic_snapshot_from_source(
         event_log=event_log,
     )
     app_config = load_app_config()
-    app_config_mapping = app_config if isinstance(app_config, Mapping) else cast(Mapping[str, Any], app_config.to_dict())
+    if isinstance(app_config, Mapping):
+        app_config_mapping = cast(Mapping[str, Any], app_config)
+    elif hasattr(app_config, "to_dict") and callable(getattr(app_config, "to_dict")):
+        app_config_mapping = cast(Mapping[str, Any], app_config.to_dict())
+    else:
+        app_config_mapping = {}
     structure_validation_report = validate_structure_quality(
         paragraphs=cast(Sequence[Any], paragraphs),
         app_config=app_config_mapping,
@@ -483,6 +547,7 @@ def _apply_prepared_snapshot_fields(snapshot: dict[str, object], prepared: objec
     if int(snapshot.get("ai_heading_count") or 0) == 0:
         snapshot["ai_heading_count"] = int(getattr(prepared, "ai_heading_count", 0) or 0)
     _apply_quality_gate_readiness_fallback(snapshot)
+    _normalize_snapshot_or_metric_statuses(snapshot)
 
 
 def _apply_structure_validation_snapshot_fields(snapshot: dict[str, object], structure_validation_report: object) -> None:
@@ -520,6 +585,7 @@ def _apply_prepared_metric_fields(metrics: dict[str, object], prepared: object) 
         ]
     if not str(metrics.get("readiness_status") or ""):
         metrics["readiness_status"] = str(getattr(structure_validation_report, "readiness_status", "") or "")
+    _normalize_snapshot_or_metric_statuses(metrics)
 
 
 def _apply_preparation_error_snapshot_fallback(snapshot: dict[str, object], preparation_error: str) -> None:
@@ -527,6 +593,7 @@ def _apply_preparation_error_snapshot_fallback(snapshot: dict[str, object], prep
     if not normalized:
         return
     detailed_reasons = _extract_quality_gate_reasons_from_error(preparation_error)
+    quality_gate_blocked = "quality gate" in normalized
     if "quality gate" in normalized and not str(snapshot.get("quality_gate_status") or ""):
         snapshot["quality_gate_status"] = "blocked"
     if detailed_reasons:
@@ -534,9 +601,17 @@ def _apply_preparation_error_snapshot_fallback(snapshot: dict[str, object], prep
             snapshot["quality_gate_reasons"] = detailed_reasons
         if not list(cast(list[str], snapshot.get("readiness_reasons") or [])):
             snapshot["readiness_reasons"] = detailed_reasons
+    if quality_gate_blocked and str(snapshot.get("quality_gate_status") or "").strip().lower() == "blocked":
+        effective_reasons = [
+            str(reason).strip()
+            for reason in list(cast(list[str], snapshot.get("quality_gate_reasons") or []))
+            if str(reason).strip()
+        ]
+        current_readiness_status = str(snapshot.get("readiness_status") or "").strip().lower()
+        if current_readiness_status in {"", "ready", "unknown"}:
+            snapshot["readiness_status"] = _infer_readiness_status_from_quality_gate_reasons(effective_reasons)
     if "structural repair" in normalized:
-        if not str(snapshot.get("readiness_status") or ""):
-            snapshot["readiness_status"] = _infer_readiness_status_from_quality_gate_reasons(detailed_reasons)
+        snapshot["readiness_status"] = _infer_readiness_status_from_quality_gate_reasons(detailed_reasons)
         if not list(cast(list[str], snapshot.get("readiness_reasons") or [])):
             snapshot["readiness_reasons"] = ["structural_repair_required_before_processing"]
         if not list(cast(list[str], snapshot.get("quality_gate_reasons") or [])):
@@ -1010,10 +1085,7 @@ def _count_bullet_headings(markdown_text: str) -> int:
 
 
 def _has_toc_body_concat_markdown(markdown_text: str) -> bool:
-    for paragraph in [chunk.strip() for chunk in re.split(r"\n\s*\n", markdown_text) if chunk.strip()]:
-        if re.search(r"(?:\.{2,}|…|\s{2,})\s*[0-9ivxlcdmIVXLCDM]+\s+[А-Яа-яЁёA-Za-z]", paragraph):
-            return True
-    return False
+    return _shared_has_toc_body_concat_markdown(markdown_text)
 
 
 def _relation_count(relation_report: object, key: str) -> int:

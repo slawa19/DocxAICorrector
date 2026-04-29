@@ -383,6 +383,31 @@ def test_build_output_formatting_diagnostics_uses_real_mapping_instead_of_tail_c
     assert len(cast(list[dict[str, object]], diagnostics["accepted_split_targets"])) == 1
 
 
+def test_build_output_formatting_diagnostics_maps_symbol_only_carryover_marker():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0260",
+            text="😂 2.",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        )
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("😂")
+
+    diagnostics = _build_output_formatting_diagnostics(
+        source_paragraphs,
+        list(target_doc.paragraphs),
+        document=target_doc,
+    )
+
+    assert diagnostics["mapped_count"] == 1
+    assert diagnostics["unmapped_source_ids"] == []
+    assert diagnostics["unmapped_target_indexes"] == []
+
+
 def test_mapping_reports_accepted_merged_sources_in_diagnostics():
     source_paragraphs = [
         ParagraphUnit(

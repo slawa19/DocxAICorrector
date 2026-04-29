@@ -6,7 +6,19 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from document_pipeline_output_validation import has_toc_body_concat_markdown
+from document_pipeline_output_validation import (
+    collect_bullet_heading_samples,
+    collect_false_fragment_heading_samples,
+    collect_list_fragment_regression_samples,
+    collect_mixed_script_samples,
+    collect_residual_bullet_glyph_samples,
+    collect_theology_style_issue_samples,
+    has_toc_body_concat_markdown,
+    normalize_false_fragment_headings_markdown,
+    normalize_list_fragment_regressions_markdown,
+    normalize_mixed_script_markdown,
+    normalize_residual_bullet_glyphs_markdown,
+)
 from formatting_diagnostics_retention import collect_recent_formatting_diagnostics, load_formatting_diagnostics_payloads
 from generation import strip_markdown_for_narration
 
@@ -192,6 +204,22 @@ def _apply_quality_gate_reason(
     return quality_status
 
 
+def _serialize_quality_samples(samples: Sequence[object], *, limit: int = 8) -> list[dict[str, object]]:
+    serialized: list[dict[str, object]] = []
+    for sample in list(samples)[:limit]:
+        line = getattr(sample, "line", None)
+        text = getattr(sample, "text", None)
+        reason = getattr(sample, "reason", None)
+        serialized.append(
+            {
+                "line": line,
+                "text": text,
+                "reason": reason,
+            }
+        )
+    return serialized
+
+
 def _build_translation_quality_report(
     *,
     context: Any,
@@ -207,8 +235,34 @@ def _build_translation_quality_report(
     policy = _resolve_translation_quality_gate_policy(context=context)
     quality_status = "pass"
     gate_reasons: list[str] = []
-    bullet_heading_count = _count_bullet_markdown_headings(final_markdown)
+    bullet_heading_samples = collect_bullet_heading_samples(final_markdown)
+    bullet_heading_count = len(bullet_heading_samples)
+    false_fragment_heading_samples = collect_false_fragment_heading_samples(final_markdown)
+    residual_bullet_glyph_samples = collect_residual_bullet_glyph_samples(final_markdown)
+    list_fragment_regression_samples = collect_list_fragment_regression_samples(final_markdown)
+    mixed_script_samples = collect_mixed_script_samples(final_markdown)
+    translation_domain = str(getattr(context, "translation_domain", "") or context.app_config.get("translation_domain", "general") or "general")
+    theology_style_samples = (
+        collect_theology_style_issue_samples(final_markdown)
+        if translation_domain.strip().lower() == "theology"
+        else []
+    )
+    suspicious_heading_repetition_samples = [
+        sample for sample in false_fragment_heading_samples if getattr(sample, "reason", "") == "suspicious_heading_repetition_present"
+    ]
+    scripture_reference_heading_samples = [
+        sample for sample in false_fragment_heading_samples if getattr(sample, "reason", "") == "scripture_reference_heading_present"
+    ]
     toc_body_concat_detected = _has_toc_body_concat_markdown(final_markdown)
+    source_paragraph_count = latest_payload.get("source_count") if isinstance(latest_payload, Mapping) else None
+    output_paragraph_count = latest_payload.get("target_count") if isinstance(latest_payload, Mapping) else None
+    worst_unmapped_source_count = len(unmapped_source_ids) if isinstance(unmapped_source_ids, list) else 0
+    prepared_paragraph_count = getattr(context, "paragraph_count", None) or getattr(context, "total_paragraphs", None)
+    if isinstance(prepared_paragraph_count, int) and prepared_paragraph_count > 0:
+        if source_paragraph_count is None:
+            source_paragraph_count = prepared_paragraph_count
+        if output_paragraph_count is None:
+            output_paragraph_count = prepared_paragraph_count
     if context.processing_operation == "translate":
         if policy == "strict" and isinstance(unmapped_source_ids, list) and unmapped_source_ids:
             quality_status = "fail"
@@ -232,20 +286,68 @@ def _build_translation_quality_report(
                 policy=policy,
                 reason="toc_body_concatenation_detected",
             )
+        if false_fragment_heading_samples:
+            quality_status = _apply_quality_gate_reason(
+                quality_status=quality_status,
+                gate_reasons=gate_reasons,
+                policy=policy,
+                reason="false_fragment_headings_present",
+            )
+        if residual_bullet_glyph_samples:
+            quality_status = _apply_quality_gate_reason(
+                quality_status=quality_status,
+                gate_reasons=gate_reasons,
+                policy=policy,
+                reason="residual_bullet_glyphs_present",
+            )
+        if list_fragment_regression_samples:
+            quality_status = _apply_quality_gate_reason(
+                quality_status=quality_status,
+                gate_reasons=gate_reasons,
+                policy=policy,
+                reason="list_fragment_regressions_present",
+            )
+        if mixed_script_samples:
+            quality_status = _apply_quality_gate_reason(
+                quality_status=quality_status,
+                gate_reasons=gate_reasons,
+                policy=policy,
+                reason="mixed_script_terms_present",
+            )
+        if theology_style_samples:
+            quality_status = "warn" if quality_status == "pass" else quality_status
 
     report = {
-        "version": 1,
+        "version": 2,
         "source_name": context.uploaded_filename,
         "processing_operation": context.processing_operation,
         "quality_gate_policy": policy,
-        "source_paragraph_count": latest_payload.get("source_count") if isinstance(latest_payload, Mapping) else None,
-        "target_paragraph_count": latest_payload.get("target_count") if isinstance(latest_payload, Mapping) else None,
+        "translation_domain": translation_domain,
+        "source_paragraph_count": source_paragraph_count,
+        "target_paragraph_count": output_paragraph_count,
+        "output_paragraph_count": output_paragraph_count,
         "mapped_count": latest_payload.get("mapped_count") if isinstance(latest_payload, Mapping) else None,
-        "unmapped_source_count": len(unmapped_source_ids) if isinstance(unmapped_source_ids, list) else 0,
+        "unmapped_source_count": worst_unmapped_source_count,
         "unmapped_target_count": len(unmapped_target_indexes) if isinstance(unmapped_target_indexes, list) else 0,
+        "worst_unmapped_source_count": worst_unmapped_source_count,
         "accepted_merged_sources_count": len(accepted_merged_sources) if isinstance(accepted_merged_sources, list) else 0,
         "caption_heading_conflicts_count": len(caption_heading_conflicts) if isinstance(caption_heading_conflicts, list) else 0,
         "bullet_heading_count": bullet_heading_count,
+        "bullet_heading_samples": _serialize_quality_samples(bullet_heading_samples),
+        "false_fragment_heading_count": len(false_fragment_heading_samples),
+        "false_fragment_heading_samples": _serialize_quality_samples(false_fragment_heading_samples),
+        "suspicious_heading_repetition_count": len(suspicious_heading_repetition_samples),
+        "suspicious_heading_repetition_samples": _serialize_quality_samples(suspicious_heading_repetition_samples),
+        "scripture_reference_heading_count": len(scripture_reference_heading_samples),
+        "scripture_reference_heading_samples": _serialize_quality_samples(scripture_reference_heading_samples),
+        "residual_bullet_glyph_count": len(residual_bullet_glyph_samples),
+        "residual_bullet_glyph_samples": _serialize_quality_samples(residual_bullet_glyph_samples),
+        "list_fragment_regression_count": len(list_fragment_regression_samples),
+        "list_fragment_regression_samples": _serialize_quality_samples(list_fragment_regression_samples),
+        "mixed_script_term_count": len(mixed_script_samples),
+        "mixed_script_term_samples": _serialize_quality_samples(mixed_script_samples),
+        "theology_style_deterministic_issue_count": len(theology_style_samples),
+        "theology_style_deterministic_issue_samples": _serialize_quality_samples(theology_style_samples),
         "toc_body_concat_detected": toc_body_concat_detected,
         "formatting_diagnostics_artifact_count": len(formatting_diagnostics_artifacts),
         "final_markdown_chars": len(final_markdown),
@@ -270,6 +372,15 @@ def _build_result_quality_warning(
         "gate_reasons": list(cast(Sequence[str], quality_report.get("gate_reasons") or [])),
         "message": str((latest_result_notice or {}).get("message", "") or ""),
     }
+
+
+def _build_quality_gate_activity_message(gate_reasons: Sequence[str]) -> str:
+    if not gate_reasons:
+        return "Итоговый перевод отклонён document-level quality gate."
+    joined_reasons = ", ".join(str(reason) for reason in gate_reasons if str(reason))
+    if not joined_reasons:
+        return "Итоговый перевод отклонён document-level quality gate."
+    return f"Итоговый перевод отклонён quality gate: {joined_reasons}."
 
 
 def _emit_terminal_result(
@@ -404,7 +515,13 @@ def run_image_processing_phase(
     initialization: Any,
     current_markdown_fn: Callable[[Sequence[str]], str],
 ) -> Any | None:
-    final_markdown = current_markdown_fn(state.processed_chunks)
+    final_markdown = normalize_mixed_script_markdown(
+        normalize_residual_bullet_glyphs_markdown(
+            normalize_list_fragment_regressions_markdown(
+                normalize_false_fragment_headings_markdown(current_markdown_fn(state.processed_chunks))
+            )
+        )
+    )
     emitters.emit_state(context.runtime, latest_markdown=final_markdown)
     try:
         processed_image_assets = dependencies.process_document_images(
@@ -550,7 +667,13 @@ def run_docx_build_phase(
     current_markdown_fn: Callable[[Sequence[str]], str],
     call_docx_restorer_with_optional_registry_fn: Callable[[Any, bytes, Any, Any], bytes],
 ) -> Any | None:
-    final_markdown = current_markdown_fn(state.processed_chunks)
+    final_markdown = normalize_mixed_script_markdown(
+        normalize_residual_bullet_glyphs_markdown(
+            normalize_list_fragment_regressions_markdown(
+                normalize_false_fragment_headings_markdown(current_markdown_fn(state.processed_chunks))
+            )
+        )
+    )
     emitters.emit_status(
         context.runtime,
         stage="Сборка DOCX",
@@ -682,7 +805,13 @@ def finalize_processing_success(
     job_count: int,
     current_markdown_fn: Callable[[Sequence[str]], str],
 ) -> PipelineResult:
-    final_markdown = current_markdown_fn(state.processed_chunks)
+    final_markdown = normalize_mixed_script_markdown(
+        normalize_residual_bullet_glyphs_markdown(
+            normalize_list_fragment_regressions_markdown(
+                normalize_false_fragment_headings_markdown(current_markdown_fn(state.processed_chunks))
+            )
+        )
+    )
     formatting_diagnostics_artifacts = cast(
         Sequence[str],
         docx_phase.get("formatting_diagnostics_artifacts") or [],
@@ -710,6 +839,7 @@ def finalize_processing_success(
             gate_reasons=list(cast(Sequence[str], quality_report.get("gate_reasons") or [])),
         )
     if quality_report.get("quality_status") == "fail":
+        gate_reasons = list(cast(Sequence[str], quality_report.get("gate_reasons") or []))
         error_message = dependencies.present_error(
             "translation_quality_gate_failed",
             RuntimeError(
@@ -718,13 +848,13 @@ def finalize_processing_success(
             "Критическая ошибка качества перевода",
             filename=context.uploaded_filename,
             quality_status=quality_report.get("quality_status"),
-            gate_reasons=list(cast(Sequence[str], quality_report.get("gate_reasons") or [])),
+            gate_reasons=gate_reasons,
             quality_report_path=quality_report_path,
         )
         emitters.emit_state(
             context.runtime,
             latest_markdown=final_markdown,
-            latest_docx_bytes=None,
+            latest_docx_bytes=docx_phase["docx_bytes"],
             latest_narration_text=None,
             latest_result_notice={
                 "level": "error",
@@ -738,7 +868,7 @@ def finalize_processing_success(
             "Итоговый перевод отклонён document-level quality gate.",
             filename=context.uploaded_filename,
             quality_report_path=quality_report_path,
-            gate_reasons=list(cast(Sequence[str], quality_report.get("gate_reasons") or [])),
+            gate_reasons=gate_reasons,
             quality_status=quality_report.get("quality_status"),
         )
         return emit_failed_result(
@@ -747,7 +877,7 @@ def finalize_processing_success(
             finalize_stage="Критическая ошибка качества перевода",
             detail=error_message,
             progress=1.0,
-            activity_message="Итоговый перевод отклонён quality gate из-за потери paragraph mapping.",
+            activity_message=_build_quality_gate_activity_message(gate_reasons),
             block_index=job_count,
             block_count=job_count,
             target_chars=len(final_markdown),

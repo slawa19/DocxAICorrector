@@ -46,7 +46,11 @@ from generation import (
     ensure_pandoc_available,
 )
 from real_document_validation_common import build_validation_event_logger, build_validation_runtime_config
-from real_document_validation_structural import build_preparation_diagnostic_snapshot
+from real_document_validation_structural import (
+    _apply_prepared_snapshot_fields,
+    _normalize_snapshot_or_metric_statuses,
+    build_preparation_diagnostic_snapshot,
+)
 from real_document_validation_profiles import (
     apply_runtime_resolution_to_app_config,
     load_validation_registry,
@@ -1497,6 +1501,35 @@ def _extract_run_formatting_diagnostics_paths(event_log: Sequence[Mapping[str, o
     return []
 
 
+def _extract_quality_report_artifact_path(event_log: Sequence[Mapping[str, object]]) -> str | None:
+    for event in reversed(event_log):
+        if str(event.get("event_id") or "") != "quality_report_saved":
+            continue
+        context = event.get("context") or {}
+        if not isinstance(context, Mapping):
+            continue
+        artifact_path = context.get("artifact_path")
+        if isinstance(artifact_path, str) and artifact_path.strip():
+            return artifact_path.strip()
+    return None
+
+
+def _load_translation_quality_report(event_log: Sequence[Mapping[str, object]]) -> tuple[dict[str, object] | None, str | None]:
+    artifact_path = _extract_quality_report_artifact_path(event_log)
+    if not artifact_path:
+        return None, None
+    candidate = Path(artifact_path)
+    if not candidate.is_absolute():
+        candidate = (PROJECT_ROOT / candidate).resolve()
+    try:
+        payload = json.loads(candidate.read_text(encoding="utf-8"))
+    except Exception:
+        return None, _path_for_report(candidate)
+    if not isinstance(payload, dict):
+        return None, _path_for_report(candidate)
+    return payload, _path_for_report(candidate)
+
+
 def evaluate_lietaer_acceptance(
     report: Mapping[str, object],
     *,
@@ -1513,6 +1546,7 @@ def evaluate_lietaer_acceptance(
     processing_operation = _extract_runtime_processing_operation(report)
     output_artifacts = cast(Mapping[str, object], report.get("output_artifacts") or {})
     formatting_diagnostics = cast(Sequence[Mapping[str, object]], report.get("formatting_diagnostics") or [])
+    translation_quality_report = cast(Mapping[str, object], report.get("translation_quality_report") or {})
 
     add_check("pipeline_succeeded", result == "succeeded", result=result)
     add_check(
@@ -1567,6 +1601,47 @@ def evaluate_lietaer_acceptance(
         caption_heading_conflicts=total_caption_heading_conflicts,
         artifact_count=len(formatting_diagnostics),
     )
+
+    if translation_quality_report:
+        residual_gate_checks = (
+            (
+                "bullet_marker_headings_present",
+                int(translation_quality_report.get("bullet_heading_count") or 0) == 0,
+                {"bullet_heading_count": translation_quality_report.get("bullet_heading_count")},
+            ),
+            (
+                "false_fragment_headings_present",
+                int(translation_quality_report.get("false_fragment_heading_count") or 0) == 0,
+                {"false_fragment_heading_count": translation_quality_report.get("false_fragment_heading_count")},
+            ),
+            (
+                "residual_bullet_glyphs_present",
+                int(translation_quality_report.get("residual_bullet_glyph_count") or 0) == 0,
+                {"residual_bullet_glyph_count": translation_quality_report.get("residual_bullet_glyph_count")},
+            ),
+            (
+                "list_fragment_regressions_present",
+                int(translation_quality_report.get("list_fragment_regression_count") or 0) == 0,
+                {"list_fragment_regression_count": translation_quality_report.get("list_fragment_regression_count")},
+            ),
+            (
+                "mixed_script_terms_present",
+                int(translation_quality_report.get("mixed_script_term_count") or 0) == 0,
+                {"mixed_script_term_count": translation_quality_report.get("mixed_script_term_count")},
+            ),
+            (
+                "theology_style_deterministic_issues_present",
+                True,
+                {"theology_style_deterministic_issue_count": translation_quality_report.get("theology_style_deterministic_issue_count"), "failed_reason": "advisory_only"},
+            ),
+            (
+                "toc_body_concatenation_detected",
+                not bool(translation_quality_report.get("toc_body_concat_detected")),
+                {"toc_body_concat_detected": translation_quality_report.get("toc_body_concat_detected")},
+            ),
+        )
+        for check_name, passed, details in residual_gate_checks:
+            add_check(check_name, passed, **details)
 
     if source_docx_bytes and output_docx_bytes:
         source_paragraphs, _ = extract_document_content_from_docx(BytesIO(source_docx_bytes))
@@ -2135,6 +2210,10 @@ def main() -> None:
         chunk_size=int(runtime_resolution.effective.chunk_size) if runtime_resolution is not None else 6000,
         event_log=event_log,
     )
+    if prepared is not None:
+        _apply_prepared_snapshot_fields(preparation_diagnostic_snapshot, prepared)
+    else:
+        _normalize_snapshot_or_metric_statuses(preparation_diagnostic_snapshot)
 
     report = {
         "run": {
@@ -2200,10 +2279,15 @@ def main() -> None:
             "new_count": len(snapshot_discovered_paths),
         },
         "formatting_diagnostics": formatting_diagnostics_payloads,
+        "translation_quality_report": None,
+        "translation_quality_report_path": None,
         "progress_events_tail": progress_events[-12:],
         "event_log": event_log[-25:],
         "image_log_tail": runtime_snapshot.get("image_log", [])[-25:],
     }
+    translation_quality_report, translation_quality_report_path = _load_translation_quality_report(event_log)
+    report["translation_quality_report"] = translation_quality_report
+    report["translation_quality_report_path"] = translation_quality_report_path
     report["failure_classification"] = classify_failure(report)
     report["acceptance"] = evaluate_lietaer_acceptance(
         report,
@@ -2253,6 +2337,9 @@ def main() -> None:
         f"output_contains_placeholder_markup={report['output_artifacts']['output_contains_placeholder_markup']}",
         f"formatting_diagnostics_count={len(formatting_diagnostics_payloads)}",
         f"formatting_diagnostics_discovery_source={formatting_diagnostics_discovery_source}",
+        f"translation_quality_report_path={report['translation_quality_report_path']}",
+        f"translation_quality_status={cast(Mapping[str, object], report['translation_quality_report'] or {}).get('quality_status')}",
+        f"translation_quality_gate_reasons={','.join(_as_string_list(cast(Mapping[str, object], report['translation_quality_report'] or {}).get('gate_reasons')))}",
         f"acceptance_passed={report['acceptance']['passed']}",
         f"acceptance_failed_checks={','.join(_as_string_list(cast(Mapping[str, object], report['acceptance']).get('failed_checks')))}",
         f"last_error={last_error}",

@@ -47,6 +47,7 @@ CENTER_SHORT_NON_HEADING_MAX_CHARS = 90
 CENTER_SHORT_NON_HEADING_MAX_WORDS = 12
 ALLOWED_CENTERED_QUOTE_STRUCTURAL_ROLES = {"epigraph", "attribution", "dedication"}
 DISALLOWED_CENTER_SHORT_STRUCTURAL_ROLES = {"toc_header", "toc_entry", "heading", "caption"}
+_SYMBOL_ONLY_CARRYOVER_MARKER_PATTERN = re.compile(r"^(?P<body>.+?)\s+(?P<next_number>\d+)\.$")
 
 
 def _paragraph_preview(text: str, *, limit: int = 120) -> str:
@@ -64,6 +65,12 @@ def _normalize_text_for_mapping(text: str) -> str:
     normalized = normalized.replace("***", "").replace("**", "").replace("*", "")
     normalized = normalized.replace("<br/>", " ")
     normalized = re.sub(r"\s+", " ", normalized)
+    carryover_match = _SYMBOL_ONLY_CARRYOVER_MARKER_PATTERN.match(normalized.strip())
+    if carryover_match:
+        body = str(carryover_match.group("body") or "").strip()
+        body_tokens = body.split()
+        if len(body_tokens) <= 2 and not re.search(r"[A-Za-zА-Яа-яЁё]", body):
+            normalized = body
     return normalized.strip().lower()
 
 
