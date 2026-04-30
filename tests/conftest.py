@@ -7,8 +7,18 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+SRC_ROOT = PROJECT_ROOT / "src"
+
+
+def _ensure_src_first_import_order(project_root: Path, src_root: Path) -> None:
+    project_root_str = str(project_root)
+    src_root_str = str(src_root)
+    sys.path[:] = [entry for entry in sys.path if entry not in {project_root_str, src_root_str}]
+    sys.path.insert(0, project_root_str)
+    sys.path.insert(0, src_root_str)
+
+
+_ensure_src_first_import_order(PROJECT_ROOT, SRC_ROOT)
 
 from config import ModelRegistry, TextModelConfig
 

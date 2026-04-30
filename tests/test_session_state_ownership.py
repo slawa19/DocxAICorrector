@@ -6,6 +6,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 OWNER_FILES = {
     PROJECT_ROOT / "state.py",
+    PROJECT_ROOT / "src" / "docxaicorrector" / "runtime" / "state.py",
 }
 SKIPPED_DIR_NAMES = {
     ".git",
@@ -180,7 +181,7 @@ def _iter_candidate_python_files():
     for path in sorted(PROJECT_ROOT.rglob("*.py")):
         if not _should_scan_python_file(path):
             continue
-        if path.name == "state.py":
+        if path in OWNER_FILES:
             continue
         source = path.read_text(encoding="utf-8")
         if "session_state" not in source:

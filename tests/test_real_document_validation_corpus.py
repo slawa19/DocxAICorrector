@@ -86,7 +86,7 @@ def test_evaluate_structural_preparation_diagnostic_returns_snapshot_summary(mon
         },
     )
 
-    result = evaluate_structural_preparation_diagnostic(document_profile, run_profile)
+    result = evaluate_structural_preparation_diagnostic(cast(Any, document_profile), cast(Any, run_profile))
 
     assert result == {
         "document_profile_id": "end-times-pdf-core",

@@ -1261,7 +1261,7 @@ def test_collect_new_formatting_diagnostics_paths_returns_only_new_files_sorted(
 
 def test_build_environment_snapshot_reports_workspace_runtime(monkeypatch) -> None:
     validation = _load_validation_module()
-    monkeypatch.setenv("PYTHONPATH", ".")
+    monkeypatch.setenv("PYTHONPATH", "src:.")
     monkeypatch.setenv("VIRTUAL_ENV", "/tmp/docxai/.venv")
 
     snapshot = validation._build_environment_snapshot()
@@ -1269,7 +1269,7 @@ def test_build_environment_snapshot_reports_workspace_runtime(monkeypatch) -> No
     assert snapshot["project_root"] == "."
     assert isinstance(snapshot["python_executable"], str)
     assert snapshot["python_version"]
-    assert snapshot["pythonpath"] == "."
+    assert snapshot["pythonpath"] == "src:."
     assert snapshot["virtual_env"] == "/tmp/docxai/.venv"
     assert "is_wsl" in snapshot
 

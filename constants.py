@@ -1,19 +1,12 @@
+"""Compatibility alias for the migrated implementation module."""
+
+from importlib import import_module
 from pathlib import Path
+import sys
 
-BASE_DIR = Path(__file__).resolve().parent
-PROMPTS_DIR = BASE_DIR / "prompts"
-ENV_PATH = BASE_DIR / ".env"
-CONFIG_PATH = BASE_DIR / "config.toml"
-SYSTEM_PROMPT_PATH = PROMPTS_DIR / "system_prompt.txt"
-RUN_DIR = BASE_DIR / ".run"
-UI_RESULT_ARTIFACTS_DIR = RUN_DIR / "ui_results"
-APP_LOG_PATH = RUN_DIR / "app.log"
-APP_READY_PATH = RUN_DIR / "app.ready"
+_SRC = Path(__file__).resolve().parent / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
 
-DEFAULT_CHUNK_SIZE = 6000
-DEFAULT_MAX_RETRIES = 3
-# Keep this in sync with .streamlit/config.toml -> server.maxUploadSize = 25 (MB).
-MAX_DOCX_ARCHIVE_SIZE_BYTES = 25 * 1024 * 1024
-MAX_DOCX_UNCOMPRESSED_SIZE_BYTES = 100 * 1024 * 1024
-MAX_DOCX_ENTRY_COUNT = 2048
-MAX_DOCX_COMPRESSION_RATIO = 150.0
+_target = import_module("docxaicorrector.core.constants")
+sys.modules[__name__] = _target

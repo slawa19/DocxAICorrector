@@ -1,6 +1,8 @@
 {
   "pythonVersion": "3.13",
   "typeCheckingMode": "basic",
+  "include": ["src/docxaicorrector", "tests", "benchmark_projects", "scripts"],
+  "extraPaths": ["src", "."],
   "reportMissingImports": "warning",
   "reportMissingModuleSource": "none"
 }

@@ -9,7 +9,7 @@ if [[ ! -f .venv/bin/activate ]]; then
 fi
 
 . .venv/bin/activate
-export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$PWD/src:$PWD${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONUNBUFFERED=1
 
 exec python -u tests/artifacts/real_document_pipeline/run_lietaer_validation.py

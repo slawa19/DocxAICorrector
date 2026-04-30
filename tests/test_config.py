@@ -1,9 +1,11 @@
 import threading
+from pathlib import Path
 from typing import cast
 
 import pytest
 
 import config
+import constants
 from tests.conftest import (
     TEST_IMAGE_ANALYSIS_MODEL,
     TEST_IMAGE_EDIT_MODEL,
@@ -14,6 +16,19 @@ from tests.conftest import (
     TEST_STRUCTURE_RECOGNITION_MODEL,
     TEST_TEXT_MODEL_DEFAULT,
 )
+
+
+def test_constants_paths_resolve_to_repo_root() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+
+    assert constants.BASE_DIR == repo_root
+    assert constants.CONFIG_PATH == repo_root / "config.toml"
+    assert constants.PROMPTS_DIR == repo_root / "prompts"
+    assert constants.ENV_PATH == repo_root / ".env"
+    assert constants.RUN_DIR == repo_root / ".run"
+    assert constants.UI_RESULT_ARTIFACTS_DIR == repo_root / ".run" / "ui_results"
+    assert constants.APP_LOG_PATH == repo_root / ".run" / "app.log"
+    assert constants.APP_READY_PATH == repo_root / ".run" / "app.ready"
 
 
 def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):

@@ -1,71 +1,12 @@
-from dataclasses import dataclass
+"""Compatibility alias for the migrated implementation module."""
 
+from importlib import import_module
+from pathlib import Path
+import sys
 
-@dataclass(frozen=True)
-class SetStateEvent:
-    values: dict[str, object]
+_SRC = Path(__file__).resolve().parent / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
 
-
-@dataclass(frozen=True)
-class ResetImageStateEvent:
-    pass
-
-
-@dataclass(frozen=True)
-class SetProcessingStatusEvent:
-    payload: dict[str, object]
-
-
-@dataclass(frozen=True)
-class FinalizeProcessingStatusEvent:
-    stage: str
-    detail: str
-    progress: float
-    terminal_kind: str | None = None
-
-
-@dataclass(frozen=True)
-class PushActivityEvent:
-    message: str
-
-
-@dataclass(frozen=True)
-class AppendLogEvent:
-    payload: dict[str, object]
-
-
-@dataclass(frozen=True)
-class AppendImageLogEvent:
-    payload: dict[str, object]
-
-
-@dataclass(frozen=True)
-class WorkerCompleteEvent:
-    outcome: str
-
-
-@dataclass(frozen=True)
-class PreparationCompleteEvent:
-    prepared_run_context: object
-    upload_marker: str
-
-
-@dataclass(frozen=True)
-class PreparationFailedEvent:
-    upload_marker: str
-    error_message: str
-    error_details: dict[str, object]
-
-
-ProcessingEvent = (
-    SetStateEvent
-    | ResetImageStateEvent
-    | SetProcessingStatusEvent
-    | FinalizeProcessingStatusEvent
-    | PushActivityEvent
-    | AppendLogEvent
-    | AppendImageLogEvent
-    | WorkerCompleteEvent
-    | PreparationCompleteEvent
-    | PreparationFailedEvent
-)
+_target = import_module("docxaicorrector.runtime.events")
+sys.modules[__name__] = _target

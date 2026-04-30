@@ -24,8 +24,18 @@ from typing import Any, Protocol, cast
 
 SCRIPT_PATH = Path(__file__).resolve()
 PROJECT_ROOT = SCRIPT_PATH.parents[3]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+SRC_ROOT = PROJECT_ROOT / "src"
+
+
+def _ensure_src_first_import_order(project_root: Path, src_root: Path) -> None:
+    project_root_str = str(project_root)
+    src_root_str = str(src_root)
+    sys.path[:] = [entry for entry in sys.path if entry not in {project_root_str, src_root_str}]
+    sys.path.insert(0, project_root_str)
+    sys.path.insert(0, src_root_str)
+
+
+_ensure_src_first_import_order(PROJECT_ROOT, SRC_ROOT)
 
 from docx import Document
 from docx.document import Document as DocxDocument
@@ -109,6 +119,24 @@ def _path_for_report(path: Path | None) -> str | None:
         return str(path.relative_to(PROJECT_ROOT)).replace("\\", "/")
     except ValueError:
         return str(path).replace("\\", "/")
+
+
+def _coerce_int(value: object, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return default
+        try:
+            return int(stripped)
+        except ValueError:
+            return default
+    return default
 
 
 def _build_run_id(source_path: Path) -> str:
@@ -1606,27 +1634,27 @@ def evaluate_lietaer_acceptance(
         residual_gate_checks = (
             (
                 "bullet_marker_headings_present",
-                int(translation_quality_report.get("bullet_heading_count") or 0) == 0,
+                _coerce_int(translation_quality_report.get("bullet_heading_count")) == 0,
                 {"bullet_heading_count": translation_quality_report.get("bullet_heading_count")},
             ),
             (
                 "false_fragment_headings_present",
-                int(translation_quality_report.get("false_fragment_heading_count") or 0) == 0,
+                _coerce_int(translation_quality_report.get("false_fragment_heading_count")) == 0,
                 {"false_fragment_heading_count": translation_quality_report.get("false_fragment_heading_count")},
             ),
             (
                 "residual_bullet_glyphs_present",
-                int(translation_quality_report.get("residual_bullet_glyph_count") or 0) == 0,
+                _coerce_int(translation_quality_report.get("residual_bullet_glyph_count")) == 0,
                 {"residual_bullet_glyph_count": translation_quality_report.get("residual_bullet_glyph_count")},
             ),
             (
                 "list_fragment_regressions_present",
-                int(translation_quality_report.get("list_fragment_regression_count") or 0) == 0,
+                _coerce_int(translation_quality_report.get("list_fragment_regression_count")) == 0,
                 {"list_fragment_regression_count": translation_quality_report.get("list_fragment_regression_count")},
             ),
             (
                 "mixed_script_terms_present",
-                int(translation_quality_report.get("mixed_script_term_count") or 0) == 0,
+                _coerce_int(translation_quality_report.get("mixed_script_term_count")) == 0,
                 {"mixed_script_term_count": translation_quality_report.get("mixed_script_term_count")},
             ),
             (

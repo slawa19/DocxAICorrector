@@ -95,3 +95,43 @@ def test_manifest_cli_write_updates_file(tmp_path):
     assert updated_manifest[0]["output_artifact"] == "sample_output.png"
     assert updated_manifest[0]["bytes_in"] == len(b"input-bytes")
     assert updated_manifest[0]["bytes_out"] == len(b"output-bytes")
+
+
+def test_manifest_module_cli_write_updates_file(tmp_path):
+    tests_dir = tmp_path / "tests"
+    artifacts_dir = tests_dir / "artifacts" / "real_image_pipeline"
+    manifest_path = artifacts_dir / "manifest.json"
+    tests_dir.mkdir(parents=True)
+    artifacts_dir.mkdir(parents=True)
+
+    (tests_dir / "sample.png").write_bytes(b"input-bytes")
+    (artifacts_dir / "sample_output.png").write_bytes(b"output-bytes")
+    manifest_path.write_text(
+        json.dumps([{"filename": "sample.png", "bytes_in": 0, "bytes_out": 0}], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "docxaicorrector.real_image.manifest",
+            "--manifest",
+            str(manifest_path),
+            "--tests-dir",
+            str(tests_dir),
+            "--artifacts-dir",
+            str(artifacts_dir),
+            "--write",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=REPO_ROOT,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    updated_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert updated_manifest[0]["output_artifact"] == "sample_output.png"
+    assert updated_manifest[0]["bytes_in"] == len(b"input-bytes")
+    assert updated_manifest[0]["bytes_out"] == len(b"output-bytes")

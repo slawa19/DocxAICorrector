@@ -835,7 +835,16 @@ def test_run_document_processing_does_not_fail_when_ui_result_artifact_save_fail
 
 
 def test_resolve_system_prompt_does_not_mask_internal_type_errors():
-    def broken_loader(*, operation: str = "edit", source_language: str = "en", target_language: str = "ru", editorial_intensity: str = "literary", prompt_variant: str = "default"):
+    def broken_loader(
+        *,
+        operation: str = "edit",
+        source_language: str = "en",
+        target_language: str = "ru",
+        editorial_intensity: str = "literary",
+        prompt_variant: str = "default",
+        translation_domain: str = "general",
+        source_text: str = "",
+    ):
         raise TypeError("broken template")
 
     with pytest.raises(TypeError, match="broken template"):
@@ -1783,8 +1792,12 @@ def test_build_translation_quality_report_exposes_new_residual_quality_metrics_a
     assert report["scripture_reference_heading_count"] == 1
     assert report["residual_bullet_glyph_count"] == 1
     assert report["list_fragment_regression_count"] == 1
-    assert report["mixed_script_term_count"] >= 1
-    assert report["theology_style_deterministic_issue_count"] >= 2
+    mixed_script_term_count = report["mixed_script_term_count"]
+    theology_style_issue_count = report["theology_style_deterministic_issue_count"]
+    assert isinstance(mixed_script_term_count, int)
+    assert isinstance(theology_style_issue_count, int)
+    assert mixed_script_term_count >= 1
+    assert theology_style_issue_count >= 2
     assert report["translation_domain"] == "theology"
     assert report["worst_unmapped_source_count"] == 0
     assert report["suspicious_heading_repetition_count"] == 0

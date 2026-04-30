@@ -6,6 +6,15 @@ writers were wired up. Not part of the runtime startup path.
 from __future__ import annotations
 
 from pathlib import Path
+import sys
+
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+SRC_ROOT = ROOT_DIR / "src"
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 from runtime_artifact_retention import (
     LAYOUT_CLEANUP_REPORTS_MAX_AGE_SECONDS,

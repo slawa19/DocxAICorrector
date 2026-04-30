@@ -6,12 +6,21 @@ from typing import Any, Mapping
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+SRC_ROOT = ROOT_DIR / "src"
 TESTS_DIR = ROOT_DIR / "tests"
 ARTIFACTS_DIR = TESTS_DIR / "artifacts" / "real_image_pipeline"
 SOURCE_IMAGE = TESTS_DIR / "pic1_lietaer.jpg"
 
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+
+def _ensure_src_first_import_order(root_dir: Path, src_root: Path) -> None:
+    root_dir_str = str(root_dir)
+    src_root_str = str(src_root)
+    sys.path[:] = [entry for entry in sys.path if entry not in {root_dir_str, src_root_str}]
+    sys.path.insert(0, root_dir_str)
+    sys.path.insert(0, src_root_str)
+
+
+_ensure_src_first_import_order(ROOT_DIR, SRC_ROOT)
 
 from config import get_client, get_model_role_value, load_app_config
 from image_analysis import analyze_image

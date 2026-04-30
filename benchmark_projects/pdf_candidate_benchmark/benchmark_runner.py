@@ -15,7 +15,7 @@ from difflib import SequenceMatcher
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, cast
 
 
 def _resolve_repo_root() -> Path:
@@ -27,8 +27,18 @@ def _resolve_repo_root() -> Path:
 
 
 REPO_ROOT = _resolve_repo_root()
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+SRC_ROOT = REPO_ROOT / "src"
+
+
+def _ensure_src_first_import_order(repo_root: Path, src_root: Path) -> None:
+    repo_root_str = str(repo_root)
+    src_root_str = str(src_root)
+    sys.path[:] = [entry for entry in sys.path if entry not in {repo_root_str, src_root_str}]
+    sys.path.insert(0, repo_root_str)
+    sys.path.insert(0, src_root_str)
+
+
+_ensure_src_first_import_order(REPO_ROOT, SRC_ROOT)
 
 import processing_runtime  # noqa: E402
 from document import build_document_text, build_semantic_blocks, extract_document_content_with_normalization_reports  # noqa: E402
@@ -132,6 +142,24 @@ def _sequence_similarity(left: str, right: str) -> float:
 
 def _visible_text_chars(text: str) -> int:
     return sum(1 for char in text if not char.isspace())
+
+
+def _coerce_int(value: object, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return default
+        try:
+            return int(stripped)
+        except ValueError:
+            return default
+    return default
 
 
 def _paragraphs_from_projection(text: str) -> list[str]:
@@ -288,18 +316,18 @@ def _build_docx_structural_proxy(
     structure_repair_report: object | None,
     preview_paragraphs: Sequence[str],
 ) -> dict[str, object]:
-    snapshot = build_preparation_diagnostic_snapshot(
+    snapshot = cast(dict[str, object], build_preparation_diagnostic_snapshot(
         paragraphs=paragraphs,
         relations=relations,
         structure_repair_report=structure_repair_report,
         chunk_size=6000,
         event_log=[],
-    )
+    ))
     preview_text = "\n\n".join(preview_paragraphs)
     failed_checks: list[str] = []
-    if int(snapshot.get("toc_entry_count") or 0) > 0 and int(snapshot.get("bounded_toc_region_count") or 0) == 0:
+    if _coerce_int(snapshot.get("toc_entry_count")) > 0 and _coerce_int(snapshot.get("bounded_toc_region_count")) == 0:
         failed_checks.append("unbounded_toc_region")
-    if int(snapshot.get("remaining_isolated_marker_count") or 0) > 0:
+    if _coerce_int(snapshot.get("remaining_isolated_marker_count")) > 0:
         failed_checks.append("isolated_marker_fragments")
     if bool(snapshot.get("first_block_has_toc")) and bool(snapshot.get("first_block_has_body_start")):
         failed_checks.append("toc_body_concat_risk")
@@ -351,7 +379,8 @@ def _build_docx_candidate_result(
     )
     structural_result_path = candidate_dir / "structural_diagnostic.json"
     _write_json(structural_result_path, structural_result)
-    snapshot = dict(structural_result.get("preparation_diagnostic_snapshot") or {})
+    snapshot_obj = structural_result.get("preparation_diagnostic_snapshot")
+    snapshot = cast(dict[str, Any], snapshot_obj if isinstance(snapshot_obj, dict) else {})
     quality_gate_status = str(snapshot.get("quality_gate_status") or "")
     first_block_preview = "\n\n".join(preview_paragraphs[:5])
     first_block_risk, first_block_risk_reasons = _derive_first_block_risk(first_block_preview)
@@ -387,8 +416,12 @@ def _build_docx_candidate_result(
         list_item_candidates_count=projection_metrics["list_item_candidates_count"],
         toc_like_block_count=int(snapshot.get("toc_header_count") or 0) + int(snapshot.get("toc_entry_count") or 0) or projection_metrics["toc_like_block_count"],
         preparation_gate_outcome=("blocked" if quality_gate_status == "blocked" else ("pass" if quality_gate_status == "pass" else "error")),
-        failed_checks=[str(item) for item in structural_result.get("failed_checks") or []],
-        toc_body_concat_detected=bool((structural_result.get("metrics") or {}).get("toc_body_concat_detected")),
+        failed_checks=[str(item) for item in cast(list[Any], structural_result.get("failed_checks") or [])],
+        toc_body_concat_detected=bool(
+            cast(dict[str, Any], structural_result.get("metrics") if isinstance(structural_result.get("metrics"), dict) else {}).get(
+                "toc_body_concat_detected"
+            )
+        ),
         toc_body_concat_detector="benchmark_block_detector",
         normalized_text_similarity_to_baseline=None,
         first_20_blocks_have_nonempty_text=all(bool(paragraph.strip()) for paragraph in preview_paragraphs[:20]),
@@ -585,11 +618,20 @@ def _run_pymupdf(context: BenchmarkContext) -> CandidateResult:
     try:
         for page in document:
             page_blocks = page.get_text("blocks")
-            sorted_blocks = sorted(page_blocks, key=lambda item: (round(item[1], 3), round(item[0], 3)))
-            for block in sorted_blocks:
-                text = str(block[4] or "").strip()
+            sortable_blocks: list[tuple[float, float, str]] = []
+            for raw_block in page_blocks:
+                if not isinstance(raw_block, (list, tuple)) or len(raw_block) < 5:
+                    continue
+                try:
+                    y_coord = float(raw_block[1])
+                    x_coord = float(raw_block[0])
+                except (TypeError, ValueError):
+                    continue
+                text = str(raw_block[4] or "").strip()
                 if text:
-                    blocks.append(text)
+                    sortable_blocks.append((y_coord, x_coord, text))
+            for _y_coord, _x_coord, text in sorted(sortable_blocks, key=lambda item: (item[0], item[1])):
+                blocks.append(text)
     finally:
         document.close()
     projection_text = "\n\n".join(blocks)
@@ -685,12 +727,22 @@ def _human_report(context: BenchmarkContext, candidates: Sequence[CandidateResul
         )
         if candidate.notes:
             lines.append(f"  notes={'; '.join(candidate.notes)}")
+    promising_candidates_raw = recommendation.get("promising_candidates")
+    promising_candidates = [
+        str(item)
+        for item in promising_candidates_raw
+    ] if isinstance(promising_candidates_raw, list) else []
+    recommendation_notes_raw = recommendation.get("notes")
+    recommendation_notes = [
+        str(item)
+        for item in recommendation_notes_raw
+    ] if isinstance(recommendation_notes_raw, list) else []
     lines.extend(
         [
             "",
             f"recommendation_outcome={recommendation.get('outcome')}",
-            f"promising_candidates={','.join(recommendation.get('promising_candidates') or [])}",
-            f"recommendation_notes={json.dumps(list(recommendation.get('notes') or []), ensure_ascii=False)}",
+            f"promising_candidates={','.join(promising_candidates)}",
+            f"recommendation_notes={json.dumps(recommendation_notes, ensure_ascii=False)}",
         ]
     )
     return "\n".join(lines) + "\n"

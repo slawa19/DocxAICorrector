@@ -542,9 +542,9 @@ def _apply_prepared_snapshot_fields(snapshot: dict[str, object], prepared: objec
         ]
     if not bool(snapshot.get("structure_ai_attempted")):
         snapshot["structure_ai_attempted"] = bool(getattr(prepared, "structure_ai_attempted", False))
-    if int(snapshot.get("ai_classified_count") or 0) == 0:
+    if _as_int(snapshot, "ai_classified_count") == 0:
         snapshot["ai_classified_count"] = int(getattr(prepared, "ai_classified_count", 0) or 0)
-    if int(snapshot.get("ai_heading_count") or 0) == 0:
+    if _as_int(snapshot, "ai_heading_count") == 0:
         snapshot["ai_heading_count"] = int(getattr(prepared, "ai_heading_count", 0) or 0)
     _apply_quality_gate_readiness_fallback(snapshot)
     _normalize_snapshot_or_metric_statuses(snapshot)
@@ -618,9 +618,9 @@ def _apply_preparation_error_snapshot_fallback(snapshot: dict[str, object], prep
             snapshot["quality_gate_reasons"] = ["structural_repair_required_before_processing"]
     if "structure_recognition_noop_on_high_risk" in detailed_reasons:
         snapshot["structure_ai_attempted"] = True
-        if int(snapshot.get("ai_classified_count") or 0) == 0:
+        if _as_int(snapshot, "ai_classified_count") == 0:
             snapshot["ai_classified_count"] = 0
-        if int(snapshot.get("ai_heading_count") or 0) == 0:
+        if _as_int(snapshot, "ai_heading_count") == 0:
             snapshot["ai_heading_count"] = 0
 
 
@@ -932,7 +932,7 @@ def _build_structural_checks(
                 "required": document_profile.require_translation_domain,
             }
         )
-    if int(metrics.get("structure_repair_bounded_toc_regions", 0) or 0) > 0:
+    if _as_int(metrics, "structure_repair_bounded_toc_regions") > 0:
         checks.append(
             {
                 "name": "bounded_toc_repair_detected",

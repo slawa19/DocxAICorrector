@@ -112,6 +112,7 @@ done
 
 require_venv
 . .venv/bin/activate
+export PYTHONPATH="$PWD/src:$PWD${PYTHONPATH:+:$PYTHONPATH}"
 
 if has_explicit_verbosity_flag "${PYTEST_ARGS[@]}"; then
 	exec pytest "$TEST_SELECTOR" "${PYTEST_ARGS[@]}"

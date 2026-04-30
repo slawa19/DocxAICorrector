@@ -2,6 +2,7 @@ from models import ImageAsset
 import processing_service
 from processing_service import ProcessingService
 from runtime_events import AppendLogEvent, FinalizeProcessingStatusEvent, SetStateEvent, WorkerCompleteEvent
+from typing import Any, cast
 
 
 def _build_service(**overrides):
@@ -414,7 +415,11 @@ def test_run_prepared_background_document_emits_controlled_failure_when_preparat
         raise AssertionError("Expected preparation exception to be re-raised")
 
     assert emitted_events[-1] == WorkerCompleteEvent(outcome="failed")
-    assert any(isinstance(event, SetStateEvent) and event.values["last_background_error"]["stage"] == "preparation" for event in emitted_events)
+    assert any(
+        isinstance(event, SetStateEvent)
+        and cast(dict[str, Any], event.values.get("last_background_error") or {}).get("stage") == "preparation"
+        for event in emitted_events
+    )
     assert any(isinstance(event, FinalizeProcessingStatusEvent) and event.stage == "Ошибка подготовки" for event in emitted_events)
     assert any(isinstance(event, AppendLogEvent) and event.payload["status"] == "ERROR" for event in emitted_events)
 

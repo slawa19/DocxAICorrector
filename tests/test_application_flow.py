@@ -796,8 +796,12 @@ def test_prepare_run_context_for_background_processes_real_docx_without_mocks():
     preparation.clear_preparation_cache(clear_shared=True)
     source_doc = Document()
     source_doc.add_heading("Глава 1", level=1)
-    source_doc.add_paragraph("Первый абзац документа.")
-    source_doc.add_paragraph("Второй абзац документа.")
+    source_doc.add_paragraph(
+        "Первый абзац документа содержит достаточно длинный связный текст, чтобы не считаться подозрительно коротким body-блоком."
+    )
+    source_doc.add_paragraph(
+        "Второй абзац документа тоже содержит несколько обычных слов и завершенное предложение для стабильной подготовки."
+    )
     source_buffer = BytesIO()
     source_doc.save(source_buffer)
 

@@ -1,9 +1,12 @@
-import glob
-for f in glob.glob("*.py"):
-    try:
-        with open(f, encoding="utf-8") as file:
-            for i, line in enumerate(file, 1):
-                if "gpt-" in line or "gpt-4" in line or "gpt-5" in line or "gpt-image" in line:
-                    print(f"{f}:{i}:{line.strip()}")
-    except Exception as e:
-        print(f"Error {f}: {e}")
+"""Compatibility alias for the migrated implementation module."""
+
+from importlib import import_module
+from pathlib import Path
+import sys
+
+_SRC = Path(__file__).resolve().parent / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+_target = import_module("docxaicorrector.generation.search")
+sys.modules[__name__] = _target

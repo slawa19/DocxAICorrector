@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -105,6 +106,49 @@ def _run_powershell_script(script_name: str, *args: str, env_overrides: dict[str
 def _load_vscode_tasks() -> list[dict[str, Any]]:
     tasks_path = REPO_ROOT / ".vscode" / "tasks.json"
     return json.loads(tasks_path.read_text(encoding="utf-8"))["tasks"]
+
+
+def _assert_src_bootstrap_results_in_src_first(script_path: Path) -> None:
+    source_lines = script_path.read_text(encoding="utf-8").splitlines()
+    source_text = "\n".join(source_lines)
+    start_index: int | None = None
+    helper_index: int | None = None
+    invocation_index: int | None = None
+
+    for index, line in enumerate(source_lines):
+        stripped = line.strip()
+        if start_index is None and stripped.startswith(("SCRIPT_PATH =", "PROJECT_ROOT =", "REPO_ROOT =", "ROOT_DIR =")):
+            start_index = index
+        if helper_index is None and stripped.startswith("def _ensure_src_first_import_order("):
+            helper_index = index
+        if stripped in {
+            "_ensure_src_first_import_order(PROJECT_ROOT, SRC_ROOT)",
+            "_ensure_src_first_import_order(REPO_ROOT, SRC_ROOT)",
+            "_ensure_src_first_import_order(ROOT_DIR, SRC_ROOT)",
+        }:
+            invocation_index = index
+
+    assert start_index is not None, script_path
+    assert helper_index is not None and helper_index >= start_index, script_path
+    assert invocation_index is not None and invocation_index >= helper_index, script_path
+
+    helper_name = None
+    if "REPO_ROOT = _resolve_repo_root()" in source_text:
+        helper_name = "_resolve_repo_root"
+
+    bootstrap_snippet = "\n".join(source_lines[start_index : invocation_index + 1])
+    fake_sys = SimpleNamespace(path=[])
+    namespace = {
+        "__file__": str(script_path),
+        "Path": Path,
+        "sys": fake_sys,
+    }
+    if helper_name is not None:
+        namespace[helper_name] = lambda: script_path.parents[2]
+    exec(bootstrap_snippet, namespace)
+
+    root_name = next(name for name in ("PROJECT_ROOT", "REPO_ROOT", "ROOT_DIR") if name in namespace)
+    assert fake_sys.path[:2] == [str(namespace["SRC_ROOT"]), str(namespace[root_name])]
 
 
 def test_test_sh_run_test_file_smoke() -> None:
@@ -408,3 +452,55 @@ def test_ci_uses_canonical_bash_test_contract() -> None:
     assert "bash scripts/test.sh tests/test_script_workflow_smoke.py -q" in ci_text
     assert "bash scripts/test.sh tests/ -q" in ci_text
     assert "python -m pytest tests -q" not in ci_text
+
+
+def test_source_path_bootstrap_prefers_src_before_repo_root() -> None:
+    test_sh = (REPO_ROOT / "scripts" / "test.sh").read_text(encoding="utf-8")
+    validation_sh = (REPO_ROOT / "scripts" / "run-real-document-validation.sh").read_text(encoding="utf-8")
+    structural_sh = (REPO_ROOT / "scripts" / "run-structural-preparation-diagnostic.sh").read_text(encoding="utf-8")
+
+    expected_pythonpath = 'export PYTHONPATH="$PWD/src:$PWD${PYTHONPATH:+:$PYTHONPATH}"'
+    assert expected_pythonpath in test_sh
+    assert expected_pythonpath in validation_sh
+    assert expected_pythonpath in structural_sh
+    _assert_src_bootstrap_results_in_src_first(REPO_ROOT / "tests" / "conftest.py")
+    _assert_src_bootstrap_results_in_src_first(
+        REPO_ROOT / "tests" / "artifacts" / "real_document_pipeline" / "run_lietaer_validation.py"
+    )
+    _assert_src_bootstrap_results_in_src_first(
+        REPO_ROOT / "benchmark_projects" / "pdf_candidate_benchmark" / "benchmark_runner.py"
+    )
+    _assert_src_bootstrap_results_in_src_first(REPO_ROOT / "scripts" / "run_pic1_modes.py")
+
+
+def test_codeowners_protects_moved_production_implementation_paths() -> None:
+    codeowners_text = (REPO_ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
+
+    assert "/constants.py @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/core/constants.py @slawa19" in codeowners_text
+    assert "/logger.py @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/core/logger.py @slawa19" in codeowners_text
+    assert "/config.py @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/core/config.py @slawa19" in codeowners_text
+    assert "/models.py @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/core/models.py @slawa19" in codeowners_text
+    assert "/state.py @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/runtime/state.py @slawa19" in codeowners_text
+    assert "/preparation.py @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/processing/preparation.py @slawa19" in codeowners_text
+    assert "/processing_runtime.py @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/processing/processing_runtime.py @slawa19" in codeowners_text
+    assert "/processing_service.py @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/processing/processing_service.py @slawa19" in codeowners_text
+    assert "/generation.py @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/generation/_generation.py @slawa19" in codeowners_text
+    assert "/formatting_transfer.py @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/generation/formatting_transfer.py @slawa19" in codeowners_text
+    assert "/formatting_diagnostics_retention.py @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/generation/formatting_diagnostics_retention.py @slawa19" in codeowners_text
+    assert "/message_formatting.py @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/generation/message_formatting.py @slawa19" in codeowners_text
+    assert "/openai_response_utils.py @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/generation/openai_response_utils.py @slawa19" in codeowners_text
+    assert "/search.py @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/generation/search.py @slawa19" in codeowners_text
