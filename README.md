@@ -123,7 +123,7 @@ Universal real-document validation architecture и её текущий implement
 ## Требования
 
 - WSL2 с Linux-дистрибутивом, в котором создаётся и используется текущее `.venv`
-- Python 3.11+
+- Python 3.12+ for the canonical WSL runtime and editable-install/package verification
 - System packages из `system-requirements.apt`: `pandoc`, `libreoffice`, `antiword`
 - Для legacy `.doc`: предпочтительно LibreOffice (`soffice`), fallback-связка `antiword` + `pandoc`
 - Для `PDF`: LibreOffice (`soffice` или `libreoffice`) внутри WSL обязателен
@@ -173,12 +173,21 @@ bash scripts/setup-wsl.sh
 - выполняет `pip install -r requirements.txt`;
 - проверяет Python imports, `pandoc` и LibreOffice (`soffice`/`libreoffice`).
 
+Package/install contract после architecture migration опирается на `pyproject.toml`, где указано `requires-python = ">=3.12"`. Если текущая WSL `.venv` была создана под Python 3.11, её нужно пересоздать под Python 3.12+ перед editable-install verification. `venv` не меняет версию интерпретатора inplace.
+
+Если в WSL доступен `python3.12`, предпочтительный repo-aligned путь:
+
+```bash
+rm -rf .venv
+DOCXAI_PYTHON_BIN=python3.12 bash scripts/setup-wsl.sh
+```
+
 Для unattended/server setup пользователь должен иметь root-доступ или passwordless `sudo`, иначе системные apt-пакеты не будут установлены автоматически.
 
 ### 1a. Ручной fallback: создать виртуальное окружение
 
 ```bash
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 ```
 

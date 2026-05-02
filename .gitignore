@@ -21,6 +21,7 @@ coverage.xml
 htmlcov/
 dist/
 build/
+*.egg-info/
 .idea/
 .history/
 .vscode/*

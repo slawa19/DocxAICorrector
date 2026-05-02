@@ -95,7 +95,7 @@ from docxaicorrector.pipeline.contracts import (
     ImageReinserter,
     build_processing_dependencies as _build_processing_dependencies_impl,
 )
-from runtime_artifacts import write_ui_result_artifacts as write_ui_result_artifacts_impl
+from docxaicorrector.runtime.artifacts import write_ui_result_artifacts as write_ui_result_artifacts_impl
 
 
 JobValue: TypeAlias = object

@@ -41,7 +41,7 @@ def resolve_paragraph_boundary_normalization_settings(
     *,
     allowed_modes: tuple[str, ...] | list[str] | set[str],
 ) -> tuple[str, bool]:
-    from config import load_app_config
+    from docxaicorrector.core.config import load_app_config
 
     app_config = load_app_config()
     enabled = bool(app_config.get("paragraph_boundary_normalization_enabled", True))

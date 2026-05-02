@@ -350,7 +350,7 @@ def build_processing_service_dependencies(**overrides: Any) -> ProcessingService
 
 
 def build_default_processing_service_dependencies() -> ProcessingServiceDependencies:
-    from config import load_app_config as _load_app_config
+    from docxaicorrector.core.config import load_app_config as _load_app_config
 
     _cfg = _load_app_config()
     _body_font = _cfg.output_body_font

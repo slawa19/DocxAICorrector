@@ -41,32 +41,32 @@ from docx import Document
 from docx.document import Document as DocxDocument
 from docx.oxml.ns import qn
 
-import application_flow
-import document_pipeline
-import logger as app_logger
-import processing_runtime
-import processing_service
-from config import get_client, load_app_config, load_system_prompt
-from document import (
+import docxaicorrector.ui.application_flow as application_flow
+import docxaicorrector.pipeline._pipeline as document_pipeline
+import docxaicorrector.core.logger as app_logger
+import docxaicorrector.processing.processing_runtime as processing_runtime
+import docxaicorrector.processing.processing_service as processing_service
+from docxaicorrector.core.config import get_client, load_app_config, load_system_prompt
+from docxaicorrector.document._document import (
     ORDERED_LIST_FORMATS,
     extract_document_content_from_docx,
 )
-from generation import (
+from docxaicorrector.generation._generation import (
     convert_markdown_to_docx_bytes,
     ensure_pandoc_available,
 )
-from real_document_validation_common import build_validation_event_logger, build_validation_runtime_config
-from real_document_validation_structural import (
+from docxaicorrector.validation.common import build_validation_event_logger, build_validation_runtime_config
+from docxaicorrector.validation.structural import (
     _apply_prepared_snapshot_fields,
     _normalize_snapshot_or_metric_statuses,
     build_preparation_diagnostic_snapshot,
 )
-from real_document_validation_profiles import (
+from docxaicorrector.validation.profiles import (
     apply_runtime_resolution_to_app_config,
     load_validation_registry,
     resolve_runtime_resolution,
 )
-from runtime_events import (
+from docxaicorrector.runtime.events import (
     AppendImageLogEvent,
     AppendLogEvent,
     FinalizeProcessingStatusEvent,

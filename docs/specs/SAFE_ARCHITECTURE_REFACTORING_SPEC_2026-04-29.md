@@ -4,7 +4,7 @@ Date: 2026-04-29
 
 Supersedes draft: `docs/specs/PROJECT_STRUCTURE_REFACTORING_SPEC_2026-04-29.md`
 
-Status: implementation-ready specification after correctness review of the initial draft.
+Status: implemented; final verification complete. Residual root-stub typing debt has been transferred to `docs/specs/ROOT_COMPATIBILITY_TYPING_SURFACE_SPEC_2026-05-01.md`.
 
 ## Goal
 
@@ -49,6 +49,7 @@ Allowed changes despite being protected files:
 8. Use canonical WSL entrypoints for final verification.
 9. Keep package `__init__.py` files lightweight; do not force heavy imports during `import docxaicorrector`.
 10. Defer file-to-package monolith decomposition to a later phase after the package migration is green.
+11. After the migration is green, treat root compatibility modules as backward-compatibility surface only. Package implementation modules and maintained canonical entrypoints must import `docxaicorrector...` modules directly, not root shims.
 
 ## Current Protected Contracts
 
@@ -205,7 +206,7 @@ Rules:
 - Subpackage `__init__.py` files may re-export stable public names only when doing so does not import heavy runtime dependencies or create cycles.
 - Root compatibility is provided by root alias shims, not by top-level `docxaicorrector` eager imports.
 - Every non-empty `__all__` must be explicit.
-- Empty `__all__ = []` is allowed during scaffold and intermediate migration.
+- Empty `__all__ = []` is allowed in lightweight package scaffolding when no stable re-exports are intended.
 
 ### Source Path Bootstrap
 
@@ -213,7 +214,7 @@ All canonical entrypoints must be able to import `docxaicorrector` before root m
 
 Required updates:
 
-- `pyproject.toml`: add `pythonpath = ["src", "."]` under `[tool.pytest.ini_options]` during transition.
+- `pyproject.toml`: keep `pythonpath = ["src", "."]` under `[tool.pytest.ini_options]` so source-tree test runs resolve package imports deterministically.
 - `scripts/test.sh`: export `PYTHONPATH="$PWD/src:$PWD${PYTHONPATH:+:$PYTHONPATH}"` after `cd` and before invoking pytest.
 - `scripts/run-real-document-validation.sh`: export the same `PYTHONPATH`.
 - `scripts/run-structural-preparation-diagnostic.sh`: export the same `PYTHONPATH`.
@@ -225,9 +226,38 @@ Required updates:
 Implementation note: the required contract is the effective import resolution order, not the textual order of statements. When using repeated `sys.path.insert(0, ...)`, code may insert the repository root first and `src` second as long as the final `sys.path` order is `src`, then repository root.
 - Root compatibility shims and executable wrappers: insert repository `src/` directly in the shim/wrapper file before importing `docxaicorrector`; this is required because verification commands and backward-compatible root imports must work even outside pytest and outside shell-script wrappers.
 
-This explicit path insertion is required during the transition even if editable install later works, because scripts and tests currently run from source without relying on installation state.
+This explicit path insertion remains required even after the migration is complete because canonical source-tree scripts and direct repository-root compatibility imports still run from source without relying on installation state.
+
+### Root Typing Stubs
+
+Root `.pyi` files are part of the compatibility layer while root shims remain supported.
+
+Rules:
+
+- If a root compatibility module exists, a sibling root `.pyi` may exist to preserve the same import surface for Pyright and tests that access private helper names through the root module.
+- Root `.pyi` files must mirror the effective compatibility contract of the root `.py` shim or wrapper and re-export from the package implementation path.
+- When a root compatibility module is removed, its sibling root `.pyi` must be removed in the same batch.
+- Add or keep focused verification so type-checking fails if a root `.pyi` no longer matches the actual compatibility module surface.
 
 Verification rule for direct Python commands: every `python -c ...` or `python -m ...` command in this specification is expected to pass from the repository root without manually exporting `PYTHONPATH`, because the compatibility layer itself must bootstrap `src/`. If a batch intentionally verifies package imports before the root shim exists, it may temporarily use `PYTHONPATH=src:. ...` for that pre-shim intra-batch check, but final acceptance for the batch must include the plain command form shown in this spec.
+
+## Follow-up After Migration Review
+
+The first post-migration review identified a small set of remaining compatibility-surface gaps. These follow-up items stay within the original migration scope and must be closed before the migration can be treated as complete.
+
+Required follow-up items:
+
+- `scripts/_list_log_events.py` must inventory the effective operational event surface after migration, including migrated pipeline seam modules that emit events through injected dependencies. The target list must include the implementation files that now own those events.
+- Root `app.py` must preserve one module-identity contract in both import and direct-execution modes. Running `python app.py` must not depend on creating a second independently initialized `app` module if startup code imports `app`.
+- `.github/CODEOWNERS` must protect root `.pyi` compatibility stubs for every supported root shim or executable compatibility wrapper, alongside the sibling `.py` wrappers and package implementation files.
+- Root stub verification must assert both the star re-export and any explicit manual compatibility re-exports required for private helpers or non-star-exported names.
+- Remaining root `.pyi` files that still expose `def __getattr__(name: str) -> Any: ...` remain acknowledged technical debt. They intentionally preserve broad fallback typing today, but they still weaken type-level enforcement of the migrated compatibility surface and should be tightened in a later dedicated batch.
+
+Follow-up acceptance checks:
+
+- `python -c "import app; import docxaicorrector.ui._app as target; assert app is target"`
+- `python scripts/_list_log_events.py` must include events emitted from migrated pipeline seam modules such as `src/docxaicorrector/pipeline/block_execution.py`, `src/docxaicorrector/pipeline/block_failures.py`, `src/docxaicorrector/pipeline/late_phases.py`, and `src/docxaicorrector/pipeline/setup.py`.
+- Protected tests must fail if a supported root `.pyi` drops out of `CODEOWNERS` or if a manual root-stub re-export disappears while the runtime compatibility wrapper still exposes that name.
 
 ## Target Package Layout
 
@@ -417,13 +447,16 @@ Non-root production/support entrypoints requiring path review:
 
 ## Import Rewrite Policy
 
-During the transition, implementation modules may continue to use root imports if root alias shims are already present and identity-preserving. This minimizes behavioral risk.
+The migration is considered complete for maintained codepaths. Root imports are now compatibility-only and must not be used by package implementation modules or by maintained canonical entrypoints.
 
-Final package-internal imports should be migrated gradually after all modules are moved:
+Required final-state import policy:
 
 - Prefer explicit absolute imports from `docxaicorrector.<subpackage>.<module>`.
-- Do not mix large import rewrites with physical file moves unless needed to break an import cycle.
-- If an import cycle appears, defer that module or batch rather than adding lazy imports that affect startup or runtime semantics.
+- Package modules under `src/docxaicorrector/` must not import root compatibility modules such as `config`, `application_flow`, `document_pipeline`, or similar root aliases.
+- Maintained canonical entrypoints in `scripts/`, `benchmark_projects/`, and validation runners must not rely on root compatibility imports when an equivalent package import exists.
+- Root compatibility imports remain allowed only for external backward-compatibility surfaces, direct user invocation of legacy root files, and tests that explicitly verify compatibility behavior.
+- Do not preserve mixed root/package import styles in maintained codepaths as a temporary compromise.
+- If an import cycle appears, resolve it without reintroducing root-shim dependencies or lazy imports that change startup or runtime semantics.
 
 ## Test Layout Policy
 
@@ -443,7 +476,7 @@ Optional later test-layout phase:
 
 ## Package Configuration
 
-### Phase 1 Transitional Configuration
+### Source-Tree Test Configuration
 
 Update `pyproject.toml` only as needed for pytest pathing:
 
@@ -460,9 +493,9 @@ markers = [
 ]
 ```
 
-### Phase 3 Installable Package Configuration
+### Installable Package Configuration
 
-After the package migration is green, add installable package metadata:
+After the package migration is green, keep installable package metadata and verify it continuously:
 
 ```toml
 [project]
@@ -493,6 +526,7 @@ Dependency source-of-truth rule:
 
 - Until CI/setup scripts are migrated, `requirements.txt` remains the CI/setup dependency source.
 - `pyproject.toml` must mirror `requirements.txt` dependency constraints exactly for shared dependencies.
+- CI must also verify editable-install viability once installable package metadata is present.
 - If a later change makes `pyproject.toml` the source of truth, CI, setup scripts, and workflow tests must be updated in the same batch.
 
 Recommended guard if dependency metadata changes again: add a focused test that parses `requirements.txt` and `pyproject.toml` and verifies that every runtime/dev dependency constraint present in both files has the same specifier. Do not introduce divergent version ranges silently.
@@ -573,7 +607,7 @@ Update bootstrap-sensitive non-root entrypoints that currently insert only the r
 - `benchmark_projects/pdf_candidate_benchmark/benchmark_runner.py`
 - `scripts/run_pic1_modes.py`
 
-Update bootstrap-sensitive tests that assert exact environment snapshots when needed. In particular, any test that currently expects `PYTHONPATH == "."` must be updated to reflect the new `src`-first transition contract.
+Update bootstrap-sensitive tests that assert exact environment snapshots when needed. In particular, any test that currently expects `PYTHONPATH == "."` must be updated to reflect the new `src`-first source-run contract.
 
 Update `tests/test_script_workflow_smoke.py` in the same batch so the protected workflow contract explicitly checks the `src`-first bootstrap in canonical scripts.
 
@@ -641,7 +675,7 @@ Move as one dependency-aware batch:
 Order inside the batch is mandatory:
 
 1. Create all five target files under `src/docxaicorrector/core/` first.
-2. Verify that package imports can resolve using temporary root imports or adjusted imports.
+2. Verify that package imports resolve directly through package paths. Do not retain package-to-root imports after the batch is complete.
 3. Replace all five root files with alias shims in one patch.
 4. Run verification immediately.
 
@@ -903,7 +937,7 @@ Every root production `.py` file should now be either:
 
 Add `[project]`, `[project.optional-dependencies]`, and `[tool.setuptools.packages.find]` metadata to `pyproject.toml`.
 
-Add or update CI/setup verification only if the project changes from `requirements.txt` installation to editable install.
+Once this metadata exists in the repository, CI/setup verification must continuously prove that editable install still works even if `requirements.txt` remains the primary installation path for other jobs.
 
 Verification in WSL venv:
 
@@ -966,7 +1000,7 @@ Each file-to-package replacement must be its own spec or PR because Python canno
     ```bash
     bash scripts/run-structural-preparation-diagnostic.sh end-times-pdf-core --run-profile-id ui-parity-pdf-structural-recovery
     ```
-11. Editable install succeeds after Phase 3:
+11. Editable install succeeds once installable package metadata is present:
     ```bash
     python -m pip install -e ".[dev]"
     python -c "import docxaicorrector"
@@ -974,6 +1008,7 @@ Each file-to-package replacement must be its own spec or PR because Python canno
 12. `pyright` remains zero-error through the protected `tests/test_typecheck.py` contract.
 13. No production behavior, log payload, event payload, artifact path, UI widget behavior, or pipeline output changes as a result of the structural move.
 14. `.github/CODEOWNERS` protects the effective implementation paths for protected modules once they move under `src/docxaicorrector/`, not only their root compatibility wrappers.
+15. Maintained package modules and canonical entrypoints no longer depend on root compatibility imports; root shims remain only for backward-compatible external import and execution surfaces.
 
 ## Final Verification Matrix
 
@@ -1001,11 +1036,43 @@ pyright src/docxaicorrector
 pyright tests
 ```
 
+## Follow-Up Work
+
+The migration is structurally complete, but the following post-migration cleanup must be completed to satisfy the final-state contracts above:
+
+1. Keep the archived verification evidence and follow-up references aligned if the migration surface changes again.
+
+Completed follow-up items in this migration scope:
+
+1. Removed remaining root compatibility imports from maintained package modules under `src/docxaicorrector/`.
+2. Removed remaining root compatibility imports and mixed root/package imports from maintained canonical entrypoints under `scripts/`, `benchmark_projects/`, and validation runners.
+3. Fixed `scripts/_list_log_events.py` so it scans implementation modules that actually emit operational events across the migrated pipeline seam.
+4. Eliminated import-time side effects from `src/docxaicorrector/generation/search.py`.
+5. Extended compatibility coverage so `real_image_manifest` is protected by `CODEOWNERS`, smoke assertions, and root-shim identity tests.
+6. Strengthened root typing-stub verification so tests assert manual compatibility re-exports where required.
+7. Expanded automated identity verification to cover the final acceptance contract for root aliases and executable wrappers.
+8. Kept editable-install verification green in CI while installable package metadata remains in `pyproject.toml`.
+
+### Archival Resolution
+
+The former archival blockers for this migration spec are now closed:
+
+1. The full final verification matrix has been executed in canonical WSL runtime, with one important contract note: the structural diagnostic for `end-times-pdf-core` continues to return the expected controlled failure `unmapped_source_threshold`, which is the accepted corpus truth for that profile rather than a migration regression.
+2. Residual root `.pyi` typing debt has been explicitly transferred into `docs/specs/ROOT_COMPATIBILITY_TYPING_SURFACE_SPEC_2026-05-01.md`, because some root facades, especially `document.pyi`, still carry active compatibility seams beyond a pure `from target import *` contract.
+
+Archive rule for this document:
+
+- This migration spec may now be archived because the package migration and its protected runtime contracts are complete, and the remaining typing-surface cleanup has its own dedicated follow-up spec.
+
 ## Risks and Mitigations
 
 ### R-1. Root alias shims hide package import cycles
 
 Mitigation: verify direct package imports for every moved module in the same batch, not only root imports.
+
+### R-1b. Completed migration still leaks runtime dependencies back through root shims
+
+Mitigation: treat any root import from `src/docxaicorrector/` or from maintained canonical entrypoints as a defect, replace it with the package path, and keep focused verification that compatibility shims are exercised only by explicit backward-compatibility tests and legacy executable wrappers.
 
 ### R-1a. Root aliases fail outside pytest or shell wrappers because `src` is not bootstrapped
 

@@ -167,7 +167,7 @@ def request_ai_review_recommendations(
     timeout_seconds: int,
     max_tokens_per_candidate: int,
 ) -> dict[str, dict[str, object]]:
-    from config import get_client
+    from docxaicorrector.core.config import get_client
 
     response = call_responses_create_with_retry(
         get_client(),

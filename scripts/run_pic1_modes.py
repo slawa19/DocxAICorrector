@@ -22,12 +22,12 @@ def _ensure_src_first_import_order(root_dir: Path, src_root: Path) -> None:
 
 _ensure_src_first_import_order(ROOT_DIR, SRC_ROOT)
 
-from config import get_client, get_model_role_value, load_app_config
-from image_analysis import analyze_image
-from image_generation import detect_image_mime_type, generate_image_candidate
-from models import ImageAsset, get_image_variant_bytes
-from processing_service import get_processing_service
-from state import init_session_state
+from docxaicorrector.core.config import get_client, get_model_role_value, load_app_config
+from docxaicorrector.core.models import ImageAsset, get_image_variant_bytes
+from docxaicorrector.image.analysis import analyze_image
+from docxaicorrector.image.generation import detect_image_mime_type, generate_image_candidate
+from docxaicorrector.processing.processing_service import get_processing_service
+from docxaicorrector.runtime.state import init_session_state
 
 
 def _detect_extension(payload: bytes) -> str:

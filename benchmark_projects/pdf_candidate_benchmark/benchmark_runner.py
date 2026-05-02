@@ -21,7 +21,7 @@ from typing import Any, cast
 def _resolve_repo_root() -> Path:
     current = Path(__file__).resolve()
     for candidate in current.parents:
-        if (candidate / "corpus_registry.toml").exists() and (candidate / "real_document_validation_profiles.py").exists():
+        if (candidate / "corpus_registry.toml").exists() and (candidate / "src" / "docxaicorrector" / "validation" / "profiles.py").exists():
             return candidate
     raise RuntimeError("Could not resolve repository root from benchmark project.")
 
@@ -40,10 +40,14 @@ def _ensure_src_first_import_order(repo_root: Path, src_root: Path) -> None:
 
 _ensure_src_first_import_order(REPO_ROOT, SRC_ROOT)
 
-import processing_runtime  # noqa: E402
-from document import build_document_text, build_semantic_blocks, extract_document_content_with_normalization_reports  # noqa: E402
-from real_document_validation_profiles import DocumentProfile, load_validation_registry  # noqa: E402
-from real_document_validation_structural import build_preparation_diagnostic_snapshot  # noqa: E402
+import docxaicorrector.processing.processing_runtime as processing_runtime  # noqa: E402
+from docxaicorrector.document._document import (  # noqa: E402
+    build_document_text,
+    build_semantic_blocks,
+    extract_document_content_with_normalization_reports,
+)
+from docxaicorrector.validation.profiles import DocumentProfile, load_validation_registry  # noqa: E402
+from docxaicorrector.validation.structural import build_preparation_diagnostic_snapshot  # noqa: E402
 
 
 MEANINGFUL_RELATIVE_IMPROVEMENT = 0.20

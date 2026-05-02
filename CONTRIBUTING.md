@@ -6,6 +6,8 @@
 
 Startup performance contract считается частью канонической документации. Перед изменениями, затрагивающими старт приложения, сверяйтесь с `docs/STARTUP_PERFORMANCE_CONTRACT.md` и не меняйте startup path без явной задачи на performance или lifecycle.
 
+Актуальный package/install contract после architecture migration: canonical WSL runtime для разработки и package verification должен быть на Python 3.12+, потому что `pyproject.toml` содержит `requires-python = ">=3.12"`, а CI использует Python 3.12.
+
 1. Установите зависимости проекта через WSL setup entry point:
 
 ```bash
@@ -17,9 +19,17 @@ bash scripts/setup-wsl.sh
 2. Ручной fallback: создайте виртуальное окружение:
 
 ```bash
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 ```
+
+Если `python3.12` доступен как alternate interpreter, используйте canonical setup script с override:
+
+```bash
+DOCXAI_PYTHON_BIN=python3.12 bash scripts/setup-wsl.sh
+```
+
+Если текущая `.venv` уже была создана под Python 3.11, пересоздайте её перед package/editable-install verification. In-place upgrade версии интерпретатора для существующего `venv` не поддерживается.
 
 Не создавайте Windows virtualenv в `.venv`: это перезапишет WSL-based runtime, на который опираются приложение и штатный тестовый путь.
 

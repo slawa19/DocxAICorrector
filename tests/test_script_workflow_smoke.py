@@ -429,7 +429,11 @@ def test_ci_exposes_separate_workflow_and_startup_contract_jobs() -> None:
 
     assert "workflow-contract:" in ci_text
     assert "startup-contract:" in ci_text
-    assert "needs: [workflow-contract, startup-contract]" in ci_text
+    assert "editable-install:" in ci_text
+    assert "pip install -e \".[dev]\"" in ci_text
+    assert "python -c \"import docxaicorrector\"" in ci_text
+    assert "bash scripts/test.sh tests/test_typecheck.py -q" in ci_text
+    assert "needs: [workflow-contract, startup-contract, editable-install]" in ci_text
     assert "bash scripts/test.sh tests/test_startup_performance_contract.py -q" in ci_text
 
 
@@ -455,10 +459,12 @@ def test_ci_uses_canonical_bash_test_contract() -> None:
 
 
 def test_source_path_bootstrap_prefers_src_before_repo_root() -> None:
+    pyproject_text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     test_sh = (REPO_ROOT / "scripts" / "test.sh").read_text(encoding="utf-8")
     validation_sh = (REPO_ROOT / "scripts" / "run-real-document-validation.sh").read_text(encoding="utf-8")
     structural_sh = (REPO_ROOT / "scripts" / "run-structural-preparation-diagnostic.sh").read_text(encoding="utf-8")
 
+    assert 'pythonpath = ["src", "."]' in pyproject_text
     expected_pythonpath = 'export PYTHONPATH="$PWD/src:$PWD${PYTHONPATH:+:$PYTHONPATH}"'
     assert expected_pythonpath in test_sh
     assert expected_pythonpath in validation_sh
@@ -471,11 +477,40 @@ def test_source_path_bootstrap_prefers_src_before_repo_root() -> None:
         REPO_ROOT / "benchmark_projects" / "pdf_candidate_benchmark" / "benchmark_runner.py"
     )
     _assert_src_bootstrap_results_in_src_first(REPO_ROOT / "scripts" / "run_pic1_modes.py")
+    _assert_src_bootstrap_results_in_src_first(REPO_ROOT / "scripts" / "_run_cleanup_now.py")
+
+
+def test_log_event_inventory_scans_migrated_implementation_paths() -> None:
+    script_text = (REPO_ROOT / "scripts" / "_list_log_events.py").read_text(encoding="utf-8")
+
+    expected_targets = [
+        "src/docxaicorrector/core/config.py",
+        "src/docxaicorrector/document/layout_cleanup.py",
+        "src/docxaicorrector/generation/_generation.py",
+        "src/docxaicorrector/image/generation.py",
+        "src/docxaicorrector/pipeline/_pipeline.py",
+        "src/docxaicorrector/pipeline/block_execution.py",
+        "src/docxaicorrector/pipeline/block_failures.py",
+        "src/docxaicorrector/pipeline/late_phases.py",
+        "src/docxaicorrector/pipeline/setup.py",
+        "src/docxaicorrector/processing/preparation.py",
+        "src/docxaicorrector/runtime/artifact_retention.py",
+        "src/docxaicorrector/runtime/state.py",
+        "src/docxaicorrector/ui/_app.py",
+        "src/docxaicorrector/ui/application_flow.py",
+        "src/docxaicorrector/validation/structural.py",
+    ]
+
+    for expected_target in expected_targets:
+        assert f'"{expected_target}"' in script_text
 
 
 def test_codeowners_protects_moved_production_implementation_paths() -> None:
     codeowners_text = (REPO_ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
 
+    assert "/app.py @slawa19" in codeowners_text
+    assert "/app.pyi @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/ui/_app.py @slawa19" in codeowners_text
     assert "/constants.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/core/constants.py @slawa19" in codeowners_text
     assert "/logger.py @slawa19" in codeowners_text
@@ -504,3 +539,26 @@ def test_codeowners_protects_moved_production_implementation_paths() -> None:
     assert "/src/docxaicorrector/generation/openai_response_utils.py @slawa19" in codeowners_text
     assert "/search.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/generation/search.py @slawa19" in codeowners_text
+    assert "/real_document_validation_common.py @slawa19" in codeowners_text
+    assert "/real_document_validation_common.pyi @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/validation/common.py @slawa19" in codeowners_text
+    assert "/real_document_validation_profiles.py @slawa19" in codeowners_text
+    assert "/real_document_validation_profiles.pyi @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/validation/profiles.py @slawa19" in codeowners_text
+    assert "/real_document_validation_structural.py @slawa19" in codeowners_text
+    assert "/real_document_validation_structural.pyi @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/validation/structural.py @slawa19" in codeowners_text
+    assert "/real_image_manifest.py @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/real_image/manifest.py @slawa19" in codeowners_text
+    assert "/ui.py @slawa19" in codeowners_text
+    assert "/ui.pyi @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/ui/_ui.py @slawa19" in codeowners_text
+    assert "/app_runtime.py @slawa19" in codeowners_text
+    assert "/app_runtime.pyi @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/ui/app_runtime.py @slawa19" in codeowners_text
+    assert "/application_flow.py @slawa19" in codeowners_text
+    assert "/application_flow.pyi @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/ui/application_flow.py @slawa19" in codeowners_text
+    assert "/compare_panel.py @slawa19" in codeowners_text
+    assert "/compare_panel.pyi @slawa19" in codeowners_text
+    assert "/src/docxaicorrector/ui/compare_panel.py @slawa19" in codeowners_text

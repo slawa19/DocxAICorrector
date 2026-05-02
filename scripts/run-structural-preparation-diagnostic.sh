@@ -12,4 +12,4 @@ fi
 export PYTHONPATH="$PWD/src:$PWD${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONUNBUFFERED=1
 
-exec python -u real_document_validation_structural.py "$@"
+exec python -u -m docxaicorrector.validation.structural "$@"

@@ -354,7 +354,7 @@ def _is_likely_caption_text(text: str) -> bool:
 
 
 def _resolve_relation_normalization_settings() -> tuple[bool, str, tuple[str, ...], bool]:
-    from config import load_app_config
+    from docxaicorrector.core.config import load_app_config
 
     app_config = load_app_config()
     enabled = bool(app_config.get("relation_normalization_enabled", True))

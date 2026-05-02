@@ -11,12 +11,19 @@ import sys
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 SRC_ROOT = ROOT_DIR / "src"
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
 
-from runtime_artifact_retention import (
+
+def _ensure_src_first_import_order(root_dir: Path, src_root: Path) -> None:
+    root_dir_str = str(root_dir)
+    src_root_str = str(src_root)
+    sys.path[:] = [entry for entry in sys.path if entry not in {root_dir_str, src_root_str}]
+    sys.path.insert(0, root_dir_str)
+    sys.path.insert(0, src_root_str)
+
+
+_ensure_src_first_import_order(ROOT_DIR, SRC_ROOT)
+
+from docxaicorrector.runtime.artifact_retention import (
     LAYOUT_CLEANUP_REPORTS_MAX_AGE_SECONDS,
     LAYOUT_CLEANUP_REPORTS_MAX_COUNT,
     PARAGRAPH_BOUNDARY_AI_REVIEW_MAX_AGE_SECONDS,

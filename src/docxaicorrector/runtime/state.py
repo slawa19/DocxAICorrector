@@ -272,7 +272,8 @@ def is_preparation_failed_for_marker(upload_marker: str) -> bool:
 
 
 def get_prepared_run_context_for_marker(upload_marker: str) -> PreparedRunContext | None:
-    from application_flow import PreparedRunContext as _PRC
+    from docxaicorrector.ui.application_flow import PreparedRunContext as _PRC
+
     snapshot = get_preparation_state()
     if snapshot.input_marker == upload_marker and snapshot.failed_marker != upload_marker:
         ctx = snapshot.prepared_run_context

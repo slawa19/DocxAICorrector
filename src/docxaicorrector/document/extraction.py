@@ -722,7 +722,7 @@ def _resolve_relation_normalization_settings() -> tuple[bool, str, tuple[str, ..
 
 
 def _resolve_layout_artifact_cleanup_settings(*, app_config: Mapping[str, object] | None = None) -> tuple[bool, int, int, bool]:
-    from config import load_app_config
+    from docxaicorrector.core.config import load_app_config
 
     if app_config is None:
         app_config = load_app_config()

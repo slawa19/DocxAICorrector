@@ -1,21 +1,12 @@
-import streamlit as st
+"""Compatibility alias for the migrated implementation module."""
 
-from models import ImageMode
+from importlib import import_module
+from pathlib import Path
+import sys
 
+_SRC = Path(__file__).resolve().parent / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
 
-def render_compare_all_apply_panel(
-    *,
-    latest_image_mode: str | None,
-    image_assets,
-    render_section_gap,
-) -> None:
-    if latest_image_mode != ImageMode.COMPARE_ALL.value:
-        return
-
-    if not image_assets:
-        return
-
-    if not any(getattr(asset, "validation_status", None) == "compared" and getattr(asset, "comparison_variants", None) for asset in image_assets):
-        return
-
-    return
+_target = import_module("docxaicorrector.ui.compare_panel")
+sys.modules[__name__] = _target
