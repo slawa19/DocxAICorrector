@@ -4,7 +4,9 @@ from functools import lru_cache
 from collections.abc import Iterable, Sequence
 import json
 from pathlib import Path
+from queue import Queue
 import re
+from threading import Thread
 import time
 from typing import Any, Protocol, cast
 
@@ -73,6 +75,10 @@ class _ResponsesApi(Protocol):
 
 class _StructureRecognitionClient(Protocol):
     responses: _ResponsesApi
+
+
+class StructureRecognitionRequestTimeout(TimeoutError):
+    pass
 
 
 def _with_request_timeout(client: object, *, timeout: float) -> object:
@@ -234,6 +240,8 @@ def _classify_descriptor_window_with_fallback(
 def _should_split_descriptor_window(*, exc: Exception, descriptor_count: int) -> bool:
     if descriptor_count <= 1:
         return False
+    if isinstance(exc, StructureRecognitionRequestTimeout):
+        return False
     error_name = type(exc).__name__
     if error_name in _TIMEOUT_ERROR_NAMES:
         return True
@@ -254,9 +262,9 @@ def _classify_descriptor_window(
     if not hasattr(timeout_scoped_client, "responses") or not hasattr(timeout_scoped_client.responses, "create"):
         raise RuntimeError("Unsupported structure recognition client")
 
-    response = call_responses_create_with_retry(
-        timeout_scoped_client,
-        {
+    response = _call_structure_responses_with_timeout(
+        client=timeout_scoped_client,
+        request_payload={
             "model": model,
             "input": [
                 {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
@@ -267,8 +275,7 @@ def _classify_descriptor_window(
             ],
             "timeout": timeout,
         },
-        max_retries=1,
-        retryable_error_predicate=lambda exc: False,
+        timeout=timeout,
     )
     traversal = collect_response_text_traversal(
         response,
@@ -278,6 +285,34 @@ def _classify_descriptor_window(
     usage = getattr(response, "usage", None)
     total_tokens = int(getattr(usage, "total_tokens", 0) or 0)
     return _parse_classification_payload(content), total_tokens
+
+
+def _call_structure_responses_with_timeout(*, client: object, request_payload: dict[str, object], timeout: float) -> Any:
+    result_queue: Queue[tuple[str, object]] = Queue(maxsize=1)
+
+    def _run_request() -> None:
+        try:
+            response = call_responses_create_with_retry(
+                client,
+                request_payload,
+                max_retries=1,
+                retryable_error_predicate=lambda exc: False,
+            )
+        except Exception as exc:
+            result_queue.put(("error", exc))
+            return
+        result_queue.put(("ok", response))
+
+    worker = Thread(target=_run_request, name="structure-recognition-request", daemon=True)
+    worker.start()
+    worker.join(timeout=max(0.001, timeout))
+    if worker.is_alive():
+        raise StructureRecognitionRequestTimeout(f"Structure recognition request timed out after {timeout:.3f}s.")
+
+    status, payload = result_queue.get_nowait()
+    if status == "error":
+        raise cast(Exception, payload)
+    return payload
 
 
 def _parse_classification_payload(payload: str | Sequence[object]) -> list[ParagraphClassification]:

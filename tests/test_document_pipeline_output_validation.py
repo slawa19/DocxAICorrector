@@ -653,6 +653,147 @@ def test_normalize_mixed_script_markdown_preserves_legitimate_latin_text():
     assert normalized == markdown
 
 
+def _make_paragraph_stub(
+    paragraph_id: str,
+    source_index: int,
+    *,
+    role: str = "body",
+    structural_role: str = "body",
+    heading_level=None,
+    list_kind=None,
+):
+    class ParagraphStub:
+        def __init__(self):
+            self.paragraph_id = paragraph_id
+            self.source_index = source_index
+            self.role = role
+            self.structural_role = structural_role
+            self.heading_level = heading_level
+            self.list_kind = list_kind
+            self.boundary_source = "raw"
+            self.boundary_confidence = "explicit"
+
+    return ParagraphStub()
+
+
+def test_assemble_final_markdown_preserves_partial_registry_uncovered_spans():
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "Первый абзац исходного блока.\n\nВторой абзац исходного блока.",
+            "Passthrough блок без registry.\n\nСохранить как есть.",
+        ],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "p1", "text": "Первый абзац исходного блока."},
+            {"block_index": 1, "paragraph_id": "p2", "text": "Второй абзац исходного блока."},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("p1", 0),
+            _make_paragraph_stub("p2", 1),
+        ],
+    )
+
+    assert result.final_markdown == (
+        "Первый абзац исходного блока.\n\nВторой абзац исходного блока.\n\n"
+        "Passthrough блок без registry.\n\nСохранить как есть."
+    )
+    assert result.diagnostics.registry_covered_paragraphs == 2
+    assert result.diagnostics.fallback_paragraphs == 2
+    assert result.entries[0].paragraph_id == "p1"
+    assert result.entries[0].source_index == 0
+    assert result.entries[2].used_fallback is True
+    assert result.entries[2].text == "Passthrough блок без registry."
+
+
+def test_assemble_final_markdown_falls_back_for_inconsistent_registry_span():
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["Первый абзац.\n\nВторой абзац."],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "p1", "text": "Первый абзац."},
+        ],
+        source_paragraphs=[_make_paragraph_stub("p1", 0)],
+    )
+
+    assert result.final_markdown == "Первый абзац.\n\nВторой абзац."
+    assert result.diagnostics.inconsistent_registry_blocks == (1,)
+    assert result.diagnostics.fallback_paragraphs == 2
+    assert all(entry.used_fallback for entry in result.entries)
+
+
+def test_assemble_final_markdown_preserves_toc_backed_heading_boundary():
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["## Введение\n\nОсновной текст раздела."],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "toc-heading", "text": "## Введение"},
+            {"block_index": 1, "paragraph_id": "body-1", "text": "Основной текст раздела."},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("toc-heading", 0, role="heading", structural_role="heading", heading_level=2),
+            _make_paragraph_stub("body-1", 1),
+        ],
+    )
+
+    assert result.final_markdown == "## Введение\n\nОсновной текст раздела."
+    assert result.diagnostics.accepted_merges == 0
+    assert result.diagnostics.protected_boundary_denials >= 1
+
+
+def test_assemble_final_markdown_preserves_blockquote_boundary_after_heading():
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["## Великая скорбь\n\n> они могли бы с уверенностью устоять до конца."],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "heading-1", "text": "## Великая скорбь"},
+            {"block_index": 1, "paragraph_id": "quote-1", "text": "> они могли бы с уверенностью устоять до конца."},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("heading-1", 0, role="heading", structural_role="heading", heading_level=2),
+            _make_paragraph_stub("quote-1", 1),
+        ],
+    )
+
+    assert result.final_markdown == "## Великая скорбь\n\n> они могли бы с уверенностью устоять до конца."
+    assert result.diagnostics.accepted_merges == 0
+    assert result.diagnostics.protected_boundary_denials >= 1
+
+
+def test_assemble_final_markdown_merges_adjacent_registry_fragments_for_body_only_span():
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано пережить\n\nВеликую скорбь"],
+        generated_paragraph_registry=[
+            {
+                "block_index": 1,
+                "paragraph_id": "body-left",
+                "text": "Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано пережить",
+            },
+            {"block_index": 1, "paragraph_id": "body-right", "text": "Великую скорбь"},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("body-left", 0),
+            _make_paragraph_stub("body-right", 1),
+        ],
+    )
+
+    assert result.final_markdown == (
+        "Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано пережить Великую скорбь"
+    )
+    assert result.diagnostics.accepted_merges == 1
+    assert len(result.entries) == 1
+
+
+def test_assemble_final_markdown_preserves_registry_backed_text_verbatim():
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["Суд Judgment #1 уже начался."],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "body-1", "text": "Суд Judgment #1 уже начался."},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("body-1", 0),
+        ],
+    )
+
+    assert result.final_markdown == "Суд Judgment #1 уже начался."
+    assert result.entries[0].text == "Суд Judgment #1 уже начался."
+
+
 def test_run_document_processing_accepts_heading_only_output_for_plaintext_banner_input():
     runtime = _build_runtime_capture()
 

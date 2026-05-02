@@ -1,6 +1,8 @@
 import re
+from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal, TypeAlias
+from typing import Any, Literal, TypeAlias
 
 
 ProcessedBlockStatus: TypeAlias = Literal[
@@ -82,6 +84,40 @@ class QualityIssueSample:
     line: int
     text: str
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class FinalAssemblyDiagnostics:
+    accepted_merges: int = 0
+    denied_merges: int = 0
+    protected_boundary_denials: int = 0
+    registry_covered_paragraphs: int = 0
+    fallback_paragraphs: int = 0
+    paragraph_count_drift: int = 0
+    inconsistent_registry_blocks: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class FinalAssemblyEntry:
+    text: str
+    block_index: int
+    paragraph_id: str | None = None
+    source_index: int | None = None
+    role: str | None = None
+    structural_role: str | None = None
+    heading_level: int | None = None
+    list_kind: str | None = None
+    boundary_source: str | None = None
+    boundary_confidence: str | None = None
+    from_registry: bool = False
+    used_fallback: bool = False
+
+
+@dataclass(frozen=True)
+class FinalMarkdownAssemblyResult:
+    final_markdown: str
+    entries: tuple[FinalAssemblyEntry, ...]
+    diagnostics: FinalAssemblyDiagnostics
 
 
 def iter_nonempty_markdown_lines(text: str) -> list[str]:
@@ -376,6 +412,291 @@ def _looks_inline_fragment_line(line: str) -> bool:
 
 def _collapse_markdown_blank_lines(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _normalize_entry_text(entry: FinalAssemblyEntry) -> str:
+    text = entry.text.strip()
+    if entry.from_registry and not entry.used_fallback:
+        return text
+    return normalize_mixed_script_markdown(normalize_residual_bullet_glyphs_markdown(text))
+
+
+def _coerce_source_paragraph_id(paragraph: object) -> str:
+    paragraph_id = getattr(paragraph, "paragraph_id", "")
+    return paragraph_id if isinstance(paragraph_id, str) else ""
+
+
+def _coerce_source_paragraph_int(paragraph: object, attribute: str) -> int | None:
+    value = getattr(paragraph, attribute, None)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _coerce_source_paragraph_str(paragraph: object, attribute: str) -> str | None:
+    value = getattr(paragraph, attribute, None)
+    return value if isinstance(value, str) and value else None
+
+
+def _build_source_paragraph_lookup(source_paragraphs: Sequence[object] | None) -> dict[str, object]:
+    if not source_paragraphs:
+        return {}
+    lookup: dict[str, object] = {}
+    for paragraph in source_paragraphs:
+        paragraph_id = _coerce_source_paragraph_id(paragraph)
+        if paragraph_id:
+            lookup[paragraph_id] = paragraph
+    return lookup
+
+
+def _build_registry_by_block(generated_paragraph_registry: Sequence[Mapping[str, object]] | None) -> dict[int, list[Mapping[str, object]]]:
+    grouped: dict[int, list[Mapping[str, object]]] = defaultdict(list)
+    for entry in generated_paragraph_registry or ():
+        block_index = entry.get("block_index")
+        if isinstance(block_index, bool) or not isinstance(block_index, int):
+            continue
+        grouped[block_index].append(entry)
+    return dict(grouped)
+
+
+def _entry_text(entry: Mapping[str, object]) -> str:
+    text = entry.get("text")
+    return text.strip() if isinstance(text, str) else ""
+
+
+def _entry_paragraph_id(entry: Mapping[str, object]) -> str | None:
+    paragraph_id = entry.get("paragraph_id")
+    return paragraph_id if isinstance(paragraph_id, str) and paragraph_id else None
+
+
+def _block_registry_matches_raw_chunk(raw_chunk: str, entries: Sequence[Mapping[str, object]]) -> bool:
+    raw_paragraphs = _split_markdown_paragraphs(raw_chunk)
+    registry_paragraphs = [_entry_text(entry) for entry in entries if _entry_text(entry)]
+    return raw_paragraphs == registry_paragraphs
+
+
+def _entry_body_text(entry: FinalAssemblyEntry) -> str:
+    return _strip_blockquote_content(entry.text).strip()
+
+
+def _entry_is_heading(entry: FinalAssemblyEntry) -> bool:
+    return (
+        entry.heading_level is not None
+        or entry.role == "heading"
+        or entry.structural_role == "heading"
+        or is_markdown_heading_line(entry.text)
+    )
+
+
+def _entry_is_blockquote(entry: FinalAssemblyEntry) -> bool:
+    return bool(_BLOCKQUOTE_PREFIX_PATTERN.match(entry.text.strip()))
+
+
+def _entry_is_toc(entry: FinalAssemblyEntry) -> bool:
+    return entry.structural_role in {"toc_header", "toc_entry"}
+
+
+def _entry_is_list(entry: FinalAssemblyEntry) -> bool:
+    body_text = _entry_body_text(entry)
+    return bool(entry.list_kind) or bool(re.match(r"^(?:[-*+]\s+|\d+[.)]\s+)", body_text))
+
+
+def _entry_is_structural_label(entry: FinalAssemblyEntry) -> bool:
+    body_text = _entry_body_text(entry)
+    return bool(_STRUCTURAL_INLINE_LABEL_PATTERN.match(body_text))
+
+
+def _entry_is_protected_boundary(entry: FinalAssemblyEntry) -> bool:
+    body_text = _entry_body_text(entry)
+    if not body_text:
+        return True
+    if _entry_is_toc(entry) or _entry_is_heading(entry) or _entry_is_blockquote(entry):
+        return True
+    if _entry_is_list(entry) or _entry_is_structural_label(entry):
+        return True
+    return _looks_structural_boundary_line(body_text)
+
+
+def _entry_can_participate_in_merge(entry: FinalAssemblyEntry) -> bool:
+    if entry.used_fallback or not entry.from_registry:
+        return False
+    if _entry_is_protected_boundary(entry):
+        return False
+    body_text = _entry_body_text(entry)
+    if not body_text:
+        return False
+    return True
+
+
+def _left_entry_looks_incomplete(entry: FinalAssemblyEntry) -> bool:
+    body_text = _entry_body_text(entry)
+    if not body_text:
+        return False
+    if body_text[-1] in {"(", "[", "{", "-", "—", "–", ":", ","}:
+        return True
+    if _SENTENCE_TERMINAL_PATTERN.search(body_text) is None:
+        return True
+    return _RUSSIAN_CONTINUATION_ENDING_PATTERN.search(body_text) is not None
+
+
+def _right_entry_looks_like_continuation(entry: FinalAssemblyEntry) -> bool:
+    body_text = _entry_body_text(entry)
+    if not body_text:
+        return False
+    if _RUSSIAN_HEADING_CONTINUATION_START_PATTERN.match(body_text):
+        return True
+    if _looks_inline_fragment_line(body_text):
+        return True
+    if body_text[0].islower():
+        return True
+    return body_text.startswith(("(", '"', "«", "—", "–"))
+
+
+def _merge_entry_pair(left: FinalAssemblyEntry, right: FinalAssemblyEntry) -> FinalAssemblyEntry:
+    return FinalAssemblyEntry(
+        text=_merge_content_line(left.text, right.text),
+        block_index=left.block_index,
+        paragraph_id=left.paragraph_id,
+        source_index=left.source_index,
+        role=left.role,
+        structural_role=left.structural_role,
+        heading_level=left.heading_level,
+        list_kind=left.list_kind,
+        boundary_source=left.boundary_source,
+        boundary_confidence=left.boundary_confidence,
+        from_registry=left.from_registry and right.from_registry,
+        used_fallback=left.used_fallback or right.used_fallback,
+    )
+
+
+def _recover_adjacent_entries(entries: Sequence[FinalAssemblyEntry]) -> tuple[tuple[FinalAssemblyEntry, ...], int, int, int]:
+    if not entries:
+        return (), 0, 0, 0
+
+    recovered: list[FinalAssemblyEntry] = []
+    accepted_merges = 0
+    denied_merges = 0
+    protected_boundary_denials = 0
+
+    for entry in entries:
+        normalized_entry = FinalAssemblyEntry(
+            text=_normalize_entry_text(entry),
+            block_index=entry.block_index,
+            paragraph_id=entry.paragraph_id,
+            source_index=entry.source_index,
+            role=entry.role,
+            structural_role=entry.structural_role,
+            heading_level=entry.heading_level,
+            list_kind=entry.list_kind,
+            boundary_source=entry.boundary_source,
+            boundary_confidence=entry.boundary_confidence,
+            from_registry=entry.from_registry,
+            used_fallback=entry.used_fallback,
+        )
+
+        if not recovered:
+            recovered.append(normalized_entry)
+            continue
+
+        previous = recovered[-1]
+        same_block = previous.block_index == normalized_entry.block_index
+        if not same_block:
+            recovered.append(normalized_entry)
+            continue
+
+        if not _entry_can_participate_in_merge(previous) or not _entry_can_participate_in_merge(normalized_entry):
+            if _entry_is_protected_boundary(previous) or _entry_is_protected_boundary(normalized_entry):
+                protected_boundary_denials += 1
+            else:
+                denied_merges += 1
+            recovered.append(normalized_entry)
+            continue
+
+        if _left_entry_looks_incomplete(previous) and _right_entry_looks_like_continuation(normalized_entry):
+            recovered[-1] = _merge_entry_pair(previous, normalized_entry)
+            accepted_merges += 1
+            continue
+
+        denied_merges += 1
+        recovered.append(normalized_entry)
+
+    return tuple(recovered), accepted_merges, denied_merges, protected_boundary_denials
+
+
+def assemble_final_markdown(
+    *,
+    processed_chunks: Sequence[str],
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
+    source_paragraphs: Sequence[object] | None,
+) -> FinalMarkdownAssemblyResult:
+    source_lookup = _build_source_paragraph_lookup(source_paragraphs)
+    registry_by_block = _build_registry_by_block(generated_paragraph_registry)
+    entries: list[FinalAssemblyEntry] = []
+    inconsistent_blocks: list[int] = []
+    registry_covered_paragraphs = 0
+    fallback_paragraphs = 0
+
+    for block_index, raw_chunk in enumerate(processed_chunks, start=1):
+        stripped_chunk = raw_chunk.strip()
+        if not stripped_chunk:
+            continue
+        raw_paragraphs = _split_markdown_paragraphs(stripped_chunk)
+        block_entries = registry_by_block.get(block_index, [])
+
+        if not block_entries or not _block_registry_matches_raw_chunk(stripped_chunk, block_entries):
+            if block_entries:
+                inconsistent_blocks.append(block_index)
+            fallback_paragraphs += len(raw_paragraphs)
+            for paragraph_text in raw_paragraphs:
+                entries.append(
+                    FinalAssemblyEntry(
+                        text=paragraph_text,
+                        block_index=block_index,
+                        from_registry=False,
+                        used_fallback=True,
+                    )
+                )
+            continue
+
+        registry_covered_paragraphs += len(block_entries)
+        for entry in block_entries:
+            paragraph_text = _entry_text(entry)
+            paragraph_id = _entry_paragraph_id(entry)
+            source_paragraph = source_lookup.get(paragraph_id or "")
+            entries.append(
+                FinalAssemblyEntry(
+                    text=paragraph_text,
+                    block_index=block_index,
+                    paragraph_id=paragraph_id,
+                    source_index=_coerce_source_paragraph_int(source_paragraph, "source_index") if source_paragraph is not None else None,
+                    role=_coerce_source_paragraph_str(source_paragraph, "role") if source_paragraph is not None else None,
+                    structural_role=_coerce_source_paragraph_str(source_paragraph, "structural_role") if source_paragraph is not None else None,
+                    heading_level=_coerce_source_paragraph_int(source_paragraph, "heading_level") if source_paragraph is not None else None,
+                    list_kind=_coerce_source_paragraph_str(source_paragraph, "list_kind") if source_paragraph is not None else None,
+                    boundary_source=_coerce_source_paragraph_str(source_paragraph, "boundary_source") if source_paragraph is not None else None,
+                    boundary_confidence=_coerce_source_paragraph_str(source_paragraph, "boundary_confidence") if source_paragraph is not None else None,
+                    from_registry=True,
+                    used_fallback=False,
+                )
+            )
+
+    original_entry_count = len(entries)
+    recovered_entries, accepted_merges, denied_merges, protected_boundary_denials = _recover_adjacent_entries(entries)
+    assembled_markdown = "\n\n".join(entry.text for entry in recovered_entries).strip()
+    final_markdown = _collapse_markdown_blank_lines(assembled_markdown)
+    paragraph_count_drift = len(_split_markdown_paragraphs(final_markdown)) - original_entry_count
+    diagnostics = FinalAssemblyDiagnostics(
+        accepted_merges=accepted_merges,
+        denied_merges=denied_merges,
+        protected_boundary_denials=protected_boundary_denials,
+        registry_covered_paragraphs=registry_covered_paragraphs,
+        fallback_paragraphs=fallback_paragraphs,
+        paragraph_count_drift=paragraph_count_drift,
+        inconsistent_registry_blocks=tuple(inconsistent_blocks),
+    )
+    return FinalMarkdownAssemblyResult(
+        final_markdown=final_markdown,
+        entries=recovered_entries,
+        diagnostics=diagnostics,
+    )
 
 
 def _build_quality_sample(*, line: int, text: str, reason: str) -> QualityIssueSample:

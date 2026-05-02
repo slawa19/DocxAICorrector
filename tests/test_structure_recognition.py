@@ -1,5 +1,8 @@
 from typing import cast
 from types import SimpleNamespace
+import threading
+
+import pytest
 
 import docxaicorrector.structure.recognition as structure_recognition
 from docxaicorrector.core.models import ParagraphClassification, ParagraphUnit, StructureMap
@@ -221,6 +224,36 @@ def test_build_structure_map_splits_timeout_windows_and_merges_subwindow_results
     assert structure_map.get(3) == ParagraphClassification(index=3, role="body", heading_level=None, confidence="high")
 
 
+def test_build_structure_map_does_not_split_on_local_request_timeout(monkeypatch):
+    paragraphs = [
+        _paragraph(source_index=0, text="Heading A"),
+        _paragraph(source_index=1, text="Body A"),
+        _paragraph(source_index=2, text="Heading B"),
+        _paragraph(source_index=3, text="Body B"),
+    ]
+    calls: list[list[int]] = []
+
+    def _classify(**kwargs):
+        descriptors = list(kwargs["descriptors"])
+        calls.append([descriptor.index for descriptor in descriptors])
+        raise structure_recognition.StructureRecognitionRequestTimeout("Structure recognition request timed out after 0.010s.")
+
+    monkeypatch.setattr(structure_recognition, "_classify_descriptor_window", _classify)
+
+    structure_map = structure_recognition.build_structure_map(
+        paragraphs,
+        client=object(),
+        model="gpt-4o-mini",
+        max_window_paragraphs=4,
+        overlap_paragraphs=1,
+    )
+
+    assert calls == [[0, 1, 2, 3]]
+    assert structure_map.window_count == 1
+    assert structure_map.total_tokens_used == 0
+    assert structure_map.classifications == {}
+
+
 def test_classify_descriptor_window_normalizes_fenced_json_output(monkeypatch):
     captured = {}
 
@@ -282,6 +315,32 @@ def test_classify_descriptor_window_scopes_client_timeout_with_with_options(monk
     assert classifications == [
         ParagraphClassification(index=3, role="heading", heading_level=2, confidence="high", rationale=None)
     ]
+
+
+def test_classify_descriptor_window_raises_timeout_when_client_call_hangs():
+    release = threading.Event()
+
+    class _HangingClient:
+        def __init__(self):
+            self.responses = SimpleNamespace(create=self._create)
+
+        def with_options(self, **kwargs):
+            return self
+
+        def _create(self, **kwargs):
+            release.wait(0.2)
+            return SimpleNamespace(output_text='[]', usage=SimpleNamespace(total_tokens=0), status="completed")
+
+    try:
+        with pytest.raises(structure_recognition.StructureRecognitionRequestTimeout, match="Structure recognition request timed out"):
+            structure_recognition._classify_descriptor_window(
+                client=cast(structure_recognition._StructureRecognitionClient, _HangingClient()),
+                model="gpt-5.4",
+                descriptors=cast(list, [SimpleNamespace(to_prompt_dict=lambda: {"i": 3})]),
+                timeout=0.01,
+            )
+    finally:
+        release.set()
 
 
 def test_parse_classification_payload_accepts_compact_json_array():

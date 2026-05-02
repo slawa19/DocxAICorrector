@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from docxaicorrector.pipeline.output_validation import (
+    assemble_final_markdown,
     collect_bullet_heading_samples,
     collect_false_fragment_heading_samples,
     collect_list_fragment_regression_samples,
@@ -14,11 +15,6 @@ from docxaicorrector.pipeline.output_validation import (
     collect_residual_bullet_glyph_samples,
     collect_theology_style_issue_samples,
     has_toc_body_concat_markdown,
-    normalize_false_fragment_headings_markdown,
-    normalize_inline_fragment_paragraphs_markdown,
-    normalize_list_fragment_regressions_markdown,
-    normalize_mixed_script_markdown,
-    normalize_residual_bullet_glyphs_markdown,
 )
 from docxaicorrector.generation.formatting_diagnostics_retention import (
     collect_recent_formatting_diagnostics,
@@ -519,15 +515,12 @@ def run_image_processing_phase(
     initialization: Any,
     current_markdown_fn: Callable[[Sequence[str]], str],
 ) -> Any | None:
-    final_markdown = normalize_mixed_script_markdown(
-        normalize_residual_bullet_glyphs_markdown(
-            normalize_list_fragment_regressions_markdown(
-                normalize_inline_fragment_paragraphs_markdown(
-                    normalize_false_fragment_headings_markdown(current_markdown_fn(state.processed_chunks))
-                )
-            )
-        )
+    assembly_result = assemble_final_markdown(
+        processed_chunks=state.processed_chunks,
+        generated_paragraph_registry=state.generated_paragraph_registry,
+        source_paragraphs=context.source_paragraphs,
     )
+    final_markdown = assembly_result.final_markdown
     emitters.emit_state(context.runtime, latest_markdown=final_markdown)
     try:
         processed_image_assets = dependencies.process_document_images(
@@ -673,15 +666,12 @@ def run_docx_build_phase(
     current_markdown_fn: Callable[[Sequence[str]], str],
     call_docx_restorer_with_optional_registry_fn: Callable[[Any, bytes, Any, Any], bytes],
 ) -> Any | None:
-    final_markdown = normalize_mixed_script_markdown(
-        normalize_residual_bullet_glyphs_markdown(
-            normalize_list_fragment_regressions_markdown(
-                normalize_inline_fragment_paragraphs_markdown(
-                    normalize_false_fragment_headings_markdown(current_markdown_fn(state.processed_chunks))
-                )
-            )
-        )
+    assembly_result = assemble_final_markdown(
+        processed_chunks=state.processed_chunks,
+        generated_paragraph_registry=state.generated_paragraph_registry,
+        source_paragraphs=context.source_paragraphs,
     )
+    final_markdown = assembly_result.final_markdown
     emitters.emit_status(
         context.runtime,
         stage="Сборка DOCX",
@@ -813,15 +803,12 @@ def finalize_processing_success(
     job_count: int,
     current_markdown_fn: Callable[[Sequence[str]], str],
 ) -> PipelineResult:
-    final_markdown = normalize_mixed_script_markdown(
-        normalize_residual_bullet_glyphs_markdown(
-            normalize_list_fragment_regressions_markdown(
-                normalize_inline_fragment_paragraphs_markdown(
-                    normalize_false_fragment_headings_markdown(current_markdown_fn(state.processed_chunks))
-                )
-            )
-        )
+    assembly_result = assemble_final_markdown(
+        processed_chunks=state.processed_chunks,
+        generated_paragraph_registry=state.generated_paragraph_registry,
+        source_paragraphs=context.source_paragraphs,
     )
+    final_markdown = assembly_result.final_markdown
     formatting_diagnostics_artifacts = cast(
         Sequence[str],
         docx_phase.get("formatting_diagnostics_artifacts") or [],
