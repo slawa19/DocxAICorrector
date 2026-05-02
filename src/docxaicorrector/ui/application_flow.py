@@ -55,6 +55,8 @@ class PreparedRunContext:
     preparation_detail: str
     preparation_cached: bool
     preparation_elapsed_seconds: float
+    source_format: str = "docx"
+    conversion_backend: str | None = None
     normalization_report: object | None = None
     relation_report: object | None = None
     cleanup_report: object | None = None
@@ -296,7 +298,11 @@ def _prepare_run_context_core(
         stage="Файл прочитан",
         detail="Формирую идентификатор источника и подготавливаю анализ.",
         progress=0.15,
-        metrics={"file_size_bytes": len(uploaded_file_bytes)},
+        metrics={
+            "file_size_bytes": len(uploaded_file_bytes),
+            "source_format": str(getattr(resolved_upload.uploaded_payload, "source_format", "docx") or "docx"),
+            "conversion_backend": getattr(resolved_upload.uploaded_payload, "conversion_backend", None),
+        },
     )
     validate_docx_source_bytes(uploaded_file_bytes)
     if session_state is not None and reset_run_state_fn is not None:
@@ -346,8 +352,20 @@ def _build_quality_gate_blocked_message(*, prepared_document) -> str:
     return f"{message} Причины: {', '.join(reasons)}"
 
 
+def _build_quality_gate_warning_message(*, prepared_document) -> str:
+    reasons = [str(reason).strip() for reason in getattr(prepared_document, "quality_gate_reasons", ()) or () if str(reason).strip()]
+    message = "Обработка продолжена в best-effort режиме: структура документа распознана с повышенным риском."
+    if not reasons:
+        return message
+    return f"{message} Причины: {', '.join(reasons)}"
+
+
 def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: bytes, uploaded_file_token: str, prepared_document, elapsed_seconds: float) -> PreparedRunContext:
     structure_summary = resolve_structure_recognition_summary(prepared_document)
+    quality_gate_status = str(getattr(prepared_document, "quality_gate_status", "pass") or "pass")
+    preparation_detail = ""
+    if quality_gate_status == "warning":
+        preparation_detail = _build_quality_gate_warning_message(prepared_document=prepared_document)
     return PreparedRunContext(
         uploaded_filename=uploaded_filename,
         uploaded_file_bytes=uploaded_file_bytes,
@@ -358,9 +376,11 @@ def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: 
         jobs=prepared_document.jobs,
         prepared_source_key=prepared_document.prepared_source_key,
         preparation_stage="Документ подготовлен",
-        preparation_detail="",
+        preparation_detail=preparation_detail,
         preparation_cached=prepared_document.cached,
         preparation_elapsed_seconds=elapsed_seconds,
+        source_format=str(getattr(prepared_document, "source_format", "docx") or "docx"),
+        conversion_backend=getattr(prepared_document, "conversion_backend", None),
         normalization_report=getattr(prepared_document, "normalization_report", None),
         relation_report=getattr(prepared_document, "relation_report", None),
         cleanup_report=getattr(prepared_document, "cleanup_report", None),
@@ -370,7 +390,7 @@ def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: 
         structure_validation_report=getattr(prepared_document, "structure_validation_report", None),
         structure_recognition_mode=str(getattr(prepared_document, "structure_recognition_mode", "off") or "off"),
         structure_ai_attempted=bool(getattr(prepared_document, "structure_ai_attempted", False)),
-        quality_gate_status=str(getattr(prepared_document, "quality_gate_status", "pass") or "pass"),
+        quality_gate_status=quality_gate_status,
         quality_gate_reasons=tuple(getattr(prepared_document, "quality_gate_reasons", ()) or ()),
         translation_domain=str(getattr(prepared_document, "translation_domain", "general") or "general"),
         translation_domain_instructions=str(

@@ -131,6 +131,8 @@ def test_set_processing_status_updates_preparation_metrics(monkeypatch):
         paragraph_count=12,
         image_count=3,
         source_chars=5000,
+        source_format="pdf",
+        conversion_backend="libreoffice",
         raw_paragraph_count=14,
         logical_paragraph_count=12,
         merged_group_count=2,
@@ -143,6 +145,8 @@ def test_set_processing_status_updates_preparation_metrics(monkeypatch):
     assert session_state.processing_status["paragraph_count"] == 12
     assert session_state.processing_status["image_count"] == 3
     assert session_state.processing_status["source_chars"] == 5000
+    assert session_state.processing_status["source_format"] == "pdf"
+    assert session_state.processing_status["conversion_backend"] == "libreoffice"
     assert session_state.processing_status["raw_paragraph_count"] == 14
     assert session_state.processing_status["logical_paragraph_count"] == 12
     assert session_state.processing_status["merged_group_count"] == 2

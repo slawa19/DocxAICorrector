@@ -15,6 +15,7 @@ from docxaicorrector.pipeline.output_validation import (
     collect_theology_style_issue_samples,
     has_toc_body_concat_markdown,
     normalize_false_fragment_headings_markdown,
+    normalize_inline_fragment_paragraphs_markdown,
     normalize_list_fragment_regressions_markdown,
     normalize_mixed_script_markdown,
     normalize_residual_bullet_glyphs_markdown,
@@ -521,7 +522,9 @@ def run_image_processing_phase(
     final_markdown = normalize_mixed_script_markdown(
         normalize_residual_bullet_glyphs_markdown(
             normalize_list_fragment_regressions_markdown(
-                normalize_false_fragment_headings_markdown(current_markdown_fn(state.processed_chunks))
+                normalize_inline_fragment_paragraphs_markdown(
+                    normalize_false_fragment_headings_markdown(current_markdown_fn(state.processed_chunks))
+                )
             )
         )
     )
@@ -673,7 +676,9 @@ def run_docx_build_phase(
     final_markdown = normalize_mixed_script_markdown(
         normalize_residual_bullet_glyphs_markdown(
             normalize_list_fragment_regressions_markdown(
-                normalize_false_fragment_headings_markdown(current_markdown_fn(state.processed_chunks))
+                normalize_inline_fragment_paragraphs_markdown(
+                    normalize_false_fragment_headings_markdown(current_markdown_fn(state.processed_chunks))
+                )
             )
         )
     )
@@ -811,7 +816,9 @@ def finalize_processing_success(
     final_markdown = normalize_mixed_script_markdown(
         normalize_residual_bullet_glyphs_markdown(
             normalize_list_fragment_regressions_markdown(
-                normalize_false_fragment_headings_markdown(current_markdown_fn(state.processed_chunks))
+                normalize_inline_fragment_paragraphs_markdown(
+                    normalize_false_fragment_headings_markdown(current_markdown_fn(state.processed_chunks))
+                )
             )
         )
     )

@@ -285,6 +285,8 @@ def _store_preparation_summary(*, prepared_run_context) -> None:
         "stage": str(getattr(prepared_run_context, "preparation_stage", "Документ подготовлен")),
         "detail": str(getattr(prepared_run_context, "preparation_detail", "")),
         "file_size_bytes": len(prepared_run_context.uploaded_file_bytes),
+        "source_format": str(getattr(prepared_run_context, "source_format", "docx") or "docx"),
+        "conversion_backend": getattr(prepared_run_context, "conversion_backend", None),
         "paragraph_count": len(prepared_run_context.paragraphs),
         "image_count": len(prepared_run_context.image_assets),
         "source_chars": len(prepared_run_context.source_text),

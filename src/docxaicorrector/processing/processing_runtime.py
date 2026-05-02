@@ -157,6 +157,8 @@ class FrozenUploadPayload:
     file_size: int
     content_hash: str
     file_token: str
+    source_format: str = "docx"
+    conversion_backend: str | None = None
 
 
 @dataclass(frozen=True)
@@ -568,6 +570,8 @@ def freeze_resolved_upload(contract: ResolvedUploadContract) -> FrozenUploadPayl
         file_size=contract.file_size,
         content_hash=contract.content_hash,
         file_token=contract.file_token,
+        source_format=contract.normalized_document.source_format,
+        conversion_backend=contract.normalized_document.conversion_backend,
     )
 
 
@@ -1036,6 +1040,8 @@ def start_background_preparation(
         progress=0.02,
         is_running=True,
         phase="preparing",
+        source_format=str(getattr(uploaded_payload, "source_format", "docx") or "docx"),
+        conversion_backend=getattr(uploaded_payload, "conversion_backend", None),
     )
 
     last_reported_stage = {"value": ""}
@@ -1055,6 +1061,8 @@ def start_background_preparation(
                     "image_count": _coerce_metric_to_int(metrics, "image_count"),
                     "source_chars": _coerce_metric_to_int(metrics, "source_chars"),
                     "cached": bool(metrics.get("cached", False)),
+                    "source_format": str(metrics.get("source_format") or "docx"),
+                    "conversion_backend": str(metrics.get("conversion_backend") or "") or None,
                 }
             )
         )

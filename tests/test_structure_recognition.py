@@ -250,6 +250,40 @@ def test_classify_descriptor_window_normalizes_fenced_json_output(monkeypatch):
     ]
 
 
+def test_classify_descriptor_window_scopes_client_timeout_with_with_options(monkeypatch):
+    captured = {}
+
+    class _TimedClient:
+        def __init__(self):
+            self.responses = SimpleNamespace(create=self._create)
+
+        def with_options(self, **kwargs):
+            captured["with_options"] = kwargs
+            return self
+
+        def _create(self, **kwargs):
+            captured["request"] = kwargs
+            return SimpleNamespace(
+                output_text='[{"i": 3, "r": "heading", "l": 2, "c": "high"}]',
+                usage=SimpleNamespace(total_tokens=7),
+                status="completed",
+            )
+
+    classifications, total_tokens = structure_recognition._classify_descriptor_window(
+        client=cast(structure_recognition._StructureRecognitionClient, _TimedClient()),
+        model="gpt-5.4",
+        descriptors=cast(list, [SimpleNamespace(to_prompt_dict=lambda: {"i": 3})]),
+        timeout=12.0,
+    )
+
+    assert captured["with_options"] == {"timeout": 12.0}
+    assert captured["request"]["timeout"] == 12.0
+    assert total_tokens == 7
+    assert classifications == [
+        ParagraphClassification(index=3, role="heading", heading_level=2, confidence="high", rationale=None)
+    ]
+
+
 def test_parse_classification_payload_accepts_compact_json_array():
     classifications = structure_recognition._parse_classification_payload(
         '[{"i": 3, "r": "heading", "l": 2, "c": "high"}, {"i": 4, "r": "body", "l": null, "c": "medium"}]'

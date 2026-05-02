@@ -53,10 +53,22 @@ _DANGLING_NUMBER_PATTERN = re.compile(r"(?:^|\s)\d+\.$")
 _RUSSIAN_CONTINUATION_ENDING_PATTERN = re.compile(r"\b(?:ли|что|относительно|с|в|на|к|по|для|о|у|при|об|под|над|между|является)$", re.IGNORECASE)
 _RUSSIAN_HEADING_CONTINUATION_START_PATTERN = re.compile(r"^(?:[а-яё]|[)\],.;:!?-])")
 _LOWERCASE_START_PATTERN = re.compile(r"^[a-zа-яё]")
-_SENTENCE_TERMINAL_PATTERN = re.compile(r"[.!?…:]$")
+_SENTENCE_TERMINAL_PATTERN = re.compile(r"[.!?…:](?:[)\]»”’'\"])?$")
 _TOC_BODY_CONCAT_MARKDOWN_PATTERN = re.compile(
     r"(?:\.{2,}|[\u2024\u2025\u2026\u2027\u2219\u22c5\u00b7]{2,}|\s{2,})\s*[0-9ivxlcdmIVXLCDM]+\s+[А-Яа-яЁёA-Za-z]"
 )
+_TOC_TITLE_CAPTURE_PATTERN = re.compile(
+    r"(?P<title>[А-ЯЁA-Z][^\n]{0,120}?)(?:\.{2,}|[\u2024\u2025\u2026\u2027\u2219\u22c5\u00b7]{2,})\s*[0-9ivxlcdmIVXLCDM]+"
+)
+_BLOCKQUOTE_PREFIX_PATTERN = re.compile(r"^(\s*>\s?)(.*)$")
+_MARKDOWN_HEADING_PREFIX_PATTERN = re.compile(r"^(#{1,6})\s+")
+_STRUCTURAL_INLINE_LABEL_PATTERN = re.compile(
+    r"^(?:\d+\s*/\s*\d+\.\)|год\s+\d+\b|(?:суд|чаша|петля|часть|глава|введение|заключение|содержание)\b)",
+    re.IGNORECASE,
+)
+_INLINE_HEADING_FRAGMENT_MAX_WORDS = 6
+_INLINE_PARAGRAPH_FRAGMENT_MAX_WORDS = 12
+_INLINE_PARAGRAPH_FRAGMENT_MAX_CHARS = 100
 
 
 @dataclass(frozen=True)
@@ -234,7 +246,9 @@ def _is_continuation_like_previous_line(line: str) -> bool:
     stripped = line.strip()
     if not stripped:
         return False
-    if stripped[-1] in {"(", "[", "{", "-", "—", "–", ":"}:
+    if stripped[-1] in {"(", "[", "{", "-", "—", "–", ":", ","}:
+        return True
+    if _SENTENCE_TERMINAL_PATTERN.search(stripped) is None:
         return True
     return _RUSSIAN_CONTINUATION_ENDING_PATTERN.search(stripped) is not None
 
@@ -248,12 +262,129 @@ def _is_continuation_like_next_line(line: str) -> bool:
     return False
 
 
+def _split_blockquote_prefix(line: str) -> tuple[str, str]:
+    match = _BLOCKQUOTE_PREFIX_PATTERN.match(line)
+    if match is None:
+        return "", line.strip()
+    return match.group(1), match.group(2).strip()
+
+
+def _merge_inline_fragments(*parts: str) -> str:
+    merged = " ".join(part.strip() for part in parts if part and part.strip())
+    merged = re.sub(r"\s+([,.;:!?…)])", r"\1", merged)
+    merged = re.sub(r"([([])\s+", r"\1", merged)
+    merged = re.sub(r"\s+", " ", merged)
+    return merged.strip()
+
+
+def _merge_content_line(base_line: str, addition_line: str) -> str:
+    base_prefix, base_content = _split_blockquote_prefix(base_line)
+    addition_prefix, addition_content = _split_blockquote_prefix(addition_line)
+    prefix = base_prefix or addition_prefix
+    merged_content = _merge_inline_fragments(base_content, addition_content)
+    return f"{prefix}{merged_content}" if prefix else merged_content
+
+
+def _heading_level_marker(line: str) -> str | None:
+    match = _MARKDOWN_HEADING_PREFIX_PATTERN.match(line.strip())
+    if match is None:
+        return None
+    return match.group(1)
+
+
+def _strip_blockquote_content(line: str) -> str:
+    return _split_blockquote_prefix(line)[1].strip()
+
+
+def _looks_title_like_heading_text(text: str) -> bool:
+    stripped = text.strip().strip('"\'“”‘’«»')
+    if not stripped:
+        return False
+    if _STRUCTURAL_INLINE_LABEL_PATTERN.match(stripped):
+        return True
+    if stripped[0].islower():
+        return False
+    if _SENTENCE_TERMINAL_PATTERN.search(stripped):
+        return False
+    words = [token for token in re.split(r"\s+", stripped) if token]
+    return 0 < len(words) <= _INLINE_HEADING_FRAGMENT_MAX_WORDS
+
+
+def _looks_structural_boundary_line(line: str) -> bool:
+    stripped = _strip_blockquote_content(line)
+    if not stripped:
+        return False
+    if is_markdown_heading_line(stripped):
+        return True
+    if re.match(r"^\d+[.)]\s+", stripped):
+        return True
+    if _STRUCTURAL_INLINE_LABEL_PATTERN.match(stripped):
+        return True
+    if _has_page_reference_suffix(stripped):
+        return True
+    if _looks_title_like_heading_text(stripped) and stripped.endswith(":"):
+        return True
+    return False
+
+
+def _looks_heading_boundary_context(next_line: str) -> bool:
+    if _BLOCKQUOTE_PREFIX_PATTERN.match(next_line.strip()):
+        return True
+    stripped = _strip_blockquote_content(next_line)
+    if not stripped:
+        return False
+    if stripped[0].isupper():
+        return True
+    return stripped.startswith(("(", '"', "«"))
+
+
+def _collect_toc_heading_registry(text: str) -> set[str]:
+    headings: set[str] = set()
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.casefold() in {"содержание", "contents"}:
+            continue
+        for match in _TOC_TITLE_CAPTURE_PATTERN.finditer(stripped):
+            normalized = _normalize_heading_text(match.group("title"))
+            if normalized:
+                headings.add(normalized)
+    return headings
+
+
+def _is_split_heading_continuation(previous_line: str, current_line: str) -> bool:
+    previous_level = _heading_level_marker(previous_line)
+    current_level = _heading_level_marker(current_line)
+    if previous_level is None or current_level is None or previous_level != current_level:
+        return False
+    current_heading_text = _trim_heading_prefix(current_line.strip())
+    return 0 < len(current_heading_text.split()) <= _INLINE_HEADING_FRAGMENT_MAX_WORDS
+
+
+def _looks_inline_fragment_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if _looks_structural_boundary_line(stripped):
+        return False
+    if is_markdown_heading_line(stripped) or stripped.startswith(("- ", ">")):
+        return False
+    if re.match(r"^\d+[.)]\s+", stripped):
+        return False
+    word_count = len(stripped.split())
+    return word_count <= _INLINE_PARAGRAPH_FRAGMENT_MAX_WORDS or len(stripped) <= _INLINE_PARAGRAPH_FRAGMENT_MAX_CHARS
+
+
+def _collapse_markdown_blank_lines(text: str) -> str:
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
 def _build_quality_sample(*, line: int, text: str, reason: str) -> QualityIssueSample:
     return QualityIssueSample(line=line, text=text.strip(), reason=reason)
 
 
 def collect_false_fragment_heading_samples(text: str) -> list[QualityIssueSample]:
     lines = iter_markdown_lines_with_numbers(text)
+    toc_heading_registry = _collect_toc_heading_registry(text)
     heading_occurrences: list[tuple[int, str, str]] = []
     samples: list[QualityIssueSample] = []
 
@@ -289,16 +420,29 @@ def collect_false_fragment_heading_samples(text: str) -> list[QualityIssueSample
             heading_occurrences.append((line_number, heading_text, normalized_heading))
             continue
 
+        if normalized_heading in toc_heading_registry and _looks_title_like_heading_text(heading_text):
+            heading_occurrences.append((line_number, heading_text, normalized_heading))
+            continue
+
+        if _is_split_heading_continuation(previous_line, stripped):
+            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="split_heading_continuation_present"))
+            heading_occurrences.append((line_number, heading_text, normalized_heading))
+            continue
+
         continuation_prev = _is_continuation_like_previous_line(previous_line)
         continuation_next = _is_continuation_like_next_line(next_line)
-        if continuation_prev and continuation_next:
+        if heading_text.endswith("?)") or heading_text.endswith(")") and "?" in heading_text:
+            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="sentence_split_heading_present"))
+        elif continuation_prev and len(heading_text.split()) <= _INLINE_HEADING_FRAGMENT_MAX_WORDS:
+            reason = "inline_term_heading_present"
+            if not continuation_next:
+                reason = "sentence_split_heading_present"
+            samples.append(_build_quality_sample(line=line_number, text=stripped, reason=reason))
+        elif continuation_prev and continuation_next:
             reason = "sentence_split_heading_present"
             if len(heading_text.split()) <= 4:
                 reason = "inline_term_heading_present"
             samples.append(_build_quality_sample(line=line_number, text=stripped, reason=reason))
-        elif heading_text.endswith("?)") or heading_text.endswith(")") and "?" in heading_text:
-            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="sentence_split_heading_present"))
-
         heading_occurrences.append((line_number, heading_text, normalized_heading))
 
     grouped: dict[str, list[tuple[int, str]]] = {}
@@ -339,46 +483,126 @@ def collect_false_fragment_heading_samples(text: str) -> list[QualityIssueSample
 
 def normalize_false_fragment_headings_markdown(text: str) -> str:
     lines = text.splitlines()
-    numbered_lines = iter_markdown_lines_with_numbers(text)
+    toc_heading_registry = _collect_toc_heading_registry(text)
+    index = 0
 
-    for index, (_, raw_line) in enumerate(numbered_lines):
-        stripped = raw_line.strip()
+    def previous_nonempty_index(start_index: int) -> int | None:
+        for candidate_index in range(start_index - 1, -1, -1):
+            if lines[candidate_index].strip():
+                return candidate_index
+        return None
+
+    def next_nonempty_index(start_index: int) -> int | None:
+        for candidate_index in range(start_index + 1, len(lines)):
+            if lines[candidate_index].strip():
+                return candidate_index
+        return None
+
+    while index < len(lines):
+        stripped = lines[index].strip()
         if not is_markdown_heading_line(stripped):
+            index += 1
             continue
 
         heading_text = _trim_heading_prefix(stripped)
-        previous_line = ""
-        next_line = ""
+        normalized_heading = _normalize_heading_text(heading_text)
+        previous_index = previous_nonempty_index(index)
+        next_index = next_nonempty_index(index)
+        previous_line = lines[previous_index].strip() if previous_index is not None else ""
+        next_line = lines[next_index].strip() if next_index is not None else ""
 
-        for previous_index in range(index - 1, -1, -1):
-            candidate = numbered_lines[previous_index][1].strip()
-            if candidate:
-                previous_line = candidate
-                break
-
-        for next_index in range(index + 1, len(numbered_lines)):
-            candidate = numbered_lines[next_index][1].strip()
-            if candidate:
-                next_line = candidate
-                break
+        if previous_index is not None and _is_split_heading_continuation(previous_line, stripped):
+            previous_level = _heading_level_marker(previous_line) or "##"
+            previous_heading_text = _trim_heading_prefix(previous_line)
+            lines[previous_index] = f"{previous_level} {_merge_inline_fragments(previous_heading_text, heading_text)}"
+            lines[index] = ""
+            index += 1
+            continue
 
         should_demote = False
         if _SCRIPTURE_REFERENCE_HEADING_PATTERN.match(stripped):
             should_demote = True
         elif _PARENTHETICAL_ONLY_HEADING_PATTERN.match(stripped):
             should_demote = True
+        elif normalized_heading in toc_heading_registry and _looks_title_like_heading_text(heading_text):
+            should_demote = False
         else:
             continuation_prev = _is_continuation_like_previous_line(previous_line)
             continuation_next = _is_continuation_like_next_line(next_line)
-            if continuation_prev and continuation_next:
+            if continuation_prev and len(heading_text.split()) <= _INLINE_HEADING_FRAGMENT_MAX_WORDS:
+                should_demote = not (
+                    _looks_title_like_heading_text(heading_text)
+                    and _looks_heading_boundary_context(next_line)
+                )
+            elif continuation_prev and continuation_next:
                 should_demote = True
             elif heading_text.endswith("?)") or heading_text.endswith(")") and "?" in heading_text:
                 should_demote = True
 
         if should_demote:
-            lines[index] = heading_text
+            if previous_index is not None and _is_continuation_like_previous_line(previous_line):
+                lines[previous_index] = _merge_content_line(lines[previous_index], heading_text)
+                lines[index] = ""
+                if next_index is not None and _is_continuation_like_next_line(next_line):
+                    lines[previous_index] = _merge_content_line(lines[previous_index], lines[next_index])
+                    lines[next_index] = ""
+            else:
+                lines[index] = heading_text
 
-    return "\n".join(lines)
+        index += 1
+
+    return _collapse_markdown_blank_lines("\n".join(lines))
+
+
+def normalize_inline_fragment_paragraphs_markdown(text: str) -> str:
+    lines = text.splitlines()
+
+    def previous_nonempty_index(start_index: int) -> int | None:
+        for candidate_index in range(start_index - 1, -1, -1):
+            if lines[candidate_index].strip():
+                return candidate_index
+        return None
+
+    def next_nonempty_index(start_index: int) -> int | None:
+        for candidate_index in range(start_index + 1, len(lines)):
+            if lines[candidate_index].strip():
+                return candidate_index
+        return None
+
+    index = 0
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if not _looks_inline_fragment_line(stripped):
+            index += 1
+            continue
+
+        previous_index = previous_nonempty_index(index)
+        if previous_index is None:
+            index += 1
+            continue
+
+        previous_line = lines[previous_index].strip()
+        if (
+            is_markdown_heading_line(previous_line)
+            or _looks_structural_boundary_line(previous_line)
+            or not _is_continuation_like_previous_line(previous_line)
+        ):
+            index += 1
+            continue
+
+        lines[previous_index] = _merge_content_line(lines[previous_index], lines[index])
+        lines[index] = ""
+
+        next_index = next_nonempty_index(index)
+        if next_index is not None:
+            next_line = lines[next_index].strip()
+            if _looks_inline_fragment_line(next_line) and _is_continuation_like_next_line(next_line) and not _SENTENCE_TERMINAL_PATTERN.search(stripped):
+                lines[previous_index] = _merge_content_line(lines[previous_index], lines[next_index])
+                lines[next_index] = ""
+
+        index += 1
+
+    return _collapse_markdown_blank_lines("\n".join(lines))
 
 
 def normalize_residual_bullet_glyphs_markdown(text: str) -> str:

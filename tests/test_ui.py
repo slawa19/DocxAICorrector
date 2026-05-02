@@ -762,6 +762,7 @@ def test_render_live_status_shows_cache_source_for_preparation(monkeypatch):
             "merged_group_count": 2,
             "merged_raw_paragraph_count": 5,
             "cached": True,
+            "source_format": "pdf",
             "progress": 0.9,
             "started_at": None,
         },
@@ -784,7 +785,7 @@ def test_render_live_status_shows_cache_source_for_preparation(monkeypatch):
     assert writes == ["Использую кэш подготовки для текущего файла."]
     assert any("Прогресс: 90%" in text for text in captions)
     assert any("Размер: 1.00 MB" in text for text in captions)
-    assert any("Источник: cache" in text for text in captions)
+    assert any("Источник: PDF (cache)" in text for text in captions)
     assert any("Нормализация абзацев: сырьевых 15 -> логических 12 | слияний: 2 групп, 5 абзацев" in text for text in captions)
     assert progress_calls == [0.9]
 
@@ -810,6 +811,7 @@ def test_render_preparation_summary_uses_stage_and_detail(monkeypatch):
             "source_chars": 5000,
             "block_count": 4,
             "cached": True,
+            "source_format": "pdf",
             "elapsed": "1.2 c",
             "raw_paragraph_count": 15,
             "logical_paragraph_count": 12,
@@ -821,7 +823,7 @@ def test_render_preparation_summary_uses_stage_and_detail(monkeypatch):
 
     assert info_calls == ["Документ подготовлен"]
     assert writes == []
-    assert any("Источник: cache | Подготовка: 1.2 c" in text for text in captions)
+    assert any("Источник: PDF (cache) | Подготовка: 1.2 c" in text for text in captions)
     assert any("1.00 MB | 12 абзацев | 2 изображений | 5000 символов | 4 блоков" in text for text in captions)
     assert any("Нормализация абзацев: сырьевых 15 -> логических 12 | слияний: 2 групп, 5 абзацев" in text for text in captions)
 
@@ -847,6 +849,7 @@ def test_render_preparation_summary_adds_ai_classification_line_when_available(m
             "source_chars": 120,
             "block_count": 2,
             "cached": False,
+            "source_format": "pdf",
             "ai_classified": 3,
             "ai_headings": 1,
         },
@@ -915,6 +918,7 @@ def test_render_preparation_summary_places_secondary_stage_line_inside_info_bloc
             "source_chars": 120,
             "block_count": 2,
             "cached": False,
+            "source_format": "pdf",
         },
         FakeTarget(),
     )
@@ -926,7 +930,7 @@ def test_render_preparation_summary_places_secondary_stage_line_inside_info_bloc
         in text
         for text in captions
     )
-    assert any("Источник: DOCX" in text for text in captions)
+    assert any("Источник: PDF" in text for text in captions)
 
 
 def test_render_preparation_summary_renders_all_status_notes_before_meta(monkeypatch):
@@ -948,6 +952,7 @@ def test_render_preparation_summary_renders_all_status_notes_before_meta(monkeyp
             "source_chars": 120,
             "block_count": 2,
             "cached": False,
+            "source_format": "pdf",
             "status_notes": [
                 "Структура: auto-режим, эскалация в AI не потребовалась; структурный риск не найден.",
                 "После анализа файла приложение скорректировало текстовые настройки.",
@@ -958,7 +963,7 @@ def test_render_preparation_summary_renders_all_status_notes_before_meta(monkeyp
 
     assert captions[0] == "Структура: auto-режим, эскалация в AI не потребовалась; структурный риск не найден."
     assert captions[1] == "После анализа файла приложение скорректировало текстовые настройки."
-    assert any("Источник: DOCX" in text for text in captions)
+    assert any("Источник: PDF" in text for text in captions)
 
 
 def test_render_live_status_shows_preparation_failure_title(monkeypatch):

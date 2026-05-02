@@ -75,6 +75,13 @@ class _StructureRecognitionClient(Protocol):
     responses: _ResponsesApi
 
 
+def _with_request_timeout(client: object, *, timeout: float) -> object:
+    with_options = getattr(client, "with_options", None)
+    if not callable(with_options):
+        return client
+    return with_options(timeout=timeout)
+
+
 @lru_cache(maxsize=1)
 def _load_system_prompt() -> str:
     return SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
@@ -243,11 +250,12 @@ def _classify_descriptor_window(
 ) -> tuple[list[ParagraphClassification], int]:
     system_prompt = _load_system_prompt()
     descriptor_payload = [descriptor.to_prompt_dict() for descriptor in descriptors]
-    if not hasattr(client, "responses") or not hasattr(client.responses, "create"):
+    timeout_scoped_client = _with_request_timeout(client, timeout=timeout)
+    if not hasattr(timeout_scoped_client, "responses") or not hasattr(timeout_scoped_client.responses, "create"):
         raise RuntimeError("Unsupported structure recognition client")
 
     response = call_responses_create_with_retry(
-        client,
+        timeout_scoped_client,
         {
             "model": model,
             "input": [

@@ -346,6 +346,20 @@ def test_collect_false_fragment_heading_samples_preserves_legitimate_boundary_he
     assert samples == []
 
 
+def test_collect_false_fragment_heading_samples_preserves_toc_backed_section_heading_after_epigraph():
+    markdown = (
+        "Содержание\n\n"
+        "Введение..................................4\n\n"
+        "> «И будете ненавидимы всеми...» — Марка 13:13\n\n"
+        "## Введение\n\n"
+        "Мой дед был убеждён, что Иисус вернётся ещё при его жизни."
+    )
+
+    samples = document_pipeline_output_validation.collect_false_fragment_heading_samples(markdown)
+
+    assert samples == []
+
+
 def test_collect_false_fragment_heading_samples_preserves_repeated_boundary_heading_with_intervening_body():
     markdown = (
         "## Начертание зверя\n\n"
@@ -414,6 +428,18 @@ def test_collect_false_fragment_heading_samples_detects_dangling_question_fragme
     assert samples[0].reason == "sentence_split_heading_present"
 
 
+def test_collect_false_fragment_heading_samples_preserves_heading_after_parenthetical_terminal_sentence():
+    markdown = (
+        "Крайне спекулятивно — появление звероподобного Антихриста. (Нарождающийся AGI?)\n\n"
+        "## Суд над второй печатью (Откровение 6:4):\n\n"
+        "Крушение мира и правопорядка."
+    )
+
+    samples = document_pipeline_output_validation.collect_false_fragment_heading_samples(markdown)
+
+    assert samples == []
+
+
 def test_normalize_false_fragment_headings_markdown_demotes_deterministic_false_headings():
     markdown = (
         "Христос предупреждает нас\n\n"
@@ -430,6 +456,101 @@ def test_normalize_false_fragment_headings_markdown_demotes_deterministic_false_
     assert "## Спутники? Ракеты?)" not in normalized
     assert "(Матфея 24:36)" in normalized
     assert "Спутники? Ракеты?)" in normalized
+
+
+def test_normalize_false_fragment_headings_markdown_merges_inline_heading_fragment_into_sentence():
+    markdown = (
+        "Иисус постоянно говорит о том, как важно распознавать знамения, чтобы, если им будет даровано пережить\n\n"
+        "## Великую скорбь\n\n"
+        "они могли устоять до конца."
+    )
+
+    normalized = document_pipeline_output_validation.normalize_false_fragment_headings_markdown(markdown)
+
+    assert "## Великую скорбь" not in normalized
+    assert "пережить Великую скорбь они могли устоять до конца." in normalized
+
+
+def test_normalize_false_fragment_headings_markdown_preserves_title_like_heading_before_blockquote_continuation():
+    markdown = (
+        "Для христиан жизненно важно помнить знамения, чтобы, если им будет даровано претерпеть\n\n"
+        "## Великая скорбь\n\n"
+        "> они могли бы с уверенностью устоять до конца."
+    )
+
+    normalized = document_pipeline_output_validation.normalize_false_fragment_headings_markdown(markdown)
+
+    assert "## Великая скорбь" in normalized
+    assert "> они могли бы с уверенностью устоять до конца." in normalized
+
+
+def test_normalize_false_fragment_headings_markdown_preserves_toc_backed_heading_after_epigraph():
+    markdown = (
+        "Содержание\n\n"
+        "Введение..................................4\n\n"
+        "> «И будете ненавидимы всеми...» — Марка 13:13\n\n"
+        "## Введение\n\n"
+        "Основной текст раздела."
+    )
+
+    normalized = document_pipeline_output_validation.normalize_false_fragment_headings_markdown(markdown)
+
+    assert "## Введение" in normalized
+
+
+def test_normalize_false_fragment_headings_markdown_merges_split_heading_lines():
+    markdown = "### О марке\n\n### зверя\n\n/антихристовой сущности"
+
+    normalized = document_pipeline_output_validation.normalize_false_fragment_headings_markdown(markdown)
+
+    assert "### зверя" not in normalized
+    assert "### О марке зверя" in normalized
+
+
+def test_normalize_inline_fragment_paragraphs_markdown_merges_standalone_term_fragments():
+    markdown = (
+        "Люди, принявшие\n\n"
+        "печать зверя,\n\n"
+        "получат мучительные язвы.\n\n"
+        "Мы сможем отказаться от\n\n"
+        "ближневосточной нефти и газа.\n\n"
+        "## Следующий раздел"
+    )
+
+    normalized = document_pipeline_output_validation.normalize_inline_fragment_paragraphs_markdown(markdown)
+
+    assert "Люди, принявшие печать зверя, получат мучительные язвы." in normalized
+    assert "Мы сможем отказаться от ближневосточной нефти и газа." in normalized
+    assert "## Следующий раздел" in normalized
+
+
+def test_normalize_inline_fragment_paragraphs_markdown_preserves_year_boundary_label():
+    markdown = (
+        "Людей исключают из мировой экономики, если они не получат начертание зверя.\n\n"
+        "Год 5 (примерно между 2030 и 2038)\n\n"
+        "Те, кто получил\n\n"
+        "начертание зверя\n\n"
+        "получат мучительные язвы."
+    )
+
+    normalized = document_pipeline_output_validation.normalize_inline_fragment_paragraphs_markdown(markdown)
+
+    assert "начертание зверя получат мучительные язвы." in normalized
+    assert "начертание зверя. Год 5" not in normalized
+    assert "\n\nГод 5 (примерно между 2030 и 2038)\n\n" in normalized
+
+
+def test_normalize_inline_fragment_paragraphs_markdown_preserves_structural_phase_label():
+    markdown = (
+        "Родовые муки становятся всё более мучительными.\n\n"
+        "3/3.) Семь судов чаши\n\n"
+        "Суд над чашей #1"
+    )
+
+    normalized = document_pipeline_output_validation.normalize_inline_fragment_paragraphs_markdown(markdown)
+
+    assert "Родовые муки становятся всё более мучительными. 3/3.)" not in normalized
+    assert "\n\n3/3.) Семь судов чаши\n\nСуд над чашей #1" in normalized
 
 
 def test_normalize_residual_bullet_glyphs_markdown_rewrites_inline_and_leading_glyphs():

@@ -308,8 +308,15 @@ def test_start_background_preparation_creates_worker_and_status(monkeypatch):
     activities = []
     payloads = []
 
-    uploaded_file = processing_runtime.build_in_memory_uploaded_file(source_name="report.docx", source_bytes=b"abc")
-    uploaded_payload = processing_runtime.freeze_uploaded_file(uploaded_file)
+    uploaded_payload = processing_runtime.FrozenUploadPayload(
+        filename="report.docx",
+        content_bytes=b"abc",
+        file_size=3,
+        content_hash="hash",
+        file_token="report.docx:3:ba7816bf8f01cfea",
+        source_format="pdf",
+        conversion_backend="libreoffice",
+    )
 
     processing_runtime.start_background_preparation(
         worker_target=lambda **kwargs: payloads.append(kwargs),
@@ -332,6 +339,8 @@ def test_start_background_preparation_creates_worker_and_status(monkeypatch):
     assert session_state.preparation_worker is not None
     assert statuses[0]["phase"] == "preparing"
     assert statuses[0]["stage"] == "Файл получен"
+    assert statuses[0]["source_format"] == "pdf"
+    assert statuses[0]["conversion_backend"] == "libreoffice"
     assert activities == ["Файл получен сервером. Запускаю анализ документа."]
     assert payloads[0]["uploaded_payload"] == uploaded_payload
     assert payloads[0]["processing_operation"] == "audiobook"

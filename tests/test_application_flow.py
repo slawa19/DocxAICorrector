@@ -234,7 +234,7 @@ def test_prepare_run_context_raises_on_none_job_target(monkeypatch):
     assert failures[0][0] == "empty_target_block"
 
 
-def test_prepare_run_context_raises_when_quality_gate_blocks(monkeypatch):
+def test_prepare_run_context_keeps_best_effort_warning_when_quality_gate_warns(monkeypatch):
     monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: None)
     session_state = SessionState(selected_source_token="", prepared_source_key="")
     failures = []
@@ -245,40 +245,32 @@ def test_prepare_run_context_raises_when_quality_gate_blocks(monkeypatch):
         image_assets=[],
         jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
         prepared_source_key="prepared-key",
-        quality_gate_status="blocked",
+        quality_gate_status="warning",
         quality_gate_reasons=("toc_like_sequence_without_bounded_region", "structure_recognition_noop_on_high_risk"),
         cached=False,
+        source_format="pdf",
+        conversion_backend="libreoffice",
     )
 
-    def fail_critical_stub(event, message, **context):
-        failures.append((event, message, context))
-        raise RuntimeError(message)
+    prepared_run_context = application_flow.prepare_run_context(
+        uploaded_file=UploadedFileStub("report.docx", b"abc"),
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=True,
+        session_state=session_state,
+        reset_run_state_fn=lambda **kwargs: None,
+        fail_critical_fn=lambda *args, **kwargs: failures.append((args, kwargs)),
+        log_event_fn=lambda *args, **kwargs: None,
+        prepare_document_for_processing_fn=lambda **kwargs: prepared_document,
+    )
 
-    try:
-        application_flow.prepare_run_context(
-            uploaded_file=UploadedFileStub("report.docx", b"abc"),
-            chunk_size=6000,
-            image_mode="safe",
-            keep_all_image_variants=True,
-            session_state=session_state,
-            reset_run_state_fn=lambda **kwargs: None,
-            fail_critical_fn=fail_critical_stub,
-            log_event_fn=lambda *args, **kwargs: None,
-            prepare_document_for_processing_fn=lambda **kwargs: prepared_document,
-        )
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError("prepare_run_context must fail when quality gate is blocked")
-
-    assert failures[0][0] == "quality_gate_blocked"
-    assert failures[0][1].endswith(
+    assert failures == []
+    assert prepared_run_context.quality_gate_status == "warning"
+    assert prepared_run_context.source_format == "pdf"
+    assert prepared_run_context.conversion_backend == "libreoffice"
+    assert prepared_run_context.preparation_detail.endswith(
         "Причины: toc_like_sequence_without_bounded_region, structure_recognition_noop_on_high_risk"
     )
-    assert failures[0][2]["quality_gate_reasons"] == [
-        "toc_like_sequence_without_bounded_region",
-        "structure_recognition_noop_on_high_risk",
-    ]
 
 
 def test_prepare_run_context_keeps_other_completed_source_tokens(monkeypatch):

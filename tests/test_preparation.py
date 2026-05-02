@@ -204,13 +204,22 @@ def _build_docx_bytes(paragraphs: list[str]) -> bytes:
     return buffer.getvalue()
 
 
-def _build_uploaded_payload(filename: str, content_bytes: bytes, file_token: str) -> FrozenUploadPayload:
+def _build_uploaded_payload(
+    filename: str,
+    content_bytes: bytes,
+    file_token: str,
+    *,
+    source_format: str = "docx",
+    conversion_backend: str | None = None,
+) -> FrozenUploadPayload:
     return FrozenUploadPayload(
         filename=filename,
         content_bytes=content_bytes,
         file_size=len(content_bytes),
         content_hash="test-hash",
         file_token=file_token,
+        source_format=source_format,
+        conversion_backend=conversion_backend,
     )
 
 
@@ -927,6 +936,37 @@ def test_prepare_document_for_processing_runs_structure_recognition_when_enabled
     assert result.structure_map is not None
 
 
+def test_prepare_document_for_processing_reports_pdf_import_stage(monkeypatch):
+    session_state = {"preparation_cache": {}}
+    events = []
+
+    monkeypatch.setattr(
+        preparation,
+        "extract_document_content_with_normalization_reports",
+        lambda uploaded_file: _build_extract_result(["p1"], [], _build_report(raw=1, logical=1)),
+    )
+    monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "text-value")
+    monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars, relations=None: ["block-a"])
+    monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [{"target_text": "a", "target_chars": 1, "context_chars": 0}])
+
+    preparation.prepare_document_for_processing(
+        uploaded_payload=_build_uploaded_payload(
+            "report.docx",
+            b"docx-bytes",
+            "report.pdf:10:hash",
+            source_format="pdf",
+            conversion_backend="libreoffice",
+        ),
+        chunk_size=6000,
+        session_state=session_state,
+        progress_callback=lambda **payload: events.append(payload),
+    )
+
+    assert events[0]["stage"] == "Импорт PDF"
+    assert events[0]["detail"] == "Конвертирую PDF в DOCX и извлекаю абзацы, встроенные изображения и структуру."
+    assert events[0]["metrics"]["source_format"] == "pdf"
+
+
 def test_prepare_document_for_processing_tracks_ai_heading_demotions_against_heuristics(monkeypatch):
     session_state = {"preparation_cache": {}}
     paragraph = _build_paragraph(source_index=0, text="Короткий заголовок", role="heading")
@@ -1303,7 +1343,7 @@ def test_prepare_document_for_processing_marks_quality_gate_blocked_on_high_risk
         session_state=session_state,
     )
 
-    assert result.quality_gate_status == "blocked"
+    assert result.quality_gate_status == "warning"
     assert result.quality_gate_reasons == (
         "toc_like_sequence_without_bounded_region",
         "structure_recognition_noop_on_high_risk",
@@ -1375,7 +1415,7 @@ def test_prepare_document_for_processing_runs_readiness_gate_in_always_mode(monk
 
     assert result.structure_recognition_mode == "always"
     assert result.structure_validation_report is not None
-    assert result.quality_gate_status == "blocked"
+    assert result.quality_gate_status == "warning"
     assert "structure_recognition_noop_on_high_risk" in result.quality_gate_reasons
 
 
@@ -1439,7 +1479,7 @@ def test_prepare_document_for_processing_blocks_mixed_first_block_toc_and_body_s
         session_state=session_state,
     )
 
-    assert result.quality_gate_status == "blocked"
+    assert result.quality_gate_status == "warning"
     assert result.quality_gate_reasons == (
         "first_block_mixed_toc_and_epigraph",
         "first_block_mixed_toc_and_body_start",

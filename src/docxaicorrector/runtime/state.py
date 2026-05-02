@@ -504,6 +504,8 @@ def _default_processing_status() -> dict[str, object]:
         "paragraph_count": 0,
         "image_count": 0,
         "source_chars": 0,
+        "source_format": "docx",
+        "conversion_backend": None,
         "raw_paragraph_count": 0,
         "logical_paragraph_count": 0,
         "merged_group_count": 0,
@@ -517,6 +519,8 @@ def _default_processing_status() -> dict[str, object]:
         "progress": 0.0,
         "terminal_kind": None,
     }
+
+
 def init_session_state() -> None:
     st.session_state.setdefault("app_start_logged", False)
     st.session_state.setdefault("run_log", [])
@@ -699,6 +703,8 @@ def set_processing_status(
     paragraph_count: int | None = None,
     image_count: int | None = None,
     source_chars: int | None = None,
+    source_format: str | None = None,
+    conversion_backend: str | None = None,
     raw_paragraph_count: int | None = None,
     logical_paragraph_count: int | None = None,
     merged_group_count: int | None = None,
@@ -738,6 +744,10 @@ def set_processing_status(
         status["image_count"] = image_count
     if source_chars is not None:
         status["source_chars"] = source_chars
+    if source_format is not None:
+        status["source_format"] = source_format
+    if conversion_backend is not None or "conversion_backend" not in status:
+        status["conversion_backend"] = conversion_backend
     if raw_paragraph_count is not None:
         status["raw_paragraph_count"] = raw_paragraph_count
     if logical_paragraph_count is not None:

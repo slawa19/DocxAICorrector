@@ -44,6 +44,8 @@ class PreparedDocumentData:
     relations: list[ParagraphRelation]
     jobs: list[dict[str, Any]]
     prepared_source_key: str
+    source_format: str = "docx"
+    conversion_backend: str | None = None
     normalization_report: ParagraphBoundaryNormalizationReport | None = None
     relation_report: RelationNormalizationReport | None = None
     cleanup_report: LayoutArtifactCleanupReport | None = None
@@ -374,7 +376,18 @@ def _write_structure_map_debug_artifact(*, cache_key: str, structure_map: Struct
     return str(artifact_path)
 
 
-def _run_structure_recognition(*, paragraphs: list, image_assets: list, app_config: Mapping[str, Any], progress_callback, normalization_report, relation_report, cleanup_report=None) -> tuple[StructureMap | None, StructureRecognitionSummary]:
+def _run_structure_recognition(
+    *,
+    paragraphs: list,
+    image_assets: list,
+    app_config: Mapping[str, Any],
+    progress_callback,
+    normalization_report,
+    relation_report,
+    cleanup_report=None,
+    source_format: str = "docx",
+    conversion_backend: str | None = None,
+) -> tuple[StructureMap | None, StructureRecognitionSummary]:
     base_metrics = _build_preparation_stage_metrics(
         paragraph_count=len(paragraphs),
         image_count=len(image_assets),
@@ -387,7 +400,7 @@ def _run_structure_recognition(*, paragraphs: list, image_assets: list, app_conf
         stage="Распознавание структуры…",
         detail="Анализирую роли абзацев с помощью AI.",
         progress=0.35,
-        metrics=base_metrics,
+        metrics={**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend},
     )
 
     try:
@@ -433,7 +446,7 @@ def _run_structure_recognition(*, paragraphs: list, image_assets: list, app_conf
             stage="Структура: эвристика",
             detail="AI-распознавание недоступно. Используются текущие правила.",
             progress=0.55,
-            metrics=base_metrics,
+            metrics={**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend},
         )
         return None, StructureRecognitionSummary()
 
@@ -455,7 +468,12 @@ def _run_structure_recognition(*, paragraphs: list, image_assets: list, app_conf
         stage=stage,
         detail=detail,
         progress=0.55,
-        metrics={**base_metrics, **structure_summary.as_progress_metrics(structure_map=structure_map)},
+        metrics={
+            **base_metrics,
+            **structure_summary.as_progress_metrics(structure_map=structure_map),
+            "source_format": source_format,
+            "conversion_backend": conversion_backend,
+        },
     )
     return structure_map, structure_summary
 
@@ -470,6 +488,21 @@ def emit_preparation_progress(progress_callback, *, stage: str, detail: str, pro
     if progress_callback is None:
         return
     progress_callback(stage=stage, detail=detail, progress=progress, metrics=metrics or {})
+
+
+def _build_source_import_progress(*, source_format: str) -> tuple[str, str]:
+    normalized = str(source_format or "docx").strip().lower()
+    if normalized == "pdf":
+        return (
+            "Импорт PDF",
+            "Конвертирую PDF в DOCX и извлекаю абзацы, встроенные изображения и структуру.",
+        )
+    if normalized == "doc":
+        return (
+            "Импорт DOC",
+            "Конвертирую DOC в DOCX и извлекаю абзацы, встроенные изображения и структуру.",
+        )
+    return ("Разбор DOCX", "Извлекаю абзацы и встроенные изображения.")
 
 
 def _resolve_structure_recognition_mode(app_config: Mapping[str, Any]) -> str:
@@ -512,6 +545,8 @@ def _run_structure_validation(
     relation_report,
     cleanup_report=None,
     structure_repair_report: StructureRepairReport | None = None,
+    source_format: str = "docx",
+    conversion_backend: str | None = None,
 ) -> StructureValidationReport:
     base_metrics = _build_preparation_stage_metrics(
         paragraph_count=len(paragraphs),
@@ -526,7 +561,7 @@ def _run_structure_validation(
         stage="Структура: валидация",
         detail="Оцениваю структурный риск документа детерминированно.",
         progress=0.30,
-        metrics=base_metrics,
+        metrics={**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend},
     )
     report = validate_structure_quality(
         paragraphs=paragraphs,
@@ -569,7 +604,7 @@ def _resolve_pre_translation_quality_gate(
         reasons.append("structure_recognition_noop_on_high_risk")
 
     unique_reasons = tuple(dict.fromkeys(reason for reason in reasons if reason))
-    return ("blocked" if unique_reasons else "pass", unique_reasons)
+    return ("warning" if unique_reasons else "pass", unique_reasons)
 
 
 def _apply_first_block_composition_quality_gate(
@@ -595,7 +630,7 @@ def _apply_first_block_composition_quality_gate(
         return quality_gate_status, quality_gate_reasons
 
     merged_reasons = tuple(dict.fromkeys([*quality_gate_reasons, *additional_reasons]))
-    return "blocked", merged_reasons
+    return "warning", merged_reasons
 
 
 def _block_has_toc_roles(paragraphs: list) -> bool:
@@ -669,15 +704,22 @@ def _prepare_document_for_processing(
     source_bytes: bytes,
     chunk_size: int,
     *,
+    source_format: str = "docx",
+    conversion_backend: str | None = None,
     app_config: Mapping[str, Any],
     processing_operation: str = "edit",
     progress_callback=None,
 ):
+    initial_stage, initial_detail = _build_source_import_progress(source_format=source_format)
     emit_preparation_progress(
         progress_callback,
-        stage="Разбор DOCX",
-        detail="Извлекаю абзацы и встроенные изображения.",
+        stage=initial_stage,
+        detail=initial_detail,
         progress=0.2,
+        metrics={
+            "source_format": source_format,
+            "conversion_backend": conversion_backend,
+        },
     )
     uploaded_file = build_in_memory_uploaded_file(source_name=source_name, source_bytes=source_bytes)
     extraction_result = _extract_document_content_with_optional_app_config(uploaded_file=uploaded_file, app_config=app_config)
@@ -691,6 +733,8 @@ def _prepare_document_for_processing(
         metrics={
             "paragraph_count": len(paragraphs),
             "image_count": len(image_assets),
+            "source_format": source_format,
+            "conversion_backend": conversion_backend,
             **_build_normalization_metrics(normalization_report, relation_report, cleanup_report, structure_repair_report),
         },
     )
@@ -708,6 +752,8 @@ def _prepare_document_for_processing(
             relation_report=relation_report,
             cleanup_report=cleanup_report,
             structure_repair_report=structure_repair_report,
+            source_format=source_format,
+            conversion_backend=conversion_backend,
         )
         if not bool(app_config.get("structure_validation_enabled", True)):
             emit_preparation_progress(
@@ -715,14 +761,18 @@ def _prepare_document_for_processing(
                 stage="Структура: детерминированно",
                 detail="Структурная валидация отключена. Используются текущие правила.",
                 progress=0.35,
-                metrics=_build_preparation_stage_metrics(
-                    paragraph_count=len(paragraphs),
-                    image_count=len(image_assets),
-                    normalization_report=normalization_report,
-                    relation_report=relation_report,
-                    cleanup_report=cleanup_report,
-                    structure_repair_report=structure_repair_report,
-                ),
+                metrics={
+                    **_build_preparation_stage_metrics(
+                        paragraph_count=len(paragraphs),
+                        image_count=len(image_assets),
+                        normalization_report=normalization_report,
+                        relation_report=relation_report,
+                        cleanup_report=cleanup_report,
+                        structure_repair_report=structure_repair_report,
+                    ),
+                    "source_format": source_format,
+                    "conversion_backend": conversion_backend,
+                },
             )
             should_run_ai = structure_mode == "always"
         else:
@@ -733,14 +783,18 @@ def _prepare_document_for_processing(
                     stage="Структура: детерминированно",
                     detail="Структурный риск не найден. Используются текущие правила.",
                     progress=0.35,
-                    metrics=_build_preparation_stage_metrics(
-                        paragraph_count=len(paragraphs),
-                        image_count=len(image_assets),
-                        normalization_report=normalization_report,
-                        relation_report=relation_report,
-                        cleanup_report=cleanup_report,
-                        structure_repair_report=structure_repair_report,
-                    ),
+                    metrics={
+                        **_build_preparation_stage_metrics(
+                            paragraph_count=len(paragraphs),
+                            image_count=len(image_assets),
+                            normalization_report=normalization_report,
+                            relation_report=relation_report,
+                            cleanup_report=cleanup_report,
+                            structure_repair_report=structure_repair_report,
+                        ),
+                        "source_format": source_format,
+                        "conversion_backend": conversion_backend,
+                    },
                 )
     structure_ai_attempted = should_run_ai
     structure_map, structure_summary = (
@@ -752,6 +806,8 @@ def _prepare_document_for_processing(
             normalization_report=normalization_report,
             relation_report=relation_report,
             cleanup_report=cleanup_report,
+            source_format=source_format,
+            conversion_backend=conversion_backend,
         )
         if should_run_ai
         else (None, StructureRecognitionSummary())
@@ -773,17 +829,21 @@ def _prepare_document_for_processing(
         stage="Текст собран",
         detail="Формирую цельный текст документа и считаю объём.",
         progress=0.6,
-        metrics=_build_preparation_stage_metrics(
-            paragraph_count=len(paragraphs),
-            image_count=len(image_assets),
-            normalization_report=normalization_report,
-            relation_report=relation_report,
-            cleanup_report=cleanup_report,
-            structure_repair_report=structure_repair_report,
-            structure_map=structure_map,
-            structure_summary=structure_summary,
-            source_text=source_text,
-        ),
+        metrics={
+            **_build_preparation_stage_metrics(
+                paragraph_count=len(paragraphs),
+                image_count=len(image_assets),
+                normalization_report=normalization_report,
+                relation_report=relation_report,
+                cleanup_report=cleanup_report,
+                structure_repair_report=structure_repair_report,
+                structure_map=structure_map,
+                structure_summary=structure_summary,
+                source_text=source_text,
+            ),
+            "source_format": source_format,
+            "conversion_backend": conversion_backend,
+        },
     )
     blocks = build_semantic_blocks(paragraphs, max_chars=chunk_size, relations=relations)
     quality_gate_status, quality_gate_reasons = _apply_first_block_composition_quality_gate(
@@ -845,18 +905,22 @@ def _prepare_document_for_processing(
         stage="Смысловые блоки",
         detail="Группирую абзацы в блоки для модели.",
         progress=0.75,
-        metrics=_build_preparation_stage_metrics(
-            paragraph_count=len(paragraphs),
-            image_count=len(image_assets),
-            normalization_report=normalization_report,
-            relation_report=relation_report,
-            cleanup_report=cleanup_report,
-            structure_repair_report=structure_repair_report,
-            structure_map=structure_map,
-            structure_summary=structure_summary,
-            source_text=source_text,
-            block_count=len(blocks),
-        ),
+        metrics={
+            **_build_preparation_stage_metrics(
+                paragraph_count=len(paragraphs),
+                image_count=len(image_assets),
+                normalization_report=normalization_report,
+                relation_report=relation_report,
+                cleanup_report=cleanup_report,
+                structure_repair_report=structure_repair_report,
+                structure_map=structure_map,
+                structure_summary=structure_summary,
+                source_text=source_text,
+                block_count=len(blocks),
+            ),
+            "source_format": source_format,
+            "conversion_backend": conversion_backend,
+        },
     )
     jobs = _build_editing_jobs_with_optional_operation(
         blocks=blocks,
@@ -868,18 +932,22 @@ def _prepare_document_for_processing(
         stage="Задания собраны",
         detail="Готовлю финальный набор задач для обработки.",
         progress=0.9,
-        metrics=_build_preparation_stage_metrics(
-            paragraph_count=len(paragraphs),
-            image_count=len(image_assets),
-            normalization_report=normalization_report,
-            relation_report=relation_report,
-            cleanup_report=cleanup_report,
-            structure_repair_report=structure_repair_report,
-            structure_map=structure_map,
-            structure_summary=structure_summary,
-            source_text=source_text,
-            block_count=len(jobs),
-        ),
+        metrics={
+            **_build_preparation_stage_metrics(
+                paragraph_count=len(paragraphs),
+                image_count=len(image_assets),
+                normalization_report=normalization_report,
+                relation_report=relation_report,
+                cleanup_report=cleanup_report,
+                structure_repair_report=structure_repair_report,
+                structure_map=structure_map,
+                structure_summary=structure_summary,
+                source_text=source_text,
+                block_count=len(jobs),
+            ),
+            "source_format": source_format,
+            "conversion_backend": conversion_backend,
+        },
     )
     return PreparedDocumentData(
         source_text=source_text,
@@ -888,6 +956,8 @@ def _prepare_document_for_processing(
         relations=relations,
         jobs=jobs,
         prepared_source_key="",
+        source_format=source_format,
+        conversion_backend=conversion_backend,
         normalization_report=normalization_report,
         relation_report=relation_report,
         cleanup_report=cleanup_report,
@@ -953,6 +1023,8 @@ def _clone_prepared_document(data: PreparedDocumentData, prepared_source_key: st
         structure_ai_attempted=data.structure_ai_attempted,
         quality_gate_status=data.quality_gate_status,
         quality_gate_reasons=tuple(data.quality_gate_reasons),
+        source_format=data.source_format,
+        conversion_backend=data.conversion_backend,
         translation_domain=data.translation_domain,
         translation_domain_instructions=data.translation_domain_instructions,
         cached=cached,
@@ -1089,6 +1161,8 @@ def prepare_document_for_processing(
                 "source_chars": len(cached.source_text),
                 "block_count": len(cached.jobs),
                 "cached": cached.cached,
+                "source_format": cached.source_format,
+                "conversion_backend": cached.conversion_backend,
                 **_build_normalization_metrics(
                     cached.normalization_report,
                     cached.relation_report,
@@ -1112,6 +1186,8 @@ def prepare_document_for_processing(
             uploaded_payload.filename,
             uploaded_payload.content_bytes,
             chunk_size,
+            source_format=str(getattr(uploaded_payload, "source_format", "docx") or "docx"),
+            conversion_backend=getattr(uploaded_payload, "conversion_backend", None),
             app_config=resolved_config,
             processing_operation=resolved_processing_operation,
             progress_callback=progress_callback,

@@ -304,13 +304,17 @@ def render_live_status(target=None) -> None:
             image_count = int(status.get("image_count") or 0)
             source_chars = int(status.get("source_chars") or 0)
             cached = bool(status.get("cached", False))
+            source_label = _format_source_label(
+                source_format=str(status.get("source_format") or "docx"),
+                cached=cached,
+            )
             progress_value = max(0.0, min(float(status.get("progress") or 0.0), 1.0))
             progress_percent = int(progress_value * 100)
             stage = str(status.get("stage") or "Подготовка документа")
             detail = str(status.get("detail") or "Идет анализ файла.")
             normalization_caption = _build_normalization_caption(status)
             meta_lines = [
-                f"Прогресс: {progress_percent}% | Источник: {'cache' if cached else 'DOCX'} | Прошло: {elapsed}",
+                f"Прогресс: {progress_percent}% | Источник: {source_label} | Прошло: {elapsed}",
                 (
                     f"Размер: {file_size_bytes / 1024 / 1024:.2f} MB | Абзацы: {paragraph_count} | "
                     f"Изображения: {image_count} | Символы: {source_chars} | Блоки: {block_count}"
@@ -359,7 +363,10 @@ def render_preparation_summary(summary: dict[str, Any] | None, target=None) -> N
     sink = _get_sink(target)
     with sink.container():
         file_size_bytes = _to_int(summary.get("file_size_bytes"), default=0)
-        source_label = "cache" if bool(summary.get("cached", False)) else "DOCX"
+        source_label = _format_source_label(
+            source_format=str(summary.get("source_format") or "docx"),
+            cached=bool(summary.get("cached", False)),
+        )
         elapsed = str(summary.get("elapsed") or "")
         paragraph_count = _to_int(summary.get("paragraph_count"), default=0)
         image_count = _to_int(summary.get("image_count"), default=0)
@@ -404,6 +411,19 @@ def render_preparation_summary(summary: dict[str, Any] | None, target=None) -> N
             detail=detail,
             meta_lines=status_notes + meta_lines,
         )
+
+
+def _format_source_label(*, source_format: str, cached: bool) -> str:
+    normalized = source_format.strip().lower() if isinstance(source_format, str) else "docx"
+    if normalized == "pdf":
+        label = "PDF"
+    elif normalized == "doc":
+        label = "DOC"
+    else:
+        label = "DOCX"
+    if cached:
+        return f"{label} (cache)"
+    return label
 
 
 def _to_int(value: Any, *, default: int) -> int:
