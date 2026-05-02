@@ -1,7 +1,7 @@
 import base64
 from io import BytesIO
 
-import image_reinsertion
+import docxaicorrector.image.reinsertion as image_reinsertion
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.opc.constants import RELATIONSHIP_TYPE
@@ -9,14 +9,14 @@ from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import qn
 from docx.shared import Inches
 
-from image_reinsertion import (
+from docxaicorrector.core.models import ImageAsset, ImageVariantCandidate
+from docxaicorrector.image.reinsertion import (
     _build_variant_block_elements,
     _replace_xml_element_with_sequence,
     resolve_final_image_bytes,
     resolve_image_insertions,
     reinsert_inline_images,
 )
-from models import ImageAsset, ImageVariantCandidate
 
 
 PNG_BYTES = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK3cAAAAASUVORK5CYII=")

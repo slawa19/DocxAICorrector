@@ -1,4 +1,4 @@
-from translation_domains import build_terminology_plan, build_translation_domain_instructions, load_domain_instructions
+from docxaicorrector.text.translation_domains import build_terminology_plan, build_translation_domain_instructions, load_domain_instructions
 
 
 def test_load_domain_instructions_returns_theology_glossary_text():

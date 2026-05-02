@@ -1,6 +1,6 @@
 from io import BytesIO
 
-import document_pipeline
+import docxaicorrector.pipeline._pipeline as document_pipeline
 
 
 class AssetStub:

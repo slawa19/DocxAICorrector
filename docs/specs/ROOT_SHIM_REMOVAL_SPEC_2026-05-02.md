@@ -2,7 +2,7 @@
 
 Date: 2026-05-02
 
-Status: planned; awaiting approval.
+Status: approved; implementation in progress.
 
 ## Goal
 
@@ -35,10 +35,17 @@ A usage audit (2026-05-02) confirmed:
 - `benchmark_projects/` — **0 root imports** (all use `docxaicorrector.*`)
 - `tests/` + `conftest.py` — **42 test files + 1 conftest** use root shim imports
 
-Root shims are only needed to support test-file imports. Because the shims do
+Root shims are only needed to support test-file imports and compatibility-contract checks. Because the shims do
 `sys.modules[__name__] = _target`, `import config` and `import docxaicorrector.core.config` already
 return **the same module object**. The migration is therefore purely mechanical: swap import
 statements, keep all downstream usage unchanged.
+
+One wrapper also currently provides a root-level executable compatibility path:
+
+- `real_image_manifest.py` is exercised as a root CLI wrapper by `tests/test_real_image_manifest.py`
+
+That root CLI contract is also in scope for removal. The canonical replacement is
+`python -m docxaicorrector.real_image.manifest ...`.
 
 ## Scope
 
@@ -94,6 +101,18 @@ from docxaicorrector.core.config import ModelRegistry, TextModelConfig
 
 `monkeypatch.setattr(config, "CONFIG_PATH", ...)` requires **no change** after swapping the import,
 because `config` is now the actual module object, not a shim over it.
+
+Dynamic imports must be migrated too:
+
+```python
+# Before
+runner = __import__("document_pipeline").run_document_processing
+
+# After
+from docxaicorrector.pipeline import _pipeline as document_pipeline
+
+runner = document_pipeline.run_document_processing
+```
 
 ## Module Map
 
@@ -202,14 +221,31 @@ if __name__ == "__main__":
 
 ### `tests/test_root_typing_stubs.py`
 
-- `test_each_root_typing_stub_has_matching_root_python_module` — remove or update to enumerate
-  only `app.pyi` (the sole remaining stub).
-- `test_root_typing_stub_targets_match_root_module_contract` — keep for `app.pyi` only.
+- `test_app_stub_is_the_only_remaining_root_typing_stub` and
+  `test_app_stub_targets_package_contract` are already in final-state form.
+- After Step 5 deletes the root shim `.pyi` files, this file should pass unchanged.
+
+### `tests/test_root_shim_identity_aliases.py`
+
+- Already rewritten around package-native imports and the `app.py` launcher contract.
+- No further behavioral changes needed before deletion.
+
+### `tests/test_real_image_manifest.py`
+
+- Already uses `import docxaicorrector.real_image.manifest as real_image_manifest` directly.
+- Already uses `python -m docxaicorrector.real_image.manifest` as the canonical CLI path.
+- No further behavioral changes needed before deletion.
 
 ### `tests/test_script_workflow_smoke.py` (CODEOWNERS-protected)
 
 - The test that checks `_ensure_src_first_import_order` in `conftest.py` and bootstrap entrypoints
   must be updated to reflect that `PROJECT_ROOT` is no longer added to `sys.path` in `conftest.py`.
+- The CODEOWNERS assertion block must be updated to remove deleted root shim and stub paths.
+
+### `tests/test_docxaicorrector_bootstrap_package.py`
+
+- No behavioral change expected, but keep this in verification because package bootstrap becomes the
+  only supported import surface once root shims are deleted.
 
 ### `.github/CODEOWNERS`
 
@@ -230,7 +266,9 @@ Remove all root shim entries after their files are deleted. Only keep:
 bash scripts/test.sh tests/ -q
 ```
 
-Record pass/fail counts. All tests must be green before starting.
+Record pass/fail counts. **Note:** `tests/test_root_typing_stubs.py` is already updated to
+expect only `app.pyi`. Before Step 5 deletes the root `.pyi` files, this test is expected to fail;
+after Step 5 it should be included in the normal green baseline.
 
 ### Step 1. Migrate `tests/conftest.py`
 
@@ -321,23 +359,40 @@ Recommended groups:
 - `test_real_document_structure_recognition_integration.py`
 - `test_real_document_validation_corpus.py`
 
+**Group K — compatibility and contracts**:
+- `test_root_shim_identity_aliases.py`
+- `test_root_typing_stubs.py`
+- `test_real_image_manifest.py`
+- `test_script_workflow_smoke.py`
+- `test_docxaicorrector_bootstrap_package.py`
+
 After each group:
 
 ```bash
 bash scripts/test.sh tests/ -q
 ```
 
-### Step 3. Update `test_root_typing_stubs.py` and `test_script_workflow_smoke.py`
+### Step 3. Verify compatibility-contract tests
 
-- Update `test_root_typing_stubs.py` to cover only `app.pyi`.
-- Update the bootstrap assertion in `test_script_workflow_smoke.py` to reflect the
-  simplified `conftest.py` path-bootstrap behavior.
+These tests are already mostly in final-state form before deletion:
+
+- `test_root_shim_identity_aliases.py` — already tests package imports and the `app.py`
+  launcher.
+- `test_real_image_manifest.py` — already uses `docxaicorrector.real_image.manifest` and
+  the `python -m` CLI path.
+- `test_root_typing_stubs.py` — already expects only `app.pyi` and should pass once
+  Step 5 removes the remaining root `.pyi` files.
+
+`test_script_workflow_smoke.py` still needs Step 1 bootstrap updates and Step 6 CODEOWNERS-assertion
+updates once root shim paths are actually removed from `.github/CODEOWNERS`.
 
 Verify:
 
 ```bash
 bash scripts/test.sh tests/test_script_workflow_smoke.py -q
 bash scripts/test.sh tests/test_root_typing_stubs.py -q
+bash scripts/test.sh tests/test_root_shim_identity_aliases.py -q
+bash scripts/test.sh tests/test_real_image_manifest.py -q
 ```
 
 ### Step 4. Simplify `app.py`
@@ -371,8 +426,21 @@ Verify:
 
 ```bash
 bash scripts/test.sh tests/test_script_workflow_smoke.py -q
+bash scripts/test.sh tests/test_docxaicorrector_bootstrap_package.py -q
 bash scripts/test.sh tests/ -q
 ```
+
+### Step 7. Run textual cleanup audit
+
+Before final signoff, run a repo-wide search to confirm there are no remaining references to deleted
+root shims outside the supported `app.py` / `app.pyi` surface.
+
+Audit for all of the following:
+
+- `import <deleted_root_module>`
+- `from <deleted_root_module> import ...`
+- `__import__("<deleted_root_module>")`
+- subprocess or script-path references to deleted root shim files
 
 ## Final Verification
 
@@ -380,6 +448,9 @@ bash scripts/test.sh tests/ -q
 bash scripts/test.sh tests/ -q
 bash scripts/test.sh tests/test_script_workflow_smoke.py -q
 bash scripts/test.sh tests/test_startup_performance_contract.py -q
+bash scripts/test.sh tests/test_root_shim_identity_aliases.py -q
+bash scripts/test.sh tests/test_real_image_manifest.py -q
+bash scripts/test.sh tests/test_docxaicorrector_bootstrap_package.py -q
 bash scripts/test.sh tests/test_typecheck.py -q
 bash scripts/run-real-document-validation.sh
 bash scripts/run-real-document-quality-gate.sh
@@ -403,6 +474,11 @@ All must pass with the same counts as the baseline.
 - `test_startup_performance_contract.py` and `test_app.py` are CODEOWNERS-protected. Their import
   changes are mechanical but must be done carefully to preserve monkeypatching semantics.
 - `test_script_workflow_smoke.py` is CODEOWNERS-protected and checks bootstrap assumptions in
-  `conftest.py`. Step 1 and Step 3 must update it in sync.
+  `conftest.py`. Step 1 and Step 3 must update it in sync. It also asserts CODEOWNERS coverage for
+  root paths that will be deleted.
+- `test_root_shim_identity_aliases.py` encodes the compatibility contract being removed; it must be
+  rewritten, not merely import-migrated.
+- Dynamic `__import__(...)` calls are easy to miss during migration and require explicit grep-based
+  auditing before deleting shim files.
 - The `ROOT_COMPATIBILITY_TYPING_SURFACE_SPEC_2026-05-01.md` follow-up (tightening `.pyi` stubs)
   becomes moot for all deleted files. It only remains relevant for `app.pyi`.

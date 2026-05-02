@@ -1,8 +1,8 @@
 import pytest
 
-import app
-import state
-import ui
+import docxaicorrector.runtime.state as state
+import docxaicorrector.ui._app as app
+import docxaicorrector.ui._ui as ui
 from conftest import SessionState as SessionState
 
 

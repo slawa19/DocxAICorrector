@@ -1,4 +1,0 @@
-from docxaicorrector.validation.structural import *
-from docxaicorrector.validation.structural import _apply_prepared_metric_fields as _apply_prepared_metric_fields
-from docxaicorrector.validation.structural import _build_structural_checks as _build_structural_checks
-from docxaicorrector.validation.structural import processing_runtime as processing_runtime

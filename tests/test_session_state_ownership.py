@@ -5,7 +5,6 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 OWNER_FILES = {
-    PROJECT_ROOT / "state.py",
     PROJECT_ROOT / "src" / "docxaicorrector" / "runtime" / "state.py",
 }
 SKIPPED_DIR_NAMES = {

@@ -1,8 +1,8 @@
 from typing import cast
 from types import SimpleNamespace
 
-from models import ParagraphClassification, ParagraphUnit, StructureMap
-import structure_recognition
+import docxaicorrector.structure.recognition as structure_recognition
+from docxaicorrector.core.models import ParagraphClassification, ParagraphUnit, StructureMap
 
 
 def _paragraph(

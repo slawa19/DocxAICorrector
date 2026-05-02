@@ -5,8 +5,8 @@ from typing import Any, cast
 
 import pytest
 
-import document
-import document_extraction
+import docxaicorrector.document._document as document
+import docxaicorrector.document.extraction as document_extraction
 from docx import Document
 from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -15,7 +15,8 @@ from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
 
-from document import (
+from docxaicorrector.core.models import ImageAsset, ParagraphUnit
+from docxaicorrector.document._document import (
     build_document_text,
     build_marker_wrapped_block_text,
     extract_document_content_from_docx,
@@ -23,8 +24,7 @@ from document import (
     paragraph_has_strong_heading_format,
     resolve_effective_paragraph_font_size,
 )
-from document_extraction import extract_document_content_with_normalization_reports
-from models import ImageAsset, ParagraphUnit
+from docxaicorrector.document.extraction import extract_document_content_with_normalization_reports
 
 
 PNG_BYTES = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK3cAAAAASUVORK5CYII=")
@@ -618,7 +618,7 @@ def test_emdash_bullet_paragraphs_render_without_list_markers():
 
 def test_classify_paragraph_role_does_not_treat_emdash_prefix_as_list():
     """Text starting with '— ' should not be classified as list by text pattern."""
-    from document import classify_paragraph_role
+    from docxaicorrector.document._document import classify_paragraph_role
 
     assert classify_paragraph_role("— Это прямая речь", "Body Text") == "body"
     assert classify_paragraph_role("— Цитата из книги", "Normal") == "body"

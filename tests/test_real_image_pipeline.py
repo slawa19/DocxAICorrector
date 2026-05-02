@@ -11,12 +11,12 @@ import pytest
 from dotenv import load_dotenv
 from PIL import Image
 
-import image_generation
-import real_image_manifest
-from config import get_client, load_app_config
-from constants import ENV_PATH
-from image_analysis import analyze_image
-from image_reconstruction import reconstruct_image
+import docxaicorrector.image.generation as image_generation
+import docxaicorrector.real_image.manifest as real_image_manifest
+from docxaicorrector.core.config import get_client, load_app_config
+from docxaicorrector.core.constants import ENV_PATH
+from docxaicorrector.image.analysis import analyze_image
+from docxaicorrector.image.reconstruction import reconstruct_image
 
 
 TESTS_DIR = Path(__file__).parent

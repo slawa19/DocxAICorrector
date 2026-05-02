@@ -1,8 +1,9 @@
-import image_validation
-from image_pipeline import _apply_validation_result_to_asset
-from image_pipeline_policy import resolve_validation_delivery_outcome
-from models import ImageAnalysisResult, ImageAsset, ImageValidationResult
 from typing import Any
+
+import docxaicorrector.image.validation as image_validation
+from docxaicorrector.core.models import ImageAnalysisResult, ImageAsset, ImageValidationResult
+from docxaicorrector.image.pipeline import _apply_validation_result_to_asset
+from docxaicorrector.image.pipeline_policy import resolve_validation_delivery_outcome
 
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"test-image-payload"

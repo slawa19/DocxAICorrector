@@ -1,5 +1,5 @@
-import app
-from runtime_artifacts import AppReadyMarkerWriter
+import docxaicorrector.runtime.artifacts as runtime_artifacts
+import docxaicorrector.ui._app as app
 from conftest import SessionState as SessionState
 
 
@@ -63,7 +63,7 @@ def test_schedule_stale_persisted_sources_cleanup_resets_flag_under_lock(monkeyp
     monkeypatch.setattr(app, "_CLEANUP_THREAD_STARTED", False)
     monkeypatch.setattr(app.threading, "Thread", ImmediateThread)
 
-    import restart_store
+    import docxaicorrector.processing.restart_store as restart_store
 
     cleanup_calls = []
     monkeypatch.setattr(restart_store, "cleanup_stale_persisted_sources", lambda **kwargs: cleanup_calls.append(kwargs))
@@ -78,7 +78,7 @@ def test_schedule_stale_persisted_sources_cleanup_resets_flag_under_lock(monkeyp
 def test_app_ready_marker_writer_throttles_repeated_writes_within_window(tmp_path):
     ready_path = tmp_path / ".run" / "app.ready"
     time_values = iter([100.0, 105.0, 116.0])
-    writer = AppReadyMarkerWriter(
+    writer = runtime_artifacts.AppReadyMarkerWriter(
         path=ready_path,
         freshness_window_seconds=15.0,
         time_fn=lambda: next(time_values),

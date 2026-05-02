@@ -4,11 +4,11 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RUNTIME_MODULES = (
-    PROJECT_ROOT / "image_generation.py",
-    PROJECT_ROOT / "image_analysis.py",
-    PROJECT_ROOT / "image_validation.py",
-    PROJECT_ROOT / "image_reconstruction.py",
-    PROJECT_ROOT / "image_pipeline.py",
+    PROJECT_ROOT / "src" / "docxaicorrector" / "image" / "generation.py",
+    PROJECT_ROOT / "src" / "docxaicorrector" / "image" / "analysis.py",
+    PROJECT_ROOT / "src" / "docxaicorrector" / "image" / "validation.py",
+    PROJECT_ROOT / "src" / "docxaicorrector" / "image" / "reconstruction.py",
+    PROJECT_ROOT / "src" / "docxaicorrector" / "image" / "pipeline.py",
 )
 FORBIDDEN_MODEL_LITERALS = {
     "gpt-5.4",

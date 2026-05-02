@@ -11,9 +11,9 @@ from docx.styles.style import ParagraphStyle, _TableStyle
 
 from PIL import Image
 
-import generation
-import image_shared
-from image_generation import _normalize_generated_document_background
+import docxaicorrector.generation._generation as generation
+import docxaicorrector.image.shared as image_shared
+from docxaicorrector.image.generation import _normalize_generated_document_background
 
 _THEME_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme"
 _DRAWINGML_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"

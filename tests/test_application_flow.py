@@ -5,11 +5,11 @@ from typing import Any, cast
 
 import pytest
 
-import application_flow
-import preparation
-import processing_runtime
-import restart_store
-import state
+import docxaicorrector.processing.preparation as preparation
+import docxaicorrector.processing.processing_runtime as processing_runtime
+import docxaicorrector.processing.restart_store as restart_store
+import docxaicorrector.runtime.state as state
+import docxaicorrector.ui.application_flow as application_flow
 from conftest import SessionState as SessionState  # noqa: F811
 from docx import Document
 

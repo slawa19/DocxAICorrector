@@ -1,4 +1,4 @@
-import generation
+import docxaicorrector.generation._generation as generation
 
 
 def test_strip_markdown_for_narration_removes_markdown_and_placeholders_but_preserves_tags():

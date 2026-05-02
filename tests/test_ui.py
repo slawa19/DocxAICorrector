@@ -2,7 +2,7 @@ from contextlib import nullcontext
 
 import pytest
 
-import ui
+import docxaicorrector.ui._ui as ui
 from conftest import SessionState as SessionState  # noqa: F811
 
 

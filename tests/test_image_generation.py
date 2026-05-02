@@ -3,9 +3,9 @@ from io import BytesIO
 from types import SimpleNamespace
 from typing import Any, cast
 
-import image_generation
+import docxaicorrector.image.generation as image_generation
 from PIL import Image, ImageDraw
-from models import ImageAnalysisResult
+from docxaicorrector.core.models import ImageAnalysisResult
 
 
 class RetryableError(Exception):

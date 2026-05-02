@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from runtime_artifact_retention import prune_artifact_dir, prune_ui_result_artifact_groups
+from docxaicorrector.runtime.artifact_retention import prune_artifact_dir, prune_ui_result_artifact_groups
 
 
 def _write_file(path: Path, *, mtime: float, content: str = "{}") -> None:
@@ -111,7 +111,7 @@ def test_prune_artifact_dir_emits_debug_log_event_once(tmp_path, monkeypatch):
         captured.append((level, event, message, context))
         return "evt-stub"
 
-    import logger
+    import docxaicorrector.core.logger as logger
 
     monkeypatch.setattr(logger, "log_event", fake_log_event)
 

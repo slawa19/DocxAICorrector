@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from config import load_project_dotenv
+from docxaicorrector.core.config import load_project_dotenv
 
 
 pytestmark = [pytest.mark.integration]

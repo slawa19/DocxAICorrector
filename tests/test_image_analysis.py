@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 from PIL import Image, ImageDraw
 
-import image_analysis
-import image_generation
+import docxaicorrector.image.analysis as image_analysis
+import docxaicorrector.image.generation as image_generation
 
 
 class _FakeResponsesClient:

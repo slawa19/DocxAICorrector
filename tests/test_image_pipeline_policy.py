@@ -1,6 +1,6 @@
-from models import ImageAnalysisResult, ImageAsset, ImageValidationResult
-from image_pipeline import score_semantic_candidate
-from image_pipeline_policy import (
+from docxaicorrector.core.models import ImageAnalysisResult, ImageAsset, ImageValidationResult
+from docxaicorrector.image.pipeline import score_semantic_candidate
+from docxaicorrector.image.pipeline_policy import (
     build_generation_analysis,
     is_advisory_safe_fallback,
     is_hard_validation_failure,

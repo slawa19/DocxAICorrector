@@ -2,9 +2,9 @@ from io import BytesIO
 
 import pytest
 from PIL import Image, ImageDraw
-from models import ImageAnalysisResult, ImageAsset, ImageValidationResult
-import processing_service
-import state
+import docxaicorrector.processing.processing_service as processing_service
+import docxaicorrector.runtime.state as state
+from docxaicorrector.core.models import ImageAnalysisResult, ImageAsset, ImageValidationResult
 from conftest import SessionState as SessionState  # noqa: F811
 
 

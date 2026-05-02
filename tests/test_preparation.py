@@ -3,14 +3,14 @@ from threading import Event, Thread
 
 from docx import Document
 
-from config import ModelRegistry, TextModelConfig
-from models import ImageAsset, ImageVariantCandidate
-from models import DocumentBlock
-from models import LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport
-from models import ParagraphClassification, ParagraphUnit, StructureMap
-from models import StructureRecognitionSummary, StructureRepairReport
-import preparation
-from processing_runtime import FrozenUploadPayload, build_in_memory_uploaded_file, build_preparation_request_marker
+import docxaicorrector.processing.preparation as preparation
+from docxaicorrector.core.config import ModelRegistry, TextModelConfig
+from docxaicorrector.core.models import DocumentBlock
+from docxaicorrector.core.models import ImageAsset, ImageVariantCandidate
+from docxaicorrector.core.models import LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport
+from docxaicorrector.core.models import ParagraphClassification, ParagraphUnit, StructureMap
+from docxaicorrector.core.models import StructureRecognitionSummary, StructureRepairReport
+from docxaicorrector.processing.processing_runtime import FrozenUploadPayload, build_in_memory_uploaded_file, build_preparation_request_marker
 
 
 def setup_function():

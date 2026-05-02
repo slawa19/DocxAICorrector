@@ -1,5 +1,5 @@
-from document_structure_repair import repair_pdf_derived_structure
-from models import ParagraphUnit
+from docxaicorrector.core.models import ParagraphUnit
+from docxaicorrector.document.structure_repair import repair_pdf_derived_structure
 
 
 def _paragraph(index: int, text: str, *, role: str = "body", structural_role: str = "body", paragraph_alignment=None) -> ParagraphUnit:

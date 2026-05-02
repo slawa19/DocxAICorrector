@@ -1,10 +1,10 @@
 import pytest
 
-import app
-import application_flow
-import compare_panel
+import docxaicorrector.ui._app as app
+import docxaicorrector.ui.application_flow as application_flow
+import docxaicorrector.ui.compare_panel as compare_panel
 from conftest import SessionState as SessionState
-from models import StructureRecognitionSummary
+from docxaicorrector.core.models import StructureRecognitionSummary
 
 
 @pytest.fixture(autouse=True)

@@ -2,7 +2,7 @@ from typing import cast
 
 import pytest
 
-from message_formatting import (
+from docxaicorrector.generation.message_formatting import (
     build_block_journal_entry,
     build_image_journal_entry,
     derive_live_status_title,

@@ -7,8 +7,8 @@ import time
 import tomllib
 from pathlib import Path
 
-import config
-import generation
+import docxaicorrector.core.config as config
+import docxaicorrector.generation._generation as generation
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

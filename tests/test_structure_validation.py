@@ -1,9 +1,9 @@
 import json
 from pathlib import Path
 
-from models import ParagraphUnit
-import structure_validation
-from structure_validation import StructureValidationReport, validate_structure_quality
+import docxaicorrector.structure.validation as structure_validation
+from docxaicorrector.core.models import ParagraphUnit
+from docxaicorrector.structure.validation import StructureValidationReport, validate_structure_quality
 
 
 def _paragraph(

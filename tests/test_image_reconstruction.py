@@ -1,6 +1,7 @@
 """Tests for the deterministic image reconstruction pipeline."""
 
-import image_reconstruction
+import docxaicorrector.image.generation as image_generation
+import docxaicorrector.image.reconstruction as image_reconstruction
 import json
 import math
 from io import BytesIO
@@ -10,7 +11,8 @@ from unittest.mock import MagicMock, patch
 
 from PIL import Image, ImageDraw
 
-from image_reconstruction import (
+from docxaicorrector.core.models import ImageAnalysisResult
+from docxaicorrector.image.reconstruction import (
     _draw_arrowhead,
     _hex_to_rgba,
     _parse_scene_graph_json,
@@ -21,7 +23,6 @@ from image_reconstruction import (
     _validate_scene_graph,
     render_scene_graph as _render_scene_graph_impl,
 )
-from models import ImageAnalysisResult
 
 
 DEFAULT_TEST_RENDER_CONFIG = {
@@ -279,7 +280,7 @@ class TestRenderSceneGraph:
 
     def test_plain_table_path_renders_text_for_each_non_empty_cell(self, monkeypatch):
         draw_calls = []
-        monkeypatch.setattr("image_reconstruction._draw_box_text", lambda *args, **kwargs: draw_calls.append(args[1]))
+        monkeypatch.setattr(image_reconstruction, "_draw_box_text", lambda *args, **kwargs: draw_calls.append(args[1]))
 
         image = Image.new("RGBA", (220, 120), (255, 255, 255, 255))
         draw = ImageDraw.Draw(image)
@@ -307,7 +308,7 @@ class TestRenderSceneGraph:
 
     def test_styled_matrix_renders_each_cell_text_once(self, monkeypatch):
         draw_calls = []
-        monkeypatch.setattr("image_reconstruction._draw_box_text", lambda *args, **kwargs: draw_calls.append(args[1]))
+        monkeypatch.setattr(image_reconstruction, "_draw_box_text", lambda *args, **kwargs: draw_calls.append(args[1]))
 
         image = Image.new("RGBA", (320, 220), (255, 255, 255, 255))
         draw = ImageDraw.Draw(image)
@@ -572,7 +573,7 @@ class TestRenderSceneGraph:
 
 class TestReconstructionRouting:
     def test_diagram_like_jpeg_analysis_sets_deterministic_strategy(self):
-        from image_analysis import analyze_image
+        from docxaicorrector.image.analysis import analyze_image
 
         jpeg_bytes = _build_diagram_like_jpeg()
         client = SimpleNamespace(
@@ -593,7 +594,7 @@ class TestReconstructionRouting:
         assert result.semantic_redraw_allowed is True
 
     def test_photo_analysis_keeps_safe_strategy(self):
-        from image_analysis import analyze_image
+        from docxaicorrector.image.analysis import analyze_image
 
         jpeg_bytes = _build_photo_like_jpeg()
         result = analyze_image(jpeg_bytes, model="test-model", mime_type="image/jpeg")
@@ -741,8 +742,8 @@ class TestGenerationReconstructionPath:
         )
         rendered_png = render_scene_graph(mock_scene_graph, original_size=(100, 80))
 
-        with patch("image_generation._generate_reconstructed_candidate", return_value=rendered_png) as mock_recon:
-            from image_generation import generate_image_candidate
+        with patch.object(image_generation, "_generate_reconstructed_candidate", return_value=rendered_png) as mock_recon:
+            from docxaicorrector.image.generation import generate_image_candidate
 
             result = generate_image_candidate(
                 png_bytes,
@@ -770,11 +771,8 @@ class TestGenerationReconstructionPath:
         )
         png_bytes = _build_test_png()
 
-        with patch(
-            "image_generation.reconstruct_image",
-            side_effect=RuntimeError("VLM API unavailable"),
-        ):
-            from image_generation import generate_image_candidate
+        with patch.object(image_generation, "reconstruct_image", side_effect=RuntimeError("VLM API unavailable")):
+            from docxaicorrector.image.generation import generate_image_candidate
 
             result = generate_image_candidate(
                 png_bytes,
@@ -803,8 +801,8 @@ class TestGenerationReconstructionPath:
         )
         png_bytes = _build_test_png()
 
-        with patch("image_generation._generate_reconstructed_candidate") as mock_recon:
-            from image_generation import generate_image_candidate
+        with patch.object(image_generation, "_generate_reconstructed_candidate") as mock_recon:
+            from docxaicorrector.image.generation import generate_image_candidate
 
             result = generate_image_candidate(png_bytes, analysis, mode="safe", model_config=resolved_test_model_registry)
             mock_recon.assert_not_called()

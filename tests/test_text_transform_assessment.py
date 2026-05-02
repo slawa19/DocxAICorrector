@@ -1,4 +1,4 @@
-import text_transform_assessment
+import docxaicorrector.text.transform_assessment as text_transform_assessment
 
 
 def test_assess_text_transform_excerpt_returns_unknown_for_empty_text():

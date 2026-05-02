@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-import processing_runtime
-import state
-from runtime_events import (
+import docxaicorrector.processing.processing_runtime as processing_runtime
+import docxaicorrector.runtime.state as state
+from docxaicorrector.runtime.events import (
     AppendImageLogEvent,
     AppendLogEvent,
     FinalizeProcessingStatusEvent,

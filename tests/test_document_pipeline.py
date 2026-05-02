@@ -7,12 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
-import document_pipeline
-import document_pipeline_late_phases
+import docxaicorrector.pipeline._pipeline as document_pipeline
+import docxaicorrector.pipeline.late_phases as document_pipeline_late_phases
 from docx import Document
 
-from document import extract_document_content_from_docx
-from models import ParagraphUnit
+from docxaicorrector.core.models import ParagraphUnit
+from docxaicorrector.document._document import extract_document_content_from_docx
 
 
 PNG_BYTES = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK3cAAAAASUVORK5CYII=")
@@ -2291,8 +2291,12 @@ def test_run_document_processing_end_to_end_produces_openable_docx_artifact(tmp_
         generate_markdown_block=lambda **kwargs: final_markdown,
         process_document_images=lambda **kwargs: image_assets,
         convert_markdown_to_docx_bytes=build_docx_from_markdown,
-        preserve_source_paragraph_properties=__import__("formatting_transfer").preserve_source_paragraph_properties,
-        reinsert_inline_images=__import__("image_reinsertion").reinsert_inline_images,
+        preserve_source_paragraph_properties=__import__(
+            "docxaicorrector.generation.formatting_transfer", fromlist=["preserve_source_paragraph_properties"]
+        ).preserve_source_paragraph_properties,
+        reinsert_inline_images=__import__(
+            "docxaicorrector.image.reinsertion", fromlist=["reinsert_inline_images"]
+        ).reinsert_inline_images,
     )
 
     assert result == "succeeded"

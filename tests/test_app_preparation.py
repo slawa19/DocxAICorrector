@@ -1,10 +1,10 @@
-import app
-import application_flow
-import compare_panel
-import processing_runtime
-from models import StructureRecognitionSummary
-from models import StructureRepairReport
-from structure_validation import StructureValidationReport
+import docxaicorrector.processing.processing_runtime as processing_runtime
+import docxaicorrector.ui._app as app
+import docxaicorrector.ui.application_flow as application_flow
+import docxaicorrector.ui.compare_panel as compare_panel
+from docxaicorrector.core.models import StructureRecognitionSummary
+from docxaicorrector.core.models import StructureRepairReport
+from docxaicorrector.structure.validation import StructureValidationReport
 from conftest import SessionState as SessionState
 
 

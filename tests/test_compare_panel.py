@@ -1,5 +1,5 @@
-import compare_panel
-from models import ImageAsset
+import docxaicorrector.ui.compare_panel as compare_panel
+from docxaicorrector.core.models import ImageAsset
 
 
 def test_render_compare_all_apply_panel_is_noop_for_completed_compare_assets(monkeypatch):

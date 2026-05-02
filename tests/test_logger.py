@@ -4,8 +4,8 @@ from typing import cast
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import logger
-from logger import _WSLSafeRotatingFileHandler
+import docxaicorrector.core.logger as logger
+from docxaicorrector.core.logger import _WSLSafeRotatingFileHandler
 
 
 def _reset_named_logger(monkeypatch):

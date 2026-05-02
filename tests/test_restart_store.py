@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-import restart_store
+import docxaicorrector.processing.restart_store as restart_store
 
 
 def test_store_and_load_restart_source_roundtrip(tmp_path, monkeypatch):

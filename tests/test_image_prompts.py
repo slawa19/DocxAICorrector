@@ -3,8 +3,8 @@ from typing import Any
 
 import pytest
 
-from constants import PROMPTS_DIR
-import image_prompts
+import docxaicorrector.image.prompts as image_prompts
+from docxaicorrector.core.constants import PROMPTS_DIR
 
 PRESERVATION_VARIANTS = ("preserve", "keep the same")
 ANTI_HALLUCINATION_VARIANTS = ("do not invent", "avoid guessing", "avoid hallucinating")

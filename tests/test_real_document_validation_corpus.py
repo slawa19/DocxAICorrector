@@ -5,18 +5,24 @@ from typing import Any, cast
 
 import pytest
 
-import processing_runtime
-from generation import ensure_pandoc_available
-from models import DocumentBlock, LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport, ParagraphUnit, RelationNormalizationReport
+import docxaicorrector.processing.processing_runtime as processing_runtime
+import docxaicorrector.validation.structural as real_document_validation_structural
+from docxaicorrector.core.models import (
+    DocumentBlock,
+    LayoutArtifactCleanupReport,
+    ParagraphBoundaryNormalizationReport,
+    ParagraphUnit,
+    RelationNormalizationReport,
+)
+from docxaicorrector.generation._generation import ensure_pandoc_available
 
 
 def _cleanup_report() -> LayoutArtifactCleanupReport:
     return LayoutArtifactCleanupReport(0, 0, 0, 0, 0, 0, cleanup_applied=True)
 
 
-from real_document_validation_profiles import load_validation_registry
-import real_document_validation_structural
-from real_document_validation_structural import (
+from docxaicorrector.validation.profiles import load_validation_registry
+from docxaicorrector.validation.structural import (
     evaluate_extraction_profile,
     evaluate_structural_preparation_diagnostic,
     run_structural_passthrough_validation,

@@ -102,7 +102,9 @@ def validate_manifest(
     current_rendered = render_manifest(current_entries)
     updated_rendered = render_manifest(updated_entries)
     if current_rendered != updated_rendered:
-        raise RuntimeError("Manifest drift detected. Run real_image_manifest.py --write to refresh bytes and output names.")
+        raise RuntimeError(
+            "Manifest drift detected. Run python -m docxaicorrector.real_image.manifest --write to refresh bytes and output names."
+        )
     return updated_entries
 
 

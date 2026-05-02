@@ -1,12 +1,12 @@
-import config
+import docxaicorrector.core.config as config
 
-from document import (
+from docxaicorrector.core.models import DocumentBlock, ParagraphUnit
+from docxaicorrector.document._document import (
     build_editing_jobs,
     build_marker_wrapped_block_text,
     build_paragraph_relations,
     build_semantic_blocks,
 )
-from models import DocumentBlock, ParagraphUnit
 
 
 def test_build_semantic_blocks_keeps_heading_with_following_body():

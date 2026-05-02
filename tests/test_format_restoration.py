@@ -5,9 +5,9 @@ from io import BytesIO
 from pathlib import Path
 from typing import cast
 
-import config
-import formatting_diagnostics_retention
-import formatting_transfer
+import docxaicorrector.core.config as config
+import docxaicorrector.generation.formatting_diagnostics_retention as formatting_diagnostics_retention
+import docxaicorrector.generation.formatting_transfer as formatting_transfer
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
@@ -15,8 +15,9 @@ from docx.oxml.ns import qn
 from docx.shared import Inches
 from docx.shared import Pt
 
-from document import build_document_text, extract_document_content_from_docx
-from formatting_transfer import (
+from docxaicorrector.core.models import ParagraphUnit
+from docxaicorrector.document._document import build_document_text, extract_document_content_from_docx
+from docxaicorrector.generation.formatting_transfer import (
     _build_output_formatting_diagnostics,
     _map_source_target_paragraphs,
     _apply_minimal_caption_formatting,
@@ -29,7 +30,6 @@ from formatting_transfer import (
     preserve_source_paragraph_properties,
     restore_source_formatting,
 )
-from models import ParagraphUnit
 
 
 PNG_BYTES = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK3cAAAAASUVORK5CYII=")

@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from runtime_artifacts import write_ui_result_artifacts
+from docxaicorrector.runtime.artifacts import write_ui_result_artifacts
 
 
 def test_write_ui_result_artifacts_persists_markdown_and_docx_pair(tmp_path):

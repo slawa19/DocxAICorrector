@@ -1,8 +1,9 @@
-from models import ImageAsset
-import processing_service
-from processing_service import ProcessingService
-from runtime_events import AppendLogEvent, FinalizeProcessingStatusEvent, SetStateEvent, WorkerCompleteEvent
 from typing import Any, cast
+
+import docxaicorrector.processing.processing_service as processing_service
+from docxaicorrector.core.models import ImageAsset
+from docxaicorrector.processing.processing_service import ProcessingService
+from docxaicorrector.runtime.events import AppendLogEvent, FinalizeProcessingStatusEvent, SetStateEvent, WorkerCompleteEvent
 
 
 def _build_service(**overrides):
@@ -46,7 +47,9 @@ def test_run_document_processing_fails_on_placeholder_integrity_mismatch():
         generate_markdown_block_fn=lambda **kwargs: "Обработанный блок без placeholder",
         inspect_placeholder_integrity_fn=lambda markdown, assets: {"img_001": "lost"},
         convert_markdown_to_docx_bytes_fn=lambda markdown: (_ for _ in ()).throw(AssertionError("must not build docx")),
-        run_document_processing_impl_fn=__import__("document_pipeline").run_document_processing,
+        run_document_processing_impl_fn=__import__(
+            "docxaicorrector.pipeline._pipeline", fromlist=["run_document_processing"]
+        ).run_document_processing,
     )
 
     result = service.run_document_processing(

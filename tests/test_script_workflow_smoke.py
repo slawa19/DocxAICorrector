@@ -114,6 +114,7 @@ def _assert_src_bootstrap_results_in_src_first(script_path: Path) -> None:
     start_index: int | None = None
     helper_index: int | None = None
     invocation_index: int | None = None
+    invocation_line: str | None = None
 
     for index, line in enumerate(source_lines):
         stripped = line.strip()
@@ -122,15 +123,18 @@ def _assert_src_bootstrap_results_in_src_first(script_path: Path) -> None:
         if helper_index is None and stripped.startswith("def _ensure_src_first_import_order("):
             helper_index = index
         if stripped in {
+            "_ensure_src_first_import_order(SRC_ROOT)",
             "_ensure_src_first_import_order(PROJECT_ROOT, SRC_ROOT)",
             "_ensure_src_first_import_order(REPO_ROOT, SRC_ROOT)",
             "_ensure_src_first_import_order(ROOT_DIR, SRC_ROOT)",
         }:
             invocation_index = index
+            invocation_line = stripped
 
     assert start_index is not None, script_path
     assert helper_index is not None and helper_index >= start_index, script_path
     assert invocation_index is not None and invocation_index >= helper_index, script_path
+    assert invocation_line is not None, script_path
 
     helper_name = None
     if "REPO_ROOT = _resolve_repo_root()" in source_text:
@@ -147,8 +151,12 @@ def _assert_src_bootstrap_results_in_src_first(script_path: Path) -> None:
         namespace[helper_name] = lambda: script_path.parents[2]
     exec(bootstrap_snippet, namespace)
 
-    root_name = next(name for name in ("PROJECT_ROOT", "REPO_ROOT", "ROOT_DIR") if name in namespace)
-    assert fake_sys.path[:2] == [str(namespace["SRC_ROOT"]), str(namespace[root_name])]
+    expected_prefix = [str(namespace["SRC_ROOT"])]
+    if invocation_line != "_ensure_src_first_import_order(SRC_ROOT)":
+        root_name = next(name for name in ("PROJECT_ROOT", "REPO_ROOT", "ROOT_DIR") if name in invocation_line)
+        expected_prefix.append(str(namespace[root_name]))
+
+    assert fake_sys.path[: len(expected_prefix)] == expected_prefix
 
 
 def test_test_sh_run_test_file_smoke() -> None:
@@ -511,54 +519,25 @@ def test_codeowners_protects_moved_production_implementation_paths() -> None:
     assert "/app.py @slawa19" in codeowners_text
     assert "/app.pyi @slawa19" in codeowners_text
     assert "/src/docxaicorrector/ui/_app.py @slawa19" in codeowners_text
-    assert "/constants.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/core/constants.py @slawa19" in codeowners_text
-    assert "/logger.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/core/logger.py @slawa19" in codeowners_text
-    assert "/config.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/core/config.py @slawa19" in codeowners_text
-    assert "/models.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/core/models.py @slawa19" in codeowners_text
-    assert "/state.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/runtime/state.py @slawa19" in codeowners_text
-    assert "/preparation.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/processing/preparation.py @slawa19" in codeowners_text
-    assert "/processing_runtime.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/processing/processing_runtime.py @slawa19" in codeowners_text
-    assert "/processing_service.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/processing/processing_service.py @slawa19" in codeowners_text
-    assert "/generation.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/generation/_generation.py @slawa19" in codeowners_text
-    assert "/formatting_transfer.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/generation/formatting_transfer.py @slawa19" in codeowners_text
-    assert "/formatting_diagnostics_retention.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/generation/formatting_diagnostics_retention.py @slawa19" in codeowners_text
-    assert "/message_formatting.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/generation/message_formatting.py @slawa19" in codeowners_text
-    assert "/openai_response_utils.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/generation/openai_response_utils.py @slawa19" in codeowners_text
-    assert "/search.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/generation/search.py @slawa19" in codeowners_text
-    assert "/real_document_validation_common.py @slawa19" in codeowners_text
-    assert "/real_document_validation_common.pyi @slawa19" in codeowners_text
     assert "/src/docxaicorrector/validation/common.py @slawa19" in codeowners_text
-    assert "/real_document_validation_profiles.py @slawa19" in codeowners_text
-    assert "/real_document_validation_profiles.pyi @slawa19" in codeowners_text
     assert "/src/docxaicorrector/validation/profiles.py @slawa19" in codeowners_text
-    assert "/real_document_validation_structural.py @slawa19" in codeowners_text
-    assert "/real_document_validation_structural.pyi @slawa19" in codeowners_text
     assert "/src/docxaicorrector/validation/structural.py @slawa19" in codeowners_text
-    assert "/real_image_manifest.py @slawa19" in codeowners_text
     assert "/src/docxaicorrector/real_image/manifest.py @slawa19" in codeowners_text
-    assert "/ui.py @slawa19" in codeowners_text
-    assert "/ui.pyi @slawa19" in codeowners_text
     assert "/src/docxaicorrector/ui/_ui.py @slawa19" in codeowners_text
-    assert "/app_runtime.py @slawa19" in codeowners_text
-    assert "/app_runtime.pyi @slawa19" in codeowners_text
     assert "/src/docxaicorrector/ui/app_runtime.py @slawa19" in codeowners_text
-    assert "/application_flow.py @slawa19" in codeowners_text
-    assert "/application_flow.pyi @slawa19" in codeowners_text
     assert "/src/docxaicorrector/ui/application_flow.py @slawa19" in codeowners_text
-    assert "/compare_panel.py @slawa19" in codeowners_text
-    assert "/compare_panel.pyi @slawa19" in codeowners_text
     assert "/src/docxaicorrector/ui/compare_panel.py @slawa19" in codeowners_text

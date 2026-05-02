@@ -1,8 +1,8 @@
 import time
 
-import document_layout_cleanup
-from document_layout_cleanup import clean_paragraph_layout_artifacts, normalize_layout_artifact_text
-from models import ParagraphUnit
+import docxaicorrector.document.layout_cleanup as document_layout_cleanup
+from docxaicorrector.core.models import ParagraphUnit
+from docxaicorrector.document.layout_cleanup import clean_paragraph_layout_artifacts, normalize_layout_artifact_text
 
 
 def _paragraph(text: str, *, role: str = "body", structural_role: str = "body", source_index: int = 0, list_kind: str | None = None) -> ParagraphUnit:

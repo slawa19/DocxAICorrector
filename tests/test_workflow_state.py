@@ -1,4 +1,4 @@
-from workflow_state import IdleViewState, ProcessingOutcome, derive_idle_view_state, has_restartable_outcome
+from docxaicorrector.runtime.workflow_state import IdleViewState, ProcessingOutcome, derive_idle_view_state, has_restartable_outcome
 
 
 def test_has_restartable_outcome_accepts_stopped_and_failed():

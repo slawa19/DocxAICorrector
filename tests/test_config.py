@@ -4,8 +4,8 @@ from typing import cast
 
 import pytest
 
-import config
-import constants
+import docxaicorrector.core.config as config
+import docxaicorrector.core.constants as constants
 from tests.conftest import (
     TEST_IMAGE_ANALYSIS_MODEL,
     TEST_IMAGE_EDIT_MODEL,

@@ -1,7 +1,7 @@
-import image_pipeline
+import docxaicorrector.image.pipeline as image_pipeline
 from typing import cast
-from models import ImageAnalysisResult, ImageAsset, ImageDeliveryPayload, ImageValidationResult, ImageVariantCandidate
-from image_pipeline import (
+from docxaicorrector.core.models import ImageAnalysisResult, ImageAsset, ImageDeliveryPayload, ImageValidationResult, ImageVariantCandidate
+from docxaicorrector.image.pipeline import (
     ImageProcessingPlan,
     ImageProcessingContext,
     _build_compare_variant_candidate,

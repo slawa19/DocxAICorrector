@@ -1,7 +1,7 @@
 import pytest
 
-import document_pipeline
-import document_pipeline_output_validation
+import docxaicorrector.pipeline._pipeline as document_pipeline
+import docxaicorrector.pipeline.output_validation as document_pipeline_output_validation
 
 
 class AssetStub:

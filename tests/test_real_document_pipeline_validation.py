@@ -12,7 +12,7 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from models import ParagraphUnit
+from docxaicorrector.core.models import ParagraphUnit
 
 
 PNG_BYTES = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK3cAAAAASUVORK5CYII=")
@@ -785,7 +785,7 @@ def test_full_tier_runtime_contract_is_nested_only() -> None:
 
 def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, monkeypatch) -> None:
     validation = _load_validation_module()
-    from models import ImageAsset, ParagraphUnit
+    from docxaicorrector.core.models import ImageAsset, ParagraphUnit
 
     source_path = tmp_path / "legacy.doc"
     source_bytes = bytes.fromhex("D0CF11E0A1B11AE1") + b"legacy-source"

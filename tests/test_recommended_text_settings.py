@@ -1,4 +1,4 @@
-import recommended_text_settings
+import docxaicorrector.ui.recommended_text_settings as recommended_text_settings
 
 
 def test_derive_recommended_text_settings_prefers_edit_when_text_matches_target_language():

@@ -1,9 +1,9 @@
 from typing import Any
 from pathlib import Path
 
-from config import load_app_config
-from real_document_validation_common import build_validation_runtime_config
-from real_document_validation_profiles import PROJECT_ROOT, apply_runtime_resolution_to_app_config, load_validation_registry, resolve_runtime_resolution
+from docxaicorrector.core.config import load_app_config
+from docxaicorrector.validation.common import build_validation_runtime_config
+from docxaicorrector.validation.profiles import PROJECT_ROOT, apply_runtime_resolution_to_app_config, load_validation_registry, resolve_runtime_resolution
 
 
 def test_load_validation_registry_reads_lietaer_profile() -> None:

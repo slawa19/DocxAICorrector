@@ -2,11 +2,11 @@ from io import BytesIO
 import base64
 import json
 
-import config
+import docxaicorrector.core.config as config
+import docxaicorrector.document._document as document_module
+import docxaicorrector.document.boundary_review as boundary_review_module
 from docx import Document as make_document
-import document as document_module
-import document_boundary_review as boundary_review_module
-from models import (
+from docxaicorrector.core.models import (
     ParagraphBoundaryDecision,
     ParagraphBoundaryNormalizationReport,
     ParagraphRelationDecision,
@@ -15,7 +15,7 @@ from models import (
     RelationNormalizationReport,
 )
 
-from document import (
+from docxaicorrector.document._document import (
     build_document_text,
     build_marker_wrapped_block_text,
     build_paragraph_relations,

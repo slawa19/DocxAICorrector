@@ -12,6 +12,32 @@ import pytest
 
 T = TypeVar("T")
 
+PACKAGE_MODULES = (
+    "docxaicorrector.ui._app",
+    "docxaicorrector.ui._ui",
+    "docxaicorrector.ui.app_runtime",
+    "docxaicorrector.ui.application_flow",
+    "docxaicorrector.ui.compare_panel",
+    "docxaicorrector.core.config",
+    "docxaicorrector.core.constants",
+    "docxaicorrector.core.logger",
+    "docxaicorrector.core.models",
+    "docxaicorrector.processing.preparation",
+    "docxaicorrector.processing.processing_runtime",
+    "docxaicorrector.processing.processing_service",
+    "docxaicorrector.runtime.state",
+    "docxaicorrector.generation._generation",
+    "docxaicorrector.generation.formatting_transfer",
+    "docxaicorrector.generation.formatting_diagnostics_retention",
+    "docxaicorrector.generation.message_formatting",
+    "docxaicorrector.generation.openai_response_utils",
+    "docxaicorrector.generation.search",
+    "docxaicorrector.real_image.manifest",
+    "docxaicorrector.validation.common",
+    "docxaicorrector.validation.profiles",
+    "docxaicorrector.validation.structural",
+)
+
 
 def _identity_cache_resource(func: T | None = None, **_: object) -> T | Callable[[T], T]:
     if func is None:
@@ -29,79 +55,35 @@ def _streamlit_stub(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "streamlit", cast(Any, stub))
 
 
-@pytest.mark.parametrize(
-    ("root_module_name", "target_module_name"),
-    [
-        ("app", "docxaicorrector.ui._app"),
-        ("ui", "docxaicorrector.ui._ui"),
-        ("app_runtime", "docxaicorrector.ui.app_runtime"),
-        ("application_flow", "docxaicorrector.ui.application_flow"),
-        ("compare_panel", "docxaicorrector.ui.compare_panel"),
-        ("config", "docxaicorrector.core.config"),
-        ("constants", "docxaicorrector.core.constants"),
-        ("logger", "docxaicorrector.core.logger"),
-        ("models", "docxaicorrector.core.models"),
-        ("preparation", "docxaicorrector.processing.preparation"),
-        ("processing_runtime", "docxaicorrector.processing.processing_runtime"),
-        ("processing_service", "docxaicorrector.processing.processing_service"),
-        ("state", "docxaicorrector.runtime.state"),
-        ("generation", "docxaicorrector.generation._generation"),
-        ("formatting_transfer", "docxaicorrector.generation.formatting_transfer"),
-        ("formatting_diagnostics_retention", "docxaicorrector.generation.formatting_diagnostics_retention"),
-        ("message_formatting", "docxaicorrector.generation.message_formatting"),
-        ("openai_response_utils", "docxaicorrector.generation.openai_response_utils"),
-        ("search", "docxaicorrector.generation.search"),
-        ("real_image_manifest", "docxaicorrector.real_image.manifest"),
-        ("real_document_validation_common", "docxaicorrector.validation.common"),
-        ("real_document_validation_profiles", "docxaicorrector.validation.profiles"),
-        ("real_document_validation_structural", "docxaicorrector.validation.structural"),
-    ],
-)
-def test_root_shim_is_identity_alias(root_module_name: str, target_module_name: str) -> None:
-    root_module = importlib.import_module(root_module_name)
-    target_module = importlib.import_module(target_module_name)
+@pytest.mark.parametrize("module_name", PACKAGE_MODULES)
+def test_package_module_imports_succeed_without_root_shims(module_name: str) -> None:
+    module = importlib.import_module(module_name)
 
-    assert root_module is target_module
+    assert module.__name__ == module_name
 
 
-def test_acceptance_module_identities_hold() -> None:
-    import app
-    import config
-    import generation
-    import models
-    import state
-    import docxaicorrector.core.config as config_target
-    import docxaicorrector.core.models as models_target
-    import docxaicorrector.generation._generation as generation_target
-    import docxaicorrector.runtime.state as state_target
-    import docxaicorrector.ui._app as app_target
+def test_package_exports_remain_directly_reachable() -> None:
+    from docxaicorrector.processing.preparation import PreparedDocumentData as prepared_document_data
+    from docxaicorrector.processing.preparation import PreparedDocumentData as prepared_document_data_again
 
-    assert config is config_target
-    assert generation is generation_target
-    assert models is models_target
-    assert state is state_target
-    assert app is app_target
+    assert prepared_document_data is prepared_document_data_again
 
 
-def test_acceptance_export_identities_hold() -> None:
-    from preparation import PreparedDocumentData as root_prepared_document_data
-    from docxaicorrector.processing.preparation import PreparedDocumentData as package_prepared_document_data
-
-    assert root_prepared_document_data is package_prepared_document_data
-
-
-def test_app_script_execution_reuses_single_app_module_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_app_script_execution_delegates_to_package_main(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
     app_target = importlib.import_module("docxaicorrector.ui._app")
 
     def _fake_main() -> None:
+        captured["called"] = True
+        captured["target_module"] = sys.modules.get(app_target.__name__)
         captured["app_module"] = sys.modules.get("app")
-        captured["target_module"] = app_target
 
     monkeypatch.setattr(app_target, "main", _fake_main)
     sys.modules.pop("app", None)
 
     runpy.run_path(str(Path(__file__).resolve().parents[1] / "app.py"), run_name="__main__")
 
-    assert captured["app_module"] is captured["target_module"]
+    assert captured["called"] is True
+    assert captured["target_module"] is app_target
+    assert captured["app_module"] is None

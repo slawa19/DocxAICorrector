@@ -1,8 +1,8 @@
 import pytest
 
-from application_flow import PreparedRunContext
-from models import StructureRecognitionSummary
-import state
+from docxaicorrector.core.models import StructureRecognitionSummary
+from docxaicorrector.runtime import state
+from docxaicorrector.ui.application_flow import PreparedRunContext
 from conftest import SessionState as SessionState  # noqa: F811
 
 
