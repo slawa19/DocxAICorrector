@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from typing import Any, cast
 
 import docxaicorrector.pipeline._pipeline as document_pipeline
 import docxaicorrector.pipeline.late_phases as document_pipeline_late_phases
@@ -1867,7 +1868,9 @@ def test_build_translation_quality_report_prefers_entry_aware_false_heading_dete
     assert report["quality_status"] == "pass"
     assert report["false_fragment_heading_count"] == 0
     assert report["gate_reasons"] == []
-    assert report["boundary_recovery"]["recovered_heading_entries"] == [
+    boundary_recovery = cast(dict[str, Any], report["boundary_recovery"])
+
+    assert boundary_recovery["recovered_heading_entries"] == [
         {
             "paragraph_id": "p1",
             "source_index": 0,

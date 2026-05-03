@@ -423,6 +423,42 @@ def _run_structure_recognition(
         metrics={**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend},
     )
 
+    def _emit_structure_ai_progress(event) -> None:
+        if event.event == "prepared":
+            detail = f"Подготовлено {event.descriptor_count or 0} абзацев, запускаю AI-классификацию."
+        elif event.event == "window_started":
+            detail = f"Ожидаю ответ модели для окна {event.current_window or 1}/{max(event.total_windows, 1)}."
+        elif event.event == "window_failed":
+            detail = f"Окно {event.current_window or 1}/{max(event.total_windows, 1)} не классифицировано, продолжаю по остальным окнам."
+        elif event.event == "window_completed":
+            detail = f"Анализирую роли абзацев с помощью AI (окно {event.processed_windows}/{max(event.total_windows, 1)})."
+        elif event.event == "window_split":
+            detail = "AI-анализ большого окна, уточняю разбиением..."
+        elif event.event == "completed":
+            detail = "AI-классификация структуры завершена."
+        else:
+            detail = "Анализирую роли абзацев с помощью AI."
+
+        if event.event == "prepared":
+            progress = 0.35
+        elif event.event in {"window_started", "window_split", "window_failed", "window_completed", "completed"}:
+            progress = min(0.35 + 0.17 * (event.processed_windows / max(event.total_windows, 1)), 0.52)
+        else:
+            progress = 0.35
+        emit_preparation_progress(
+            progress_callback,
+            stage="Распознавание структуры…",
+            detail=detail,
+            progress=progress,
+            metrics={
+                **base_metrics,
+                "source_format": source_format,
+                "conversion_backend": conversion_backend,
+                "structure_ai_processed_windows": event.processed_windows,
+                "structure_ai_total_windows": event.total_windows,
+            },
+        )
+
     try:
         baseline = _capture_structure_baseline(paragraphs)
         cache_key = _build_structure_map_cache_key(paragraphs=paragraphs, app_config=app_config)
@@ -437,9 +473,24 @@ def _run_structure_recognition(
                 max_window_paragraphs=int(app_config.get("structure_recognition_max_window_paragraphs", 1800) or 1800),
                 overlap_paragraphs=int(app_config.get("structure_recognition_overlap_paragraphs", 50) or 50),
                 timeout=float(app_config.get("structure_recognition_timeout_seconds", 60) or 60),
+                progress_callback=_emit_structure_ai_progress,
             )
             if bool(app_config.get("structure_recognition_cache_enabled", True)):
                 _store_cached_structure_map(cache_key, structure_map)
+        else:
+            emit_preparation_progress(
+                progress_callback,
+                stage="Распознавание структуры…",
+                detail="Использую сохранённую карту структуры.",
+                progress=0.52,
+                metrics={
+                    **base_metrics,
+                    "source_format": source_format,
+                    "conversion_backend": conversion_backend,
+                    "structure_ai_processed_windows": 1,
+                    "structure_ai_total_windows": 1,
+                },
+            )
         if bool(app_config.get("structure_recognition_save_debug_artifacts", True)):
             artifact_path = _write_structure_map_debug_artifact(cache_key=cache_key, structure_map=structure_map, app_config=app_config)
             log_event(
@@ -448,6 +499,13 @@ def _run_structure_recognition(
                 "Сохранён debug artifact распознанной структуры.",
                 artifact_path=artifact_path,
             )
+        emit_preparation_progress(
+            progress_callback,
+            stage="Применение структуры…",
+            detail="Применяю результаты AI-классификации к абзацам.",
+            progress=0.53,
+            metrics={**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend},
+        )
         applied_metrics = apply_structure_map(
             paragraphs,
             structure_map,

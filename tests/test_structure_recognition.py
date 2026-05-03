@@ -6,6 +6,7 @@ import pytest
 
 import docxaicorrector.structure.recognition as structure_recognition
 from docxaicorrector.core.models import ParagraphClassification, ParagraphUnit, StructureMap
+from docxaicorrector.structure.recognition import StructureRecognitionProgress
 
 
 def _paragraph(
@@ -252,6 +253,167 @@ def test_build_structure_map_does_not_split_on_local_request_timeout(monkeypatch
     assert structure_map.window_count == 1
     assert structure_map.total_tokens_used == 0
     assert structure_map.classifications == {}
+
+
+def test_build_structure_map_emits_progress_for_top_level_windows(monkeypatch):
+    paragraphs = [_paragraph(source_index=index, text=f"Paragraph {index}") for index in range(5)]
+    captured: list[StructureRecognitionProgress] = []
+
+    monkeypatch.setattr(
+        structure_recognition,
+        "_classify_descriptor_window_with_fallback",
+        lambda **kwargs: (
+            [
+                (
+                    list(kwargs["descriptors"]),
+                    [
+                        ParagraphClassification(
+                            index=descriptor.index,
+                            role="body",
+                            heading_level=None,
+                            confidence="high",
+                            rationale=None,
+                        )
+                        for descriptor in kwargs["descriptors"]
+                    ],
+                )
+            ],
+            7,
+        ),
+    )
+
+    structure_map = structure_recognition.build_structure_map(
+        paragraphs,
+        client=object(),
+        model="gpt-5-mini",
+        max_window_paragraphs=2,
+        overlap_paragraphs=0,
+        progress_callback=captured.append,
+    )
+
+    assert isinstance(structure_map, StructureMap)
+    assert [event.event for event in captured] == [
+        "prepared",
+        "window_started",
+        "window_completed",
+        "window_started",
+        "window_completed",
+        "window_started",
+        "window_completed",
+        "completed",
+    ]
+    completed = [event for event in captured if event.event == "window_completed"]
+    assert [event.processed_windows for event in completed] == [1, 2, 3]
+    assert all(event.total_windows == 3 for event in completed)
+
+
+def test_build_structure_map_emits_split_event_on_fallback(monkeypatch):
+    paragraphs = [_paragraph(source_index=index, text=f"Paragraph {index}") for index in range(3)]
+    captured: list[StructureRecognitionProgress] = []
+    call_state = {"count": 0}
+
+    def _fake_classify_descriptor_window(*, descriptors, **kwargs):
+        call_state["count"] += 1
+        if call_state["count"] == 1:
+            raise TimeoutError("timeout")
+        return [
+            ParagraphClassification(
+                index=descriptor.index,
+                role="body",
+                heading_level=None,
+                confidence="high",
+                rationale=None,
+            )
+            for descriptor in descriptors
+        ], 1
+
+    monkeypatch.setattr(structure_recognition, "_classify_descriptor_window", _fake_classify_descriptor_window)
+
+    structure_recognition.build_structure_map(
+        paragraphs,
+        client=object(),
+        model="gpt-5-mini",
+        max_window_paragraphs=10,
+        overlap_paragraphs=0,
+        progress_callback=captured.append,
+    )
+
+    split_events = [event for event in captured if event.event == "window_split"]
+    assert len(split_events) == 1
+    assert split_events[0].descriptor_count == 3
+    assert split_events[0].total_windows == 1
+    assert split_events[0].current_window == 1
+
+
+def test_build_structure_map_ignores_progress_callback_errors(monkeypatch):
+    paragraphs = [_paragraph(source_index=0, text="Paragraph")]
+
+    monkeypatch.setattr(
+        structure_recognition,
+        "_classify_descriptor_window_with_fallback",
+        lambda **kwargs: (
+            [
+                (
+                    list(kwargs["descriptors"]),
+                    [
+                        ParagraphClassification(
+                            index=kwargs["descriptors"][0].index,
+                            role="body",
+                            heading_level=None,
+                            confidence="high",
+                            rationale=None,
+                        )
+                    ],
+                )
+            ],
+            1,
+        ),
+    )
+
+    structure_map = structure_recognition.build_structure_map(
+        paragraphs,
+        client=object(),
+        model="gpt-5-mini",
+        progress_callback=lambda event: (_ for _ in ()).throw(RuntimeError("ui failed")),
+    )
+
+    assert structure_map.classified_count == 1
+
+
+def test_build_structure_map_logs_debug_when_progress_callback_fails(monkeypatch, caplog):
+    paragraphs = [_paragraph(source_index=0, text="Paragraph")]
+
+    monkeypatch.setattr(
+        structure_recognition,
+        "_classify_descriptor_window_with_fallback",
+        lambda **kwargs: (
+            [
+                (
+                    list(kwargs["descriptors"]),
+                    [
+                        ParagraphClassification(
+                            index=kwargs["descriptors"][0].index,
+                            role="body",
+                            heading_level=None,
+                            confidence="high",
+                            rationale=None,
+                        )
+                    ],
+                )
+            ],
+            1,
+        ),
+    )
+
+    with caplog.at_level("DEBUG"):
+        structure_recognition.build_structure_map(
+            paragraphs,
+            client=object(),
+            model="gpt-5-mini",
+            progress_callback=lambda event: (_ for _ in ()).throw(RuntimeError("ui failed")),
+        )
+
+    assert "Structure progress callback failed" in caplog.text
 
 
 def test_classify_descriptor_window_normalizes_fenced_json_output(monkeypatch):

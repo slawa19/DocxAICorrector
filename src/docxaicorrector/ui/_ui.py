@@ -3,7 +3,7 @@ from collections.abc import Mapping
 from pathlib import Path
 import hashlib
 import re
-from typing import Any
+from typing import Any, cast
 
 import streamlit as st
 
@@ -208,7 +208,7 @@ def _build_normalization_caption(metrics_source) -> str:
         "merged_raw_paragraph_count": _to_int(getattr(metrics_source, "merged_raw_paragraph_count", None), default=_to_int(metrics_source.get("merged_raw_paragraph_count") if isinstance(metrics_source, Mapping) else None, default=0)),
     }
     if not any(metrics.values()):
-        metrics = flatten_normalization_metrics(metrics_source)
+        metrics = cast(dict[str, int], flatten_normalization_metrics(metrics_source))
     merged_group_count = int(metrics.get("merged_group_count", 0) or 0)
     merged_raw_paragraph_count = int(metrics.get("merged_raw_paragraph_count", 0) or 0)
     if merged_group_count <= 0 and merged_raw_paragraph_count <= 0:

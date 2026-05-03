@@ -2,7 +2,7 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, TypedDict
 
 from docxaicorrector.document._document import summarize_boundary_normalization_metrics, validate_docx_source_bytes
 from docxaicorrector.core.models import StructureRecognitionSummary
@@ -39,7 +39,17 @@ class SessionStateLike(Protocol):
 
     def __getitem__(self, key: str): ...
 
-    def __setitem__(self, key: str, value) -> None: ...
+    def __setitem__(self, key: str, value: object) -> None: ...
+
+
+class NormalizationMetrics(TypedDict, total=False):
+    raw_paragraph_count: int
+    logical_paragraph_count: int
+    merged_group_count: int
+    merged_raw_paragraph_count: int
+    high_confidence_merge_count: int
+    medium_accepted_merge_count: int
+    medium_rejected_candidate_count: int
 
 
 @dataclass
@@ -102,16 +112,18 @@ def resolve_structure_recognition_summary(source: object | None) -> StructureRec
     return StructureRecognitionSummary.from_source(summary)
 
 
-def flatten_normalization_metrics(normalization_report) -> dict[str, int]:
+def flatten_normalization_metrics(normalization_report) -> NormalizationMetrics:
     if normalization_report is None:
         return {}
-    metrics = {
+    metrics: NormalizationMetrics = {
         "raw_paragraph_count": int(getattr(normalization_report, "total_raw_paragraphs", 0) or 0),
         "logical_paragraph_count": int(getattr(normalization_report, "total_logical_paragraphs", 0) or 0),
         "merged_group_count": int(getattr(normalization_report, "merged_group_count", 0) or 0),
         "merged_raw_paragraph_count": int(getattr(normalization_report, "merged_raw_paragraph_count", 0) or 0),
     }
-    metrics.update(summarize_boundary_normalization_metrics(normalization_report))
+    boundary_metrics = summarize_boundary_normalization_metrics(normalization_report)
+    for key, value in boundary_metrics.items():
+        metrics[key] = value
     return metrics
 
 

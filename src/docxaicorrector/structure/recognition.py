@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from functools import lru_cache
 from collections.abc import Iterable, Sequence
+import logging
 import json
 from pathlib import Path
 from queue import Queue
 import re
 from threading import Thread
 import time
-from typing import Any, Protocol, cast
+from typing import Any, Callable, Protocol, cast
 
 from docxaicorrector.core.constants import PROMPTS_DIR
 from docxaicorrector.generation._generation import normalize_model_output
@@ -18,6 +20,7 @@ from docxaicorrector.generation.openai_response_utils import collect_response_te
 
 
 SYSTEM_PROMPT_PATH = PROMPTS_DIR / "structure_recognition_system.txt"
+_LOGGER = logging.getLogger(__name__)
 _PIPELINE_BODY_STRUCTURAL_ROLES = {"epigraph", "attribution", "toc_entry", "toc_header", "dedication"}
 _VALID_AI_ROLES = {"heading", "body", "caption", "epigraph", "attribution", "toc_entry", "toc_header", "dedication", "list"}
 _VALID_AI_CONFIDENCES = {"high", "medium", "low"}
@@ -77,8 +80,45 @@ class _StructureRecognitionClient(Protocol):
     responses: _ResponsesApi
 
 
+class _ResponsesCreateClient(Protocol):
+    responses: _ResponsesApi
+
+
 class StructureRecognitionRequestTimeout(TimeoutError):
     pass
+
+
+@dataclass(frozen=True)
+class StructureRecognitionProgress:
+    event: str
+    processed_windows: int
+    total_windows: int
+    current_window: int | None = None
+    descriptor_count: int | None = None
+    fallback_depth: int = 0
+
+
+StructureProgressCallback = Callable[[StructureRecognitionProgress], None]
+
+
+def _emit_structure_progress(
+    callback: StructureProgressCallback | None,
+    event: StructureRecognitionProgress,
+) -> None:
+    if callback is None:
+        return
+    try:
+        callback(event)
+    except Exception:
+        _LOGGER.debug(
+            "Structure progress callback failed for event=%s current_window=%s processed=%s total=%s",
+            event.event,
+            event.current_window,
+            event.processed_windows,
+            event.total_windows,
+            exc_info=True,
+        )
+        return
 
 
 def _with_request_timeout(client: object, *, timeout: float) -> object:
@@ -86,6 +126,13 @@ def _with_request_timeout(client: object, *, timeout: float) -> object:
     if not callable(with_options):
         return client
     return with_options(timeout=timeout)
+
+
+def _as_responses_create_client(client: object) -> _ResponsesCreateClient | None:
+    responses = getattr(client, "responses", None)
+    if responses is None or not hasattr(responses, "create"):
+        return None
+    return cast(_ResponsesCreateClient, client)
 
 
 @lru_cache(maxsize=1)
@@ -168,30 +215,95 @@ def build_structure_map(
     max_window_paragraphs: int = 1800,
     overlap_paragraphs: int = 50,
     timeout: float = 60.0,
+    progress_callback: StructureProgressCallback | None = None,
 ) -> StructureMap:
     started_at = time.perf_counter()
     descriptors = build_paragraph_descriptors(paragraphs)
     if not descriptors:
         return StructureMap({}, model, 0, 0.0, 0)
 
+    windows = list(
+        _iter_descriptor_windows(
+            descriptors,
+            max_window_paragraphs=max_window_paragraphs,
+            overlap_paragraphs=overlap_paragraphs,
+        )
+    )
+    total_windows = len(windows)
+    processed_windows = 0
+
+    _emit_structure_progress(
+        progress_callback,
+        StructureRecognitionProgress(
+            event="prepared",
+            processed_windows=0,
+            total_windows=total_windows,
+            descriptor_count=len(descriptors),
+        ),
+    )
+
     merged_classifications: dict[int, ParagraphClassification] = {}
     window_count = 0
     total_tokens_used = 0
-    for window in _iter_descriptor_windows(descriptors, max_window_paragraphs=max_window_paragraphs, overlap_paragraphs=overlap_paragraphs):
+    for window_index, window in enumerate(windows, start=1):
+        _emit_structure_progress(
+            progress_callback,
+            StructureRecognitionProgress(
+                event="window_started",
+                processed_windows=processed_windows,
+                total_windows=total_windows,
+                current_window=window_index,
+                descriptor_count=len(window),
+            ),
+        )
         try:
             resolved_windows, resolved_tokens = _classify_descriptor_window_with_fallback(
                 client=cast(_StructureRecognitionClient, client),
                 model=model,
                 descriptors=window,
                 timeout=timeout,
+                progress_callback=progress_callback,
+                processed_windows=processed_windows,
+                total_windows=total_windows,
+                current_window=window_index,
             )
         except Exception:
             window_count += 1
+            processed_windows += 1
+            _emit_structure_progress(
+                progress_callback,
+                StructureRecognitionProgress(
+                    event="window_failed",
+                    processed_windows=processed_windows,
+                    total_windows=total_windows,
+                    current_window=window_index,
+                    descriptor_count=len(window),
+                ),
+            )
             continue
         window_count += len(resolved_windows)
         total_tokens_used += resolved_tokens
         for resolved_window, window_classifications in resolved_windows:
             _merge_window_classifications(merged_classifications, window_classifications, window=resolved_window)
+        processed_windows += 1
+        _emit_structure_progress(
+            progress_callback,
+            StructureRecognitionProgress(
+                event="window_completed",
+                processed_windows=processed_windows,
+                total_windows=total_windows,
+                current_window=window_index,
+                descriptor_count=len(window),
+            ),
+        )
+    _emit_structure_progress(
+        progress_callback,
+        StructureRecognitionProgress(
+            event="completed",
+            processed_windows=processed_windows,
+            total_windows=total_windows,
+        ),
+    )
     return StructureMap(
         classifications=merged_classifications,
         model_used=model,
@@ -207,6 +319,11 @@ def _classify_descriptor_window_with_fallback(
     model: str,
     descriptors: Sequence[ParagraphDescriptor],
     timeout: float,
+    progress_callback: StructureProgressCallback | None = None,
+    processed_windows: int = 0,
+    total_windows: int = 0,
+    current_window: int | None = None,
+    fallback_depth: int = 0,
 ) -> tuple[list[tuple[list[ParagraphDescriptor], list[ParagraphClassification]]], int]:
     descriptor_list = list(descriptors)
     try:
@@ -221,18 +338,40 @@ def _classify_descriptor_window_with_fallback(
         if not _should_split_descriptor_window(exc=exc, descriptor_count=len(descriptor_list)):
             raise
 
+    _emit_structure_progress(
+        progress_callback,
+        StructureRecognitionProgress(
+            event="window_split",
+            processed_windows=processed_windows,
+            total_windows=total_windows,
+            current_window=current_window,
+            descriptor_count=len(descriptor_list),
+            fallback_depth=fallback_depth + 1,
+        ),
+    )
+
     midpoint = max(1, len(descriptor_list) // 2)
     left_windows, left_tokens = _classify_descriptor_window_with_fallback(
         client=client,
         model=model,
         descriptors=descriptor_list[:midpoint],
         timeout=timeout,
+        progress_callback=progress_callback,
+        processed_windows=processed_windows,
+        total_windows=total_windows,
+        current_window=current_window,
+        fallback_depth=fallback_depth + 1,
     )
     right_windows, right_tokens = _classify_descriptor_window_with_fallback(
         client=client,
         model=model,
         descriptors=descriptor_list[midpoint:],
         timeout=timeout,
+        progress_callback=progress_callback,
+        processed_windows=processed_windows,
+        total_windows=total_windows,
+        current_window=current_window,
+        fallback_depth=fallback_depth + 1,
     )
     return left_windows + right_windows, left_tokens + right_tokens
 
@@ -259,11 +398,12 @@ def _classify_descriptor_window(
     system_prompt = _load_system_prompt()
     descriptor_payload = [descriptor.to_prompt_dict() for descriptor in descriptors]
     timeout_scoped_client = _with_request_timeout(client, timeout=timeout)
-    if not hasattr(timeout_scoped_client, "responses") or not hasattr(timeout_scoped_client.responses, "create"):
+    responses_client = _as_responses_create_client(timeout_scoped_client)
+    if responses_client is None:
         raise RuntimeError("Unsupported structure recognition client")
 
     response = _call_structure_responses_with_timeout(
-        client=timeout_scoped_client,
+        client=responses_client,
         request_payload={
             "model": model,
             "input": [
@@ -287,7 +427,9 @@ def _classify_descriptor_window(
     return _parse_classification_payload(content), total_tokens
 
 
-def _call_structure_responses_with_timeout(*, client: object, request_payload: dict[str, object], timeout: float) -> Any:
+def _call_structure_responses_with_timeout(
+    *, client: _ResponsesCreateClient, request_payload: dict[str, object], timeout: float
+) -> Any:
     result_queue: Queue[tuple[str, object]] = Queue(maxsize=1)
 
     def _run_request() -> None:

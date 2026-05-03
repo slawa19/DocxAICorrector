@@ -414,6 +414,20 @@ def test_load_system_prompt_rejects_auto_source_language_for_edit_mode():
         config.load_system_prompt.cache_clear()
 
 
+def test_load_system_prompt_edit_includes_local_fragment_repair_guardrails():
+    config.load_system_prompt.cache_clear()
+    try:
+        prompt = config.load_system_prompt(operation="edit", source_language="ru", target_language="ru")
+    finally:
+        config.load_system_prompt.cache_clear()
+
+    assert "явно разорванное предложение" in prompt
+    assert "минимально восстановить локальную связность" in prompt
+    assert "не переносите текст через очевидные структурные границы" in prompt
+    assert "не меняйте тип элемента" in prompt
+    assert "Не меняйте структуру абзацев сверх того" in prompt
+
+
 def test_load_system_prompt_translate_includes_hardening_rules():
     config.load_system_prompt.cache_clear()
     try:

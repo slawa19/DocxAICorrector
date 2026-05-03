@@ -130,6 +130,8 @@ def test_store_preparation_summary_uses_preparation_context_not_processing_statu
         "source_chars": len("text-value"),
         "block_count": 1,
         "cached": True,
+        "source_format": "docx",
+        "conversion_backend": None,
         "quality_gate_status": "pass",
         "ai_classified": 4,
         "ai_headings": 2,
@@ -795,3 +797,5 @@ def test_store_preparation_summary_includes_auto_structure_status_note(monkeypat
     assert session_state.latest_preparation_summary["status_notes"] == [
         "Структура: auto-режим, выполнена эскалация в AI; классифицировано 6 абзацев, найдено 2 заголовков. Причины: мало явных заголовков, обнаружен TOC-подобный фрагмент."
     ]
+
+
