@@ -1651,6 +1651,48 @@ def test_run_document_processing_normalizes_false_fragment_headings_before_quali
     assert payload["false_fragment_heading_count"] == 0
 
 
+def test_run_document_processing_quality_report_uses_runtime_normalized_heading_text_for_sentence_split_case(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    quality_dir = tmp_path / "quality_reports"
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+
+    result = _run_processing(
+        runtime,
+        app_config={"translation_output_quality_gate_policy": "strict"},
+        processing_operation="translate",
+        jobs=[{
+            "target_text": "Исходный блок",
+            "target_text_with_markers": "[[DOCX_PARA_p1]]\n[[DOCX_PARA_p2]]\n[[DOCX_PARA_p3]]\n[[DOCX_PARA_p4]]",
+            "paragraph_ids": ["p1", "p2", "p3", "p4"],
+            "context_before": "",
+            "context_after": "",
+            "target_chars": 13,
+            "context_chars": 0,
+        }],
+        source_paragraphs=[
+            SimpleNamespace(paragraph_id="p1", source_index=0, role="body", structural_role="body", heading_level=None, list_kind=None, boundary_source="raw", boundary_confidence="explicit"),
+            SimpleNamespace(paragraph_id="p2", source_index=1, role="heading", structural_role="heading", heading_level=2, list_kind=None, boundary_source="raw", boundary_confidence="explicit"),
+            SimpleNamespace(paragraph_id="p3", source_index=2, role="body", structural_role="body", heading_level=None, list_kind=None, boundary_source="raw", boundary_confidence="explicit"),
+            SimpleNamespace(paragraph_id="p4", source_index=3, role="body", structural_role="body", heading_level=None, list_kind=None, boundary_source="raw", boundary_confidence="explicit"),
+        ],
+        generate_markdown_block=lambda **kwargs: (
+            "Пожалуй, главный вывод состоит в том, что каждое поколение христиан должно приготовиться к возможности пережить\n\n"
+            "## Великая скорбь\n\n"
+            ".\n\n"
+            "Практические шаги начинаются здесь."
+        ),
+    )
+
+    assert result == "succeeded"
+    assert "## Великая скорбь\n\n." not in runtime["state"]["latest_markdown"]
+    report_files = list(quality_dir.glob("*.json"))
+    assert len(report_files) == 1
+    payload = json.loads(report_files[0].read_text(encoding="utf-8"))
+    assert payload["quality_status"] == "pass"
+    assert payload["false_fragment_heading_count"] == 0
+
+
 def test_run_document_processing_normalizes_residual_bullet_glyphs_before_quality_gate(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
@@ -1805,14 +1847,13 @@ def test_build_translation_quality_report_exposes_new_residual_quality_metrics_a
 
     assert report["quality_status"] == "fail"
     assert report["gate_reasons"] == [
-        "false_fragment_headings_present",
         "residual_bullet_glyphs_present",
         "list_fragment_regressions_present",
         "mixed_script_terms_present",
     ]
     assert report["bullet_heading_count"] == 0
-    assert report["false_fragment_heading_count"] == 2
-    assert report["scripture_reference_heading_count"] == 1
+    assert report["false_fragment_heading_count"] == 0
+    assert report["scripture_reference_heading_count"] == 0
     assert report["residual_bullet_glyph_count"] == 1
     assert report["list_fragment_regression_count"] == 1
     mixed_script_term_count = report["mixed_script_term_count"]
@@ -1933,16 +1974,10 @@ def test_build_translation_quality_report_reports_entry_aware_false_heading_samp
         assembly_result=assembly_result,
     )
 
-    assert report["quality_status"] == "fail"
-    assert report["gate_reasons"] == ["false_fragment_headings_present"]
-    assert report["false_fragment_heading_count"] == 1
-    assert report["false_fragment_heading_samples"] == [
-        {
-            "line": 3,
-            "text": "## начертание зверя",
-            "reason": "inline_term_heading_present",
-        }
-    ]
+    assert report["quality_status"] == "pass"
+    assert report["gate_reasons"] == []
+    assert report["false_fragment_heading_count"] == 0
+    assert report["false_fragment_heading_samples"] == []
 
 
 def test_collect_false_fragment_heading_samples_from_entries_preserves_source_backed_real_heading():

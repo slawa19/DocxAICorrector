@@ -56,6 +56,10 @@ _HOMOGLYPH_TABLE = str.maketrans({
 _DANGLING_NUMBER_PATTERN = re.compile(r"(?:^|\s)\d+\.$")
 _RUSSIAN_CONTINUATION_ENDING_PATTERN = re.compile(r"\b(?:ли|что|относительно|с|в|на|к|по|для|о|у|при|об|под|над|между|является)$", re.IGNORECASE)
 _RUSSIAN_HEADING_CONTINUATION_START_PATTERN = re.compile(r"^(?:[а-яё]|[)\],.;:!?-])")
+_RUSSIAN_PRONOUN_CONTINUATION_START_PATTERN = re.compile(
+    r"^(?:Я|Мы|Ты|Вы|Он|Она|Они)\s+(?:смог\w+|буд\w+|хот\w+|мож\w+|долж\w+|стан\w+|готов\w+|суме\w+)",
+    re.IGNORECASE,
+)
 _LOWERCASE_START_PATTERN = re.compile(r"^[a-zа-яё]")
 _SENTENCE_TERMINAL_PATTERN = re.compile(r"[.!?…:](?:[)\]»”’'\"])?$")
 _TOC_BODY_CONCAT_MARKDOWN_PATTERN = re.compile(
@@ -515,6 +519,8 @@ def _entry_can_override_source_heading_signal(
         return True
     if _entry_has_cross_block_continuation_context(entry, previous_entry, next_entry):
         return True
+    if _entry_has_previous_block_and_same_block_tail_context(entry, previous_entry, next_entry):
+        return True
     if entry.heading_level is not None and _entry_looks_major_section_heading(entry):
         return False
     return False
@@ -820,6 +826,32 @@ def _entry_has_cross_block_continuation_context(
     return _entry_has_previous_continuation_context(entry, previous_entry) and _entry_has_next_continuation_context(entry, next_entry)
 
 
+def _entry_has_previous_block_and_same_block_tail_context(
+    entry: FinalAssemblyEntry,
+    previous_entry: FinalAssemblyEntry | None,
+    next_entry: FinalAssemblyEntry | None,
+) -> bool:
+    if previous_entry is None or next_entry is None:
+        return False
+    if previous_entry.block_index + 1 != entry.block_index:
+        return False
+    if next_entry.block_index != entry.block_index:
+        return False
+    if not _entry_has_previous_continuation_context(entry, previous_entry):
+        return False
+    demoted_body = _trim_heading_prefix(entry.text).strip()
+    if not demoted_body:
+        return False
+    next_body = _entry_body_text(next_entry)
+    if not next_body:
+        return False
+    if re.fullmatch(r"[.?!…,:;]+", next_body):
+        return True
+    if _right_entry_looks_like_continuation(next_entry):
+        return True
+    return False
+
+
 def _classify_generated_heading(
     entry: FinalAssemblyEntry,
     previous_entry: FinalAssemblyEntry | None,
@@ -843,6 +875,8 @@ def _classify_generated_heading(
     if _entry_has_mixed_block_parenthetical_tail_context(entry, previous_entry, next_entry):
         return "false_fragment_heading"
     if _entry_has_cross_block_continuation_context(entry, previous_entry, next_entry):
+        return "false_fragment_heading"
+    if _entry_has_previous_block_and_same_block_tail_context(entry, previous_entry, next_entry):
         return "false_fragment_heading"
     return "unknown"
 
@@ -919,6 +953,16 @@ def _entry_is_protected_boundary(entry: FinalAssemblyEntry) -> bool:
     return _looks_structural_boundary_line(body_text)
 
 
+def _entries_match_blockquote_body_continuation_merge(left: FinalAssemblyEntry, right: FinalAssemblyEntry) -> bool:
+    if not _entry_is_blockquote(left) or _entry_is_blockquote(right):
+        return False
+    if _entry_is_heading(right) or _entry_is_toc(right):
+        return False
+    if _entry_is_list(right) or _entry_is_structural_label(right):
+        return False
+    return _left_entry_looks_incomplete(left) and _right_entry_looks_like_continuation(right)
+
+
 def _entry_can_participate_in_merge(entry: FinalAssemblyEntry) -> bool:
     if entry.used_fallback or not entry.from_registry:
         return False
@@ -930,6 +974,8 @@ def _entry_can_participate_in_merge(entry: FinalAssemblyEntry) -> bool:
 
 def _entries_match_allowed_protected_merge(left: FinalAssemblyEntry, right: FinalAssemblyEntry) -> bool:
     if _entry_is_blockquote(left) and _entry_is_blockquote(right):
+        return True
+    if _entries_match_blockquote_body_continuation_merge(left, right):
         return True
     if _entry_is_blockquote(left) and right.generated_heading_kind == "false_fragment_heading":
         return True
@@ -967,7 +1013,11 @@ def _right_entry_looks_like_continuation(entry: FinalAssemblyEntry) -> bool:
     body_text = _entry_body_text(entry)
     if not body_text:
         return False
+    if re.fullmatch(r"[.?!…,:;]+", body_text):
+        return True
     if _RUSSIAN_HEADING_CONTINUATION_START_PATTERN.match(body_text):
+        return True
+    if _RUSSIAN_PRONOUN_CONTINUATION_START_PATTERN.match(body_text):
         return True
     if _looks_inline_fragment_line(body_text):
         return True
@@ -1180,6 +1230,8 @@ def collect_false_fragment_heading_samples_from_entries(entries: Sequence[FinalA
     samples: list[QualityIssueSample] = []
 
     for position_index, line_number, entry in positions:
+        if entry.generated_heading_kind == "false_fragment_heading":
+            continue
         stripped = entry.text.strip()
         if not is_markdown_heading_line(stripped):
             continue

@@ -1061,6 +1061,91 @@ def test_assemble_final_markdown_demotes_false_generated_heading_across_adjacent
     assert result.diagnostics.accepted_merges == 1
 
 
+def test_assemble_final_markdown_merges_blockquote_into_following_body_continuation_across_adjacent_blocks():
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "## Великая скорбь\n\n> они могли бы с уверенностью сказать: Это знамения. Всё это происходит не случайно. Таков Божий замысел. Я могу доверять Ему. Он суверенен. С Его Святым Духом",
+            "Я смогу выдержать до конца.",
+        ],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "heading-1", "text": "## Великая скорбь"},
+            {
+                "block_index": 1,
+                "paragraph_id": "quote-left",
+                "text": "> они могли бы с уверенностью сказать: Это знамения. Всё это происходит не случайно. Таков Божий замысел. Я могу доверять Ему. Он суверенен. С Его Святым Духом",
+            },
+            {"block_index": 2, "paragraph_id": "body-right", "text": "Я смогу выдержать до конца."},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("heading-1", 0, role="heading", structural_role="heading", heading_level=2),
+            _make_paragraph_stub("quote-left", 1, role="body", structural_role="body"),
+            _make_paragraph_stub("body-right", 2, role="body", structural_role="body"),
+        ],
+    )
+
+    assert result.final_markdown == (
+        "## Великая скорбь\n\n"
+        "> они могли бы с уверенностью сказать: Это знамения. Всё это происходит не случайно. "
+        "Таков Божий замысел. Я могу доверять Ему. Он суверенен. С Его Святым Духом Я смогу выдержать до конца."
+    )
+    assert len(result.entries) == 2
+    assert result.entries[1].merged_paragraph_ids == ("quote-left", "body-right")
+    assert result.diagnostics.accepted_merges == 1
+
+
+def test_assemble_final_markdown_treats_uppercase_pronoun_clause_as_continuation_after_incomplete_blockquote():
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "> С Его Святым Духом",
+            "Я смогу выдержать до конца.",
+        ],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "quote-left", "text": "> С Его Святым Духом"},
+            {"block_index": 2, "paragraph_id": "body-right", "text": "Я смогу выдержать до конца."},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("quote-left", 0, role="body", structural_role="body"),
+            _make_paragraph_stub("body-right", 1, role="body", structural_role="body"),
+        ],
+    )
+
+    assert result.final_markdown == "> С Его Святым Духом Я смогу выдержать до конца."
+    assert len(result.entries) == 1
+    assert result.entries[0].merged_paragraph_ids == ("quote-left", "body-right")
+    assert result.diagnostics.accepted_merges == 1
+
+
+def test_assemble_final_markdown_demotes_false_generated_heading_with_previous_block_and_same_block_tail_context():
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "Пожалуй, главный вывод состоит в том, что каждое поколение христиан должно готовиться к возможности пережить",
+            "## Великая скорбь\n\n.",
+        ],
+        generated_paragraph_registry=[
+            {
+                "block_index": 1,
+                "paragraph_id": "body-left",
+                "text": "Пожалуй, главный вывод состоит в том, что каждое поколение христиан должно готовиться к возможности пережить",
+            },
+            {"block_index": 2, "paragraph_id": "false-heading", "text": "## Великая скорбь"},
+            {"block_index": 2, "paragraph_id": "tail", "text": "."},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("body-left", 0, role="body", structural_role="body"),
+            _make_paragraph_stub("false-heading", 1, role="heading", structural_role="heading", heading_level=2),
+            _make_paragraph_stub("tail", 2, role="body", structural_role="body"),
+        ],
+    )
+
+    assert result.final_markdown == (
+        "Пожалуй, главный вывод состоит в том, что каждое поколение христиан должно готовиться к возможности пережить Великая скорбь."
+    )
+    assert len(result.entries) == 1
+    assert result.entries[0].merged_paragraph_ids == ("body-left", "false-heading", "tail")
+    assert result.diagnostics.demoted_false_headings == 1
+    assert result.diagnostics.accepted_merges == 2
+
+
 def test_assemble_final_markdown_preserves_source_backed_scripture_heading():
     result = document_pipeline_output_validation.assemble_final_markdown(
         processed_chunks=[

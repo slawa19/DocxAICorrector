@@ -917,16 +917,17 @@ def test_prepare_document_for_processing_runs_structure_recognition_when_enabled
         "Структура извлечена",
         "Структура: валидация",
         "Распознавание структуры…",
+        "Применение структуры…",
         "Структура распознана",
         "Текст собран",
         "Смысловые блоки",
         "Задания собраны",
     ]
-    assert events[4]["metrics"]["ai_classified"] == 1
-    assert events[4]["metrics"]["ai_headings"] == 1
-    assert events[4]["metrics"]["ai_role_changes"] == 1
-    assert events[4]["metrics"]["ai_heading_promotions"] == 1
-    assert events[4]["metrics"]["ai_structural_role_changes"] == 1
+    assert events[5]["metrics"]["ai_classified"] == 1
+    assert events[5]["metrics"]["ai_headings"] == 1
+    assert events[5]["metrics"]["ai_role_changes"] == 1
+    assert events[5]["metrics"]["ai_heading_promotions"] == 1
+    assert events[5]["metrics"]["ai_structural_role_changes"] == 1
     assert result.ai_classified_count == 1
     assert result.ai_heading_count == 1
     assert result.ai_role_change_count == 1
@@ -1266,11 +1267,12 @@ def test_prepare_document_for_processing_auto_mode_runs_ai_when_gate_escalates(m
         progress_callback=lambda **payload: events.append(payload),
     )
 
-    assert [event["stage"] for event in events][:5] == [
+    assert [event["stage"] for event in events][:6] == [
         "Разбор DOCX",
         "Структура извлечена",
         "Структура: валидация",
         "Распознавание структуры…",
+        "Применение структуры…",
         "Структура распознана",
     ]
     assert result.structure_validation_report is not None

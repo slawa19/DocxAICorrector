@@ -428,6 +428,30 @@ def test_load_system_prompt_edit_includes_local_fragment_repair_guardrails():
     assert "Не меняйте структуру абзацев сверх того" in prompt
 
 
+def test_load_system_prompt_translate_includes_local_fragment_repair_guardrails():
+    config.load_system_prompt.cache_clear()
+    try:
+        prompt = config.load_system_prompt(operation="translate", source_language="en", target_language="ru")
+    finally:
+        config.load_system_prompt.cache_clear()
+
+    assert "явно разорванное предложение" in prompt
+    assert "не нарушает прямые ограничения выбранного режима обработки" in prompt
+    assert "не превращайте локальный repair в общую перестройку структуры" in prompt
+
+
+def test_load_system_prompt_audiobook_includes_local_fragment_repair_guardrails():
+    config.load_system_prompt.cache_clear()
+    try:
+        prompt = config.load_system_prompt(operation="audiobook", source_language="en", target_language="ru")
+    finally:
+        config.load_system_prompt.cache_clear()
+
+    assert "явно разорванное предложение" in prompt
+    assert "не нарушает прямые ограничения выбранного режима обработки" in prompt
+    assert "не превращайте локальный repair в общую перестройку структуры" in prompt
+
+
 def test_load_system_prompt_translate_includes_hardening_rules():
     config.load_system_prompt.cache_clear()
     try:

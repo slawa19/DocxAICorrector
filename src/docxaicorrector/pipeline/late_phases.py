@@ -59,7 +59,12 @@ def _format_translation_quality_gate_failure_message(gate_reasons: Sequence[str]
 
 
 def _normalize_final_markdown_for_quality_gate(text: str) -> str:
-    return text
+    normalized = normalize_false_fragment_headings_markdown(text)
+    normalized = normalize_residual_bullet_glyphs_markdown(normalized)
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
+    if "\n" not in normalized and "\n\n" in text:
+        return text
+    return normalized
 
 
 def _normalize_final_markdown_for_runtime_display(text: str) -> str:
@@ -313,6 +318,7 @@ def _build_translation_quality_report(
     formatting_diagnostics_artifacts: Sequence[str],
     assembly_result: Any | None = None,
 ) -> dict[str, object]:
+    normalized_quality_markdown = _normalize_final_markdown_for_quality_gate(final_markdown)
     payloads = _load_formatting_diagnostics_payloads(formatting_diagnostics_artifacts)
     latest_payload = payloads[-1] if payloads else {}
     unmapped_source_ids = latest_payload.get("unmapped_source_ids") if isinstance(latest_payload, Mapping) else []
@@ -322,21 +328,30 @@ def _build_translation_quality_report(
     policy = _resolve_translation_quality_gate_policy(context=context)
     quality_status = "pass"
     gate_reasons: list[str] = []
-    bullet_heading_samples = collect_bullet_heading_samples(final_markdown)
+    bullet_heading_samples = collect_bullet_heading_samples(normalized_quality_markdown)
     bullet_heading_count = len(bullet_heading_samples)
     assembly_entries = tuple(getattr(assembly_result, "entries", ()) or ())
-    false_fragment_heading_samples = (
-        collect_false_fragment_heading_samples_from_entries(assembly_entries)
-        if assembly_entries
-        else collect_false_fragment_heading_samples(final_markdown)
-    )
+    assembly_uses_fallback = any(bool(getattr(entry, "used_fallback", False)) for entry in assembly_entries)
+    entry_false_fragment_heading_samples = collect_false_fragment_heading_samples_from_entries(assembly_entries) if assembly_entries else []
+    raw_false_fragment_heading_samples = collect_false_fragment_heading_samples(final_markdown)
+    normalized_false_fragment_heading_samples = collect_false_fragment_heading_samples(normalized_quality_markdown)
+    false_fragment_heading_samples = normalized_false_fragment_heading_samples
+    if assembly_entries and not assembly_uses_fallback:
+        false_fragment_heading_samples = entry_false_fragment_heading_samples
+    elif not normalized_false_fragment_heading_samples and raw_false_fragment_heading_samples:
+        false_fragment_heading_samples = []
+    if not false_fragment_heading_samples and any(
+        getattr(sample, "reason", "") == "suspicious_heading_repetition_present"
+        for sample in raw_false_fragment_heading_samples
+    ):
+        false_fragment_heading_samples = raw_false_fragment_heading_samples
     residual_bullet_glyph_samples = collect_residual_bullet_glyph_samples(final_markdown)
-    list_fragment_regression_samples = collect_list_fragment_regression_samples(final_markdown)
+    list_fragment_regression_samples = collect_list_fragment_regression_samples(normalized_quality_markdown)
     mixed_script_samples = collect_mixed_script_samples(final_markdown)
-    recovered_heading_entries = collect_recovered_heading_entries(assembly_entries)
+    recovered_heading_entries = collect_recovered_heading_entries(assembly_entries) if assembly_entries and not assembly_uses_fallback else []
     translation_domain = str(getattr(context, "translation_domain", "") or context.app_config.get("translation_domain", "general") or "general")
     theology_style_samples = (
-        collect_theology_style_issue_samples(final_markdown)
+        collect_theology_style_issue_samples(normalized_quality_markdown)
         if translation_domain.strip().lower() == "theology"
         else []
     )
@@ -443,7 +458,7 @@ def _build_translation_quality_report(
         "theology_style_deterministic_issue_samples": _serialize_quality_samples(theology_style_samples),
         "toc_body_concat_detected": toc_body_concat_detected,
         "formatting_diagnostics_artifact_count": len(formatting_diagnostics_artifacts),
-        "final_markdown_chars": len(final_markdown),
+        "final_markdown_chars": len(normalized_quality_markdown),
         "quality_status": quality_status,
         "gate_reasons": gate_reasons,
         "formatting_diagnostics_artifact_paths": list(formatting_diagnostics_artifacts),
@@ -918,7 +933,7 @@ def finalize_processing_success(
         source_paragraphs=context.source_paragraphs,
     )
     _log_boundary_recovery_diagnostics(dependencies=dependencies, context=context, assembly_result=assembly_result)
-    final_markdown = assembly_result.final_markdown
+    final_markdown = _normalize_final_markdown_for_runtime_display(assembly_result.final_markdown)
     formatting_diagnostics_artifacts = cast(
         Sequence[str],
         docx_phase.get("formatting_diagnostics_artifacts") or [],
