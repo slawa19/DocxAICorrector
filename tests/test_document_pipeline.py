@@ -9,6 +9,7 @@ import pytest
 
 import docxaicorrector.pipeline._pipeline as document_pipeline
 import docxaicorrector.pipeline.late_phases as document_pipeline_late_phases
+import docxaicorrector.pipeline.output_validation as document_pipeline_output_validation
 from docx import Document
 
 from docxaicorrector.core.models import ParagraphUnit
@@ -113,6 +114,17 @@ def _run_processing(runtime, **overrides):
     }
     params.update(overrides)
     return document_pipeline.run_document_processing(**params)
+
+
+def _run_processing_and_read_quality_report(tmp_path, runtime, **overrides):
+    quality_dir = tmp_path / "quality_reports"
+    overrides.setdefault("app_config", {"translation_output_quality_gate_policy": "strict"})
+    overrides.setdefault("processing_operation", "translate")
+    overrides.setdefault("generate_markdown_block", lambda **kwargs: "Обработанный блок")
+    result = _run_processing(runtime, **overrides)
+    report_files = list(quality_dir.glob("*.json"))
+    payload = json.loads(report_files[0].read_text(encoding="utf-8")) if report_files else None
+    return result, payload
 
 
 def _capture_log_events():
@@ -1623,6 +1635,11 @@ def test_run_document_processing_normalizes_false_fragment_headings_before_quali
         ),
     )
 
+    report_files = list(quality_dir.glob("*.json"))
+    if report_files:
+        payload = json.loads(report_files[0].read_text(encoding="utf-8"))
+        assert payload["quality_status"] == "pass", json.dumps(payload, ensure_ascii=False, indent=2)
+
     assert result == "succeeded"
     assert "## (Матфея 24:36)" not in runtime["state"]["latest_markdown"]
     assert "## Спутники? Ракеты?)" not in runtime["state"]["latest_markdown"]
@@ -1676,6 +1693,11 @@ def test_run_document_processing_normalizes_list_fragment_regressions_before_qua
             "3. Бог спасает остаток верных."
         ),
     )
+
+    report_files = list(quality_dir.glob("*.json"))
+    if report_files:
+        payload = json.loads(report_files[0].read_text(encoding="utf-8"))
+        assert payload["quality_status"] == "pass", json.dumps(payload, ensure_ascii=False, indent=2)
 
     assert result == "succeeded"
     assert "схеме: 1." not in runtime["state"]["latest_markdown"]
@@ -1802,6 +1824,242 @@ def test_build_translation_quality_report_exposes_new_residual_quality_metrics_a
     assert report["worst_unmapped_source_count"] == 0
     assert report["suspicious_heading_repetition_count"] == 0
 
+
+def test_build_translation_quality_report_prefers_entry_aware_false_heading_detection():
+    assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
+        final_markdown="## Введение\n\nТекст раздела.",
+        entries=(
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="## Введение",
+                block_index=1,
+                paragraph_id="p1",
+                source_index=0,
+                role="heading",
+                structural_role="heading",
+                heading_level=2,
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="Текст раздела.",
+                block_index=1,
+                paragraph_id="p2",
+                source_index=1,
+                role="body",
+                structural_role="body",
+                from_registry=True,
+            ),
+        ),
+        diagnostics=document_pipeline_output_validation.FinalAssemblyDiagnostics(),
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+        ),
+        final_markdown="## Введение\n\nТекст раздела.",
+        formatting_diagnostics_artifacts=[],
+        assembly_result=assembly_result,
+    )
+
+    assert report["quality_status"] == "pass"
+    assert report["false_fragment_heading_count"] == 0
+    assert report["gate_reasons"] == []
+    assert report["boundary_recovery"]["recovered_heading_entries"] == [
+        {
+            "paragraph_id": "p1",
+            "source_index": 0,
+            "role": "heading",
+            "structural_role": "heading",
+            "generated_heading_kind": None,
+            "text": "## Введение",
+        }
+    ]
+
+
+def test_build_translation_quality_report_reports_entry_aware_false_heading_sample():
+    assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
+        final_markdown="На людей, получивших начертание зверя и поклонявшихся его образу.",
+        entries=(
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="На людей, получивших",
+                block_index=1,
+                paragraph_id="p1",
+                source_index=0,
+                role="body",
+                structural_role="body",
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="## начертание зверя",
+                block_index=2,
+                paragraph_id="p2",
+                source_index=1,
+                role="heading",
+                structural_role="heading",
+                heading_level=2,
+                from_registry=True,
+                generated_heading_kind="false_fragment_heading",
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="и поклонявшихся его образу.",
+                block_index=3,
+                paragraph_id="p3",
+                source_index=2,
+                role="body",
+                structural_role="body",
+                from_registry=True,
+            ),
+        ),
+        diagnostics=document_pipeline_output_validation.FinalAssemblyDiagnostics(
+            demoted_false_headings=1,
+        ),
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+        ),
+        final_markdown="На людей, получивших начертание зверя и поклонявшихся его образу.",
+        formatting_diagnostics_artifacts=[],
+        assembly_result=assembly_result,
+    )
+
+    assert report["quality_status"] == "fail"
+    assert report["gate_reasons"] == ["false_fragment_headings_present"]
+    assert report["false_fragment_heading_count"] == 1
+    assert report["false_fragment_heading_samples"] == [
+        {
+            "line": 3,
+            "text": "## начертание зверя",
+            "reason": "inline_term_heading_present",
+        }
+    ]
+
+
+def test_collect_false_fragment_heading_samples_from_entries_preserves_source_backed_real_heading():
+    entries = (
+        document_pipeline_output_validation.FinalAssemblyEntry(
+            text="Незавершённая вводная фраза о разделе",
+            block_index=1,
+            paragraph_id="p1",
+            source_index=0,
+            role="body",
+            structural_role="body",
+            from_registry=True,
+        ),
+        document_pipeline_output_validation.FinalAssemblyEntry(
+            text="## Размышление о верности",
+            block_index=2,
+            paragraph_id="p2",
+            source_index=1,
+            role="heading",
+            structural_role="heading",
+            heading_level=2,
+            from_registry=True,
+            generated_heading_kind="real_heading",
+        ),
+        document_pipeline_output_validation.FinalAssemblyEntry(
+            text="Этот раздел открывается полноценным абзацем.",
+            block_index=3,
+            paragraph_id="p3",
+            source_index=2,
+            role="body",
+            structural_role="body",
+            from_registry=True,
+        ),
+    )
+
+    samples = document_pipeline_output_validation.collect_false_fragment_heading_samples_from_entries(entries)
+
+    assert samples == []
+
+
+def test_collect_false_fragment_heading_samples_from_entries_overrides_source_heading_for_parenthetical_question_tail():
+    entries = (
+        document_pipeline_output_validation.FinalAssemblyEntry(
+            text="Кометы? Астероиды?",
+            block_index=1,
+            paragraph_id="p1",
+            source_index=0,
+            role="body",
+            structural_role="body",
+            from_registry=True,
+        ),
+        document_pipeline_output_validation.FinalAssemblyEntry(
+            text="## Спутники? Ракеты?)",
+            block_index=2,
+            paragraph_id="p2",
+            source_index=1,
+            role="heading",
+            structural_role="heading",
+            heading_level=2,
+            from_registry=True,
+            generated_heading_kind=None,
+        ),
+        document_pipeline_output_validation.FinalAssemblyEntry(
+            text="Треть земли будет сожжена.",
+            block_index=3,
+            paragraph_id="p3",
+            source_index=2,
+            role="body",
+            structural_role="body",
+            from_registry=True,
+        ),
+    )
+
+    samples = document_pipeline_output_validation.collect_false_fragment_heading_samples_from_entries(entries)
+
+    assert samples == [
+        document_pipeline_output_validation.QualityIssueSample(
+            line=3,
+            text="## Спутники? Ракеты?)",
+            reason="sentence_split_heading_present",
+        )
+    ]
+
+
+def test_run_document_processing_quality_report_uses_same_final_markdown_as_runtime_state(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    quality_dir = tmp_path / "quality_reports"
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+
+    final_markdown = "На людей, получивших начертание зверя и поклонявшихся его образу, приходят язвы."
+    result = _run_processing(
+        runtime,
+        app_config={"translation_output_quality_gate_policy": "strict", "enable_paragraph_markers": True},
+        processing_operation="translate",
+        jobs=[{
+            "target_text": "Исходный блок",
+            "target_text_with_markers": "[[DOCX_PARA_p1]]\n[[DOCX_PARA_p2]]\n[[DOCX_PARA_p3]]",
+            "paragraph_ids": ["p1", "p2", "p3"],
+            "context_before": "",
+            "context_after": "",
+            "target_chars": 13,
+            "context_chars": 0,
+        }],
+        source_paragraphs=[
+            SimpleNamespace(paragraph_id="p1", source_index=0, role="body", structural_role="body", heading_level=None, list_kind=None, boundary_source="raw", boundary_confidence="explicit"),
+            SimpleNamespace(paragraph_id="p2", source_index=1, role="body", structural_role="body", heading_level=None, list_kind=None, boundary_source="raw", boundary_confidence="explicit"),
+            SimpleNamespace(paragraph_id="p3", source_index=2, role="body", structural_role="body", heading_level=None, list_kind=None, boundary_source="raw", boundary_confidence="explicit"),
+        ],
+        generate_markdown_block=lambda **kwargs: "На людей, получивших\n\n## начертание зверя\n\nи поклонявшихся его образу, приходят язвы.",
+    )
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_markdown"] == final_markdown
+    report_files = list(quality_dir.glob("*.json"))
+    assert len(report_files) == 1
+    payload = json.loads(report_files[0].read_text(encoding="utf-8"))
+    assert payload["quality_status"] == "pass"
+    assert payload["final_markdown_chars"] == len(final_markdown)
+    assert payload["false_fragment_heading_count"] == 0
 
 def test_run_document_processing_fails_on_strict_structural_markdown_quality_gate(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
@@ -2100,6 +2358,59 @@ def test_run_document_processing_registry_uses_logical_marker_for_merged_source_
     assert runtime["state"]["processed_paragraph_registry"] == [
         {"block_index": 1, "paragraph_id": "p0007", "text": "Слитый логический абзац"}
     ]
+
+
+def test_run_document_processing_passes_assembly_aware_registry_into_docx_restoration():
+    runtime = _build_runtime_capture()
+    preserve_calls = []
+    source_paragraphs = [
+        ParagraphUnit(text="Первый фрагмент", role="body", paragraph_id="p0001"),
+        ParagraphUnit(text="Второй фрагмент", role="body", paragraph_id="p0002"),
+    ]
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{
+            "target_text": "Исходный блок",
+            "target_text_with_markers": "[[DOCX_PARA_p0001]]\n[[DOCX_PARA_p0002]]",
+            "paragraph_ids": ["p0001", "p0002"],
+            "context_before": "",
+            "context_after": "",
+            "target_chars": 13,
+            "context_chars": 0,
+        }],
+        source_paragraphs=source_paragraphs,
+        image_assets=[],
+        image_mode="safe",
+        app_config={"enable_paragraph_markers": True},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "Первый фрагмент\n\nВторой фрагмент",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: preserve_calls.append(generated_paragraph_registry) or docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
+    )
+
+    assert result == "succeeded"
+    assert preserve_calls == [[
+        {"block_index": 1, "paragraph_id": "p0001", "text": "Первый фрагмент Второй фрагмент", "merged_paragraph_ids": ["p0001", "p0002"]}
+    ]]
 
 
 def test_run_document_processing_writes_marker_generation_diagnostics_artifact_on_marker_validation_failure(tmp_path, monkeypatch):

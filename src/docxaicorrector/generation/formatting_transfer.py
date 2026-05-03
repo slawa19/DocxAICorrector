@@ -62,7 +62,9 @@ def _paragraph_preview(text: str, *, limit: int = 120) -> str:
 
 def _normalize_text_for_mapping(text: str) -> str:
     normalized = text.strip()
+    normalized = re.sub(r"^(?:>\s*)+", "", normalized)
     normalized = re.sub(r"^#{1,6}\s+", "", normalized)
+    normalized = re.sub(r"^(?:[-*+]\s+|\d+[.)]\s+)", "", normalized)
     normalized = MARKDOWN_LINK_PATTERN.sub(r"\1", normalized)
     normalized = INLINE_HTML_TAG_PATTERN.sub("", normalized)
     normalized = normalized.replace("***", "").replace("**", "").replace("*", "")
@@ -250,8 +252,8 @@ def _register_mapping(
 
 def _build_generated_registry_by_paragraph_id(
     generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
-) -> dict[str, str]:
-    registry_by_id: dict[str, str] = {}
+) -> dict[str, dict[str, object]]:
+    registry_by_id: dict[str, dict[str, object]] = {}
     if not generated_paragraph_registry:
         return registry_by_id
 
@@ -259,15 +261,35 @@ def _build_generated_registry_by_paragraph_id(
         paragraph_id = entry.get("paragraph_id")
         text = entry.get("text")
         if isinstance(paragraph_id, str) and paragraph_id and isinstance(text, str) and text.strip():
-            registry_by_id[paragraph_id] = text
+            payload: dict[str, object] = {"text": text}
+            merged_ids = entry.get("merged_paragraph_ids")
+            if isinstance(merged_ids, Sequence) and not isinstance(merged_ids, (str, bytes)):
+                payload["merged_paragraph_ids"] = [value for value in merged_ids if isinstance(value, str) and value]
+            registry_by_id[paragraph_id] = payload
     return registry_by_id
+
+
+def _generated_registry_text(entry: Mapping[str, object] | None) -> str:
+    if not isinstance(entry, Mapping):
+        return ""
+    text = entry.get("text")
+    return text if isinstance(text, str) else ""
+
+
+def _generated_registry_merged_ids(entry: Mapping[str, object] | None) -> list[str]:
+    if not isinstance(entry, Mapping):
+        return []
+    merged_ids = entry.get("merged_paragraph_ids")
+    if not isinstance(merged_ids, Sequence) or isinstance(merged_ids, (str, bytes)):
+        return []
+    return [value for value in merged_ids if isinstance(value, str) and value]
 
 
 def _collect_accepted_split_targets(
     source_paragraphs: list[ParagraphUnit],
     target_paragraphs: list[Paragraph],
     mapped_target_by_source: Mapping[int, int],
-    generated_registry_by_id: Mapping[str, str],
+    generated_registry_by_id: Mapping[str, Mapping[str, object]],
 ) -> list[dict[str, object]]:
     accepted_targets: list[dict[str, object]] = []
     accepted_target_indexes: set[int] = set()
@@ -281,7 +303,7 @@ def _collect_accepted_split_targets(
         if not paragraph_id:
             continue
 
-        generated_text = generated_registry_by_id.get(paragraph_id)
+        generated_text = _generated_registry_text(generated_registry_by_id.get(paragraph_id))
         if not generated_text:
             continue
 
@@ -359,6 +381,64 @@ def _collect_accepted_merged_sources(
     return accepted_sources
 
 
+def _try_register_local_gap_fallback(
+    source_index: int,
+    source_paragraphs: list[ParagraphUnit],
+    target_paragraphs: list[Paragraph],
+    *,
+    mapped_target_by_source: dict[int, int],
+    strategy_by_source: dict[int, str],
+    available_target_indexes: set[int],
+) -> bool:
+    if source_index <= 0 or source_index + 1 >= len(source_paragraphs):
+        return False
+    if source_index in mapped_target_by_source:
+        return False
+
+    previous_index = source_index - 1
+    next_index = source_index + 1
+    previous_target_index = mapped_target_by_source.get(previous_index)
+    next_target_index = mapped_target_by_source.get(next_index)
+    if previous_target_index is None or next_target_index is None:
+        return False
+    if next_target_index - previous_target_index != 2:
+        return False
+
+    candidate_index = previous_target_index + 1
+    if candidate_index not in available_target_indexes or candidate_index >= len(target_paragraphs):
+        return False
+
+    source_paragraph = source_paragraphs[source_index]
+    structural_role = str(getattr(source_paragraph, "structural_role", "") or "").strip().lower()
+    candidate_target = target_paragraphs[candidate_index]
+    candidate_text = candidate_target.text.strip()
+    if not candidate_text or IMAGE_PLACEHOLDER_PATTERN.search(candidate_text):
+        return False
+
+    if structural_role == "heading":
+        if _extract_target_heading_level(candidate_target) is None:
+            return False
+        strategy = "local_gap_heading_fallback"
+    elif structural_role == "toc_entry":
+        previous_source = source_paragraphs[previous_index]
+        next_source = source_paragraphs[next_index]
+        if not (_is_toc_source_paragraph(previous_source) and _is_toc_source_paragraph(next_source)):
+            return False
+        strategy = "local_gap_toc_fallback"
+    else:
+        return False
+
+    _register_mapping(
+        source_index,
+        candidate_index,
+        strategy,
+        mapped_target_by_source=mapped_target_by_source,
+        strategy_by_source=strategy_by_source,
+        available_target_indexes=available_target_indexes,
+    )
+    return True
+
+
 def _map_source_target_paragraphs(
     source_paragraphs: list[ParagraphUnit],
     target_paragraphs: list[Paragraph],
@@ -384,7 +464,7 @@ def _map_source_target_paragraphs(
         paragraph_id = source_paragraph.paragraph_id
         if not paragraph_id or source_index in mapped_target_by_source:
             continue
-        generated_text = generated_registry_by_id.get(paragraph_id)
+        generated_text = _generated_registry_text(generated_registry_by_id.get(paragraph_id))
         if not generated_text:
             continue
         matching_target_indexes: set[int] = set()
@@ -408,7 +488,7 @@ def _map_source_target_paragraphs(
         paragraph_id = source_paragraph.paragraph_id
         if not paragraph_id or source_index in mapped_target_by_source or source_paragraph.role == "image":
             continue
-        generated_text = generated_registry_by_id.get(paragraph_id)
+        generated_text = _generated_registry_text(generated_registry_by_id.get(paragraph_id))
         if not generated_text:
             continue
 
@@ -486,6 +566,16 @@ def _map_source_target_paragraphs(
                 strategy_by_source=strategy_by_source,
                 available_target_indexes=available_target_indexes,
             )
+
+    for source_index, _source_paragraph in enumerate(source_paragraphs):
+        _try_register_local_gap_fallback(
+            source_index,
+            source_paragraphs,
+            target_paragraphs,
+            mapped_target_by_source=mapped_target_by_source,
+            strategy_by_source=strategy_by_source,
+            available_target_indexes=available_target_indexes,
+        )
 
     for source_index, source_paragraph in enumerate(source_paragraphs):
         if source_index in mapped_target_by_source:
@@ -655,11 +745,7 @@ def _map_source_target_paragraphs(
         "source_count": len(source_paragraphs),
         "target_count": len(target_paragraphs),
         "mapped_count": len(mapping_pairs),
-        "unmapped_source_ids": [
-            source_paragraphs[source_index].paragraph_id or f"p{source_index:04d}"
-            for source_index in range(len(source_paragraphs))
-            if source_index not in mapped_target_by_source
-        ],
+        "unmapped_source_ids": [],
         "unmapped_target_indexes": [
             target_index
             for target_index in range(len(target_paragraphs))
@@ -728,6 +814,25 @@ def _map_source_target_paragraphs(
         ),
         "list_restoration_decisions": [],
     }
+
+    source_index_by_id = {
+        (paragraph.paragraph_id or f"p{index:04d}"): index
+        for index, paragraph in enumerate(source_paragraphs)
+    }
+    covered_source_indexes = set(mapped_target_by_source)
+    for source_index in sorted(mapped_target_by_source):
+        paragraph_id = source_paragraphs[source_index].paragraph_id or f"p{source_index:04d}"
+        merged_ids = _generated_registry_merged_ids(generated_registry_by_id.get(paragraph_id))
+        for merged_id in merged_ids:
+            covered_index = source_index_by_id.get(merged_id)
+            if covered_index is not None:
+                covered_source_indexes.add(covered_index)
+
+    diagnostics["unmapped_source_ids"] = [
+        source_paragraphs[source_index].paragraph_id or f"p{source_index:04d}"
+        for source_index in range(len(source_paragraphs))
+        if source_index not in covered_source_indexes
+    ]
     return mapping_pairs, diagnostics
 
 
@@ -909,7 +1014,7 @@ def _apply_minimal_caption_formatting(
     }
     source_caption_texts.discard("")
     generated_caption_texts = {
-        _normalize_text_for_mapping(generated_registry_by_id.get(paragraph.paragraph_id or "", ""))
+        _normalize_text_for_mapping(_generated_registry_text(generated_registry_by_id.get(paragraph.paragraph_id or "")))
         for paragraph in source_paragraphs
         if paragraph.role == "caption" and paragraph.paragraph_id
     }

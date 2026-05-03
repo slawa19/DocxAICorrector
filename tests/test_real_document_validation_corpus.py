@@ -1482,7 +1482,7 @@ def test_structural_passthrough_failure_derives_detailed_snapshot_reasons_from_p
             run_prepared_background_document=lambda **kwargs: (_ for _ in ()).throw(
                 ValueError(
                     "Подготовка заблокирована quality gate: документ требует structural repair перед обработкой. "
-                    "Причины: toc_like_sequence_without_bounded_region, structure_recognition_noop_on_high_risk"
+                    "Причины: обнаружен TOC-подобный фрагмент без надёжно выделенной границы, AI-распознавание структуры не внесло изменений для документа с высоким структурным риском"
                 )
             )
         ),

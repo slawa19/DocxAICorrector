@@ -36,6 +36,34 @@ from docxaicorrector.structure.validation import StructureValidationReport, vali
 from docxaicorrector.text.translation_domains import build_translation_domain_instructions
 
 
+_REASON_LABELS: dict[str, str] = {
+    "structure_recognition_noop_on_high_risk": "AI-распознавание структуры не внесло изменений для документа с высоким структурным риском",
+    "toc_like_sequence_without_bounded_region": "обнаружен TOC-подобный фрагмент без надёжно выделенной границы",
+    "structural_repair_required_before_processing": "перед обработкой требуется structural repair документа",
+    "isolated_list_markers_remaining": "после подготовки остались изолированные маркеры списка",
+    "first_block_mixed_toc_and_epigraph": "первый блок смешивает элементы оглавления и эпиграфа",
+    "first_block_mixed_toc_and_body_start": "первый блок смешивает элементы оглавления и начало основного текста",
+    "low_explicit_heading_density": "мало явных заголовков",
+    "high_suspicious_short_body_ratio": "много коротких body-абзацев",
+    "toc_like_sequence_detected": "обнаружен TOC-подобный фрагмент",
+    "high_all_caps_or_centered_body_ratio": "слишком много body-абзацев в ВЕРХНЕМ РЕГИСТРЕ или по центру",
+    "heading_only_collapse_risk": "есть риск потери заголовочной структуры",
+    "isolated_list_marker_fragments": "остались изолированные маркеры списков",
+    "large_front_matter_block_risk": "обнаружен риск крупного фронт-маттер блока без безопасной границы",
+    "heading_count_far_below_toc_expectation": "заголовков значительно меньше, чем ожидается по оглавлению",
+    "high_risk_without_structure_repair": "документ высокого риска не прошёл structural repair",
+}
+
+
+def humanize_quality_gate_reason(reason: str) -> str:
+    normalized = str(reason or "").strip()
+    return _REASON_LABELS.get(normalized, normalized.replace("_", " "))
+
+
+def humanize_quality_gate_reasons(reasons) -> list[str]:
+    return [humanize_quality_gate_reason(str(reason).strip()) for reason in reasons or () if str(reason).strip()]
+
+
 @dataclass
 class PreparedDocumentData:
     source_text: str
@@ -230,15 +258,7 @@ def _build_structure_recognition_summary(*, applied_metrics: dict[str, int], div
 def _format_structure_escalation_reasons(report: StructureValidationReport | None) -> str:
     if report is None or not report.escalation_reasons:
         return ""
-    labels = {
-        "low_explicit_heading_density": "мало явных заголовков",
-        "high_suspicious_short_body_ratio": "много коротких body-абзацев",
-        "high_all_caps_or_centered_body_ratio": "много CAPS/центрированных body-абзацев",
-        "toc_like_sequence_detected": "обнаружен TOC-подобный фрагмент",
-        "heading_only_collapse_risk": "есть риск потери заголовочной структуры",
-        "isolated_list_marker_fragments": "остались изолированные маркеры списков",
-    }
-    return ", ".join(labels.get(reason, reason) for reason in report.escalation_reasons)
+    return ", ".join(humanize_quality_gate_reason(reason) for reason in report.escalation_reasons)
 
 
 def build_structure_repair_status_note(structure_repair_report) -> str:

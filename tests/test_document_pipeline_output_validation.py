@@ -794,6 +794,418 @@ def test_assemble_final_markdown_preserves_registry_backed_text_verbatim():
     assert result.entries[0].text == "Суд Judgment #1 уже начался."
 
 
+def test_assemble_final_markdown_normalizes_mixed_script_in_registry_backed_entries():
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["Прежде чем суперразумa догонит квантовый скачок."],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "body-1", "text": "Прежде чем суперразумa догонит квантовый скачок."},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("body-1", 0),
+        ],
+    )
+
+    assert "суперразумa" not in result.final_markdown
+    assert "суперразума" in result.final_markdown
+    assert result.entries[0].text == "Прежде чем суперразума догонит квантовый скачок."
+
+
+def test_assemble_final_markdown_normalizes_residual_bullet_glyphs_in_registry_backed_entries():
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "Посттрибулационисты считают, что Иисус придёт в конце ● скорби.\n\n● собирают армию в 200 миллионов солдат."
+        ],
+        generated_paragraph_registry=[
+            {
+                "block_index": 1,
+                "paragraph_id": "body-1",
+                "text": "Посттрибулационисты считают, что Иисус придёт в конце ● скорби.",
+            },
+            {
+                "block_index": 1,
+                "paragraph_id": "body-2",
+                "text": "● собирают армию в 200 миллионов солдат.",
+            },
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("body-1", 0),
+            _make_paragraph_stub("body-2", 1),
+        ],
+    )
+
+    assert "●" not in result.final_markdown
+    assert "в конце скорби." in result.final_markdown
+    assert "- собирают армию в 200 миллионов солдат." in result.final_markdown
+    assert result.entries[0].text == "Посттрибулационисты считают, что Иисус придёт в конце скорби."
+    assert result.entries[1].text == "- собирают армию в 200 миллионов солдат."
+
+
+def test_assemble_final_markdown_does_not_convert_heading_into_bullet_heading_during_post_normalization():
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["## Раздел", "● собирают армию в 200 миллионов солдат."],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "heading-1", "text": "## Раздел"},
+            {"block_index": 2, "paragraph_id": "body-1", "text": "● собирают армию в 200 миллионов солдат."},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("heading-1", 0, role="heading", structural_role="heading", heading_level=2),
+            _make_paragraph_stub("body-1", 1),
+        ],
+    )
+
+    assert result.entries[0].text == "## Раздел"
+    assert result.entries[1].text == "- собирают армию в 200 миллионов солдат."
+    assert result.final_markdown.startswith("## Раздел\n\n")
+
+
+def test_assemble_final_markdown_normalizes_registry_backed_intro_and_carryover_list_markers():
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "Поразительно, но все петли следуют одной и той же схеме: 1.\n\n"
+            "Духовные существа восстают против Бога.\n\n"
+            "2. Бог судит их за грех.\n\n"
+            "3. Бог спасает остаток верных."
+        ],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "intro", "text": "Поразительно, но все петли следуют одной и той же схеме: 1."},
+            {"block_index": 1, "paragraph_id": "item-1", "text": "Духовные существа восстают против Бога."},
+            {"block_index": 1, "paragraph_id": "item-2", "text": "2. Бог судит их за грех."},
+            {"block_index": 1, "paragraph_id": "item-3", "text": "3. Бог спасает остаток верных."},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("intro", 0),
+            _make_paragraph_stub("item-1", 1),
+            _make_paragraph_stub("item-2", 2),
+            _make_paragraph_stub("item-3", 3),
+        ],
+    )
+
+    assert "схеме: 1." not in result.final_markdown
+    assert "Поразительно, но все петли следуют одной и той же схеме:" in result.final_markdown
+    assert "1. Духовные существа восстают против Бога." in result.final_markdown
+    assert "2. Бог судит их за грех." in result.final_markdown
+    assert "3. Бог спасает остаток верных." in result.final_markdown
+
+
+def test_assemble_final_markdown_normalizes_registry_backed_number_carryover_chain():
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "Сатана-Дьявол пытается воспроизвести Троицу: 1.\n\n"
+            "Обвинитель-Противник 2.\n\n"
+            "Звероподобная сущность Антихриста 3.\n\n"
+            "Вторая сущность — зверь/лжепророк."
+        ],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "intro", "text": "Сатана-Дьявол пытается воспроизвести Троицу: 1."},
+            {"block_index": 1, "paragraph_id": "item-1", "text": "Обвинитель-Противник 2."},
+            {"block_index": 1, "paragraph_id": "item-2", "text": "Звероподобная сущность Антихриста 3."},
+            {"block_index": 1, "paragraph_id": "item-3", "text": "Вторая сущность — зверь/лжепророк."},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("intro", 0),
+            _make_paragraph_stub("item-1", 1),
+            _make_paragraph_stub("item-2", 2),
+            _make_paragraph_stub("item-3", 3),
+        ],
+    )
+
+    assert result.entries[0].text == "Сатана-Дьявол пытается воспроизвести Троицу:"
+    assert result.entries[1].text == "1. Обвинитель-Противник"
+    assert result.entries[2].text == "2. Звероподобная сущность Антихриста"
+    assert result.entries[3].text == "3. Вторая сущность — зверь/лжепророк."
+
+
+def test_assemble_final_markdown_normalizes_registry_backed_emoji_marker_fragment():
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["Представьте, если этим лидером окажется Дональд Трамп.\n\n😂 2.\n\nВ первой половине"],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "body-1", "text": "Представьте, если этим лидером окажется Дональд Трамп."},
+            {"block_index": 1, "paragraph_id": "emoji", "text": "😂 2."},
+            {"block_index": 1, "paragraph_id": "body-2", "text": "В первой половине"},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("body-1", 0),
+            _make_paragraph_stub("emoji", 1),
+            _make_paragraph_stub("body-2", 2),
+        ],
+    )
+
+    assert result.entries[1].text == "😂"
+    assert result.entries[2].text == "2. В первой половине"
+    assert "1. 😂" not in result.final_markdown
+
+
+def test_assemble_final_markdown_normalizes_registry_backed_trailing_next_item_with_heading_target():
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "5. Держитесь подальше от зла. Таковых удаляйся». 6.\n\n"
+            "## Примите срочные меры, чтобы подготовиться к почти неизбежному полному глобальному экономическому исключению:"
+        ],
+        generated_paragraph_registry=[
+            {
+                "block_index": 1,
+                "paragraph_id": "item-5",
+                "text": "5. Держитесь подальше от зла. Таковых удаляйся». 6.",
+            },
+            {
+                "block_index": 1,
+                "paragraph_id": "heading-6",
+                "text": "## Примите срочные меры, чтобы подготовиться к почти неизбежному полному глобальному экономическому исключению:",
+            },
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("item-5", 0),
+            _make_paragraph_stub("heading-6", 1, role="heading", structural_role="heading", heading_level=2),
+        ],
+    )
+
+    assert result.entries[0].text == "5. Держитесь подальше от зла. Таковых удаляйся»."
+    assert result.entries[1].text == "6. Примите срочные меры, чтобы подготовиться к почти неизбежному полному глобальному экономическому исключению:"
+    assert "## Примите срочные меры" not in result.final_markdown
+
+
+def test_assemble_final_markdown_demotes_false_generated_heading_between_blockquote_fragments():
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "> Для христиан жизненно важно помнить, понимать и интуитивно улавливать знамения времени, чтобы, если им будет даровано пережить\n\n## Великая скорбь\n\n> они смогут уверенно сказать: Это знамения."
+        ],
+        generated_paragraph_registry=[
+            {
+                "block_index": 1,
+                "paragraph_id": "quote-left",
+                "text": "> Для христиан жизненно важно помнить, понимать и интуитивно улавливать знамения времени, чтобы, если им будет даровано пережить",
+            },
+            {"block_index": 1, "paragraph_id": "false-heading", "text": "## Великая скорбь"},
+            {"block_index": 1, "paragraph_id": "quote-right", "text": "> они смогут уверенно сказать: Это знамения."},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("quote-left", 0, role="body", structural_role="body"),
+            _make_paragraph_stub("false-heading", 1, role="body", structural_role="body"),
+            _make_paragraph_stub("quote-right", 2, role="body", structural_role="body"),
+        ],
+    )
+
+    assert result.final_markdown == (
+        "> Для христиан жизненно важно помнить, понимать и интуитивно улавливать знамения времени, "
+        "чтобы, если им будет даровано пережить Великая скорбь они смогут уверенно сказать: Это знамения."
+    )
+    assert len(result.entries) == 1
+    assert result.diagnostics.demoted_false_headings == 1
+    assert result.diagnostics.accepted_merges == 2
+    assert result.entries[0].merged_paragraph_ids == ("quote-left", "false-heading", "quote-right")
+    assert any(
+        decision.action == "demote_heading" and decision.paragraph_ids == ("false-heading",)
+        for decision in result.diagnostics.merge_decisions
+    )
+
+
+def test_assemble_final_markdown_demotes_false_generated_heading_inside_body_phrase():
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "На людей, получивших\n\n## начертание зверя\n\nи поклонявшихся его образу, приходят язвы."
+        ],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "body-left", "text": "На людей, получивших"},
+            {"block_index": 1, "paragraph_id": "false-heading", "text": "## начертание зверя"},
+            {
+                "block_index": 1,
+                "paragraph_id": "body-right",
+                "text": "и поклонявшихся его образу, приходят язвы.",
+            },
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("body-left", 0, role="body", structural_role="body"),
+            _make_paragraph_stub("false-heading", 1, role="body", structural_role="body"),
+            _make_paragraph_stub("body-right", 2, role="body", structural_role="body"),
+        ],
+    )
+
+    assert result.final_markdown == "На людей, получивших начертание зверя и поклонявшихся его образу, приходят язвы."
+    assert len(result.entries) == 1
+    assert result.diagnostics.demoted_false_headings == 1
+    assert result.diagnostics.accepted_merges == 2
+    assert result.entries[0].merged_paragraph_ids == ("body-left", "false-heading", "body-right")
+    assert any(
+        decision.action == "merge" and decision.paragraph_ids == ("body-left", "false-heading", "body-right")
+        for decision in result.diagnostics.merge_decisions
+    )
+
+
+def test_assemble_final_markdown_demotes_false_generated_heading_across_adjacent_blocks():
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "> Христианам жизненно необходимо помнить знамения времени, чтобы, если им будет дано претерпеть",
+            "## Великая скорбь",
+            "> они могли бы уверенно сказать: Это знаки.",
+        ],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "quote-left", "text": "> Христианам жизненно необходимо помнить знамения времени, чтобы, если им будет дано претерпеть"},
+            {"block_index": 2, "paragraph_id": "false-heading", "text": "## Великая скорбь"},
+            {"block_index": 3, "paragraph_id": "quote-right", "text": "> они могли бы уверенно сказать: Это знаки."},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("quote-left", 0, role="body", structural_role="body"),
+            _make_paragraph_stub("false-heading", 1, role="heading", structural_role="heading", heading_level=2),
+            _make_paragraph_stub("quote-right", 2, role="body", structural_role="body"),
+        ],
+    )
+
+    assert result.final_markdown == (
+        "> Христианам жизненно необходимо помнить знамения времени, чтобы, если им будет дано претерпеть Великая скорбь\n\n"
+        "> они могли бы уверенно сказать: Это знаки."
+    )
+    assert len(result.entries) == 2
+    assert result.entries[0].merged_paragraph_ids == ("quote-left", "false-heading")
+    assert result.entries[1].text == "> они могли бы уверенно сказать: Это знаки."
+    assert result.diagnostics.demoted_false_headings == 1
+    assert result.diagnostics.accepted_merges == 1
+
+
+def test_assemble_final_markdown_preserves_source_backed_scripture_heading():
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "## (Матфея 24:36)",
+            "Христос вернётся, как тать в ночи.",
+        ],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "heading-1", "text": "## (Матфея 24:36)"},
+            {"block_index": 2, "paragraph_id": "body-1", "text": "Христос вернётся, как тать в ночи."},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("heading-1", 0, role="heading", structural_role="heading", heading_level=2),
+            _make_paragraph_stub("body-1", 1, role="body", structural_role="body"),
+        ],
+    )
+
+    assert result.final_markdown == "## (Матфея 24:36)\n\nХристос вернётся, как тать в ночи."
+    assert len(result.entries) == 2
+    assert result.entries[0].generated_heading_kind == "real_heading"
+    assert result.diagnostics.demoted_false_headings == 0
+    assert result.diagnostics.accepted_merges == 0
+
+
+def test_assemble_final_markdown_demotes_parenthetical_question_tail_across_mixed_block_boundary():
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "«Град и огонь, смешанные с кровью», падают на землю. (Кометы? Астероиды?",
+            "## Спутники? Ракеты?)\n\nСгорела треть земли, деревьев и травяных покровов.",
+        ],
+        generated_paragraph_registry=[
+            {
+                "block_index": 1,
+                "paragraph_id": "body-left",
+                "text": "«Град и огонь, смешанные с кровью», падают на землю. (Кометы? Астероиды?",
+            },
+            {"block_index": 2, "paragraph_id": "false-heading", "text": "## Спутники? Ракеты?)"},
+            {
+                "block_index": 2,
+                "paragraph_id": "body-right",
+                "text": "Сгорела треть земли, деревьев и травяных покровов.",
+            },
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("body-left", 0, role="body", structural_role="body"),
+            _make_paragraph_stub("false-heading", 1, role="heading", structural_role="heading", heading_level=2),
+            _make_paragraph_stub("body-right", 2, role="body", structural_role="body"),
+        ],
+    )
+
+    assert result.final_markdown == (
+        "«Град и огонь, смешанные с кровью», падают на землю. (Кометы? Астероиды? Спутники? Ракеты?)\n\n"
+        "Сгорела треть земли, деревьев и травяных покровов."
+    )
+    assert len(result.entries) == 2
+    assert result.entries[0].merged_paragraph_ids == ("body-left", "false-heading")
+    assert result.entries[1].merged_paragraph_ids == ("body-right",)
+    assert result.diagnostics.demoted_false_headings == 1
+    assert result.diagnostics.accepted_merges == 1
+
+
+def test_collect_false_fragment_heading_samples_skips_legitimate_major_section_heading():
+    samples = document_pipeline_output_validation.collect_false_fragment_heading_samples(
+        "## Введение\n\nЭто первый абзац раздела."
+    )
+
+    assert samples == []
+
+
+def test_collect_false_fragment_heading_samples_skips_canonical_judgment_heading():
+    samples = document_pipeline_output_validation.collect_false_fragment_heading_samples(
+        "2/3.) Семь трубных судов\n\n## Суд над трубой #1 (Откровение 8:7):\n\nГрад и огонь падают на землю."
+    )
+
+    assert samples == []
+
+
+def test_collect_false_fragment_heading_samples_flags_parenthetical_question_tail_heading():
+    samples = document_pipeline_output_validation.collect_false_fragment_heading_samples(
+        "Кометы? Астероиды?\n\n## Спутники? Ракеты?)\n\nТреть земли будет сожжена."
+    )
+
+    assert [sample.reason for sample in samples] == ["sentence_split_heading_present"]
+    assert samples[0].text == "## Спутники? Ракеты?)"
+
+
+def test_collect_false_fragment_heading_samples_from_entries_preserves_source_backed_scripture_heading():
+    entries = (
+        document_pipeline_output_validation.FinalAssemblyEntry(
+            text="## (Матфея 24:36)",
+            block_index=1,
+            paragraph_id="p1",
+            source_index=0,
+            role="heading",
+            structural_role="heading",
+            heading_level=2,
+            from_registry=True,
+            generated_heading_kind="real_heading",
+        ),
+        document_pipeline_output_validation.FinalAssemblyEntry(
+            text="Христос вернётся, как тать в ночи.",
+            block_index=2,
+            paragraph_id="p2",
+            source_index=1,
+            role="body",
+            structural_role="body",
+            from_registry=True,
+        ),
+    )
+
+    samples = document_pipeline_output_validation.collect_false_fragment_heading_samples_from_entries(entries)
+
+    assert samples == []
+
+
+def test_collect_false_fragment_heading_samples_from_entries_does_not_report_demoted_question_tail():
+    assembly_result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=[
+            "«Град и огонь, смешанные с кровью», падают на землю. (Кометы? Астероиды?",
+            "## Спутники? Ракеты?)\n\nСгорела треть земли, деревьев и травяных покровов.",
+        ],
+        generated_paragraph_registry=[
+            {
+                "block_index": 1,
+                "paragraph_id": "body-left",
+                "text": "«Град и огонь, смешанные с кровью», падают на землю. (Кометы? Астероиды?",
+            },
+            {"block_index": 2, "paragraph_id": "false-heading", "text": "## Спутники? Ракеты?)"},
+            {
+                "block_index": 2,
+                "paragraph_id": "body-right",
+                "text": "Сгорела треть земли, деревьев и травяных покровов.",
+            },
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("body-left", 0, role="body", structural_role="body"),
+            _make_paragraph_stub("false-heading", 1, role="heading", structural_role="heading", heading_level=2),
+            _make_paragraph_stub("body-right", 2, role="body", structural_role="body"),
+        ],
+    )
+
+    samples = document_pipeline_output_validation.collect_false_fragment_heading_samples_from_entries(assembly_result.entries)
+
+    assert samples == []
+
+
 def test_run_document_processing_accepts_heading_only_output_for_plaintext_banner_input():
     runtime = _build_runtime_capture()
 

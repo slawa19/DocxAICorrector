@@ -13,6 +13,7 @@ ProcessedBlockStatus: TypeAlias = Literal[
     "toc_body_concat",
     "english_residual_output",
 ]
+GeneratedHeadingKind: TypeAlias = Literal["real_heading", "false_fragment_heading", "unknown"]
 
 # Spec TOC/minimal-formatting 2026-04-21 constants.
 TOC_UPPERCASE_LABEL_MAX_CHARS = 10
@@ -34,6 +35,7 @@ _SCRIPTURE_REFERENCE_HEADING_PATTERN = re.compile(
 )
 _PARENTHETICAL_ONLY_HEADING_PATTERN = re.compile(r"^#{1,6}\s+\([^\n]+\)$")
 _HEADING_PREFIX_PATTERN = re.compile(r"^#{1,6}\s+")
+_CANONICAL_JUDGMENT_HEADING_PATTERN = re.compile(r"^суд\b.+\(откровение\s+\d{1,3}:\d{1,3}", re.IGNORECASE)
 _CYRILLIC_LATIN_MIXED_TOKEN_PATTERN = re.compile(r"(?=\w*[A-Za-z])(?=\w*[А-Яа-яЁё])[A-Za-zА-Яа-яЁё]+")
 _HOMOGLYPH_TABLE = str.maketrans({
     "a": "а",
@@ -87,14 +89,24 @@ class QualityIssueSample:
 
 
 @dataclass(frozen=True)
+class FinalAssemblyDecision:
+    action: Literal["demote_heading", "merge"]
+    block_index: int
+    paragraph_ids: tuple[str, ...] = ()
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
 class FinalAssemblyDiagnostics:
     accepted_merges: int = 0
     denied_merges: int = 0
     protected_boundary_denials: int = 0
+    demoted_false_headings: int = 0
     registry_covered_paragraphs: int = 0
     fallback_paragraphs: int = 0
     paragraph_count_drift: int = 0
     inconsistent_registry_blocks: tuple[int, ...] = ()
+    merge_decisions: tuple[FinalAssemblyDecision, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -111,6 +123,8 @@ class FinalAssemblyEntry:
     boundary_confidence: str | None = None
     from_registry: bool = False
     used_fallback: bool = False
+    generated_heading_kind: GeneratedHeadingKind | None = None
+    merged_paragraph_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -387,6 +401,125 @@ def _collect_toc_heading_registry(text: str) -> set[str]:
     return headings
 
 
+def _is_parenthetical_question_tail(text: str) -> bool:
+    stripped = text.strip()
+    return stripped.endswith("?)") or (stripped.endswith(")") and "?" in stripped)
+
+
+def _is_canonical_judgment_heading_text(text: str) -> bool:
+    return bool(_CANONICAL_JUDGMENT_HEADING_PATTERN.match(text.strip()))
+
+
+def _entry_looks_major_section_heading(entry: FinalAssemblyEntry) -> bool:
+    body_text = _entry_body_text(entry)
+    if is_markdown_heading_line(body_text):
+        body_text = _trim_heading_prefix(body_text)
+    if not body_text:
+        return False
+    if body_text[0].islower():
+        return False
+    if _is_canonical_judgment_heading_text(body_text):
+        return False
+    if _is_parenthetical_question_tail(body_text):
+        return False
+    return _looks_title_like_heading_text(body_text)
+
+
+def _entry_looks_scripture_reference_fragment(entry: FinalAssemblyEntry) -> bool:
+    return bool(_SCRIPTURE_REFERENCE_HEADING_PATTERN.match(entry.text.strip()))
+
+
+def _entry_looks_parenthetical_heading_fragment(entry: FinalAssemblyEntry) -> bool:
+    return bool(_PARENTHETICAL_ONLY_HEADING_PATTERN.match(entry.text.strip()))
+
+
+def _entry_looks_sentence_fragment_heading(entry: FinalAssemblyEntry) -> bool:
+    body_text = _entry_body_text(entry)
+    if not body_text:
+        return False
+    if _entry_looks_scripture_reference_fragment(entry) or _entry_looks_parenthetical_heading_fragment(entry):
+        return True
+    if _is_parenthetical_question_tail(body_text):
+        return True
+    if body_text[0].islower() and _looks_inline_fragment_line(body_text):
+        return True
+    if body_text.startswith(("/", ")", "]", ",", ";", ":", "?", "!", "-", "—", "–")):
+        return True
+    return False
+
+
+def _text_has_open_parenthetical_context(text: str) -> bool:
+    balance = 0
+    for char in text:
+        if char == "(":
+            balance += 1
+        elif char == ")" and balance > 0:
+            balance -= 1
+    return balance > 0
+
+
+def _entry_has_explicit_source_heading_signal(entry: FinalAssemblyEntry) -> bool:
+    return entry.role == "heading" or entry.structural_role in {"heading", "toc_header", "toc_entry"}
+
+
+def _entry_is_source_backed_scripture_heading(entry: FinalAssemblyEntry) -> bool:
+    return (
+        _entry_looks_scripture_reference_fragment(entry)
+        and _entry_has_source_heading_signal(entry)
+        and entry.from_registry
+        and not entry.used_fallback
+    )
+
+
+def _entry_looks_parenthetical_question_tail_fragment(entry: FinalAssemblyEntry) -> bool:
+    return _is_parenthetical_question_tail(_entry_body_text(entry))
+
+
+def _entry_has_mixed_block_parenthetical_tail_context(
+    entry: FinalAssemblyEntry,
+    previous_entry: FinalAssemblyEntry | None,
+    next_entry: FinalAssemblyEntry | None,
+) -> bool:
+    if previous_entry is None or next_entry is None:
+        return False
+    if previous_entry.block_index + 1 != entry.block_index:
+        return False
+    if next_entry.block_index != entry.block_index:
+        return False
+    if not _entry_looks_parenthetical_question_tail_fragment(entry):
+        return False
+    if _entry_is_source_backed_scripture_heading(entry):
+        return False
+    if not _entry_allows_continuation_context(previous_entry):
+        return False
+    previous_body = _entry_body_text(previous_entry)
+    if not previous_body or not _text_has_open_parenthetical_context(previous_body):
+        return False
+    return _left_entry_looks_incomplete(previous_entry)
+
+
+def _entry_can_override_source_heading_signal(
+    entry: FinalAssemblyEntry,
+    previous_entry: FinalAssemblyEntry | None,
+    next_entry: FinalAssemblyEntry | None,
+) -> bool:
+    if entry.used_fallback or not entry.from_registry:
+        return False
+    if entry.structural_role in {"toc_header", "toc_entry"}:
+        return False
+    if _entry_is_source_backed_scripture_heading(entry):
+        return False
+    if _entry_has_mixed_block_parenthetical_tail_context(entry, previous_entry, next_entry):
+        return True
+    if _entry_looks_sentence_fragment_heading(entry):
+        return True
+    if _entry_has_cross_block_continuation_context(entry, previous_entry, next_entry):
+        return True
+    if entry.heading_level is not None and _entry_looks_major_section_heading(entry):
+        return False
+    return False
+
+
 def _is_split_heading_continuation(previous_line: str, current_line: str) -> bool:
     previous_level = _heading_level_marker(previous_line)
     current_level = _heading_level_marker(current_line)
@@ -419,6 +552,112 @@ def _normalize_entry_text(entry: FinalAssemblyEntry) -> str:
     if entry.from_registry and not entry.used_fallback:
         return text
     return normalize_mixed_script_markdown(normalize_residual_bullet_glyphs_markdown(text))
+
+
+def _normalize_final_entry_text(text: str) -> str:
+    normalized = normalize_residual_bullet_glyphs_markdown(text)
+    normalized = normalize_mixed_script_markdown(normalized)
+    return normalized.strip()
+
+
+def _normalize_final_entry_list_fragments(entries: Sequence[FinalAssemblyEntry]) -> tuple[FinalAssemblyEntry, ...]:
+    if not entries:
+        return ()
+
+    normalized_entries = list(entries)
+
+    def _replace_entry(index: int, text: str) -> None:
+        entry = normalized_entries[index]
+        normalized_entries[index] = FinalAssemblyEntry(
+            text=text.strip(),
+            block_index=entry.block_index,
+            paragraph_id=entry.paragraph_id,
+            source_index=entry.source_index,
+            role=entry.role,
+            structural_role=entry.structural_role,
+            heading_level=entry.heading_level,
+            list_kind=entry.list_kind,
+            boundary_source=entry.boundary_source,
+            boundary_confidence=entry.boundary_confidence,
+            from_registry=entry.from_registry,
+            used_fallback=entry.used_fallback,
+            generated_heading_kind=entry.generated_heading_kind,
+            merged_paragraph_ids=entry.merged_paragraph_ids,
+        )
+
+    for index, entry in enumerate(list(normalized_entries)):
+        stripped = entry.text.strip()
+        if not stripped:
+            continue
+        next_index = index + 1
+        if next_index >= len(normalized_entries):
+            continue
+        next_entry = normalized_entries[next_index]
+        next_stripped = next_entry.text.strip()
+        if not next_stripped:
+            continue
+
+        intro_match = re.match(r"^(?P<prefix>.+?):\s+1\.$", stripped)
+        if intro_match is not None and not _entry_is_heading(next_entry):
+            _replace_entry(index, intro_match.group("prefix") + ":")
+            next_content = _trim_heading_prefix(next_stripped) if is_markdown_heading_line(next_stripped) else next_stripped
+            _replace_entry(next_index, f"1. {next_content}")
+            continue
+
+        carry_match = re.match(r"^(?:(?P<current>\d+)\.\s+)?(?P<body>.+?)\s+(?P<next>\d+)\.$", stripped)
+        if carry_match is None:
+            continue
+
+        next_number = int(carry_match.group("next"))
+        current_number_group = carry_match.group("current")
+        current_number = int(current_number_group) if current_number_group is not None else max(1, next_number - 1)
+        if current_number_group is not None and next_number != current_number + 1:
+            continue
+
+        body = str(carry_match.group("body") or "").strip()
+        if not body:
+            continue
+        if not next_stripped or _entry_is_heading(entry):
+            continue
+
+        body_tokens = body.split()
+        if current_number_group is None and len(body_tokens) <= 2 and not re.search(r"[A-Za-zА-Яа-яЁё]", body):
+            _replace_entry(index, body)
+        else:
+            _replace_entry(index, f"{current_number}. {body}")
+
+        next_content = _trim_heading_prefix(next_stripped) if is_markdown_heading_line(next_stripped) else next_stripped
+        _replace_entry(next_index, f"{next_number}. {next_content}")
+
+    return tuple(normalized_entries)
+
+
+def _apply_final_entry_post_normalization(entries: Sequence[FinalAssemblyEntry]) -> tuple[FinalAssemblyEntry, ...]:
+    normalized_entries: list[FinalAssemblyEntry] = []
+    for entry in entries:
+        normalized_text = _normalize_final_entry_text(entry.text)
+        if normalized_text == entry.text:
+            normalized_entries.append(entry)
+            continue
+        normalized_entries.append(
+            FinalAssemblyEntry(
+                text=normalized_text,
+                block_index=entry.block_index,
+                paragraph_id=entry.paragraph_id,
+                source_index=entry.source_index,
+                role=entry.role,
+                structural_role=entry.structural_role,
+                heading_level=entry.heading_level,
+                list_kind=entry.list_kind,
+                boundary_source=entry.boundary_source,
+                boundary_confidence=entry.boundary_confidence,
+                from_registry=entry.from_registry,
+                used_fallback=entry.used_fallback,
+                generated_heading_kind=entry.generated_heading_kind,
+                merged_paragraph_ids=entry.merged_paragraph_ids,
+            )
+        )
+    return _normalize_final_entry_list_fragments(tuple(normalized_entries))
 
 
 def _coerce_source_paragraph_id(paragraph: object) -> str:
@@ -477,11 +716,176 @@ def _entry_body_text(entry: FinalAssemblyEntry) -> str:
     return _strip_blockquote_content(entry.text).strip()
 
 
-def _entry_is_heading(entry: FinalAssemblyEntry) -> bool:
+def _entry_paragraph_ids(entry: FinalAssemblyEntry) -> tuple[str, ...]:
+    if entry.merged_paragraph_ids:
+        return entry.merged_paragraph_ids
+    if entry.paragraph_id:
+        return (entry.paragraph_id,)
+    return ()
+
+
+def _merge_paragraph_ids(*entries: FinalAssemblyEntry) -> tuple[str, ...]:
+    ordered_ids: list[str] = []
+    seen_ids: set[str] = set()
+    for entry in entries:
+        for paragraph_id in _entry_paragraph_ids(entry):
+            if paragraph_id in seen_ids:
+                continue
+            seen_ids.add(paragraph_id)
+            ordered_ids.append(paragraph_id)
+    return tuple(ordered_ids)
+
+
+def _entry_has_source_heading_signal(entry: FinalAssemblyEntry) -> bool:
     return (
         entry.heading_level is not None
         or entry.role == "heading"
-        or entry.structural_role == "heading"
+        or entry.structural_role in {"heading", "toc_header", "toc_entry"}
+    )
+
+
+def _entry_allows_continuation_context(entry: FinalAssemblyEntry) -> bool:
+    if entry.used_fallback or not entry.from_registry:
+        return False
+    body_text = _entry_body_text(entry)
+    if not body_text:
+        return False
+    if _entry_is_heading(entry) or _entry_is_toc(entry):
+        return False
+    if _entry_is_list(entry) or _entry_is_structural_label(entry):
+        return False
+    return True
+
+
+def _build_recovery_entry(
+    entry: FinalAssemblyEntry,
+    *,
+    text: str,
+    generated_heading_kind: GeneratedHeadingKind | None,
+) -> FinalAssemblyEntry:
+    return FinalAssemblyEntry(
+        text=text,
+        block_index=entry.block_index,
+        paragraph_id=entry.paragraph_id,
+        source_index=entry.source_index,
+        role=entry.role,
+        structural_role=entry.structural_role,
+        heading_level=entry.heading_level,
+        list_kind=entry.list_kind,
+        boundary_source=entry.boundary_source,
+        boundary_confidence=entry.boundary_confidence,
+        from_registry=entry.from_registry,
+        used_fallback=entry.used_fallback,
+        generated_heading_kind=generated_heading_kind,
+        merged_paragraph_ids=_entry_paragraph_ids(entry),
+    )
+
+
+def _entry_has_previous_continuation_context(
+    entry: FinalAssemblyEntry,
+    previous_entry: FinalAssemblyEntry | None,
+) -> bool:
+    return (
+        previous_entry is not None
+        and _entry_allows_continuation_context(previous_entry)
+        and _left_entry_looks_incomplete(previous_entry)
+    )
+
+
+def _entry_has_next_continuation_context(
+    entry: FinalAssemblyEntry,
+    next_entry: FinalAssemblyEntry | None,
+) -> bool:
+    if next_entry is None or not _entry_allows_continuation_context(next_entry):
+        return False
+    demoted_entry = _build_recovery_entry(
+        entry,
+        text=_trim_heading_prefix(entry.text),
+        generated_heading_kind="false_fragment_heading",
+    )
+    return _left_entry_looks_incomplete(demoted_entry) and _right_entry_looks_like_continuation(next_entry)
+
+
+def _entry_has_cross_block_continuation_context(
+    entry: FinalAssemblyEntry,
+    previous_entry: FinalAssemblyEntry | None,
+    next_entry: FinalAssemblyEntry | None,
+) -> bool:
+    if previous_entry is None or next_entry is None:
+        return False
+    if previous_entry.block_index + 1 != entry.block_index:
+        return False
+    if entry.block_index + 1 != next_entry.block_index:
+        return False
+    return _entry_has_previous_continuation_context(entry, previous_entry) and _entry_has_next_continuation_context(entry, next_entry)
+
+
+def _classify_generated_heading(
+    entry: FinalAssemblyEntry,
+    previous_entry: FinalAssemblyEntry | None,
+    next_entry: FinalAssemblyEntry | None,
+) -> GeneratedHeadingKind | None:
+    if not is_markdown_heading_line(entry.text):
+        return None
+    if _entry_has_source_heading_signal(entry) and not _entry_can_override_source_heading_signal(entry, previous_entry, next_entry):
+        return "real_heading"
+    if entry.used_fallback or not entry.from_registry:
+        return "unknown"
+
+    demoted_text = _trim_heading_prefix(entry.text)
+    if not (_looks_inline_fragment_line(demoted_text) or _entry_looks_sentence_fragment_heading(entry)):
+        return "unknown"
+
+    same_block_left_context = previous_entry is not None and previous_entry.block_index == entry.block_index and _entry_has_previous_continuation_context(entry, previous_entry)
+    same_block_right_context = next_entry is not None and next_entry.block_index == entry.block_index and _entry_has_next_continuation_context(entry, next_entry)
+    if same_block_left_context or same_block_right_context:
+        return "false_fragment_heading"
+    if _entry_has_mixed_block_parenthetical_tail_context(entry, previous_entry, next_entry):
+        return "false_fragment_heading"
+    if _entry_has_cross_block_continuation_context(entry, previous_entry, next_entry):
+        return "false_fragment_heading"
+    return "unknown"
+
+
+def _normalize_recovery_entry(
+    entry: FinalAssemblyEntry,
+    previous_entry: FinalAssemblyEntry | None,
+    next_entry: FinalAssemblyEntry | None,
+) -> tuple[FinalAssemblyEntry, FinalAssemblyDecision | None]:
+    generated_heading_kind = _classify_generated_heading(entry, previous_entry, next_entry)
+    normalized_text = _normalize_entry_text(entry)
+    if generated_heading_kind == "false_fragment_heading":
+        demoted_text = _trim_heading_prefix(normalized_text)
+        return (
+            _build_recovery_entry(
+                entry,
+                text=demoted_text,
+                generated_heading_kind=generated_heading_kind,
+            ),
+            FinalAssemblyDecision(
+                action="demote_heading",
+                block_index=entry.block_index,
+                paragraph_ids=_entry_paragraph_ids(entry),
+                reason="source_body_continuation_context",
+            ),
+        )
+    return (
+        _build_recovery_entry(
+            entry,
+            text=normalized_text,
+            generated_heading_kind=generated_heading_kind,
+        ),
+        None,
+    )
+
+
+def _entry_is_heading(entry: FinalAssemblyEntry) -> bool:
+    if entry.generated_heading_kind == "false_fragment_heading":
+        return False
+    if entry.generated_heading_kind == "real_heading":
+        return True
+    return (
+        _entry_has_source_heading_signal(entry)
         or is_markdown_heading_line(entry.text)
     )
 
@@ -518,18 +922,40 @@ def _entry_is_protected_boundary(entry: FinalAssemblyEntry) -> bool:
 def _entry_can_participate_in_merge(entry: FinalAssemblyEntry) -> bool:
     if entry.used_fallback or not entry.from_registry:
         return False
-    if _entry_is_protected_boundary(entry):
-        return False
     body_text = _entry_body_text(entry)
     if not body_text:
         return False
     return True
 
 
+def _entries_match_allowed_protected_merge(left: FinalAssemblyEntry, right: FinalAssemblyEntry) -> bool:
+    if _entry_is_blockquote(left) and _entry_is_blockquote(right):
+        return True
+    if _entry_is_blockquote(left) and right.generated_heading_kind == "false_fragment_heading":
+        return True
+    if left.generated_heading_kind == "false_fragment_heading" and _entry_is_blockquote(right):
+        return True
+    if left.generated_heading_kind == "false_fragment_heading" or right.generated_heading_kind == "false_fragment_heading":
+        return True
+    return False
+
+
+def _entries_can_participate_in_merge(left: FinalAssemblyEntry, right: FinalAssemblyEntry) -> bool:
+    if not _entry_can_participate_in_merge(left) or not _entry_can_participate_in_merge(right):
+        return False
+    left_protected = _entry_is_protected_boundary(left)
+    right_protected = _entry_is_protected_boundary(right)
+    if not left_protected and not right_protected:
+        return True
+    return _entries_match_allowed_protected_merge(left, right)
+
+
 def _left_entry_looks_incomplete(entry: FinalAssemblyEntry) -> bool:
     body_text = _entry_body_text(entry)
     if not body_text:
         return False
+    if _text_has_open_parenthetical_context(body_text):
+        return True
     if body_text[-1] in {"(", "[", "{", "-", "—", "–", ":", ","}:
         return True
     if _SENTENCE_TERMINAL_PATTERN.search(body_text) is None:
@@ -564,46 +990,52 @@ def _merge_entry_pair(left: FinalAssemblyEntry, right: FinalAssemblyEntry) -> Fi
         boundary_confidence=left.boundary_confidence,
         from_registry=left.from_registry and right.from_registry,
         used_fallback=left.used_fallback or right.used_fallback,
+        generated_heading_kind=None,
+        merged_paragraph_ids=_merge_paragraph_ids(left, right),
     )
 
 
-def _recover_adjacent_entries(entries: Sequence[FinalAssemblyEntry]) -> tuple[tuple[FinalAssemblyEntry, ...], int, int, int]:
+def _recover_adjacent_entries(
+    entries: Sequence[FinalAssemblyEntry],
+) -> tuple[tuple[FinalAssemblyEntry, ...], int, int, int, int, tuple[FinalAssemblyDecision, ...]]:
     if not entries:
-        return (), 0, 0, 0
+        return (), 0, 0, 0, 0, ()
+
+    normalized_entries: list[FinalAssemblyEntry] = []
+    recovery_decisions: list[FinalAssemblyDecision] = []
+    demoted_false_headings = 0
+
+    for index, entry in enumerate(entries):
+        previous_entry = entries[index - 1] if index > 0 else None
+        next_entry = entries[index + 1] if index + 1 < len(entries) else None
+        normalized_entry, decision = _normalize_recovery_entry(entry, previous_entry, next_entry)
+        normalized_entries.append(normalized_entry)
+        if decision is not None:
+            demoted_false_headings += 1
+            recovery_decisions.append(decision)
 
     recovered: list[FinalAssemblyEntry] = []
     accepted_merges = 0
     denied_merges = 0
     protected_boundary_denials = 0
 
-    for entry in entries:
-        normalized_entry = FinalAssemblyEntry(
-            text=_normalize_entry_text(entry),
-            block_index=entry.block_index,
-            paragraph_id=entry.paragraph_id,
-            source_index=entry.source_index,
-            role=entry.role,
-            structural_role=entry.structural_role,
-            heading_level=entry.heading_level,
-            list_kind=entry.list_kind,
-            boundary_source=entry.boundary_source,
-            boundary_confidence=entry.boundary_confidence,
-            from_registry=entry.from_registry,
-            used_fallback=entry.used_fallback,
-        )
-
+    for normalized_entry in normalized_entries:
         if not recovered:
             recovered.append(normalized_entry)
             continue
 
         previous = recovered[-1]
         same_block = previous.block_index == normalized_entry.block_index
-        if not same_block:
+        adjacent_cross_block = previous.block_index + 1 == normalized_entry.block_index
+        if not same_block and not adjacent_cross_block:
             recovered.append(normalized_entry)
             continue
 
-        if not _entry_can_participate_in_merge(previous) or not _entry_can_participate_in_merge(normalized_entry):
-            if _entry_is_protected_boundary(previous) or _entry_is_protected_boundary(normalized_entry):
+        if not _entries_can_participate_in_merge(previous, normalized_entry):
+            if (
+                (_entry_is_protected_boundary(previous) or _entry_is_protected_boundary(normalized_entry))
+                and not _entries_match_allowed_protected_merge(previous, normalized_entry)
+            ):
                 protected_boundary_denials += 1
             else:
                 denied_merges += 1
@@ -613,12 +1045,27 @@ def _recover_adjacent_entries(entries: Sequence[FinalAssemblyEntry]) -> tuple[tu
         if _left_entry_looks_incomplete(previous) and _right_entry_looks_like_continuation(normalized_entry):
             recovered[-1] = _merge_entry_pair(previous, normalized_entry)
             accepted_merges += 1
+            recovery_decisions.append(
+                FinalAssemblyDecision(
+                    action="merge",
+                    block_index=normalized_entry.block_index,
+                    paragraph_ids=_entry_paragraph_ids(recovered[-1]),
+                    reason="adjacent_continuation_recovery",
+                )
+            )
             continue
 
         denied_merges += 1
         recovered.append(normalized_entry)
 
-    return tuple(recovered), accepted_merges, denied_merges, protected_boundary_denials
+    return (
+        tuple(recovered),
+        accepted_merges,
+        denied_merges,
+        protected_boundary_denials,
+        demoted_false_headings,
+        tuple(recovery_decisions),
+    )
 
 
 def assemble_final_markdown(
@@ -647,13 +1094,14 @@ def assemble_final_markdown(
             fallback_paragraphs += len(raw_paragraphs)
             for paragraph_text in raw_paragraphs:
                 entries.append(
-                    FinalAssemblyEntry(
-                        text=paragraph_text,
-                        block_index=block_index,
-                        from_registry=False,
-                        used_fallback=True,
-                    )
+                FinalAssemblyEntry(
+                    text=paragraph_text,
+                    block_index=block_index,
+                    from_registry=False,
+                    used_fallback=True,
+                    merged_paragraph_ids=(),
                 )
+            )
             continue
 
         registry_covered_paragraphs += len(block_entries)
@@ -675,11 +1123,20 @@ def assemble_final_markdown(
                     boundary_confidence=_coerce_source_paragraph_str(source_paragraph, "boundary_confidence") if source_paragraph is not None else None,
                     from_registry=True,
                     used_fallback=False,
+                    merged_paragraph_ids=(paragraph_id,) if paragraph_id else (),
                 )
             )
 
     original_entry_count = len(entries)
-    recovered_entries, accepted_merges, denied_merges, protected_boundary_denials = _recover_adjacent_entries(entries)
+    (
+        recovered_entries,
+        accepted_merges,
+        denied_merges,
+        protected_boundary_denials,
+        demoted_false_headings,
+        merge_decisions,
+    ) = _recover_adjacent_entries(entries)
+    recovered_entries = _apply_final_entry_post_normalization(recovered_entries)
     assembled_markdown = "\n\n".join(entry.text for entry in recovered_entries).strip()
     final_markdown = _collapse_markdown_blank_lines(assembled_markdown)
     paragraph_count_drift = len(_split_markdown_paragraphs(final_markdown)) - original_entry_count
@@ -687,16 +1144,174 @@ def assemble_final_markdown(
         accepted_merges=accepted_merges,
         denied_merges=denied_merges,
         protected_boundary_denials=protected_boundary_denials,
+        demoted_false_headings=demoted_false_headings,
         registry_covered_paragraphs=registry_covered_paragraphs,
         fallback_paragraphs=fallback_paragraphs,
         paragraph_count_drift=paragraph_count_drift,
         inconsistent_registry_blocks=tuple(inconsistent_blocks),
+        merge_decisions=merge_decisions,
     )
     return FinalMarkdownAssemblyResult(
         final_markdown=final_markdown,
         entries=recovered_entries,
         diagnostics=diagnostics,
     )
+
+
+def _entry_heading_text(entry: FinalAssemblyEntry) -> str:
+    body_text = _entry_body_text(entry)
+    if is_markdown_heading_line(body_text):
+        return _trim_heading_prefix(body_text)
+    return body_text.strip()
+
+
+def _iter_entry_heading_positions(entries: Sequence[FinalAssemblyEntry]) -> list[tuple[int, int, FinalAssemblyEntry]]:
+    positions: list[tuple[int, int, FinalAssemblyEntry]] = []
+    line_number = 1
+    for index, entry in enumerate(entries):
+        positions.append((index, line_number, entry))
+        line_number += max(1, len(entry.text.splitlines())) + 1
+    return positions
+
+
+def collect_false_fragment_heading_samples_from_entries(entries: Sequence[FinalAssemblyEntry]) -> list[QualityIssueSample]:
+    positions = _iter_entry_heading_positions(entries)
+    heading_occurrences: list[tuple[int, int, str, str]] = []
+    samples: list[QualityIssueSample] = []
+
+    for position_index, line_number, entry in positions:
+        stripped = entry.text.strip()
+        if not is_markdown_heading_line(stripped):
+            continue
+
+        heading_text = _entry_heading_text(entry)
+        normalized_heading = _normalize_heading_text(heading_text)
+        previous_entry = positions[position_index - 1][2] if position_index > 0 else None
+        next_entry = positions[position_index + 1][2] if position_index + 1 < len(positions) else None
+        previous_line = previous_entry.text.strip() if previous_entry is not None else ""
+        next_line = next_entry.text.strip() if next_entry is not None else ""
+        continuation_prev = _entry_has_previous_continuation_context(entry, previous_entry)
+        continuation_next = _entry_has_next_continuation_context(entry, next_entry)
+
+        if _entry_is_toc(entry):
+            heading_occurrences.append((position_index, line_number, heading_text, normalized_heading))
+            continue
+
+        if _entry_is_source_backed_scripture_heading(entry):
+            heading_occurrences.append((position_index, line_number, heading_text, normalized_heading))
+            continue
+
+        if _entry_looks_scripture_reference_fragment(entry):
+            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="scripture_reference_heading_present"))
+            heading_occurrences.append((position_index, line_number, heading_text, normalized_heading))
+            continue
+
+        if _entry_looks_parenthetical_heading_fragment(entry):
+            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="false_fragment_headings_present"))
+            heading_occurrences.append((position_index, line_number, heading_text, normalized_heading))
+            continue
+
+        if _is_parenthetical_question_tail(heading_text):
+            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="sentence_split_heading_present"))
+            heading_occurrences.append((position_index, line_number, heading_text, normalized_heading))
+            continue
+
+        if (
+            entry.generated_heading_kind == "real_heading"
+            or (
+                _entry_has_source_heading_signal(entry)
+                and not _entry_can_override_source_heading_signal(entry, previous_entry, next_entry)
+            )
+        ):
+            heading_occurrences.append((position_index, line_number, heading_text, normalized_heading))
+            continue
+
+        if _is_canonical_judgment_heading_text(heading_text):
+            heading_occurrences.append((position_index, line_number, heading_text, normalized_heading))
+            continue
+
+        if _entry_looks_major_section_heading(entry) and not continuation_prev and next_line and not continuation_next:
+            heading_occurrences.append((position_index, line_number, heading_text, normalized_heading))
+            continue
+
+        if _is_split_heading_continuation(previous_line, stripped):
+            samples.append(_build_quality_sample(line=line_number, text=stripped, reason="split_heading_continuation_present"))
+            heading_occurrences.append((position_index, line_number, heading_text, normalized_heading))
+            continue
+
+        if continuation_prev and len(heading_text.split()) <= _INLINE_HEADING_FRAGMENT_MAX_WORDS:
+            reason = "inline_term_heading_present"
+            if not continuation_next:
+                reason = "sentence_split_heading_present"
+            samples.append(_build_quality_sample(line=line_number, text=stripped, reason=reason))
+        elif continuation_prev and continuation_next:
+            reason = "sentence_split_heading_present"
+            if len(heading_text.split()) <= 4:
+                reason = "inline_term_heading_present"
+            samples.append(_build_quality_sample(line=line_number, text=stripped, reason=reason))
+
+        heading_occurrences.append((position_index, line_number, heading_text, normalized_heading))
+
+    grouped: dict[str, list[tuple[int, int, str]]] = {}
+    for position_index, line_number, heading_text, normalized_heading in heading_occurrences:
+        if not normalized_heading:
+            continue
+        grouped.setdefault(normalized_heading, []).append((position_index, line_number, heading_text))
+
+    heading_positions = {position_index for position_index, _, _, _ in heading_occurrences}
+    for repeated in grouped.values():
+        if len(repeated) <= 1:
+            continue
+        previous_position: int | None = None
+        for position_index, line_number, heading_text in repeated:
+            if previous_position is None:
+                previous_position = position_index
+                continue
+            intervening_body_entries = any(
+                candidate_index not in heading_positions
+                for candidate_index in range(previous_position + 1, position_index)
+            )
+            if intervening_body_entries:
+                previous_position = position_index
+                continue
+            samples.append(_build_quality_sample(line=line_number, text=heading_text, reason="suspicious_heading_repetition_present"))
+            previous_position = position_index
+
+    deduped: list[QualityIssueSample] = []
+    seen: set[tuple[int, str]] = set()
+    for sample in samples:
+        key = (sample.line, sample.reason or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(sample)
+    return deduped
+
+
+def collect_recovered_heading_entries(entries: Sequence[FinalAssemblyEntry]) -> tuple[FinalAssemblyEntry, ...]:
+    return tuple(
+        entry
+        for entry in entries
+        if is_markdown_heading_line(entry.text.strip()) or entry.generated_heading_kind == "false_fragment_heading"
+    )
+
+
+def build_generated_paragraph_registry_from_entries(entries: Sequence[FinalAssemblyEntry]) -> list[dict[str, object]]:
+    registry: list[dict[str, object]] = []
+    for entry in entries:
+        paragraph_id = entry.paragraph_id or (_entry_paragraph_ids(entry)[0] if _entry_paragraph_ids(entry) else None)
+        if not paragraph_id:
+            continue
+        payload: dict[str, object] = {
+            "block_index": entry.block_index,
+            "paragraph_id": paragraph_id,
+            "text": entry.text,
+        }
+        merged_ids = list(_entry_paragraph_ids(entry))
+        if len(merged_ids) > 1:
+            payload["merged_paragraph_ids"] = merged_ids
+        registry.append(payload)
+    return registry
 
 
 def _build_quality_sample(*, line: int, text: str, reason: str) -> QualityIssueSample:
@@ -731,6 +1346,9 @@ def collect_false_fragment_heading_samples(text: str) -> list[QualityIssueSample
                 next_line = candidate
                 break
 
+        continuation_prev = _is_continuation_like_previous_line(previous_line)
+        continuation_next = _is_continuation_like_next_line(next_line)
+
         if _SCRIPTURE_REFERENCE_HEADING_PATTERN.match(stripped):
             samples.append(_build_quality_sample(line=line_number, text=stripped, reason="scripture_reference_heading_present"))
             heading_occurrences.append((line_number, heading_text, normalized_heading))
@@ -745,13 +1363,19 @@ def collect_false_fragment_heading_samples(text: str) -> list[QualityIssueSample
             heading_occurrences.append((line_number, heading_text, normalized_heading))
             continue
 
+        if _is_canonical_judgment_heading_text(heading_text):
+            heading_occurrences.append((line_number, heading_text, normalized_heading))
+            continue
+
+        if _looks_title_like_heading_text(heading_text) and not continuation_prev and next_line and not continuation_next:
+            heading_occurrences.append((line_number, heading_text, normalized_heading))
+            continue
+
         if _is_split_heading_continuation(previous_line, stripped):
             samples.append(_build_quality_sample(line=line_number, text=stripped, reason="split_heading_continuation_present"))
             heading_occurrences.append((line_number, heading_text, normalized_heading))
             continue
 
-        continuation_prev = _is_continuation_like_previous_line(previous_line)
-        continuation_next = _is_continuation_like_next_line(next_line)
         if heading_text.endswith("?)") or heading_text.endswith(")") and "?" in heading_text:
             samples.append(_build_quality_sample(line=line_number, text=stripped, reason="sentence_split_heading_present"))
         elif continuation_prev and len(heading_text.split()) <= _INLINE_HEADING_FRAGMENT_MAX_WORDS:

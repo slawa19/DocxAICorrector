@@ -269,7 +269,7 @@ def test_prepare_run_context_keeps_best_effort_warning_when_quality_gate_warns(m
     assert prepared_run_context.source_format == "pdf"
     assert prepared_run_context.conversion_backend == "libreoffice"
     assert prepared_run_context.preparation_detail.endswith(
-        "Причины: toc_like_sequence_without_bounded_region, structure_recognition_noop_on_high_risk"
+        "Причины: обнаружен TOC-подобный фрагмент без надёжно выделенной границы, AI-распознавание структуры не внесло изменений для документа с высоким структурным риском"
     )
 
 

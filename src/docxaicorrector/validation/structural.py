@@ -46,6 +46,25 @@ from docxaicorrector.validation.profiles import (
     resolve_runtime_resolution,
 )
 from docxaicorrector.processing.preparation import flatten_structure_repair_metrics
+
+
+_HUMANIZED_QUALITY_GATE_REASON_TO_CODE: dict[str, str] = {
+    "обнаружен TOC-подобный фрагмент без надёжно выделенной границы": "toc_like_sequence_without_bounded_region",
+    "AI-распознавание структуры не внесло изменений для документа с высоким структурным риском": "structure_recognition_noop_on_high_risk",
+    "перед обработкой требуется structural repair документа": "structural_repair_required_before_processing",
+    "после подготовки остались изолированные маркеры списка": "isolated_list_markers_remaining",
+    "первый блок смешивает элементы оглавления и эпиграфа": "first_block_mixed_toc_and_epigraph",
+    "первый блок смешивает элементы оглавления и начало основного текста": "first_block_mixed_toc_and_body_start",
+    "мало явных заголовков": "low_explicit_heading_density",
+    "много коротких body-абзацев": "high_suspicious_short_body_ratio",
+    "обнаружен TOC-подобный фрагмент": "toc_like_sequence_detected",
+    "слишком много body-абзацев в ВЕРХНЕМ РЕГИСТРЕ или по центру": "high_all_caps_or_centered_body_ratio",
+    "есть риск потери заголовочной структуры": "heading_only_collapse_risk",
+    "остались изолированные маркеры списков": "isolated_list_marker_fragments",
+    "обнаружен риск крупного фронт-маттер блока без безопасной границы": "large_front_matter_block_risk",
+    "заголовков значительно меньше, чем ожидается по оглавлению": "heading_count_far_below_toc_expectation",
+    "документ высокого риска не прошёл structural repair": "high_risk_without_structure_repair",
+}
 from docxaicorrector.structure.validation import validate_structure_quality
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -628,7 +647,8 @@ def _extract_quality_gate_reasons_from_error(preparation_error: str) -> list[str
     match = re.search(r"Причины:\s*(.+)$", preparation_error)
     if match is None:
         return []
-    return [reason.strip() for reason in match.group(1).split(",") if reason.strip()]
+    parsed = [reason.strip() for reason in match.group(1).split(",") if reason.strip()]
+    return [_HUMANIZED_QUALITY_GATE_REASON_TO_CODE.get(reason, reason) for reason in parsed]
 
 
 def _infer_readiness_status_from_quality_gate_reasons(reasons: Sequence[str]) -> str:

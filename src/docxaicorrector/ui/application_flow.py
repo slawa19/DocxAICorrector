@@ -11,6 +11,7 @@ from docxaicorrector.processing.preparation import (
     build_structure_processing_status_note,
     build_structure_repair_status_note,
     emit_preparation_progress,
+    humanize_quality_gate_reasons,
     prepare_document_for_processing,
 )
 from docxaicorrector.processing.processing_runtime import (
@@ -345,7 +346,7 @@ def _raise_or_fail_preparation(*, prepared_document, uploaded_filename: str, fai
 
 
 def _build_quality_gate_blocked_message(*, prepared_document) -> str:
-    reasons = [str(reason).strip() for reason in getattr(prepared_document, "quality_gate_reasons", ()) or () if str(reason).strip()]
+    reasons = humanize_quality_gate_reasons(getattr(prepared_document, "quality_gate_reasons", ()) or ())
     message = "Подготовка заблокирована quality gate: документ требует structural repair перед обработкой."
     if not reasons:
         return message
@@ -353,7 +354,7 @@ def _build_quality_gate_blocked_message(*, prepared_document) -> str:
 
 
 def _build_quality_gate_warning_message(*, prepared_document) -> str:
-    reasons = [str(reason).strip() for reason in getattr(prepared_document, "quality_gate_reasons", ()) or () if str(reason).strip()]
+    reasons = humanize_quality_gate_reasons(getattr(prepared_document, "quality_gate_reasons", ()) or ())
     message = "Обработка продолжена в best-effort режиме: структура документа распознана с повышенным риском."
     if not reasons:
         return message

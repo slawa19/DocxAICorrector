@@ -8,19 +8,27 @@ from typing import Any, Literal, cast
 
 from docxaicorrector.pipeline.output_validation import (
     assemble_final_markdown,
+    build_generated_paragraph_registry_from_entries,
     collect_bullet_heading_samples,
+    collect_recovered_heading_entries,
     collect_false_fragment_heading_samples,
+    collect_false_fragment_heading_samples_from_entries,
     collect_list_fragment_regression_samples,
     collect_mixed_script_samples,
     collect_residual_bullet_glyph_samples,
     collect_theology_style_issue_samples,
     has_toc_body_concat_markdown,
+    normalize_false_fragment_headings_markdown,
+    normalize_list_fragment_regressions_markdown,
+    normalize_mixed_script_markdown,
+    normalize_residual_bullet_glyphs_markdown,
 )
 from docxaicorrector.generation.formatting_diagnostics_retention import (
     collect_recent_formatting_diagnostics,
     load_formatting_diagnostics_payloads,
 )
 from docxaicorrector.generation._generation import strip_markdown_for_narration
+from docxaicorrector.processing.preparation import humanize_quality_gate_reasons
 
 
 PipelineResult = Literal["succeeded", "failed", "stopped"]
@@ -40,6 +48,68 @@ QUALITY_REPORTS_DIR = Path(".run") / "quality_reports"
 QUALITY_REPORTS_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 QUALITY_REPORTS_MAX_COUNT = 100
 _BULLET_MARKDOWN_HEADING_PATTERN = re.compile(r"(?m)^\s{0,3}#{1,6}\s*[\u2022\u25cf\u25e6\u2023*\-]\s*$")
+
+
+def _format_translation_quality_gate_failure_message(gate_reasons: Sequence[str]) -> str:
+    reasons = humanize_quality_gate_reasons(gate_reasons)
+    base = "Итоговый перевод не прошёл document-level quality gate."
+    if not reasons:
+        return f"{base} (translation_quality_gate_failed)"
+    return f"{base} (translation_quality_gate_failed) Причины: {', '.join(reasons)}."
+
+
+def _normalize_final_markdown_for_quality_gate(text: str) -> str:
+    return text
+
+
+def _normalize_final_markdown_for_runtime_display(text: str) -> str:
+    normalized = normalize_false_fragment_headings_markdown(text)
+    normalized = normalize_residual_bullet_glyphs_markdown(normalized)
+    normalized = normalize_list_fragment_regressions_markdown(normalized)
+    normalized = normalize_mixed_script_markdown(normalized)
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
+    if "\n" not in normalized and "\n\n" in text:
+        return text
+    return normalized
+
+
+def _serialize_assembly_decisions(decisions: Sequence[object], *, limit: int = 20) -> list[dict[str, object]]:
+    serialized: list[dict[str, object]] = []
+    for decision in decisions[:limit]:
+        action = getattr(decision, "action", None)
+        block_index = getattr(decision, "block_index", None)
+        paragraph_ids = getattr(decision, "paragraph_ids", ())
+        reason = getattr(decision, "reason", None)
+        serialized.append(
+            {
+                "action": action,
+                "block_index": block_index,
+                "paragraph_ids": list(paragraph_ids) if isinstance(paragraph_ids, tuple) else list(paragraph_ids or []),
+                "reason": reason,
+            }
+        )
+    return serialized
+
+
+def _log_boundary_recovery_diagnostics(*, dependencies: Any, context: Any, assembly_result: Any) -> None:
+    diagnostics = getattr(assembly_result, "diagnostics", None)
+    if diagnostics is None:
+        return
+    dependencies.log_event(
+        logging.INFO,
+        "boundary_recovery_diagnostics",
+        "Собраны diagnostics registry-aware paragraph boundary recovery.",
+        filename=context.uploaded_filename,
+        accepted_merges=getattr(diagnostics, "accepted_merges", 0),
+        denied_merges=getattr(diagnostics, "denied_merges", 0),
+        protected_boundary_denials=getattr(diagnostics, "protected_boundary_denials", 0),
+        demoted_false_headings=getattr(diagnostics, "demoted_false_headings", 0),
+        registry_covered_paragraphs=getattr(diagnostics, "registry_covered_paragraphs", 0),
+        fallback_paragraphs=getattr(diagnostics, "fallback_paragraphs", 0),
+        paragraph_count_drift=getattr(diagnostics, "paragraph_count_drift", 0),
+        inconsistent_registry_blocks=list(getattr(diagnostics, "inconsistent_registry_blocks", ()) or ()),
+        merge_decisions=_serialize_assembly_decisions(getattr(diagnostics, "merge_decisions", ()) or ()),
+    )
 
 
 def _require_group_int(group: Mapping[str, object], key: str) -> int:
@@ -220,11 +290,28 @@ def _serialize_quality_samples(samples: Sequence[object], *, limit: int = 8) -> 
     return serialized
 
 
+def _serialize_recovered_heading_entries(entries: Sequence[object], *, limit: int = 12) -> list[dict[str, object]]:
+    serialized: list[dict[str, object]] = []
+    for entry in list(entries)[:limit]:
+        serialized.append(
+            {
+                "paragraph_id": getattr(entry, "paragraph_id", None),
+                "source_index": getattr(entry, "source_index", None),
+                "role": getattr(entry, "role", None),
+                "structural_role": getattr(entry, "structural_role", None),
+                "generated_heading_kind": getattr(entry, "generated_heading_kind", None),
+                "text": getattr(entry, "text", None),
+            }
+        )
+    return serialized
+
+
 def _build_translation_quality_report(
     *,
     context: Any,
     final_markdown: str,
     formatting_diagnostics_artifacts: Sequence[str],
+    assembly_result: Any | None = None,
 ) -> dict[str, object]:
     payloads = _load_formatting_diagnostics_payloads(formatting_diagnostics_artifacts)
     latest_payload = payloads[-1] if payloads else {}
@@ -237,10 +324,16 @@ def _build_translation_quality_report(
     gate_reasons: list[str] = []
     bullet_heading_samples = collect_bullet_heading_samples(final_markdown)
     bullet_heading_count = len(bullet_heading_samples)
-    false_fragment_heading_samples = collect_false_fragment_heading_samples(final_markdown)
+    assembly_entries = tuple(getattr(assembly_result, "entries", ()) or ())
+    false_fragment_heading_samples = (
+        collect_false_fragment_heading_samples_from_entries(assembly_entries)
+        if assembly_entries
+        else collect_false_fragment_heading_samples(final_markdown)
+    )
     residual_bullet_glyph_samples = collect_residual_bullet_glyph_samples(final_markdown)
     list_fragment_regression_samples = collect_list_fragment_regression_samples(final_markdown)
     mixed_script_samples = collect_mixed_script_samples(final_markdown)
+    recovered_heading_entries = collect_recovered_heading_entries(assembly_entries)
     translation_domain = str(getattr(context, "translation_domain", "") or context.app_config.get("translation_domain", "general") or "general")
     theology_style_samples = (
         collect_theology_style_issue_samples(final_markdown)
@@ -354,6 +447,18 @@ def _build_translation_quality_report(
         "quality_status": quality_status,
         "gate_reasons": gate_reasons,
         "formatting_diagnostics_artifact_paths": list(formatting_diagnostics_artifacts),
+        "boundary_recovery": {
+            "accepted_merges": getattr(getattr(assembly_result, "diagnostics", None), "accepted_merges", 0),
+            "denied_merges": getattr(getattr(assembly_result, "diagnostics", None), "denied_merges", 0),
+            "protected_boundary_denials": getattr(getattr(assembly_result, "diagnostics", None), "protected_boundary_denials", 0),
+            "demoted_false_headings": getattr(getattr(assembly_result, "diagnostics", None), "demoted_false_headings", 0),
+            "registry_covered_paragraphs": getattr(getattr(assembly_result, "diagnostics", None), "registry_covered_paragraphs", 0),
+            "fallback_paragraphs": getattr(getattr(assembly_result, "diagnostics", None), "fallback_paragraphs", 0),
+            "paragraph_count_drift": getattr(getattr(assembly_result, "diagnostics", None), "paragraph_count_drift", 0),
+            "inconsistent_registry_blocks": list(getattr(getattr(assembly_result, "diagnostics", None), "inconsistent_registry_blocks", ()) or ()),
+            "merge_decisions": _serialize_assembly_decisions(getattr(getattr(assembly_result, "diagnostics", None), "merge_decisions", ()) or ()),
+            "recovered_heading_entries": _serialize_recovered_heading_entries(recovered_heading_entries),
+        },
     }
     return report
 
@@ -520,8 +625,10 @@ def run_image_processing_phase(
         generated_paragraph_registry=state.generated_paragraph_registry,
         source_paragraphs=context.source_paragraphs,
     )
+    _log_boundary_recovery_diagnostics(dependencies=dependencies, context=context, assembly_result=assembly_result)
     final_markdown = assembly_result.final_markdown
-    emitters.emit_state(context.runtime, latest_markdown=final_markdown)
+    display_markdown = _normalize_final_markdown_for_runtime_display(final_markdown)
+    emitters.emit_state(context.runtime, latest_markdown=display_markdown)
     try:
         processed_image_assets = dependencies.process_document_images(
             image_assets=context.image_assets,
@@ -535,7 +642,7 @@ def run_image_processing_phase(
             raise RuntimeError("Пайплайн обработки изображений вернул None вместо коллекции ассетов.")
 
         normalized_image_assets = list(processed_image_assets)
-        placeholder_integrity = dependencies.inspect_placeholder_integrity(final_markdown, normalized_image_assets)
+        placeholder_integrity = dependencies.inspect_placeholder_integrity(display_markdown, normalized_image_assets)
         if not isinstance(placeholder_integrity, Mapping):
             raise TypeError("Проверка целостности placeholder вернула неподдерживаемый тип результата.")
 
@@ -547,13 +654,13 @@ def run_image_processing_phase(
             exc,
             "Ошибка обработки изображений",
             filename=context.uploaded_filename,
-            final_markdown_chars=len(final_markdown),
+            final_markdown_chars=len(display_markdown),
             image_count=len(context.image_assets),
             image_mode=context.image_mode,
         )
         emitters.emit_state(
             context.runtime,
-            latest_markdown=final_markdown,
+            latest_markdown=display_markdown,
             last_error=error_message,
             latest_docx_bytes=None,
             latest_narration_text=None,
@@ -567,7 +674,7 @@ def run_image_processing_phase(
             activity_message="Ошибка на этапе обработки изображений документа.",
             block_index=initialization.job_count,
             block_count=initialization.job_count,
-            target_chars=len(final_markdown),
+            target_chars=len(display_markdown),
             context_chars=0,
             log_details=error_message,
         )
@@ -671,6 +778,7 @@ def run_docx_build_phase(
         generated_paragraph_registry=state.generated_paragraph_registry,
         source_paragraphs=context.source_paragraphs,
     )
+    _log_boundary_recovery_diagnostics(dependencies=dependencies, context=context, assembly_result=assembly_result)
     final_markdown = assembly_result.final_markdown
     emitters.emit_status(
         context.runtime,
@@ -690,11 +798,12 @@ def run_docx_build_phase(
     try:
         docx_bytes = dependencies.convert_markdown_to_docx_bytes(final_markdown)
         if context.source_paragraphs:
+            assembly_registry = build_generated_paragraph_registry_from_entries(assembly_result.entries)
             docx_bytes = call_docx_restorer_with_optional_registry_fn(
                 dependencies.preserve_source_paragraph_properties,
                 docx_bytes,
                 context.source_paragraphs,
-                state.generated_paragraph_registry or None,
+                assembly_registry or state.generated_paragraph_registry or None,
             )
         processed_image_assets = image_phase["processed_image_assets"]
         if processed_image_assets:
@@ -808,6 +917,7 @@ def finalize_processing_success(
         generated_paragraph_registry=state.generated_paragraph_registry,
         source_paragraphs=context.source_paragraphs,
     )
+    _log_boundary_recovery_diagnostics(dependencies=dependencies, context=context, assembly_result=assembly_result)
     final_markdown = assembly_result.final_markdown
     formatting_diagnostics_artifacts = cast(
         Sequence[str],
@@ -817,6 +927,7 @@ def finalize_processing_success(
         context=context,
         final_markdown=final_markdown,
         formatting_diagnostics_artifacts=formatting_diagnostics_artifacts,
+        assembly_result=assembly_result,
     )
     if quality_report.get("quality_status") == "warn":
         docx_phase = dict(docx_phase)
@@ -839,9 +950,7 @@ def finalize_processing_success(
         gate_reasons = list(cast(Sequence[str], quality_report.get("gate_reasons") or []))
         error_message = dependencies.present_error(
             "translation_quality_gate_failed",
-            RuntimeError(
-                "Итоговый перевод не прошёл document-level quality gate (translation_quality_gate_failed)."
-            ),
+            RuntimeError(_format_translation_quality_gate_failure_message(gate_reasons)),
             "Критическая ошибка качества перевода",
             filename=context.uploaded_filename,
             quality_status=quality_report.get("quality_status"),

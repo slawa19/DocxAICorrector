@@ -549,6 +549,135 @@ def test_mapping_reports_medium_accepted_merged_sources_in_diagnostics():
     ]
 
 
+def test_mapping_treats_assembly_merged_paragraph_ids_as_covered_source_paragraphs():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="Первый фрагмент", 
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0002",
+            text="Второй фрагмент",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        ),
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("Первый фрагмент Второй фрагмент")
+
+    _, diagnostics = _map_source_target_paragraphs(
+        source_paragraphs,
+        target_doc.paragraphs,
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0001",
+                "text": "Первый фрагмент Второй фрагмент",
+                "merged_paragraph_ids": ["p0001", "p0002"],
+            }
+        ],
+    )
+
+    assert diagnostics["mapped_count"] == 1
+    assert diagnostics["unmapped_source_ids"] == []
+    assert diagnostics["unmapped_target_indexes"] == []
+
+
+def test_mapping_normalizes_markdown_list_and_blockquote_prefixes_from_generated_registry():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="Список: первый пункт",
+            role="list",
+            structural_role="list_item",
+            role_confidence="heuristic",
+            list_kind="ordered",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0002",
+            text="Цитата ободрения",
+            role="body",
+            structural_role="epigraph",
+            role_confidence="heuristic",
+        ),
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("Список: первый пункт")
+    target_doc.add_paragraph("Цитата ободрения")
+
+    _, diagnostics = _map_source_target_paragraphs(
+        source_paragraphs,
+        target_doc.paragraphs,
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0001", "text": "1. Список: первый пункт"},
+            {"paragraph_id": "p0002", "text": "> Цитата ободрения"},
+        ],
+    )
+
+    assert diagnostics["mapped_count"] == 2
+    assert diagnostics["unmapped_source_ids"] == []
+    assert diagnostics["unmapped_target_indexes"] == []
+
+
+def test_mapping_uses_local_gap_fallback_for_repeated_heading():
+    source_paragraphs = [
+        ParagraphUnit(paragraph_id="p0001", text="Предыдущий абзац", role="body", structural_role="body", role_confidence="heuristic"),
+        ParagraphUnit(paragraph_id="p0002", text="Великая скорбь", role="heading", structural_role="heading", role_confidence="heuristic", heading_level=2),
+        ParagraphUnit(paragraph_id="p0003", text="Следующий абзац", role="body", structural_role="body", role_confidence="heuristic"),
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("Предыдущий абзац")
+    target_doc.add_paragraph("Великая скорбь", style="Heading 2")
+    target_doc.add_paragraph("Следующий абзац")
+
+    _, diagnostics = _map_source_target_paragraphs(
+        source_paragraphs,
+        target_doc.paragraphs,
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0001", "text": "Предыдущий абзац"},
+            {"paragraph_id": "p0003", "text": "Следующий абзац"},
+        ],
+    )
+
+    source_registry = cast(list[dict[str, object]], diagnostics["source_registry"])
+    assert diagnostics["unmapped_source_ids"] == []
+    assert source_registry[1]["mapped_target_index"] == 1
+    assert source_registry[1]["mapping_strategy"] in {"exact_text", "local_gap_heading_fallback"}
+
+
+def test_mapping_uses_local_gap_fallback_for_toc_entry_between_mapped_neighbors():
+    source_paragraphs = [
+        ParagraphUnit(paragraph_id="p0001", text="Введение........1", role="body", structural_role="toc_entry", role_confidence="heuristic"),
+        ParagraphUnit(paragraph_id="p0002", text="Что такое книга Откровения?........5", role="body", structural_role="toc_entry", role_confidence="heuristic"),
+        ParagraphUnit(paragraph_id="p0003", text="Цикл родовых мук........6", role="body", structural_role="toc_entry", role_confidence="heuristic"),
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("Введение........1")
+    target_doc.add_paragraph("Что такое книга Откровения?........5")
+    target_doc.add_paragraph("Цикл родовых мук........6")
+
+    _, diagnostics = _map_source_target_paragraphs(
+        source_paragraphs,
+        target_doc.paragraphs,
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0001", "text": "Введение........1"},
+            {"paragraph_id": "p0003", "text": "Цикл родовых мук........6"},
+        ],
+    )
+
+    source_registry = cast(list[dict[str, object]], diagnostics["source_registry"])
+    assert diagnostics["unmapped_source_ids"] == []
+    assert source_registry[1]["mapped_target_index"] == 1
+    assert source_registry[1]["mapping_strategy"] in {"exact_text", "local_gap_toc_fallback"}
+
+
 def test_apply_output_formatting_restores_toc_paragraph_properties_from_source_mapping():
     source_paragraphs = [
         ParagraphUnit(

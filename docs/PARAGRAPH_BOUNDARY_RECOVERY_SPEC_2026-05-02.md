@@ -129,6 +129,121 @@ The change is complete when all of the following are true:
 6. A partial-registry test proves passthrough or uncovered spans are preserved exactly rather than dropped or reordered.
 7. A consistency test proves image processing, DOCX build, quality validation, and saved UI artifacts receive identical final markdown for the same state.
 
+## Follow-up Work After Heading Recovery
+
+### Current canonical status (2026-05-03)
+
+The registry-aware heading recovery slice is considered implemented and canonically validated for `end-times-pdf-core` when the latest completed real-document run shows all of the following at the same time:
+
+- `false_fragment_heading_count == 0` and `false_fragment_heading_samples == []`;
+- `toc_body_concat_detected == false`;
+- the acceptance check `key_headings_preserved` passes;
+- `boundary_recovery.fallback_paragraphs == 0`;
+- `boundary_recovery.inconsistent_registry_blocks == []`;
+- `boundary_recovery.registry_covered_paragraphs` covers the prepared paragraph count for the profile.
+
+The follow-up work below must not reopen heading recovery. Treat any recurrence of `false_fragment_headings_present`, `toc_body_concatenation_detected`, or `key_headings_preserved` failure as a regression in the completed heading slice and fix it before continuing lower-priority cleanup.
+
+### Remaining strict quality-gate failures
+
+After heading recovery, the remaining `end-times-pdf-core` failures are expected to be in these categories:
+
+1. `mixed_script_terms_present` — paragraph-local Cyrillic/Latin homoglyph residue.
+2. `residual_bullet_glyphs_present` — literal bullet glyphs such as `●` that survived in prose or list text.
+3. `list_fragment_regressions_present` — dangling ordered-list markers such as `intro: 1.`, `body 2.`, or marker-only emoji/number fragments.
+4. `unmapped_source_paragraphs_present` — formatting restoration coverage still reports unmapped source/target paragraphs after accepted paragraph merges.
+
+These are intentionally separate from heading recovery. Fix them in small, independently verifiable layers rather than adding broad recovery rules to the heading classifier.
+
+### Follow-up layer 1: paragraph-local final normalization
+
+Goal: make canonical final markdown, DOCX input markdown, quality validation, and saved UI artifacts receive the same safe paragraph-local cleanup that runtime display previously applied opportunistically.
+
+Scope:
+
+- Apply mixed-script homoglyph repair to final assembly output, including registry-backed entries.
+- Apply residual bullet glyph cleanup to body/list paragraphs, including registry-backed entries.
+- Keep these operations paragraph-local: no reordering, no cross-paragraph merges, and no heading/body boundary changes.
+- Do not change `generated_paragraph_registry`, marker validation, block execution contracts, or DOCX restoration public signatures.
+
+Important implementation constraint:
+
+- The registry-aware path currently preserves registry-backed entry text verbatim. Follow-up normalization should be introduced as an explicit final-entry/post-assembly normalization step so that canonical artifacts do not differ from runtime display.
+
+Suggested focused tests:
+
+- mixed-script repair applies to registry-backed entries (`чашa` -> `чаша`) without altering legitimate Latin terms such as `OpenAI`, `BMW`, or glossary terms intentionally written in Latin;
+- inline `●` inside body prose is removed or converted to spacing without joining unrelated text;
+- inline `●` inside existing Markdown list items is removed from item content;
+- leading `● text` is converted to `- text` only for body/list paragraphs, not for headings or blockquotes;
+- image phase, DOCX build, final runtime state, quality report, and UI artifacts still use one canonical final markdown string.
+
+Completion criteria for layer 1:
+
+- focused output-validation and pipeline quality-report tests pass;
+- canonical `end-times-pdf-core` rerun keeps the heading-slice invariants passing;
+- `mixed_script_term_count == 0`;
+- `residual_bullet_glyph_count == 0` or is reduced to only documented false positives with samples added to this spec before acceptance;
+- gate reasons no longer include `mixed_script_terms_present` or `residual_bullet_glyphs_present` unless an explicit false-positive decision is documented.
+
+### Follow-up layer 2: list-fragment recovery
+
+Goal: repair deterministic ordered-list marker fragments that remain after paragraph-local glyph cleanup.
+
+Scope:
+
+- Handle intro lines ending in a dangling first marker, for example `...: 1.`.
+- Handle short body fragments ending in the next ordered marker, for example `... 2.` or `... 3.` when neighboring entries prove an ordered-list sequence.
+- Preserve real prose containing numbers, verse references, years, section labels, and emoji that are not proven list markers.
+- Prefer entry-aware/neighbor-aware recovery over flat-string cleanup when `FinalAssemblyEntry` data is available.
+
+Suggested focused tests:
+
+- `intro: 1.` followed by a body/list continuation becomes `intro:` plus `1. continuation`;
+- sequential `body 2.` / `body 3.` fragments are restored to ordered list items only when adjacent context supports the sequence;
+- scripture references and year labels are not rewritten as list markers;
+- emoji-plus-number fragments are either safely repaired or explicitly excluded with a documented sample and reason.
+
+Completion criteria for layer 2:
+
+- focused list-fragment tests pass;
+- canonical `end-times-pdf-core` rerun keeps the heading and paragraph-local cleanup invariants passing;
+- `list_fragment_regression_count == 0` or remaining samples are documented as accepted false positives;
+- gate reasons no longer include `list_fragment_regressions_present` unless an explicit false-positive decision is documented.
+
+### Follow-up layer 3: formatting diagnostics and unmapped paragraphs
+
+Goal: reduce `unmapped_source_paragraphs_present` only after heading, mixed-script, bullet-glyph, and list-fragment output is stable.
+
+Do not start this layer until prior layers are stable, because every boundary merge, bullet cleanup, or list repair can change formatting restoration coverage.
+
+Investigation checklist:
+
+- inspect the latest `.run/formatting_diagnostics/restore_*.json` referenced by `translation_quality_report.formatting_diagnostics_artifact_paths`;
+- compare `source_paragraph_count`, `target_paragraph_count`, `mapped_count`, `unmapped_source_count`, `unmapped_target_count`, `accepted_merged_sources_count`, and `boundary_recovery.paragraph_count_drift`;
+- classify unmapped sources into accepted merge coverage, true text loss, list/heading boundary shifts, and mapping-policy limitations;
+- prefer improving restoration diagnostics/mapping policy over weakening the quality gate.
+
+Completion criteria for layer 3:
+
+- canonical `end-times-pdf-core` rerun keeps all previous layers passing;
+- formatting diagnostics show materially reduced unmapped source/target counts compared with the heading-recovery baseline;
+- `unmapped_source_paragraphs_present` is removed from strict gate reasons, or the remaining unmapped sources are explicitly classified as accepted/benign by deterministic diagnostics;
+- no DOCX restoration regression is introduced for captions, headings, lists, or image placeholders.
+
+### Overall completion criteria
+
+The full paragraph-boundary recovery effort is complete when a canonical `end-times-pdf-core` rerun under `ui-parity-pdf-structural-recovery` completes through DOCX build and quality validation with:
+
+- no early block-level rejection such as `english_residual_output`;
+- heading-slice invariants still passing;
+- `mixed_script_term_count == 0`;
+- `residual_bullet_glyph_count == 0`;
+- `list_fragment_regression_count == 0`;
+- `unmapped_source_paragraphs_present` absent from strict gate reasons, or remaining unmapped sources deterministically classified as accepted/benign;
+- `quality_status == "pass"` for strict translation quality gate, except for explicitly documented advisory-only theology style findings;
+- all focused unit tests for output validation, quality report routing, partial registry preservation, and final-markdown consistency passing through the canonical WSL test entrypoint.
+
 ## Why This Is The Right Architecture
 
 The repository already pays the cost to preserve paragraph identity through a generation-time marker contract and a durable `generated_paragraph_registry`. Re-solving paragraph-boundary errors from the flattened markdown string throws away that structure and forces fragile regex guesses. The durable fix is to use the registry plus source paragraph metadata during final assembly and make merge/split decisions explicitly at that layer.
