@@ -49,8 +49,8 @@ def test_end_times_pdf_structural_run_profile_is_generic_structural_recovery() -
     run_profile = _resolve_structural_run_profile(document_profile)
 
     assert run_profile.id == "ui-parity-pdf-structural-recovery"
-    assert document_profile.structural_expected_result == "fail"
-    assert document_profile.structural_expected_failed_checks == ("unmapped_source_threshold",)
+    assert document_profile.structural_expected_result == "pass"
+    assert document_profile.structural_expected_failed_checks == ()
     assert document_profile.structural_optional_failed_checks == ()
 
 
@@ -58,6 +58,7 @@ def test_end_times_pdf_structural_diagnostic_artifact_matches_current_contract()
     artifact_path = Path("tests/artifacts/structural_diagnostics/end-times-pdf-core/structural_diagnostic.json")
     payload = json.loads(artifact_path.read_text(encoding="utf-8"))
     snapshot = payload["preparation_diagnostic_snapshot"]
+    document_profile = REGISTRY.get_document_profile("end-times-pdf-core")
 
     assert payload["document_profile_id"] == "end-times-pdf-core"
     assert payload["run_profile_id"] == "ui-parity-pdf-structural-recovery"

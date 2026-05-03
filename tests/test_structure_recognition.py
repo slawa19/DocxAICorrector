@@ -405,7 +405,7 @@ def test_build_structure_map_logs_debug_when_progress_callback_fails(monkeypatch
         ),
     )
 
-    with caplog.at_level("DEBUG"):
+    with caplog.at_level("DEBUG", logger="docxaicorrector.structure.recognition"):
         structure_recognition.build_structure_map(
             paragraphs,
             client=object(),

@@ -120,8 +120,8 @@ def test_load_validation_registry_reads_end_times_pdf_profile_and_structural_rec
     assert document_profile.require_no_toc_body_concat is True
     assert document_profile.require_translation_domain == "theology"
     assert document_profile.structural_run_profile == "ui-parity-pdf-structural-recovery"
-    assert document_profile.structural_expected_result == "fail"
-    assert document_profile.structural_expected_failed_checks == ("unmapped_source_threshold",)
+    assert document_profile.structural_expected_result == "pass"
+    assert document_profile.structural_expected_failed_checks == ()
     assert document_profile.structural_optional_failed_checks == ()
     assert document_profile.default_run_profile == "ui-parity-pdf-structural-recovery"
     assert run_profile.processing_operation == "translate"
