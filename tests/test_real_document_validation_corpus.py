@@ -1131,8 +1131,17 @@ def test_structural_passthrough_success_uses_prepared_context_when_event_log_lac
         lambda paragraphs, max_chars, relations=None: [DocumentBlock(paragraphs=list(paragraphs))],
     )
 
+    class _PreparedStub:
+        uploaded_file_bytes = b"PK\x03\x04prepared"
+        quality_gate_status = "pass"
+        quality_gate_reasons = []
+        structure_validation_report = SimpleNamespace(readiness_status="ready", readiness_reasons=[])
+        structure_ai_attempted = True
+        ai_classified_count = 12
+        ai_heading_count = 4
+
     def _run_prepared_background_document(**kwargs):
-        raise RuntimeError("blocked by quality gate")
+        return ("succeeded", _PreparedStub())
 
     monkeypatch.setattr(
         real_document_validation_structural,
@@ -1528,7 +1537,7 @@ def test_structural_passthrough_failure_derives_detailed_snapshot_reasons_from_p
         "toc_like_sequence_without_bounded_region",
         "structure_recognition_noop_on_high_risk",
     ]
-    assert snapshot["structure_ai_attempted"] is False
+    assert snapshot["structure_ai_attempted"] is True
     assert snapshot["ai_classified_count"] == 0
     assert snapshot["ai_heading_count"] == 0
 
