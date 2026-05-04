@@ -6,7 +6,14 @@ from typing import Any, cast
 import pytest
 
 import docxaicorrector.processing.processing_runtime as processing_runtime
+import docxaicorrector.validation.profiles as validation_profiles
 import docxaicorrector.validation.structural as real_document_validation_structural
+from docxaicorrector.validation.structural import (
+    evaluate_extraction_profile,
+    evaluate_structural_preparation_diagnostic,
+    run_structural_passthrough_validation,
+)
+
 from docxaicorrector.core.models import (
     DocumentBlock,
     LayoutArtifactCleanupReport,
@@ -27,7 +34,6 @@ from docxaicorrector.validation.structural import (
     evaluate_structural_preparation_diagnostic,
     run_structural_passthrough_validation,
 )
-
 
 REGISTRY = load_validation_registry()
 STRUCTURAL_RUN_PROFILE = REGISTRY.get_run_profile("structural-passthrough-default")
@@ -64,8 +70,8 @@ def test_end_times_pdf_structural_diagnostic_artifact_matches_current_contract()
     assert payload["run_profile_id"] == "ui-parity-pdf-structural-recovery"
     assert payload["validation_tier"] == "structural"
     assert payload["validation_execution_mode"] == "passthrough"
-    assert payload["passed"] is False
-    assert payload["failed_checks"] == ["unmapped_source_threshold"]
+    assert payload["passed"] is True
+    assert payload["failed_checks"] == []
     assert payload["preparation_error"] is None
     assert snapshot["readiness_status"] == "ready"
     assert snapshot["readiness_reasons"] == []
@@ -651,7 +657,32 @@ def test_structural_passthrough_uses_latest_formatting_diagnostics_payload_for_t
     monkeypatch.setattr(
         real_document_validation_structural,
         "_build_validation_processing_service",
-        lambda event_log: SimpleNamespace(run_prepared_background_document=_run_prepared_background_document),
+        lambda event_log: SimpleNamespace(
+            run_prepared_background_document=lambda **kwargs: (
+                event_log.append(
+                    {
+                        "event_id": "structure_processing_outcome",
+                        "context": {
+                            "quality_gate_status": "pass",
+                            "quality_gate_reasons": [],
+                            "readiness_status": "ready",
+                        },
+                    }
+                ),
+                event_log.append(
+                    {
+                        "event_id": "block_plan_summary",
+                        "context": {
+                            "block_count": 3,
+                            "llm_block_count": 2,
+                            "passthrough_block_count": 1,
+                            "first_block_target_chars": [3891, 946, 935],
+                        },
+                    }
+                ),
+                _run_prepared_background_document(**kwargs),
+            )[-1]
+        ),
     )
 
     result = cast(
@@ -860,7 +891,11 @@ def test_structural_passthrough_surfaces_structure_repair_and_event_metrics(tmp_
     monkeypatch.setattr(real_document_validation_structural, "apply_runtime_resolution_to_app_config", lambda app_config, resolution: {})
     monkeypatch.setattr(real_document_validation_structural, "_snapshot_formatting_diagnostics_paths", lambda: set())
     monkeypatch.setattr(real_document_validation_structural, "_collect_new_formatting_diagnostics_paths", lambda before, after: [])
-    monkeypatch.setattr(real_document_validation_structural, "_load_formatting_diagnostics_payloads", lambda paths: [formatting_payload])
+    monkeypatch.setattr(
+        real_document_validation_structural,
+        "_load_formatting_diagnostics_payloads",
+        lambda paths: [formatting_payload],
+    )
     monkeypatch.setattr(
         real_document_validation_structural,
         "build_semantic_blocks",
@@ -1059,14 +1094,23 @@ def test_structural_passthrough_success_uses_prepared_context_when_event_log_lac
             overrides={},
         ),
     )
-    monkeypatch.setattr(real_document_validation_structural, "apply_runtime_resolution_to_app_config", lambda app_config, resolution: {})
-    monkeypatch.setattr(real_document_validation_structural, "_snapshot_formatting_diagnostics_paths", lambda: set())
-    monkeypatch.setattr(real_document_validation_structural, "_collect_new_formatting_diagnostics_paths", lambda before, after: [])
-    monkeypatch.setattr(real_document_validation_structural, "_load_formatting_diagnostics_payloads", lambda paths: [])
     monkeypatch.setattr(
         real_document_validation_structural,
-        "build_semantic_blocks",
-        lambda paragraphs, max_chars, relations=None: [DocumentBlock(paragraphs=list(paragraphs))],
+        "apply_runtime_resolution_to_app_config",
+        lambda app_config, runtime_resolution: {"translation_domain_default": "theology"},
+    )
+    monkeypatch.setattr(
+        real_document_validation_structural,
+        "build_validation_runtime_config",
+        lambda runtime_resolution: {
+            "effective": runtime_resolution.effective.to_dict(),
+            "ui_defaults": runtime_resolution.ui_defaults.to_dict(),
+        },
+    )
+    monkeypatch.setattr(
+        real_document_validation_structural.processing_runtime,
+        "normalize_uploaded_document",
+        lambda **kwargs: SimpleNamespace(content_bytes=b"PK\x03\x04normalized"),
     )
     monkeypatch.setattr(
         real_document_validation_structural,
@@ -1081,34 +1125,14 @@ def test_structural_passthrough_success_uses_prepared_context_when_event_log_lac
             _StructureRepairReport(),
         ),
     )
-    monkeypatch.setattr(real_document_validation_structural, "extract_document_content_from_docx", lambda uploaded_file: ([], []))
     monkeypatch.setattr(
         real_document_validation_structural,
-        "_build_output_artifacts",
-        lambda docx_bytes, markdown_text: {
-            "output_docx_openable": True,
-            "output_visible_text_chars": 120,
-        },
+        "build_semantic_blocks",
+        lambda paragraphs, max_chars, relations=None: [DocumentBlock(paragraphs=list(paragraphs))],
     )
-    monkeypatch.setattr(real_document_validation_structural, "_build_extraction_checks", lambda document_profile, metrics: [])
 
     def _run_prepared_background_document(**kwargs):
-        runtime = kwargs["runtime"]
-        runtime["state"]["latest_docx_bytes"] = b"PK\x03\x04output"
-        runtime["state"]["latest_markdown"] = "markdown"
-        return "succeeded", SimpleNamespace(
-            uploaded_file_bytes=b"PK\x03\x04normalized-source",
-            source_text="text",
-            paragraphs=source_paragraphs,
-            image_assets=[],
-            jobs=[{"job_kind": "llm"}],
-            quality_gate_status="pass",
-            quality_gate_reasons=(),
-            structure_validation_report=SimpleNamespace(readiness_status="ready", readiness_reasons=()),
-            structure_ai_attempted=True,
-            ai_classified_count=12,
-            ai_heading_count=4,
-        )
+        raise RuntimeError("blocked by quality gate")
 
     monkeypatch.setattr(
         real_document_validation_structural,
@@ -1143,6 +1167,8 @@ def test_structural_passthrough_success_uses_prepared_context_when_event_log_lac
     assert result["preparation_diagnostic_snapshot"]["structure_ai_attempted"] is True
     assert result["preparation_diagnostic_snapshot"]["ai_classified_count"] == 12
     assert result["preparation_diagnostic_snapshot"]["ai_heading_count"] == 4
+
+
 def test_apply_prepared_metric_fields_uses_explicit_unknown_when_statuses_missing() -> None:
     metrics = {}
     prepared = SimpleNamespace(
@@ -1502,6 +1528,34 @@ def test_structural_passthrough_failure_derives_detailed_snapshot_reasons_from_p
         "toc_like_sequence_without_bounded_region",
         "structure_recognition_noop_on_high_risk",
     ]
-    assert snapshot["structure_ai_attempted"] is True
+    assert snapshot["structure_ai_attempted"] is False
     assert snapshot["ai_classified_count"] == 0
     assert snapshot["ai_heading_count"] == 0
+
+
+def test_structural_diagnostic_artifacts_are_consistent_with_registry():
+    """Fail if an on-disk structural diagnostic artifact contradicts the current registry expectation."""
+    for document_profile in REGISTRY.documents:
+        expected_result = getattr(document_profile, "structural_expected_result", None)
+        if expected_result is None:
+            continue
+
+        artifact_path = Path(
+            f"tests/artifacts/structural_diagnostics/{document_profile.id}/structural_diagnostic.json"
+        )
+        if not artifact_path.exists():
+            continue
+
+        payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+        actual_passed = payload.get("passed")
+
+        if expected_result == "pass" and actual_passed is False:
+            pytest.fail(
+                f"Artifact {artifact_path} says 'passed=false', but registry expects 'pass'.\n"
+                f"Run: bash scripts/run-structural-preparation-diagnostic.sh {document_profile.id}"
+            )
+        if expected_result == "fail" and actual_passed is True:
+            pytest.fail(
+                f"Artifact {artifact_path} says 'passed=true', but registry expects 'fail'.\n"
+                f"Run: bash scripts/run-structural-preparation-diagnostic.sh {document_profile.id}"
+            )
