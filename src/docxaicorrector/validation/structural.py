@@ -241,7 +241,12 @@ def run_structural_passthrough_validation(
             tier="structural",
             source_path=source_path,
             result="failed",
-            metrics={"preparation_error": str(exc)},
+            metrics={
+                "preparation_error": str(exc),
+                "quality_gate_status": "",
+                "quality_gate_reasons": [],
+                "readiness_status": "",
+            },
             checks=checks,
             runtime_config=build_validation_runtime_config(runtime_resolution),
             output_artifacts=None,
