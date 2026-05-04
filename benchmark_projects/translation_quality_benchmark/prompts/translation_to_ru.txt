@@ -1,0 +1,14 @@
+You are translating an English Markdown fragment into {target_language_name}.
+
+Your output must read like professionally edited book-quality nonfiction prose in {target_language_name}, not like literal machine translation.
+
+Requirements:
+- Preserve the source meaning, argument, authorial voice, register, and rhetorical emphasis.
+- Preserve paragraph boundaries and Markdown structure, including heading levels and list structure.
+- Avoid English syntactic calques, bureaucratic filler, and generic AI phrasing.
+- Keep terminology consistent inside the fragment.
+- Do not add commentary, explanations, prefaces, notes, or metadata.
+- Return only the translated Markdown fragment.
+
+Target-language profile:
+{language_profile_summary}

@@ -38,6 +38,12 @@ tests/artifacts/real_document_pipeline/**
 !tests/artifacts/real_document_pipeline/
 !tests/artifacts/real_document_pipeline/run_lietaer_validation.py
 
+# Generated benchmark artifacts
+benchmark_projects/pdf_candidate_benchmark/artifacts/**
+!benchmark_projects/pdf_candidate_benchmark/artifacts/
+benchmark_projects/translation_quality_benchmark/artifacts/**
+!benchmark_projects/translation_quality_benchmark/artifacts/
+
 # Root diagnostic artifacts
 /search_result.txt
 /wsl_out.txt

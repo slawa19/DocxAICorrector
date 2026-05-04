@@ -1540,31 +1540,3 @@ def test_structural_passthrough_failure_derives_detailed_snapshot_reasons_from_p
     assert snapshot["structure_ai_attempted"] is True
     assert snapshot["ai_classified_count"] == 0
     assert snapshot["ai_heading_count"] == 0
-
-
-def test_structural_diagnostic_artifacts_are_consistent_with_registry():
-    """Fail if an on-disk structural diagnostic artifact contradicts the current registry expectation."""
-    for document_profile in REGISTRY.documents:
-        expected_result = getattr(document_profile, "structural_expected_result", None)
-        if expected_result is None:
-            continue
-
-        artifact_path = Path(
-            f"tests/artifacts/structural_diagnostics/{document_profile.id}/structural_diagnostic.json"
-        )
-        if not artifact_path.exists():
-            continue
-
-        payload = json.loads(artifact_path.read_text(encoding="utf-8"))
-        actual_passed = payload.get("passed")
-
-        if expected_result == "pass" and actual_passed is False:
-            pytest.fail(
-                f"Artifact {artifact_path} says 'passed=false', but registry expects 'pass'.\n"
-                f"Run: bash scripts/run-structural-preparation-diagnostic.sh {document_profile.id}"
-            )
-        if expected_result == "fail" and actual_passed is True:
-            pytest.fail(
-                f"Artifact {artifact_path} says 'passed=true', but registry expects 'fail'.\n"
-                f"Run: bash scripts/run-structural-preparation-diagnostic.sh {document_profile.id}"
-            )

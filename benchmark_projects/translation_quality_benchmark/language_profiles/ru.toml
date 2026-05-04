@@ -1,0 +1,17 @@
+name = "Russian"
+quality_focus = "book-quality nonfiction prose"
+avoid = [
+  "literal English syntax",
+  "bureaucratic filler",
+  "unmotivated passive constructions",
+  "excessive nominalization",
+  "generic AI phrasing",
+  "unstable terminology",
+]
+prefer = [
+  "natural Russian clause order",
+  "editorially polished rhythm",
+  "clear causal links",
+  "consistent domain terminology",
+  "style that reads like professionally edited Russian",
+]

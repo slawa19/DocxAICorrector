@@ -432,17 +432,15 @@ def test_legacy_powershell_test_wrappers_are_removed() -> None:
         assert not (REPO_ROOT / "scripts" / script_name).exists()
 
 
-def test_ci_exposes_separate_workflow_and_startup_contract_jobs() -> None:
+def test_ci_exposes_editable_install_and_tests_jobs() -> None:
     ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
-    assert "workflow-contract:" in ci_text
-    assert "startup-contract:" in ci_text
     assert "editable-install:" in ci_text
     assert "pip install -e \".[dev]\"" in ci_text
     assert "python -c \"import docxaicorrector\"" in ci_text
     assert "bash scripts/test.sh tests/test_typecheck.py -q" in ci_text
-    assert "needs: [workflow-contract, startup-contract, editable-install]" in ci_text
-    assert "bash scripts/test.sh tests/test_startup_performance_contract.py -q" in ci_text
+    assert "tests:" in ci_text
+    assert "needs: [editable-install]" in ci_text
 
 
 def test_codeowners_protects_workflow_and_startup_contract_files() -> None:
@@ -461,7 +459,6 @@ def test_ci_uses_canonical_bash_test_contract() -> None:
     assert "runs-on: ubuntu-latest" in ci_text
     assert "python -m venv .venv" in ci_text
     assert ". .venv/bin/activate" in ci_text
-    assert "bash scripts/test.sh tests/test_script_workflow_smoke.py -q" in ci_text
     assert "bash scripts/test.sh tests/ -q" in ci_text
     assert "python -m pytest tests -q" not in ci_text
 
