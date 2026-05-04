@@ -37,6 +37,10 @@ benchmark_projects/translation_quality_benchmark/
   run.sh
   benchmark_runner.py
   benchmark_config.toml
+  prompts/
+    translation_to_ru.txt
+  language_profiles/
+    ru.toml
   artifacts/
     runs/
 ```
@@ -50,6 +54,8 @@ The benchmark will:
 5. Run automated safety/structure checks.
 6. Produce a compact human review pack with only final examples and judge reasoning.
 7. Write all benchmark artifacts under `benchmark_projects/translation_quality_benchmark/artifacts/runs/<run_id>/`.
+
+Benchmark-specific prompts and language profiles must live inside `benchmark_projects/translation_quality_benchmark/`, not in the main project `prompts/` tree. This keeps the benchmark isolated and avoids accidental production prompt changes during the MVP.
 
 ## Runtime Boundary
 
@@ -85,6 +91,10 @@ target_language_name = "Russian"
 source_language = "en"
 judge_model = "openai/gpt-5.5"
 openrouter_base_url = "https://openrouter.ai/api/v1"
+openrouter_referer = "DocxAICorrectorTranslationBenchmark"
+openrouter_title = "DocxAICorrector Translation Benchmark"
+translation_prompt_file = "benchmark_projects/translation_quality_benchmark/prompts/translation_to_ru.txt"
+target_language_profile_file = "benchmark_projects/translation_quality_benchmark/language_profiles/ru.toml"
 
 [[candidates]]
 id = "claude-haiku-4-5"
@@ -128,8 +138,16 @@ Environment variables:
 ```text
 OPENROUTER_API_KEY=...
 TRANSLATION_BENCHMARK_JUDGE_MODEL=openai/gpt-5.5
-TRANSLATION_BENCHMARK_REFERER=DocxAICorrectorTranslationBenchmark
+TRANSLATION_BENCHMARK_OPENROUTER_REFERER=DocxAICorrectorTranslationBenchmark
+TRANSLATION_BENCHMARK_OPENROUTER_TITLE=DocxAICorrector Translation Benchmark
 ```
+
+Rules:
+
+1. `OPENROUTER_API_KEY` is required.
+2. The judge model may come from config, with `TRANSLATION_BENCHMARK_JUDGE_MODEL` as an override.
+3. `openrouter_referer` and `openrouter_title` must be set either in config or through env overrides.
+4. `manifest.json` must record the effective non-secret values used for judge model, referer, title, and base URL.
 
 The benchmark must save usage data returned by OpenRouter:
 
@@ -147,6 +165,18 @@ The benchmark must save usage data returned by OpenRouter:
 ```
 
 For fair comparison, each call must log the requested model and the returned model. If they differ, the candidate result must be flagged.
+
+### Model Availability Preflight
+
+Before any translation or judge calls, the runner must query the live OpenRouter model catalog and validate every configured candidate ID.
+
+Requirements:
+
+1. Write the preflight result to `model_availability.json`.
+2. Record requested model ID, matched catalog ID, availability status, and any mismatch reason.
+3. Skip unavailable candidates automatically, but do not auto-replace them.
+4. If fewer than 2 candidate models remain available after preflight, abort the run before translation begins.
+5. This preflight happens before any paid benchmark requests so the run does not spend money on obviously invalid candidate IDs.
 
 ## Corpus Scope
 
@@ -174,6 +204,40 @@ Recommended MVP sampling:
 7. Include at least one structurally non-trivial fragment with headings, lists, or adjacent formatting.
 
 This gives approximately 6 fragments x 4 models = 24 translation calls, plus judge calls. That is enough for a fast decision-oriented first pass.
+
+## Fragment Extraction Source And Method
+
+The benchmark must extract source text from normalized source documents, not from translated pipeline output and not from AI structure-recognition results.
+
+For the MVP, use this direct extraction path:
+
+1. Resolve the source file from the selected `DocumentProfile`.
+2. Normalize the uploaded document through `docxaicorrector.processing.processing_runtime.normalize_uploaded_document(...)`.
+3. Call `extract_document_content_with_normalization_reports(...)` on the normalized document bytes.
+4. Build candidate semantic groups with `build_semantic_blocks(paragraphs, max_chars=...)`.
+5. Render selected fragment text with `build_document_text(selected_paragraphs)`.
+
+Clarifications:
+
+1. Do not run the full `processing.preparation` flow for fragment extraction.
+2. Do not run AI structure recognition for the MVP fragment source path.
+3. Use the extracted `ParagraphUnit.rendered_text` as the canonical source representation.
+4. Preserve heading/list/paragraph boundaries exactly as represented by extracted paragraph rendering.
+5. A thin benchmark-local wrapper is allowed to encapsulate this flow, but it must live inside the benchmark project and must not modify production helpers.
+
+Fragment selection must be deterministic.
+
+Recommended MVP selection algorithm:
+
+1. Build semantic blocks from the extracted paragraphs.
+2. Exclude image-only, table-only, or TOC-dominant blocks.
+3. Prefer blocks whose rendered text falls within 1,500-3,500 source characters.
+4. Select per-profile fragments from early, middle, and late document regions to avoid clustering in one section.
+5. Keep paragraph boundaries intact; if a single block is too short, merge only adjacent blocks.
+6. If a profile does not yield enough in-range fragments, widen the acceptable range to 1,000-4,500 characters before giving up.
+7. If the target count still cannot be reached, write fewer fragments, record the reason in fragment metadata and the manifest, and continue the benchmark.
+
+Each fragment metadata file should record why it was selected, its source profile, source character count, paragraph count, block indexes, and whether it was single-block or merged.
 
 ## Benchmark Modes
 
@@ -205,6 +269,14 @@ This follow-up must be approved separately if it requires any production-code ch
 
 Use one fixed prompt for all candidates in the MVP.
 
+The physical prompt file for the Russian MVP must live at:
+
+```text
+benchmark_projects/translation_quality_benchmark/prompts/translation_to_ru.txt
+```
+
+Do not reuse or edit the main project prompt registry in this phase.
+
 The prompt must prioritize publishable Russian prose over literal word-for-word output, while preserving source meaning.
 
 Prompt requirements:
@@ -218,10 +290,15 @@ Prompt requirements:
 7. Do not add commentary, explanations, prefaces, or metadata.
 8. Keep terms consistent within the fragment.
 
-The prompt should be target-language-aware, with a Russian style profile in config:
+The prompt should be target-language-aware, with the Russian language profile stored separately at:
+
+```text
+benchmark_projects/translation_quality_benchmark/language_profiles/ru.toml
+```
+
+Example shape:
 
 ```toml
-[target_language_profiles.ru]
 name = "Russian"
 quality_focus = "book-quality nonfiction prose"
 avoid = [
@@ -241,6 +318,22 @@ prefer = [
 ]
 ```
 
+For reproducibility, each run must snapshot both the resolved prompt text and the resolved target-language profile into the run artifact directory.
+
+## Translation Request Execution
+
+The MVP should prefer predictable execution over maximum throughput.
+
+Requirements:
+
+1. Translation calls run sequentially by default.
+2. Retry on `429`, transient `5xx`, and transport timeouts with exponential backoff.
+3. Save retry attempt counts, per-attempt errors, and final status in a per-output metadata artifact.
+4. Requested model and returned model must always be recorded.
+5. Output validation happens after the final successful response is received.
+
+This benchmark is small enough that sequential execution is acceptable and reduces rate-limit noise during the MVP.
+
 ## AI Judge Strategy
 
 GPT-5.5 is the primary judge for the MVP.
@@ -253,6 +346,12 @@ Use two judge passes:
 2. Pairwise ranking within each fragment.
 
 This keeps the result more robust than a single absolute score.
+
+For the expected MVP size of 4 candidates and 6 fragments, pairwise judging means 6 pairwise comparisons per fragment and 36 pairwise judge calls overall. This is acceptable for the MVP. If the candidate set grows beyond 5 models, pairwise cost increases quickly and the candidate list should be narrowed before the run or explicitly approved.
+
+The benchmark must store both the requested judge model and the returned judge model in `manifest.json` and `summary.json`.
+
+Judge-phase cost is expected to stay in the low single-digit USD range for the MVP fragment count. The runner should print the projected number of translation and judge calls before execution so cost is visible before the paid phase starts.
 
 ### Per-Candidate Rubric
 
@@ -315,13 +414,19 @@ Judge output:
     {
       "left": "candidate_A",
       "right": "candidate_B",
-      "winner": "candidate_A",
-      "margin": "slight | clear | decisive",
+      "winner": "candidate_A | candidate_B | tie",
+      "margin": "slight | clear | decisive | tie",
       "reason": "..."
     }
   ]
 }
 ```
+
+Tie handling:
+
+1. `tie` is allowed.
+2. A tie counts as `0.5` pairwise win credit to each side.
+3. Ties do not count toward decisive win count.
 
 The final summary should include:
 
@@ -350,6 +455,26 @@ Required checks:
 
 These checks should not decide the winner by themselves. They should flag risks for the judge summary and human spot-check.
 
+### Hard Failure Versus Risk Flags
+
+The benchmark must distinguish between a failed translation output and an output that is usable but risky.
+
+Treat the output as `failed` for the fragment if any of the following is true:
+
+1. The API call fails permanently after retries.
+2. The final output is empty after trimming.
+3. The final output is shorter than 60% of source character count or longer than 200% of source character count.
+4. The output begins with or is dominated by forbidden wrapper/meta phrases such as `Here is the translation`.
+
+Treat the output as `ok_with_flags` rather than `failed` if it only has softer issues such as untranslated residue, paragraph drift, repeated n-grams, heading/list preservation problems, or quote/bracket imbalance.
+
+Failed outputs:
+
+1. must still write metadata and automated check artifacts;
+2. may omit `.ru.md` only if no usable text exists;
+3. are excluded from judging for that fragment;
+4. count against reliability and recommendation status in the final summary.
+
 ## Cost Scoring
 
 For each candidate, compute:
@@ -362,6 +487,16 @@ cost_per_1k_output_chars
 cost_per_quality_point
 estimated_cost_per_300k_word_book
 ```
+
+`estimated_cost_per_300k_word_book` must be computed as a linear benchmark-only estimate, not as a production billing promise.
+
+Method:
+
+1. Compute observed `total_cost / total_source_chars` for each candidate across completed fragment calls.
+2. Estimate source characters for a 300k-word book using the sampled corpus average source chars per word.
+3. Multiply the observed cost-per-source-char by that estimated source character volume.
+4. Include prompt overhead and retry overhead implicitly because they are already included in observed benchmark cost.
+5. Label this value as an estimate that excludes future document-level effects such as chunk-boundary inefficiencies, provider price changes, and larger-book prompt-management overhead.
 
 The final recommendation should not simply choose the cheapest model. It should classify candidates:
 
@@ -404,6 +539,8 @@ Each run writes:
 artifacts/runs/<run_id>/
   manifest.json
   benchmark_config.snapshot.toml
+  translation_prompt.snapshot.txt
+  target_language_profile.snapshot.toml
   model_availability.json
   fragments/
     <fragment_id>.source.md
@@ -411,11 +548,13 @@ artifacts/runs/<run_id>/
   translations/
     <fragment_id>/
       <candidate_id>.ru.md
+      <candidate_id>.metadata.json
       <candidate_id>.usage.json
       <candidate_id>.automated_checks.json
   judging/
     <fragment_id>.rubric_scores.json
     <fragment_id>.pairwise.json
+    <fragment_id>.judge_metadata.json
   summary.json
   summary.md
   findings_for_project_backlog.md
@@ -432,7 +571,16 @@ artifacts/runs/<run_id>/
 6. fragment IDs;
 7. judge model;
 8. OpenRouter base URL;
-9. environment flags, excluding secrets.
+9. environment flags, excluding secrets;
+10. Python version;
+11. runtime platform details such as `uname` when available.
+
+`summary.json` must also record:
+
+1. requested judge model;
+2. returned judge model or models observed during the run;
+3. total judge cost;
+4. total translation cost.
 
 ## Findings For Main Project
 
@@ -449,6 +597,8 @@ Each finding should use this format:
 ```text
 ## Finding: <short title>
 
+Severity: critical | major | minor | cosmetic
+
 Evidence:
 <artifact paths and examples>
 
@@ -460,6 +610,8 @@ Suggested follow-up:
 
 Requires approval before implementation: yes
 ```
+
+`summary.md` should emphasize `critical` and `major` findings first. `minor` and `cosmetic` findings may still be listed in the backlog artifact but should not dominate the benchmark conclusion.
 
 Potential categories:
 
@@ -503,6 +655,8 @@ Add:
 benchmark_projects/translation_quality_benchmark/run.sh
 benchmark_projects/translation_quality_benchmark/benchmark_runner.py
 benchmark_projects/translation_quality_benchmark/benchmark_config.toml
+benchmark_projects/translation_quality_benchmark/prompts/translation_to_ru.txt
+benchmark_projects/translation_quality_benchmark/language_profiles/ru.toml
 ```
 
 `run.sh` should follow the existing pattern from `benchmark_projects/pdf_candidate_benchmark/run.sh`:
@@ -511,6 +665,8 @@ benchmark_projects/translation_quality_benchmark/benchmark_config.toml
 2. activate WSL `.venv/bin/activate`;
 3. set `PYTHONPATH`;
 4. execute the runner.
+
+`benchmark_runner.py` lives directly in `benchmark_projects/translation_quality_benchmark/`, matching the existing `pdf_candidate_benchmark` layout.
 
 ### Step 2: Config And Candidate Loading
 
@@ -524,33 +680,53 @@ OPENROUTER_API_KEY
 
 Fail clearly if missing.
 
-### Step 3: Fragment Extraction
+Resolve prompt/profile inputs from benchmark-local files, snapshot them into the run directory, and validate that the configured candidate list has at least 2 entries.
+
+### Step 3: Model Availability Preflight
+
+Query the OpenRouter model catalog before any translation requests.
+
+1. Validate configured candidate model IDs.
+2. Write `model_availability.json`.
+3. Skip unavailable candidates.
+4. Abort early if fewer than 2 candidates remain.
+
+### Step 4: Fragment Extraction
 
 Load corpus profiles and extract text using existing project helpers.
 
 Keep the first version simple:
 
-1. collect meaningful paragraphs/blocks;
-2. choose deterministic fragments by position and length;
-3. write source fragments to artifacts.
+1. normalize the source document;
+2. extract `ParagraphUnit` content through `extract_document_content_with_normalization_reports(...)`;
+3. build semantic blocks through `build_semantic_blocks(...)`;
+4. choose deterministic fragments by position, structure, and length;
+5. render source fragments through `build_document_text(...)`;
+6. write source fragments and selection metadata to artifacts.
 
 Avoid model calls during extraction.
 
-### Step 4: Translation Calls
+Do not run AI structure recognition in this step.
+
+### Step 5: Translation Calls
 
 Call OpenRouter for each candidate/fragment pair.
 
-Save raw response metadata, translated Markdown, usage, latency, and errors.
+Save raw response metadata, translated Markdown, usage, latency, retry history, requested model, returned model, and errors.
 
 If a candidate fails on a fragment, continue the run and mark that output as failed.
 
-### Step 5: Automated Checks
+Use sequential calls with retry and exponential backoff for rate-limit and transient transport errors.
+
+### Step 6: Automated Checks
 
 Run simple deterministic checks on each candidate output.
 
 Save one JSON file per output.
 
-### Step 6: GPT-5.5 Judging
+Mark outputs as `failed` or `ok_with_flags` according to the hard-failure rules above.
+
+### Step 7: GPT-5.5 Judging
 
 For each fragment:
 
@@ -558,9 +734,12 @@ For each fragment:
 2. run rubric scoring;
 3. run pairwise scoring;
 4. save strict JSON;
-5. retry once if judge JSON is invalid.
+5. retry once if judge JSON is invalid;
+6. record judge usage, requested model, returned model, and cost metadata.
 
-### Step 7: Summary
+Failed candidate outputs are excluded from fragment judging rather than being silently treated as low-quality translations.
+
+### Step 8: Summary
 
 Aggregate scores, pairwise wins, costs, and risk flags.
 
@@ -572,6 +751,8 @@ summary.md
 human_review_pack/top_examples.md
 findings_for_project_backlog.md
 ```
+
+The summary must include total translation cost, total judge cost, pairwise tie handling, estimated cost per 300k-word book, and recommendation status per candidate.
 
 ## Acceptance Criteria
 
@@ -586,6 +767,11 @@ The MVP is complete when:
 7. The final summary includes cost and quality, not quality alone.
 8. The human review pack contains enough examples for selective manual verification.
 9. Any suggested main-project optimizations are written as findings requiring approval.
+10. The runner performs model-availability preflight before paid translation calls.
+11. Hard translation failures are recorded consistently and excluded from judging.
+12. `manifest.json` and `summary.json` record the effective judge model and runtime reproducibility details.
+13. The runner handles missing env vars and per-fragment/provider errors gracefully.
+14. MVP completion does not require benchmark-specific unit tests as a release gate, but the runner must remain deterministic for `--skip-judge` artifact generation and error handling.
 
 ## Recommendation Logic
 

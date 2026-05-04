@@ -258,3 +258,19 @@ AI agents must follow these rules:
 - Do not change `scripts/test.sh`, `.vscode/tasks.json` test tasks, `tests/test_script_workflow_smoke.py`, or the test-workflow docs as part of unrelated work.
 - If the user explicitly asks to change the test workflow contract, update all of these in the same change: `scripts/test.sh`, `.vscode/tasks.json`, `tests/test_script_workflow_smoke.py`, `README.md`, `CONTRIBUTING.md`, and `docs/WORKFLOW_AND_IMAGE_MODES.md`.
 - After any intentional test-workflow change, run the canonical verification command `bash scripts/test.sh tests/test_script_workflow_smoke.py -q` and then `bash scripts/test.sh tests/ -q`.
+
+## Перед запуском тестов / CI verification
+
+**КРИТИЧЕСКИ ВАЖНО:** Перед финальной верификацией через `bash scripts/test.sh`, VS Code tasks (`Run Full Pytest`, `Run Current Test File` и т.д.) или перед тем, как утверждать, что "всё зелёное", **всегда проверяй чистоту рабочего дерева**:
+
+```bash
+git status --porcelain
+```
+
+Если вывод не пустой — у тебя **dirty worktree**. В этом случае:
+
+- Локальные результаты тестов **могут отличаться** от CI.
+- Особенно это касается `test_typecheck.py` (pyright), `test_real_document_validation_corpus.py` и любых тестов, которые зависят от наличия/отсутствия файлов в `docs/`, `docs/specs/` и т.д.
+- CI всегда запускается на **чистом** checkout'е коммита.
+
+**Правило:** Если дерево грязное — либо закоммить изменения, либо явно понимать, что локальный прогон не является доказательством для CI.

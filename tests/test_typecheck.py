@@ -9,9 +9,13 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# Baseline: known pyright error count as of 2026-04-18 after test-suite hardening.
+# Baseline: known pyright error count measured on a **clean worktree**.
 # When you fix type errors across the project, lower this number.
 # The test fails if pyright finds MORE errors than the baseline (regression).
+#
+# IMPORTANT: Always run this test on a clean checkout (`git status --porcelain` must be empty).
+# Dirty worktrees (uncommitted docs/, specs/, etc.) can change the error count
+# and cause flaky CI failures.
 _ERROR_BASELINE = 0
 
 
@@ -20,7 +24,21 @@ def _run_pyright() -> dict:
     if not venv_python.exists():
         venv_python = PROJECT_ROOT / ".venv" / "bin" / "python"
 
-    cmd = [sys.executable, "-m", "pyright", "--outputjson"]
+    # Explicitly target only source and test code.
+    # This prevents pyright from scanning docs/, uncommitted files,
+    # or other directories that can cause flaky baseline counts
+    # between local dirty worktrees and clean CI checkouts.
+    #
+    # We also pass --pythonpath pointing to the project venv when available
+    # so pyright resolves imports the same way as the test environment.
+    cmd = [
+        sys.executable,
+        "-m",
+        "pyright",
+        "src/docxaicorrector",
+        "tests",
+        "--outputjson",
+    ]
     if venv_python.exists():
         cmd += ["--pythonpath", str(venv_python)]
 

@@ -73,6 +73,9 @@ jobs:
           python -c "import docxaicorrector"
           bash scripts/test.sh tests/test_typecheck.py -q
 
+      - name: Clean working tree before tests
+        run: git clean -fdx
+
   tests:
     runs-on: ubuntu-latest
     needs: [workflow-contract, startup-contract, editable-install]
@@ -92,6 +95,9 @@ jobs:
           python -m venv .venv
           . .venv/bin/activate
           pip install -r requirements.txt
+
+      - name: Clean working tree before tests
+        run: git clean -fdx
 
       - name: Run full test suite
         run: bash scripts/test.sh tests/ -q

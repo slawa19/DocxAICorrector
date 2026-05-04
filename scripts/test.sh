@@ -8,6 +8,14 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
+# Warn when the working tree is dirty.
+# CI always runs on a clean checkout. Dirty trees are a common source
+# of "tests pass locally but fail on GitHub Actions" situations.
+if [ -n "$(git status --porcelain 2>/dev/null || true)" ]; then
+	echo "WARNING: Working tree is dirty. Test results may differ from CI." >&2
+	echo "         Run 'git status --porcelain' to see uncommitted changes." >&2
+fi
+
 validation_error() {
 	echo "$1" >&2
 	exit 2

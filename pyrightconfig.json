@@ -2,6 +2,7 @@
   "pythonVersion": "3.13",
   "typeCheckingMode": "basic",
   "include": ["src/docxaicorrector", "tests", "benchmark_projects", "scripts"],
+  "exclude": ["docs", "**/node_modules", "**/__pycache__"],
   "extraPaths": ["src", "."],
   "reportMissingImports": "warning",
   "reportMissingModuleSource": "none"
