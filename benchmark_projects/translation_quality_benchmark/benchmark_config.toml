@@ -20,10 +20,10 @@ translation_temperature = 0.2
 judge_temperature = 0.1
 
 [[candidates]]
-id = "claude-haiku-4-5"
-label = "Claude Haiku 4.5"
+id = "gemini-3-flash"
+label = "Gemini 3 Flash"
 provider = "openrouter"
-model = "anthropic/claude-haiku-4.5"
+model = "google/gemini-3-flash-preview"
 
 [[candidates]]
 id = "gemini-3-1-flash-lite"
@@ -32,16 +32,16 @@ provider = "openrouter"
 model = "google/gemini-3.1-flash-lite-preview"
 
 [[candidates]]
-id = "deepseek-v4-pro"
-label = "DeepSeek V4 Pro"
+id = "qwen3-next-80b-a3b-instruct"
+label = "Qwen3 Next 80B A3B Instruct"
 provider = "openrouter"
-model = "deepseek/deepseek-v4-pro"
+model = "qwen/qwen3-next-80b-a3b-instruct"
 
 [[candidates]]
-id = "grok-4-3"
-label = "Grok 4.3"
+id = "llama-3-3-70b-instruct"
+label = "Llama 3.3 70B Instruct"
 provider = "openrouter"
-model = "x-ai/grok-4.3"
+model = "meta-llama/llama-3.3-70b-instruct"
 
 [[candidates]]
 id = "gpt-5-4-mini"
