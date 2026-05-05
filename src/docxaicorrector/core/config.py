@@ -65,9 +65,15 @@ from docxaicorrector.text.translation_domains import build_translation_domain_in
 
 OpenAI = None
 _CLIENT = None
+_CLIENTS_BY_PROVIDER: dict[str, object] = {}
 _CLIENT_LOCK = Lock()
 _IMAGE_OUTPUT_SIZE_VALUES = {"256x256", "512x512", "1024x1024", "1024x1536", "1536x1024", "1024x1792", "1792x1024"}
 PROCESSING_OPERATION_VALUES = ("edit", "translate", "audiobook")
+_SUPPORTED_PROVIDER_IDS = ("openai", "openrouter")
+_PROVIDER_CAPABILITIES = {
+    "openai": frozenset({"responses_text", "responses_vision", "images_generate", "images_edit"}),
+    "openrouter": frozenset({"responses_text"}),
+}
 _MIGRATION_DEFAULT_TEXT_MODEL = "gpt-5.4-mini"
 _MIGRATION_DEFAULT_TEXT_MODEL_OPTIONS = (
     "gpt-5.4",
@@ -118,6 +124,40 @@ class ModelRegistry:
     image_generation_vision: str
 
 
+@dataclass(frozen=True)
+class ProviderConfig:
+    name: str
+    enabled: bool
+    api_key_env: str
+    base_url: str | None = None
+    referer: str | None = None
+    title: str | None = None
+
+
+@dataclass(frozen=True)
+class ProviderRegistry:
+    openai: ProviderConfig
+    openrouter: ProviderConfig
+
+
+@dataclass(frozen=True)
+class ResolvedModelSelector:
+    raw_selector: str
+    canonical_selector: str
+    provider: str
+    model_id: str
+
+
+@dataclass(frozen=True)
+class ProviderAvailability:
+    selector: ResolvedModelSelector
+    provider: ProviderConfig
+    enabled: bool
+    api_key_env: str
+    has_api_key: bool
+    error_message: str | None
+
+
 DEFAULT_SUPPORTED_LANGUAGES = (
     LanguageOption(code="ru", label="Русский"),
     LanguageOption(code="en", label="English"),
@@ -154,6 +194,7 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class AppConfig(Mapping[str, Any]):
     models: ModelRegistry
+    providers: ProviderRegistry
     default_model: str
     model_options: list[str]
     chunk_size: int
@@ -496,6 +537,7 @@ def _build_text_model_config(default_model: str, options: tuple[str, ...]) -> Te
         options,
         text_model_config_factory_fn=TextModelConfig,
         dedupe_preserving_order_fn=_dedupe_preserving_order,
+        normalize_model_selector_fn=_normalize_model_selector_for_registry,
     )
 
 
@@ -562,6 +604,138 @@ def get_text_model_default(config_like: object | None) -> str:
 
 def get_text_model_options(config_like: object | None) -> tuple[str, ...]:
     return get_text_model_config(config_like).options
+
+
+def _parse_model_selector(selector: str, *, source_name: str) -> ResolvedModelSelector:
+    raw_selector = selector.strip()
+    if not raw_selector:
+        raise RuntimeError("Некорректный селектор модели: ожидается непустая строка.")
+
+    provider = "openai"
+    model_id = raw_selector
+    if ":" in raw_selector:
+        provider_prefix, provider_model_id = raw_selector.split(":", 1)
+        provider = provider_prefix.strip().lower()
+        model_id = provider_model_id.strip()
+        if not provider or not model_id:
+            raise RuntimeError("Некорректный селектор модели: expected '<provider>:<model>' or bare OpenAI model.")
+        if provider not in _SUPPORTED_PROVIDER_IDS:
+            raise RuntimeError(f"Неизвестный provider '{provider}' в {source_name}.")
+
+    if not model_id:
+        raise RuntimeError("Некорректный селектор модели: expected '<provider>:<model>' or bare OpenAI model.")
+
+    return ResolvedModelSelector(
+        raw_selector=raw_selector,
+        canonical_selector=f"{provider}:{model_id}",
+        provider=provider,
+        model_id=model_id,
+    )
+
+
+def _normalize_model_selector_for_registry(selector: str) -> str:
+    return _parse_model_selector(selector, source_name="models.text").canonical_selector
+
+
+def _coerce_provider_config(value: object, *, provider_name: str) -> ProviderConfig:
+    if isinstance(value, ProviderConfig):
+        return value
+    if not isinstance(value, Mapping):
+        raise RuntimeError(f"Некорректная конфигурация provider '{provider_name}'.")
+
+    enabled = value.get("enabled")
+    api_key_env = value.get("api_key_env")
+    base_url = value.get("base_url")
+    referer = value.get("referer")
+    title = value.get("title")
+    if not isinstance(enabled, bool):
+        raise RuntimeError(f"Некорректная конфигурация provider '{provider_name}'.")
+    if not isinstance(api_key_env, str) or not api_key_env.strip():
+        raise RuntimeError(f"Некорректная конфигурация provider '{provider_name}'.")
+    for field_name, field_value in (("base_url", base_url), ("referer", referer), ("title", title)):
+        if field_value is not None and (not isinstance(field_value, str) or not field_value.strip()):
+            raise RuntimeError(f"Некорректная конфигурация provider '{provider_name}.{field_name}'.")
+
+    return ProviderConfig(
+        name=provider_name,
+        enabled=enabled,
+        api_key_env=api_key_env.strip(),
+        base_url=base_url.strip() if isinstance(base_url, str) else None,
+        referer=referer.strip() if isinstance(referer, str) else None,
+        title=title.strip() if isinstance(title, str) else None,
+    )
+
+
+def get_provider_registry(config_like: object | None = None) -> ProviderRegistry:
+    if config_like is None:
+        return load_app_config().providers
+    if isinstance(config_like, AppConfig):
+        return config_like.providers
+    if isinstance(config_like, ProviderRegistry):
+        return config_like
+
+    providers_value = _resolve_config_value(config_like, "providers")
+    if isinstance(providers_value, ProviderRegistry):
+        return providers_value
+    if not isinstance(providers_value, Mapping):
+        raise RuntimeError("Provider registry is not available without resolved application config.")
+
+    return ProviderRegistry(
+        openai=_coerce_provider_config(providers_value.get("openai"), provider_name="openai"),
+        openrouter=_coerce_provider_config(providers_value.get("openrouter"), provider_name="openrouter"),
+    )
+
+
+def get_provider_config(provider_name: str, config_like: object | None = None) -> ProviderConfig:
+    normalized_provider_name = provider_name.strip().lower()
+    if normalized_provider_name not in _SUPPORTED_PROVIDER_IDS:
+        raise RuntimeError(f"Неизвестный provider '{normalized_provider_name}' в provider client factory.")
+    return getattr(get_provider_registry(config_like), normalized_provider_name)
+
+
+def resolve_model_selector(
+    selector: str,
+    required_capability: str | None = None,
+    *,
+    config_like: object | None = None,
+    source_name: str = "selector",
+) -> ResolvedModelSelector:
+    resolved_selector = _parse_model_selector(selector, source_name=source_name)
+    provider_config = get_provider_config(resolved_selector.provider, config_like)
+    if not provider_config.enabled:
+        raise RuntimeError(
+            f"Provider '{resolved_selector.provider}' отключён, но selector '{resolved_selector.raw_selector}' требует его использования."
+        )
+    if required_capability is not None and required_capability not in _PROVIDER_CAPABILITIES[resolved_selector.provider]:
+        raise RuntimeError(
+            f"Provider '{resolved_selector.provider}' не поддерживает role '{source_name}' / capability '{required_capability}'."
+        )
+    return resolved_selector
+
+
+def describe_provider_availability(
+    selector: str,
+    *,
+    app_config: AppConfig | Mapping[str, object],
+) -> ProviderAvailability:
+    resolved_selector = _parse_model_selector(selector, source_name="selector")
+    provider_config = get_provider_config(resolved_selector.provider, app_config)
+    api_key_value = os.getenv(provider_config.api_key_env, "").strip()
+    error_message: str | None = None
+    if not provider_config.enabled:
+        error_message = (
+            f"Provider '{provider_config.name}' отключён, но selector '{resolved_selector.raw_selector}' требует его использования."
+        )
+    elif not api_key_value:
+        error_message = f"Для модели '{resolved_selector.raw_selector}' не найден {provider_config.api_key_env}."
+    return ProviderAvailability(
+        selector=resolved_selector,
+        provider=provider_config,
+        enabled=provider_config.enabled,
+        api_key_env=provider_config.api_key_env,
+        has_api_key=bool(api_key_value),
+        error_message=error_message,
+    )
 
 
 def _resolve_text_model_options(
@@ -844,8 +1018,168 @@ def _resolve_model_registry_settings(
     )
 
 
+def _resolve_provider_registry(*, config_data: dict[str, object]) -> ProviderRegistry:
+    providers_config = parse_optional_config_section(config_data, "providers")
+    unknown_provider_tables = sorted(set(providers_config) - set(_SUPPORTED_PROVIDER_IDS))
+    if unknown_provider_tables:
+        raise RuntimeError(f"Неизвестные provider tables в {CONFIG_PATH}: {', '.join(unknown_provider_tables)}")
+
+    def _resolve_provider(
+        provider_name: str,
+        *,
+        default_enabled: bool,
+        default_api_key_env: str,
+        default_base_url: str | None = None,
+        default_referer: str | None = None,
+        default_title: str | None = None,
+    ) -> ProviderConfig:
+        section = parse_optional_config_section(providers_config, provider_name, parent_name="providers")
+        enabled_value = section.get("enabled", default_enabled)
+        if not isinstance(enabled_value, bool):
+            raise RuntimeError(f"Некорректное поле providers.{provider_name}.enabled в {CONFIG_PATH}")
+        api_key_env_value = section.get("api_key_env", default_api_key_env)
+        if not isinstance(api_key_env_value, str) or not api_key_env_value.strip():
+            raise RuntimeError(f"Некорректное поле providers.{provider_name}.api_key_env в {CONFIG_PATH}")
+
+        def _optional_field(field_name: str, default_value: str | None) -> str | None:
+            field_value = section.get(field_name, default_value)
+            if field_value is None:
+                return None
+            if not isinstance(field_value, str) or not field_value.strip():
+                raise RuntimeError(f"Некорректное поле providers.{provider_name}.{field_name} в {CONFIG_PATH}")
+            return field_value.strip()
+
+        enabled = parse_bool_env(f"DOCX_AI_PROVIDERS_{provider_name.upper()}_ENABLED", enabled_value)
+        base_url = _optional_field("base_url", default_base_url)
+        referer = _optional_field("referer", default_referer)
+        title = _optional_field("title", default_title)
+
+        if provider_name == "openrouter":
+            base_url = parse_optional_str_env("DOCX_AI_PROVIDERS_OPENROUTER_BASE_URL") or base_url
+            referer = parse_optional_str_env("DOCX_AI_PROVIDERS_OPENROUTER_REFERER") or referer
+            title = parse_optional_str_env("DOCX_AI_PROVIDERS_OPENROUTER_TITLE") or title
+
+        return ProviderConfig(
+            name=provider_name,
+            enabled=enabled,
+            api_key_env=api_key_env_value.strip(),
+            base_url=base_url,
+            referer=referer,
+            title=title,
+        )
+
+    return ProviderRegistry(
+        openai=_resolve_provider(
+            "openai",
+            default_enabled=True,
+            default_api_key_env="OPENAI_API_KEY",
+        ),
+        openrouter=_resolve_provider(
+            "openrouter",
+            default_enabled=False,
+            default_api_key_env="OPENROUTER_API_KEY",
+            default_base_url="https://openrouter.ai/api/v1",
+            default_referer="DocxAICorrector",
+            default_title="DocxAICorrector",
+        ),
+    )
+
+
+def _validate_provider_model_contracts(
+    *,
+    provider_registry: ProviderRegistry,
+    model_registry_settings: Mapping[str, Any],
+    text_runtime_defaults: Mapping[str, Any],
+    paragraph_boundary_settings: Mapping[str, Any],
+    structure_recognition_settings: Mapping[str, Any],
+) -> None:
+    models = model_registry_settings["models"]
+    text_model_config = models.text
+
+    def ensure_selector_supports_capability(selector: str, *, required_capability: str, source_name: str) -> None:
+        resolved_selector = _parse_model_selector(selector, source_name=source_name)
+        if required_capability not in _PROVIDER_CAPABILITIES[resolved_selector.provider]:
+            raise RuntimeError(
+                f"Provider '{resolved_selector.provider}' не поддерживает role '{source_name}' / capability '{required_capability}'."
+            )
+
+    def ensure_openai_service_role_available(role_name: str) -> None:
+        openai_provider = provider_registry.openai
+        if not openai_provider.enabled or not os.getenv(openai_provider.api_key_env, "").strip():
+            raise RuntimeError(
+                f"OpenAI service role '{role_name}' включён, но provider openai недоступен."
+            )
+
+    if structure_recognition_settings["structure_recognition_enabled"]:
+        ensure_openai_service_role_available("structure_recognition")
+
+    if paragraph_boundary_settings["paragraph_boundary_ai_review_enabled"]:
+        ensure_openai_service_role_available("paragraph_boundary_ai_review")
+
+    resolve_model_selector(
+        text_model_config.default,
+        required_capability="responses_text",
+        config_like=provider_registry,
+        source_name="models.text.default",
+    )
+    for index, option in enumerate(text_model_config.options):
+        ensure_selector_supports_capability(
+            option,
+            required_capability="responses_text",
+            source_name=f"models.text.options[{index}]",
+        )
+
+    if text_runtime_defaults["translation_second_pass_model"]:
+        resolve_model_selector(
+            text_runtime_defaults["translation_second_pass_model"],
+            required_capability="responses_text",
+            config_like=provider_registry,
+            source_name="translation_second_pass_model",
+        )
+    resolve_model_selector(
+        text_runtime_defaults["audiobook_model"],
+        required_capability="responses_text",
+        config_like=provider_registry,
+        source_name="models.audiobook.default",
+    )
+
+    openai_only_roles = {
+        "models.structure_recognition.default": (models.structure_recognition, "responses_text"),
+        "models.image_analysis.default": (models.image_analysis, "responses_vision"),
+        "models.image_validation.default": (models.image_validation, "responses_vision"),
+        "models.image_reconstruction.default": (models.image_reconstruction, "responses_vision"),
+        "models.image_generation.default": (models.image_generation, "images_generate"),
+        "models.image_edit.default": (models.image_edit, "images_edit"),
+        "models.image_generation_vision.default": (models.image_generation_vision, "responses_vision"),
+    }
+    for role_name, (selector, required_capability) in openai_only_roles.items():
+        resolved_selector = resolve_model_selector(
+            selector,
+            required_capability=required_capability,
+            config_like=provider_registry,
+            source_name=role_name,
+        )
+        if resolved_selector.provider != "openai":
+            raise RuntimeError(
+                f"Provider '{resolved_selector.provider}' не поддерживает role '{role_name}' / capability '{required_capability}'."
+            )
+
+    if paragraph_boundary_settings["paragraph_boundary_ai_review_enabled"]:
+        resolved_selector = resolve_model_selector(
+            models.structure_recognition,
+            required_capability="responses_text",
+            config_like=provider_registry,
+            source_name="paragraph_boundary_ai_review",
+        )
+        if resolved_selector.provider != "openai":
+            raise RuntimeError(
+                "OpenAI service role 'paragraph_boundary_ai_review' включён, но provider openai недоступен."
+            )
+
+
 def _build_app_config(
     *,
+    provider_registry: ProviderRegistry,
     model_registry_settings: Mapping[str, Any],
     text_runtime_defaults: Mapping[str, Any],
     paragraph_boundary_settings: Mapping[str, Any],
@@ -859,6 +1193,7 @@ def _build_app_config(
 ) -> AppConfig:
     return AppConfig(
         **build_app_config_payload(
+            provider_registry=provider_registry,
             model_registry_settings=model_registry_settings,
             text_runtime_defaults=text_runtime_defaults,
             paragraph_boundary_settings=paragraph_boundary_settings,
@@ -901,8 +1236,17 @@ def load_app_config() -> AppConfig:
         resolved_sections.model_registry_settings["models"],
         resolved_sections.model_registry_settings["model_sources"],
     )
+    provider_registry = _resolve_provider_registry(config_data=config_data)
+    _validate_provider_model_contracts(
+        provider_registry=provider_registry,
+        model_registry_settings=resolved_sections.model_registry_settings,
+        text_runtime_defaults=resolved_sections.text_runtime_defaults,
+        paragraph_boundary_settings=resolved_sections.paragraph_boundary_settings,
+        structure_recognition_settings=resolved_sections.structure_recognition_settings,
+    )
 
     return _build_app_config(
+        provider_registry=provider_registry,
         model_registry_settings=resolved_sections.model_registry_settings,
         text_runtime_defaults=resolved_sections.text_runtime_defaults,
         paragraph_boundary_settings=resolved_sections.paragraph_boundary_settings,
@@ -1015,24 +1359,85 @@ def load_system_prompt(
     )
 
 
-def get_client() -> "OpenAIClient":
+def _get_openai_client_class() -> type["OpenAIClient"]:
+    global OpenAI
+    client_cls = OpenAI
+    if client_cls is None:
+        from openai import OpenAI as imported_openai
+
+        client_cls = imported_openai
+        OpenAI = imported_openai
+    return client_cls
+
+
+def get_provider_client(provider_name: str, *, config_like: object | None = None) -> "OpenAIClient":
+    normalized_provider_name = provider_name.strip().lower()
+    provider_config = get_provider_config(normalized_provider_name, config_like)
+    if not provider_config.enabled:
+        raise RuntimeError(
+            f"Provider '{normalized_provider_name}' отключён, но selector '{normalized_provider_name}:<runtime>' требует его использования."
+        )
+
     global _CLIENT
-    if _CLIENT is not None:
+    cached_client = _CLIENTS_BY_PROVIDER.get(normalized_provider_name)
+    if cached_client is not None:
+        return cached_client  # type: ignore[return-value]
+    if normalized_provider_name == "openai" and _CLIENT is not None:
+        _CLIENTS_BY_PROVIDER[normalized_provider_name] = _CLIENT
         return _CLIENT
+
     with _CLIENT_LOCK:
-        if _CLIENT is not None:
+        cached_client = _CLIENTS_BY_PROVIDER.get(normalized_provider_name)
+        if cached_client is not None:
+            return cached_client  # type: ignore[return-value]
+        if normalized_provider_name == "openai" and _CLIENT is not None:
+            _CLIENTS_BY_PROVIDER[normalized_provider_name] = _CLIENT
             return _CLIENT
 
         load_project_dotenv()
-        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        api_key = os.getenv(provider_config.api_key_env, "").strip()
         if not api_key:
-            raise RuntimeError("Не найден OPENAI_API_KEY. Добавьте его в .env или переменные окружения.")
-        global OpenAI
-        client_cls = OpenAI
-        if client_cls is None:
-            from openai import OpenAI as imported_openai
+            raise RuntimeError(f"Для модели '{normalized_provider_name}:<runtime>' не найден {provider_config.api_key_env}.")
 
-            client_cls = imported_openai
-            OpenAI = imported_openai
-        _CLIENT = client_cls(api_key=api_key)
-        return _CLIENT
+        client_kwargs: dict[str, object] = {"api_key": api_key}
+        default_headers: dict[str, str] = {}
+        if provider_config.base_url:
+            client_kwargs["base_url"] = provider_config.base_url
+        if provider_config.referer:
+            default_headers["HTTP-Referer"] = provider_config.referer
+        if provider_config.title:
+            default_headers["X-OpenRouter-Title"] = provider_config.title
+        if default_headers:
+            client_kwargs["default_headers"] = default_headers
+
+        client = _get_openai_client_class()(**client_kwargs)
+        _CLIENTS_BY_PROVIDER[normalized_provider_name] = client
+        if normalized_provider_name == "openai":
+            _CLIENT = client
+        return client
+
+
+def get_client_for_model_selector(
+    selector: str,
+    required_capability: str,
+    *,
+    config_like: object | None = None,
+) -> "OpenAIClient":
+    resolved_selector = resolve_model_selector(
+        selector,
+        required_capability,
+        config_like=config_like,
+        source_name="model selector",
+    )
+    try:
+        return get_provider_client(resolved_selector.provider, config_like=config_like)
+    except RuntimeError as exc:
+        error_text = str(exc)
+        runtime_marker = f"{resolved_selector.provider}:<runtime>"
+        if runtime_marker in error_text:
+            raise RuntimeError(error_text.replace(runtime_marker, resolved_selector.raw_selector)) from exc
+        raise
+
+
+def get_client() -> "OpenAIClient":
+    return get_provider_client("openai")

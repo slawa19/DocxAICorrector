@@ -243,10 +243,16 @@ def _build_processing_dependencies(
     preserve_source_paragraph_properties: ParagraphPropertiesPreserver,
     reinsert_inline_images: ImageReinserter,
     write_ui_result_artifacts: ResultArtifactWriter,
+    get_provider_client: Callable[[str], object] | None = None,
+    get_client_for_model_selector: Callable[[str, str], object] | None = None,
+    resolve_model_selector: Callable[[str, str | None], object] | None = None,
 ) -> ProcessingDependencies:
     return _build_processing_dependencies_impl(
         resolve_uploaded_filename=resolve_uploaded_filename,
         get_client=get_client,
+        get_provider_client=get_provider_client,
+        get_client_for_model_selector=get_client_for_model_selector,
+        resolve_model_selector=resolve_model_selector,
         ensure_pandoc_available=ensure_pandoc_available,
         load_system_prompt=load_system_prompt,
         log_event=log_event,
@@ -350,6 +356,9 @@ def _build_processing_run_components(
     preserve_source_paragraph_properties: ParagraphPropertiesPreserver,
     reinsert_inline_images: ImageReinserter,
     write_ui_result_artifacts: ResultArtifactWriter,
+    get_provider_client: Callable[[str], object] | None = None,
+    get_client_for_model_selector: Callable[[str, str], object] | None = None,
+    resolve_model_selector: Callable[[str, str | None], object] | None = None,
 ) -> ProcessingRunComponents:
     return _build_processing_run_components_impl(
         uploaded_file=uploaded_file,
@@ -371,6 +380,9 @@ def _build_processing_run_components(
         run_components_factory_fn=ProcessingRunComponents,
         resolve_uploaded_filename=resolve_uploaded_filename,
         get_client=get_client,
+        get_provider_client_fn=get_provider_client,
+        get_client_for_model_selector_fn=get_client_for_model_selector,
+        resolve_model_selector_fn=resolve_model_selector,
         ensure_pandoc_available=ensure_pandoc_available,
         load_system_prompt=load_system_prompt,
         log_event=log_event,
@@ -893,6 +905,9 @@ def run_document_processing(
     preserve_source_paragraph_properties: ParagraphPropertiesPreserver,
     reinsert_inline_images: ImageReinserter,
     write_ui_result_artifacts: ResultArtifactWriter = write_ui_result_artifacts_impl,
+    get_provider_client: Callable[[str], object] | None = None,
+    get_client_for_model_selector: Callable[[str, str], object] | None = None,
+    resolve_model_selector: Callable[[str, str | None], object] | None = None,
 ) -> PipelineResult:
     components = _build_processing_run_components(
         uploaded_file=uploaded_file,
@@ -910,6 +925,9 @@ def run_document_processing(
         runtime=runtime,
         resolve_uploaded_filename=resolve_uploaded_filename,
         get_client=get_client,
+        get_provider_client=get_provider_client,
+        get_client_for_model_selector=get_client_for_model_selector,
+        resolve_model_selector=resolve_model_selector,
         ensure_pandoc_available=ensure_pandoc_available,
         load_system_prompt=load_system_prompt,
         log_event=log_event,

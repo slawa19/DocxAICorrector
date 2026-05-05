@@ -68,6 +68,8 @@ options = [
   "gpt-5.4",
   "gpt-5.4-mini",
   "gpt-5-mini",
+  "openrouter:google/gemini-3-flash-preview",
+  "openrouter:google/gemini-3.1-flash-lite-preview",
 ]
 
 # Optional override for the dedicated audiobook post-pass / standalone audiobook mode.
@@ -95,6 +97,17 @@ default = "gpt-image-1.5"
 
 [models.image_generation_vision]
 default = "gpt-5.4-mini"
+
+[providers.openai]
+enabled = true
+api_key_env = "OPENAI_API_KEY"
+
+[providers.openrouter]
+enabled = false
+api_key_env = "OPENROUTER_API_KEY"
+base_url = "https://openrouter.ai/api/v1"
+referer = "DocxAICorrector"
+title = "DocxAICorrector"
 
 [paragraph_boundary_normalization]
 enabled = true

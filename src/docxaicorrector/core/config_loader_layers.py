@@ -31,6 +31,7 @@ class ResolvedAppConfigSections:
 
 def build_app_config_payload(
     *,
+    provider_registry: Mapping[str, Any],
     model_registry_settings: Mapping[str, Any],
     text_runtime_defaults: Mapping[str, Any],
     paragraph_boundary_settings: Mapping[str, Any],
@@ -49,6 +50,7 @@ def build_app_config_payload(
 
     return {
         "models": models,
+        "providers": provider_registry,
         "default_model": model_registry_settings["default_model"],
         "model_options": list(models.text.options),
         "chunk_size": text_runtime_defaults["chunk_size"],

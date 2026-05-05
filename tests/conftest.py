@@ -1,4 +1,5 @@
 import base64
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ def _ensure_src_first_import_order(src_root: Path) -> None:
 _ensure_src_first_import_order(SRC_ROOT)
 
 from docxaicorrector.core.config import ModelRegistry, TextModelConfig
+import docxaicorrector.core.config as config
 
 
 TEST_TEXT_MODEL_DEFAULT = "gpt-5.4-mini"
@@ -30,6 +32,15 @@ TEST_IMAGE_RECONSTRUCTION_MODEL = "gpt-5.4-mini"
 TEST_IMAGE_GENERATION_MODEL = "gpt-image-1.5"
 TEST_IMAGE_EDIT_MODEL = "gpt-image-1.5"
 TEST_IMAGE_GENERATION_VISION_MODEL = "gpt-5.4-mini"
+
+
+@pytest.fixture(autouse=True)
+def isolate_repo_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent local repo .env values from leaking into tests by default."""
+    monkeypatch.setattr(config, "ENV_PATH", PROJECT_ROOT / "__missing_test__.env")
+    for env_name in tuple(os.environ):
+        if env_name.startswith("DOCX_AI_") or env_name in {"OPENAI_API_KEY", "OPENROUTER_API_KEY"}:
+            monkeypatch.delenv(env_name, raising=False)
 
 
 @pytest.fixture

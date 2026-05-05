@@ -562,6 +562,33 @@ def test_blocked_boundary_stays_blocked_in_high_and_medium_mode(monkeypatch):
     assert report.decisions[0].confidence == "blocked"
 
 
+def test_resolve_paragraph_boundary_ai_review_settings_uses_structure_recognition_model(monkeypatch):
+    monkeypatch.setattr(
+        config,
+        "load_app_config",
+        lambda: {
+            "paragraph_boundary_ai_review_enabled": True,
+            "paragraph_boundary_ai_review_mode": "review_only",
+            "paragraph_boundary_ai_review_candidate_limit": 200,
+            "paragraph_boundary_ai_review_timeout_seconds": 30,
+            "paragraph_boundary_ai_review_max_tokens_per_candidate": 120,
+            "models": {
+                "text": {
+                    "default": "openrouter:google/gemini-3.1-flash-lite-preview",
+                    "options": ["openrouter:google/gemini-3.1-flash-lite-preview"],
+                },
+                "structure_recognition": "gpt-5-mini",
+            },
+        },
+    )
+
+    settings = boundary_review_module.resolve_paragraph_boundary_ai_review_settings(
+        allowed_modes=("off", "review_only", "apply"),
+    )
+
+    assert settings[-1] == "gpt-5-mini"
+
+
 def test_caption_boundary_is_never_merged():
     document = make_document()
     document.add_paragraph("Вступление без завершающей точки")

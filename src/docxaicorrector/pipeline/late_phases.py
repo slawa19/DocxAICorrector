@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from docxaicorrector.core.models import ImageMode
 from docxaicorrector.pipeline.output_validation import (
     assemble_final_markdown,
     build_generated_paragraph_registry_from_entries,
@@ -645,13 +646,28 @@ def run_image_processing_phase(
     display_markdown = _normalize_final_markdown_for_runtime_display(final_markdown)
     emitters.emit_state(context.runtime, latest_markdown=display_markdown)
     try:
+        image_client = initialization.openai_client
+        image_mode_requires_openai_client = context.image_mode not in {
+            ImageMode.NO_CHANGE.value,
+            ImageMode.SAFE.value,
+        }
+        if (
+            image_client is None
+            and image_mode_requires_openai_client
+            and callable(getattr(dependencies, "get_provider_client", None))
+        ):
+            image_client = dependencies.get_provider_client("openai")
+        if image_client is None and image_mode_requires_openai_client:
+            raise RuntimeError("Для image phase, требующей OpenAI, не удалось получить OpenAI client.")
+        if image_client is None:
+            image_client = initialization.client
         processed_image_assets = dependencies.process_document_images(
             image_assets=context.image_assets,
             image_mode=context.image_mode,
             config=context.app_config,
             on_progress=context.on_progress,
             runtime=context.runtime,
-            client=initialization.client,
+            client=image_client,
         )
         if processed_image_assets is None:
             raise RuntimeError("Пайплайн обработки изображений вернул None вместо коллекции ассетов.")
@@ -1252,6 +1268,23 @@ def _resolve_audiobook_postprocess_model(*, context: Any) -> str:
     return configured_model or context.model
 
 
+def _resolve_text_call_target(*, selector: str, context: Any, dependencies: Any, fallback_client: object | None) -> tuple[object, str, str, str | None]:
+    resolver = getattr(dependencies, "resolve_model_selector", None)
+    client_factory = getattr(dependencies, "get_client_for_model_selector", None)
+    if not callable(resolver) or not callable(client_factory):
+        if fallback_client is None:
+            raise RuntimeError("Provider-aware text client factory is unavailable for the requested selector.")
+        return fallback_client, selector, selector, None
+
+    resolved_selector = resolver(selector, "responses_text")
+    return (
+        client_factory(selector, "responses_text"),
+        resolved_selector.model_id,
+        resolved_selector.canonical_selector,
+        resolved_selector.provider,
+    )
+
+
 def _resolve_audiobook_postprocess_chunk_size(*, context: Any) -> int:
     configured_chunk_size = context.app_config.get("chunk_size", 6000)
     try:
@@ -1321,7 +1354,17 @@ def _run_audiobook_postprocess(*, context: Any, dependencies: Any, emitters: Any
         prompt_variant="default",
     )
     model = _resolve_audiobook_postprocess_model(context=context)
-    client = dependencies.get_client()
+    fallback_client = None
+    if not callable(getattr(dependencies, "resolve_model_selector", None)) or not callable(
+        getattr(dependencies, "get_client_for_model_selector", None)
+    ):
+        fallback_client = dependencies.get_client()
+    client, model_id, model_selector, model_provider = _resolve_text_call_target(
+        selector=model,
+        context=context,
+        dependencies=dependencies,
+        fallback_client=fallback_client,
+    )
     groups = _build_narration_postprocess_groups(
         narration_chunks=narration_chunks,
         chunk_size=_resolve_audiobook_postprocess_chunk_size(context=context),
@@ -1356,6 +1399,9 @@ def _run_audiobook_postprocess(*, context: Any, dependencies: Any, emitters: Any
             operation="audiobook",
             **{"pass": "postprocess"},
             model=model,
+            model_selector=model_selector,
+            model_provider=model_provider,
+            model_id=model_id,
             chunk_index=group_index,
             chunk_count=len(groups),
             target_chars=len(target_text),
@@ -1366,7 +1412,7 @@ def _run_audiobook_postprocess(*, context: Any, dependencies: Any, emitters: Any
         )
         processed_chunk = dependencies.generate_markdown_block(
             client=client,
-            model=model,
+            model=model_id,
             system_prompt=system_prompt,
             target_text=target_text,
             context_before=context_before,
@@ -1384,6 +1430,9 @@ def _run_audiobook_postprocess(*, context: Any, dependencies: Any, emitters: Any
             operation="audiobook",
             **{"pass": "postprocess"},
             model=model,
+            model_selector=model_selector,
+            model_provider=model_provider,
+            model_id=model_id,
             chunk_index=group_index,
             chunk_count=len(groups),
             output_chars=len(processed_chunk),

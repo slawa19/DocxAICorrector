@@ -113,6 +113,122 @@ def test_evaluate_structural_preparation_diagnostic_returns_snapshot_summary(mon
     }
 
 
+def test_runtime_resolution_accepts_provider_qualified_model_override() -> None:
+    app_config = SimpleNamespace(
+        models=SimpleNamespace(
+            text=SimpleNamespace(
+                default="gpt-5.4-mini",
+                options=("gpt-5.4-mini", "openrouter:google/gemini-3.1-flash-lite-preview"),
+            )
+        ),
+        chunk_size=6000,
+        max_retries=3,
+        image_mode_default="safe",
+        processing_operation_default="edit",
+        source_language_default="en",
+        target_language_default="ru",
+        translation_domain_default="general",
+        audiobook_postprocess_default=False,
+        enable_paragraph_markers=True,
+        keep_all_image_variants=False,
+        structure_recognition_mode="off",
+        structure_recognition_enabled=False,
+        to_dict=lambda: {
+            "models": SimpleNamespace(
+                text=SimpleNamespace(
+                    default="gpt-5.4-mini",
+                    options=("gpt-5.4-mini", "openrouter:google/gemini-3.1-flash-lite-preview"),
+                )
+            ),
+            "chunk_size": 6000,
+            "max_retries": 3,
+            "image_mode_default": "safe",
+            "processing_operation_default": "edit",
+            "source_language_default": "en",
+            "target_language_default": "ru",
+            "translation_domain_default": "general",
+            "audiobook_postprocess_default": False,
+            "enable_paragraph_markers": True,
+            "keep_all_image_variants": False,
+            "structure_recognition_mode": "off",
+            "structure_recognition_enabled": False,
+        },
+    )
+    run_profile = validation_profiles.RunProfile(
+        id="openrouter-text-profile",
+        model="openrouter:google/gemini-3.1-flash-lite-preview",
+        processing_operation="translate",
+        source_language="en",
+        target_language="ru",
+    )
+
+    resolution = validation_profiles.resolve_runtime_resolution(app_config, run_profile)
+    applied_config = validation_profiles.apply_runtime_resolution_to_app_config(app_config, resolution)
+
+    assert resolution.effective.model == "openrouter:google/gemini-3.1-flash-lite-preview"
+    assert resolution.overrides["model"] == "openrouter:google/gemini-3.1-flash-lite-preview"
+    assert applied_config["model"] == "openrouter:google/gemini-3.1-flash-lite-preview"
+    assert applied_config["processing_operation"] == "translate"
+
+
+def test_runtime_resolution_applies_translation_quality_gate_policy_override() -> None:
+    app_config = SimpleNamespace(
+        models=SimpleNamespace(
+            text=SimpleNamespace(
+                default="gpt-5.4-mini",
+                options=("gpt-5.4-mini", "openrouter:google/gemini-3.1-flash-lite-preview"),
+            )
+        ),
+        to_dict=lambda: {
+            "models": SimpleNamespace(
+                text=SimpleNamespace(
+                    default="gpt-5.4-mini",
+                    options=("gpt-5.4-mini", "openrouter:google/gemini-3.1-flash-lite-preview"),
+                )
+            ),
+            "model": "gpt-5.4",
+            "chunk_size": 6000,
+            "max_retries": 3,
+            "image_mode_default": "safe",
+            "processing_operation_default": "edit",
+            "source_language_default": "en",
+            "target_language_default": "ru",
+            "translation_domain_default": "general",
+            "audiobook_postprocess_default": False,
+            "enable_paragraph_markers": True,
+            "keep_all_image_variants": False,
+            "structure_recognition_mode": "off",
+            "structure_recognition_enabled": False,
+            "translation_output_quality_gate_policy": "strict",
+        },
+        model="gpt-5.4",
+        chunk_size=6000,
+        max_retries=3,
+        image_mode_default="safe",
+        processing_operation_default="edit",
+        source_language_default="en",
+        target_language_default="ru",
+        translation_domain_default="general",
+        audiobook_postprocess_default=False,
+        enable_paragraph_markers=True,
+        keep_all_image_variants=False,
+        structure_recognition_mode="off",
+        structure_recognition_enabled=False,
+    )
+    run_profile = validation_profiles.RunProfile(
+        id="benchmark-translate-profile",
+        processing_operation="translate",
+        translation_output_quality_gate_policy="advisory",
+    )
+
+    resolution = validation_profiles.resolve_runtime_resolution(app_config, run_profile)
+    applied_config = validation_profiles.apply_runtime_resolution_to_app_config(app_config, resolution)
+
+    assert resolution.overrides["translation_output_quality_gate_policy"] == "advisory"
+    assert resolution.app_config_overrides["translation_output_quality_gate_policy"] == "advisory"
+    assert applied_config["translation_output_quality_gate_policy"] == "advisory"
+
+
 def _skip_if_legacy_doc_conversion_unavailable(source_path: Path) -> None:
     if source_path.suffix.lower() != ".doc":
         return

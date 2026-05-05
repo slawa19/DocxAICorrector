@@ -113,7 +113,13 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["structure_recognition_enabled"] is False
     assert app_config["structure_recognition_model"] == TEST_STRUCTURE_RECOGNITION_MODEL
     assert models.text.default == TEST_TEXT_MODEL_DEFAULT
-    assert models.text.options == ("gpt-5.4", "gpt-5.4-mini", "gpt-5-mini")
+    assert models.text.options == (
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5-mini",
+        "openrouter:google/gemini-3-flash-preview",
+        "openrouter:google/gemini-3.1-flash-lite-preview",
+    )
     assert models.structure_recognition == TEST_STRUCTURE_RECOGNITION_MODEL
     assert app_config["structure_recognition_max_window_paragraphs"] == 1800
     assert app_config["structure_recognition_overlap_paragraphs"] == 50
@@ -223,6 +229,196 @@ def test_load_app_config_honors_audiobook_model_override_from_toml(monkeypatch, 
     app_config = config.load_app_config()
 
     assert app_config["audiobook_model"] == "gpt-5.4"
+
+
+def test_load_app_config_exposes_provider_registry_defaults(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH)
+
+    app_config = config.load_app_config()
+    providers = cast(config.ProviderRegistry, app_config["providers"])
+
+    assert providers.openai.enabled is True
+    assert providers.openai.api_key_env == "OPENAI_API_KEY"
+    assert providers.openrouter.enabled is False
+    assert providers.openrouter.api_key_env == "OPENROUTER_API_KEY"
+    assert providers.openrouter.base_url == "https://openrouter.ai/api/v1"
+
+
+def test_load_app_config_accepts_openrouter_text_selector(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[models.text]\n'
+        'default = "openrouter:google/gemini-3.1-flash-lite-preview"\n'
+        'options = ["gpt-5.4-mini", "openrouter:google/gemini-3.1-flash-lite-preview"]\n\n'
+        '[providers.openrouter]\n'
+        'enabled = true\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+
+    app_config = config.load_app_config()
+
+    assert app_config["default_model"] == "openrouter:google/gemini-3.1-flash-lite-preview"
+    assert app_config["model_options"] == ["gpt-5.4-mini", "openrouter:google/gemini-3.1-flash-lite-preview"]
+
+
+def test_load_app_config_rejects_duplicate_normalized_text_selectors(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[models.text]\n'
+        'default = "gpt-5.4-mini"\n'
+        'options = ["gpt-5.4-mini", "openai:gpt-5.4-mini"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+
+    with pytest.raises(RuntimeError, match="duplicate normalized selectors"):
+        config.load_app_config()
+
+
+def test_load_app_config_rejects_openrouter_for_image_roles(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[models.text]\n'
+        'default = "gpt-5.4-mini"\n'
+        'options = ["gpt-5.4-mini"]\n\n'
+        '[models.image_generation]\n'
+        'default = "openrouter:google/gemini-3.1-flash-lite-preview"\n\n'
+        '[providers.openrouter]\n'
+        'enabled = true\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+
+    with pytest.raises(RuntimeError, match=r"models\.image_generation\.default"):
+        config.load_app_config()
+
+
+def test_resolve_model_selector_normalizes_bare_openai_selector(monkeypatch):
+    provider_registry = config.ProviderRegistry(
+        openai=config.ProviderConfig(name="openai", enabled=True, api_key_env="OPENAI_API_KEY"),
+        openrouter=config.ProviderConfig(name="openrouter", enabled=False, api_key_env="OPENROUTER_API_KEY"),
+    )
+
+    resolved = config.resolve_model_selector("gpt-5.4-mini", config_like=provider_registry)
+
+    assert resolved.provider == "openai"
+    assert resolved.model_id == "gpt-5.4-mini"
+    assert resolved.canonical_selector == "openai:gpt-5.4-mini"
+
+
+def test_describe_provider_availability_reports_missing_key(monkeypatch):
+    app_config = config.AppConfig(
+        models=config.ModelRegistry(
+            text=config.TextModelConfig(default="gpt-5.4-mini", options=("gpt-5.4-mini",)),
+            structure_recognition=TEST_STRUCTURE_RECOGNITION_MODEL,
+            image_analysis=TEST_IMAGE_ANALYSIS_MODEL,
+            image_validation=TEST_IMAGE_VALIDATION_MODEL,
+            image_reconstruction=TEST_IMAGE_RECONSTRUCTION_MODEL,
+            image_generation=TEST_IMAGE_GENERATION_MODEL,
+            image_edit=TEST_IMAGE_EDIT_MODEL,
+            image_generation_vision=TEST_IMAGE_GENERATION_VISION_MODEL,
+        ),
+        providers=config.ProviderRegistry(
+            openai=config.ProviderConfig(name="openai", enabled=True, api_key_env="OPENAI_API_KEY"),
+            openrouter=config.ProviderConfig(name="openrouter", enabled=True, api_key_env="OPENROUTER_API_KEY", base_url="https://openrouter.ai/api/v1", referer="DocxAICorrector", title="DocxAICorrector"),
+        ),
+        default_model="gpt-5.4-mini",
+        model_options=["gpt-5.4-mini"],
+        chunk_size=6000,
+        max_retries=3,
+        processing_operation_default="edit",
+        source_language_default="en",
+        target_language_default="ru",
+        editorial_intensity_default="literary",
+        translation_domain_default="general",
+        translation_second_pass_default=False,
+        translation_second_pass_model="",
+        audiobook_postprocess_default=False,
+        audiobook_model="gpt-5.4-mini",
+        supported_languages=tuple(),
+        enable_paragraph_markers=False,
+        paragraph_boundary_normalization_enabled=True,
+        paragraph_boundary_normalization_mode="high_only",
+        paragraph_boundary_normalization_save_debug_artifacts=True,
+        paragraph_boundary_ai_review_enabled=False,
+        paragraph_boundary_ai_review_mode="off",
+        paragraph_boundary_ai_review_candidate_limit=200,
+        paragraph_boundary_ai_review_timeout_seconds=30,
+        paragraph_boundary_ai_review_max_tokens_per_candidate=120,
+        layout_artifact_cleanup_enabled=True,
+        layout_artifact_cleanup_min_repeat_count=3,
+        layout_artifact_cleanup_max_repeated_text_chars=80,
+        layout_artifact_cleanup_save_debug_artifacts=True,
+        relation_normalization_enabled=True,
+        relation_normalization_profile="phase2_default",
+        relation_normalization_enabled_relation_kinds=("image_caption",),
+        relation_normalization_save_debug_artifacts=True,
+        structure_recognition_mode="off",
+        structure_recognition_enabled=False,
+        structure_recognition_model=TEST_STRUCTURE_RECOGNITION_MODEL,
+        structure_recognition_max_window_paragraphs=1800,
+        structure_recognition_overlap_paragraphs=50,
+        structure_recognition_timeout_seconds=60,
+        structure_recognition_min_confidence="medium",
+        structure_recognition_cache_enabled=True,
+        structure_recognition_save_debug_artifacts=True,
+        structure_validation_enabled=True,
+        structure_validation_min_paragraphs_for_auto_gate=40,
+        structure_validation_min_explicit_heading_density=0.003,
+        structure_validation_max_suspicious_short_body_ratio_without_escalation=0.05,
+        structure_validation_max_all_caps_or_centered_body_ratio_without_escalation=0.03,
+        structure_validation_toc_like_sequence_min_length=4,
+        structure_validation_forbid_heading_only_collapse=True,
+        structure_validation_save_debug_artifacts=True,
+        structure_validation_block_on_high_risk_noop=True,
+        output_body_font=None,
+        output_heading_font=None,
+        image_mode_default="no_change",
+        semantic_validation_policy="advisory",
+        keep_all_image_variants=False,
+        validation_model=TEST_IMAGE_VALIDATION_MODEL,
+        min_semantic_match_score=0.75,
+        min_text_match_score=0.8,
+        min_structure_match_score=0.7,
+        validator_confidence_threshold=0.75,
+        allow_accept_with_partial_text_loss=False,
+        prefer_deterministic_reconstruction=True,
+        reconstruction_model=TEST_IMAGE_RECONSTRUCTION_MODEL,
+        enable_vision_image_analysis=True,
+        enable_vision_image_validation=True,
+        semantic_redraw_max_attempts=2,
+        semantic_redraw_max_model_calls_per_image=9,
+        dense_text_bypass_threshold=18,
+        non_latin_text_bypass_threshold=12,
+        reconstruction_min_canvas_short_side_px=900,
+        reconstruction_target_min_font_px=18,
+        reconstruction_max_upscale_factor=3.0,
+        reconstruction_background_sample_ratio=0.04,
+        reconstruction_background_color_distance_threshold=48.0,
+        reconstruction_background_uniformity_threshold=10.0,
+        image_output_generate_size_square="1024x1024",
+        image_output_generate_size_landscape="1536x1024",
+        image_output_generate_size_portrait="1024x1536",
+        image_output_generate_candidate_sizes=("1536x1024",),
+        image_output_edit_candidate_sizes=("1536x1024",),
+        image_output_aspect_ratio_threshold=1.2,
+        image_output_trim_tolerance=20,
+        image_output_trim_padding_ratio=0.02,
+        image_output_trim_padding_min_px=4,
+        image_output_trim_max_loss_ratio=0.15,
+    )
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    availability = config.describe_provider_availability(
+        "openrouter:google/gemini-3.1-flash-lite-preview",
+        app_config=app_config,
+    )
+
+    assert availability.has_api_key is False
+    assert availability.error_message == (
+        "Для модели 'openrouter:google/gemini-3.1-flash-lite-preview' не найден OPENROUTER_API_KEY."
+    )
 
 
 def test_load_app_config_applies_audiobook_postprocess_env_override(monkeypatch):
@@ -661,6 +857,7 @@ def test_load_app_config_exposes_paragraph_boundary_ai_review_defaults(monkeypat
 
 def test_load_app_config_applies_paragraph_boundary_ai_review_env_overrides(monkeypatch):
     monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     monkeypatch.setenv("DOCX_AI_PARAGRAPH_BOUNDARY_AI_REVIEW_ENABLED", "true")
     monkeypatch.setenv("DOCX_AI_PARAGRAPH_BOUNDARY_AI_REVIEW_MODE", "review_only")
     monkeypatch.setenv("DOCX_AI_PARAGRAPH_BOUNDARY_AI_REVIEW_CANDIDATE_LIMIT", "999")
@@ -693,6 +890,7 @@ def test_load_app_config_applies_layout_cleanup_env_overrides(monkeypatch):
 
 def test_load_app_config_applies_structure_recognition_env_overrides(monkeypatch):
     monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_ENABLED", "true")
     monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_MODEL", "gpt-5.4")
     monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_MAX_WINDOW_PARAGRAPHS", "9999")
@@ -739,6 +937,7 @@ def test_load_app_config_applies_structure_recognition_mode_env_override(monkeyp
         encoding="utf-8",
     )
     monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_MODE", "always")
 
     app_config = config.load_app_config()
@@ -1014,6 +1213,7 @@ def test_get_client_loads_openai_api_key_from_dotenv(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "ENV_PATH", dotenv_path)
     monkeypatch.setattr(config, "OpenAI", FakeOpenAI)
     monkeypatch.setattr(config, "_CLIENT", None)
+    monkeypatch.setattr(config, "_CLIENTS_BY_PROVIDER", {})
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     config.get_client()
@@ -1038,6 +1238,7 @@ def test_get_client_uses_single_locked_initialization(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "ENV_PATH", dotenv_path)
     monkeypatch.setattr(config, "OpenAI", FakeOpenAI)
     monkeypatch.setattr(config, "_CLIENT", None)
+    monkeypatch.setattr(config, "_CLIENTS_BY_PROVIDER", {})
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     results = []
@@ -1063,3 +1264,157 @@ def test_get_client_uses_single_locked_initialization(monkeypatch, tmp_path):
     assert len(results) == 2
     assert results[0] is results[1]
     assert len(created_instances) == 1
+
+
+def test_get_provider_client_builds_openrouter_client(monkeypatch, tmp_path):
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("OPENROUTER_API_KEY=test-openrouter-key\n", encoding="utf-8")
+
+    captured = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    provider_registry = config.ProviderRegistry(
+        openai=config.ProviderConfig(name="openai", enabled=True, api_key_env="OPENAI_API_KEY"),
+        openrouter=config.ProviderConfig(
+            name="openrouter",
+            enabled=True,
+            api_key_env="OPENROUTER_API_KEY",
+            base_url="https://openrouter.ai/api/v1",
+            referer="DocxAICorrector",
+            title="DocxAICorrector",
+        ),
+    )
+
+    monkeypatch.setattr(config, "ENV_PATH", dotenv_path)
+    monkeypatch.setattr(config, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(config, "_CLIENT", None)
+    monkeypatch.setattr(config, "_CLIENTS_BY_PROVIDER", {})
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
+
+    config.get_provider_client("openrouter", config_like=provider_registry)
+
+    assert captured["api_key"] == "test-openrouter-key"
+    assert captured["base_url"] == "https://openrouter.ai/api/v1"
+    assert captured["default_headers"] == {
+        "HTTP-Referer": "DocxAICorrector",
+        "X-OpenRouter-Title": "DocxAICorrector",
+    }
+
+
+def _provider_contract_test_args(*, paragraph_boundary_enabled: bool, structure_recognition_enabled: bool):
+    return {
+        "model_registry_settings": {
+            "models": config.ModelRegistry(
+                text=config.TextModelConfig(default="gpt-5.4-mini", options=("gpt-5.4-mini",)),
+                structure_recognition=TEST_STRUCTURE_RECOGNITION_MODEL,
+                image_analysis=TEST_IMAGE_ANALYSIS_MODEL,
+                image_validation=TEST_IMAGE_VALIDATION_MODEL,
+                image_reconstruction=TEST_IMAGE_RECONSTRUCTION_MODEL,
+                image_generation=TEST_IMAGE_GENERATION_MODEL,
+                image_edit=TEST_IMAGE_EDIT_MODEL,
+                image_generation_vision=TEST_IMAGE_GENERATION_VISION_MODEL,
+            ),
+        },
+        "text_runtime_defaults": {
+            "translation_second_pass_model": "",
+            "audiobook_model": "gpt-5.4-mini",
+        },
+        "paragraph_boundary_settings": {
+            "paragraph_boundary_ai_review_enabled": paragraph_boundary_enabled,
+        },
+        "structure_recognition_settings": {
+            "structure_recognition_enabled": structure_recognition_enabled,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("role_name", "paragraph_boundary_enabled", "structure_recognition_enabled"),
+    [
+        ("paragraph_boundary_ai_review", True, False),
+        ("structure_recognition", False, True),
+    ],
+)
+def test_validate_provider_model_contracts_requires_openai_for_enabled_service_roles_when_provider_disabled(
+    monkeypatch,
+    role_name,
+    paragraph_boundary_enabled,
+    structure_recognition_enabled,
+):
+    provider_registry = config.ProviderRegistry(
+        openai=config.ProviderConfig(name="openai", enabled=False, api_key_env="OPENAI_API_KEY"),
+        openrouter=config.ProviderConfig(name="openrouter", enabled=True, api_key_env="OPENROUTER_API_KEY"),
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match=rf"OpenAI service role '{role_name}' включён, но provider openai недоступен\."):
+        config._validate_provider_model_contracts(
+            provider_registry=provider_registry,
+            **_provider_contract_test_args(
+                paragraph_boundary_enabled=paragraph_boundary_enabled,
+                structure_recognition_enabled=structure_recognition_enabled,
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("role_name", "paragraph_boundary_enabled", "structure_recognition_enabled"),
+    [
+        ("paragraph_boundary_ai_review", True, False),
+        ("structure_recognition", False, True),
+    ],
+)
+def test_validate_provider_model_contracts_requires_openai_key_for_enabled_service_roles(
+    monkeypatch,
+    role_name,
+    paragraph_boundary_enabled,
+    structure_recognition_enabled,
+):
+    provider_registry = config.ProviderRegistry(
+        openai=config.ProviderConfig(name="openai", enabled=True, api_key_env="OPENAI_API_KEY"),
+        openrouter=config.ProviderConfig(name="openrouter", enabled=True, api_key_env="OPENROUTER_API_KEY"),
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match=rf"OpenAI service role '{role_name}' включён, но provider openai недоступен\."):
+        config._validate_provider_model_contracts(
+            provider_registry=provider_registry,
+            **_provider_contract_test_args(
+                paragraph_boundary_enabled=paragraph_boundary_enabled,
+                structure_recognition_enabled=structure_recognition_enabled,
+            ),
+        )
+
+
+def test_validate_provider_model_contracts_allows_openrouter_main_text_when_openai_service_role_available(monkeypatch):
+    provider_registry = config.ProviderRegistry(
+        openai=config.ProviderConfig(name="openai", enabled=True, api_key_env="OPENAI_API_KEY"),
+        openrouter=config.ProviderConfig(name="openrouter", enabled=True, api_key_env="OPENROUTER_API_KEY"),
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+
+    config._validate_provider_model_contracts(
+        provider_registry=provider_registry,
+        model_registry_settings={
+            "models": config.ModelRegistry(
+                text=config.TextModelConfig(
+                    default="openrouter:google/gemini-3.1-flash-lite-preview",
+                    options=("openrouter:google/gemini-3.1-flash-lite-preview",),
+                ),
+                structure_recognition=TEST_STRUCTURE_RECOGNITION_MODEL,
+                image_analysis=TEST_IMAGE_ANALYSIS_MODEL,
+                image_validation=TEST_IMAGE_VALIDATION_MODEL,
+                image_reconstruction=TEST_IMAGE_RECONSTRUCTION_MODEL,
+                image_generation=TEST_IMAGE_GENERATION_MODEL,
+                image_edit=TEST_IMAGE_EDIT_MODEL,
+                image_generation_vision=TEST_IMAGE_GENERATION_VISION_MODEL,
+            ),
+        },
+        text_runtime_defaults={"translation_second_pass_model": "", "audiobook_model": "gpt-5.4-mini"},
+        paragraph_boundary_settings={"paragraph_boundary_ai_review_enabled": True},
+        structure_recognition_settings={"structure_recognition_enabled": False},
+    )

@@ -29,12 +29,23 @@ def build_text_model_config(
     *,
     text_model_config_factory_fn: Any,
     dedupe_preserving_order_fn: Any,
+    normalize_model_selector_fn: Any | None = None,
 ) -> Any:
     unique_options = dedupe_preserving_order_fn(options)
     if not unique_options:
         raise RuntimeError("Не задан ни один доступный text model в models.text.options")
     if len(unique_options) != len(options):
         raise RuntimeError("models.text.options содержит дублирующиеся значения моделей")
+
+    if normalize_model_selector_fn is not None:
+        normalized_options = tuple(normalize_model_selector_fn(item) for item in unique_options)
+        if len(set(normalized_options)) != len(normalized_options):
+            raise RuntimeError("models.text.options содержит duplicate normalized selectors.")
+        default_normalized = normalize_model_selector_fn(default_model)
+        if default_normalized not in normalized_options:
+            unique_options = (default_model, *tuple(item for item in unique_options if item != default_model))
+        return text_model_config_factory_fn(default=default_model, options=unique_options)
+
     if default_model not in unique_options:
         unique_options = (default_model, *tuple(item for item in unique_options if item != default_model))
     return text_model_config_factory_fn(default=default_model, options=unique_options)
@@ -266,6 +277,15 @@ def log_resolved_model_registry(
     emitted_model_registry_log_keys: set[str],
     log_event_fn: Any,
 ) -> None:
+    def _canonicalize_selector(value: str) -> str:
+        stripped_value = str(value).strip()
+        if ":" in stripped_value:
+            provider_name, _, model_id = stripped_value.partition(":")
+            normalized_provider = provider_name.strip().lower()
+            if normalized_provider in {"openai", "openrouter"} and model_id.strip():
+                return f"{normalized_provider}:{model_id.strip()}"
+        return f"openai:{stripped_value}"
+
     dedupe_key = repr((models, tuple(sorted(model_sources.items()))))
     if dedupe_key in emitted_model_registry_log_keys:
         return
@@ -277,6 +297,8 @@ def log_resolved_model_registry(
         resolved_models={
             "text.default": models.text.default,
             "text.options": list(models.text.options),
+            "text.canonical_default": _canonicalize_selector(models.text.default),
+            "text.canonical_options": [_canonicalize_selector(item) for item in models.text.options],
             "structure_recognition": models.structure_recognition,
             "image_analysis": models.image_analysis,
             "image_validation": models.image_validation,

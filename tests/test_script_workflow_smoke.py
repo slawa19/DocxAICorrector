@@ -18,6 +18,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 POWERSHELL_EXE = shutil.which("powershell.exe")
 WSLPATH_EXE = shutil.which("wslpath")
 
+pytestmark = pytest.mark.skipif(
+    os.environ.get("DOCXAI_SKIP_WORKFLOW_SMOKE") == "1",
+    reason="workflow smoke checks are excluded from mandatory CI signal",
+)
+
 
 def _to_windows_path(path: Path) -> str:
     resolved = path.resolve()

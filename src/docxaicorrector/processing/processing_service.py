@@ -3,7 +3,13 @@ from collections.abc import Callable, Mapping, Sequence
 from threading import Lock
 from typing import Any, cast
 
-from docxaicorrector.core.config import get_client, load_system_prompt
+from docxaicorrector.core.config import (
+    get_client,
+    get_client_for_model_selector,
+    get_provider_client,
+    load_system_prompt,
+    resolve_model_selector,
+)
 from docxaicorrector.document._document import inspect_placeholder_integrity
 from docxaicorrector.generation.formatting_transfer import preserve_source_paragraph_properties
 from docxaicorrector.image.reinsertion import reinsert_inline_images
@@ -53,6 +59,9 @@ from docxaicorrector.runtime.state import append_image_log, append_log, finalize
 @dataclass(frozen=True)
 class ProcessingServiceDependencies:
     get_client_fn: ClientFactory
+    get_provider_client_fn: Callable[..., object] | None
+    get_client_for_model_selector_fn: Callable[..., object] | None
+    resolve_model_selector_fn: Callable[..., object] | None
     load_system_prompt_fn: SystemPromptLoader
     ensure_pandoc_available_fn: Callable[[], None]
     generate_markdown_block_fn: MarkdownGenerator
@@ -144,6 +153,29 @@ class ProcessingService:
         runtime=None,
     ) -> str:
         deps = self.dependencies
+        get_provider_client_bound = None
+        if deps.get_provider_client_fn is not None:
+            def get_provider_client_bound(provider_name):
+                return deps.get_provider_client_fn(provider_name, config_like=app_config)
+
+        get_client_for_model_selector_bound = None
+        if deps.get_client_for_model_selector_fn is not None:
+            def get_client_for_model_selector_bound(selector, required_capability):
+                return deps.get_client_for_model_selector_fn(
+                    selector,
+                    required_capability,
+                    config_like=app_config,
+                )
+
+        resolve_model_selector_bound = None
+        if deps.resolve_model_selector_fn is not None:
+            def resolve_model_selector_bound(selector, required_capability=None):
+                return deps.resolve_model_selector_fn(
+                    selector,
+                    required_capability,
+                    config_like=app_config,
+                )
+
         return deps.run_document_processing_impl_fn(
             uploaded_file=uploaded_file,
             jobs=cast(list[dict[str, str | int]], list(jobs)),
@@ -160,6 +192,9 @@ class ProcessingService:
             runtime=runtime,
             resolve_uploaded_filename=deps.resolve_uploaded_filename_fn,
             get_client=deps.get_client_fn,
+            get_provider_client=get_provider_client_bound,
+            get_client_for_model_selector=get_client_for_model_selector_bound,
+            resolve_model_selector=resolve_model_selector_bound,
             ensure_pandoc_available=deps.ensure_pandoc_available_fn,
             load_system_prompt=deps.load_system_prompt_fn,
             log_event=deps.log_event_fn,
@@ -400,6 +435,9 @@ def build_default_processing_service_dependencies() -> ProcessingServiceDependen
 
     return build_processing_service_dependencies(
         get_client_fn=get_client,
+        get_provider_client_fn=get_provider_client,
+        get_client_for_model_selector_fn=get_client_for_model_selector,
+        resolve_model_selector_fn=resolve_model_selector,
         load_system_prompt_fn=load_system_prompt,
         ensure_pandoc_available_fn=ensure_pandoc_available,
         generate_markdown_block_fn=_generate_markdown_block,

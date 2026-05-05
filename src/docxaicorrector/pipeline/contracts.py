@@ -29,6 +29,18 @@ class ClientFactory(Protocol):
     def __call__(self) -> object: ...
 
 
+class ProviderClientFactory(Protocol):
+    def __call__(self, provider_name: str) -> object: ...
+
+
+class ModelSelectorClientFactory(Protocol):
+    def __call__(self, selector: str, required_capability: str) -> object: ...
+
+
+class ModelSelectorResolver(Protocol):
+    def __call__(self, selector: str, required_capability: str | None = None) -> object: ...
+
+
 class SystemPromptLoader(Protocol):
     def __call__(
         self,
@@ -157,6 +169,9 @@ class ProcessingDependencies:
     preserve_source_paragraph_properties: ParagraphPropertiesPreserver
     reinsert_inline_images: ImageReinserter
     write_ui_result_artifacts: ResultArtifactWriter
+    get_provider_client: ProviderClientFactory | None = None
+    get_client_for_model_selector: ModelSelectorClientFactory | None = None
+    resolve_model_selector: ModelSelectorResolver | None = None
 
 
 @dataclass(frozen=True)
@@ -186,6 +201,10 @@ class ProcessingContext:
     translation_domain_instructions: str
     on_progress: ProgressCallback
     runtime: object
+    model_selector: str = ""
+    canonical_model_selector: str | None = None
+    model_provider: str | None = None
+    model_id: str | None = None
 
 
 @dataclass
@@ -204,6 +223,9 @@ class ProcessingState:
 class ProcessingInitialization:
     client: object
     job_count: int
+    text_client: object | None = None
+    text_model_id: str | None = None
+    openai_client: object | None = None
 
 
 @dataclass(frozen=True)
@@ -247,6 +269,9 @@ def build_processing_dependencies(
     *,
     resolve_uploaded_filename: FilenameResolver,
     get_client: ClientFactory,
+    get_provider_client: ProviderClientFactory | None = None,
+    get_client_for_model_selector: ModelSelectorClientFactory | None = None,
+    resolve_model_selector: ModelSelectorResolver | None = None,
     ensure_pandoc_available: Callable[[], None],
     load_system_prompt: SystemPromptLoader,
     log_event: EventLogger,
@@ -263,6 +288,9 @@ def build_processing_dependencies(
     return ProcessingDependencies(
         resolve_uploaded_filename=resolve_uploaded_filename,
         get_client=get_client,
+        get_provider_client=get_provider_client,
+        get_client_for_model_selector=get_client_for_model_selector,
+        resolve_model_selector=resolve_model_selector,
         ensure_pandoc_available=ensure_pandoc_available,
         load_system_prompt=load_system_prompt,
         log_event=log_event,

@@ -14,6 +14,7 @@ _SUPPORTED_TIERS = {"extraction", "structural", "full"}
 _SUPPORTED_STRUCTURAL_MODES = {"strict", "tolerant"}
 _STRUCTURE_RECOGNITION_MODES = {"off", "auto", "always"}
 _STRUCTURAL_EXPECTATION_VALUES = {"pass", "fail"}
+_TRANSLATION_QUALITY_GATE_POLICIES = {"strict", "advisory"}
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,7 @@ class RunProfile:
     keep_all_image_variants: bool | None = None
     structure_recognition_mode: str | None = None
     structure_recognition_enabled: bool | None = None
+    translation_output_quality_gate_policy: str | None = None
     repeat_count: int = 1
 
 
@@ -150,6 +152,7 @@ class RuntimeResolution:
     effective: ResolvedRuntimeConfig
     ui_defaults: ResolvedRuntimeConfig
     overrides: dict[str, object]
+    app_config_overrides: dict[str, object]
 
 
 @lru_cache(maxsize=1)
@@ -240,11 +243,20 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
     overrides: dict[str, object] = {
         key: value for key, value in explicit_profile_overrides.items() if value is not None
     }
+    app_config_overrides: dict[str, object] = {}
+    if run_profile.translation_output_quality_gate_policy is not None:
+        app_config_overrides["translation_output_quality_gate_policy"] = run_profile.translation_output_quality_gate_policy
+        overrides["translation_output_quality_gate_policy"] = run_profile.translation_output_quality_gate_policy
     for key, default_value in ui_defaults.to_dict().items():
         effective_value = effective.to_dict()[key]
         if effective_value != default_value:
             overrides[key] = effective_value
-    return RuntimeResolution(effective=effective, ui_defaults=ui_defaults, overrides=overrides)
+    return RuntimeResolution(
+        effective=effective,
+        ui_defaults=ui_defaults,
+        overrides=overrides,
+        app_config_overrides=app_config_overrides,
+    )
 
 
 def apply_runtime_resolution_to_app_config(app_config, resolution: RuntimeResolution) -> dict[str, object]:
@@ -254,6 +266,7 @@ def apply_runtime_resolution_to_app_config(app_config, resolution: RuntimeResolu
     app_config_dict["audiobook_postprocess_enabled"] = resolution.effective.audiobook_postprocess_enabled
     app_config_dict["keep_all_image_variants"] = resolution.effective.keep_all_image_variants
     app_config_dict["enable_paragraph_markers"] = resolution.effective.enable_paragraph_markers
+    app_config_dict.update(resolution.app_config_overrides)
     return app_config_dict
 
 
@@ -335,6 +348,15 @@ def _build_run_profile(payload: Any) -> RunProfile:
     repeat_count = _coerce_int(payload, "repeat_count", 1)
     if repeat_count < 1:
         raise RuntimeError(f"Run profile repeat_count must be >= 1, got {repeat_count}")
+    translation_output_quality_gate_policy = _optional_str(payload, "translation_output_quality_gate_policy")
+    if (
+        translation_output_quality_gate_policy is not None
+        and translation_output_quality_gate_policy not in _TRANSLATION_QUALITY_GATE_POLICIES
+    ):
+        raise RuntimeError(
+            "Unsupported translation_output_quality_gate_policy: "
+            f"{translation_output_quality_gate_policy}"
+        )
     return RunProfile(
         id=_require_str(payload, "id"),
         tier=tier,
@@ -352,6 +374,7 @@ def _build_run_profile(payload: Any) -> RunProfile:
         keep_all_image_variants=_optional_bool(payload, "keep_all_image_variants"),
         structure_recognition_mode=_optional_structure_recognition_mode(payload, "structure_recognition_mode"),
         structure_recognition_enabled=_optional_bool(payload, "structure_recognition_enabled"),
+        translation_output_quality_gate_policy=translation_output_quality_gate_policy,
         repeat_count=repeat_count,
     )
 

@@ -231,6 +231,187 @@ def test_run_document_processing_passes_text_transform_context_to_system_prompt_
     }
 
 
+def test_run_document_processing_routes_provider_aware_text_and_image_clients():
+    runtime = _build_runtime_capture()
+    text_calls = []
+    image_calls = []
+    openrouter_client = object()
+    openai_client = object()
+
+    def resolve_model_selector(selector, required_capability=None):
+        if selector == "openrouter:google/gemini-3.1-flash-lite-preview":
+            return SimpleNamespace(
+                raw_selector=selector,
+                canonical_selector=selector,
+                provider="openrouter",
+                model_id="google/gemini-3.1-flash-lite-preview",
+            )
+        return SimpleNamespace(
+            raw_selector=selector,
+            canonical_selector=f"openai:{selector}",
+            provider="openai",
+            model_id=selector.removeprefix("openai:"),
+        )
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
+        source_paragraphs=[],
+        image_assets=[AssetStub("img_001")],
+        image_mode="semantic_redraw_direct",
+        app_config={},
+        model="openrouter:google/gemini-3.1-flash-lite-preview",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: openai_client,
+        get_provider_client=lambda provider_name: openai_client if provider_name == "openai" else openrouter_client,
+        get_client_for_model_selector=lambda selector, required_capability: openrouter_client,
+        resolve_model_selector=resolve_model_selector,
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: text_calls.append(kwargs) or "Обработанный блок",
+        process_document_images=lambda **kwargs: image_calls.append(kwargs) or kwargs["image_assets"],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
+    )
+
+    assert result == "succeeded"
+    assert text_calls[0]["client"] is openrouter_client
+    assert text_calls[0]["model"] == "google/gemini-3.1-flash-lite-preview"
+    assert image_calls[0]["client"] is openai_client
+
+
+def test_run_document_processing_does_not_fallback_to_text_client_for_openai_image_phase():
+    runtime = _build_runtime_capture()
+    openrouter_client = object()
+    image_calls = []
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
+        source_paragraphs=[],
+        image_assets=[AssetStub("img_001")],
+        image_mode="semantic_redraw_direct",
+        app_config={},
+        model="openrouter:google/gemini-3.1-flash-lite-preview",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: (_ for _ in ()).throw(AssertionError("legacy get_client fallback must not run")),
+        get_provider_client=lambda provider_name: (_ for _ in ()).throw(RuntimeError("missing OpenAI client")),
+        get_client_for_model_selector=lambda selector, required_capability: openrouter_client,
+        resolve_model_selector=lambda selector, required_capability=None: SimpleNamespace(
+            raw_selector=selector,
+            canonical_selector=selector,
+            provider="openrouter",
+            model_id="google/gemini-3.1-flash-lite-preview",
+        ),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "Обработанный блок",
+        process_document_images=lambda **kwargs: image_calls.append(kwargs) or kwargs["image_assets"],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
+    )
+
+    assert result == "failed"
+    assert image_calls == []
+
+
+def test_run_document_processing_routes_second_pass_through_provider_aware_selector():
+    runtime = _build_runtime_capture()
+    text_calls = []
+    main_client = object()
+    second_pass_client = object()
+
+    def resolve_model_selector(selector, required_capability=None):
+        if selector == "openrouter:google/gemini-3.1-flash-lite-preview":
+            return SimpleNamespace(
+                raw_selector=selector,
+                canonical_selector=selector,
+                provider="openrouter",
+                model_id="google/gemini-3.1-flash-lite-preview",
+            )
+        return SimpleNamespace(
+            raw_selector=selector,
+            canonical_selector=f"openai:{selector}",
+            provider="openai",
+            model_id=selector.removeprefix("openai:"),
+        )
+
+    def get_client_for_model_selector(selector, required_capability):
+        if selector == "openrouter:google/gemini-3.1-flash-lite-preview":
+            return second_pass_client
+        return main_client
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={
+            "translation_second_pass_enabled": True,
+            "translation_second_pass_model": "openrouter:google/gemini-3.1-flash-lite-preview",
+        },
+        model="gpt-5.4-mini",
+        max_retries=1,
+        processing_operation="translate",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: main_client,
+        get_client_for_model_selector=get_client_for_model_selector,
+        resolve_model_selector=resolve_model_selector,
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: text_calls.append(kwargs) or "Обработанный блок",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
+    )
+
+    assert result == "succeeded"
+    assert len(text_calls) == 2
+    assert text_calls[0]["client"] is main_client
+    assert text_calls[0]["model"] == "gpt-5.4-mini"
+    assert text_calls[1]["client"] is second_pass_client
+    assert text_calls[1]["model"] == "google/gemini-3.1-flash-lite-preview"
+
+
 def test_run_document_processing_persists_final_ui_result_artifacts_and_logs_paths():
     runtime = _build_runtime_capture()
     events, log_event = _capture_log_events()

@@ -18,7 +18,7 @@ def resolve_paragraph_boundary_ai_review_settings(
     *,
     allowed_modes: tuple[str, ...] | list[str] | set[str],
 ) -> tuple[bool, str, int, int, int, str]:
-    from docxaicorrector.core.config import get_text_model_default, load_app_config
+    from docxaicorrector.core.config import get_model_role_value, load_app_config
 
     app_config = load_app_config()
     enabled = bool(app_config.get("paragraph_boundary_ai_review_enabled", False))
@@ -28,7 +28,7 @@ def resolve_paragraph_boundary_ai_review_settings(
     if not enabled:
         mode = "off"
     effective_enabled = enabled and mode != "off"
-    model = get_text_model_default(app_config) if effective_enabled else ""
+    model = get_model_role_value(app_config, "structure_recognition") if effective_enabled else ""
     return (
         effective_enabled,
         mode,

@@ -483,6 +483,130 @@ def _call_responses_create(client: "OpenAI", request_kwargs: dict[str, Any]) -> 
     )
 
 
+def _is_openrouter_client(client: "OpenAI") -> bool:
+    base_url = getattr(client, "base_url", None)
+    if base_url is None:
+        return False
+    return "openrouter" in str(base_url).lower()
+
+
+def _is_openrouter_responses_compatibility_error(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int) and status_code not in {400, 404, 422}:
+        return False
+    error_text = str(exc).lower()
+    return any(
+        marker in error_text
+        for marker in (
+            "/responses",
+            "responses api unsupported",
+            "responses endpoint",
+            "chat.completions",
+            "unsupported parameter",
+            "unsupported field",
+            "unknown parameter",
+            "unknown field",
+        )
+    )
+
+
+def _canonicalize_model_selector_for_client(*, client: "OpenAI", model: str) -> str:
+    stripped_model = str(model).strip()
+    if not stripped_model:
+        return stripped_model
+    if ":" in stripped_model:
+        provider_name, _, model_id = stripped_model.partition(":")
+        normalized_provider = provider_name.strip().lower()
+        if normalized_provider in {"openai", "openrouter"} and model_id.strip():
+            return f"{normalized_provider}:{model_id.strip()}"
+    provider_name = "openrouter" if _is_openrouter_client(client) else "openai"
+    return f"{provider_name}:{stripped_model}"
+
+
+def _extract_chat_messages_from_request(request_kwargs: dict[str, object]) -> list[dict[str, str]]:
+    raw_input = request_kwargs.get("input")
+    if not isinstance(raw_input, list):
+        raise RuntimeError("OpenRouter Chat Completions fallback не может собрать messages из request input.")
+
+    messages: list[dict[str, str]] = []
+    for item in raw_input:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "user").strip() or "user"
+        raw_content = item.get("content")
+        if isinstance(raw_content, list):
+            text_parts = [
+                str(content_item.get("text") or "")
+                for content_item in raw_content
+                if isinstance(content_item, dict) and content_item.get("type") == "input_text"
+            ]
+            content_text = "\n".join(part for part in text_parts if part)
+        else:
+            content_text = str(raw_content or "")
+        messages.append({"role": role, "content": content_text})
+
+    if not messages:
+        raise RuntimeError("OpenRouter Chat Completions fallback не может собрать ни одного message.")
+    return messages
+
+
+def _call_chat_completions_create(client: "OpenAI", request_kwargs: dict[str, object]) -> object:
+    chat_completions = getattr(getattr(client, "chat", None), "completions", None)
+    create = getattr(chat_completions, "create", None)
+    if not callable(create):
+        raise RuntimeError("Provider 'openrouter' не поддерживает required text API surface для selector '<runtime>'.")
+
+    payload: dict[str, object] = {
+        "model": request_kwargs["model"],
+        "messages": _extract_chat_messages_from_request(request_kwargs),
+        "temperature": request_kwargs.get("temperature"),
+    }
+    max_output_tokens = request_kwargs.get("max_output_tokens")
+    if isinstance(max_output_tokens, int) and not isinstance(max_output_tokens, bool):
+        payload["max_tokens"] = max_output_tokens
+
+    removable_optional_params = {"temperature", "max_tokens"}
+    while True:
+        try:
+            return create(**payload)
+        except TypeError as exc:
+            unsupported_param = extract_unsupported_parameter_name(str(exc))
+            if unsupported_param in removable_optional_params and unsupported_param in payload:
+                payload.pop(unsupported_param, None)
+                continue
+            raise
+        except Exception as exc:
+            unsupported_param = extract_unsupported_parameter_name(str(exc))
+            if unsupported_param in removable_optional_params and unsupported_param in payload:
+                payload.pop(unsupported_param, None)
+                continue
+            raise
+
+
+def _extract_chat_completion_markdown(response: object) -> str:
+    choices = getattr(response, "choices", None)
+    if not isinstance(choices, list) or not choices:
+        raise RuntimeError("Provider 'openrouter' не поддерживает required text API surface для selector '<runtime>'.")
+    first_choice = choices[0]
+    message = getattr(first_choice, "message", None)
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        markdown = normalize_model_output(content)
+        if markdown:
+            return markdown
+        raise RuntimeError("Модель вернула ответ, который схлопнулся после нормализации (collapsed_output).")
+    if isinstance(content, list):
+        text_parts = [
+            str(getattr(item, "text", "") or item.get("text") or "")
+            for item in content
+            if isinstance(item, dict) or hasattr(item, "text")
+        ]
+        markdown = normalize_model_output("\n".join(part for part in text_parts if part))
+        if markdown:
+            return markdown
+    raise RuntimeError("Модель вернула пустой ответ (empty_response).")
+
+
 def _estimate_max_output_tokens(target_text: str) -> int:
     estimated_output_tokens = max((len(target_text) // 3) * 4, 512)
     return min(estimated_output_tokens, 16384)
@@ -522,8 +646,28 @@ def _boost_request_output_budget(
 
 
 def _call_markdown_request_with_sdk_fallback(client: "OpenAI", request_kwargs: dict[str, object]) -> tuple[str, bool]:
-    response = _call_responses_create(client, cast(dict[str, Any], request_kwargs))
-    return _extract_normalized_markdown(response), False
+    try:
+        response = _call_responses_create(client, cast(dict[str, Any], request_kwargs))
+        return _extract_normalized_markdown(response), False
+    except Exception as exc:
+        if not _is_openrouter_client(client) or not _is_openrouter_responses_compatibility_error(exc):
+            raise
+        log_event(
+            logging.WARNING,
+            "provider_text_api_fallback_engaged",
+            "Responses API для text path отклонён provider-совместимостью; переключаюсь на Chat Completions fallback.",
+            provider="openrouter",
+            model=str(request_kwargs.get("model") or ""),
+            model_selector=str(request_kwargs.get("model") or ""),
+            canonical_model_selector=_canonicalize_model_selector_for_client(
+                client=client,
+                model=str(request_kwargs.get("model") or ""),
+            ),
+            api_surface="chat.completions",
+            fallback_reason=str(exc),
+        )
+        chat_response = _call_chat_completions_create(client, request_kwargs)
+        return _extract_chat_completion_markdown(chat_response), True
 
 
 def _recover_from_persistent_empty_response(

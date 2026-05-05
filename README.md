@@ -216,7 +216,7 @@ soffice --headless --version
 cp .env.example .env
 ```
 
-Минимально нужен `OPENAI_API_KEY`:
+Минимально нужен `OPENAI_API_KEY` для текущего OpenAI baseline. Для text-only OpenRouter run нужен provider-qualified selector и `OPENROUTER_API_KEY`:
 
 ```env
 OPENAI_API_KEY=sk-...
@@ -225,8 +225,14 @@ OPENAI_API_KEY=sk-...
 Поддерживаемые переменные `.env`:
 
 - `OPENAI_API_KEY` — обязательный API-ключ OpenAI для текстовой и image-обработки.
+- `OPENROUTER_API_KEY` — optional API-ключ OpenRouter для provider-qualified text selectors вида `openrouter:<model_id>`.
 - `DOCX_AI_MODELS_TEXT_DEFAULT` — модель редактирования текста по умолчанию.
 - `DOCX_AI_MODELS_TEXT_OPTIONS` — список моделей для sidebar через запятую.
+- `DOCX_AI_PROVIDERS_OPENAI_ENABLED` — включает или выключает provider `openai`.
+- `DOCX_AI_PROVIDERS_OPENROUTER_ENABLED` — включает или выключает provider `openrouter`.
+- `DOCX_AI_PROVIDERS_OPENROUTER_BASE_URL` — override base URL для OpenRouter-compatible Responses API.
+- `DOCX_AI_PROVIDERS_OPENROUTER_REFERER` — значение заголовка `HTTP-Referer` для OpenRouter.
+- `DOCX_AI_PROVIDERS_OPENROUTER_TITLE` — значение заголовка `X-OpenRouter-Title` для OpenRouter.
 - `DOCX_AI_CHUNK_SIZE` — размер целевого блока документа.
 - `DOCX_AI_MAX_RETRIES` — число retry для текстовых вызовов.
 - `DOCX_AI_EDITORIAL_INTENSITY_DEFAULT` — дефолтная стилистическая интенсивность для текстовой обработки: `literary` или `conservative`. В текущем Slice 1 влияет только на prompt contract и не меняет `temperature`.
@@ -249,6 +255,8 @@ OPENAI_API_KEY=sk-...
 
 ```env
 OPENAI_API_KEY=sk-...
+DOCX_AI_PROVIDERS_OPENAI_ENABLED=true
+DOCX_AI_PROVIDERS_OPENROUTER_ENABLED=false
 DOCX_AI_MODELS_TEXT_DEFAULT=gpt-5.4-mini
 DOCX_AI_MODELS_TEXT_OPTIONS=gpt-5.4,gpt-5.4-mini,gpt-5-mini
 DOCX_AI_CHUNK_SIZE=6000
@@ -279,6 +287,8 @@ DOCX_AI_MODELS_IMAGE_GENERATION_DEFAULT=gpt-image-1.5
 DOCX_AI_MODELS_IMAGE_EDIT_DEFAULT=gpt-image-1.5
 DOCX_AI_MODELS_IMAGE_GENERATION_VISION_DEFAULT=gpt-5.4-mini
 ```
+
+Для manual OpenRouter opt-in добавьте provider-qualified selector, `OPENROUTER_API_KEY` и включите `DOCX_AI_PROVIDERS_OPENROUTER_ENABLED=true` локально.
 
 ### 5. Запустить приложение
 
@@ -331,6 +341,17 @@ streamlit run app.py
 [models.text]
 default = "gpt-5.4-mini"
 options = ["gpt-5.4", "gpt-5.4-mini", "gpt-5-mini"]
+
+[providers.openai]
+enabled = true
+api_key_env = "OPENAI_API_KEY"
+
+[providers.openrouter]
+enabled = false
+api_key_env = "OPENROUTER_API_KEY"
+base_url = "https://openrouter.ai/api/v1"
+referer = "DocxAICorrector"
+title = "DocxAICorrector"
 
 [models.structure_recognition]
 default = "gpt-5-mini"
@@ -388,6 +409,8 @@ save_debug_artifacts = true
 ```env
 DOCX_AI_MODELS_TEXT_DEFAULT=gpt-5.4-mini
 DOCX_AI_MODELS_TEXT_OPTIONS=gpt-5.4,gpt-5.4-mini,gpt-5-mini
+DOCX_AI_PROVIDERS_OPENAI_ENABLED=true
+DOCX_AI_PROVIDERS_OPENROUTER_ENABLED=false
 DOCX_AI_CHUNK_SIZE=6000
 DOCX_AI_MAX_RETRIES=3
 DOCX_AI_MODELS_STRUCTURE_RECOGNITION_DEFAULT=gpt-5-mini

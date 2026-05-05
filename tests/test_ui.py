@@ -274,7 +274,7 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
     result = ui.render_sidebar(config)
 
     assert result == ("gpt-5-mini", 6000, 3, "semantic_redraw_direct", False, "edit", "en", "ru", False, False)
-    assert sidebar_calls == [
+    assert sidebar_calls[:3] == [
         ("header", "Настройки"),
         (
             "selectbox",
@@ -290,7 +290,11 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
             ("Русский", "English"),
             None,
         ),
-        ("selectbox", "Модель", None, ("gpt-5.4", "gpt-5-mini", "custom"), None),
+    ]
+    model_call = sidebar_calls[3]
+    assert model_call[:4] == ("selectbox", "Модель", None, ("gpt-5.4", "gpt-5-mini", "custom"))
+    assert callable(model_call[4])
+    assert sidebar_calls[4:] == [
         (
             "selectbox",
             "Режим обработки изображений",
@@ -315,6 +319,72 @@ def test_render_sidebar_returns_image_settings(monkeypatch):
         )
     ]
     assert sidebar_warnings == []
+
+
+def test_render_sidebar_formats_openrouter_model_label_and_warns_without_key(monkeypatch):
+    config = {
+        "models": type(
+            "Models",
+            (),
+            {
+                "text": type(
+                    "TextModels",
+                    (),
+                    {
+                        "default": "openrouter:google/gemini-3.1-flash-lite-preview",
+                        "options": ("openrouter:google/gemini-3.1-flash-lite-preview",),
+                    },
+                )(),
+            },
+        )(),
+        "chunk_size": 6000,
+        "max_retries": 3,
+        "processing_operation_default": "edit",
+        "source_language_default": "en",
+        "target_language_default": "ru",
+        "supported_languages": [
+            type("Lang", (), {"code": "ru", "label": "Русский"})(),
+            type("Lang", (), {"code": "en", "label": "English"})(),
+        ],
+        "image_mode_default": "no_change",
+        "keep_all_image_variants": False,
+        "providers": {
+            "openai": {"enabled": True, "api_key_env": "OPENAI_API_KEY"},
+            "openrouter": {
+                "enabled": True,
+                "api_key_env": "OPENROUTER_API_KEY",
+                "base_url": "https://openrouter.ai/api/v1",
+                "referer": "DocxAICorrector",
+                "title": "DocxAICorrector",
+            },
+        },
+    }
+
+    captured_model_format = {}
+    warnings = []
+
+    monkeypatch.setattr(ui.st.sidebar, "header", lambda text: None)
+    monkeypatch.setattr(ui.st.sidebar, "caption", lambda text: None)
+    monkeypatch.setattr(ui.st.sidebar, "warning", lambda text: warnings.append(text))
+
+    def fake_selectbox(label, options, index=0, format_func=None, help=None, key=None, disabled=False):
+        if label == "Модель":
+            captured_model_format["label"] = format_func(options[index]) if format_func is not None else options[index]
+        if label == "Режим обработки изображений":
+            return ui.IMAGE_MODE_LABELS["no_change"]
+        return options[index]
+
+    monkeypatch.setattr(ui.st.sidebar, "selectbox", fake_selectbox)
+    monkeypatch.setattr(ui.st.sidebar, "text_input", lambda *args, **kwargs: "")
+    monkeypatch.setattr(ui.st.sidebar, "slider", lambda label, **kwargs: kwargs["value"])
+    monkeypatch.setattr(ui.st.sidebar, "checkbox", lambda label, value, key=None, help=None: value)
+
+    ui.render_sidebar(config)
+
+    assert captured_model_format["label"] == "google/gemini-3.1-flash-lite-preview (OpenRouter)"
+    assert warnings == [
+        "Для модели 'openrouter:google/gemini-3.1-flash-lite-preview' не найден OPENROUTER_API_KEY."
+    ]
 
 
 def test_render_sidebar_warns_when_translate_source_matches_target(monkeypatch):

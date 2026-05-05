@@ -414,6 +414,111 @@ def test_generate_markdown_block_retries_without_temperature_when_model_rejects_
     assert "temperature" not in calls[1]
 
 
+def test_generate_markdown_block_falls_back_to_chat_completions_for_openrouter_compatibility(monkeypatch):
+    responses_calls = []
+    chat_calls = []
+    logged_events = []
+
+    class UnsupportedResponsesError(Exception):
+        status_code = 400
+
+    def responses_create(**kwargs):
+        responses_calls.append(dict(kwargs))
+        raise UnsupportedResponsesError("Responses API unsupported for this model; use chat.completions instead.")
+
+    def chat_create(**kwargs):
+        chat_calls.append(dict(kwargs))
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="fallback-ok"),
+                )
+            ]
+        )
+
+    client = SimpleNamespace(
+        base_url="https://openrouter.ai/api/v1",
+        responses=SimpleNamespace(create=responses_create),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=chat_create)),
+    )
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-openrouter-fallback",
+    )
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="google/gemini-3.1-flash-lite-preview",
+        system_prompt="system",
+        target_text="target",
+        context_before="before",
+        context_after="after",
+        max_retries=1,
+    )
+
+    assert result == "fallback-ok"
+    assert len(responses_calls) == 1
+    assert len(chat_calls) == 1
+    assert chat_calls[0]["model"] == "google/gemini-3.1-flash-lite-preview"
+    assert chat_calls[0]["messages"] == [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "Below is a target document block and surrounding context.\nUse the surrounding context only to understand meaning, terminology, and continuity.\nProcess only the target block according to the system instructions and return only its final text.\n\n[CONTEXT BEFORE]\nbefore\n\n[TARGET BLOCK]\ntarget\n\n[CONTEXT AFTER]\nafter"},
+    ]
+    assert logged_events[-1][0][1] == "provider_text_api_fallback_engaged"
+    assert logged_events[-1][1]["canonical_model_selector"] == "openrouter:google/gemini-3.1-flash-lite-preview"
+
+
+def test_generate_markdown_block_does_not_fallback_on_non_compatibility_openrouter_error():
+    class UnauthorizedError(Exception):
+        status_code = 401
+
+    def responses_create(**kwargs):
+        raise UnauthorizedError("Unauthorized provider call")
+
+    client = SimpleNamespace(
+        base_url="https://openrouter.ai/api/v1",
+        responses=SimpleNamespace(create=responses_create),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kwargs: (_ for _ in ()).throw(AssertionError("chat fallback must not run")))),
+    )
+
+    with pytest.raises(UnauthorizedError):
+        generation.generate_markdown_block(
+            client=_as_openai_client(client),
+            model="google/gemini-3.1-flash-lite-preview",
+            system_prompt="system",
+            target_text="target",
+            context_before="before",
+            context_after="after",
+            max_retries=1,
+        )
+
+
+def test_generate_markdown_block_does_not_fallback_on_generic_invalid_input_error():
+    class InvalidInputError(Exception):
+        status_code = 400
+
+    def responses_create(**kwargs):
+        raise InvalidInputError("Invalid input payload")
+
+    client = SimpleNamespace(
+        base_url="https://openrouter.ai/api/v1",
+        responses=SimpleNamespace(create=responses_create),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kwargs: (_ for _ in ()).throw(AssertionError("chat fallback must not run")))),
+    )
+
+    with pytest.raises(InvalidInputError):
+        generation.generate_markdown_block(
+            client=_as_openai_client(client),
+            model="google/gemini-3.1-flash-lite-preview",
+            system_prompt="system",
+            target_text="target",
+            context_before="before",
+            context_after="after",
+            max_retries=1,
+        )
+
+
 def test_generate_markdown_block_raises_after_persistent_empty_response(monkeypatch):
     attempts = []
     sleep_calls = []

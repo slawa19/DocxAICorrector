@@ -96,6 +96,16 @@ def build_processing_context(
     context_factory_fn: Callable[..., Any],
 ) -> Any:
     effective_image_mode = ImageMode.NO_CHANGE.value if processing_operation == "audiobook" else image_mode
+    model_selector = model
+    canonical_model_selector = model
+    model_provider: str | None = None
+    model_id = model
+    if callable(getattr(dependencies, "resolve_model_selector", None)):
+        resolved_selector = dependencies.resolve_model_selector(model, "responses_text")
+        model_selector = resolved_selector.raw_selector
+        canonical_model_selector = resolved_selector.canonical_selector
+        model_provider = resolved_selector.provider
+        model_id = resolved_selector.model_id
     return context_factory_fn(
         uploaded_file=uploaded_file,
         uploaded_filename=dependencies.resolve_uploaded_filename(uploaded_file),
@@ -113,6 +123,10 @@ def build_processing_context(
         translation_domain_instructions=str(app_config.get("translation_domain_instructions", "") or ""),
         on_progress=on_progress,
         runtime=runtime,
+        model_selector=model_selector,
+        canonical_model_selector=canonical_model_selector,
+        model_provider=model_provider,
+        model_id=model_id,
     )
 
 
@@ -154,10 +168,16 @@ def build_processing_run_components(
     preserve_source_paragraph_properties: Any,
     reinsert_inline_images: Any,
     write_ui_result_artifacts: Any,
+    get_provider_client_fn: Any = None,
+    get_client_for_model_selector_fn: Any = None,
+    resolve_model_selector_fn: Any = None,
 ) -> Any:
     dependencies = dependency_builder_fn(
         resolve_uploaded_filename=resolve_uploaded_filename,
         get_client=get_client,
+        get_provider_client=get_provider_client_fn,
+        get_client_for_model_selector=get_client_for_model_selector_fn,
+        resolve_model_selector=resolve_model_selector_fn,
         ensure_pandoc_available=ensure_pandoc_available,
         load_system_prompt=load_system_prompt,
         log_event=log_event,
@@ -340,7 +360,25 @@ def initialize_processing_run(
         )
 
     try:
-        client = dependencies.get_client()
+        resolved_selector = None
+        if callable(getattr(dependencies, "resolve_model_selector", None)):
+            resolved_selector = dependencies.resolve_model_selector(context.model, "responses_text")
+        text_client = (
+            dependencies.get_client_for_model_selector(context.model, "responses_text")
+            if callable(getattr(dependencies, "get_client_for_model_selector", None))
+            else dependencies.get_client()
+        )
+        openai_client = None
+        image_mode_requires_openai_client = context.image_mode not in {
+            ImageMode.NO_CHANGE.value,
+            ImageMode.SAFE.value,
+        }
+        if image_mode_requires_openai_client:
+            provider_client_factory = getattr(dependencies, "get_provider_client", None)
+            if callable(provider_client_factory):
+                openai_client = provider_client_factory("openai")
+            else:
+                openai_client = dependencies.get_client()
         dependencies.ensure_pandoc_available()
         dependencies.log_event(
             logging.INFO,
@@ -348,6 +386,13 @@ def initialize_processing_run(
             "Запуск обработки документа",
             filename=context.uploaded_filename,
             model=context.model,
+            model_selector=context.model_selector or context.model,
+            canonical_model_selector=(
+                context.canonical_model_selector
+                or getattr(resolved_selector, "canonical_selector", context.model)
+            ),
+            model_provider=context.model_provider or getattr(resolved_selector, "provider", None),
+            model_id=context.model_id or getattr(resolved_selector, "model_id", context.model),
             block_count=job_count,
             max_retries=context.max_retries,
             image_count=len(context.image_assets),
@@ -376,7 +421,10 @@ def initialize_processing_run(
             filename=context.uploaded_filename,
             blocks=block_plan_summary["blocks"],
         )
-        emitters.emit_activity(context.runtime, f"Инициализация завершена. Модель: {context.model}.")
+        emitters.emit_activity(
+            context.runtime,
+            f"Инициализация завершена. Модель: {context.canonical_model_selector or context.model}.",
+        )
     except Exception as exc:
         error_message = dependencies.present_error(
             "processing_init_failed",
@@ -384,6 +432,7 @@ def initialize_processing_run(
             "Ошибка инициализации обработки",
             filename=context.uploaded_filename,
             model=context.model,
+            model_selector=context.model_selector or context.model,
         )
         emitters.emit_state(
             context.runtime,
@@ -408,4 +457,10 @@ def initialize_processing_run(
         )
         return None
 
-    return initialization_factory_fn(client=client, job_count=job_count)
+    return initialization_factory_fn(
+        client=text_client,
+        job_count=job_count,
+        text_client=text_client,
+        text_model_id=context.model_id or getattr(resolved_selector, "model_id", context.model),
+        openai_client=openai_client,
+    )

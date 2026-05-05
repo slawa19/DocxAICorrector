@@ -72,9 +72,11 @@ def _generate_block_chunk(
     marker_mode_enabled: bool,
     system_prompt: str,
 ) -> str:
+    client = initialization.text_client or initialization.client
+    model_id = context.model_id or initialization.text_model_id or context.model
     return dependencies.generate_markdown_block(
-        client=initialization.client,
-        model=context.model,
+        client=client,
+        model=model_id,
         system_prompt=system_prompt,
         target_text=payload.target_text_with_markers if marker_mode_enabled else payload.target_text,
         context_before=payload.context_before,
@@ -186,6 +188,28 @@ def _resolve_translation_second_pass_model(*, context: Any) -> str:
     return configured_model or context.model
 
 
+def _resolve_text_call_target(*, selector: str, context: Any, dependencies: Any, initialization: Any) -> tuple[object, str, str, str | None]:
+    resolver = getattr(dependencies, "resolve_model_selector", None)
+    client_factory = getattr(dependencies, "get_client_for_model_selector", None)
+    if not callable(resolver) or not callable(client_factory):
+        return initialization.text_client or initialization.client, selector, selector, None
+
+    resolved_selector = resolver(selector, "responses_text")
+    if resolved_selector.canonical_selector == (context.canonical_model_selector or context.model):
+        return (
+            initialization.text_client or initialization.client,
+            resolved_selector.model_id,
+            resolved_selector.canonical_selector,
+            resolved_selector.provider,
+        )
+    return (
+        client_factory(selector, "responses_text"),
+        resolved_selector.model_id,
+        resolved_selector.canonical_selector,
+        resolved_selector.provider,
+    )
+
+
 def _run_translation_second_pass(
     *,
     context: Any,
@@ -212,6 +236,12 @@ def _run_translation_second_pass(
         )
 
     second_pass_model = _resolve_translation_second_pass_model(context=context)
+    second_pass_client, second_pass_model_id, second_pass_selector, second_pass_provider = _resolve_text_call_target(
+        selector=second_pass_model,
+        context=context,
+        dependencies=dependencies,
+        initialization=initialization,
+    )
     emitters.emit_status(
         context.runtime,
         stage="Литературная полировка",
@@ -232,10 +262,13 @@ def _run_translation_second_pass(
         block_index=index,
         block_count=initialization.job_count,
         model=second_pass_model,
+        model_selector=second_pass_selector,
+        model_provider=second_pass_provider,
+        model_id=second_pass_model_id,
     )
     polished_chunk = dependencies.generate_markdown_block(
-        client=initialization.client,
-        model=second_pass_model,
+        client=second_pass_client,
+        model=second_pass_model_id,
         system_prompt=state.second_pass_system_prompt,
         target_text=processed_chunk,
         context_before="",
@@ -252,6 +285,9 @@ def _run_translation_second_pass(
         block_index=index,
         block_count=initialization.job_count,
         model=second_pass_model,
+        model_selector=second_pass_selector,
+        model_provider=second_pass_provider,
+        model_id=second_pass_model_id,
     )
     return polished_chunk
 
@@ -290,9 +326,9 @@ def emit_block_started(
         context.runtime,
         stage="Подготовка блока",
         detail=(
-            f"Готовлю блок {index} из {initialization.job_count} к отправке в OpenAI."
+            f"Готовлю блок {index} из {initialization.job_count} к отправке в модель."
             if payload.job_kind == "llm"
-            else f"Готовлю passthrough-блок {index} из {initialization.job_count} без вызова OpenAI."
+            else f"Готовлю passthrough-блок {index} из {initialization.job_count} без вызова модели."
         ),
         current_block=index,
         block_count=initialization.job_count,
@@ -312,6 +348,10 @@ def emit_block_started(
         target_chars=payload.target_chars,
         context_chars=payload.context_chars,
         model=context.model,
+        model_selector=context.model_selector or context.model,
+        canonical_model_selector=context.canonical_model_selector or context.model,
+        model_provider=context.model_provider,
+        model_id=context.model_id or context.model,
         job_kind=payload.job_kind,
     )
 
@@ -340,14 +380,14 @@ def execute_processing_block(
             progress=(index - 1) / initialization.job_count,
             is_running=True,
         )
-        emitters.emit_activity(context.runtime, f"Блок {index} пропущен через passthrough без OpenAI.")
+        emitters.emit_activity(context.runtime, f"Блок {index} пропущен через passthrough без вызова модели.")
         context.on_progress(preview_title="Текущий Markdown")
         return payload.target_text, False
 
     marker_mode_enabled = is_marker_mode_enabled_fn(context, payload)
     emitters.emit_status(
         context.runtime,
-        stage="Ожидание ответа OpenAI",
+        stage="Ожидание ответа модели",
         detail=f"Блок {index} отправлен в модель. Приложение работает, ожидаю ответ.",
         current_block=index,
         block_count=initialization.job_count,
@@ -356,7 +396,7 @@ def execute_processing_block(
         progress=(index - 1) / initialization.job_count,
         is_running=True,
     )
-    emitters.emit_activity(context.runtime, f"Блок {index} отправлен в OpenAI.")
+    emitters.emit_activity(context.runtime, f"Блок {index} отправлен в модель.")
     context.on_progress(preview_title="Текущий Markdown")
     if _should_route_toc_through_llm(context=context, payload=payload):
         processed_chunk = _validate_toc_chunk_with_retries(

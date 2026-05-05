@@ -8,7 +8,12 @@ from typing import Any, cast
 import streamlit as st
 
 from docxaicorrector.ui.application_flow import flatten_normalization_metrics
-from docxaicorrector.core.config import get_text_model_default, get_text_model_options
+from docxaicorrector.core.config import (
+    describe_provider_availability,
+    get_text_model_default,
+    get_text_model_options,
+    resolve_model_selector,
+)
 from docxaicorrector.core.logger import format_elapsed
 from docxaicorrector.generation.message_formatting import derive_live_status_title_and_severity, humanize_reason, humanize_variant
 from docxaicorrector.core.models import ImageMode
@@ -262,6 +267,46 @@ def get_target_language_label(config: Mapping[str, Any], language_code: str) -> 
     if not language_labels:
         return language_code
     return label_by_code.get(language_code, language_labels[0])
+
+
+def _format_model_option_label(option: str, config: Mapping[str, Any]) -> str:
+    if option == "custom":
+        return "Пользовательская модель"
+    try:
+        resolved_selector = resolve_model_selector(option, config_like=config)
+    except Exception:
+        return option
+    if resolved_selector.provider == "openrouter":
+        return f"{resolved_selector.model_id} (OpenRouter)"
+    return resolved_selector.model_id
+
+
+def _resolve_model_default_index(model_options: list[str], default_model: str, config: Mapping[str, Any]) -> int:
+    if default_model in model_options:
+        return model_options.index(default_model)
+    try:
+        default_selector = resolve_model_selector(default_model, config_like=config)
+    except Exception:
+        return 0
+    for index, option in enumerate(model_options):
+        if option == "custom":
+            continue
+        try:
+            option_selector = resolve_model_selector(option, config_like=config)
+        except Exception:
+            continue
+        if option_selector.canonical_selector == default_selector.canonical_selector:
+            return index
+    return 0
+
+
+def _render_selected_model_availability_warning(*, model: str, config: Mapping[str, Any]) -> None:
+    try:
+        availability = describe_provider_availability(model, app_config=config)
+    except Exception:
+        return
+    if availability.error_message:
+        st.sidebar.warning(availability.error_message)
 
 
 def get_source_language_widget_value(config: Mapping[str, Any], language_code: str) -> str:
@@ -597,13 +642,24 @@ def render_sidebar(config: Mapping[str, Any]) -> tuple[str, int, int, str, bool,
 
     model_options = [*get_text_model_options(config), "custom"]
     default_model = get_text_model_default(config)
-    default_index = model_options.index(default_model) if default_model in model_options else 0
-    selected_model = render_sidebar_selectbox("Модель", model_options, index=default_index, key="sidebar_model")
+    default_index = _resolve_model_default_index(model_options, default_model, config)
+    selected_model = st.sidebar.selectbox(
+        "Модель",
+        model_options,
+        index=default_index,
+        format_func=lambda option: _format_model_option_label(option, config),
+        key="sidebar_model",
+    )
     custom_model = ""
     if selected_model == "custom":
-        custom_model = st.sidebar.text_input("Имя модели", value=default_model).strip()
+        custom_model = st.sidebar.text_input(
+            "Имя модели",
+            value=default_model,
+            help="Можно указать provider-qualified selector, например openrouter:google/gemini-3.1-flash-lite-preview.",
+        ).strip()
 
     model = custom_model or selected_model
+    _render_selected_model_availability_warning(model=model, config=config)
     chunk_size = st.sidebar.slider(
         "Размер целевого блока, символов",
         min_value=3000,
