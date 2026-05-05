@@ -120,6 +120,34 @@ default_run_profile = "ui-parity-pdf-structural-recovery"
 tags = ["pdf", "translation", "theology", "toc", "headings", "lists", "manual-regression"]
 provenance = "Regression source for PDF-derived long-form theological translation quality after 2026-04-27 failure."
 
+[[documents]]
+id = "lietaer-pdf-first-20-benchmark"
+source_path = "tests/sources/Rethinking-money-first-20-pages.pdf"
+artifact_prefix = "lietaer_pdf_first20_benchmark"
+output_basename = "Rethinking_money_first20_benchmark"
+structural_mode = "strict"
+min_paragraphs = 80
+has_headings = true
+min_headings = 2
+has_numbered_lists = false
+min_numbered_items = 0
+has_images = false
+min_images = 0
+has_tables = false
+min_tables = 0
+max_formatting_diagnostics = 5
+max_unmapped_source_paragraphs = 6
+max_unmapped_target_paragraphs = 3
+max_heading_level_drift = 1
+min_text_similarity = 0.96
+require_numbered_lists_preserved = false
+require_nonempty_output = true
+forbid_heading_only_collapse = true
+require_pdf_conversion = true
+default_run_profile = "ui-parity-translate-baseline"
+tags = ["pdf", "translation", "benchmark-only", "lietaer"]
+provenance = "Benchmark-only first-20-pages PDF slice for translation model evaluation."
+
 [[run_profiles]]
 id = "ui-parity-default"
 tier = "full"

@@ -186,8 +186,9 @@ First-pass profiles:
 
 ```text
 mazzucato-audiobook-core
-lietaer-core
 ```
+
+`lietaer-core` must not be used for the English-to-Russian benchmark path because its currently registered source document is Russian, not English.
 
 Do not use `end-times-pdf-core` for this benchmark MVP.
 
@@ -195,15 +196,15 @@ The first run should use a small but varied fragment set rather than full docume
 
 Recommended MVP sampling:
 
-1. 3 fragments from Mazzucato.
-2. 3 fragments from Lietaer.
+1. Use only profiles whose actual extracted fragment text matches the configured `source_language`.
+2. For the current English-to-Russian MVP, start with 3 fragments from Mazzucato and add more English-source profiles only after they are explicitly confirmed.
 3. Each fragment should be around 1,500-3,500 source characters when possible.
 4. Prefer fragments with complete paragraph boundaries.
 5. Include at least one terminology-heavy fragment.
 6. Include at least one rhetorically expressive or stylistically dense fragment.
 7. Include at least one structurally non-trivial fragment with headings, lists, or adjacent formatting.
 
-This gives approximately 6 fragments x 4 models = 24 translation calls, plus judge calls. That is enough for a fast decision-oriented first pass.
+If only one verified source-language profile is currently available, a smaller first real run is acceptable. Do not silently mix source languages just to preserve the nominal fragment count.
 
 ## Fragment Extraction Source And Method
 
@@ -235,9 +236,25 @@ Recommended MVP selection algorithm:
 4. Select per-profile fragments from early, middle, and late document regions to avoid clustering in one section.
 5. Keep paragraph boundaries intact; if a single block is too short, merge only adjacent blocks.
 6. If a profile does not yield enough in-range fragments, widen the acceptable range to 1,000-4,500 characters before giving up.
-7. If the target count still cannot be reached, write fewer fragments, record the reason in fragment metadata and the manifest, and continue the benchmark.
+7. Run source-language verification on each candidate fragment before final selection. Verification must happen on extracted fragment text, not on profile labels or file names.
+8. Reject candidates whose detected or strongly signaled source language does not match configured `source_language`.
+9. If the target count still cannot be reached after source-language filtering, write fewer fragments, record the reason in fragment metadata and the manifest, and continue the benchmark.
 
-Each fragment metadata file should record why it was selected, its source profile, source character count, paragraph count, block indexes, and whether it was single-block or merged.
+Each fragment metadata file should record why it was selected, its source profile, source character count, paragraph count, block indexes, whether it was single-block or merged, and the source-language verification result used to allow the fragment into the run.
+
+### Source-Language Verification Gate
+
+The benchmark must not assume that a profile tagged for translation has source text in the configured source language.
+
+Requirements:
+
+1. Verify each selected fragment candidate against `benchmark.source_language` before any translation requests are sent.
+2. The first implementation may use deterministic heuristics such as script ratios and function-word signals; a lightweight detector is acceptable if added later.
+3. A fragment that fails verification must be excluded from translation and judging.
+4. A fragment with inconclusive verification must also be excluded for the real benchmark path unless explicitly approved for a debug-only run.
+5. If zero fragments remain after source-language verification, abort the run before translation begins.
+6. `manifest.json` and `summary.json` must report verification counts and any rejected fragment candidates.
+7. Fragment metadata must include the verification method, status, confidence or signal strength, and a human-readable note.
 
 ## Benchmark Modes
 
@@ -332,7 +349,7 @@ Requirements:
 4. Requested model and returned model must always be recorded.
 5. Output validation happens after the final successful response is received.
 
-This benchmark is small enough that sequential execution is acceptable and reduces rate-limit noise during the MVP.
+This benchmark is small enough that sequential execution is acceptable and reduces rate-limit noise during the MVP. Source-language verification must complete before this execution phase starts.
 
 ## AI Judge Strategy
 
@@ -573,14 +590,17 @@ artifacts/runs/<run_id>/
 8. OpenRouter base URL;
 9. environment flags, excluding secrets;
 10. Python version;
-11. runtime platform details such as `uname` when available.
+11. runtime platform details such as `uname` when available;
+12. configured source language;
+13. source-language verification summary.
 
 `summary.json` must also record:
 
 1. requested judge model;
 2. returned judge model or models observed during the run;
 3. total judge cost;
-4. total translation cost.
+4. total translation cost;
+5. source-language verification summary.
 
 ## Findings For Main Project
 

@@ -124,8 +124,98 @@ ENGLISH_RESIDUE_WORD_PATTERN = re.compile(
     re.IGNORECASE,
 )
 WORD_PATTERN = re.compile(r"[A-Za-zА-Яа-яЁё0-9']+")
+LATIN_CHAR_PATTERN = re.compile(r"[A-Za-z]")
+CYRILLIC_CHAR_PATTERN = re.compile(r"[А-Яа-яЁё]")
 HEADING_PATTERN = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 LIST_PATTERN = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)", re.MULTILINE)
+ENGLISH_FUNCTION_WORDS = frozenset(
+    {
+        "the",
+        "and",
+        "of",
+        "to",
+        "in",
+        "a",
+        "is",
+        "that",
+        "for",
+        "it",
+        "as",
+        "with",
+        "was",
+        "on",
+        "be",
+        "are",
+        "by",
+        "this",
+        "from",
+        "or",
+        "an",
+        "at",
+        "we",
+        "not",
+        "have",
+        "has",
+        "but",
+        "their",
+        "they",
+        "which",
+        "can",
+        "more",
+        "than",
+        "also",
+        "into",
+        "these",
+        "those",
+        "our",
+        "who",
+        "will",
+    }
+)
+RUSSIAN_FUNCTION_WORDS = frozenset(
+    {
+        "и",
+        "в",
+        "на",
+        "что",
+        "это",
+        "как",
+        "не",
+        "с",
+        "по",
+        "для",
+        "из",
+        "к",
+        "мы",
+        "они",
+        "но",
+        "или",
+        "также",
+        "при",
+        "от",
+        "у",
+        "до",
+        "если",
+        "когда",
+        "есть",
+        "был",
+        "были",
+        "его",
+        "ее",
+        "их",
+        "который",
+        "которая",
+        "которые",
+        "чтобы",
+        "же",
+        "ли",
+        "о",
+        "об",
+        "под",
+        "над",
+        "между",
+    }
+)
 RUBRIC_WEIGHTS = {
     "russian_naturalness": 20,
     "semantic_accuracy": 18,
@@ -610,6 +700,7 @@ def _build_manifest(
     total_judge_cost: float = 0.0,
     returned_judge_models: Sequence[str] | None = None,
     notes: Sequence[str] | None = None,
+    source_language_verification: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     return {
         "benchmark_run_id": run_id,
@@ -620,6 +711,7 @@ def _build_manifest(
         "repo_commit_sha": _git_commit_sha(),
         "candidate_list": [candidate.id for candidate in config.candidates],
         "available_candidates": [candidate.id for candidate in (available_candidates or ())],
+        "source_language": config.source_language,
         "source_profiles": list(config.profiles),
         "fragment_ids": list(fragment_ids),
         "judge_model_requested": config.judge_model,
@@ -627,6 +719,7 @@ def _build_manifest(
         "openrouter_base_url": config.openrouter_base_url,
         "environment_flags": {
             "skip_judge": bool(args.skip_judge),
+            "source_language": config.source_language,
             "target_language": config.target_language,
             "openrouter_referer": config.openrouter_referer,
             "openrouter_title": config.openrouter_title,
@@ -637,6 +730,7 @@ def _build_manifest(
         "model_availability_path": _relative_artifact_path(model_availability_path),
         "total_translation_cost": round(total_translation_cost, 6),
         "total_judge_cost": round(total_judge_cost, 6),
+        "source_language_verification": dict(source_language_verification or {}),
         "notes": list(notes or ()),
     }
 
@@ -784,6 +878,142 @@ def _word_count(text: str) -> int:
     return len(WORD_PATTERN.findall(text))
 
 
+def _verification_method_name() -> str:
+    return "script_ratio_and_function_word_heuristic_v1"
+
+
+def _function_word_signal(words: Sequence[str], vocabulary: frozenset[str]) -> tuple[int, list[str]]:
+    counts: Counter[str] = Counter(word for word in words if word in vocabulary)
+    return sum(counts.values()), [word for word, _count in counts.most_common(8)]
+
+
+def _verify_source_language(text: str, expected_language: str) -> dict[str, object]:
+    words = [word.casefold() for word in WORD_PATTERN.findall(text)]
+    word_count = len(words)
+    latin_chars = len(LATIN_CHAR_PATTERN.findall(text))
+    cyrillic_chars = len(CYRILLIC_CHAR_PATTERN.findall(text))
+    alpha_chars = latin_chars + cyrillic_chars
+    english_hits, english_samples = _function_word_signal(words, ENGLISH_FUNCTION_WORDS)
+    russian_hits, russian_samples = _function_word_signal(words, RUSSIAN_FUNCTION_WORDS)
+    latin_ratio = round(latin_chars / max(1, alpha_chars), 4)
+    cyrillic_ratio = round(cyrillic_chars / max(1, alpha_chars), 4)
+    english_word_ratio = round(english_hits / max(1, word_count), 4)
+    russian_word_ratio = round(russian_hits / max(1, word_count), 4)
+    dominant_script = "latin" if latin_chars > cyrillic_chars else ("cyrillic" if cyrillic_chars > latin_chars else "mixed_or_unknown")
+    minimum_signal_hits = max(6, word_count // 60)
+    note = ""
+
+    if expected_language == "en":
+        verified = latin_ratio >= 0.55 and english_hits >= minimum_signal_hits and russian_hits <= max(3, english_hits // 3)
+        failed = cyrillic_ratio >= 0.35 and russian_hits >= minimum_signal_hits and russian_hits > english_hits
+    elif expected_language == "ru":
+        verified = cyrillic_ratio >= 0.55 and russian_hits >= minimum_signal_hits and english_hits <= max(3, russian_hits // 3)
+        failed = latin_ratio >= 0.35 and english_hits >= minimum_signal_hits and english_hits > russian_hits
+    else:
+        verified = False
+        failed = False
+        note = f"Source-language verification is implemented only for 'en' and 'ru'; expected={expected_language!r}."
+
+    if verified:
+        status = "verified"
+        allow_translation = True
+        note = note or f"Detected {expected_language} source text via dominant script and function-word signals."
+    elif failed:
+        status = "failed"
+        allow_translation = False
+        note = note or f"Source-language mismatch: expected {expected_language}, but fragment shows stronger alternate-language signals."
+    else:
+        status = "suspicious"
+        allow_translation = False
+        note = note or f"Source-language verification was inconclusive for expected={expected_language!r}; fragment withheld from translation."
+
+    expected_signal = english_word_ratio if expected_language == "en" else russian_word_ratio if expected_language == "ru" else 0.0
+    alternate_signal = russian_word_ratio if expected_language == "en" else english_word_ratio if expected_language == "ru" else max(english_word_ratio, russian_word_ratio)
+    confidence = round(abs(expected_signal - alternate_signal) + abs((latin_ratio if expected_language == "en" else cyrillic_ratio) - (cyrillic_ratio if expected_language == "en" else latin_ratio)), 4)
+    return {
+        "expected_language": expected_language,
+        "status": status,
+        "allow_translation": allow_translation,
+        "method": _verification_method_name(),
+        "confidence": confidence,
+        "dominant_script": dominant_script,
+        "word_count": word_count,
+        "script_ratios": {
+            "latin": latin_ratio,
+            "cyrillic": cyrillic_ratio,
+        },
+        "function_word_hits": {
+            "english": english_hits,
+            "russian": russian_hits,
+        },
+        "function_word_ratios": {
+            "english": english_word_ratio,
+            "russian": russian_word_ratio,
+        },
+        "signal_samples": {
+            "english": english_samples,
+            "russian": russian_samples,
+        },
+        "note": note,
+    }
+
+
+def _new_source_language_verification_summary(expected_language: str) -> dict[str, object]:
+    return {
+        "enabled": True,
+        "expected_language": expected_language,
+        "method": _verification_method_name(),
+        "checked_candidate_count": 0,
+        "selected_fragment_count": 0,
+        "selected_fragment_ids": [],
+        "rejected_candidate_count": 0,
+        "rejected_candidate_count_by_profile": {},
+        "status_counts": {
+            "verified": 0,
+            "suspicious": 0,
+            "failed": 0,
+        },
+    }
+
+
+def _record_source_language_check(summary: dict[str, object], verification: Mapping[str, object], *, profile_id: str) -> None:
+    summary["checked_candidate_count"] = int(summary.get("checked_candidate_count") or 0) + 1
+    status = str(verification.get("status") or "suspicious")
+    status_counts = dict(summary.get("status_counts") or {})
+    status_counts[status] = int(status_counts.get(status) or 0) + 1
+    summary["status_counts"] = status_counts
+    if not bool(verification.get("allow_translation")):
+        summary["rejected_candidate_count"] = int(summary.get("rejected_candidate_count") or 0) + 1
+        rejected_by_profile = dict(summary.get("rejected_candidate_count_by_profile") or {})
+        rejected_by_profile[profile_id] = int(rejected_by_profile.get(profile_id) or 0) + 1
+        summary["rejected_candidate_count_by_profile"] = rejected_by_profile
+
+
+def _record_selected_verified_fragment(summary: dict[str, object], fragment_id: str) -> None:
+    summary["selected_fragment_count"] = int(summary.get("selected_fragment_count") or 0) + 1
+    selected_ids = list(summary.get("selected_fragment_ids") or [])
+    selected_ids.append(fragment_id)
+    summary["selected_fragment_ids"] = selected_ids
+
+
+def _merge_source_language_verification_summary(target: dict[str, object], source: Mapping[str, object]) -> dict[str, object]:
+    target["checked_candidate_count"] = int(target.get("checked_candidate_count") or 0) + int(source.get("checked_candidate_count") or 0)
+    target["selected_fragment_count"] = int(target.get("selected_fragment_count") or 0) + int(source.get("selected_fragment_count") or 0)
+    target["rejected_candidate_count"] = int(target.get("rejected_candidate_count") or 0) + int(source.get("rejected_candidate_count") or 0)
+    target["selected_fragment_ids"] = list(target.get("selected_fragment_ids") or []) + list(source.get("selected_fragment_ids") or [])
+
+    target_status_counts = dict(target.get("status_counts") or {})
+    for status, count in dict(source.get("status_counts") or {}).items():
+        target_status_counts[str(status)] = int(target_status_counts.get(str(status)) or 0) + int(count or 0)
+    target["status_counts"] = target_status_counts
+
+    rejected_by_profile = dict(target.get("rejected_candidate_count_by_profile") or {})
+    for profile_id, count in dict(source.get("rejected_candidate_count_by_profile") or {}).items():
+        rejected_by_profile[str(profile_id)] = int(rejected_by_profile.get(str(profile_id)) or 0) + int(count or 0)
+    target["rejected_candidate_count_by_profile"] = rejected_by_profile
+    return target
+
+
 def _paragraph_indexes(paragraphs: Sequence[object]) -> tuple[int, ...]:
     indexes: list[int] = []
     for paragraph in paragraphs:
@@ -924,15 +1154,16 @@ def _select_fragments_for_profile(
     *,
     target_count: int,
     config: ResolvedBenchmarkConfig,
-) -> tuple[list[FragmentRecord], list[str]]:
+) -> tuple[list[FragmentRecord], list[str], dict[str, object]]:
     candidates = _build_fragment_candidates(extraction, config)
     selected: list[FragmentRecord] = []
     notes: list[str] = []
     occupied_indexes: set[int] = set()
     desired_regions = _desired_regions(target_count)
     profile_relative_source = _relative_artifact_path(extraction.source_path)
+    verification_summary = _new_source_language_verification_summary(config.source_language)
 
-    for slot_index, desired_region in enumerate(desired_regions, start=1):
+    for desired_region in desired_regions:
         eligible = [
             candidate
             for candidate in candidates
@@ -941,14 +1172,33 @@ def _select_fragments_for_profile(
         if not eligible:
             break
         region_candidates = [candidate for candidate in eligible if candidate.region == desired_region] or eligible
-        selected_candidate = max(
+        ranked_candidates = sorted(
             region_candidates,
             key=lambda candidate: (
                 _candidate_score(candidate, desired_region=desired_region, config=config),
                 -candidate.start_block_index,
                 -candidate.end_block_index,
             ),
+            reverse=True,
         )
+        selected_candidate = None
+        verification_payload: dict[str, object] | None = None
+        rejected_for_slot = 0
+        for candidate in ranked_candidates:
+            candidate_verification = _verify_source_language(candidate.text, config.source_language)
+            _record_source_language_check(verification_summary, candidate_verification, profile_id=extraction.profile.id)
+            if bool(candidate_verification.get("allow_translation")):
+                selected_candidate = candidate
+                verification_payload = candidate_verification
+                break
+            rejected_for_slot += 1
+
+        if selected_candidate is None or verification_payload is None:
+            notes.append(
+                f"Profile {extraction.profile.id} had no fragment candidate that verified as source_language={config.source_language!r} for region {desired_region}; rejected {rejected_for_slot} candidates."
+            )
+            continue
+
         occupied_indexes.update(range(selected_candidate.start_block_index, selected_candidate.end_block_index + 1))
         reason_parts = [f"region={desired_region}"]
         if config.preferred_min_chars <= selected_candidate.char_count <= config.preferred_max_chars:
@@ -957,9 +1207,15 @@ def _select_fragments_for_profile(
             reason_parts.append("within_fallback_range")
         if selected_candidate.feature_flags:
             reason_parts.append("features=" + ",".join(selected_candidate.feature_flags))
+        if rejected_for_slot > 0:
+            notes.append(
+                f"Profile {extraction.profile.id} skipped {rejected_for_slot} non-matching fragment candidates before selecting a verified source-language fragment for region {desired_region}."
+            )
+        fragment_id = f"{extraction.profile.id}-f{len(selected) + 1:02d}"
+        _record_selected_verified_fragment(verification_summary, fragment_id)
         selected.append(
             FragmentRecord(
-                fragment_id=f"{extraction.profile.id}-f{slot_index:02d}",
+                fragment_id=fragment_id,
                 profile_id=extraction.profile.id,
                 source_path=profile_relative_source,
                 source_text=selected_candidate.text,
@@ -984,6 +1240,7 @@ def _select_fragments_for_profile(
                     "selection_reason": "; ".join(reason_parts),
                     "selected_from": "merged_blocks" if selected_candidate.merged else "single_block",
                     "feature_flags": list(selected_candidate.feature_flags),
+                    "source_language_verification": verification_payload,
                 },
             )
         )
@@ -992,26 +1249,28 @@ def _select_fragments_for_profile(
         notes.append(
             f"Profile {extraction.profile.id} yielded {len(selected)} fragments after deterministic fallback selection; requested {target_count}."
         )
-    return selected, notes
+    return selected, notes, verification_summary
 
 
-def _extract_fragments(config: ResolvedBenchmarkConfig, run_dir: Path) -> tuple[list[FragmentRecord], list[dict[str, object]], list[str]]:
+def _extract_fragments(config: ResolvedBenchmarkConfig, run_dir: Path) -> tuple[list[FragmentRecord], list[dict[str, object]], list[str], dict[str, object]]:
     _ensure_project_imports()
     registry = load_validation_registry()
     target_distribution = _distribute_targets(config.max_fragments, config.profiles)
     fragments: list[FragmentRecord] = []
     fragment_metadata_payloads: list[dict[str, object]] = []
     notes: list[str] = []
+    source_language_verification = _new_source_language_verification_summary(config.source_language)
 
     for profile_id in config.profiles:
         profile = registry.get_document_profile(profile_id)
         extraction = _load_profile_extraction(profile, config)
-        selected, profile_notes = _select_fragments_for_profile(
+        selected, profile_notes, profile_verification = _select_fragments_for_profile(
             extraction,
             target_count=target_distribution.get(profile_id, 0),
             config=config,
         )
         notes.extend(profile_notes)
+        _merge_source_language_verification_summary(source_language_verification, profile_verification)
         for fragment in selected:
             fragments.append(fragment)
             metadata_payload = dict(fragment.metadata)
@@ -1023,7 +1282,13 @@ def _extract_fragments(config: ResolvedBenchmarkConfig, run_dir: Path) -> tuple[
             fragment_metadata_payloads.append(metadata_payload)
             _write_text(run_dir / "fragments" / f"{fragment.fragment_id}.source.md", fragment.source_text + "\n")
             _write_json(run_dir / "fragments" / f"{fragment.fragment_id}.metadata.json", metadata_payload)
-    return fragments, fragment_metadata_payloads, notes
+    if int(source_language_verification.get("rejected_candidate_count") or 0) > 0:
+        notes.append(
+            f"Source-language verification rejected {source_language_verification['rejected_candidate_count']} candidate fragments before translation dispatch; {len(fragments)} verified fragments remain."
+        )
+    if not fragments:
+        notes.append(f"No selected fragments passed source-language verification for expected source_language={config.source_language!r}.")
+    return fragments, fragment_metadata_payloads, notes, source_language_verification
 
 
 def _estimate_max_output_tokens(text: str) -> int:
@@ -1834,9 +2099,13 @@ def _run_judging(
                 winner_alias = str(comparison.get("winner") or "")
                 normalized_comparisons.append(
                     {
-                        "left": anonymized_map.get(left_alias, left_alias),
-                        "right": anonymized_map.get(right_alias, right_alias),
-                        "winner": "tie" if winner_alias == "tie" else anonymized_map.get(winner_alias, winner_alias),
+                        "left": next((actual_id for actual_id, alias in anonymized_map.items() if alias == left_alias), left_alias),
+                        "right": next((actual_id for actual_id, alias in anonymized_map.items() if alias == right_alias), right_alias),
+                        "winner": (
+                            "tie"
+                            if winner_alias == "tie"
+                            else next((actual_id for actual_id, alias in anonymized_map.items() if alias == winner_alias), winner_alias)
+                        ),
                         "margin": str(comparison.get("margin") or ""),
                         "reason": str(comparison.get("reason") or ""),
                         "left_alias": left_alias,
@@ -2086,16 +2355,22 @@ def _summary_markdown(
     total_translation_cost: float,
     total_judge_cost: float,
     notes: Sequence[str],
+    source_language_verification: Mapping[str, object],
 ) -> str:
     lines = [
         f"# Translation Benchmark Summary: {run_id}",
         "",
         "## Run",
+        f"- Source language: {config.source_language}",
         f"- Target language: {config.target_language_name} ({config.target_language})",
         f"- Profiles: {', '.join(config.profiles)}",
         f"- Candidate count: {len(candidate_summaries)}",
         f"- Total translation cost: {total_translation_cost:.6f}",
         f"- Total judge cost: {total_judge_cost:.6f}",
+        "- Source-language verification: "
+        f"checked={int(source_language_verification.get('checked_candidate_count') or 0)}, "
+        f"selected={int(source_language_verification.get('selected_fragment_count') or 0)}, "
+        f"rejected={int(source_language_verification.get('rejected_candidate_count') or 0)}",
         "",
         "## Candidates",
     ]
@@ -2234,6 +2509,7 @@ def _aggregate_summary(
     available_candidates: Sequence[CandidateConfig],
     run_dir: Path,
     notes: Sequence[str],
+    source_language_verification: Mapping[str, object],
 ) -> tuple[dict[str, object], str]:
     fragment_lookup = {fragment.fragment_id: fragment for fragment in fragments}
     anonymized_mapping_cache = {
@@ -2274,6 +2550,9 @@ def _aggregate_summary(
     )
     summary_payload = {
         "benchmark_run_id": run_id,
+        "source_language": {
+            "id": config.source_language,
+        },
         "target_language": {
             "id": config.target_language,
             "name": config.target_language_name,
@@ -2284,6 +2563,7 @@ def _aggregate_summary(
         "returned_judge_models": observed_judge_models,
         "total_translation_cost": round(total_translation_cost, 6),
         "total_judge_cost": round(total_judge_cost, 6),
+        "source_language_verification": dict(source_language_verification),
         "candidates": candidate_summaries,
         "fragment_count": len(fragments),
         "translation_call_count": len(translation_results),
@@ -2297,6 +2577,7 @@ def _aggregate_summary(
         total_translation_cost=total_translation_cost,
         total_judge_cost=total_judge_cost,
         notes=notes,
+        source_language_verification=source_language_verification,
     )
     _write_json(run_dir / "summary.json", summary_payload)
     _write_text(run_dir / "summary.md", summary_markdown)
@@ -2350,6 +2631,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             fragment_ids=[],
             model_availability_path=run_dir / "model_availability.json",
             notes=["Fewer than two candidate models remained available after model catalog preflight."],
+            source_language_verification=_new_source_language_verification_summary(config.source_language),
         )
         _write_json(run_dir / "manifest.json", manifest)
         _write_json(
@@ -2371,7 +2653,47 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps({"benchmark_run_id": run_id, "status": "aborted_preflight"}, ensure_ascii=False, indent=2))
         return 2
 
-    fragments, _fragment_metadata, extraction_notes = _extract_fragments(config, run_dir)
+    fragments, _fragment_metadata, extraction_notes, source_language_verification = _extract_fragments(config, run_dir)
+    if not fragments:
+        summary_payload = {
+            "benchmark_run_id": run_id,
+            "status": "aborted_source_language_verification",
+            "reason": "no_verified_source_language_fragments",
+            "source_language": {
+                "id": config.source_language,
+            },
+            "source_profiles": list(config.profiles),
+            "fragment_count": 0,
+            "source_language_verification": dict(source_language_verification),
+            "notes": list(extraction_notes),
+        }
+        summary_md = (
+            "# Translation Benchmark Summary\n\n"
+            f"Run aborted: no selected fragments passed source-language verification for expected source_language={config.source_language!r}.\n"
+        )
+        manifest = _build_manifest(
+            run_id=run_id,
+            config=config,
+            args=args,
+            run_dir=run_dir,
+            status="aborted_source_language_verification",
+            available_candidates=available_candidates,
+            fragment_ids=[],
+            model_availability_path=run_dir / "model_availability.json",
+            notes=extraction_notes,
+            source_language_verification=source_language_verification,
+        )
+        _write_json(run_dir / "summary.json", summary_payload)
+        _write_text(run_dir / "summary.md", summary_md)
+        _write_json(run_dir / "manifest.json", manifest)
+        _copy_latest_aliases(
+            run_dir=run_dir,
+            summary_json_path=run_dir / "summary.json",
+            summary_md_path=run_dir / "summary.md",
+            manifest_path=run_dir / "manifest.json",
+        )
+        print(json.dumps(summary_payload, ensure_ascii=False, indent=2))
+        return 3
     call_projection = _projected_call_counts(len(fragments), len(available_candidates), skip_judge=bool(args.skip_judge))
     projection_note = (
         f"Projected calls: translation={call_projection['translation_calls']}, "
@@ -2418,6 +2740,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         available_candidates=available_candidates,
         run_dir=run_dir,
         notes=notes,
+        source_language_verification=source_language_verification,
     )
     manifest = _build_manifest(
         run_id=run_id,
@@ -2432,6 +2755,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         total_judge_cost=float(summary_payload.get("total_judge_cost") or 0.0),
         returned_judge_models=list(summary_payload.get("returned_judge_models") or []),
         notes=notes,
+        source_language_verification=source_language_verification,
     )
     _write_json(run_dir / "manifest.json", manifest)
     _copy_latest_aliases(
