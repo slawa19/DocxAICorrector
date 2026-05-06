@@ -437,10 +437,10 @@ def test_initialize_processing_run_builds_segment_runtime_metadata():
             {"target_text": "block-2", "target_chars": 7, "context_chars": 0, "segment_id": "seg_0002"},
         ],
         selected_segment_ids=("seg_0001", "seg_0002"),
-        source_paragraphs=[
+        source_paragraphs=cast(Any, [
             type("ParagraphStub", (), {"segment_id": "seg_0001", "text": "Chapter 1"})(),
             type("ParagraphStub", (), {"segment_id": "seg_0002", "text": "Chapter 2"})(),
-        ],
+        ]),
         image_assets=[],
         image_mode="safe",
         app_config={},
@@ -455,7 +455,7 @@ def test_initialize_processing_run_builds_segment_runtime_metadata():
         runtime=None,
     )
 
-    initialization = initialize_processing_run(
+    initialization: Any = initialize_processing_run(
         context=context,
         dependencies=dependencies,
         emitters=emitters,

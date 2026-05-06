@@ -3,7 +3,7 @@ import time
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Protocol, TypedDict
+from typing import Any, Protocol, TypedDict, cast
 
 from docxaicorrector.document._document import summarize_boundary_normalization_metrics, validate_docx_source_bytes
 from docxaicorrector.core.models import StructureRecognitionSummary
@@ -427,8 +427,8 @@ def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: 
     )
 
 
-def build_structure_manifest_payload(*, prepared_run_context: PreparedRunContext, app_config: dict[str, object] | None = None) -> dict[str, object]:
-    config = {} if app_config is None else dict(app_config)
+def build_structure_manifest_payload(*, prepared_run_context: PreparedRunContext, app_config: dict[str, object] | None = None) -> dict[str, Any]:
+    config: dict[str, Any] = cast(dict[str, Any], {} if app_config is None else dict(app_config))
     uploaded_bytes = bytes(getattr(prepared_run_context, "uploaded_file_bytes", b"") or b"")
     source_name = str(getattr(prepared_run_context, "uploaded_filename", "document.docx") or "document.docx")
     segments = list(getattr(prepared_run_context, "segments", []) or [])

@@ -2816,10 +2816,10 @@ def test_run_document_processing_emits_segment_statuses_during_segmented_run_bef
                 "segment_id": "seg_0002",
             },
         ],
-        source_paragraphs=[
+        source_paragraphs=cast(Any, [
             SimpleNamespace(segment_id="seg_0001", text="Chapter 1"),
             SimpleNamespace(segment_id="seg_0002", text="Chapter 2"),
-        ],
+        ]),
         image_assets=[],
         image_mode="safe",
         app_config={},
@@ -2869,7 +2869,7 @@ def test_run_document_processing_emits_active_segment_before_failed_terminal_res
                 "segment_id": "seg_0001",
             },
         ],
-        source_paragraphs=[SimpleNamespace(segment_id="seg_0001", text="Chapter 1")],
+        source_paragraphs=cast(Any, [SimpleNamespace(segment_id="seg_0001", text="Chapter 1")]),
         image_assets=[],
         image_mode="safe",
         app_config={},

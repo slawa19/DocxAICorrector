@@ -134,7 +134,7 @@ def write_structure_manifest_artifact(
 
 
 def _to_jsonable(value: object) -> object:
-    if is_dataclass(value):
+    if is_dataclass(value) and not isinstance(value, type):
         return {key: _to_jsonable(item) for key, item in asdict(value).items()}
     if isinstance(value, Mapping):
         return {str(key): _to_jsonable(item) for key, item in value.items()}

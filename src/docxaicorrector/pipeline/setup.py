@@ -113,7 +113,7 @@ def build_processing_context(
     *,
     uploaded_file: object,
     jobs: object,
-    selected_segment_ids: object = None,
+    selected_segment_ids: Sequence[Any] | None = None,
     source_paragraphs: object,
     image_assets: object,
     image_mode: str,

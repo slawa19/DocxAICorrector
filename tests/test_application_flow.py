@@ -421,7 +421,7 @@ def test_document_facade_build_semantic_blocks_forwards_hard_boundaries(monkeypa
     )
 
     result = document_facade.build_semantic_blocks(
-        ["p1", "p2"],
+        cast(Any, ["p1", "p2"]),
         max_chars=7000,
         relations=["rel"],
         hard_boundary_paragraph_ids={"p0002"},
