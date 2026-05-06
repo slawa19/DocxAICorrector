@@ -352,6 +352,20 @@ detector_version
 
 This means a repeated analysis of the same file should produce the same segment IDs as long as the structure is unchanged. If IDs change, the UI can clearly show that the detected structure changed.
 
+### Boundary Fingerprint
+
+`boundary_fingerprint` must be deterministic for the same detected segment boundary.
+
+Recommended Phase 1 rule:
+
+```text
+boundary_fingerprint = sha1(
+  f"{normalized_title}|{level}|{start_paragraph_id}|{end_paragraph_id}"
+)[:8]
+```
+
+This fingerprint is segment-local and is intended for structure comparison and manifest auditing. It does not replace `segment_id`, which also includes source identity and detector version inputs.
+
 ### Structure Fingerprint
 
 Compute a document-level `structure_fingerprint` from the ordered list of segment boundary fingerprints.
@@ -387,6 +401,14 @@ class SegmentSelection:
     output_mode: str = "selected_only"  # selected_only, selected_with_context, hybrid_document, final_translated_book
 ```
 
+Output mode precedence rules:
+
+```text
+1. `selected_only` ignores `include_front_matter` and `include_toc` and outputs exactly the selected segment set.
+2. `selected_with_context` may include front matter and TOC according to `include_front_matter` and `include_toc`.
+3. `hybrid_document` and `final_translated_book` are full-document modes and therefore ignore `include_front_matter` and `include_toc` as selection filters.
+```
+
 ### Processing Flow
 
 ```text
@@ -407,6 +429,19 @@ Include a job if all output paragraph IDs belong to selected segment coverage.
 ```
 
 If cached jobs predate segment hard boundaries, invalidate and rebuild jobs.
+
+### Full-Book Processing Path
+
+The system must preserve the existing monolithic processing path as a first-class execution mode.
+
+Rules:
+
+```text
+1. Full-book processing does not require `structure_confirmed = true`.
+2. Full-book processing does not depend on `selected_segment_ids`.
+3. Full-book processing reuses the existing prepared document and legacy/full-book job set.
+4. Full-book processing is the safe fallback when chapter detection is ambiguous or unacceptable.
+```
 
 ### Processing Context Changes
 
@@ -534,8 +569,8 @@ Responsibilities:
 |---|---|---|
 | `selected_only` | Voice-over chapter export | DOCX and Markdown only for selected chapters |
 | `selected_with_context` | Episodic publication with context | Optional title/front matter plus selected chapters |
-| `hybrid_document` | Incremental translation review | Full document with completed segments translated and pending segments original or placeholder |
-| `final_translated_book` | Final book output | Full translated document, enabled only when all required segments are complete |
+| `hybrid_document` | Incremental translation review | Full document with completed segments translated and pending segments kept as original source text |
+| `final_translated_book` | Final book output | Full translated document, enabled only when all required segments are complete in the current session |
 
 ### Reassembly Manifest Example
 
@@ -579,6 +614,7 @@ The intermediate UI state "Analysis Complete + Chapter Selector" must be represe
 ```text
 structure_confirmed
 confirmed_structure_fingerprint
+confirmed_at_settings_hash
 selected_segment_ids
 segments_loaded_for_source_token
 ```
@@ -616,8 +652,17 @@ Analysis-review state is a session/UI concern, not a new processing outcome.
 | Selection Summary                                                    |
 | 2 chapters selected · 8,921 words · approx. 11 LLM blocks            |
 |                                                                     |
-| [Confirm Structure] [Process Selected] [Export Structure Manifest]   |
+| [Confirm Structure] [Process Selected] [Process Entire Book]         |
+| [Export Structure Manifest]                                          |
 +---------------------------------------------------------------------+
+```
+
+Phase 1 clarification:
+
+```text
+Until Phase 2 segment-aware job filtering is implemented, `Process Selected` should be visible but disabled, with a tooltip or inline note that chapter-based execution becomes available in Phase 2.
+Phase 1 may render the selection UI and structure confirmation flow, but full-book processing remains the only executable processing path.
+`Process Entire Book` must remain available as the explicit legacy/full-book action.
 ```
 
 Use Streamlit native primitives where possible:
@@ -665,7 +710,108 @@ Recommended UI elements:
 | `Boundary preview` | Shows the first and last paragraph preview for each chapter |
 | `Evidence expander` | Explains why the boundary was detected |
 | `Confirm Structure` button | Freezes the current in-session outline for processing |
+| `Process Entire Book` button | Runs the existing monolithic full-book pipeline without depending on chapter selection |
 | `Export Structure Manifest` button | Lets user save the outline for later comparison/audit |
+
+### Action Button Behavior
+
+#### `Confirm Structure`
+
+Purpose:
+
+- freezes the full currently detected outline for the current session, independent of search/filter state in the UI;
+- stores `confirmed_structure_fingerprint` in session state;
+- stores a snapshot hash of detection-affecting settings in session state as `confirmed_at_settings_hash`;
+- marks `structure_confirmed = true`;
+- allows subsequent processing actions to use the confirmed segment list rather than a recomputed one.
+
+When the button is clicked:
+
+```text
+1. Validate that a detected segment list exists for the active source_token.
+2. Validate that every segment in the full detected outline has a deterministic segment_id and boundary_fingerprint.
+3. Save confirmed_structure_fingerprint in session state.
+4. Save a settings snapshot hash for all detection-affecting settings as `confirmed_at_settings_hash`.
+5. Save the full confirmed segment list for the current source_token in session state.
+6. Enable processing actions that depend on confirmed structure.
+```
+
+The button does not:
+
+- write translation outputs;
+- start translation;
+- persist cross-session completion state;
+- silently re-run structure detection.
+
+If structure changes after confirmation:
+
+```text
+1. Invalidate structure_confirmed.
+2. Show a warning banner.
+3. Disable segment-based processing until the user confirms the new structure again.
+```
+
+Semantics note:
+
+```text
+`Confirm Structure` always applies to the full detected outline for the active source_token.
+It is not a partial confirmation of only the currently filtered or manually highlighted subset.
+```
+
+#### `Export Structure Manifest`
+
+Purpose:
+
+- writes the currently detected structure to `.run/structure_manifests/...segments.json`;
+- gives the user a stable audit artifact showing what the system recognized;
+- allows later manual comparison between repeated analyses of the same file.
+
+When the button is clicked:
+
+```text
+1. Serialize the currently displayed structure.
+2. Include source metadata, detector_version, structure_fingerprint, summary, and ordered segment list.
+3. Save the manifest to `.run/structure_manifests/`.
+4. Show the saved manifest path and fingerprint in the UI.
+```
+
+The button does not:
+
+- confirm the structure automatically;
+- enable processing by itself;
+- alter selected chapters;
+- act as a source of truth over the live UI state.
+
+Export is primarily for verification, audit, debugging, and side-by-side comparison of repeated analyses.
+
+#### `Process Entire Book`
+
+Purpose:
+
+- starts the existing full-book processing path;
+- bypasses chapter selection as an execution requirement;
+- remains available even when the user does not trust detected chapter structure.
+
+When the button is clicked:
+
+```text
+1. Use the already prepared source document and existing full-book jobs.
+2. Ignore selected chapter checkboxes as an execution filter.
+3. Start the current legacy/full-book processing flow.
+4. Show standard run progress and final full-book artifacts.
+```
+
+The button does not:
+
+- require `structure_confirmed = true`;
+- depend on selected segments;
+- claim that detected chapter boundaries were accepted by the user.
+
+Recommended UX rule:
+
+```text
+`Process Entire Book` is the safe fallback when chapter detection is incomplete, ambiguous, or visibly wrong.
+```
 
 Chapter row concept:
 
@@ -685,6 +831,89 @@ Low-confidence row concept:
     Warning: no explicit heading style or TOC match found.
     Review before processing.
 ```
+
+### What The User Does If Structure Does Not Match The Book
+
+The UI must not assume the detected structure is always correct. If the user sees that chapter boundaries, titles, nesting, or omitted sections do not match the real book, the expected actions are:
+
+```text
+1. Do not confirm the structure yet.
+2. Expand the suspicious chapter rows and inspect boundary previews and evidence.
+3. Export the structure manifest if the user wants an audit snapshot or needs to compare multiple attempts.
+4. Adjust analysis-affecting settings if available, then re-run analysis.
+5. Review the new structure_fingerprint and updated chapter tree.
+6. Confirm structure only after the visible chapter map is acceptable.
+```
+
+Examples of user-visible mismatch cases:
+
+- one chapter was split into two segments incorrectly;
+- several short sections were merged into one chapter;
+- front matter or bibliography was treated as body chapters;
+- TOC matched the wrong body heading;
+- PDF-derived layout noise created false boundaries.
+
+### Recovery Actions When Structure Is Wrong
+
+If the structure is visibly wrong, the UI should guide the user toward one of these actions:
+
+| User action | Intended outcome |
+|---|---|
+| Review boundary previews | Verify whether the detected start/end paragraphs are acceptable |
+| Expand evidence details | Understand why a segment boundary was created |
+| Re-run analysis | Recompute segments after changing relevant settings |
+| Export structure manifest | Save the current faulty or candidate structure for comparison |
+| Use full-book processing fallback | Continue without chapter selection if chapter segmentation is not trustworthy yet |
+
+Phase 1 and early Phase 2 rule:
+
+```text
+If the user does not trust the detected chapter structure, the safe fallback is to avoid segment-based processing and use the existing full-book processing path.
+```
+
+### Re-Analysis UX When Structure Changes
+
+If the user re-runs analysis and the new structure differs from the previously viewed or confirmed one, the UI should show a visible warning such as:
+
+```text
+Detected chapter structure changed after re-analysis.
+Previous fingerprint: 8fd1c2...
+Current fingerprint:  a91be7...
+Review the updated chapter list before processing.
+```
+
+Expected user flow after this warning:
+
+```text
+1. Compare the new chapter tree with the book.
+2. Inspect the chapters whose boundaries changed.
+3. Re-confirm structure if the new outline is acceptable.
+4. If still unacceptable, export the manifest and either re-run analysis again or fall back to full-book processing.
+```
+
+### Settings Change Detection After Confirmation
+
+The UI must be able to detect when detection-affecting settings changed after structure confirmation.
+
+Required mechanism:
+
+```text
+1. At confirmation time, compute and store `confirmed_at_settings_hash` in session state.
+2. The hash must include all settings that can affect structure detection.
+3. On every rerun, recompute the current settings hash.
+4. If the current hash differs from `confirmed_at_settings_hash`, invalidate `structure_confirmed`.
+5. Show a warning that the confirmed structure is no longer valid for the current settings.
+```
+
+Minimum hash inputs:
+
+- uploaded source token;
+- structure recognition mode;
+- paragraph boundary normalization mode;
+- minimum heading confidence;
+- detector version;
+- PDF/DOC conversion-relevant settings;
+- chunk size only if synthetic oversized-segment splitting depends on it.
 
 ### Structure Stability Rules
 
@@ -748,6 +977,7 @@ expanded_segment_ids
 segment_status_by_id
 active_source_token
 confirmed_structure_fingerprint
+confirmed_at_settings_hash
 structure_confirmed
 chapter_selector_filter
 chapter_selector_search
@@ -758,6 +988,13 @@ Recommended additional key:
 
 ```text
 segments_loaded_for_source_token
+```
+
+Status note for setting changes:
+
+```text
+Changing language, processing operation, or other non-detection runtime settings does not automatically rewrite existing in-session `completed` segment statuses.
+Those statuses remain a record of what was completed earlier in the same session, and any semantic mismatch between earlier artifacts and new settings is visible responsibility of the user until a future stale-status feature is introduced.
 ```
 
 The selector should remain visible after a run completes so the user can continue processing the next chapter without re-uploading or manually splitting the source file.
@@ -859,8 +1096,17 @@ Request:
 {
   "source_token": "upload_...",
   "structure_fingerprint": "...",
-  "confirmed_segment_ids": ["seg_0001_...", "seg_0002_..."]
+  "confirmed_segment_ids": ["seg_0001_...", "seg_0002_...", "seg_0003_..."],
+  "confirmed_at_settings_hash": "..."
 }
+```
+
+Semantics:
+
+```text
+`confirmed_segment_ids` is not a partial-selection mechanism.
+It is the ordered full-outline segment ID list that the client saw at confirmation time and sends back as a verification payload.
+If the server-side detected outline and the provided full list differ, confirmation must be rejected and the user must review the structure again.
 ```
 
 Response:
@@ -923,6 +1169,13 @@ Response:
 }
 ```
 
+Clarification:
+
+```text
+`output_mode` in `/api/current-analysis/runs` determines how artifacts should be assembled after the run completes.
+Precondition enforcement for `final_translated_book` applies at the reassemble step, not at run creation.
+```
+
 ### Get Run Status
 
 ```http
@@ -959,6 +1212,13 @@ Response:
 }
 ```
 
+Stopped-run status rule:
+
+```text
+If a run ends with STOPPED, segments with status `queued` or `processing` must revert to `pending`.
+Segments already marked `completed` or `failed` keep their status.
+```
+
 ### Retry Failed Segments
 
 ```http
@@ -983,6 +1243,49 @@ Response:
 }
 ```
 
+Phase gating rule:
+
+```text
+Retry UI and retry API are Phase 3 capabilities.
+Before Phase 3, failed segments may be shown in the UI, but retry controls should be visible and disabled, or omitted entirely.
+```
+
+### Start Full-Book Processing
+
+```http
+POST /api/current-analysis/full-book-run
+```
+
+Request:
+
+```json
+{
+  "processing_operation": "translate",
+  "source_language": "en",
+  "target_language": "ru",
+  "translation_domain": "theology",
+  "model_selector": "default",
+  "max_retries": 2
+}
+```
+
+Response:
+
+```json
+{
+  "run_id": "run_full_...",
+  "status": "queued",
+  "mode": "full_book"
+}
+```
+
+Contract:
+
+```text
+This endpoint runs the existing full-book processing path.
+It ignores chapter selection and does not require `structure_confirmed = true`.
+```
+
 ### Reassemble Artifacts
 
 ```http
@@ -997,6 +1300,14 @@ Request:
   "segment_ids": "all_completed",
   "include_original_for_pending": false
 }
+```
+
+Precondition guard:
+
+```text
+`final_translated_book` is allowed only when all required segments are completed in the current session.
+Required segments = all detected segments except those explicitly marked `skipped` by design, such as TOC or bibliography when excluded by the active workflow rules.
+If the precondition is not satisfied, the UI must disable this action and the API must return a validation error.
 ```
 
 Response:
@@ -1023,12 +1334,14 @@ Rules:
 - Retry should target failed jobs only when possible.
 - Partial outputs from completed segments must remain downloadable.
 - Completed segment outputs are only tracked in the current session and by saved artifacts.
+- If a run ends with `STOPPED`, segments still in `queued` or `processing` revert to `pending`.
+- Segments already marked `completed` or `failed` keep their status after `STOPPED`.
 
 UI behavior:
 
 - Failed chapter shows a red badge.
 - Expandable error details show failed block index, error code, retry count, and last message.
-- Retry button reuses completed job outputs and runs only failed or pending jobs.
+- Retry button reuses completed job outputs and runs only failed or pending jobs once Phase 3 retry support exists.
 - The chapter selector remains available after failure.
 
 ## Edge Cases
@@ -1046,6 +1359,8 @@ UI behavior:
 | Tables spanning pages | Keep table as atomic block and avoid splitting inside it |
 | User reprocesses completed chapter | Create a new artifact bundle for the current session and leave previous saved artifacts untouched |
 | Settings changed before processing | Invalidate structure confirmation if settings affect detection |
+| Run is stopped mid-segment | Revert `queued` and `processing` segments to `pending`; keep `completed` and `failed` unchanged |
+| User changes target language or processing operation mid-session | Keep existing `completed` statuses as historical in-session status; do not auto-invalidate them in Phase 1 |
 | Partial translation changes glossary | Update memory and use newer memory version for later segments |
 | Same file is analyzed twice and structure differs | Compare `structure_fingerprint`, warn the user, and require confirmation again |
 
@@ -1063,13 +1378,16 @@ flowchart TD
     H --> I[Build Processing Jobs]
     I --> J[Analysis Complete UI]
     J --> K[User Reviews and Confirms Structure]
+    J --> T[User Chooses Process Entire Book]
     K --> L[User Selects Segments]
     L --> M[Create Segment-Aware Processing Run]
     M --> N[Filter Jobs by Selected Segment Coverage]
     N --> O[Process Jobs with Global Context and Glossary]
     O --> P[Save Selected Segment Artifacts]
     P --> Q[Update Session Segment Statuses]
-    Q --> R{All Required Segments Complete?}
+    T --> U[Run Existing Full-Book Pipeline]
+    U --> V[Write Full-Book Artifacts]
+    Q --> R{All Required Segments Complete In Current Session?}
     R -->|No| J
     R -->|Yes| S[Build Final Reassembled DOCX]
 ```
@@ -1089,11 +1407,13 @@ flowchart TD
 - Add structure manifest export.
 - Keep analysis-review state in session flags rather than expanding `ProcessingOutcome`.
 - Keep existing full-book processing as the default path.
+- Add explicit `Process Entire Book` UI action backed by the legacy/full-book processing path.
 
 ### Phase 2: Segment-Aware Processing
 
 - Add segment-to-job mapping.
 - Add hard segment boundaries to semantic block generation.
+- Update the `build_semantic_blocks(...)` re-export path in `src/docxaicorrector/document/_document.py` so the new `hard_boundary_paragraph_ids` parameter is forwarded correctly from preparation code.
 - Add `selected_segment_ids` to processing context.
 - Filter jobs by selected segments.
 - Add segment-level status updates, preferably by extending existing event payloads in Phase 1.
@@ -1106,13 +1426,14 @@ flowchart TD
 - Optionally allow importing/exporting structure manifests for manual comparison.
 - Add failed-segment retry.
 - Invalidate structure confirmation when detection-affecting settings change.
+- Store and compare `confirmed_at_settings_hash` for detection-affecting settings.
 
 ### Phase 4: Reassembly And Final Book Generation
 
 - Add reassembly service.
 - Support `selected_only`, `selected_with_context`, `hybrid_document`, and `final_translated_book` output modes consistently across UI, API, and processing contracts.
 - Write segment-aware artifact manifests.
-- Enable final book build only when required segments are complete.
+- Enable final book build only when all required segments are complete in the current session.
 
 ### Phase 5: Translation Memory And Consistency
 
