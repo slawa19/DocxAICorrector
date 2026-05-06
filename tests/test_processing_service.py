@@ -3,6 +3,8 @@ from typing import Any, cast
 import docxaicorrector.processing.processing_service as processing_service
 from docxaicorrector.core.models import ImageAsset
 from docxaicorrector.processing.processing_service import ProcessingService
+from docxaicorrector.pipeline.contracts import ProcessingContext, ProcessingDependencies
+from docxaicorrector.pipeline.setup import initialize_processing_run
 from docxaicorrector.runtime.events import AppendLogEvent, FinalizeProcessingStatusEvent, SetStateEvent, WorkerCompleteEvent
 
 
@@ -35,6 +37,9 @@ def _build_service(**overrides):
         "resolve_uploaded_filename_fn": lambda uploaded_file: str(uploaded_file),
         "image_model_call_budget_cls": object,
         "image_model_call_budget_exceeded_cls": RuntimeError,
+        "get_provider_client_fn": None,
+        "get_client_for_model_selector_fn": None,
+        "resolve_model_selector_fn": None,
     }
     defaults.update(overrides)
     return ProcessingService(dependencies=processing_service.build_processing_service_dependencies(**defaults))
@@ -296,6 +301,7 @@ def test_run_prepared_background_document_passes_prepared_payload_into_processin
         {
             "uploaded_filename": "prepared-report.docx",
             "jobs": [{"target_text": "one"}],
+            "selected_segment_ids": ["seg_0001", "seg_0002"],
             "paragraphs": ["p1"],
             "image_assets": ["img1"],
             "translation_domain": "theology",
@@ -325,12 +331,152 @@ def test_run_prepared_background_document_passes_prepared_payload_into_processin
 
     assert captured["run"]["uploaded_file"] == "prepared-report.docx"
     assert captured["run"]["jobs"] == [{"target_text": "one", "job_kind": "passthrough"}]
+    assert captured["run"]["selected_segment_ids"] == ["seg_0001", "seg_0002"]
     assert captured["run"]["source_paragraphs"] == ["p1"]
     assert captured["run"]["image_assets"] == ["img1"]
     assert captured["run"]["app_config"]["translation_second_pass_enabled"] is True
     assert captured["run"]["app_config"]["translation_second_pass_model"] == "gpt-5.4"
     assert captured["run"]["app_config"]["translation_domain_default"] == "theology"
     assert captured["run"]["app_config"]["translation_domain_instructions"] == "TERM PLAN"
+
+
+def test_run_processing_worker_passes_selected_segment_ids_to_pipeline(monkeypatch):
+    captured = {}
+    service = _build_service(
+        run_document_processing_impl_fn=lambda **kwargs: (captured.setdefault("run", kwargs), "succeeded")[1],
+    )
+
+    service.run_processing_worker(
+        runtime=type("RuntimeStub", (), {"emit": lambda self, event: None})(),
+        uploaded_filename="report.docx",
+        jobs=[{"target_text": "x", "context_before": "", "context_after": "", "target_chars": 1, "context_chars": 0}],
+        selected_segment_ids=["seg_0003"],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+    )
+
+    assert captured["run"]["selected_segment_ids"] == ["seg_0003"]
+
+
+def test_run_prepared_background_document_passes_selected_segment_ids_none_when_absent(monkeypatch):
+    captured = {}
+    service = _build_service(
+        run_document_processing_impl_fn=lambda **kwargs: (captured.setdefault("run", kwargs), "succeeded")[1],
+    )
+    prepared = type(
+        "PreparedRunContextStub",
+        (),
+        {
+            "uploaded_filename": "prepared-report.docx",
+            "jobs": [{"target_text": "one"}],
+            "paragraphs": ["p1"],
+            "image_assets": ["img1"],
+            "translation_domain": "general",
+            "translation_domain_instructions": "",
+        },
+    )()
+
+    monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: uploaded_file)
+    monkeypatch.setattr(
+        processing_service.application_flow,
+        "prepare_run_context_for_background",
+        lambda **kwargs: prepared,
+    )
+
+    service.run_prepared_background_document(
+        uploaded_file="report.docx",
+        chunk_size=123,
+        image_mode="safe",
+        keep_all_image_variants=True,
+        app_config={"x": 1},
+        model="gpt-5.4",
+        max_retries=2,
+        progress_callback=None,
+        runtime={"state": {}},
+    )
+
+    assert captured["run"]["selected_segment_ids"] is None
+
+
+def test_initialize_processing_run_builds_segment_runtime_metadata():
+    dependencies = ProcessingDependencies(
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **kwargs: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: "markdown",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=lambda markdown_text, image_assets: {},
+        convert_markdown_to_docx_bytes=lambda markdown_text: b"docx",
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+        write_ui_result_artifacts=lambda **kwargs: {},
+    )
+    emitters = type(
+        "EmittersStub",
+        (),
+        {
+            "emit_state": lambda *args, **kwargs: None,
+            "emit_finalize": lambda *args, **kwargs: None,
+            "emit_activity": lambda *args, **kwargs: None,
+            "emit_log": lambda *args, **kwargs: None,
+            "emit_status": lambda *args, **kwargs: None,
+        },
+    )()
+    context = ProcessingContext(
+        uploaded_file="report.docx",
+        uploaded_filename="report.docx",
+        jobs=[
+            {"target_text": "block-1", "target_chars": 7, "context_chars": 0, "segment_id": "seg_0001"},
+            {"target_text": "block-2", "target_chars": 7, "context_chars": 0, "segment_id": "seg_0002"},
+        ],
+        selected_segment_ids=("seg_0001", "seg_0002"),
+        source_paragraphs=[
+            type("ParagraphStub", (), {"segment_id": "seg_0001", "text": "Chapter 1"})(),
+            type("ParagraphStub", (), {"segment_id": "seg_0002", "text": "Chapter 2"})(),
+        ],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="edit",
+        source_language="en",
+        target_language="ru",
+        translation_domain="general",
+        translation_domain_instructions="",
+        on_progress=lambda **kwargs: None,
+        runtime=None,
+    )
+
+    initialization = initialize_processing_run(
+        context=context,
+        dependencies=dependencies,
+        emitters=emitters,
+        emit_failed_result_fn=lambda **kwargs: "failed",
+        summarize_block_plan_fn=lambda jobs: {
+            "block_count": len(jobs),
+            "llm_block_count": len(jobs),
+            "passthrough_block_count": 0,
+            "total_target_chars": 14,
+            "min_target_chars": 7,
+            "max_target_chars": 7,
+            "avg_target_chars": 7.0,
+            "first_block_target_chars": [7, 7],
+            "blocks": [],
+        },
+        initialization_factory_fn=lambda **kwargs: kwargs,
+    )
+
+    assert initialization["segment_ids_by_job"] == ("seg_0001", "seg_0002")
+    assert initialization["segment_titles_by_id"] == {"seg_0001": "Chapter 1", "seg_0002": "Chapter 2"}
+    assert initialization["segment_job_totals"] == {"seg_0001": 1, "seg_0002": 1}
 
 
 def test_run_prepared_background_document_supports_distinct_prepare_and_processing_callbacks(monkeypatch):

@@ -297,6 +297,27 @@ def apply_preparation_complete(*, prepared_run_context, upload_marker: str, rese
     st.session_state.preparation_input_marker = upload_marker
     st.session_state.preparation_failed_marker = ""
     st.session_state.selected_source_token = uploaded_token
+    st.session_state.selected_segment_ids = [
+        str(getattr(segment, "segment_id", "") or "")
+        for segment in (getattr(prepared_run_context, "segments", None) or [])
+        if str(getattr(segment, "segment_id", "") or "").strip()
+    ]
+    st.session_state.segment_status_by_id = {
+        str(getattr(segment, "segment_id", "") or ""): "pending"
+        for segment in (getattr(prepared_run_context, "segments", None) or [])
+        if str(getattr(segment, "segment_id", "") or "").strip()
+    }
+    st.session_state.segment_progress_by_id = {
+        str(getattr(segment, "segment_id", "") or ""): 0.0
+        for segment in (getattr(prepared_run_context, "segments", None) or [])
+        if str(getattr(segment, "segment_id", "") or "").strip()
+    }
+    st.session_state.active_segment_id = ""
+    st.session_state.active_segment_title = ""
+    st.session_state.structure_confirmed = False
+    st.session_state.confirmed_structure_fingerprint = ""
+    st.session_state.confirmed_at_settings_hash = ""
+    st.session_state.segments_loaded_for_source_token = uploaded_token
     set_prepared_source_key(str(getattr(prepared_run_context, "prepared_source_key", "")))
     set_preparation_runtime(worker=None, event_queue=None)
     st.session_state.processing_outcome = ProcessingOutcome.IDLE.value
@@ -434,6 +455,71 @@ def get_manual_text_settings_override_for_token() -> object | None:
     return st.session_state.get("manual_text_settings_override_for_token")
 
 
+def get_structure_manifest_notice_details() -> object | None:
+    return st.session_state.get("structure_manifest_notice_details")
+
+
+def get_structure_manifest_notice_token() -> str:
+    return str(st.session_state.get("structure_manifest_notice_token") or "")
+
+
+def get_selected_segment_ids() -> list[str]:
+    selected_segment_ids = st.session_state.get("selected_segment_ids")
+    if not isinstance(selected_segment_ids, list):
+        return []
+    return [str(segment_id) for segment_id in selected_segment_ids if str(segment_id).strip()]
+
+
+def get_segment_status_by_id() -> dict[str, str]:
+    raw_value = st.session_state.get("segment_status_by_id")
+    if not isinstance(raw_value, dict):
+        return {}
+    return {
+        str(segment_id): str(status)
+        for segment_id, status in raw_value.items()
+        if str(segment_id).strip() and str(status).strip()
+    }
+
+
+def get_segment_progress_by_id() -> dict[str, float]:
+    raw_value = st.session_state.get("segment_progress_by_id")
+    if not isinstance(raw_value, dict):
+        return {}
+    normalized: dict[str, float] = {}
+    for segment_id, progress in raw_value.items():
+        if not str(segment_id).strip():
+            continue
+        try:
+            normalized[str(segment_id)] = max(0.0, min(float(progress), 1.0))
+        except (TypeError, ValueError):
+            continue
+    return normalized
+
+
+def get_active_segment_id() -> str:
+    return str(st.session_state.get("active_segment_id") or "")
+
+
+def get_active_segment_title() -> str:
+    return str(st.session_state.get("active_segment_title") or "")
+
+
+def get_structure_confirmed() -> bool:
+    return bool(st.session_state.get("structure_confirmed", False))
+
+
+def get_confirmed_structure_fingerprint() -> str:
+    return str(st.session_state.get("confirmed_structure_fingerprint") or "")
+
+
+def get_confirmed_at_settings_hash() -> str:
+    return str(st.session_state.get("confirmed_at_settings_hash") or "")
+
+
+def get_segments_loaded_for_source_token() -> str:
+    return str(st.session_state.get("segments_loaded_for_source_token") or "")
+
+
 def set_recommended_text_settings(recommendation: object | None) -> None:
     st.session_state.recommended_text_settings = recommendation
 
@@ -444,6 +530,61 @@ def set_text_transform_assessment(assessment: object | None) -> None:
 
 def set_manual_text_settings_override_for_token(manual_override: object | None) -> None:
     st.session_state.manual_text_settings_override_for_token = manual_override
+
+
+def set_structure_manifest_notice(*, file_token: str | None, details: dict[str, object] | None) -> None:
+    st.session_state.structure_manifest_notice_token = file_token
+    st.session_state.structure_manifest_notice_details = details
+
+
+def set_selected_segment_ids(selected_segment_ids: list[str] | None) -> None:
+    st.session_state.selected_segment_ids = list(selected_segment_ids or [])
+
+
+def set_segment_runtime_state(
+    *,
+    segment_status_by_id: dict[str, str] | None = None,
+    segment_progress_by_id: dict[str, float] | None = None,
+    active_segment_id: str = "",
+    active_segment_title: str = "",
+) -> None:
+    st.session_state.segment_status_by_id = {
+        str(segment_id): str(status)
+        for segment_id, status in (segment_status_by_id or {}).items()
+        if str(segment_id).strip() and str(status).strip()
+    }
+    st.session_state.segment_progress_by_id = {
+        str(segment_id): max(0.0, min(float(progress), 1.0))
+        for segment_id, progress in (segment_progress_by_id or {}).items()
+        if str(segment_id).strip()
+    }
+    st.session_state.active_segment_id = str(active_segment_id or "")
+    st.session_state.active_segment_title = str(active_segment_title or "")
+
+
+def set_structure_confirmation_state(
+    *,
+    structure_confirmed: bool,
+    confirmed_structure_fingerprint: str = "",
+    confirmed_at_settings_hash: str = "",
+    segments_loaded_for_source_token: str = "",
+) -> None:
+    st.session_state.structure_confirmed = bool(structure_confirmed)
+    st.session_state.confirmed_structure_fingerprint = confirmed_structure_fingerprint
+    st.session_state.confirmed_at_settings_hash = confirmed_at_settings_hash
+    st.session_state.segments_loaded_for_source_token = segments_loaded_for_source_token
+
+
+def clear_structure_review_state() -> None:
+    st.session_state.selected_segment_ids = []
+    st.session_state.segment_status_by_id = {}
+    st.session_state.segment_progress_by_id = {}
+    st.session_state.active_segment_id = ""
+    st.session_state.active_segment_title = ""
+    st.session_state.structure_confirmed = False
+    st.session_state.confirmed_structure_fingerprint = ""
+    st.session_state.confirmed_at_settings_hash = ""
+    st.session_state.segments_loaded_for_source_token = ""
 
 
 def clear_recommended_text_settings_notice_token() -> None:
@@ -568,6 +709,17 @@ def init_session_state() -> None:
     st.session_state.setdefault("recommended_text_settings_notice_token", None)
     st.session_state.setdefault("recommended_text_settings_notice_details", None)
     st.session_state.setdefault("manual_text_settings_override_for_token", None)
+    st.session_state.setdefault("structure_manifest_notice_token", None)
+    st.session_state.setdefault("structure_manifest_notice_details", None)
+    st.session_state.setdefault("selected_segment_ids", [])
+    st.session_state.setdefault("segment_status_by_id", {})
+    st.session_state.setdefault("segment_progress_by_id", {})
+    st.session_state.setdefault("active_segment_id", "")
+    st.session_state.setdefault("active_segment_title", "")
+    st.session_state.setdefault("structure_confirmed", False)
+    st.session_state.setdefault("confirmed_structure_fingerprint", "")
+    st.session_state.setdefault("confirmed_at_settings_hash", "")
+    st.session_state.setdefault("segments_loaded_for_source_token", "")
 
 
 def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: bool = False) -> None:
@@ -598,6 +750,27 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
     manual_text_settings_override_for_token = (
         st.session_state.get("manual_text_settings_override_for_token") if preserve_preparation else None
     )
+    structure_manifest_notice_token = (
+        st.session_state.get("structure_manifest_notice_token") if preserve_preparation else None
+    )
+    structure_manifest_notice_details = (
+        st.session_state.get("structure_manifest_notice_details") if preserve_preparation else None
+    )
+    selected_segment_ids = list(st.session_state.get("selected_segment_ids", [])) if preserve_preparation else []
+    segment_status_by_id = dict(st.session_state.get("segment_status_by_id", {})) if preserve_preparation else {}
+    segment_progress_by_id = dict(st.session_state.get("segment_progress_by_id", {})) if preserve_preparation else {}
+    active_segment_id = str(st.session_state.get("active_segment_id", "")) if preserve_preparation else ""
+    active_segment_title = str(st.session_state.get("active_segment_title", "")) if preserve_preparation else ""
+    structure_confirmed = bool(st.session_state.get("structure_confirmed", False)) if preserve_preparation else False
+    confirmed_structure_fingerprint = (
+        str(st.session_state.get("confirmed_structure_fingerprint", "")) if preserve_preparation else ""
+    )
+    confirmed_at_settings_hash = (
+        str(st.session_state.get("confirmed_at_settings_hash", "")) if preserve_preparation else ""
+    )
+    segments_loaded_for_source_token = (
+        str(st.session_state.get("segments_loaded_for_source_token", "")) if preserve_preparation else ""
+    )
     preserved_file_token = str(getattr(prepared_run_context, "uploaded_file_token", "")) if prepared_run_context is not None else ""
     if preserved_file_token:
         if not isinstance(recommended_text_settings, dict) or str(recommended_text_settings.get("file_token", "")) != preserved_file_token:
@@ -626,6 +799,23 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
             or str(manual_text_settings_override_for_token.get("file_token", "")) != preserved_file_token
         ):
             manual_text_settings_override_for_token = None
+        if str(structure_manifest_notice_token or "") != preserved_file_token:
+            structure_manifest_notice_token = None
+        if (
+            not isinstance(structure_manifest_notice_details, dict)
+            or str(structure_manifest_notice_details.get("file_token", "")) != preserved_file_token
+        ):
+            structure_manifest_notice_details = None
+        if segments_loaded_for_source_token != preserved_file_token:
+            selected_segment_ids = []
+            segment_status_by_id = {}
+            segment_progress_by_id = {}
+            active_segment_id = ""
+            active_segment_title = ""
+            structure_confirmed = False
+            confirmed_structure_fingerprint = ""
+            confirmed_at_settings_hash = ""
+            segments_loaded_for_source_token = ""
     else:
         recommended_text_settings = None
         recommended_text_settings_applied_for_token = None
@@ -634,6 +824,17 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
         recommended_text_settings_notice_token = None
         recommended_text_settings_notice_details = None
         manual_text_settings_override_for_token = None
+        structure_manifest_notice_token = None
+        structure_manifest_notice_details = None
+        selected_segment_ids = []
+        segment_status_by_id = {}
+        segment_progress_by_id = {}
+        active_segment_id = ""
+        active_segment_title = ""
+        structure_confirmed = False
+        confirmed_structure_fingerprint = ""
+        confirmed_at_settings_hash = ""
+        segments_loaded_for_source_token = ""
     st.session_state.run_log = []
     st.session_state.activity_feed = []
     st.session_state.latest_markdown = ""
@@ -673,6 +874,17 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
     st.session_state.recommended_text_settings_notice_token = recommended_text_settings_notice_token
     st.session_state.recommended_text_settings_notice_details = recommended_text_settings_notice_details
     st.session_state.manual_text_settings_override_for_token = manual_text_settings_override_for_token
+    st.session_state.structure_manifest_notice_token = structure_manifest_notice_token
+    st.session_state.structure_manifest_notice_details = structure_manifest_notice_details
+    st.session_state.selected_segment_ids = selected_segment_ids
+    st.session_state.segment_status_by_id = segment_status_by_id
+    st.session_state.segment_progress_by_id = segment_progress_by_id
+    st.session_state.active_segment_id = active_segment_id
+    st.session_state.active_segment_title = active_segment_title
+    st.session_state.structure_confirmed = structure_confirmed
+    st.session_state.confirmed_structure_fingerprint = confirmed_structure_fingerprint
+    st.session_state.confirmed_at_settings_hash = confirmed_at_settings_hash
+    st.session_state.segments_loaded_for_source_token = segments_loaded_for_source_token
     clear_restart_source(completed_source)
     st.session_state.completed_source = None
     if not keep_restart_source:
@@ -713,6 +925,10 @@ def set_processing_status(
     medium_accepted_merge_count: int | None = None,
     medium_rejected_candidate_count: int | None = None,
     cached: bool | None = None,
+    segment_status_by_id: dict[str, str] | None = None,
+    segment_progress_by_id: dict[str, float] | None = None,
+    active_segment_id: str | None = None,
+    active_segment_title: str | None = None,
     progress: float = 0.0,
     is_running: bool | None = None,
     phase: str | None = None,
@@ -764,6 +980,27 @@ def set_processing_status(
         status["medium_rejected_candidate_count"] = medium_rejected_candidate_count
     if cached is not None:
         status["cached"] = cached
+    if segment_status_by_id is not None:
+        status["segment_status_by_id"] = {
+            str(segment_id): str(segment_status)
+            for segment_id, segment_status in segment_status_by_id.items()
+            if str(segment_id).strip() and str(segment_status).strip()
+        }
+        st.session_state.segment_status_by_id = dict(status["segment_status_by_id"])
+    if segment_progress_by_id is not None:
+        normalized_progress = {
+            str(segment_id): max(0.0, min(float(segment_progress), 1.0))
+            for segment_id, segment_progress in segment_progress_by_id.items()
+            if str(segment_id).strip()
+        }
+        status["segment_progress_by_id"] = normalized_progress
+        st.session_state.segment_progress_by_id = dict(normalized_progress)
+    if active_segment_id is not None:
+        status["active_segment_id"] = str(active_segment_id or "")
+        st.session_state.active_segment_id = status["active_segment_id"]
+    if active_segment_title is not None:
+        status["active_segment_title"] = str(active_segment_title or "")
+        st.session_state.active_segment_title = status["active_segment_title"]
     if status["is_running"] and not status.get("started_at"):
         status["started_at"] = _current_unix_timestamp()
     st.session_state.processing_status = status
@@ -781,6 +1018,11 @@ def finalize_processing_status(stage: str, detail: str, progress: float, termina
             "terminal_kind": terminal_kind if terminal_kind in {None, "completed", "stopped", "error"} else None,
         }
     )
+    if terminal_kind in {"completed", "stopped", "error"}:
+        status["active_segment_id"] = ""
+        status["active_segment_title"] = ""
+        st.session_state.active_segment_id = ""
+        st.session_state.active_segment_title = ""
     st.session_state.processing_status = status
 
 

@@ -733,8 +733,19 @@ def _build_validation_processing_service(event_log: list[dict[str, object]]):
 
         return cast(str, run_document_processing(**kwargs))
 
+    def _noop_client(*args: Any, **kwargs: Any) -> object:
+        return object()
+
+    def _noop_resolve_model_selector(selector: Any, required_capability: Any = None, **kwargs: Any) -> Any:
+        from types import SimpleNamespace
+        s = str(selector or "passthrough")
+        return SimpleNamespace(raw_selector=s, canonical_selector=s, provider="passthrough", model_id=s)
+
     return clone_processing_service(
         get_client_fn=lambda: object(),
+        get_provider_client_fn=_noop_client,
+        get_client_for_model_selector_fn=_noop_client,
+        resolve_model_selector_fn=_noop_resolve_model_selector,
         load_system_prompt_fn=lambda: "",
         ensure_pandoc_available_fn=ensure_pandoc_available,
         generate_markdown_block_fn=lambda **kwargs: cast(str, kwargs.get("target_text") or ""),

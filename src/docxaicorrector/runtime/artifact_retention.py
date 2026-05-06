@@ -60,6 +60,10 @@ STRUCTURE_VALIDATION_MAX_COUNT = 200
 UI_RESULT_ARTIFACTS_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 UI_RESULT_ARTIFACTS_MAX_COUNT = 80
 
+# Exported chapter/section structure manifests.
+STRUCTURE_MANIFESTS_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
+STRUCTURE_MANIFESTS_MAX_COUNT = 200
+
 _UI_RESULT_GROUP_SUFFIXES = (".result.meta.json", ".result.tts.txt", ".result.docx", ".result.md")
 
 

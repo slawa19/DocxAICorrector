@@ -188,6 +188,7 @@ class ProcessingContext:
     uploaded_file: object
     uploaded_filename: str
     jobs: ProcessingJobs
+    selected_segment_ids: Sequence[str] | None
     source_paragraphs: Sequence[ParagraphLike] | None
     image_assets: Sequence[ImageAssetLike]
     image_mode: str
@@ -223,6 +224,9 @@ class ProcessingState:
 class ProcessingInitialization:
     client: object
     job_count: int
+    segment_ids_by_job: tuple[str | None, ...] = ()
+    segment_titles_by_id: dict[str, str] = field(default_factory=dict)
+    segment_job_totals: dict[str, int] = field(default_factory=dict)
     text_client: object | None = None
     text_model_id: str | None = None
     openai_client: object | None = None

@@ -665,6 +665,15 @@ Phase 1 may render the selection UI and structure confirmation flow, but full-bo
 `Process Entire Book` must remain available as the explicit legacy/full-book action.
 ```
 
+Status update 2026-05-06:
+
+```text
+Minimal early Phase 2 filtering is now implemented for selected chapters only.
+`Process Selected` is enabled only after structure confirmation and only when the current selection resolves to a non-empty job set.
+This path currently produces a partial result artifact from the filtered job/paragraph subset and does not yet include segment-level progress/status families.
+`Process Entire Book` remains the explicit legacy/full-book fallback path.
+```
+
 Use Streamlit native primitives where possible:
 
 | UI Area | Streamlit Primitive |
@@ -1396,27 +1405,27 @@ flowchart TD
 
 ### Phase 1: Segment Detection And Analysis UI
 
-- Add `DocumentSegment`, `SegmentBoundaryEvidence`, and `SegmentDetectionReport` models.
-- Add placeholder types `GlossaryTerm` and `SegmentOutlineEntry` for later context-preservation phases.
-- Add `document/segments.py` detection logic.
-- Reuse TOC title matching helpers from `document/structure_repair.py`.
-- Extend `PreparedDocumentData` with segments, diagnostics, `structure_fingerprint`, and `detector_version`.
-- Extend `PreparedRunContext` with the same fields and map them through `_build_prepared_run_context(...)`.
-- Add analysis result screen with chapter selector.
-- Add structure fingerprint, boundary previews, evidence display, and required structure confirmation.
-- Add structure manifest export.
-- Keep analysis-review state in session flags rather than expanding `ProcessingOutcome`.
-- Keep existing full-book processing as the default path.
-- Add explicit `Process Entire Book` UI action backed by the legacy/full-book processing path.
+- [x] Add `DocumentSegment`, `SegmentBoundaryEvidence`, and `SegmentDetectionReport` models.
+- [x] Add placeholder types `GlossaryTerm` and `SegmentOutlineEntry` for later context-preservation phases.
+- [x] Add `document/segments.py` detection logic.
+- [x] Reuse TOC title matching helpers from `document/structure_repair.py`.
+- [x] Extend `PreparedDocumentData` with segments, diagnostics, `structure_fingerprint`, and `detector_version`.
+- [x] Extend `PreparedRunContext` with the same fields and map them through `_build_prepared_run_context(...)`.
+- [x] Add analysis result screen with chapter selector.
+- [x] Add structure fingerprint, boundary previews, evidence display, and required structure confirmation.
+- [x] Add structure manifest export.
+- [x] Keep analysis-review state in session flags rather than expanding `ProcessingOutcome`.
+- [x] Keep existing full-book processing as the default path.
+- [x] Add explicit `Process Entire Book` UI action backed by the legacy/full-book processing path.
 
 ### Phase 2: Segment-Aware Processing
 
-- Add segment-to-job mapping.
-- Add hard segment boundaries to semantic block generation.
-- Update the `build_semantic_blocks(...)` re-export path in `src/docxaicorrector/document/_document.py` so the new `hard_boundary_paragraph_ids` parameter is forwarded correctly from preparation code.
-- Add `selected_segment_ids` to processing context.
-- Filter jobs by selected segments.
-- Add segment-level status updates, preferably by extending existing event payloads in Phase 1.
+- [x] Add segment-to-job mapping.
+- [x] Add hard segment boundaries to semantic block generation.
+- [x] Update the `build_semantic_blocks(...)` re-export path in `src/docxaicorrector/document/_document.py` so the new `hard_boundary_paragraph_ids` parameter is forwarded correctly from preparation code.
+- [x] Add `selected_segment_ids` to processing context.
+- [x] Filter jobs by selected segments.
+- [x] Add segment-level status updates, preferably by extending existing event payloads in Phase 1.
 - If dedicated `Segment*Event` dataclasses are introduced, update the `ProcessingEvent` type union.
 
 ### Phase 3: Structure Reproducibility And Retry

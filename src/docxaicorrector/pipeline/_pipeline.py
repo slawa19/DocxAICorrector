@@ -293,6 +293,7 @@ def _build_processing_context(
     *,
     uploaded_file: object,
     jobs: ProcessingJobs,
+    selected_segment_ids: Sequence[str] | None = None,
     source_paragraphs: Sequence[ParagraphLike] | None,
     image_assets: Sequence[ImageAssetLike],
     image_mode: str,
@@ -309,6 +310,7 @@ def _build_processing_context(
     return _build_processing_context_impl(
         uploaded_file=uploaded_file,
         jobs=jobs,
+        selected_segment_ids=selected_segment_ids,
         source_paragraphs=source_paragraphs,
         image_assets=image_assets,
         image_mode=image_mode,
@@ -329,6 +331,7 @@ def _build_processing_run_components(
     *,
     uploaded_file: object,
     jobs: ProcessingJobs,
+    selected_segment_ids: Sequence[str] | None = None,
     source_paragraphs: Sequence[ParagraphLike] | None,
     image_assets: Sequence[ImageAssetLike],
     image_mode: str,
@@ -366,6 +369,7 @@ def _build_processing_run_components(
     return _build_processing_run_components_impl(
         uploaded_file=uploaded_file,
         jobs=jobs,
+        selected_segment_ids=selected_segment_ids,
         source_paragraphs=source_paragraphs,
         image_assets=image_assets,
         image_mode=image_mode,
@@ -878,6 +882,7 @@ def run_document_processing(
     *,
     uploaded_file: object,
     jobs: ProcessingJobs,
+    selected_segment_ids: Sequence[str] | None = None,
     source_paragraphs: Sequence[ParagraphLike] | None = None,
     image_assets: Sequence[ImageAssetLike],
     image_mode: str,
@@ -915,6 +920,7 @@ def run_document_processing(
     components = _build_processing_run_components(
         uploaded_file=uploaded_file,
         jobs=jobs,
+        selected_segment_ids=selected_segment_ids,
         source_paragraphs=source_paragraphs,
         image_assets=image_assets,
         image_mode=image_mode,

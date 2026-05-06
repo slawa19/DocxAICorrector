@@ -140,6 +140,7 @@ class ProcessingService:
         *,
         uploaded_file,
         jobs: Sequence[Mapping[str, object]],
+        selected_segment_ids: Sequence[str] | None = None,
         source_paragraphs: list | None = None,
         image_assets: list,
         image_mode: str,
@@ -182,6 +183,7 @@ class ProcessingService:
         return deps.run_document_processing_impl_fn(
             uploaded_file=uploaded_file,
             jobs=cast(list[dict[str, str | int]], list(jobs)),
+            selected_segment_ids=selected_segment_ids,
             source_paragraphs=source_paragraphs,
             image_assets=image_assets,
             image_mode=image_mode,
@@ -222,6 +224,7 @@ class ProcessingService:
         runtime,
         uploaded_filename: str,
         jobs: Sequence[Mapping[str, object]],
+        selected_segment_ids: Sequence[str] | None = None,
         source_paragraphs: list | None = None,
         image_assets: list,
         image_mode: str,
@@ -238,6 +241,7 @@ class ProcessingService:
             outcome = self.run_document_processing(
                 uploaded_file=uploaded_filename,
                 jobs=jobs,
+                selected_segment_ids=selected_segment_ids,
                 source_paragraphs=source_paragraphs,
                 image_assets=image_assets,
                 image_mode=image_mode,
@@ -332,6 +336,7 @@ class ProcessingService:
         result = self.run_document_processing(
             uploaded_file=prepared.uploaded_filename,
             jobs=cast(Sequence[Mapping[str, object]], jobs),
+            selected_segment_ids=list(getattr(prepared, "selected_segment_ids", ()) or []) or None,
             source_paragraphs=prepared.paragraphs,
             image_assets=prepared.image_assets,
             image_mode=image_mode,

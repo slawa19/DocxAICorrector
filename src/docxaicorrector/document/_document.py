@@ -49,7 +49,8 @@ from docxaicorrector.document.roles import (
     resolve_paragraph_outline_level as _resolve_paragraph_outline_level,
     xml_local_name as _xml_local_name,
 )
-from docxaicorrector.document.semantic_blocks import build_editing_jobs, build_marker_wrapped_block_text, build_semantic_blocks
+from docxaicorrector.document.semantic_blocks import build_editing_jobs, build_marker_wrapped_block_text
+from docxaicorrector.document.semantic_blocks import build_semantic_blocks as _build_semantic_blocks_impl
 from docxaicorrector.core.models import ImageAsset, ParagraphUnit, RawBlock
 from docxaicorrector.processing.processing_runtime import read_uploaded_file_bytes, resolve_uploaded_filename
 from docxaicorrector.runtime.artifact_retention import (
@@ -306,6 +307,21 @@ def inspect_placeholder_integrity(markdown_text: str, image_assets: list[ImageAs
     for unexpected_placeholder in sorted(set(IMAGE_PLACEHOLDER_PATTERN.findall(markdown_text)) - expected_placeholders):
         status_map[f"unexpected:{unexpected_placeholder}"] = "unexpected"
     return status_map
+
+
+def build_semantic_blocks(
+    paragraphs: list[ParagraphUnit],
+    max_chars: int = 6000,
+    *,
+    relations: list | None = None,
+    hard_boundary_paragraph_ids: set[str] | None = None,
+):
+    return _build_semantic_blocks_impl(
+        paragraphs,
+        max_chars=max_chars,
+        relations=relations,
+        hard_boundary_paragraph_ids=hard_boundary_paragraph_ids,
+    )
 
 
 xml_local_name = _xml_local_name

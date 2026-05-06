@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from docxaicorrector.runtime.artifacts import write_ui_result_artifacts
+from docxaicorrector.runtime.artifacts import write_structure_manifest_artifact, write_ui_result_artifacts
 
 
 def test_write_ui_result_artifacts_persists_markdown_and_docx_pair(tmp_path):
@@ -90,4 +90,27 @@ def test_write_ui_result_artifacts_persists_machine_readable_quality_warning(tmp
             "gate_reasons": ["unmapped_source_paragraphs_above_advisory_threshold"],
             "message": "Paragraph mapping drift detected.",
         },
+    }
+
+
+def test_write_structure_manifest_artifact_persists_segments_json(tmp_path):
+    manifest_path = write_structure_manifest_artifact(
+        source_name="The Value of Everything.docx",
+        manifest_payload={
+            "schema_version": 1,
+            "structure_fingerprint": "abc123",
+            "segments": [{"segment_id": "seg_0001_deadbeef", "title": "Chapter 1"}],
+        },
+        output_dir=tmp_path,
+        created_at=1_766_636_465.0,
+    )
+
+    persisted_path = Path(manifest_path)
+
+    assert persisted_path.parent == tmp_path
+    assert persisted_path.name.endswith(".segments.json")
+    assert json.loads(persisted_path.read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "structure_fingerprint": "abc123",
+        "segments": [{"segment_id": "seg_0001_deadbeef", "title": "Chapter 1"}],
     }

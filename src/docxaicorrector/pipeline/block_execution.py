@@ -10,6 +10,42 @@ TOC_VALIDATION_RETRY_BUDGET = 2
 TOC_RETRY_HARDENING_ATTEMPT = 2
 
 
+def _resolve_segment_status_payload(*, initialization: Any, index: int, status: str) -> tuple[dict[str, str], dict[str, float], str, str]:
+    segment_ids_by_job = tuple(getattr(initialization, "segment_ids_by_job", ()) or ())
+    segment_titles_by_id = dict(getattr(initialization, "segment_titles_by_id", {}) or {})
+    segment_job_totals = dict(getattr(initialization, "segment_job_totals", {}) or {})
+    if not segment_ids_by_job:
+        return {}, {}, "", ""
+
+    active_segment_index = max(0, min(index - 1, len(segment_ids_by_job) - 1))
+    active_segment_id = segment_ids_by_job[active_segment_index]
+    if active_segment_id is None:
+        return {}, {}, "", ""
+
+    active_segment_title = str(segment_titles_by_id.get(active_segment_id, active_segment_id) or active_segment_id)
+    completed_jobs_by_segment: dict[str, int] = {}
+    for segment_index in range(max(0, min(index, len(segment_ids_by_job)))):
+        segment_id = segment_ids_by_job[segment_index]
+        if segment_id is None:
+            continue
+        completed_jobs_by_segment[segment_id] = completed_jobs_by_segment.get(segment_id, 0) + 1
+
+    status_by_id: dict[str, str] = {}
+    progress_by_id: dict[str, float] = {}
+    for segment_id, total_jobs in segment_job_totals.items():
+        completed_jobs = completed_jobs_by_segment.get(segment_id, 0)
+        if segment_id == active_segment_id:
+            status_by_id[segment_id] = status
+        elif completed_jobs >= total_jobs > 0:
+            status_by_id[segment_id] = "completed"
+        elif completed_jobs > 0:
+            status_by_id[segment_id] = "processing"
+        else:
+            status_by_id[segment_id] = "pending"
+        progress_by_id[segment_id] = 0.0 if total_jobs <= 0 else min(completed_jobs / total_jobs, 1.0)
+    return status_by_id, progress_by_id, str(active_segment_id), active_segment_title
+
+
 def _is_toc_dominant_payload(*, payload: Any) -> bool:
     return bool(getattr(payload, "toc_dominant", False))
 
@@ -322,6 +358,11 @@ def emit_block_started(
     index: int,
     payload: Any,
 ) -> None:
+    segment_status_by_id, segment_progress_by_id, active_segment_id, active_segment_title = _resolve_segment_status_payload(
+        initialization=initialization,
+        index=index,
+        status="processing",
+    )
     emitters.emit_status(
         context.runtime,
         stage="Подготовка блока",
@@ -334,6 +375,10 @@ def emit_block_started(
         block_count=initialization.job_count,
         target_chars=payload.target_chars,
         context_chars=payload.context_chars,
+        segment_status_by_id=segment_status_by_id,
+        segment_progress_by_id=segment_progress_by_id,
+        active_segment_id=active_segment_id,
+        active_segment_title=active_segment_title,
         progress=(index - 1) / initialization.job_count,
         is_running=True,
     )
@@ -483,6 +528,11 @@ def emit_block_completed(
     processed_chunk: str,
     current_markdown_fn: Any,
 ) -> None:
+    segment_status_by_id, segment_progress_by_id, active_segment_id, active_segment_title = _resolve_segment_status_payload(
+        initialization=initialization,
+        index=index,
+        status="completed",
+    )
     emitters.emit_state(
         context.runtime,
         processed_block_markdowns=state.processed_chunks.copy(),
@@ -506,6 +556,10 @@ def emit_block_completed(
         block_count=initialization.job_count,
         target_chars=payload.target_chars,
         context_chars=payload.context_chars,
+        segment_status_by_id=segment_status_by_id,
+        segment_progress_by_id=segment_progress_by_id,
+        active_segment_id=active_segment_id,
+        active_segment_title=active_segment_title,
         progress=index / initialization.job_count,
         is_running=True,
     )

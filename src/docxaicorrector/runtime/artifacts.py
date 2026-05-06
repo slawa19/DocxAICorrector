@@ -2,10 +2,14 @@ import json
 import threading
 import time
 from collections.abc import Mapping
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 
-from docxaicorrector.core.constants import UI_RESULT_ARTIFACTS_DIR
+from docxaicorrector.core.constants import STRUCTURE_MANIFESTS_DIR, UI_RESULT_ARTIFACTS_DIR
 from docxaicorrector.runtime.artifact_retention import (
+    STRUCTURE_MANIFESTS_MAX_AGE_SECONDS,
+    STRUCTURE_MANIFESTS_MAX_COUNT,
+    prune_artifact_dir,
     UI_RESULT_ARTIFACTS_MAX_AGE_SECONDS,
     UI_RESULT_ARTIFACTS_MAX_COUNT,
     prune_ui_result_artifact_groups,
@@ -101,3 +105,43 @@ def write_ui_result_artifacts(
     if quality_warning:
         artifact_paths["metadata_path"] = str(meta_path)
     return artifact_paths
+
+
+def write_structure_manifest_artifact(
+    *,
+    source_name: str,
+    manifest_payload: Mapping[str, object],
+    output_dir: Path = STRUCTURE_MANIFESTS_DIR,
+    created_at: float | None = None,
+) -> str:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(time.time() if created_at is None else created_at))
+    source_path = Path(source_name)
+    stem = _sanitize_artifact_stem(source_path.stem)
+    manifest_path = output_dir / f"{timestamp}_{stem}.segments.json"
+    manifest_path.write_text(
+        json.dumps(_to_jsonable(manifest_payload), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    prune_artifact_dir(
+        target_dir=output_dir,
+        max_age_seconds=STRUCTURE_MANIFESTS_MAX_AGE_SECONDS,
+        max_count=STRUCTURE_MANIFESTS_MAX_COUNT,
+        glob="*.json",
+        emit_log=False,
+    )
+    return str(manifest_path)
+
+
+def _to_jsonable(value: object) -> object:
+    if is_dataclass(value):
+        return {key: _to_jsonable(item) for key, item in asdict(value).items()}
+    if isinstance(value, Mapping):
+        return {str(key): _to_jsonable(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_to_jsonable(item) for item in value]
+    if isinstance(value, list):
+        return [_to_jsonable(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    return value

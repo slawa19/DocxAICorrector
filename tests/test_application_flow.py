@@ -12,6 +12,7 @@ import docxaicorrector.runtime.state as state
 import docxaicorrector.ui.application_flow as application_flow
 from conftest import SessionState as SessionState  # noqa: F811
 from docx import Document
+from docxaicorrector.document.segments import DocumentSegment, SegmentBoundaryEvidence, SegmentDetectionReport
 
 
 @pytest.fixture(autouse=True)
@@ -308,6 +309,131 @@ def test_prepare_run_context_copies_segment_fields_from_prepared_document(monkey
     assert prepared_run_context.structure_fingerprint == "abc123def456"
     assert prepared_run_context.detector_version == "chapter_segments_v1"
     assert prepared_run_context.segment_to_job == {"seg_0001_abcd1234": (0,)}
+
+
+def test_build_structure_manifest_payload_serializes_detected_segments():
+    prepared_run_context = application_flow.PreparedRunContext(
+        uploaded_filename="report.docx",
+        uploaded_file_bytes=b"abc",
+        uploaded_file_token="report.docx:3:token",
+        source_text="source-text",
+        paragraphs=["p1", "p2", "p3"],
+        image_assets=[],
+        jobs=[{"target_text": "block one"}],
+        prepared_source_key="report.docx:3:token:6000",
+        preparation_stage="Документ подготовлен",
+        preparation_detail="",
+        preparation_cached=False,
+        preparation_elapsed_seconds=0.1,
+        segments=[
+            DocumentSegment(
+                segment_id="seg_0001_abcd1234",
+                ordinal=1,
+                level=1,
+                title="Chapter 1",
+                normalized_title="chapter 1",
+                start_paragraph_index=0,
+                end_paragraph_index=2,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0002",
+                paragraph_ids=("p0000", "p0001", "p0002"),
+                paragraph_count=3,
+                char_count=120,
+                word_count=20,
+                estimated_token_count=30,
+                structural_role="chapter",
+                confidence="high",
+                boundary_fingerprint="beefcafe",
+                boundary_evidence=(
+                    SegmentBoundaryEvidence(
+                        source="heading_style",
+                        confidence="high",
+                        details={"heading_level": 1},
+                    ),
+                ),
+            )
+        ],
+        segment_diagnostics=SegmentDetectionReport(
+            segment_count=1,
+            high_confidence_count=1,
+            toc_entry_count=2,
+            toc_matched_count=1,
+        ),
+        structure_fingerprint="abc123def456",
+        detector_version="chapter_segments_v1",
+        segment_to_job={"seg_0001_abcd1234": (0,)},
+    )
+
+    payload = application_flow.build_structure_manifest_payload(
+        prepared_run_context=prepared_run_context,
+        app_config={"chunk_size": 6000, "structure_recognition_min_confidence": "medium"},
+    )
+
+    assert payload["schema_version"] == 1
+    assert payload["source_name"] == "report.docx"
+    assert payload["prepared_source_key"] == "report.docx:3:token:6000"
+    assert payload["detector_version"] == "chapter_segments_v1"
+    assert payload["detector_config"] == {
+        "chunk_size": 6000,
+        "structure_recognition_mode": "off",
+        "min_confidence": "medium",
+    }
+    assert payload["structure_fingerprint"] == "abc123def456"
+    assert payload["summary"] == {
+        "paragraph_count": 3,
+        "segment_count": 1,
+        "toc_entry_count": 2,
+        "toc_matched_count": 1,
+        "low_confidence_count": 0,
+    }
+    assert payload["segments"][0]["segment_id"] == "seg_0001_abcd1234"
+    assert payload["segments"][0]["evidence"] == [
+        {
+            "source": "heading_style",
+            "confidence": "high",
+            "details": {"heading_level": 1},
+        }
+    ]
+
+
+def test_document_facade_build_semantic_blocks_forwards_hard_boundaries(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(
+        application_flow,
+        "build_structure_manifest_payload",
+        application_flow.build_structure_manifest_payload,
+    )
+
+    import docxaicorrector.document._document as document_facade
+
+    monkeypatch.setattr(
+        document_facade,
+        "_build_semantic_blocks_impl",
+        lambda paragraphs, max_chars=6000, *, relations=None, hard_boundary_paragraph_ids=None: captured.update(
+            {
+                "paragraphs": paragraphs,
+                "max_chars": max_chars,
+                "relations": relations,
+                "hard_boundary_paragraph_ids": hard_boundary_paragraph_ids,
+            }
+        ) or ["ok"],
+    )
+
+    result = document_facade.build_semantic_blocks(
+        ["p1", "p2"],
+        max_chars=7000,
+        relations=["rel"],
+        hard_boundary_paragraph_ids={"p0002"},
+    )
+
+    assert result == ["ok"]
+    assert captured == {
+        "paragraphs": ["p1", "p2"],
+        "max_chars": 7000,
+        "relations": ["rel"],
+        "hard_boundary_paragraph_ids": {"p0002"},
+    }
 
 
 def test_prepare_run_context_keeps_other_completed_source_tokens(monkeypatch):

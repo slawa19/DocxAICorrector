@@ -382,6 +382,7 @@ def render_live_status(target=None) -> None:
             title, severity = derive_live_status_title_and_severity(status)
             stage = str(status.get("stage") or "Ожидание")
             detail = str(status.get("detail") or "")
+            active_segment_title = str(status.get("active_segment_title") or "").strip()
             _render_status_panel(
                 sink=sink,
                 title=title,
@@ -396,6 +397,8 @@ def render_live_status(target=None) -> None:
             metric_columns[1].metric("Цель", f"{target_chars} симв.")
             metric_columns[2].metric("Контекст", f"{context_chars} симв.")
             metric_columns[3].metric("Прошло", elapsed)
+            if active_segment_title:
+                sink.caption(f"Активный сегмент: {active_segment_title}")
             progress_value = max(0.0, min(float(status.get("progress") or 0.0), 1.0))
             progress_api = _resolve_render_target(target, "progress")
             progress_api.progress(progress_value)
@@ -423,6 +426,15 @@ def render_preparation_summary(summary: dict[str, Any] | None, target=None) -> N
         ai_heading_promotions = _to_int(summary.get("ai_heading_promotions"), default=0)
         ai_heading_demotions = _to_int(summary.get("ai_heading_demotions"), default=0)
         ai_structural_role_changes = _to_int(summary.get("ai_structural_role_changes"), default=0)
+        structure_fingerprint = str(summary.get("structure_fingerprint") or "").strip()
+        detector_version = str(summary.get("detector_version") or "").strip()
+        segment_count = _to_int(summary.get("segment_count"), default=0)
+        high_confidence_count = _to_int(summary.get("high_confidence_count"), default=0)
+        medium_confidence_count = _to_int(summary.get("medium_confidence_count"), default=0)
+        low_confidence_count = _to_int(summary.get("low_confidence_count"), default=0)
+        toc_entry_count = _to_int(summary.get("toc_entry_count"), default=0)
+        toc_matched_count = _to_int(summary.get("toc_matched_count"), default=0)
+        manifest_path = str(summary.get("manifest_path") or "").strip()
         normalization_caption = _build_normalization_caption(summary)
         elapsed_fragment = f" | Подготовка: {elapsed}" if elapsed else ""
         stage = str(summary.get("stage") or "Документ подготовлен")
@@ -447,6 +459,18 @@ def render_preparation_summary(summary: dict[str, Any] | None, target=None) -> N
                 f"ролей {ai_role_changes} | +заголовков {ai_heading_promotions} | "
                 f"-заголовков {ai_heading_demotions} | структурных ролей {ai_structural_role_changes}"
             )
+        if structure_fingerprint:
+            meta_lines.append(f"Structure fingerprint: {structure_fingerprint}")
+        if detector_version:
+            meta_lines.append(f"Detector version: {detector_version}")
+        if segment_count > 0:
+            meta_lines.append(
+                "Сегменты: "
+                f"{segment_count} | confidence H/M/L: {high_confidence_count}/{medium_confidence_count}/{low_confidence_count}"
+            )
+            meta_lines.append(f"TOC matched: {toc_matched_count}/{toc_entry_count}")
+        if manifest_path and f"Structure manifest: {manifest_path}" not in status_notes:
+            meta_lines.append(f"Structure manifest: {manifest_path}")
         if normalization_caption:
             meta_lines.append(normalization_caption)
         _render_status_panel(

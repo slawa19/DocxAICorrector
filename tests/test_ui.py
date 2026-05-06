@@ -1036,6 +1036,45 @@ def test_render_preparation_summary_renders_all_status_notes_before_meta(monkeyp
     assert any("Источник: PDF" in text for text in captions)
 
 
+def test_render_preparation_summary_adds_structure_review_meta_lines(monkeypatch):
+    session_state = SessionState()
+    captions = []
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "info", lambda text: None)
+    monkeypatch.setattr(ui.st, "write", lambda text: None)
+    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
+
+    ui.render_preparation_summary(
+        {
+            "stage": "Документ подготовлен",
+            "detail": "",
+            "file_size_bytes": 1024,
+            "paragraph_count": 5,
+            "image_count": 0,
+            "source_chars": 120,
+            "block_count": 2,
+            "cached": False,
+            "structure_fingerprint": "abc123def456",
+            "detector_version": "chapter_segments_v1",
+            "segment_count": 4,
+            "high_confidence_count": 2,
+            "medium_confidence_count": 1,
+            "low_confidence_count": 1,
+            "toc_entry_count": 6,
+            "toc_matched_count": 5,
+            "manifest_path": ".run/structure_manifests/report.segments.json",
+        },
+        FakeTarget(),
+    )
+
+    assert any(text == "Structure fingerprint: abc123def456" for text in captions)
+    assert any(text == "Detector version: chapter_segments_v1" for text in captions)
+    assert any(text == "Сегменты: 4 | confidence H/M/L: 2/1/1" for text in captions)
+    assert any(text == "TOC matched: 5/6" for text in captions)
+    assert any(text == "Structure manifest: .run/structure_manifests/report.segments.json" for text in captions)
+
+
 def test_render_live_status_shows_preparation_failure_title(monkeypatch):
     session_state = SessionState(
         processing_status={
@@ -1098,6 +1137,32 @@ def test_render_live_status_uses_target_columns_progress_and_clamps_processing_p
     assert target.progress_calls == [1.0]
     assert len(target.columns_calls) == 1
     assert target.columns_calls[0][0].calls == [("Блок", "2/5")]
+
+
+def test_render_live_status_shows_active_segment_caption(monkeypatch):
+    session_state = SessionState(
+        processing_status={
+            "is_running": True,
+            "phase": "processing",
+            "stage": "Обработка блока",
+            "detail": "Идет работа.",
+            "current_block": 1,
+            "block_count": 2,
+            "target_chars": 100,
+            "context_chars": 25,
+            "progress": 0.5,
+            "active_segment_title": "Chapter 1",
+            "started_at": None,
+        },
+        activity_feed=[],
+    )
+    target = FakeLiveStatusTarget()
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+
+    ui.render_live_status(target)
+
+    assert any(text == "Активный сегмент: Chapter 1" for text in target.caption_calls)
 
 
 def test_render_live_status_uses_target_warning_for_stopped_processing(monkeypatch):

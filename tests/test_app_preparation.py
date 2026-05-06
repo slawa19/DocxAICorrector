@@ -4,6 +4,7 @@ import docxaicorrector.ui.application_flow as application_flow
 import docxaicorrector.ui.compare_panel as compare_panel
 from docxaicorrector.core.models import StructureRecognitionSummary
 from docxaicorrector.core.models import StructureRepairReport
+from docxaicorrector.document.segments import DocumentSegment, SegmentBoundaryEvidence, SegmentDetectionReport
 from docxaicorrector.structure.validation import StructureValidationReport
 from conftest import SessionState as SessionState
 
@@ -64,9 +65,24 @@ def _build_prepared_run_context(**overrides):
         "structure_validation_report": None,
         "structure_recognition_mode": "off",
         "structure_ai_attempted": False,
+        "segments": [],
+        "segment_diagnostics": SegmentDetectionReport(),
+        "structure_fingerprint": "",
+        "detector_version": "chapter_segments_v1",
+        "segment_to_job": {},
     }
     payload.update(overrides)
     return application_flow.PreparedRunContext(**payload)
+
+
+class FakeColumn:
+    def __init__(self, result=False):
+        self.result = result
+        self.calls = []
+
+    def button(self, label, **kwargs):
+        self.calls.append((label, kwargs))
+        return self.result
 
 
 def test_store_preparation_summary_uses_preparation_context_not_processing_status(monkeypatch):
@@ -799,3 +815,1003 @@ def test_store_preparation_summary_includes_auto_structure_status_note(monkeypat
     ]
 
 
+def test_store_preparation_summary_includes_exported_structure_manifest_path(monkeypatch):
+    session_state = SessionState()
+    prepared_run_context = _build_prepared_run_context(
+        exported_structure_manifest_path=".run/structure_manifests/20260506_094000_report.segments.json",
+    )
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+
+    app._store_preparation_summary(prepared_run_context=prepared_run_context)
+
+    assert session_state.latest_preparation_summary["manifest_path"] == ".run/structure_manifests/20260506_094000_report.segments.json"
+    assert "Structure manifest: .run/structure_manifests/20260506_094000_report.segments.json" in session_state.latest_preparation_summary["status_notes"]
+
+
+def test_store_preparation_summary_includes_structure_review_metrics(monkeypatch):
+    session_state = SessionState()
+    prepared_run_context = _build_prepared_run_context(
+        structure_fingerprint="abc123def456",
+        detector_version="chapter_segments_v1",
+        segments=[DocumentSegment(segment_id="seg_0001")],
+        segment_diagnostics=SegmentDetectionReport(
+            segment_count=1,
+            high_confidence_count=1,
+            medium_confidence_count=2,
+            low_confidence_count=3,
+            toc_entry_count=7,
+            toc_matched_count=5,
+        ),
+    )
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+
+    app._store_preparation_summary(prepared_run_context=prepared_run_context)
+
+    assert session_state.latest_preparation_summary["structure_fingerprint"] == "abc123def456"
+    assert session_state.latest_preparation_summary["detector_version"] == "chapter_segments_v1"
+    assert session_state.latest_preparation_summary["segment_count"] == 1
+    assert session_state.latest_preparation_summary["high_confidence_count"] == 1
+    assert session_state.latest_preparation_summary["medium_confidence_count"] == 2
+    assert session_state.latest_preparation_summary["low_confidence_count"] == 3
+    assert session_state.latest_preparation_summary["toc_entry_count"] == 7
+    assert session_state.latest_preparation_summary["toc_matched_count"] == 5
+
+
+def test_main_exports_structure_manifest_from_prepared_state(monkeypatch):
+    prepared_run_context = _build_prepared_run_context()
+    uploaded_file = UploadedFileStub("report.docx", b"abc")
+    session_state = SessionState(
+        app_start_logged=True,
+        processing_status={},
+        activity_feed=[],
+        image_assets=[],
+        preparation_input_marker="report.docx:3:ba7816bf8f01cfea:6000",
+        preparation_failed_marker="",
+        prepared_run_context=prepared_run_context,
+        latest_docx_bytes=None,
+        latest_source_token="",
+        latest_markdown="",
+        latest_image_mode="safe",
+        last_error="",
+        last_log_hint="hint",
+        processing_outcome="idle",
+    )
+    render_calls = []
+    export_calls = []
+    notice_calls = []
+    reruns = []
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app, "init_session_state", lambda: None)
+    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
+    monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
+    monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
+    monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
+    monkeypatch.setattr(app, "get_processing_session_snapshot", lambda: type("ProcessingSnapshot", (), {"latest_source_token": ""})())
+    monkeypatch.setattr(app, "get_latest_image_mode", lambda: "safe")
+    monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "error", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "button", lambda label, **kwargs: label == "Export Structure Manifest")
+    monkeypatch.setattr(app, "render_preparation_summary", lambda summary, *args, **kwargs: render_calls.append(summary))
+    monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: None)
+    monkeypatch.setattr(compare_panel, "render_compare_all_apply_panel", lambda **kwargs: None)
+    monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)
+    monkeypatch.setattr(application_flow, "has_resettable_state", lambda **kwargs: False)
+    monkeypatch.setattr(application_flow, "derive_app_idle_view_state", lambda **kwargs: "file_selected")
+    monkeypatch.setattr(application_flow, "prepare_run_context", lambda **kwargs: (_ for _ in ()).throw(AssertionError("prepare_run_context should not be called")))
+    def fake_export_structure_manifest(**kwargs):
+        export_calls.append(kwargs)
+        kwargs["prepared_run_context"].exported_structure_manifest_path = ".run/structure_manifests/20260506_094000_report.segments.json"
+        return ".run/structure_manifests/20260506_094000_report.segments.json"
+
+    monkeypatch.setattr(application_flow, "export_structure_manifest", fake_export_structure_manifest)
+    monkeypatch.setattr(app, "set_structure_manifest_notice", lambda **kwargs: notice_calls.append(kwargs))
+    monkeypatch.setattr(app, "log_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "rerun", lambda: reruns.append(True))
+
+    app.main()
+
+    assert len(render_calls) == 1
+    assert len(export_calls) == 1
+    assert export_calls[0]["app_config"]["chunk_size"] == 6000
+    assert notice_calls == [{
+        "file_token": "report.docx:3:token",
+        "details": {
+            "file_token": "report.docx:3:token",
+            "manifest_path": ".run/structure_manifests/20260506_094000_report.segments.json",
+            "structure_fingerprint": "",
+        },
+    }]
+    assert reruns
+
+
+def test_render_analysis_review_panel_renders_selector_and_disabled_process_selected(monkeypatch):
+    session_state = SessionState(
+        selected_segment_ids=["seg_0001"],
+        structure_confirmed=False,
+        confirmed_structure_fingerprint="",
+        confirmed_at_settings_hash="",
+        segments_loaded_for_source_token="report.docx:3:token",
+    )
+    prepared_run_context = _build_prepared_run_context(
+        structure_fingerprint="abc123def456",
+        segments=[
+            DocumentSegment(
+                segment_id="seg_0001",
+                ordinal=1,
+                level=1,
+                title="Chapter 1",
+                normalized_title="chapter 1",
+                start_paragraph_index=0,
+                end_paragraph_index=1,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0001",
+                paragraph_ids=("p0000", "p0001"),
+                paragraph_count=2,
+                char_count=100,
+                word_count=20,
+                estimated_token_count=25,
+                structural_role="chapter",
+                confidence="high",
+                boundary_fingerprint="beefcafe",
+                boundary_evidence=(
+                    SegmentBoundaryEvidence(source="heading_style", confidence="high", details={"heading_level": 1}),
+                ),
+            )
+        ],
+        segment_diagnostics=SegmentDetectionReport(segment_count=1, toc_entry_count=1, toc_matched_count=1),
+        segment_to_job={"seg_0001": (0, 1)},
+    )
+    confirm_col = FakeColumn(result=False)
+    selected_col = FakeColumn(result=False)
+    full_book_col = FakeColumn(result=False)
+    checkbox_calls = []
+    info_calls = []
+    subheader_calls = []
+    caption_calls = []
+    expander_calls = []
+    write_calls = []
+
+    class FakeExpander:
+        def __init__(self, label, expanded):
+            expander_calls.append((label, expanded))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app.st, "columns", lambda n: [confirm_col, selected_col, full_book_col])
+    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: checkbox_calls.append((label, kwargs)) or kwargs.get("value", False))
+    monkeypatch.setattr(app.st, "info", lambda message, **kwargs: info_calls.append(message))
+    monkeypatch.setattr(app.st, "subheader", lambda message, **kwargs: subheader_calls.append(message))
+    monkeypatch.setattr(app.st, "caption", lambda message, **kwargs: caption_calls.append(message))
+    monkeypatch.setattr(app.st, "expander", lambda label, expanded=False, **kwargs: FakeExpander(label, expanded))
+    monkeypatch.setattr(app.st, "write", lambda message, **kwargs: write_calls.append(message))
+    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
+
+    action = app._render_analysis_review_panel(
+        prepared_run_context=prepared_run_context,
+        uploaded_file_token="report.docx:3:token",
+        chunk_size=6000,
+    )
+
+    assert action is None
+    assert subheader_calls == ["Chapter Selector"]
+    assert caption_calls[0] == "Structure fingerprint: abc123def456"
+    assert caption_calls[1] == "Detector version: chapter_segments_v1"
+    assert checkbox_calls and checkbox_calls[0][1]["value"] is True
+    assert expander_calls == [("Boundary preview: Chapter 1", False)]
+    assert any(message == "Starts: p1" for message in caption_calls)
+    assert any(message == "Ends: p2" for message in caption_calls)
+    assert any(message == "Boundary fingerprint: beefcafe" for message in caption_calls)
+    assert write_calls == ["Boundary evidence:"]
+    assert selected_col.calls == [(
+        "Process Selected",
+        {
+            "use_container_width": True,
+            "disabled": True,
+            "help": "Confirm the current structure and keep at least one segment selected to process only chosen chapters.",
+            "key": "process_selected_button",
+        },
+    )]
+    assert full_book_col.calls == [(
+        "Process Entire Book",
+        {
+            "type": "primary",
+            "use_container_width": True,
+            "key": "process_entire_book_button",
+        },
+    )]
+    assert any("Selected: 1 segments" in message for message in info_calls)
+    assert any("Confidence H/M/L:" in message for message in info_calls)
+    assert any("TOC matched: 1/1" in message for message in info_calls)
+
+
+def test_render_analysis_review_panel_shows_low_confidence_warning_and_manifest(monkeypatch):
+    session_state = SessionState(
+        selected_segment_ids=["seg_0002"],
+        structure_confirmed=False,
+        confirmed_structure_fingerprint="",
+        confirmed_at_settings_hash="",
+        segments_loaded_for_source_token="report.docx:3:token",
+    )
+    prepared_run_context = _build_prepared_run_context(
+        structure_fingerprint="abc123def456",
+        exported_structure_manifest_path=".run/structure_manifests/20260506_094000_report.segments.json",
+        paragraphs=[
+            type("ParagraphStub", (), {"text": "Chapter 2 heading"})(),
+            type("ParagraphStub", (), {"text": "Ending paragraph text"})(),
+        ],
+        segments=[
+            DocumentSegment(
+                segment_id="seg_0002",
+                ordinal=2,
+                level=1,
+                title="Chapter 2",
+                normalized_title="chapter 2",
+                start_paragraph_index=0,
+                end_paragraph_index=1,
+                start_paragraph_id="p0002",
+                end_paragraph_id="p0003",
+                paragraph_ids=("p0002", "p0003"),
+                paragraph_count=2,
+                char_count=120,
+                word_count=22,
+                estimated_token_count=30,
+                structural_role="chapter",
+                confidence="low",
+                boundary_fingerprint="deadbeef",
+                boundary_evidence=(
+                    SegmentBoundaryEvidence(source="numbering_pattern", confidence="medium", details={"text_preview": "Chapter 2"}),
+                ),
+                warnings=("No TOC match",),
+            )
+        ],
+        segment_diagnostics=SegmentDetectionReport(
+            segment_count=1,
+            high_confidence_count=0,
+            medium_confidence_count=0,
+            low_confidence_count=1,
+            toc_entry_count=4,
+            toc_matched_count=2,
+            warnings=("1 low-confidence segment detected",),
+        ),
+        segment_to_job={"seg_0002": (1, 2)},
+    )
+    warnings = []
+    captions = []
+
+    class FakeExpander:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app.st, "columns", lambda n: [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)])
+    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "caption", lambda message, **kwargs: captions.append(message))
+    monkeypatch.setattr(app.st, "warning", lambda message, **kwargs: warnings.append(message))
+    monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "expander", lambda *args, **kwargs: FakeExpander())
+
+    app._render_analysis_review_panel(
+        prepared_run_context=prepared_run_context,
+        uploaded_file_token="report.docx:3:token",
+        chunk_size=6000,
+    )
+
+    assert warnings == [
+        "Structure warnings: 1 low-confidence segment detected",
+        "Low-confidence segment: Chapter 2. No TOC match",
+    ]
+    assert any(message == "Manifest path: .run/structure_manifests/20260506_094000_report.segments.json" for message in captions)
+
+
+def test_render_analysis_review_panel_shows_segment_runtime_badges(monkeypatch):
+    session_state = SessionState(
+        selected_segment_ids=["seg_0001", "seg_0002"],
+        segment_status_by_id={"seg_0001": "completed", "seg_0002": "processing"},
+        segment_progress_by_id={"seg_0001": 1.0, "seg_0002": 0.5},
+        active_segment_id="seg_0002",
+        active_segment_title="Chapter 2",
+        structure_confirmed=True,
+        confirmed_structure_fingerprint="abc123def456",
+        confirmed_at_settings_hash="settings123",
+        segments_loaded_for_source_token="report.docx:3:token",
+    )
+    prepared_run_context = _build_prepared_run_context(
+        structure_fingerprint="abc123def456",
+        segments=[
+            DocumentSegment(
+                segment_id="seg_0001",
+                ordinal=1,
+                level=1,
+                title="Chapter 1",
+                normalized_title="chapter 1",
+                start_paragraph_index=0,
+                end_paragraph_index=0,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0000",
+                paragraph_ids=("p0000",),
+                paragraph_count=1,
+                char_count=10,
+                word_count=2,
+                estimated_token_count=3,
+                structural_role="chapter",
+                confidence="high",
+                boundary_fingerprint="fp1",
+                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
+            ),
+            DocumentSegment(
+                segment_id="seg_0002",
+                ordinal=2,
+                level=1,
+                title="Chapter 2",
+                normalized_title="chapter 2",
+                start_paragraph_index=1,
+                end_paragraph_index=1,
+                start_paragraph_id="p0001",
+                end_paragraph_id="p0001",
+                paragraph_ids=("p0001",),
+                paragraph_count=1,
+                char_count=10,
+                word_count=2,
+                estimated_token_count=3,
+                structural_role="chapter",
+                confidence="high",
+                boundary_fingerprint="fp2",
+                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
+            ),
+        ],
+        segment_to_job={"seg_0001": (0,), "seg_0002": (1,)},
+    )
+    checkbox_labels = []
+
+    monkeypatch.setattr(app, "_build_structure_settings_hash", lambda **kwargs: "settings123")
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app.st, "columns", lambda n: [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)])
+    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: checkbox_labels.append(label) or kwargs.get("value", False))
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "expander", lambda *args, **kwargs: type("FakeExpander", (), {"__enter__": lambda self: self, "__exit__": lambda self, exc_type, exc, tb: False})())
+
+    app._render_analysis_review_panel(
+        prepared_run_context=prepared_run_context,
+        uploaded_file_token="report.docx:3:token",
+        chunk_size=6000,
+    )
+
+    assert any("completed 100%" in label for label in checkbox_labels)
+    assert any("processing 50% | active" in label for label in checkbox_labels)
+
+
+def test_render_analysis_review_panel_clears_confirmation_when_selection_changes(monkeypatch):
+    session_state = SessionState(
+        selected_segment_ids=["seg_0001"],
+        structure_confirmed=True,
+        confirmed_structure_fingerprint="abc123def456",
+        confirmed_at_settings_hash="settings123",
+        segments_loaded_for_source_token="report.docx:3:token",
+    )
+    prepared_run_context = _build_prepared_run_context(
+        structure_fingerprint="abc123def456",
+        segments=[
+            DocumentSegment(
+                segment_id="seg_0001",
+                ordinal=1,
+                level=1,
+                title="Chapter 1",
+                normalized_title="chapter 1",
+                start_paragraph_index=0,
+                end_paragraph_index=0,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0000",
+                paragraph_ids=("p0000",),
+                paragraph_count=1,
+                char_count=10,
+                word_count=2,
+                estimated_token_count=3,
+                structural_role="chapter",
+                confidence="high",
+                boundary_fingerprint="fp1",
+                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
+            ),
+            DocumentSegment(
+                segment_id="seg_0002",
+                ordinal=2,
+                level=1,
+                title="Chapter 2",
+                normalized_title="chapter 2",
+                start_paragraph_index=1,
+                end_paragraph_index=1,
+                start_paragraph_id="p0001",
+                end_paragraph_id="p0001",
+                paragraph_ids=("p0001",),
+                paragraph_count=1,
+                char_count=10,
+                word_count=2,
+                estimated_token_count=3,
+                structural_role="chapter",
+                confidence="high",
+                boundary_fingerprint="fp2",
+                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
+            ),
+        ],
+    )
+    checkbox_values = iter([False, True])
+
+    class FakeExpander:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app.st, "columns", lambda n: [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)])
+    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: next(checkbox_values))
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "expander", lambda *args, **kwargs: FakeExpander())
+
+    app._render_analysis_review_panel(
+        prepared_run_context=prepared_run_context,
+        uploaded_file_token="report.docx:3:token",
+        chunk_size=6000,
+    )
+
+    assert session_state.selected_segment_ids == ["seg_0002"]
+    assert session_state.structure_confirmed is False
+    assert session_state.confirmed_structure_fingerprint == ""
+    assert session_state.confirmed_at_settings_hash == ""
+
+
+def test_render_analysis_review_panel_confirms_structure(monkeypatch):
+    session_state = SessionState(
+        selected_segment_ids=["seg_0001"],
+        structure_confirmed=False,
+        confirmed_structure_fingerprint="",
+        confirmed_at_settings_hash="",
+        segments_loaded_for_source_token="report.docx:3:token",
+    )
+    prepared_run_context = _build_prepared_run_context(
+        structure_fingerprint="abc123def456",
+        segments=[
+            DocumentSegment(
+                segment_id="seg_0001",
+                ordinal=1,
+                level=1,
+                title="Chapter 1",
+                normalized_title="chapter 1",
+                start_paragraph_index=0,
+                end_paragraph_index=1,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0001",
+                paragraph_ids=("p0000", "p0001"),
+                paragraph_count=2,
+                char_count=100,
+                word_count=20,
+                estimated_token_count=25,
+                structural_role="chapter",
+                confidence="high",
+                boundary_fingerprint="beefcafe",
+                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
+            )
+        ],
+    )
+    confirm_col = FakeColumn(result=True)
+    selected_col = FakeColumn(result=False)
+    full_book_col = FakeColumn(result=False)
+    reruns = []
+    log_calls = []
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app.st, "columns", lambda n: [confirm_col, selected_col, full_book_col])
+    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        app.st,
+        "expander",
+        lambda *args, **kwargs: type("FakeExpander", (), {"__enter__": lambda self: self, "__exit__": lambda self, exc_type, exc, tb: False})(),
+    )
+    monkeypatch.setattr(app.st, "rerun", lambda: reruns.append(True))
+    monkeypatch.setattr(app, "log_event", lambda *args, **kwargs: log_calls.append((args, kwargs)))
+
+    app._render_analysis_review_panel(
+        prepared_run_context=prepared_run_context,
+        uploaded_file_token="report.docx:3:token",
+        chunk_size=6000,
+    )
+
+    assert session_state.structure_confirmed is True
+    assert session_state.confirmed_structure_fingerprint == "abc123def456"
+    assert session_state.confirmed_at_settings_hash
+    assert session_state.segments_loaded_for_source_token == "report.docx:3:token"
+    assert reruns == [True]
+    assert log_calls and log_calls[0][0][1] == "structure_confirmed"
+
+
+def test_render_analysis_review_panel_returns_selected_action_when_confirmed(monkeypatch):
+    session_state = SessionState(
+        selected_segment_ids=["seg_0001"],
+        structure_confirmed=True,
+        confirmed_structure_fingerprint="abc123def456",
+        confirmed_at_settings_hash="settings123",
+        segments_loaded_for_source_token="report.docx:3:token",
+    )
+    prepared_run_context = _build_prepared_run_context(
+        structure_fingerprint="abc123def456",
+        segments=[
+            DocumentSegment(
+                segment_id="seg_0001",
+                ordinal=1,
+                level=1,
+                title="Chapter 1",
+                normalized_title="chapter 1",
+                start_paragraph_index=0,
+                end_paragraph_index=1,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0001",
+                paragraph_ids=("p0000", "p0001"),
+                paragraph_count=2,
+                char_count=100,
+                word_count=20,
+                estimated_token_count=25,
+                structural_role="chapter",
+                confidence="high",
+                boundary_fingerprint="beefcafe",
+                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
+            )
+        ],
+        segment_to_job={"seg_0001": (0,)},
+    )
+    confirm_col = FakeColumn(result=False)
+    selected_col = FakeColumn(result=True)
+    full_book_col = FakeColumn(result=False)
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app.st, "columns", lambda n: [confirm_col, selected_col, full_book_col])
+    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_build_structure_settings_hash", lambda **kwargs: "settings123")
+    monkeypatch.setattr(
+        app.st,
+        "expander",
+        lambda *args, **kwargs: type("FakeExpander", (), {"__enter__": lambda self: self, "__exit__": lambda self, exc_type, exc, tb: False})(),
+    )
+
+    action = app._render_analysis_review_panel(
+        prepared_run_context=prepared_run_context,
+        uploaded_file_token="report.docx:3:token",
+        chunk_size=6000,
+    )
+
+    assert action == "start_selected"
+    assert selected_col.calls == [(
+        "Process Selected",
+        {
+            "use_container_width": True,
+            "disabled": False,
+            "help": "Processes only the selected chapters and produces a partial output artifact.",
+            "key": "process_selected_button",
+        },
+    )]
+
+
+def test_render_analysis_review_panel_returns_full_book_action(monkeypatch):
+    session_state = SessionState(
+        selected_segment_ids=["seg_0001"],
+        structure_confirmed=False,
+        confirmed_structure_fingerprint="",
+        confirmed_at_settings_hash="",
+        segments_loaded_for_source_token="report.docx:3:token",
+    )
+    prepared_run_context = _build_prepared_run_context(
+        segments=[
+            DocumentSegment(
+                segment_id="seg_0001",
+                ordinal=1,
+                level=1,
+                title="Chapter 1",
+                normalized_title="chapter 1",
+                start_paragraph_index=0,
+                end_paragraph_index=1,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0001",
+                paragraph_ids=("p0000", "p0001"),
+                paragraph_count=2,
+                char_count=100,
+                word_count=20,
+                estimated_token_count=25,
+                structural_role="chapter",
+                confidence="high",
+                boundary_fingerprint="beefcafe",
+                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
+            )
+        ],
+    )
+    confirm_col = FakeColumn(result=False)
+    selected_col = FakeColumn(result=False)
+    full_book_col = FakeColumn(result=True)
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app.st, "columns", lambda n: [confirm_col, selected_col, full_book_col])
+    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        app.st,
+        "expander",
+        lambda *args, **kwargs: type("FakeExpander", (), {"__enter__": lambda self: self, "__exit__": lambda self, exc_type, exc, tb: False})(),
+    )
+
+    action = app._render_analysis_review_panel(
+        prepared_run_context=prepared_run_context,
+        uploaded_file_token="report.docx:3:token",
+        chunk_size=6000,
+    )
+
+    assert action == "start_full_book"
+
+
+def test_main_starts_full_book_processing_from_analysis_panel(monkeypatch):
+    prepared_run_context = _build_prepared_run_context(
+        segments=[
+            DocumentSegment(
+                segment_id="seg_0001",
+                ordinal=1,
+                level=1,
+                title="Chapter 1",
+                normalized_title="chapter 1",
+                start_paragraph_index=0,
+                end_paragraph_index=1,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0001",
+                paragraph_ids=("p0000", "p0001"),
+                paragraph_count=2,
+                char_count=100,
+                word_count=20,
+                estimated_token_count=25,
+                structural_role="chapter",
+                confidence="high",
+                boundary_fingerprint="beefcafe",
+                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
+            )
+        ],
+    )
+    uploaded_file = UploadedFileStub("report.docx", b"abc")
+    session_state = SessionState(
+        app_start_logged=True,
+        processing_status={},
+        activity_feed=[],
+        image_assets=[],
+        preparation_input_marker="report.docx:3:ba7816bf8f01cfea:6000",
+        preparation_failed_marker="",
+        prepared_run_context=prepared_run_context,
+        latest_docx_bytes=None,
+        latest_source_token="",
+        latest_markdown="",
+        latest_image_mode="safe",
+        last_error="",
+        last_log_hint="hint",
+        processing_outcome="idle",
+        selected_segment_ids=["seg_0001"],
+        structure_confirmed=False,
+        confirmed_structure_fingerprint="",
+        confirmed_at_settings_hash="",
+        segments_loaded_for_source_token="report.docx:3:token",
+    )
+    start_calls = []
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app, "init_session_state", lambda: None)
+    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
+    monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
+    monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
+    monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
+    monkeypatch.setattr(app, "get_processing_session_snapshot", lambda: type("ProcessingSnapshot", (), {"latest_source_token": ""})())
+    monkeypatch.setattr(app, "get_latest_image_mode", lambda: "safe")
+    monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "error", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
+    monkeypatch.setattr(app.st, "expander", lambda *args, **kwargs: type("FakeExpander", (), {"__enter__": lambda self: self, "__exit__": lambda self, exc_type, exc, tb: False})())
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "button", lambda *args, **kwargs: False)
+    monkeypatch.setattr(app.st, "columns", lambda n: [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=True)])
+    monkeypatch.setattr(app, "render_preparation_summary", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: (_ for _ in ()).throw(AssertionError("generic controls should not be used when analysis action returns full-book start")))
+    monkeypatch.setattr(compare_panel, "render_compare_all_apply_panel", lambda **kwargs: None)
+    monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)
+    monkeypatch.setattr(application_flow, "has_resettable_state", lambda **kwargs: False)
+    monkeypatch.setattr(application_flow, "derive_app_idle_view_state", lambda **kwargs: "file_selected")
+    monkeypatch.setattr(application_flow, "prepare_run_context", lambda **kwargs: (_ for _ in ()).throw(AssertionError("prepare_run_context should not be called")))
+    monkeypatch.setattr(app, "_start_background_processing", lambda **kwargs: start_calls.append(kwargs))
+
+    app.main()
+
+    assert len(start_calls) == 1
+    assert start_calls[0]["uploaded_filename"] == "report.docx"
+    assert start_calls[0]["uploaded_token"] == "report.docx:3:token"
+    assert start_calls[0]["jobs"] == prepared_run_context.jobs
+
+
+def test_main_starts_selected_processing_from_analysis_panel(monkeypatch):
+    image_asset = type("ImageAssetStub", (), {"image_id": "img_001"})()
+    paragraph_a = type("ParagraphStub", (), {"paragraph_id": "p0000", "asset_id": None, "attached_to_asset_id": None})()
+    paragraph_b = type("ParagraphStub", (), {"paragraph_id": "p0001", "asset_id": "img_001", "attached_to_asset_id": None})()
+    paragraph_c = type("ParagraphStub", (), {"paragraph_id": "p0002", "asset_id": None, "attached_to_asset_id": None})()
+    prepared_run_context = _build_prepared_run_context(
+        paragraphs=[paragraph_a, paragraph_b, paragraph_c],
+        image_assets=[image_asset],
+        jobs=[
+            {"target_text": "block-1", "paragraph_ids": ["p0000", "p0001"]},
+            {"target_text": "block-2", "paragraph_ids": ["p0002"]},
+        ],
+        segments=[
+            DocumentSegment(
+                segment_id="seg_0001",
+                ordinal=1,
+                level=1,
+                title="Chapter 1",
+                normalized_title="chapter 1",
+                start_paragraph_index=0,
+                end_paragraph_index=1,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0001",
+                paragraph_ids=("p0000", "p0001"),
+                paragraph_count=2,
+                char_count=100,
+                word_count=20,
+                estimated_token_count=25,
+                structural_role="chapter",
+                confidence="high",
+                boundary_fingerprint="beefcafe",
+                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
+            ),
+            DocumentSegment(
+                segment_id="seg_0002",
+                ordinal=2,
+                level=1,
+                title="Chapter 2",
+                normalized_title="chapter 2",
+                start_paragraph_index=2,
+                end_paragraph_index=2,
+                start_paragraph_id="p0002",
+                end_paragraph_id="p0002",
+                paragraph_ids=("p0002",),
+                paragraph_count=1,
+                char_count=50,
+                word_count=10,
+                estimated_token_count=12,
+                structural_role="chapter",
+                confidence="high",
+                boundary_fingerprint="deadbeef",
+                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
+            ),
+        ],
+        segment_to_job={"seg_0001": (0,), "seg_0002": (1,)},
+    )
+    uploaded_file = UploadedFileStub("report.docx", b"abc")
+    session_state = SessionState(
+        app_start_logged=True,
+        processing_status={},
+        activity_feed=[],
+        image_assets=[],
+        preparation_input_marker="report.docx:3:ba7816bf8f01cfea:6000",
+        preparation_failed_marker="",
+        prepared_run_context=prepared_run_context,
+        latest_docx_bytes=None,
+        latest_source_token="",
+        latest_markdown="",
+        latest_image_mode="safe",
+        last_error="",
+        last_log_hint="hint",
+        processing_outcome="idle",
+        selected_segment_ids=["seg_0001"],
+        structure_confirmed=True,
+        confirmed_structure_fingerprint="abc123def456",
+        confirmed_at_settings_hash="settings123",
+        segments_loaded_for_source_token="report.docx:3:token",
+    )
+    start_calls = []
+    reruns = []
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app, "init_session_state", lambda: None)
+    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
+    monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
+    monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
+    monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
+    monkeypatch.setattr(app, "get_processing_session_snapshot", lambda: type("ProcessingSnapshot", (), {"latest_source_token": ""})())
+    monkeypatch.setattr(app, "get_latest_image_mode", lambda: "safe")
+    monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "error", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
+    monkeypatch.setattr(app.st, "expander", lambda *args, **kwargs: type("FakeExpander", (), {"__enter__": lambda self: self, "__exit__": lambda self, exc_type, exc, tb: False})())
+    monkeypatch.setattr(app.st, "button", lambda *args, **kwargs: False)
+    monkeypatch.setattr(app.st, "columns", lambda n: [FakeColumn(result=False), FakeColumn(result=True), FakeColumn(result=False)])
+    monkeypatch.setattr(app, "render_preparation_summary", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_section_gap", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_maybe_apply_file_recommendations", lambda **kwargs: None)
+    monkeypatch.setattr(app, "_build_structure_settings_hash", lambda **kwargs: "settings123")
+    monkeypatch.setattr(app, "_render_processing_controls", lambda **kwargs: (_ for _ in ()).throw(AssertionError("generic controls should not be used when analysis action returns selected start")))
+    monkeypatch.setattr(compare_panel, "render_compare_all_apply_panel", lambda **kwargs: None)
+    monkeypatch.setattr(application_flow, "resolve_effective_uploaded_file", lambda **kwargs: uploaded_file)
+    monkeypatch.setattr(application_flow, "has_resettable_state", lambda **kwargs: False)
+    monkeypatch.setattr(application_flow, "derive_app_idle_view_state", lambda **kwargs: "file_selected")
+    monkeypatch.setattr(application_flow, "prepare_run_context", lambda **kwargs: (_ for _ in ()).throw(AssertionError("prepare_run_context should not be called")))
+    monkeypatch.setattr(app, "_start_background_processing", lambda **kwargs: start_calls.append(kwargs))
+    monkeypatch.setattr(app.st, "rerun", lambda: reruns.append(True))
+
+    app.main()
+
+    assert len(start_calls) == 1
+    assert start_calls[0]["uploaded_filename"] == "report.docx"
+    assert start_calls[0]["uploaded_token"] == "report.docx:3:token"
+    assert start_calls[0]["selected_segment_ids"] == ["seg_0001"]
+    assert start_calls[0]["jobs"] == [{"target_text": "block-1", "paragraph_ids": ["p0000", "p0001"]}]
+    assert start_calls[0]["source_paragraphs"] == [paragraph_a, paragraph_b]
+    assert start_calls[0]["image_assets"] == [image_asset]
+    assert reruns == [True]
+
+
+def test_start_background_processing_accepts_selected_segment_ids(monkeypatch):
+    start_calls = []
+
+    monkeypatch.setattr(app, "start_background_processing", lambda **kwargs: start_calls.append(kwargs))
+
+    app._start_background_processing(
+        uploaded_filename="report.docx",
+        uploaded_token="report.docx:3:token",
+        source_bytes=b"abc",
+        jobs=[{"target_text": "block"}],
+        selected_segment_ids=["seg_0001"],
+        source_paragraphs=["p1"],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=3,
+        processing_operation="edit",
+        source_language="en",
+        target_language="ru",
+    )
+
+    assert len(start_calls) == 1
+    assert start_calls[0]["selected_segment_ids"] == ["seg_0001"]
+
+
+def test_build_selected_processing_payload_filters_jobs_paragraphs_and_images():
+    image_asset = type("ImageAssetStub", (), {"image_id": "img_001"})()
+    paragraphs = [
+        type("ParagraphStub", (), {"paragraph_id": "p0000", "asset_id": None, "attached_to_asset_id": None})(),
+        type("ParagraphStub", (), {"paragraph_id": "p0001", "asset_id": "img_001", "attached_to_asset_id": None})(),
+        type("ParagraphStub", (), {"paragraph_id": "p0002", "asset_id": None, "attached_to_asset_id": None})(),
+    ]
+    prepared_run_context = _build_prepared_run_context(
+        paragraphs=paragraphs,
+        image_assets=[image_asset],
+        jobs=[
+            {"target_text": "block-1", "paragraph_ids": ["p0000", "p0001"]},
+            {"target_text": "block-2", "paragraph_ids": ["p0002"]},
+        ],
+        segments=[
+            DocumentSegment(
+                segment_id="seg_0001",
+                ordinal=1,
+                title="Chapter 1",
+                start_paragraph_index=0,
+                end_paragraph_index=1,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0001",
+                paragraph_ids=("p0000", "p0001"),
+            ),
+            DocumentSegment(
+                segment_id="seg_0002",
+                ordinal=2,
+                title="Chapter 2",
+                start_paragraph_index=2,
+                end_paragraph_index=2,
+                start_paragraph_id="p0002",
+                end_paragraph_id="p0002",
+                paragraph_ids=("p0002",),
+            ),
+        ],
+        segment_to_job={"seg_0001": (0,), "seg_0002": (1,)},
+    )
+
+    payload = app._build_selected_processing_payload(
+        prepared_run_context=prepared_run_context,
+        selected_segment_ids=["seg_0001"],
+    )
+
+    assert payload["selected_segment_ids"] == ["seg_0001"]
+    assert payload["jobs"] == [{"target_text": "block-1", "paragraph_ids": ["p0000", "p0001"]}]
+    assert payload["source_paragraphs"] == paragraphs[:2]
+    assert payload["image_assets"] == [image_asset]
+
+
+def test_build_selected_processing_payload_returns_empty_payload_when_nothing_selected():
+    payload = app._build_selected_processing_payload(
+        prepared_run_context=_build_prepared_run_context(),
+        selected_segment_ids=[],
+    )
+
+    assert payload == {
+        "selected_segment_ids": [],
+        "jobs": [],
+        "source_paragraphs": [],
+        "image_assets": [],
+    }

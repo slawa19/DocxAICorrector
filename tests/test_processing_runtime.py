@@ -118,7 +118,18 @@ def test_drain_processing_events_applies_typed_runtime_events(monkeypatch):
 
     session_state.processing_event_queue.put(SetStateEvent(values={"last_error": "boom"}))
     session_state.processing_event_queue.put(ResetImageStateEvent())
-    session_state.processing_event_queue.put(SetProcessingStatusEvent(payload={"stage": "run", "detail": "detail"}))
+    session_state.processing_event_queue.put(
+        SetProcessingStatusEvent(
+            payload={
+                "stage": "run",
+                "detail": "detail",
+                "segment_status_by_id": {"seg_0001": "processing"},
+                "segment_progress_by_id": {"seg_0001": 0.5},
+                "active_segment_id": "seg_0001",
+                "active_segment_title": "Chapter 1",
+            }
+        )
+    )
     session_state.processing_event_queue.put(FinalizeProcessingStatusEvent(stage="done", detail="ok", progress=1.0, terminal_kind="completed"))
     session_state.processing_event_queue.put(PushActivityEvent(message="hello"))
     session_state.processing_event_queue.put(AppendLogEvent(payload={"status": "OK", "block_index": 1, "block_count": 2, "target_chars": 3, "context_chars": 4, "details": "done"}))
@@ -144,7 +155,14 @@ def test_drain_processing_events_applies_typed_runtime_events(monkeypatch):
         "fallbacks_applied": 0,
         "validation_errors": [],
     }
-    assert calls["status"] == [{"stage": "run", "detail": "detail"}]
+    assert calls["status"] == [{
+        "stage": "run",
+        "detail": "detail",
+        "segment_status_by_id": {"seg_0001": "processing"},
+        "segment_progress_by_id": {"seg_0001": 0.5},
+        "active_segment_id": "seg_0001",
+        "active_segment_title": "Chapter 1",
+    }]
     assert calls["finalize"] == [("done", "ok", 1.0, "completed")]
     assert calls["activity"] == ["hello"]
     assert calls["log"][0]["status"] == "OK"
@@ -207,7 +225,15 @@ def test_build_runtime_event_emitters_emits_typed_events_for_background_runtime(
     runtime = RuntimeStub()
     emitters.emit_state(runtime, last_error="boom")
     emitters.emit_image_reset(runtime)
-    emitters.emit_status(runtime, stage="run", detail="detail")
+    emitters.emit_status(
+        runtime,
+        stage="run",
+        detail="detail",
+        segment_status_by_id={"seg_0001": "processing"},
+        segment_progress_by_id={"seg_0001": 0.5},
+        active_segment_id="seg_0001",
+        active_segment_title="Chapter 1",
+    )
     emitters.emit_finalize(runtime, "done", "ok", 1.0, "completed")
     emitters.emit_activity(runtime, "hello")
     emitters.emit_log(runtime, status="OK", block_index=1, block_count=1, target_chars=2, context_chars=0, details="done")
@@ -216,7 +242,16 @@ def test_build_runtime_event_emitters_emits_typed_events_for_background_runtime(
     assert emitted_events == [
         SetStateEvent(values={"last_error": "boom"}),
         ResetImageStateEvent(),
-        SetProcessingStatusEvent(payload={"stage": "run", "detail": "detail"}),
+        SetProcessingStatusEvent(
+            payload={
+                "stage": "run",
+                "detail": "detail",
+                "segment_status_by_id": {"seg_0001": "processing"},
+                "segment_progress_by_id": {"seg_0001": 0.5},
+                "active_segment_id": "seg_0001",
+                "active_segment_title": "Chapter 1",
+            }
+        ),
         FinalizeProcessingStatusEvent(stage="done", detail="ok", progress=1.0, terminal_kind="completed"),
         PushActivityEvent(message="hello"),
         AppendLogEvent(payload={"status": "OK", "block_index": 1, "block_count": 1, "target_chars": 2, "context_chars": 0, "details": "done"}),
@@ -608,6 +643,93 @@ def test_start_background_processing_delegates_p1a_start_state_to_state_owner(mo
     assert start_calls[0]["worker"] is session_state.processing_worker
     assert start_calls[0]["event_queue"] is session_state.processing_event_queue
     assert start_calls[0]["stop_event"] is session_state.processing_stop_event
+
+
+def test_start_background_processing_passes_selected_segment_ids_to_worker(monkeypatch):
+    session_state = SessionState(restart_session_id="session-a")
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    monkeypatch.setattr(state.st, "session_state", session_state)
+    state.init_session_state()
+    session_state.restart_session_id = "session-a"
+    monkeypatch.setattr(
+        processing_runtime,
+        "store_restart_source",
+        lambda **kwargs: {
+            "filename": kwargs["source_name"],
+            "token": kwargs["source_token"],
+            "storage_path": "restart.bin",
+            "session_id": kwargs["session_id"],
+        },
+    )
+    captured = {}
+
+    def worker_target(**kwargs):
+        captured.update(kwargs)
+
+    processing_runtime.start_background_processing(
+        worker_target=worker_target,
+        reset_run_state=state.reset_run_state,
+        push_activity=lambda message: None,
+        set_processing_status=lambda **kwargs: None,
+        uploaded_filename="report.docx",
+        uploaded_token="report.docx:3:abc",
+        source_bytes=b"abc",
+        jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
+        selected_segment_ids=["seg_0001", "seg_0002"],
+        source_paragraphs=["paragraph"],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+    )
+
+    session_state.processing_worker.join(timeout=5)
+
+    assert captured["selected_segment_ids"] == ["seg_0001", "seg_0002"]
+
+
+def test_start_background_processing_passes_none_selected_segment_ids_to_worker(monkeypatch):
+    session_state = SessionState(restart_session_id="session-a")
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    monkeypatch.setattr(state.st, "session_state", session_state)
+    state.init_session_state()
+    session_state.restart_session_id = "session-a"
+    monkeypatch.setattr(
+        processing_runtime,
+        "store_restart_source",
+        lambda **kwargs: {
+            "filename": kwargs["source_name"],
+            "token": kwargs["source_token"],
+            "storage_path": "restart.bin",
+            "session_id": kwargs["session_id"],
+        },
+    )
+    captured = {}
+
+    def worker_target(**kwargs):
+        captured.update(kwargs)
+
+    processing_runtime.start_background_processing(
+        worker_target=worker_target,
+        reset_run_state=state.reset_run_state,
+        push_activity=lambda message: None,
+        set_processing_status=lambda **kwargs: None,
+        uploaded_filename="report.docx",
+        uploaded_token="report.docx:3:abc",
+        source_bytes=b"abc",
+        jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
+        source_paragraphs=["paragraph"],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+    )
+
+    session_state.processing_worker.join(timeout=5)
+
+    assert captured["selected_segment_ids"] is None
 
 
 def test_request_processing_stop_delegates_to_state_owner(monkeypatch):

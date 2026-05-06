@@ -8,6 +8,38 @@ from docxaicorrector.core.models import ImageMode
 PipelineResult = Literal["succeeded", "failed", "stopped"]
 
 
+def _coerce_job_segment_id(job: Mapping[str, object] | object) -> str | None:
+    if not isinstance(job, Mapping):
+        return None
+    value = job.get("segment_id")
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
+def _build_segment_title_lookup(context: Any) -> dict[str, str]:
+    paragraphs = list(getattr(context, "source_paragraphs", ()) or ())
+    titles: dict[str, str] = {}
+    for paragraph in paragraphs:
+        segment_id = str(getattr(paragraph, "segment_id", "") or "").strip()
+        if not segment_id or segment_id in titles:
+            continue
+        title = str(getattr(paragraph, "text", "") or "").strip()
+        if title:
+            titles[segment_id] = title
+    return titles
+
+
+def _build_segment_runtime_payload(*, context: Any) -> tuple[tuple[str | None, ...], dict[str, str], dict[str, int]]:
+    jobs = list(context.jobs)
+    segment_ids_by_job = tuple(_coerce_job_segment_id(job) for job in jobs)
+    segment_job_totals: dict[str, int] = {}
+    for segment_id in segment_ids_by_job:
+        if segment_id is None:
+            continue
+        segment_job_totals[segment_id] = segment_job_totals.get(segment_id, 0) + 1
+    return segment_ids_by_job, _build_segment_title_lookup(context), segment_job_totals
+
+
 def summarize_block_plan(
     *,
     jobs: Sequence[object],
@@ -81,6 +113,7 @@ def build_processing_context(
     *,
     uploaded_file: object,
     jobs: object,
+    selected_segment_ids: object = None,
     source_paragraphs: object,
     image_assets: object,
     image_mode: str,
@@ -110,6 +143,7 @@ def build_processing_context(
         uploaded_file=uploaded_file,
         uploaded_filename=dependencies.resolve_uploaded_filename(uploaded_file),
         jobs=jobs,
+        selected_segment_ids=tuple(str(segment_id) for segment_id in (selected_segment_ids or ()) if str(segment_id).strip()) or None,
         source_paragraphs=source_paragraphs,
         image_assets=image_assets,
         image_mode=effective_image_mode,
@@ -134,6 +168,7 @@ def build_processing_run_components(
     *,
     uploaded_file: object,
     jobs: object,
+    selected_segment_ids: object = None,
     source_paragraphs: object,
     image_assets: object,
     image_mode: str,
@@ -201,6 +236,7 @@ def build_processing_run_components(
     context = context_builder_fn(
         uploaded_file=uploaded_file,
         jobs=jobs,
+        selected_segment_ids=selected_segment_ids,
         source_paragraphs=source_paragraphs,
         image_assets=image_assets,
         image_mode=image_mode,
@@ -359,6 +395,8 @@ def initialize_processing_run(
             log_details=error_message,
         )
 
+    segment_ids_by_job, segment_titles_by_id, segment_job_totals = _build_segment_runtime_payload(context=context)
+
     try:
         resolved_selector = None
         if callable(getattr(dependencies, "resolve_model_selector", None)):
@@ -460,6 +498,9 @@ def initialize_processing_run(
     return initialization_factory_fn(
         client=text_client,
         job_count=job_count,
+        segment_ids_by_job=segment_ids_by_job,
+        segment_titles_by_id=segment_titles_by_id,
+        segment_job_totals=segment_job_totals,
         text_client=text_client,
         text_model_id=context.model_id or getattr(resolved_selector, "model_id", context.model),
         openai_client=openai_client,

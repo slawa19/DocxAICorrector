@@ -92,6 +92,15 @@ def test_init_session_state_initializes_image_processing_summary(monkeypatch):
     assert session_state.recommended_text_settings is None
     assert session_state.recommended_text_settings_applied_for_token is None
     assert session_state.manual_text_settings_override_for_token is None
+    assert session_state.selected_segment_ids == []
+    assert session_state.segment_status_by_id == {}
+    assert session_state.segment_progress_by_id == {}
+    assert session_state.active_segment_id == ""
+    assert session_state.active_segment_title == ""
+    assert session_state.structure_confirmed is False
+    assert session_state.confirmed_structure_fingerprint == ""
+    assert session_state.confirmed_at_settings_hash == ""
+    assert session_state.segments_loaded_for_source_token == ""
 
 
 def test_reset_image_state_restores_image_defaults(monkeypatch):
@@ -154,6 +163,33 @@ def test_set_processing_status_updates_preparation_metrics(monkeypatch):
     assert session_state.processing_status["cached"] is True
 
 
+def test_set_processing_status_updates_segment_runtime_metrics(monkeypatch):
+    session_state = SessionState()
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    state.init_session_state()
+    state.set_processing_status(
+        stage="Обработка блока",
+        detail="Идет работа.",
+        progress=0.5,
+        is_running=True,
+        phase="processing",
+        segment_status_by_id={"seg_0001": "processing", "seg_0002": "pending"},
+        segment_progress_by_id={"seg_0001": 0.5, "seg_0002": 0.0},
+        active_segment_id="seg_0001",
+        active_segment_title="Chapter 1",
+    )
+
+    assert session_state.processing_status["segment_status_by_id"] == {"seg_0001": "processing", "seg_0002": "pending"}
+    assert session_state.processing_status["segment_progress_by_id"] == {"seg_0001": 0.5, "seg_0002": 0.0}
+    assert session_state.processing_status["active_segment_id"] == "seg_0001"
+    assert session_state.processing_status["active_segment_title"] == "Chapter 1"
+    assert session_state.segment_status_by_id == {"seg_0001": "processing", "seg_0002": "pending"}
+    assert session_state.segment_progress_by_id == {"seg_0001": 0.5, "seg_0002": 0.0}
+    assert session_state.active_segment_id == "seg_0001"
+    assert session_state.active_segment_title == "Chapter 1"
+
+
 def test_reset_run_state_can_clear_restart_source(monkeypatch):
     session_state = SessionState(
         restart_source={"filename": "report.docx", "storage_path": "restart.bin"},
@@ -213,6 +249,20 @@ def test_reset_run_state_can_preserve_preparation_state(monkeypatch):
             "source_language": False,
             "target_language": False,
         },
+        structure_manifest_notice_token="report.docx:3:abc",
+        structure_manifest_notice_details={
+            "file_token": "report.docx:3:abc",
+            "manifest_path": ".run/structure_manifests/report.segments.json",
+        },
+        selected_segment_ids=["seg_0001", "seg_0002"],
+        segment_status_by_id={"seg_0001": "completed", "seg_0002": "processing"},
+        segment_progress_by_id={"seg_0001": 1.0, "seg_0002": 0.5},
+        active_segment_id="seg_0002",
+        active_segment_title="Chapter 2",
+        structure_confirmed=True,
+        confirmed_structure_fingerprint="abc123",
+        confirmed_at_settings_hash="settings123",
+        segments_loaded_for_source_token="report.docx:3:abc",
         latest_markdown="stale",
         latest_narration_text="stale narration",
         run_log=[{"message": "stale"}],
@@ -236,6 +286,17 @@ def test_reset_run_state_can_preserve_preparation_state(monkeypatch):
     assert session_state.recommended_text_settings_pending_widget_state["file_token"] == "report.docx:3:abc"
     assert session_state.recommended_text_settings_notice_details["file_token"] == "report.docx:3:abc"
     assert session_state.manual_text_settings_override_for_token["file_token"] == "report.docx:3:abc"
+    assert session_state.structure_manifest_notice_token == "report.docx:3:abc"
+    assert session_state.structure_manifest_notice_details["file_token"] == "report.docx:3:abc"
+    assert session_state.selected_segment_ids == ["seg_0001", "seg_0002"]
+    assert session_state.segment_status_by_id == {"seg_0001": "completed", "seg_0002": "processing"}
+    assert session_state.segment_progress_by_id == {"seg_0001": 1.0, "seg_0002": 0.5}
+    assert session_state.active_segment_id == "seg_0002"
+    assert session_state.active_segment_title == "Chapter 2"
+    assert session_state.structure_confirmed is True
+    assert session_state.confirmed_structure_fingerprint == "abc123"
+    assert session_state.confirmed_at_settings_hash == "settings123"
+    assert session_state.segments_loaded_for_source_token == "report.docx:3:abc"
     assert session_state.latest_markdown == ""
     assert session_state.run_log == []
     assert session_state.activity_feed == []
@@ -273,6 +334,20 @@ def test_reset_run_state_drops_recommendation_state_for_different_preserved_file
             "source_language": False,
             "target_language": False,
         },
+        structure_manifest_notice_token="old.docx:3:abc",
+        structure_manifest_notice_details={
+            "file_token": "old.docx:3:abc",
+            "manifest_path": ".run/structure_manifests/old.segments.json",
+        },
+        selected_segment_ids=["seg_old"],
+        segment_status_by_id={"seg_old": "completed"},
+        segment_progress_by_id={"seg_old": 1.0},
+        active_segment_id="seg_old",
+        active_segment_title="Old Chapter",
+        structure_confirmed=True,
+        confirmed_structure_fingerprint="oldfp",
+        confirmed_at_settings_hash="oldsettings",
+        segments_loaded_for_source_token="old.docx:3:abc",
     )
     monkeypatch.setattr(state.st, "session_state", session_state)
     monkeypatch.setattr(state, "clear_restart_source", lambda restart_source: None)
@@ -286,6 +361,17 @@ def test_reset_run_state_drops_recommendation_state_for_different_preserved_file
     assert session_state.recommended_text_settings_pending_widget_state is None
     assert session_state.recommended_text_settings_notice_details is None
     assert session_state.manual_text_settings_override_for_token is None
+    assert session_state.structure_manifest_notice_token is None
+    assert session_state.structure_manifest_notice_details is None
+    assert session_state.selected_segment_ids == []
+    assert session_state.segment_status_by_id == {}
+    assert session_state.segment_progress_by_id == {}
+    assert session_state.active_segment_id == ""
+    assert session_state.active_segment_title == ""
+    assert session_state.structure_confirmed is False
+    assert session_state.confirmed_structure_fingerprint == ""
+    assert session_state.confirmed_at_settings_hash == ""
+    assert session_state.segments_loaded_for_source_token == ""
 
 
 def test_recommended_text_settings_helpers_roundtrip_state(monkeypatch):
@@ -332,6 +418,90 @@ def test_recommended_text_settings_helpers_roundtrip_state(monkeypatch):
         "file_token": "report.docx:3:abc",
         "changes": ["режим: edit -> translate"],
     }
+
+
+def test_structure_manifest_notice_helpers_roundtrip_state(monkeypatch):
+    session_state = SessionState()
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    state.set_structure_manifest_notice(
+        file_token="report.docx:3:abc",
+        details={
+            "file_token": "report.docx:3:abc",
+            "manifest_path": ".run/structure_manifests/20260506_094000_report.segments.json",
+            "structure_fingerprint": "abc123def456",
+        },
+    )
+
+    assert state.get_structure_manifest_notice_token() == "report.docx:3:abc"
+    assert state.get_structure_manifest_notice_details() == {
+        "file_token": "report.docx:3:abc",
+        "manifest_path": ".run/structure_manifests/20260506_094000_report.segments.json",
+        "structure_fingerprint": "abc123def456",
+    }
+
+
+def test_structure_review_state_helpers_roundtrip(monkeypatch):
+    session_state = SessionState()
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    state.set_selected_segment_ids(["seg_0001", "seg_0002"])
+    state.set_structure_confirmation_state(
+        structure_confirmed=True,
+        confirmed_structure_fingerprint="abc123def456",
+        confirmed_at_settings_hash="settings123",
+        segments_loaded_for_source_token="report.docx:3:abc",
+    )
+
+    assert state.get_selected_segment_ids() == ["seg_0001", "seg_0002"]
+    assert state.get_structure_confirmed() is True
+    assert state.get_confirmed_structure_fingerprint() == "abc123def456"
+    assert state.get_confirmed_at_settings_hash() == "settings123"
+    assert state.get_segments_loaded_for_source_token() == "report.docx:3:abc"
+
+
+def test_segment_runtime_state_helpers_roundtrip(monkeypatch):
+    session_state = SessionState()
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    state.set_segment_runtime_state(
+        segment_status_by_id={"seg_0001": "processing", "seg_0002": "completed"},
+        segment_progress_by_id={"seg_0001": 0.5, "seg_0002": 1.0},
+        active_segment_id="seg_0001",
+        active_segment_title="Chapter 1",
+    )
+
+    assert state.get_segment_status_by_id() == {"seg_0001": "processing", "seg_0002": "completed"}
+    assert state.get_segment_progress_by_id() == {"seg_0001": 0.5, "seg_0002": 1.0}
+    assert state.get_active_segment_id() == "seg_0001"
+    assert state.get_active_segment_title() == "Chapter 1"
+
+
+def test_clear_structure_review_state_resets_analysis_flags(monkeypatch):
+    session_state = SessionState(
+        selected_segment_ids=["seg_0001"],
+        segment_status_by_id={"seg_0001": "processing"},
+        segment_progress_by_id={"seg_0001": 0.5},
+        active_segment_id="seg_0001",
+        active_segment_title="Chapter 1",
+        structure_confirmed=True,
+        confirmed_structure_fingerprint="abc",
+        confirmed_at_settings_hash="settings",
+        segments_loaded_for_source_token="report.docx:3:abc",
+    )
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    state.clear_structure_review_state()
+
+    assert session_state.selected_segment_ids == []
+    assert session_state.segment_status_by_id == {}
+    assert session_state.segment_progress_by_id == {}
+    assert session_state.active_segment_id == ""
+    assert session_state.active_segment_title == ""
+    assert session_state.structure_confirmed is False
+    assert session_state.confirmed_structure_fingerprint == ""
+    assert session_state.confirmed_at_settings_hash == ""
+    assert session_state.segments_loaded_for_source_token == ""
 
 
 def test_text_transform_assessment_helper_roundtrip_state(monkeypatch):
@@ -427,6 +597,41 @@ def test_mark_preparation_started_clears_previous_failure_and_context(monkeypatc
     assert session_state.preparation_input_marker == "new"
     assert session_state.preparation_failed_marker == ""
     assert session_state.prepared_run_context is None
+
+
+def test_apply_preparation_complete_initializes_structure_review_state(monkeypatch):
+    session_state = SessionState(selected_source_token="")
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    prepared_run_context = type(
+        "PreparedRunContextStub",
+        (),
+        {
+            "uploaded_file_token": "report.docx:3:abc",
+            "prepared_source_key": "report.docx:3:abc:6000",
+            "segments": [
+                type("SegmentStub", (), {"segment_id": "seg_0001"})(),
+                type("SegmentStub", (), {"segment_id": "seg_0002"})(),
+            ],
+        },
+    )()
+
+    state.apply_preparation_complete(
+        prepared_run_context=prepared_run_context,
+        upload_marker="report.docx:3:abc:6000",
+        reset_run_state_fn=lambda **kwargs: None,
+    )
+
+    assert session_state.selected_source_token == "report.docx:3:abc"
+    assert session_state.selected_segment_ids == ["seg_0001", "seg_0002"]
+    assert session_state.segment_status_by_id == {"seg_0001": "pending", "seg_0002": "pending"}
+    assert session_state.segment_progress_by_id == {"seg_0001": 0.0, "seg_0002": 0.0}
+    assert session_state.active_segment_id == ""
+    assert session_state.active_segment_title == ""
+    assert session_state.structure_confirmed is False
+    assert session_state.confirmed_structure_fingerprint == ""
+    assert session_state.confirmed_at_settings_hash == ""
+    assert session_state.segments_loaded_for_source_token == "report.docx:3:abc"
 
 
 def test_state_read_helpers_expose_processing_and_persisted_source_state(monkeypatch):
@@ -635,6 +840,22 @@ def test_apply_processing_start_updates_owned_p1a_keys(monkeypatch):
     assert session_state.processing_event_queue is event_queue
     assert session_state.processing_stop_event is stop_event
     assert session_state.processing_stop_requested is False
+
+
+def test_finalize_processing_status_clears_active_segment(monkeypatch):
+    session_state = SessionState(
+        processing_status={"stage": "run", "detail": "detail", "active_segment_id": "seg_0001", "active_segment_title": "Chapter 1"},
+        active_segment_id="seg_0001",
+        active_segment_title="Chapter 1",
+    )
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    state.finalize_processing_status("done", "ok", 1.0, "completed")
+
+    assert session_state.processing_status["active_segment_id"] == ""
+    assert session_state.processing_status["active_segment_title"] == ""
+    assert session_state.active_segment_id == ""
+    assert session_state.active_segment_title == ""
 
 
 def test_request_processing_stop_marks_flag_and_sets_event(monkeypatch):
