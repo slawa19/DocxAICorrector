@@ -273,6 +273,43 @@ def test_prepare_run_context_keeps_best_effort_warning_when_quality_gate_warns(m
     )
 
 
+def test_prepare_run_context_copies_segment_fields_from_prepared_document(monkeypatch):
+    monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: None)
+    session_state = SessionState(selected_source_token="", prepared_source_key="")
+
+    prepared_document = SimpleNamespace(
+        source_text="text",
+        paragraphs=["p1"],
+        image_assets=[],
+        jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
+        prepared_source_key="prepared-key",
+        cached=False,
+        segments=[SimpleNamespace(segment_id="seg_0001_abcd1234", title="Chapter 1")],
+        segment_diagnostics=SimpleNamespace(segment_count=1, toc_matched_count=0),
+        structure_fingerprint="abc123def456",
+        detector_version="chapter_segments_v1",
+        segment_to_job={"seg_0001_abcd1234": (0,)},
+    )
+
+    prepared_run_context = application_flow.prepare_run_context(
+        uploaded_file=UploadedFileStub("report.docx", b"abc"),
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=True,
+        session_state=session_state,
+        reset_run_state_fn=lambda **kwargs: None,
+        fail_critical_fn=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected critical error")),
+        log_event_fn=lambda *args, **kwargs: None,
+        prepare_document_for_processing_fn=lambda **kwargs: prepared_document,
+    )
+
+    assert prepared_run_context.segments == prepared_document.segments
+    assert prepared_run_context.segment_diagnostics is prepared_document.segment_diagnostics
+    assert prepared_run_context.structure_fingerprint == "abc123def456"
+    assert prepared_run_context.detector_version == "chapter_segments_v1"
+    assert prepared_run_context.segment_to_job == {"seg_0001_abcd1234": (0,)}
+
+
 def test_prepare_run_context_keeps_other_completed_source_tokens(monkeypatch):
     monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: None)
     session_state = SessionState(

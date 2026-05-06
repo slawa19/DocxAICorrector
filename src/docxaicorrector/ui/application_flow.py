@@ -1,11 +1,12 @@
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, TypedDict
 
 from docxaicorrector.document._document import summarize_boundary_normalization_metrics, validate_docx_source_bytes
 from docxaicorrector.core.models import StructureRecognitionSummary
+from docxaicorrector.document.segments import CHAPTER_SEGMENTS_DETECTOR_VERSION, DocumentSegment, SegmentDetectionReport
 from docxaicorrector.processing.preparation import (
     build_layout_cleanup_status_note,
     build_structure_processing_status_note,
@@ -66,6 +67,11 @@ class PreparedRunContext:
     preparation_detail: str
     preparation_cached: bool
     preparation_elapsed_seconds: float
+    segments: list[DocumentSegment] = field(default_factory=list)
+    segment_diagnostics: SegmentDetectionReport = field(default_factory=SegmentDetectionReport)
+    structure_fingerprint: str = ""
+    detector_version: str = CHAPTER_SEGMENTS_DETECTOR_VERSION
+    segment_to_job: dict[str, tuple[int, ...]] = field(default_factory=dict)
     source_format: str = "docx"
     conversion_backend: str | None = None
     normalization_report: object | None = None
@@ -73,7 +79,7 @@ class PreparedRunContext:
     cleanup_report: object | None = None
     structure_repair_report: object | None = None
     structure_map: object | None = None
-    structure_recognition_summary: StructureRecognitionSummary = StructureRecognitionSummary()
+    structure_recognition_summary: StructureRecognitionSummary = field(default_factory=StructureRecognitionSummary)
     structure_validation_report: object | None = None
     structure_recognition_mode: str = "off"
     structure_ai_attempted: bool = False
@@ -388,6 +394,11 @@ def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: 
         image_assets=prepared_document.image_assets,
         jobs=prepared_document.jobs,
         prepared_source_key=prepared_document.prepared_source_key,
+        segments=list(getattr(prepared_document, "segments", []) or []),
+        segment_diagnostics=getattr(prepared_document, "segment_diagnostics", SegmentDetectionReport()),
+        structure_fingerprint=str(getattr(prepared_document, "structure_fingerprint", "") or ""),
+        detector_version=str(getattr(prepared_document, "detector_version", CHAPTER_SEGMENTS_DETECTOR_VERSION) or CHAPTER_SEGMENTS_DETECTOR_VERSION),
+        segment_to_job=dict(getattr(prepared_document, "segment_to_job", {}) or {}),
         preparation_stage="Документ подготовлен",
         preparation_detail=preparation_detail,
         preparation_cached=prepared_document.cached,

@@ -206,6 +206,9 @@ class ParagraphUnit:
     boundary_source: str = "raw"
     boundary_confidence: str = "explicit"
     boundary_rationale: str | None = None
+    segment_id: str | None = None
+    segment_level: int | None = None
+    segment_boundary_before: bool = False
 
     @property
     def rendered_text(self) -> str:

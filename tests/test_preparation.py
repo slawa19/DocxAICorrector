@@ -10,6 +10,7 @@ from docxaicorrector.core.models import ImageAsset, ImageVariantCandidate
 from docxaicorrector.core.models import LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport
 from docxaicorrector.core.models import ParagraphClassification, ParagraphUnit, StructureMap
 from docxaicorrector.core.models import StructureRecognitionSummary, StructureRepairReport
+from docxaicorrector.document.segments import CHAPTER_SEGMENTS_DETECTOR_VERSION
 from docxaicorrector.processing.processing_runtime import FrozenUploadPayload, build_in_memory_uploaded_file, build_preparation_request_marker
 
 
@@ -466,6 +467,77 @@ def test_prepare_document_for_processing_jobs_include_narration_metadata_without
     assert list(session_state["preparation_cache"].keys()) == [
         "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=off"
     ]
+
+
+def test_prepare_document_for_processing_detects_segments_and_builds_segment_mapping(monkeypatch):
+    session_state = {"preparation_cache": {}}
+    paragraphs = [
+        ParagraphUnit(text="Contents", role="body", structural_role="toc_header", paragraph_id="p0000", source_index=0),
+        ParagraphUnit(text="Chapter 1........ 12", role="body", structural_role="toc_entry", paragraph_id="p0001", source_index=1),
+        ParagraphUnit(text="Chapter 1", role="heading", heading_level=1, heading_source="explicit", paragraph_id="p0002", source_index=2),
+        ParagraphUnit(text="First chapter body", role="body", paragraph_id="p0003", source_index=3),
+        ParagraphUnit(text="Chapter 2", role="heading", heading_level=1, heading_source="explicit", paragraph_id="p0004", source_index=4),
+        ParagraphUnit(text="Second chapter body", role="body", paragraph_id="p0005", source_index=5),
+    ]
+    captured = {}
+
+    config_state = {
+        "paragraph_boundary_normalization_enabled": True,
+        "paragraph_boundary_normalization_mode": "high_only",
+        "paragraph_boundary_ai_review_enabled": False,
+        "paragraph_boundary_ai_review_mode": "off",
+        "relation_normalization_enabled": True,
+        "relation_normalization_profile": "phase2_default",
+        "relation_normalization_enabled_relation_kinds": (
+            "image_caption",
+            "table_caption",
+            "epigraph_attribution",
+            "toc_region",
+        ),
+        "structure_recognition_enabled": False,
+        "structure_recognition_mode": "off",
+        "structure_validation_enabled": True,
+    }
+
+    monkeypatch.setattr(
+        preparation,
+        "extract_document_content_with_normalization_reports",
+        lambda uploaded_file, app_config=None: _build_extract_result(paragraphs, [], None),
+    )
+    monkeypatch.setattr(preparation, "build_document_text", lambda items: "\n\n".join(paragraph.text for paragraph in items))
+    monkeypatch.setattr(preparation, "load_app_config", lambda: dict(config_state))
+
+    def fake_build_semantic_blocks(paragraphs, max_chars, relations=None, hard_boundary_paragraph_ids=None):
+        captured["hard_boundary_paragraph_ids"] = set(hard_boundary_paragraph_ids or set())
+        return [
+            DocumentBlock(paragraphs=list(paragraphs[:2])),
+            DocumentBlock(paragraphs=list(paragraphs[2:4])),
+            DocumentBlock(paragraphs=list(paragraphs[4:])),
+        ]
+
+    monkeypatch.setattr(preparation, "build_semantic_blocks", fake_build_semantic_blocks)
+
+    prepared = preparation.prepare_document_for_processing(
+        uploaded_payload=_build_uploaded_payload("report.docx", b"docx-bytes", "report.docx:10:hash"),
+        chunk_size=6000,
+        processing_operation="translate",
+        session_state=session_state,
+    )
+
+    assert prepared.detector_version == CHAPTER_SEGMENTS_DETECTOR_VERSION
+    assert prepared.structure_fingerprint
+    assert prepared.segment_diagnostics.segment_count >= 3
+    assert [segment.title for segment in prepared.segments or []][:3] == ["Table of Contents", "Chapter 1", "Chapter 2"]
+    assert captured["hard_boundary_paragraph_ids"] == {"p0002", "p0004"}
+    segments = prepared.segments
+    segment_to_job = prepared.segment_to_job
+    assert segments is not None
+    assert segment_to_job is not None
+    assert segment_to_job[segments[0].segment_id] == (0,)
+    assert segment_to_job[segments[1].segment_id] == (1,)
+    assert segment_to_job[segments[2].segment_id] == (2,)
+    assert paragraphs[2].segment_boundary_before is True
+    assert paragraphs[4].segment_boundary_before is True
 
 
 def test_prepare_document_for_processing_postprocess_toggle_does_not_change_cache_key_or_request_marker(monkeypatch):

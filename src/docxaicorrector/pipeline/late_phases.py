@@ -1269,14 +1269,14 @@ def _resolve_audiobook_postprocess_model(*, context: Any) -> str:
 
 
 def _resolve_text_call_target(*, selector: str, context: Any, dependencies: Any, fallback_client: object | None) -> tuple[object, str, str, str | None]:
-    resolver = getattr(dependencies, "resolve_model_selector", None)
-    client_factory = getattr(dependencies, "get_client_for_model_selector", None)
+    resolver: Any = getattr(dependencies, "resolve_model_selector", None)
+    client_factory: Any = getattr(dependencies, "get_client_for_model_selector", None)
     if not callable(resolver) or not callable(client_factory):
         if fallback_client is None:
             raise RuntimeError("Provider-aware text client factory is unavailable for the requested selector.")
         return fallback_client, selector, selector, None
 
-    resolved_selector = resolver(selector, "responses_text")
+    resolved_selector: Any = resolver(selector, "responses_text")
     return (
         client_factory(selector, "responses_text"),
         resolved_selector.model_id,

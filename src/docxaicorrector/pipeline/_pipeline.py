@@ -94,6 +94,9 @@ from docxaicorrector.pipeline.contracts import (
     ActivityEmitter,
     ImageReinserter,
     build_processing_dependencies as _build_processing_dependencies_impl,
+    ModelSelectorClientFactory,
+    ModelSelectorResolver,
+    ProviderClientFactory,
 )
 from docxaicorrector.runtime.artifacts import write_ui_result_artifacts as write_ui_result_artifacts_impl
 
@@ -243,9 +246,9 @@ def _build_processing_dependencies(
     preserve_source_paragraph_properties: ParagraphPropertiesPreserver,
     reinsert_inline_images: ImageReinserter,
     write_ui_result_artifacts: ResultArtifactWriter,
-    get_provider_client: Callable[[str], object] | None = None,
-    get_client_for_model_selector: Callable[[str, str], object] | None = None,
-    resolve_model_selector: Callable[[str, str | None], object] | None = None,
+    get_provider_client: ProviderClientFactory | None = None,
+    get_client_for_model_selector: ModelSelectorClientFactory | None = None,
+    resolve_model_selector: ModelSelectorResolver | None = None,
 ) -> ProcessingDependencies:
     return _build_processing_dependencies_impl(
         resolve_uploaded_filename=resolve_uploaded_filename,

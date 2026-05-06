@@ -153,28 +153,31 @@ class ProcessingService:
         runtime=None,
     ) -> str:
         deps = self.dependencies
-        get_provider_client_bound = None
+        get_provider_client_bound: Any = None
         if deps.get_provider_client_fn is not None:
-            def get_provider_client_bound(provider_name):
-                return deps.get_provider_client_fn(provider_name, config_like=app_config)
+            _get_provider_client_fn = deps.get_provider_client_fn
+            _gpck_bound = lambda provider_name: _get_provider_client_fn(provider_name, config_like=app_config)
+            get_provider_client_bound = _gpck_bound
 
-        get_client_for_model_selector_bound = None
+        get_client_for_model_selector_bound: Any = None
         if deps.get_client_for_model_selector_fn is not None:
-            def get_client_for_model_selector_bound(selector, required_capability):
-                return deps.get_client_for_model_selector_fn(
-                    selector,
-                    required_capability,
-                    config_like=app_config,
-                )
+            _get_client_for_model_selector_fn = deps.get_client_for_model_selector_fn
+            _gcms_bound = lambda selector, required_capability: _get_client_for_model_selector_fn(
+                selector,
+                required_capability,
+                config_like=app_config,
+            )
+            get_client_for_model_selector_bound = _gcms_bound
 
-        resolve_model_selector_bound = None
+        resolve_model_selector_bound: Any = None
         if deps.resolve_model_selector_fn is not None:
-            def resolve_model_selector_bound(selector, required_capability=None):
-                return deps.resolve_model_selector_fn(
-                    selector,
-                    required_capability,
-                    config_like=app_config,
-                )
+            _resolve_model_selector_fn = deps.resolve_model_selector_fn
+            _rms_bound = lambda selector, required_capability=None: _resolve_model_selector_fn(
+                selector,
+                required_capability,
+                config_like=app_config,
+            )
+            resolve_model_selector_bound = _rms_bound
 
         return deps.run_document_processing_impl_fn(
             uploaded_file=uploaded_file,

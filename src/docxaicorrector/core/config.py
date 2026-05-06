@@ -1399,7 +1399,7 @@ def get_provider_client(provider_name: str, *, config_like: object | None = None
         if not api_key:
             raise RuntimeError(f"Для модели '{normalized_provider_name}:<runtime>' не найден {provider_config.api_key_env}.")
 
-        client_kwargs: dict[str, object] = {"api_key": api_key}
+        client_kwargs: dict[str, Any] = {"api_key": api_key}
         default_headers: dict[str, str] = {}
         if provider_config.base_url:
             client_kwargs["base_url"] = provider_config.base_url

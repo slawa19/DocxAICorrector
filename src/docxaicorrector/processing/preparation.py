@@ -1,13 +1,13 @@
 from collections import OrderedDict
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import inspect
 import json
 import logging
 from pathlib import Path
 from threading import Event, Lock
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from docxaicorrector.core.config import get_client, get_model_role_value, load_app_config
@@ -30,6 +30,14 @@ from docxaicorrector.runtime.artifact_retention import (
     STRUCTURE_MAPS_MAX_AGE_SECONDS,
     STRUCTURE_MAPS_MAX_COUNT,
     prune_artifact_dir,
+)
+from docxaicorrector.document.segments import (
+    CHAPTER_SEGMENTS_DETECTOR_VERSION,
+    DocumentSegment,
+    SegmentDetectionReport,
+    build_segment_to_job_mapping,
+    detect_document_segments,
+    resolve_segment_hard_boundary_paragraph_ids,
 )
 from docxaicorrector.structure.recognition import apply_structure_map, build_structure_map
 from docxaicorrector.structure.validation import StructureValidationReport, validate_structure_quality, write_structure_validation_debug_artifact
@@ -72,6 +80,11 @@ class PreparedDocumentData:
     relations: list[ParagraphRelation]
     jobs: list[dict[str, Any]]
     prepared_source_key: str
+    segments: list[DocumentSegment] | None = None
+    segment_diagnostics: SegmentDetectionReport = field(default_factory=SegmentDetectionReport)
+    structure_fingerprint: str = ""
+    detector_version: str = CHAPTER_SEGMENTS_DETECTOR_VERSION
+    segment_to_job: dict[str, tuple[int, ...]] | None = None
     source_format: str = "docx"
     conversion_backend: str | None = None
     normalization_report: ParagraphBoundaryNormalizationReport | None = None
@@ -79,7 +92,7 @@ class PreparedDocumentData:
     cleanup_report: LayoutArtifactCleanupReport | None = None
     structure_repair_report: StructureRepairReport | None = None
     structure_map: StructureMap | None = None
-    structure_recognition_summary: StructureRecognitionSummary = StructureRecognitionSummary()
+    structure_recognition_summary: StructureRecognitionSummary = field(default_factory=StructureRecognitionSummary)
     structure_validation_report: StructureValidationReport | None = None
     structure_recognition_mode: str = "off"
     structure_ai_attempted: bool = False
@@ -769,6 +782,26 @@ def _build_editing_jobs_with_optional_operation(*, blocks, max_chars: int, proce
         return build_editing_jobs(blocks, max_chars=max_chars)
 
 
+def _build_semantic_blocks_with_optional_boundaries(*, paragraphs, max_chars: int, relations, hard_boundary_paragraph_ids: set[str]):
+    signature = inspect.signature(build_semantic_blocks)
+    accepts_hard_boundaries = "hard_boundary_paragraph_ids" in signature.parameters
+    if accepts_hard_boundaries:
+        try:
+            return build_semantic_blocks(
+                paragraphs,
+                max_chars=max_chars,
+                relations=relations,
+                hard_boundary_paragraph_ids=hard_boundary_paragraph_ids,
+            )
+        except TypeError:
+            pass
+    return build_semantic_blocks(paragraphs, max_chars=max_chars, relations=relations)
+
+
+def _supports_segment_detection(paragraphs: Sequence[Any]) -> bool:
+    return all(hasattr(paragraph, "text") and hasattr(paragraph, "role") for paragraph in paragraphs)
+
+
 def _extract_document_content_with_optional_app_config(*, uploaded_file, app_config: Mapping[str, Any]):
     signature = inspect.signature(extract_document_content_with_normalization_reports)
     accepts_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values())
@@ -896,6 +929,24 @@ def _prepare_document_for_processing(
         structure_summary=structure_summary,
         app_config=app_config,
     )
+    if _supports_segment_detection(paragraphs):
+        source_content_hash16 = hashlib.sha256(source_bytes).hexdigest()[:16]
+        segments, segment_diagnostics, structure_fingerprint = detect_document_segments(
+            paragraphs,
+            source_content_hash16=source_content_hash16,
+            chunk_size=chunk_size,
+        )
+        for segment in segments:
+            for index in range(segment.start_paragraph_index, segment.end_paragraph_index + 1):
+                paragraph = paragraphs[index]
+                paragraph.segment_id = segment.segment_id
+                paragraph.segment_level = segment.level
+                if index == segment.start_paragraph_index:
+                    paragraph.segment_boundary_before = segment.ordinal > 1
+    else:
+        segments = []
+        segment_diagnostics = SegmentDetectionReport()
+        structure_fingerprint = ""
     source_text = build_document_text(paragraphs)
     translation_domain = str(app_config.get("translation_domain_default", "general") or "general").strip().lower() or "general"
     translation_domain_instructions = build_translation_domain_instructions(
@@ -923,7 +974,13 @@ def _prepare_document_for_processing(
             "conversion_backend": conversion_backend,
         },
     )
-    blocks = build_semantic_blocks(paragraphs, max_chars=chunk_size, relations=relations)
+    hard_boundary_paragraph_ids = resolve_segment_hard_boundary_paragraph_ids(segments)
+    blocks = _build_semantic_blocks_with_optional_boundaries(
+        paragraphs=paragraphs,
+        max_chars=chunk_size,
+        relations=relations,
+        hard_boundary_paragraph_ids=hard_boundary_paragraph_ids,
+    )
     quality_gate_status, quality_gate_reasons = _apply_first_block_composition_quality_gate(
         blocks=blocks,
         processing_operation=processing_operation,
@@ -1005,6 +1062,7 @@ def _prepare_document_for_processing(
         max_chars=chunk_size,
         processing_operation=processing_operation,
     )
+    segment_to_job = build_segment_to_job_mapping(segments, jobs)
     emit_preparation_progress(
         progress_callback,
         stage="Задания собраны",
@@ -1033,6 +1091,11 @@ def _prepare_document_for_processing(
         image_assets=image_assets,
         relations=relations,
         jobs=jobs,
+        segments=segments,
+        segment_diagnostics=segment_diagnostics,
+        structure_fingerprint=structure_fingerprint,
+        detector_version=CHAPTER_SEGMENTS_DETECTOR_VERSION,
+        segment_to_job=segment_to_job,
         prepared_source_key="",
         source_format=source_format,
         conversion_backend=conversion_backend,
@@ -1043,14 +1106,14 @@ def _prepare_document_for_processing(
         structure_map=structure_map,
         structure_recognition_summary=structure_summary,
         structure_validation_report=structure_validation_report,
-            structure_recognition_mode=structure_mode,
-            structure_ai_attempted=structure_ai_attempted,
-            quality_gate_status=quality_gate_status,
-            quality_gate_reasons=quality_gate_reasons,
-            translation_domain=translation_domain,
-            translation_domain_instructions=translation_domain_instructions,
-            cached=False,
-        )
+        structure_recognition_mode=structure_mode,
+        structure_ai_attempted=structure_ai_attempted,
+        quality_gate_status=quality_gate_status,
+        quality_gate_reasons=quality_gate_reasons,
+        translation_domain=translation_domain,
+        translation_domain_instructions=translation_domain_instructions,
+        cached=False,
+    )
 
 
 def _get_preparation_cache(session_state) -> dict[str, PreparedDocumentData]:
@@ -1089,6 +1152,11 @@ def _clone_prepared_document(data: PreparedDocumentData, prepared_source_key: st
         image_assets=[clone_prepared_image_asset(asset) for asset in data.image_assets],
         relations=deepcopy(data.relations),
         jobs=[dict(job) for job in data.jobs],
+        segments=deepcopy(data.segments),
+        segment_diagnostics=deepcopy(data.segment_diagnostics),
+        structure_fingerprint=data.structure_fingerprint,
+        detector_version=data.detector_version,
+        segment_to_job=deepcopy(data.segment_to_job),
         prepared_source_key=prepared_source_key,
         normalization_report=deepcopy(data.normalization_report),
         relation_report=deepcopy(data.relation_report),

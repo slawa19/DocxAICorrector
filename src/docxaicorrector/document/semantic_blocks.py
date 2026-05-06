@@ -29,6 +29,7 @@ def build_semantic_blocks(
     max_chars: int = 6000,
     *,
     relations: list[ParagraphRelation] | None = None,
+    hard_boundary_paragraph_ids: set[str] | None = None,
 ) -> list[DocumentBlock]:
     if not paragraphs:
         return []
@@ -39,7 +40,14 @@ def build_semantic_blocks(
             paragraphs,
             enabled_relation_kinds=resolve_effective_relation_kinds(),
         )
-    paragraph_units = _build_semantic_block_units(paragraphs, resolved_relations)
+    resolved_hard_boundary_paragraph_ids = {
+        str(paragraph_id).strip() for paragraph_id in (hard_boundary_paragraph_ids or set()) if str(paragraph_id).strip()
+    }
+    paragraph_units = _build_semantic_block_units(
+        paragraphs,
+        resolved_relations,
+        hard_boundary_paragraph_ids=resolved_hard_boundary_paragraph_ids,
+    )
     soft_limit = max(1200, min(max_chars, int(max_chars * 0.7)))
     blocks: list[DocumentBlock] = []
     current: list[ParagraphUnit] = []
@@ -66,7 +74,13 @@ def build_semantic_blocks(
         unit_is_list = all(paragraph.role == "list" for paragraph in unit_paragraphs)
         unit_is_quote_cluster = bool(unit_paragraphs) and all(_is_quote_structural_role(paragraph) for paragraph in unit_paragraphs)
         unit_is_toc_cluster = bool(unit_paragraphs) and all(_is_toc_structural_role(paragraph) for paragraph in unit_paragraphs)
+        unit_starts_at_hard_boundary = bool(unit_paragraphs) and _paragraph_boundary_key(unit_paragraphs[0]) in resolved_hard_boundary_paragraph_ids
         if not current:
+            append_unit(unit_paragraphs)
+            continue
+
+        if unit_starts_at_hard_boundary:
+            flush_current()
             append_unit(unit_paragraphs)
             continue
 
@@ -245,7 +259,10 @@ def build_editing_jobs(
 def _build_semantic_block_units(
     paragraphs: list[ParagraphUnit],
     relations: list[ParagraphRelation],
+    *,
+    hard_boundary_paragraph_ids: set[str] | None = None,
 ) -> list[list[ParagraphUnit]]:
+    resolved_hard_boundary_paragraph_ids = hard_boundary_paragraph_ids or set()
     index_by_paragraph_id = {
         paragraph.paragraph_id: index for index, paragraph in enumerate(paragraphs) if paragraph.paragraph_id
     }
@@ -258,6 +275,13 @@ def _build_semantic_block_units(
         return index
 
     def union(left_index: int, right_index: int) -> None:
+        if _indexes_cross_hard_boundary(
+            paragraphs,
+            left_index,
+            right_index,
+            hard_boundary_paragraph_ids=resolved_hard_boundary_paragraph_ids,
+        ):
+            return
         left_root = find(left_index)
         right_root = find(right_index)
         if left_root != right_root:
@@ -304,6 +328,31 @@ def _resolve_marker_paragraph_id(paragraph: ParagraphUnit, fallback_index: int) 
 
 def _paragraph_structural_kind(paragraph: ParagraphUnit) -> str:
     return str(paragraph.structural_role or paragraph.role or "").strip().lower()
+
+
+def _paragraph_boundary_key(paragraph: ParagraphUnit) -> str:
+    if paragraph.paragraph_id:
+        return str(paragraph.paragraph_id).strip()
+    if paragraph.source_index >= 0:
+        return f"p{paragraph.source_index:04d}"
+    return ""
+
+
+def _indexes_cross_hard_boundary(
+    paragraphs: list[ParagraphUnit],
+    left_index: int,
+    right_index: int,
+    *,
+    hard_boundary_paragraph_ids: set[str],
+) -> bool:
+    if not hard_boundary_paragraph_ids:
+        return False
+    start_index = min(left_index, right_index) + 1
+    end_index = max(left_index, right_index)
+    for index in range(start_index, end_index + 1):
+        if _paragraph_boundary_key(paragraphs[index]) in hard_boundary_paragraph_ids:
+            return True
+    return False
 
 
 def _is_quote_structural_role(paragraph: ParagraphUnit) -> bool:

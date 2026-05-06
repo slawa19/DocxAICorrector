@@ -189,12 +189,12 @@ def _resolve_translation_second_pass_model(*, context: Any) -> str:
 
 
 def _resolve_text_call_target(*, selector: str, context: Any, dependencies: Any, initialization: Any) -> tuple[object, str, str, str | None]:
-    resolver = getattr(dependencies, "resolve_model_selector", None)
-    client_factory = getattr(dependencies, "get_client_for_model_selector", None)
+    resolver: Any = getattr(dependencies, "resolve_model_selector", None)
+    client_factory: Any = getattr(dependencies, "get_client_for_model_selector", None)
     if not callable(resolver) or not callable(client_factory):
         return initialization.text_client or initialization.client, selector, selector, None
 
-    resolved_selector = resolver(selector, "responses_text")
+    resolved_selector: Any = resolver(selector, "responses_text")
     if resolved_selector.canonical_selector == (context.canonical_model_selector or context.model):
         return (
             initialization.text_client or initialization.client,

@@ -120,6 +120,26 @@ def test_build_semantic_blocks_uses_structural_roles_for_toc_grouping_without_re
     ]
 
 
+def test_build_semantic_blocks_respects_hard_boundary_paragraph_ids():
+    paragraphs = [
+        ParagraphUnit(text="Chapter 1", role="heading", heading_level=1, paragraph_id="p0000"),
+        ParagraphUnit(text="First chapter body paragraph.", role="body", paragraph_id="p0001"),
+        ParagraphUnit(text="Chapter 2", role="heading", heading_level=1, paragraph_id="p0002"),
+        ParagraphUnit(text="Second chapter body paragraph.", role="body", paragraph_id="p0003"),
+    ]
+
+    blocks = build_semantic_blocks(
+        paragraphs,
+        max_chars=1000,
+        relations=[],
+        hard_boundary_paragraph_ids={"p0002"},
+    )
+
+    assert len(blocks) == 2
+    assert [paragraph.text for paragraph in blocks[0].paragraphs] == ["Chapter 1", "First chapter body paragraph."]
+    assert [paragraph.text for paragraph in blocks[1].paragraphs] == ["Chapter 2", "Second chapter body paragraph."]
+
+
 def test_build_editing_jobs_marks_toc_only_blocks_as_passthrough():
     paragraphs = [
         ParagraphUnit(text="Содержание", role="body", structural_role="toc_header", paragraph_id="p0000"),

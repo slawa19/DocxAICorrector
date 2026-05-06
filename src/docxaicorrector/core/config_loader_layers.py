@@ -31,7 +31,7 @@ class ResolvedAppConfigSections:
 
 def build_app_config_payload(
     *,
-    provider_registry: Mapping[str, Any],
+    provider_registry: object,
     model_registry_settings: Mapping[str, Any],
     text_runtime_defaults: Mapping[str, Any],
     paragraph_boundary_settings: Mapping[str, Any],

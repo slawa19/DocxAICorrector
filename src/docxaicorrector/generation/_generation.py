@@ -16,7 +16,7 @@ from docx.oxml.ns import qn
 from docx.shared import Pt
 
 from docxaicorrector.core.logger import log_event
-from docxaicorrector.image.shared import call_responses_create_with_retry, is_retryable_error
+from docxaicorrector.image.shared import call_responses_create_with_retry, extract_unsupported_parameter_name, is_retryable_error
 from docxaicorrector.generation.openai_response_utils import collect_response_text_traversal, read_response_field
 
 if TYPE_CHECKING:
