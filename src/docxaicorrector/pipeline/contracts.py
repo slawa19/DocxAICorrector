@@ -146,6 +146,9 @@ class ResultArtifactWriter(Protocol):
         docx_bytes: bytes,
         narration_text: str | None = None,
         quality_warning: Mapping[str, object] | None = None,
+        assembly_mode: str | None = None,
+        selected_segment_count: int | None = None,
+        result_manifest: Mapping[str, object] | None = None,
     ) -> Mapping[str, str]: ...
 
 
@@ -189,6 +192,7 @@ class ProcessingContext:
     uploaded_filename: str
     jobs: ProcessingJobs
     selected_segment_ids: Sequence[str] | None
+    output_mode: str
     source_paragraphs: Sequence[ParagraphLike] | None
     image_assets: Sequence[ImageAssetLike]
     image_mode: str

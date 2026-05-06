@@ -1,9 +1,7 @@
 import logging
 import threading
 import time
-import hashlib
-import json
-from typing import Any, cast
+from typing import Any, Mapping, TypeAlias, cast
 
 import streamlit as st
 
@@ -118,6 +116,17 @@ from docxaicorrector.ui._ui import (
     render_section_gap,
     render_sidebar,
 )
+from docxaicorrector.ui.structure_review_panel import (
+    EffectiveSelectedProcessingState,
+    SegmentLike,
+    SelectedProcessingPayload,
+    StructureReviewState,
+    _build_effective_selected_processing_state as _structure_review_panel_build_effective_selected_processing_state,
+    _build_selected_processing_payload as _structure_review_panel_build_selected_processing_payload,
+    _build_structure_settings_hash as _structure_review_panel_build_structure_settings_hash,
+    _expand_segment_ids_for_selection as _structure_review_panel_expand_segment_ids_for_selection,
+    _render_analysis_review_panel as _structure_review_panel_render_analysis_review_panel,
+)
 from docxaicorrector.runtime.workflow_state import IdleViewState, ProcessingOutcome, has_restartable_outcome
 
 PERSISTED_SOURCE_TTL_SECONDS = 12 * 60 * 60
@@ -129,6 +138,30 @@ _APP_READY_MARKER_WRITER = AppReadyMarkerWriter(
     freshness_window_seconds=APP_READY_FRESHNESS_WINDOW_SECONDS,
     time_fn=time.monotonic,
 )
+
+SidebarSettings: TypeAlias = tuple[str, int, int, str, bool, str, str, str, bool, bool]
+
+_build_structure_settings_hash = _structure_review_panel_build_structure_settings_hash
+_build_selected_processing_payload = _structure_review_panel_build_selected_processing_payload
+_build_effective_selected_processing_state = _structure_review_panel_build_effective_selected_processing_state
+_expand_segment_ids_for_selection = _structure_review_panel_expand_segment_ids_for_selection
+
+
+def _render_analysis_review_panel(
+    *,
+    prepared_run_context,
+    uploaded_file_token: str,
+    chunk_size: int,
+    app_config: Mapping[str, object] | None = None,
+) -> str | None:
+    return _structure_review_panel_render_analysis_review_panel(
+        prepared_run_context=prepared_run_context,
+        uploaded_file_token=uploaded_file_token,
+        chunk_size=chunk_size,
+        app_config=app_config,
+        build_structure_settings_hash_fn=_build_structure_settings_hash,
+        log_event_fn=log_event,
+    )
 
 
 @st.cache_resource
@@ -175,6 +208,23 @@ def _is_uploaded_file_too_large(uploaded_file) -> bool:
     return isinstance(file_size, int) and file_size > MAX_DOCX_ARCHIVE_SIZE_BYTES
 
 
+def _show_notice(*, level: str, message: str) -> None:
+    if level == "warning":
+        st.warning(message)
+        return
+    if level == "caption":
+        st.caption(message)
+        return
+    if level == "info":
+        st.info(message)
+        return
+    raise ValueError(f"Unsupported Streamlit notice level: {level}")
+
+
+def _get_prepared_segments(prepared_run_context: object) -> list[SegmentLike]:
+    return cast(list[SegmentLike], list(getattr(prepared_run_context, "segments", None) or []))
+
+
 def _start_background_processing(
     *,
     uploaded_filename: str,
@@ -182,6 +232,7 @@ def _start_background_processing(
     source_bytes: bytes,
     jobs: list[dict[str, str | int]],
     selected_segment_ids: list[str] | None = None,
+    output_mode: str | None = None,
     source_paragraphs: list,
     image_assets: list,
     image_mode: str,
@@ -198,6 +249,7 @@ def _start_background_processing(
         uploaded_filename,
         jobs,
         selected_segment_ids,
+        output_mode,
         source_paragraphs,
         image_assets,
         image_mode,
@@ -215,6 +267,7 @@ def _start_background_processing(
             uploaded_filename=uploaded_filename,
             jobs=jobs,
             selected_segment_ids=selected_segment_ids,
+            output_mode=output_mode,
             source_paragraphs=source_paragraphs,
             image_assets=image_assets,
             image_mode=image_mode,
@@ -233,6 +286,7 @@ def _start_background_processing(
         source_bytes=source_bytes,
         jobs=jobs,
         selected_segment_ids=selected_segment_ids,
+        output_mode=output_mode,
         source_paragraphs=source_paragraphs,
         image_assets=image_assets,
         image_mode=image_mode,
@@ -245,7 +299,7 @@ def _start_background_processing(
     )
 
 
-def _resolve_sidebar_settings(sidebar_result):
+def _resolve_sidebar_settings(sidebar_result: object) -> SidebarSettings:
     if isinstance(sidebar_result, tuple) and len(sidebar_result) == 10:
         return sidebar_result
     if isinstance(sidebar_result, tuple) and len(sidebar_result) == 9:
@@ -381,555 +435,6 @@ def _handle_structure_manifest_export(*, prepared_run_context, app_config: dict[
     )
 
 
-def _build_structure_settings_hash(*, uploaded_file_token: str, prepared_run_context, chunk_size: int) -> str:
-    payload = {
-        "uploaded_file_token": uploaded_file_token,
-        "structure_fingerprint": str(getattr(prepared_run_context, "structure_fingerprint", "") or ""),
-        "detector_version": str(getattr(prepared_run_context, "detector_version", "") or ""),
-        "structure_recognition_mode": str(getattr(prepared_run_context, "structure_recognition_mode", "off") or "off"),
-        "chunk_size": int(chunk_size or 0),
-    }
-    return hashlib.sha1(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:12]
-
-
-def _sync_structure_review_state(*, prepared_run_context, uploaded_file_token: str, chunk_size: int) -> dict[str, object]:
-    segments = list(cast(Any, getattr(prepared_run_context, "segments", None)) or [])
-    segment_ids = [str(getattr(segment, "segment_id", "") or "") for segment in segments if str(getattr(segment, "segment_id", "") or "").strip()]
-    current_settings_hash = _build_structure_settings_hash(
-        uploaded_file_token=uploaded_file_token,
-        prepared_run_context=prepared_run_context,
-        chunk_size=chunk_size,
-    )
-    current_fingerprint = str(getattr(prepared_run_context, "structure_fingerprint", "") or "")
-    loaded_token = get_segments_loaded_for_source_token()
-    selected_segment_ids = get_selected_segment_ids()
-    if loaded_token != uploaded_file_token:
-        set_selected_segment_ids(segment_ids)
-        set_structure_confirmation_state(
-            structure_confirmed=False,
-            confirmed_structure_fingerprint="",
-            confirmed_at_settings_hash="",
-            segments_loaded_for_source_token=uploaded_file_token,
-        )
-        selected_segment_ids = segment_ids
-    else:
-        normalized_selected = [segment_id for segment_id in selected_segment_ids if segment_id in set(segment_ids)]
-        if normalized_selected != selected_segment_ids:
-            set_selected_segment_ids(normalized_selected)
-            selected_segment_ids = normalized_selected
-    structure_confirmed = get_structure_confirmed()
-    confirmed_fingerprint = get_confirmed_structure_fingerprint()
-    confirmed_settings_hash = get_confirmed_at_settings_hash()
-    confirmation_invalidated = False
-    fingerprint_changed = structure_confirmed and confirmed_fingerprint != current_fingerprint
-    settings_changed = structure_confirmed and confirmed_settings_hash != current_settings_hash
-    if structure_confirmed and (fingerprint_changed or settings_changed):
-        set_structure_confirmation_state(
-            structure_confirmed=False,
-            confirmed_structure_fingerprint="",
-            confirmed_at_settings_hash="",
-            segments_loaded_for_source_token=uploaded_file_token,
-        )
-        structure_confirmed = False
-        confirmation_invalidated = True
-    return {
-        "segment_ids": segment_ids,
-        "selected_segment_ids": selected_segment_ids,
-        "structure_confirmed": structure_confirmed,
-        "settings_hash": current_settings_hash,
-        "fingerprint": current_fingerprint,
-        "confirmation_invalidated": confirmation_invalidated,
-        "confirmed_fingerprint_before_invalidation": confirmed_fingerprint,
-        "fingerprint_changed": fingerprint_changed,
-        "settings_changed": settings_changed,
-    }
-
-
-def _build_structure_invalidation_summary(review_state: dict[str, object]) -> str:
-    if not bool(review_state.get("confirmation_invalidated", False)):
-        return ""
-    previous_fingerprint = str(review_state.get("confirmed_fingerprint_before_invalidation", "") or "")
-    current_fingerprint = str(review_state.get("fingerprint", "") or "")
-    fingerprint_changed = bool(review_state.get("fingerprint_changed", False))
-    settings_changed = bool(review_state.get("settings_changed", False))
-    summary_lines = ["Structure confirmation invalidated."]
-    if previous_fingerprint:
-        summary_lines.append(f"Previous confirmed fingerprint: {previous_fingerprint}")
-    summary_lines.append(f"Current fingerprint: {current_fingerprint or 'n/a'}")
-    if fingerprint_changed:
-        summary_lines.append("Detected chapter structure changed after re-analysis.")
-    if settings_changed:
-        summary_lines.append("Detection-affecting settings changed since the last confirmation.")
-    summary_lines.append("Review the chapter list and confirm structure again before processing selected chapters.")
-    return "\n".join(summary_lines)
-
-
-def _coerce_segment_preview_text(paragraph: object) -> str:
-    if isinstance(paragraph, str):
-        return " ".join(paragraph.strip().split())
-    for attribute_name in ("rendered_text", "text"):
-        value = str(getattr(paragraph, attribute_name, "") or "").strip()
-        if value:
-            return " ".join(value.split())
-    return " ".join(str(paragraph or "").strip().split())
-
-
-def _truncate_segment_preview(text: str, *, limit: int = 120) -> str:
-    normalized = " ".join(str(text or "").split())
-    if not normalized:
-        return "n/a"
-    if len(normalized) <= limit:
-        return normalized
-    return normalized[: max(0, limit - 3)].rstrip() + "..."
-
-
-def _resolve_segment_preview(paragraphs: list[object], paragraph_index: int) -> str:
-    if paragraph_index < 0 or paragraph_index >= len(paragraphs):
-        return "n/a"
-    return _truncate_segment_preview(_coerce_segment_preview_text(paragraphs[paragraph_index]))
-
-
-def _coerce_segment_index(value: Any) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return -1
-
-
-def _format_segment_evidence_line(evidence: object) -> str:
-    source = str(getattr(evidence, "source", "fallback") or "fallback")
-    confidence = str(getattr(evidence, "confidence", "low") or "low")
-    details = getattr(evidence, "details", {}) or {}
-    details_suffix = ""
-    if isinstance(details, dict) and details:
-        detail_parts = [f"{key}={details[key]}" for key in sorted(details)]
-        details_suffix = " | " + ", ".join(detail_parts)
-    return f"{source} | confidence={confidence}{details_suffix}"
-
-
-def _build_selected_processing_payload(*, prepared_run_context, selected_segment_ids: list[str] | None) -> dict[str, object]:
-    segments = list(cast(Any, getattr(prepared_run_context, "segments", None)) or [])
-    selected_segment_id_set = {
-        str(segment_id).strip() for segment_id in (selected_segment_ids or []) if str(segment_id).strip()
-    }
-    if not selected_segment_id_set:
-        return {
-            "selected_segment_ids": [],
-            "jobs": [],
-            "source_paragraphs": [],
-            "image_assets": [],
-        }
-
-    selected_segments = [segment for segment in segments if segment.segment_id in selected_segment_id_set]
-    selected_paragraph_ids = {
-        str(paragraph_id).strip()
-        for segment in selected_segments
-        for paragraph_id in getattr(segment, "paragraph_ids", ()) or ()
-        if str(paragraph_id).strip()
-    }
-    segment_to_job = dict(getattr(prepared_run_context, "segment_to_job", {}) or {})
-    selected_job_indexes = sorted(
-        {
-            int(job_index)
-            for segment in selected_segments
-            for job_index in (segment_to_job.get(segment.segment_id, ()) or ())
-        }
-    )
-    all_jobs = list(getattr(prepared_run_context, "jobs", []) or [])
-    filtered_jobs = [all_jobs[job_index] for job_index in selected_job_indexes if 0 <= job_index < len(all_jobs)]
-    all_paragraphs = list(getattr(prepared_run_context, "paragraphs", []) or [])
-    filtered_paragraphs = [
-        paragraph
-        for paragraph in all_paragraphs
-        if str(getattr(paragraph, "paragraph_id", "") or "").strip() in selected_paragraph_ids
-    ]
-    selected_asset_ids = {
-        str(asset_id).strip()
-        for paragraph in filtered_paragraphs
-        for asset_id in (
-            getattr(paragraph, "asset_id", None),
-            getattr(paragraph, "attached_to_asset_id", None),
-        )
-        if str(asset_id or "").strip()
-    }
-    filtered_image_assets = [
-        asset
-        for asset in list(getattr(prepared_run_context, "image_assets", []) or [])
-        if str(getattr(asset, "image_id", "") or "").strip() in selected_asset_ids
-    ]
-    return {
-        "selected_segment_ids": [segment.segment_id for segment in selected_segments],
-        "jobs": filtered_jobs,
-        "source_paragraphs": filtered_paragraphs,
-        "image_assets": filtered_image_assets,
-    }
-
-
-def _build_segment_runtime_badge(segment_status: str, segment_progress: float) -> str:
-    normalized_status = str(segment_status or "pending").strip().lower() or "pending"
-    progress_percent = int(max(0.0, min(float(segment_progress or 0.0), 1.0)) * 100)
-    if normalized_status == "completed":
-        return f"completed {progress_percent}%"
-    if normalized_status == "processing":
-        return f"processing {progress_percent}%"
-    if normalized_status == "failed":
-        return f"failed {progress_percent}%"
-    if normalized_status == "queued":
-        return f"queued {progress_percent}%"
-    return normalized_status
-
-
-def _build_segment_status_summary_line(*, segments: list[object], segment_status_by_id: dict[str, str]) -> str:
-    if not segments:
-        return ""
-    ordered_statuses = ("pending", "queued", "processing", "completed", "failed", "skipped")
-    counts = {status: 0 for status in ordered_statuses}
-    for segment in segments:
-        segment_id = str(getattr(segment, "segment_id", "") or "").strip()
-        if not segment_id:
-            continue
-        normalized_status = str(segment_status_by_id.get(segment_id, "pending") or "pending").strip().lower() or "pending"
-        if normalized_status not in counts:
-            continue
-        counts[normalized_status] += 1
-    fragments = [f"{status} {count}" for status, count in counts.items() if count > 0]
-    if not fragments:
-        return ""
-    return "Segment status summary: " + " | ".join(fragments)
-
-
-def _build_selected_segment_status_summary_line(*, selected_segments: list[object], segment_status_by_id: dict[str, str]) -> str:
-    if not selected_segments:
-        return ""
-    ordered_statuses = ("pending", "queued", "processing", "completed", "failed", "skipped")
-    counts = {status: 0 for status in ordered_statuses}
-    for segment in selected_segments:
-        segment_id = str(getattr(segment, "segment_id", "") or "").strip()
-        if not segment_id:
-            continue
-        normalized_status = _normalize_segment_status(segment_status_by_id.get(segment_id, "pending"))
-        if normalized_status not in counts:
-            continue
-        counts[normalized_status] += 1
-    fragments = [f"{status} {count}" for status, count in counts.items() if count > 0]
-    if not fragments:
-        return ""
-    return "Selected segment statuses: " + " | ".join(fragments)
-
-
-def _normalize_segment_status(value: object) -> str:
-    return str(value or "pending").strip().lower() or "pending"
-
-
-def _is_segment_selection_locked(segment_status: str) -> bool:
-    return _normalize_segment_status(segment_status) in {"queued", "processing"}
-
-
-def _build_bulk_selectable_segment_ids(*, visible_segments: list[object], segment_status_by_id: dict[str, str]) -> list[str]:
-    selectable_segment_ids: list[str] = []
-    for segment in visible_segments:
-        segment_id = str(getattr(segment, "segment_id", "") or "").strip()
-        if not segment_id:
-            continue
-        if _is_segment_selection_locked(segment_status_by_id.get(segment_id, "pending")):
-            continue
-        selectable_segment_ids.append(segment_id)
-    return selectable_segment_ids
-
-
-def _segment_matches_review_filters(
-    *,
-    segment: object,
-    segment_status_by_id: dict[str, str],
-    status_filter: str,
-    search_query: str,
-) -> bool:
-    normalized_filter = str(status_filter or "all").strip().lower() or "all"
-    normalized_query = " ".join(str(search_query or "").strip().lower().split())
-    segment_status = _normalize_segment_status(
-        segment_status_by_id.get(str(getattr(segment, "segment_id", "") or ""), "pending")
-    )
-    segment_title = " ".join(str(getattr(segment, "title", "") or "").strip().lower().split())
-    segment_warning_text = " ".join(
-        str(item).strip().lower()
-        for item in (getattr(segment, "warnings", ()) or ())
-        if str(item).strip()
-    )
-    if normalized_filter == "low_confidence":
-        if str(getattr(segment, "confidence", "") or "").strip().lower() != "low":
-            return False
-    elif normalized_filter != "all" and segment_status != normalized_filter:
-        return False
-    if not normalized_query:
-        return True
-    return normalized_query in segment_title or normalized_query in segment_warning_text
-
-
-def _build_segment_status_hint(segment_status: str) -> str:
-    normalized_status = _normalize_segment_status(segment_status)
-    if normalized_status == "completed":
-        return "Completed in this session. This segment can be selected again for reprocess/export later."
-    if normalized_status == "failed":
-        return "Failed in this session. Retry UI is not available yet in the current phase."
-    if normalized_status == "skipped":
-        return "Skipped in the current session workflow. Usually excluded by default."
-    return ""
-
-
-def _render_analysis_review_panel(*, prepared_run_context, uploaded_file_token: str, chunk_size: int) -> str | None:
-    segments = list(cast(Any, getattr(prepared_run_context, "segments", None)) or [])
-    if not segments:
-        return None
-    review_state = _sync_structure_review_state(
-        prepared_run_context=prepared_run_context,
-        uploaded_file_token=uploaded_file_token,
-        chunk_size=chunk_size,
-    )
-    selected_segment_ids = list(cast(Any, review_state["selected_segment_ids"]))
-    structure_confirmed = bool(review_state["structure_confirmed"])
-    invalidation_summary = _build_structure_invalidation_summary(review_state)
-    if invalidation_summary:
-        st.warning(invalidation_summary)
-
-    st.subheader("Chapter Selector")
-    st.caption(f"Structure fingerprint: {review_state['fingerprint'] or 'n/a'}")
-    st.caption(f"Detector version: {str(getattr(prepared_run_context, 'detector_version', '') or 'n/a')}")
-    diagnostics = getattr(prepared_run_context, "segment_diagnostics", None)
-    if diagnostics is not None:
-        st.info(
-            f"Detected segments: {len(segments)} | Confidence H/M/L: "
-            f"{int(getattr(diagnostics, 'high_confidence_count', 0) or 0)}/"
-            f"{int(getattr(diagnostics, 'medium_confidence_count', 0) or 0)}/"
-            f"{int(getattr(diagnostics, 'low_confidence_count', 0) or 0)} | "
-            f"TOC matched: {int(getattr(diagnostics, 'toc_matched_count', 0) or 0)}/"
-            f"{int(getattr(diagnostics, 'toc_entry_count', 0) or 0)}"
-        )
-        diagnostic_warnings = tuple(str(item).strip() for item in getattr(diagnostics, "warnings", ()) if str(item).strip())
-        if diagnostic_warnings:
-            st.warning("Structure warnings: " + "; ".join(diagnostic_warnings))
-
-    manifest_path = str(getattr(prepared_run_context, "exported_structure_manifest_path", "") or "")
-    if manifest_path:
-        st.caption(f"Manifest path: {manifest_path}")
-
-    segment_status_by_id = get_segment_status_by_id()
-    segment_progress_by_id = get_segment_progress_by_id()
-    active_segment_id = get_active_segment_id()
-    search_query = str(st.session_state.get("chapter_selector_search", "") or "")
-    status_filter_options = {
-        "All segments": "all",
-        "Pending": "pending",
-        "Queued": "queued",
-        "Processing": "processing",
-        "Completed": "completed",
-        "Failed": "failed",
-        "Skipped": "skipped",
-        "Low confidence": "low_confidence",
-    }
-    filter_labels = list(status_filter_options.keys())
-    current_filter_value = str(st.session_state.get("chapter_selector_filter", "all") or "all")
-    current_filter_label = next(
-        (label for label, value in status_filter_options.items() if value == current_filter_value),
-        "All segments",
-    )
-    selected_filter_label = st.selectbox(
-        "Status Filter",
-        filter_labels,
-        index=filter_labels.index(current_filter_label),
-        key="chapter_selector_filter_selectbox",
-    )
-    selected_filter_value = status_filter_options[selected_filter_label]
-    st.session_state.chapter_selector_filter = selected_filter_value
-    search_query = st.text_input(
-        "Search Chapters",
-        value=search_query,
-        key="chapter_selector_search_input",
-        placeholder="Search by title or warning",
-    )
-    st.session_state.chapter_selector_search = search_query
-    status_summary_line = _build_segment_status_summary_line(
-        segments=segments,
-        segment_status_by_id=segment_status_by_id,
-    )
-    if status_summary_line:
-        st.caption(status_summary_line)
-    paragraphs = list(getattr(prepared_run_context, "paragraphs", []) or [])
-    updated_selection: list[str] = []
-    visible_segments = [
-        segment
-        for segment in segments
-        if _segment_matches_review_filters(
-            segment=segment,
-            segment_status_by_id=segment_status_by_id,
-            status_filter=selected_filter_value,
-            search_query=search_query,
-        )
-    ]
-    st.caption(f"Visible segments: {len(visible_segments)}/{len(segments)}")
-    visible_segment_ids = {
-        str(getattr(segment, "segment_id", "") or "").strip()
-        for segment in visible_segments
-        if str(getattr(segment, "segment_id", "") or "").strip()
-    }
-    visible_selectable_segment_ids = _build_bulk_selectable_segment_ids(
-        visible_segments=visible_segments,
-        segment_status_by_id=segment_status_by_id,
-    )
-    all_selectable_segment_ids = _build_bulk_selectable_segment_ids(
-        visible_segments=segments,
-        segment_status_by_id=segment_status_by_id,
-    )
-    locked_visible_count = sum(
-        1
-        for segment in visible_segments
-        if _is_segment_selection_locked(
-            segment_status_by_id.get(str(getattr(segment, "segment_id", "") or "").strip(), "pending")
-        )
-    )
-    bulk_updated_selection: list[str] | None = None
-    if locked_visible_count > 0:
-        st.caption(f"Locked while queued/processing: {locked_visible_count}")
-    bulk_select_col, bulk_clear_col, bulk_all_col = st.columns(3)
-    if bulk_select_col.button(
-        "Select Visible",
-        use_container_width=True,
-        disabled=not bool(visible_selectable_segment_ids),
-        key="select_visible_segments_button",
-    ):
-        bulk_updated_selection = list(dict.fromkeys([*selected_segment_ids, *visible_selectable_segment_ids]))
-    if bulk_clear_col.button(
-        "Clear Visible",
-        use_container_width=True,
-        disabled=not bool(visible_segment_ids),
-        key="clear_visible_segments_button",
-    ):
-        bulk_updated_selection = [segment_id for segment_id in selected_segment_ids if segment_id not in visible_segment_ids]
-    if bulk_all_col.button(
-        "Select Entire Book",
-        use_container_width=True,
-        disabled=not bool(all_selectable_segment_ids),
-        key="select_entire_book_segments_button",
-    ):
-        bulk_updated_selection = list(all_selectable_segment_ids)
-    current_selection_ids = list(bulk_updated_selection if bulk_updated_selection is not None else selected_segment_ids)
-    current_selection_set = set(current_selection_ids)
-    updated_selection = [segment_id for segment_id in current_selection_ids if segment_id not in visible_segment_ids]
-    for segment in visible_segments:
-        segment_job_count = len((getattr(prepared_run_context, "segment_to_job", {}) or {}).get(segment.segment_id, ()))
-        segment_status = segment_status_by_id.get(segment.segment_id, "pending")
-        segment_progress = segment_progress_by_id.get(segment.segment_id, 0.0)
-        active_segment_suffix = " | active" if active_segment_id == segment.segment_id else ""
-        label = (
-            f"{segment.title} | {segment.word_count} words | {segment.confidence} | "
-            f"{segment.structural_role} | approx. {segment_job_count} jobs | "
-            f"{_build_segment_runtime_badge(segment_status, segment_progress)}{active_segment_suffix}"
-        )
-        checkbox_key = f"segment_checkbox_{segment.segment_id}"
-        checkbox_value = segment.segment_id in current_selection_set
-        if st.checkbox(
-            label,
-            value=checkbox_value,
-            key=checkbox_key,
-            disabled=_is_segment_selection_locked(segment_status),
-        ):
-            updated_selection.append(segment.segment_id)
-        status_hint = _build_segment_status_hint(segment_status)
-        if status_hint:
-            st.caption(status_hint)
-        if segment.confidence == "low":
-            warning_suffix = "; ".join(segment.warnings) if segment.warnings else "Review boundary preview and evidence before processing."
-            st.warning(f"Low-confidence segment: {segment.title}. {warning_suffix}")
-        with st.expander(f"Boundary preview: {segment.title}", expanded=segment.confidence == "low"):
-            st.caption(
-                "Starts: "
-                + _resolve_segment_preview(paragraphs, _coerce_segment_index(getattr(segment, "start_paragraph_index", -1)))
-            )
-            st.caption(
-                "Ends: "
-                + _resolve_segment_preview(paragraphs, _coerce_segment_index(getattr(segment, "end_paragraph_index", -1)))
-            )
-            st.caption(f"Boundary fingerprint: {str(getattr(segment, 'boundary_fingerprint', '') or 'n/a')}")
-            segment_warnings = [str(item).strip() for item in getattr(segment, "warnings", ()) if str(item).strip()]
-            if segment_warnings:
-                st.write("Warnings: " + "; ".join(segment_warnings))
-            evidence_items = list(getattr(segment, "boundary_evidence", ()) or [])
-            if evidence_items:
-                st.write("Boundary evidence:")
-                for evidence in evidence_items:
-                    st.caption(_format_segment_evidence_line(evidence))
-            else:
-                st.caption("Boundary evidence: n/a")
-    if not visible_segments:
-        st.info("No segments match the current filter/search.")
-    if updated_selection != selected_segment_ids:
-        set_selected_segment_ids(updated_selection)
-        selected_segment_ids = updated_selection
-        if structure_confirmed:
-            set_structure_confirmation_state(
-                structure_confirmed=False,
-                confirmed_structure_fingerprint="",
-                confirmed_at_settings_hash="",
-                segments_loaded_for_source_token=uploaded_file_token,
-            )
-            structure_confirmed = False
-
-    selected_segments = [segment for segment in segments if segment.segment_id in set(selected_segment_ids)]
-    selected_word_count = sum(int(getattr(segment, "word_count", 0) or 0) for segment in selected_segments)
-    selected_job_count = sum(
-        len((getattr(prepared_run_context, "segment_to_job", {}) or {}).get(segment.segment_id, ()))
-        for segment in selected_segments
-    )
-    can_process_selected = structure_confirmed and bool(selected_segment_ids) and selected_job_count > 0
-    st.info(
-        f"Selected: {len(selected_segments)} segments | {selected_word_count} words | approx. {selected_job_count} jobs"
-    )
-    selected_status_summary_line = _build_selected_segment_status_summary_line(
-        selected_segments=selected_segments,
-        segment_status_by_id=segment_status_by_id,
-    )
-    if selected_status_summary_line:
-        st.caption(selected_status_summary_line)
-
-    confirm_col, selected_col, full_book_col = st.columns(3)
-    current_settings_hash = str(review_state["settings_hash"])
-    current_fingerprint = str(review_state["fingerprint"])
-    if confirm_col.button("Confirm Structure", use_container_width=True, key="confirm_structure_button"):
-        set_structure_confirmation_state(
-            structure_confirmed=True,
-            confirmed_structure_fingerprint=current_fingerprint,
-            confirmed_at_settings_hash=current_settings_hash,
-            segments_loaded_for_source_token=uploaded_file_token,
-        )
-        log_event(
-            logging.INFO,
-            "structure_confirmed",
-            "Пользователь подтвердил обнаруженную структуру документа.",
-            file_token=uploaded_file_token,
-            structure_fingerprint=current_fingerprint,
-            selected_segment_count=len(selected_segment_ids),
-        )
-        st.rerun()
-    if selected_col.button(
-        "Process Selected",
-        use_container_width=True,
-        disabled=not can_process_selected,
-        help=(
-            "Processes only the selected chapters and produces a partial output artifact."
-            if can_process_selected
-            else "Confirm the current structure and keep at least one segment selected to process only chosen chapters."
-        ),
-        key="process_selected_button",
-    ):
-        return "start_selected"
-    if full_book_col.button("Process Entire Book", type="primary", use_container_width=True, key="process_entire_book_button"):
-        return "start_full_book"
-    if structure_confirmed:
-        st.success("Structure confirmed for the current prepared document.")
-        if can_process_selected:
-            st.caption("Process Selected now runs only the chosen chapters and produces a partial output artifact.")
-    else:
-        st.caption("Confirm the detected structure before chapter-based processing becomes available in a later phase.")
-    return None
 
 
 def _current_text_settings(*, processing_operation: str, source_language: str, target_language: str) -> dict[str, str]:
@@ -1197,6 +702,7 @@ def main() -> None:
         return
 
     _apply_pending_recommended_widget_state()
+    analysis_action: str | None = None
 
     (
         model,
@@ -1326,8 +832,9 @@ def main() -> None:
             render_preparation_panel()
             return
         if is_preparation_failed_for_marker(preparation_request_marker):
-            if st.session_state.last_error:
-                st.error(st.session_state.last_error)
+            preparation_error = str(st.session_state.get("last_error") or "")
+            if preparation_error:
+                st.error(preparation_error)
             render_live_status()
             render_run_log()
             _finalize_app_frame()
@@ -1390,7 +897,7 @@ def main() -> None:
             outcome_notice = get_restartable_outcome_notice(processing_outcome, restart_filename)
             if outcome_notice is not None:
                 notice_level, notice_message = outcome_notice
-                getattr(st, notice_level)(notice_message)
+                _show_notice(level=notice_level, message=notice_message)
             else:
                 st.info("Можно изменить настройки и запустить обработку заново без повторной загрузки файла.")
             render_run_log()
@@ -1447,7 +954,7 @@ def main() -> None:
     outcome_notice = get_restartable_outcome_notice(processing_outcome, uploaded_filename)
     if current_result is None and outcome_notice is not None:
         notice_level, notice_message = outcome_notice
-        getattr(st, notice_level)(notice_message)
+        _show_notice(level=notice_level, message=notice_message)
 
     _store_preparation_summary(prepared_run_context=prepared_run_context)
     if not processing_active and not restartable_outcome:
@@ -1470,7 +977,7 @@ def main() -> None:
             terminal_kind="completed",
             **normalization_metrics,
         )
-    if not st.session_state.activity_feed and not restartable_outcome:
+    if not st.session_state.get("activity_feed") and not restartable_outcome:
         push_activity(f"Документ разобран на {len(jobs)} блоков.")
 
     if len(jobs) == 1:
@@ -1487,13 +994,15 @@ def main() -> None:
             st.warning(warning_message)
         notice_message = _build_recommended_text_settings_notice(uploaded_file_token)
 
-    if st.session_state.last_error:
-        st.error(st.session_state.last_error)
-        st.caption(st.session_state.last_log_hint)
+    last_error = str(st.session_state.get("last_error") or "")
+    last_log_hint = str(st.session_state.get("last_log_hint") or "")
+    if last_error:
+        st.error(last_error)
+        st.caption(last_log_hint)
 
     processing_snapshot = get_processing_session_snapshot()
     has_completed_result = bool(
-        (st.session_state.latest_docx_bytes or st.session_state.get("latest_narration_text"))
+        (st.session_state.get("latest_docx_bytes") or st.session_state.get("latest_narration_text"))
         and processing_snapshot.latest_source_token == uploaded_file_token
     )
     if not restartable_outcome:
@@ -1534,6 +1043,7 @@ def main() -> None:
             prepared_run_context=prepared_run_context,
             uploaded_file_token=uploaded_file_token,
             chunk_size=chunk_size,
+            app_config=app_config,
         )
     render_run_log()
     render_image_validation_summary()
@@ -1541,15 +1051,15 @@ def main() -> None:
 
     compare_panel.render_compare_all_apply_panel(
         latest_image_mode=get_latest_image_mode(),
-        image_assets=st.session_state.image_assets,
+        image_assets=cast(list[object], st.session_state.get("image_assets", [])),
         render_section_gap=render_section_gap,
     )
 
     if has_completed_result:
         render_markdown_preview(title="Предпросмотр Markdown")
         render_result(
-            st.session_state.latest_docx_bytes,
-            st.session_state.latest_markdown,
+            cast(bytes | None, st.session_state.get("latest_docx_bytes")),
+            str(st.session_state.get("latest_markdown") or ""),
             uploaded_filename,
             st.session_state.get("latest_narration_text"),
             processing_operation=processing_snapshot.latest_processing_operation,
@@ -1557,7 +1067,7 @@ def main() -> None:
         )
 
     _finalize_app_frame(add_section_gap=True)
-    action = analysis_action if 'analysis_action' in locals() and analysis_action is not None else _render_processing_controls(
+    action = analysis_action if analysis_action is not None else _render_processing_controls(
         can_start=True,
         is_processing=False,
         emphasize_start=not has_completed_result,
@@ -1568,6 +1078,7 @@ def main() -> None:
             uploaded_token=uploaded_file_token,
             source_bytes=uploaded_file_bytes,
             jobs=cast(list[dict[str, str | int]], jobs),
+            output_mode="legacy_full_document",
             source_paragraphs=paragraphs,
             image_assets=image_assets,
             image_mode=image_mode,
@@ -1579,18 +1090,21 @@ def main() -> None:
             target_language=target_language,
         )
     elif action == "start_selected":
-        selected_processing_payload = _build_selected_processing_payload(
+        selected_processing_state = _build_effective_selected_processing_state(
             prepared_run_context=prepared_run_context,
             selected_segment_ids=get_selected_segment_ids(),
+            segment_status_by_id=get_segment_status_by_id(),
         )
+        selected_processing_payload = selected_processing_state["payload"]
         _start_background_processing(
             uploaded_filename=uploaded_filename,
             uploaded_token=uploaded_file_token,
             source_bytes=uploaded_file_bytes,
             jobs=cast(list[dict[str, str | int]], selected_processing_payload["jobs"]),
-            selected_segment_ids=cast(list[str], selected_processing_payload["selected_segment_ids"]),
-            source_paragraphs=cast(list, selected_processing_payload["source_paragraphs"]),
-            image_assets=cast(list, selected_processing_payload["image_assets"]),
+            selected_segment_ids=selected_processing_payload["selected_segment_ids"],
+            output_mode="selected_only",
+            source_paragraphs=selected_processing_payload["source_paragraphs"],
+            image_assets=selected_processing_payload["image_assets"],
             image_mode=image_mode,
             app_config=app_config,
             model=model,
@@ -1606,6 +1120,25 @@ def main() -> None:
             uploaded_token=uploaded_file_token,
             source_bytes=uploaded_file_bytes,
             jobs=cast(list[dict[str, str | int]], jobs),
+            output_mode="legacy_full_document",
+            source_paragraphs=paragraphs,
+            image_assets=image_assets,
+            image_mode=image_mode,
+            app_config=app_config,
+            model=model,
+            max_retries=max_retries,
+            processing_operation=processing_operation,
+            source_language=source_language,
+            target_language=target_language,
+        )
+        st.rerun()
+    elif action == "start_final_book":
+        _start_background_processing(
+            uploaded_filename=uploaded_filename,
+            uploaded_token=uploaded_file_token,
+            source_bytes=uploaded_file_bytes,
+            jobs=cast(list[dict[str, str | int]], jobs),
+            output_mode="final_translated_book",
             source_paragraphs=paragraphs,
             image_assets=image_assets,
             image_mode=image_mode,

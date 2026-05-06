@@ -56,6 +56,9 @@ def write_ui_result_artifacts(
     docx_bytes: bytes,
     narration_text: str | None = None,
     quality_warning: Mapping[str, object] | None = None,
+    assembly_mode: str | None = None,
+    selected_segment_count: int | None = None,
+    result_manifest: Mapping[str, object] | None = None,
     output_dir: Path = UI_RESULT_ARTIFACTS_DIR,
     created_at: float | None = None,
 ) -> dict[str, str]:
@@ -65,15 +68,30 @@ def write_ui_result_artifacts(
     docx_path = output_dir / f"{artifact_stem}.docx"
     tts_path = output_dir / f"{artifact_stem}.tts.txt"
     meta_path = output_dir / f"{artifact_stem}.meta.json"
+    manifest_path = output_dir / f"{artifact_stem}.manifest.json"
+
+    meta_payload: dict[str, object] = {"version": 1}
+    if assembly_mode is not None:
+        meta_payload["assembly_mode"] = assembly_mode
+    if selected_segment_count is not None:
+        meta_payload["selected_segment_count"] = selected_segment_count
+    if quality_warning:
+        meta_payload["quality_warning"] = quality_warning
+    write_meta = len(meta_payload) > 1
 
     markdown_path.write_text(markdown_text, encoding="utf-8")
     try:
         docx_path.write_bytes(docx_bytes)
         if narration_text is not None:
             tts_path.write_text(narration_text, encoding="utf-8")
-        if quality_warning:
+        if write_meta:
             meta_path.write_text(
-                json.dumps({"version": 1, "quality_warning": quality_warning}, ensure_ascii=False, indent=2),
+                json.dumps(meta_payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        if result_manifest is not None:
+            manifest_path.write_text(
+                json.dumps(_to_jsonable(result_manifest), ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
     except OSError:
@@ -86,6 +104,8 @@ def write_ui_result_artifacts(
                 tts_path.unlink()
             if meta_path.exists():
                 meta_path.unlink()
+            if manifest_path.exists():
+                manifest_path.unlink()
         except OSError:
             pass
         raise
@@ -102,8 +122,10 @@ def write_ui_result_artifacts(
     }
     if narration_text is not None:
         artifact_paths["tts_text_path"] = str(tts_path)
-    if quality_warning:
+    if write_meta:
         artifact_paths["metadata_path"] = str(meta_path)
+    if result_manifest is not None:
+        artifact_paths["manifest_path"] = str(manifest_path)
     return artifact_paths
 
 

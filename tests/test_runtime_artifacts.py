@@ -93,6 +93,101 @@ def test_write_ui_result_artifacts_persists_machine_readable_quality_warning(tmp
     }
 
 
+def test_write_ui_result_artifacts_records_assembly_mode_in_meta(tmp_path):
+    artifact_paths = write_ui_result_artifacts(
+        source_name="report.docx",
+        markdown_text="body",
+        docx_bytes=b"docx-bytes",
+        assembly_mode="selected_chapters",
+        selected_segment_count=3,
+        output_dir=tmp_path,
+        created_at=1_766_636_465.0,
+    )
+
+    metadata_path = Path(artifact_paths["metadata_path"])
+
+    assert metadata_path.name.endswith(".result.meta.json")
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert payload["assembly_mode"] == "selected_chapters"
+    assert payload["selected_segment_count"] == 3
+    assert "quality_warning" not in payload
+
+
+def test_write_ui_result_artifacts_persists_result_manifest(tmp_path):
+    artifact_paths = write_ui_result_artifacts(
+        source_name="report.docx",
+        markdown_text="body",
+        docx_bytes=b"docx-bytes",
+        result_manifest={
+            "schema_version": 1,
+            "assembly_mode": "selected_chapters",
+            "output_mode": "selected_only",
+            "segments": [{"segment_id": "seg_0001", "job_count": 2, "selected": True}],
+        },
+        output_dir=tmp_path,
+        created_at=1_766_636_465.0,
+    )
+
+    manifest_path = Path(artifact_paths["manifest_path"])
+
+    assert manifest_path.parent == tmp_path
+    assert manifest_path.name.endswith(".result.manifest.json")
+    assert json.loads(manifest_path.read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "assembly_mode": "selected_chapters",
+        "output_mode": "selected_only",
+        "segments": [{"segment_id": "seg_0001", "job_count": 2, "selected": True}],
+    }
+
+
+def test_write_ui_result_artifacts_records_full_document_assembly_mode(tmp_path):
+    artifact_paths = write_ui_result_artifacts(
+        source_name="report.docx",
+        markdown_text="body",
+        docx_bytes=b"docx-bytes",
+        assembly_mode="full_document",
+        output_dir=tmp_path,
+        created_at=1_766_636_465.0,
+    )
+
+    metadata_path = Path(artifact_paths["metadata_path"])
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert payload["assembly_mode"] == "full_document"
+    assert "selected_segment_count" not in payload
+
+
+def test_write_ui_result_artifacts_merges_assembly_mode_and_quality_warning(tmp_path):
+    artifact_paths = write_ui_result_artifacts(
+        source_name="report.docx",
+        markdown_text="body",
+        docx_bytes=b"docx-bytes",
+        assembly_mode="selected_chapters",
+        selected_segment_count=2,
+        quality_warning={"quality_status": "warn", "gate_reasons": ["drift"]},
+        output_dir=tmp_path,
+        created_at=1_766_636_465.0,
+    )
+
+    metadata_path = Path(artifact_paths["metadata_path"])
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert payload["assembly_mode"] == "selected_chapters"
+    assert payload["selected_segment_count"] == 2
+    assert payload["quality_warning"] == {"quality_status": "warn", "gate_reasons": ["drift"]}
+
+
+def test_write_ui_result_artifacts_no_meta_when_no_mode_or_warning(tmp_path):
+    artifact_paths = write_ui_result_artifacts(
+        source_name="report.docx",
+        markdown_text="body",
+        docx_bytes=b"docx-bytes",
+        output_dir=tmp_path,
+        created_at=1_766_636_465.0,
+    )
+
+    assert "metadata_path" not in artifact_paths
+    assert not any(p.name.endswith(".result.meta.json") for p in tmp_path.iterdir())
+
+
 def test_write_structure_manifest_artifact_persists_segments_json(tmp_path):
     manifest_path = write_structure_manifest_artifact(
         source_name="The Value of Everything.docx",

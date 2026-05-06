@@ -64,7 +64,13 @@ UI_RESULT_ARTIFACTS_MAX_COUNT = 80
 STRUCTURE_MANIFESTS_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 STRUCTURE_MANIFESTS_MAX_COUNT = 200
 
-_UI_RESULT_GROUP_SUFFIXES = (".result.meta.json", ".result.tts.txt", ".result.docx", ".result.md")
+_UI_RESULT_GROUP_SUFFIXES = (
+    ".result.manifest.json",
+    ".result.meta.json",
+    ".result.tts.txt",
+    ".result.docx",
+    ".result.md",
+)
 
 
 def prune_artifact_dir(

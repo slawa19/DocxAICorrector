@@ -690,19 +690,28 @@ Use Streamlit native primitives where possible:
 The selector should support:
 
 - Select entire book.
-- Select or deselect parent section with descendants.
-- Select a single chapter.
-- Select multiple non-contiguous chapters.
-- Filter by pending, failed, completed, skipped, or low confidence.
-- Search by title.
-- Show word count and estimated processing blocks per segment.
-- Show confidence badge.
-- Show status badge.
-- Show warnings for low-confidence boundaries.
-- Preview start and end text for each detected chapter.
-- Show boundary evidence for each chapter.
-- Require structure confirmation before processing selected chapters.
-- Export the detected structure manifest.
+- [x] Select or deselect parent section with descendants using the current flat checkbox list, without introducing a nested tree UI model yet.
+- [x] Show minimal flat-list relationship hints for parent/child rows, including descendant count on parent rows and parent title on child rows.
+- [x] Show minimal flat-list level awareness in the selector, with lightweight indentation/prefixing for nested rows and a compact visible-structure summary.
+- [x] Show a more explicit confirmation/selection summary in the analysis panel, including confirmed fingerprint context and top-level vs nested selection counts.
+- [x] Show lightweight last-exported-manifest comparison messaging in the analysis panel when the current fingerprint differs from the most recently exported manifest in the current session.
+- [x] Selection changes no longer clear `structure_confirmed`; confirmation is preserved across chapter selection changes and is only invalidated by fingerprint or settings changes.
+- [x] Selection info line shows selected/total counts for segments, words, and jobs (e.g. `Selected: 2/5 segments | 400/1200 words | approx. 3/8 jobs`).
+- [x] Confirm Structure button shows "Re-confirm Structure" label when structure is already confirmed, making the re-confirmation action explicit.
+- [x] Action button area shows explicit "Ready: confirmed structure | selection resolves to processable jobs." caption when `Process Selected` is enabled; shows specific unavailable reason when disabled.
+- [x] Select a single chapter.
+- [x] Select multiple non-contiguous chapters.
+- [x] Select entire book (via "Select Entire Book" bulk action).
+- [x] Filter by pending, failed, completed, skipped, or low confidence.
+- [x] Search by title.
+- [x] Show word count and estimated processing blocks per segment.
+- [x] Show confidence badge.
+- [x] Show status badge.
+- [x] Show warnings for low-confidence boundaries.
+- [x] Preview start and end text for each detected chapter.
+- [x] Show boundary evidence for each chapter.
+- [x] Require structure confirmation before processing selected chapters.
+- [x] Export the detected structure manifest.
 
 ### Structure Verification UX
 
@@ -1403,6 +1412,74 @@ flowchart TD
 
 ## Implementation Plan
 
+### Current Delivery Status
+
+- Overall status for the user-facing chapter workflow MVP is approximately 75-80% complete.
+- Overall status for the full spec including retry, reassembly, final-book modes, and consistency/context-preservation phases is approximately 45-55% complete.
+- `Phase 1` is effectively complete.
+- `Phase 2` is mostly complete, with remaining UX/contract polish and consistency work around selection semantics and selector clarity.
+- `Milestone B.5` is implemented: the chapter/segment review subsystem now lives in `src/docxaicorrector/ui/structure_review_panel.py`, while `src/docxaicorrector/ui/_app.py` remains the orchestration shell that composes it.
+- `Phase 3` is partially complete: structure reproducibility and confirmation invalidation are in place, but retry and richer manual comparison flows remain open.
+- `Phase 4` and `Phase 5` remain largely ahead.
+
+### Autonomous Execution Plan
+
+This section is the handoff contract for future sessions working on this spec.
+
+Rules for future implementation sessions:
+
+- Prefer milestone-sized deliveries over microscopic slices when the affected code can be changed safely without a large refactor.
+- Keep changes minimal and local; do not do a large tree/UI refactor unless the spec is otherwise blocked.
+- Do not introduce new event families unless there is a concrete need.
+- Do not present retry as a completed Phase 3 capability until it works end-to-end.
+- Update this spec only for behavior that is actually implemented.
+- Run relevant tests through the WSL debug-side path after each milestone package.
+- Treat this spec as the primary handoff artifact between sessions.
+- Keep `src/docxaicorrector/ui/_app.py` as an orchestration shell rather than a feature-logic sink. New chapter/segment workflow UI state machines, selector semantics, payload derivation, and other feature-specific UI logic should be extracted into dedicated `ui/` modules with typed input/output contracts once a change goes beyond a small local tweak.
+- Prefer adding typed helper contracts (`TypedDict`, `Protocol`, small dataclasses, or narrowly scoped typed helpers) when extending chapter/segment review flows, so future work does not increase dynamic `dict[str, object]` and `object`-typed coupling inside `_app.py`.
+
+Execution order for autonomous work:
+
+1. `Milestone A: Finish Analysis/Review UX`
+2. `Milestone B: Close Phase 2 UX/contract polish`
+3. `Milestone B.5: Structure Review Panel Decomposition`
+4. `Milestone C: Failure/Retry Decision`
+5. `Milestone D: Reassembly Foundation`
+6. `Milestone E: Final Book Modes`
+7. `Milestone F: Context Preservation`
+
+Milestone definitions:
+
+- `Milestone A: Finish Analysis/Review UX`
+  - make the confirmed-outline summary more explicit in the analysis panel;
+  - make selection summary more section-aware and easier to understand;
+  - improve invalidation and disabled-state messaging;
+  - add lightweight manual comparison affordances only if they fit the current architecture without a large refactor.
+- `Milestone B: Close Phase 2 UX/contract polish`
+  - keep parent/child selection semantics consistent across selector state, bulk actions, and selected-processing payloads;
+  - improve selector clarity for flat-list section/chapter relationships;
+  - avoid a real nested tree UI model unless a blocker appears.
+- `Milestone B.5: Structure Review Panel Decomposition`
+  - extract the chapter/segment review subsystem from `src/docxaicorrector/ui/_app.py` into a dedicated UI module such as `src/docxaicorrector/ui/structure_review_panel.py` or `src/docxaicorrector/ui/chapter_review_panel.py`;
+  - move `_render_analysis_review_panel(...)` and its tightly coupled helpers together rather than splitting them across unrelated modules;
+  - move selection expansion helpers, selected-processing payload/effective selection state helpers, and confirmation invalidation/review summary helpers with that panel module;
+  - keep `_app.py` as an orchestration shell that composes the feature module rather than owning the chapter-review state machine internally;
+  - treat this as the preferred low-risk decomposition boundary before deeper retry or reassembly work, because the chapter-review flow is already a largely self-contained subsystem.
+- `Milestone C: Failure/Retry Decision`
+  - either implement a real minimal retry flow for failed segments/jobs;
+  - or explicitly keep retry as disabled/not-yet-implemented UX without implying completion.
+- `Milestone D: Reassembly Foundation`
+  - add the reassembly service foundation;
+  - first target `selected_only` and `hybrid_document` modes;
+  - add artifact coverage manifests.
+- `Milestone E: Final Book Modes`
+  - complete `selected_with_context` and `final_translated_book` behavior;
+  - add session-completeness guards and user-facing gating.
+- `Milestone F: Context Preservation`
+  - add `DocumentContextProfile`;
+  - add glossary extraction and session-scoped consistency support;
+  - inject outline/context information into segment processing prompts.
+
 ### Phase 1: Segment Detection And Analysis UI
 
 - [x] Add `DocumentSegment`, `SegmentBoundaryEvidence`, and `SegmentDetectionReport` models.
@@ -1429,23 +1506,43 @@ flowchart TD
 - [x] Revert `queued` and `processing` segment statuses to `pending` when a run ends with `STOPPED`, while keeping `completed` and `failed` statuses intact.
 - [x] Show a minimal segment status summary in the analysis/review UI.
 - [x] Add minimal chapter selector filter/search controls for status and title review.
+- [x] Lock queued/processing segment rows in the selector while keeping them visible.
+- [x] Add minimal `skipped` selector/filter support in the current UI state model.
+- [x] Add minimal bulk selector actions for `Select Visible`, `Clear Visible`, and `Select Entire Book`.
+- [x] Add minimal row hints for `completed` and `failed` segments in the selector.
+- [x] Add a minimal selected-segment status summary near the selection summary.
+- [x] Add minimal parent/section-aware selection expansion so selecting a parent includes currently detected descendants in selector state and selected-processing payloads, without a true tree refactor.
+- [x] Keep locked `queued`/`processing` descendants excluded from newly expanded parent selections and selected-processing payloads in the current session.
+- [x] Derive review-panel selected counts, readiness state, and disabled-state messaging from the same effective selected-processing payload used by the real `start_selected` launch path.
+- [x] Show an explicit review-panel note when queued/processing descendants are excluded from the effective selected-processing payload.
 - If dedicated `Segment*Event` dataclasses are introduced, update the `ProcessingEvent` type union.
 
 ### Phase 3: Structure Reproducibility And Retry
 
 - Keep processing state session scoped.
-- Compare repeated same-session detections by `structure_fingerprint`.
+- [x] Compare repeated same-session detections by `structure_fingerprint` and show an explicit analysis-panel invalidation summary with previous/current fingerprint details when confirmation becomes invalid.
 - Optionally allow importing/exporting structure manifests for manual comparison.
-- Add failed-segment retry.
-- Invalidate structure confirmation when detection-affecting settings change.
-- Store and compare `confirmed_at_settings_hash` for detection-affecting settings.
+- [x] Show explicit panel-level notice for failed segments with count and clear "retry not available in Phase 2" message; per-segment status hint also records the same in `_build_segment_status_hint`.
+- Add failed-segment retry (deferred to Phase 3 proper or Milestone C retry path).
+- [x] Invalidate structure confirmation when detection-affecting settings change.
+- [x] Store and compare `confirmed_at_settings_hash` for detection-affecting settings.
 
 ### Phase 4: Reassembly And Final Book Generation
 
-- Add reassembly service.
+- [x] Record `assembly_mode` (`selected_chapters` / `full_document`) and `selected_segment_count` in the result artifact `.meta.json`, threaded from `ProcessingContext.selected_segment_ids` through `finalize_processing_success` to `write_ui_result_artifacts`.
+- [x] Add an initial reassembly service that centralizes `assembly_mode` / `output_mode` planning for current full-document and selected-only runs, instead of keeping that branching inline in `late_phases.py`.
+- [x] Thread explicit `output_mode` through the current UI, worker, API, and processing contracts for the currently supported modes `selected_only` and `legacy_full_document`, instead of deriving it only from `selected_segment_ids` during finalization.
 - Support `selected_only`, `selected_with_context`, `hybrid_document`, and `final_translated_book` output modes consistently across UI, API, and processing contracts.
-- Write segment-aware artifact manifests.
-- Enable final book build only when all required segments are complete in the current session.
+- [x] Preserve explicit `selected_with_context` through the current processing/reassembly contract for selected-segment runs, instead of collapsing every selected run back to `selected_only` during finalization.
+- [x] Preserve explicit `hybrid_document` through the current processing/reassembly contract for full-document runs, so manifest/output-mode plumbing stays honest before true hybrid reassembly behavior is implemented.
+- [x] Write segment-aware result artifact manifests (`.result.manifest.json`) for current runs, including included segment ids and per-segment job counts. Current Phase 4 foundation deliberately omits segment titles unless a canonical segment-title source is available in the processing contract.
+- [x] Gate the current UI full-book launch so it requests `final_translated_book` only when all required non-skipped segments are complete in the current session; otherwise it stays on `legacy_full_document`.
+
+Current contract note for the Phase 4 foundation:
+
+- full-document runs currently use the temporary manifest `output_mode` placeholder `legacy_full_document` by default, but the current UI now upgrades that request to `final_translated_book` when all required non-skipped segments are already completed in the session.
+- selected-segment runs now preserve `selected_with_context` in the current processing/reassembly contract, but the actual context-enrichment artifact behavior is still a later Phase 4 slice.
+- full-document runs also preserve explicit `hybrid_document` in the current processing/reassembly contract, but the actual mixed translated-plus-source artifact assembly is still a later Phase 4 slice.
 
 ### Phase 5: Translation Memory And Consistency
 

@@ -29,6 +29,7 @@ from docxaicorrector.generation.formatting_diagnostics_retention import (
     load_formatting_diagnostics_payloads,
 )
 from docxaicorrector.generation._generation import strip_markdown_for_narration
+from docxaicorrector.pipeline.reassembly import build_reassembly_plan, build_reassembly_result_manifest
 from docxaicorrector.processing.preparation import humanize_quality_gate_reasons
 
 
@@ -1138,11 +1139,25 @@ def finalize_processing_success(
         last_error=narration_error_message,
     )
     try:
+        reassembly_plan = build_reassembly_plan(
+            selected_segment_ids=getattr(context, "selected_segment_ids", None),
+            output_mode=str(getattr(context, "output_mode", "") or ""),
+            jobs=list(getattr(context, "jobs", ()) or ()),
+        )
         artifact_writer_kwargs = {
             "source_name": context.uploaded_filename,
             "markdown_text": final_markdown,
             "docx_bytes": docx_phase["docx_bytes"],
+            "assembly_mode": reassembly_plan.assembly_mode,
+            "result_manifest": build_reassembly_result_manifest(
+                source_name=context.uploaded_filename,
+                plan=reassembly_plan,
+                jobs=list(getattr(context, "jobs", ()) or ()),
+                source_paragraphs=cast(Sequence[object] | None, getattr(context, "source_paragraphs", None)),
+            ),
         }
+        if reassembly_plan.selected_segment_count is not None:
+            artifact_writer_kwargs["selected_segment_count"] = reassembly_plan.selected_segment_count
         quality_warning = _build_result_quality_warning(
             quality_report=quality_report,
             latest_result_notice=cast(Mapping[str, str] | None, docx_phase.get("latest_result_notice")),

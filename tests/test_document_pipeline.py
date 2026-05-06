@@ -85,6 +85,7 @@ def _run_processing(runtime, **overrides):
     params = {
         "uploaded_file": "report.docx",
         "jobs": [{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
+        "output_mode": None,
         "source_paragraphs": [],
         "image_assets": [],
         "image_mode": "safe",
@@ -435,6 +436,17 @@ def test_run_document_processing_persists_final_ui_result_artifacts_and_logs_pat
         "source_name": "report.docx",
         "markdown_text": "Обработанный блок",
         "docx_bytes": b"docx-bytes",
+        "assembly_mode": "full_document",
+        "result_manifest": {
+            "schema_version": 1,
+            "source_name": "report.docx",
+            "assembly_mode": "full_document",
+            "output_mode": "legacy_full_document",
+            "selected_segment_count": 0,
+            "included_segment_count": 0,
+            "included_segment_ids": [],
+            "segments": [],
+        },
     }
     info_events = [event for event in events if event["level"] == logging.INFO]
     saved_event = next(event for event in info_events if event["event_id"] == "ui_result_artifacts_saved")
@@ -442,6 +454,177 @@ def test_run_document_processing_persists_final_ui_result_artifacts_and_logs_pat
         "markdown_path": "/tmp/mariana.result.md",
         "docx_path": "/tmp/mariana.result.docx",
     }
+
+
+def test_run_document_processing_passes_selected_chapters_assembly_mode_to_artifact_writer():
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+    captured = {}
+
+    def write_ui_result_artifacts(**kwargs):
+        captured["artifact_kwargs"] = kwargs
+        return {
+            "markdown_path": "/tmp/mariana.result.md",
+            "docx_path": "/tmp/mariana.result.docx",
+        }
+
+    result = _run_processing(
+        runtime,
+        log_event=log_event,
+        write_ui_result_artifacts=write_ui_result_artifacts,
+        selected_segment_ids=["seg_0001", "seg_0002"],
+    )
+
+    assert result == "succeeded"
+    assert captured["artifact_kwargs"]["assembly_mode"] == "selected_chapters"
+    assert captured["artifact_kwargs"]["selected_segment_count"] == 2
+    assert captured["artifact_kwargs"]["result_manifest"] == {
+        "schema_version": 1,
+        "source_name": "report.docx",
+        "assembly_mode": "selected_chapters",
+        "output_mode": "selected_only",
+        "selected_segment_count": 2,
+        "included_segment_count": 2,
+        "included_segment_ids": ["seg_0001", "seg_0002"],
+        "selected_segment_ids": ["seg_0001", "seg_0002"],
+        "segments": [
+            {"segment_id": "seg_0001", "job_count": 0, "selected": True},
+            {"segment_id": "seg_0002", "job_count": 0, "selected": True},
+        ],
+    }
+
+
+def test_run_document_processing_preserves_selected_with_context_output_mode_for_selected_runs():
+    runtime = _build_runtime_capture()
+    captured = {}
+
+    def write_ui_result_artifacts(**kwargs):
+        captured["artifact_kwargs"] = kwargs
+        return {
+            "markdown_path": "/tmp/mariana.result.md",
+            "docx_path": "/tmp/mariana.result.docx",
+            "manifest_path": "/tmp/mariana.result.manifest.json",
+        }
+
+    result = _run_processing(
+        runtime,
+        output_mode="selected_with_context",
+        selected_segment_ids=["seg_0001", "seg_0002"],
+        jobs=[
+            {"target_text": "block 1", "context_before": "", "context_after": "", "target_chars": 7, "context_chars": 0, "segment_id": "seg_0001"},
+            {"target_text": "block 2", "context_before": "", "context_after": "", "target_chars": 7, "context_chars": 0, "segment_id": "seg_0002"},
+        ],
+        write_ui_result_artifacts=write_ui_result_artifacts,
+    )
+
+    assert result == "succeeded"
+    assert captured["artifact_kwargs"]["assembly_mode"] == "selected_chapters"
+    assert captured["artifact_kwargs"]["result_manifest"]["output_mode"] == "selected_with_context"
+    assert captured["artifact_kwargs"]["result_manifest"]["selected_segment_ids"] == ["seg_0001", "seg_0002"]
+
+
+def test_run_document_processing_builds_segment_aware_manifest_for_full_document_output():
+    runtime = _build_runtime_capture()
+    captured = {}
+    source_paragraphs = [
+        SimpleNamespace(role="body", segment_id="seg_0001", text="Chapter 1"),
+        SimpleNamespace(role="body", segment_id="seg_0002", text="Chapter 2"),
+    ]
+
+    def write_ui_result_artifacts(**kwargs):
+        captured["artifact_kwargs"] = kwargs
+        return {
+            "markdown_path": "/tmp/mariana.result.md",
+            "docx_path": "/tmp/mariana.result.docx",
+            "manifest_path": "/tmp/mariana.result.manifest.json",
+        }
+
+    result = _run_processing(
+        runtime,
+        jobs=[
+            {"target_text": "block 1", "context_before": "", "context_after": "", "target_chars": 7, "context_chars": 0, "segment_id": "seg_0001"},
+            {"target_text": "block 2", "context_before": "", "context_after": "", "target_chars": 7, "context_chars": 0, "segment_id": "seg_0002"},
+            {"target_text": "block 3", "context_before": "", "context_after": "", "target_chars": 7, "context_chars": 0, "segment_id": "seg_0002"},
+        ],
+        source_paragraphs=source_paragraphs,
+        write_ui_result_artifacts=write_ui_result_artifacts,
+    )
+
+    assert result == "succeeded"
+    assert captured["artifact_kwargs"]["assembly_mode"] == "full_document"
+    assert "selected_segment_count" not in captured["artifact_kwargs"]
+    assert captured["artifact_kwargs"]["result_manifest"] == {
+        "schema_version": 1,
+        "source_name": "report.docx",
+        "assembly_mode": "full_document",
+        "output_mode": "legacy_full_document",
+        "selected_segment_count": 0,
+        "included_segment_count": 2,
+        "included_segment_ids": ["seg_0001", "seg_0002"],
+        "segments": [
+            {"segment_id": "seg_0001", "job_count": 1, "selected": False},
+            {"segment_id": "seg_0002", "job_count": 2, "selected": False},
+        ],
+    }
+
+
+def test_run_document_processing_manifest_omits_noncanonical_segment_titles():
+    runtime = _build_runtime_capture()
+    captured = {}
+
+    def write_ui_result_artifacts(**kwargs):
+        captured["artifact_kwargs"] = kwargs
+        return {
+            "markdown_path": "/tmp/mariana.result.md",
+            "docx_path": "/tmp/mariana.result.docx",
+            "manifest_path": "/tmp/mariana.result.manifest.json",
+        }
+
+    result = _run_processing(
+        runtime,
+        jobs=[
+            {"target_text": "block 1", "context_before": "", "context_after": "", "target_chars": 7, "context_chars": 0, "segment_id": "seg_0001"},
+        ],
+        source_paragraphs=[SimpleNamespace(role="body", segment_id="seg_0001", text="This is body text, not a canonical heading")],
+        write_ui_result_artifacts=write_ui_result_artifacts,
+    )
+
+    assert result == "succeeded"
+    assert captured["artifact_kwargs"]["result_manifest"]["segments"] == [
+        {"segment_id": "seg_0001", "job_count": 1, "selected": False}
+    ]
+
+
+def test_run_document_processing_passes_machine_readable_quality_warning_to_artifact_writer(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    captured = {}
+
+    def write_ui_result_artifacts(**kwargs):
+        captured["artifact_kwargs"] = kwargs
+        return {
+            "markdown_path": "/tmp/report.result.md",
+            "docx_path": "/tmp/report.result.docx",
+            "manifest_path": "/tmp/report.result.manifest.json",
+        }
+
+    result = _run_processing(
+        runtime,
+        output_mode="legacy_full_document",
+        jobs=[
+            {
+                "segment_id": "seg_0001",
+                "target_text": "block",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 5,
+                "context_chars": 0,
+            }
+        ],
+        write_ui_result_artifacts=write_ui_result_artifacts,
+    )
+
+    assert result == "succeeded"
+    assert captured["artifact_kwargs"]["result_manifest"]["output_mode"] == "legacy_full_document"
 
 
 def test_run_document_processing_passes_machine_readable_quality_warning_to_artifact_writer(tmp_path, monkeypatch):
@@ -513,6 +696,70 @@ def test_run_document_processing_passes_machine_readable_quality_warning_to_arti
         "gate_reasons": ["unmapped_source_paragraphs_above_advisory_threshold"],
         "message": "Результат собран, но quality report зафиксировал document-level structural warnings.",
     }
+
+
+def test_run_document_processing_preserves_final_translated_book_output_mode_in_manifest():
+    runtime = _build_runtime_capture()
+    captured = {}
+
+    def write_ui_result_artifacts(**kwargs):
+        captured["artifact_kwargs"] = kwargs
+        return {
+            "markdown_path": "/tmp/report.result.md",
+            "docx_path": "/tmp/report.result.docx",
+            "manifest_path": "/tmp/report.result.manifest.json",
+        }
+
+    result = _run_processing(
+        runtime,
+        output_mode="final_translated_book",
+        jobs=[
+            {
+                "segment_id": "seg_0001",
+                "target_text": "block",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 5,
+                "context_chars": 0,
+            }
+        ],
+        write_ui_result_artifacts=write_ui_result_artifacts,
+    )
+
+    assert result == "succeeded"
+    assert captured["artifact_kwargs"]["result_manifest"]["output_mode"] == "final_translated_book"
+
+
+def test_run_document_processing_preserves_hybrid_document_output_mode_in_manifest():
+    runtime = _build_runtime_capture()
+    captured = {}
+
+    def write_ui_result_artifacts(**kwargs):
+        captured["artifact_kwargs"] = kwargs
+        return {
+            "markdown_path": "/tmp/report.result.md",
+            "docx_path": "/tmp/report.result.docx",
+            "manifest_path": "/tmp/report.result.manifest.json",
+        }
+
+    result = _run_processing(
+        runtime,
+        output_mode="hybrid_document",
+        jobs=[
+            {
+                "segment_id": "seg_0001",
+                "target_text": "block",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 5,
+                "context_chars": 0,
+            }
+        ],
+        write_ui_result_artifacts=write_ui_result_artifacts,
+    )
+
+    assert result == "succeeded"
+    assert captured["artifact_kwargs"]["result_manifest"]["output_mode"] == "hybrid_document"
 
 
 def test_run_document_processing_builds_standalone_audiobook_artifact_and_coerces_image_mode():

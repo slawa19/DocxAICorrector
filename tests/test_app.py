@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 
 import docxaicorrector.runtime.state as state
 import docxaicorrector.ui._app as app
@@ -71,3 +72,46 @@ def test_resolve_result_bundle_passes_mode_flags_for_completed_view(monkeypatch)
     assert captured["narration_text"] == "[thoughtful] narration"
     assert captured["processing_operation"] == "translate"
     assert captured["audiobook_postprocess_enabled"] is True
+
+
+def test_start_background_processing_forwards_explicit_output_mode(monkeypatch):
+    captured = {}
+
+    class FakeService:
+        def run_processing_worker(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(app, "start_background_processing", lambda **kwargs: kwargs["worker_target"](
+        runtime=object(),
+        uploaded_filename=kwargs["uploaded_filename"],
+        jobs=kwargs["jobs"],
+        selected_segment_ids=kwargs["selected_segment_ids"],
+        output_mode=kwargs["output_mode"],
+        source_paragraphs=kwargs["source_paragraphs"],
+        image_assets=kwargs["image_assets"],
+        image_mode=kwargs["image_mode"],
+        app_config=kwargs["app_config"],
+        model=kwargs["model"],
+        max_retries=kwargs["max_retries"],
+        processing_operation=kwargs["processing_operation"],
+        source_language=kwargs["source_language"],
+        target_language=kwargs["target_language"],
+    ))
+    monkeypatch.setitem(__import__("sys").modules, "docxaicorrector.processing.processing_service", SimpleNamespace(get_processing_service=lambda: FakeService()))
+
+    app._start_background_processing(
+        uploaded_filename="report.docx",
+        uploaded_token="token",
+        source_bytes=b"source",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0}],
+        selected_segment_ids=["seg_0001"],
+        output_mode="selected_only",
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+    )
+
+    assert captured["output_mode"] == "selected_only"
