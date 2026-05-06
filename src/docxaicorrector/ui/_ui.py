@@ -383,6 +383,8 @@ def render_live_status(target=None) -> None:
             stage = str(status.get("stage") or "Ожидание")
             detail = str(status.get("detail") or "")
             active_segment_title = str(status.get("active_segment_title") or "").strip()
+            raw_segment_status_by_id = status.get("segment_status_by_id")
+            segment_status_by_id = raw_segment_status_by_id if isinstance(raw_segment_status_by_id, Mapping) else {}
             _render_status_panel(
                 sink=sink,
                 title=title,
@@ -399,6 +401,19 @@ def render_live_status(target=None) -> None:
             metric_columns[3].metric("Прошло", elapsed)
             if active_segment_title:
                 sink.caption(f"Активный сегмент: {active_segment_title}")
+            if segment_status_by_id:
+                summary_order = ("pending", "queued", "processing", "completed", "failed")
+                fragments = []
+                for segment_status in summary_order:
+                    count = sum(
+                        1
+                        for value in segment_status_by_id.values()
+                        if str(value or "").strip().lower() == segment_status
+                    )
+                    if count > 0:
+                        fragments.append(f"{segment_status} {count}")
+                if fragments:
+                    sink.caption("Сегменты: " + " | ".join(fragments))
             progress_value = max(0.0, min(float(status.get("progress") or 0.0), 1.0))
             progress_api = _resolve_render_target(target, "progress")
             progress_api.progress(progress_value)

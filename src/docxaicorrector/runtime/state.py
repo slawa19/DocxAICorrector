@@ -318,6 +318,8 @@ def apply_preparation_complete(*, prepared_run_context, upload_marker: str, rese
     st.session_state.confirmed_structure_fingerprint = ""
     st.session_state.confirmed_at_settings_hash = ""
     st.session_state.segments_loaded_for_source_token = uploaded_token
+    st.session_state.chapter_selector_search = ""
+    st.session_state.chapter_selector_filter = "all"
     set_prepared_source_key(str(getattr(prepared_run_context, "prepared_source_key", "")))
     set_preparation_runtime(worker=None, event_queue=None)
     st.session_state.processing_outcome = ProcessingOutcome.IDLE.value
@@ -585,6 +587,8 @@ def clear_structure_review_state() -> None:
     st.session_state.confirmed_structure_fingerprint = ""
     st.session_state.confirmed_at_settings_hash = ""
     st.session_state.segments_loaded_for_source_token = ""
+    st.session_state.chapter_selector_search = ""
+    st.session_state.chapter_selector_filter = "all"
 
 
 def clear_recommended_text_settings_notice_token() -> None:
@@ -720,6 +724,8 @@ def init_session_state() -> None:
     st.session_state.setdefault("confirmed_structure_fingerprint", "")
     st.session_state.setdefault("confirmed_at_settings_hash", "")
     st.session_state.setdefault("segments_loaded_for_source_token", "")
+    st.session_state.setdefault("chapter_selector_search", "")
+    st.session_state.setdefault("chapter_selector_filter", "all")
 
 
 def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: bool = False) -> None:
@@ -757,6 +763,8 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
         st.session_state.get("structure_manifest_notice_details") if preserve_preparation else None
     )
     selected_segment_ids = list(st.session_state.get("selected_segment_ids", [])) if preserve_preparation else []
+    chapter_selector_search = str(st.session_state.get("chapter_selector_search", "")) if preserve_preparation else ""
+    chapter_selector_filter = str(st.session_state.get("chapter_selector_filter", "all") or "all") if preserve_preparation else "all"
     segment_status_by_id = dict(st.session_state.get("segment_status_by_id", {})) if preserve_preparation else {}
     segment_progress_by_id = dict(st.session_state.get("segment_progress_by_id", {})) if preserve_preparation else {}
     active_segment_id = str(st.session_state.get("active_segment_id", "")) if preserve_preparation else ""
@@ -808,6 +816,8 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
             structure_manifest_notice_details = None
         if segments_loaded_for_source_token != preserved_file_token:
             selected_segment_ids = []
+            chapter_selector_search = ""
+            chapter_selector_filter = "all"
             segment_status_by_id = {}
             segment_progress_by_id = {}
             active_segment_id = ""
@@ -827,6 +837,8 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
         structure_manifest_notice_token = None
         structure_manifest_notice_details = None
         selected_segment_ids = []
+        chapter_selector_search = ""
+        chapter_selector_filter = "all"
         segment_status_by_id = {}
         segment_progress_by_id = {}
         active_segment_id = ""
@@ -877,6 +889,8 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
     st.session_state.structure_manifest_notice_token = structure_manifest_notice_token
     st.session_state.structure_manifest_notice_details = structure_manifest_notice_details
     st.session_state.selected_segment_ids = selected_segment_ids
+    st.session_state.chapter_selector_search = chapter_selector_search
+    st.session_state.chapter_selector_filter = chapter_selector_filter
     st.session_state.segment_status_by_id = segment_status_by_id
     st.session_state.segment_progress_by_id = segment_progress_by_id
     st.session_state.active_segment_id = active_segment_id
@@ -1006,6 +1020,36 @@ def set_processing_status(
     st.session_state.processing_status = status
 
 
+def _resolve_terminal_segment_runtime_state(
+    *,
+    terminal_kind: str | None,
+    segment_status_by_id: dict[str, str],
+    segment_progress_by_id: dict[str, float],
+    active_segment_id: str,
+) -> tuple[dict[str, str], dict[str, float]]:
+    normalized_status_by_id = {
+        str(segment_id): str(segment_status or "pending").strip().lower() or "pending"
+        for segment_id, segment_status in segment_status_by_id.items()
+        if str(segment_id).strip()
+    }
+    normalized_progress_by_id = {
+        str(segment_id): max(0.0, min(float(segment_progress), 1.0))
+        for segment_id, segment_progress in segment_progress_by_id.items()
+        if str(segment_id).strip()
+    }
+    if terminal_kind == "stopped":
+        for segment_id, segment_status in tuple(normalized_status_by_id.items()):
+            if segment_status in {"queued", "processing"}:
+                normalized_status_by_id[segment_id] = "pending"
+                normalized_progress_by_id[segment_id] = 0.0
+    elif terminal_kind == "error" and active_segment_id:
+        current_status = normalized_status_by_id.get(active_segment_id, "pending")
+        if current_status in {"pending", "queued", "processing"}:
+            normalized_status_by_id[active_segment_id] = "failed"
+            normalized_progress_by_id.setdefault(active_segment_id, 0.0)
+    return normalized_status_by_id, normalized_progress_by_id
+
+
 def finalize_processing_status(stage: str, detail: str, progress: float, terminal_kind: str | None = None) -> None:
     status = dict(st.session_state.processing_status)
     status.update(
@@ -1018,6 +1062,38 @@ def finalize_processing_status(stage: str, detail: str, progress: float, termina
             "terminal_kind": terminal_kind if terminal_kind in {None, "completed", "stopped", "error"} else None,
         }
     )
+    if terminal_kind in {"stopped", "error"}:
+        raw_segment_status_by_id = status.get("segment_status_by_id")
+        raw_segment_progress_by_id = status.get("segment_progress_by_id")
+        active_segment_id = str(status.get("active_segment_id") or st.session_state.get("active_segment_id") or "")
+        segment_status_by_id = (
+            {
+                str(segment_id): str(segment_status)
+                for segment_id, segment_status in raw_segment_status_by_id.items()
+                if str(segment_id).strip() and str(segment_status).strip()
+            }
+            if isinstance(raw_segment_status_by_id, dict)
+            else get_segment_status_by_id()
+        )
+        segment_progress_by_id = (
+            {
+                str(segment_id): max(0.0, min(float(segment_progress), 1.0))
+                for segment_id, segment_progress in raw_segment_progress_by_id.items()
+                if str(segment_id).strip()
+            }
+            if isinstance(raw_segment_progress_by_id, dict)
+            else get_segment_progress_by_id()
+        )
+        segment_status_by_id, segment_progress_by_id = _resolve_terminal_segment_runtime_state(
+            terminal_kind=terminal_kind,
+            segment_status_by_id=segment_status_by_id,
+            segment_progress_by_id=segment_progress_by_id,
+            active_segment_id=active_segment_id,
+        )
+        status["segment_status_by_id"] = segment_status_by_id
+        status["segment_progress_by_id"] = segment_progress_by_id
+        st.session_state.segment_status_by_id = dict(segment_status_by_id)
+        st.session_state.segment_progress_by_id = dict(segment_progress_by_id)
     if terminal_kind in {"completed", "stopped", "error"}:
         status["active_segment_id"] = ""
         status["active_segment_title"] = ""

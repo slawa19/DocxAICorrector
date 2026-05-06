@@ -985,6 +985,8 @@ def test_render_analysis_review_panel_renders_selector_and_disabled_process_sele
     caption_calls = []
     expander_calls = []
     write_calls = []
+    selectbox_calls = []
+    text_input_calls = []
 
     class FakeExpander:
         def __init__(self, label, expanded):
@@ -999,6 +1001,8 @@ def test_render_analysis_review_panel_renders_selector_and_disabled_process_sele
     monkeypatch.setattr(app.st, "session_state", session_state)
     monkeypatch.setattr(app.st, "columns", lambda n: [confirm_col, selected_col, full_book_col])
     monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: checkbox_calls.append((label, kwargs)) or kwargs.get("value", False))
+    monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: selectbox_calls.append((label, tuple(options), index)) or options[index])
+    monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: text_input_calls.append((label, value)) or value)
     monkeypatch.setattr(app.st, "info", lambda message, **kwargs: info_calls.append(message))
     monkeypatch.setattr(app.st, "subheader", lambda message, **kwargs: subheader_calls.append(message))
     monkeypatch.setattr(app.st, "caption", lambda message, **kwargs: caption_calls.append(message))
@@ -1017,6 +1021,8 @@ def test_render_analysis_review_panel_renders_selector_and_disabled_process_sele
     assert subheader_calls == ["Chapter Selector"]
     assert caption_calls[0] == "Structure fingerprint: abc123def456"
     assert caption_calls[1] == "Detector version: chapter_segments_v1"
+    assert selectbox_calls == [("Status Filter", ("All segments", "Pending", "Queued", "Processing", "Completed", "Failed", "Low confidence"), 0)]
+    assert text_input_calls == [("Search Chapters", "")]
     assert checkbox_calls and checkbox_calls[0][1]["value"] is True
     assert expander_calls == [("Boundary preview: Chapter 1", False)]
     assert any(message == "Starts: p1" for message in caption_calls)
@@ -1043,6 +1049,173 @@ def test_render_analysis_review_panel_renders_selector_and_disabled_process_sele
     assert any("Selected: 1 segments" in message for message in info_calls)
     assert any("Confidence H/M/L:" in message for message in info_calls)
     assert any("TOC matched: 1/1" in message for message in info_calls)
+
+
+def test_render_analysis_review_panel_filters_segments_by_status_and_search(monkeypatch):
+    session_state = SessionState(
+        selected_segment_ids=["seg_0001", "seg_0002"],
+        segment_status_by_id={"seg_0001": "completed", "seg_0002": "failed"},
+        segment_progress_by_id={"seg_0001": 1.0, "seg_0002": 0.0},
+        structure_confirmed=False,
+        confirmed_structure_fingerprint="",
+        confirmed_at_settings_hash="",
+        segments_loaded_for_source_token="report.docx:3:token",
+        chapter_selector_search="",
+        chapter_selector_filter="all",
+    )
+    prepared_run_context = _build_prepared_run_context(
+        structure_fingerprint="abc123def456",
+        segments=[
+            DocumentSegment(
+                segment_id="seg_0001",
+                ordinal=1,
+                level=1,
+                title="Chapter 1",
+                normalized_title="chapter 1",
+                start_paragraph_index=0,
+                end_paragraph_index=0,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0000",
+                paragraph_ids=("p0000",),
+                paragraph_count=1,
+                char_count=10,
+                word_count=2,
+                estimated_token_count=3,
+                structural_role="chapter",
+                confidence="high",
+                boundary_fingerprint="fp1",
+                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
+            ),
+            DocumentSegment(
+                segment_id="seg_0002",
+                ordinal=2,
+                level=1,
+                title="Appendix Notes",
+                normalized_title="appendix notes",
+                start_paragraph_index=1,
+                end_paragraph_index=1,
+                start_paragraph_id="p0001",
+                end_paragraph_id="p0001",
+                paragraph_ids=("p0001",),
+                paragraph_count=1,
+                char_count=10,
+                word_count=2,
+                estimated_token_count=3,
+                structural_role="appendix",
+                confidence="high",
+                boundary_fingerprint="fp2",
+                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
+                warnings=("Needs review",),
+            ),
+        ],
+        segment_to_job={"seg_0001": (0,), "seg_0002": (1,)},
+    )
+    checkbox_labels = []
+    info_calls = []
+    caption_calls = []
+    selectbox_values = iter(["Failed"])
+
+    class FakeExpander:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app.st, "columns", lambda n: [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)])
+    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: checkbox_labels.append(label) or kwargs.get("value", False))
+    monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: next(selectbox_values))
+    monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: "appendix")
+    monkeypatch.setattr(app.st, "info", lambda message, **kwargs: info_calls.append(message))
+    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "caption", lambda message, **kwargs: caption_calls.append(message))
+    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "expander", lambda *args, **kwargs: FakeExpander())
+
+    app._render_analysis_review_panel(
+        prepared_run_context=prepared_run_context,
+        uploaded_file_token="report.docx:3:token",
+        chunk_size=6000,
+    )
+
+    assert checkbox_labels == [
+        "Appendix Notes | 2 words | high | appendix | approx. 1 jobs | failed 0%"
+    ]
+    assert session_state.chapter_selector_filter == "failed"
+    assert session_state.chapter_selector_search == "appendix"
+    assert session_state.selected_segment_ids == ["seg_0001", "seg_0002"]
+    assert any(message == "Visible segments: 1/2" for message in caption_calls)
+    assert any("Selected: 2 segments" in message for message in info_calls)
+
+
+def test_render_analysis_review_panel_shows_empty_filter_result_notice(monkeypatch):
+    session_state = SessionState(
+        selected_segment_ids=["seg_0001"],
+        segment_status_by_id={"seg_0001": "pending"},
+        segment_progress_by_id={"seg_0001": 0.0},
+        structure_confirmed=False,
+        confirmed_structure_fingerprint="",
+        confirmed_at_settings_hash="",
+        segments_loaded_for_source_token="report.docx:3:token",
+    )
+    prepared_run_context = _build_prepared_run_context(
+        structure_fingerprint="abc123def456",
+        segments=[
+            DocumentSegment(
+                segment_id="seg_0001",
+                ordinal=1,
+                level=1,
+                title="Chapter 1",
+                normalized_title="chapter 1",
+                start_paragraph_index=0,
+                end_paragraph_index=0,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0000",
+                paragraph_ids=("p0000",),
+                paragraph_count=1,
+                char_count=10,
+                word_count=2,
+                estimated_token_count=3,
+                structural_role="chapter",
+                confidence="high",
+                boundary_fingerprint="fp1",
+                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
+            )
+        ],
+        segment_to_job={"seg_0001": (0,)},
+    )
+    info_calls = []
+
+    class FakeExpander:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app.st, "columns", lambda n: [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)])
+    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: (_ for _ in ()).throw(AssertionError("checkbox should not render when filter is empty")))
+    monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: "Completed")
+    monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: "missing")
+    monkeypatch.setattr(app.st, "info", lambda message, **kwargs: info_calls.append(message))
+    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "expander", lambda *args, **kwargs: FakeExpander())
+
+    app._render_analysis_review_panel(
+        prepared_run_context=prepared_run_context,
+        uploaded_file_token="report.docx:3:token",
+        chunk_size=6000,
+    )
+
+    assert "No segments match the current filter/search." in info_calls
 
 
 def test_render_analysis_review_panel_shows_low_confidence_warning_and_manifest(monkeypatch):
@@ -1210,6 +1383,138 @@ def test_render_analysis_review_panel_shows_segment_runtime_badges(monkeypatch):
 
     assert any("completed 100%" in label for label in checkbox_labels)
     assert any("processing 50% | active" in label for label in checkbox_labels)
+
+
+def test_render_analysis_review_panel_shows_segment_status_summary(monkeypatch):
+    session_state = SessionState(
+        selected_segment_ids=["seg_0001", "seg_0002", "seg_0003", "seg_0004"],
+        segment_status_by_id={
+            "seg_0001": "completed",
+            "seg_0002": "processing",
+            "seg_0003": "pending",
+            "seg_0004": "failed",
+        },
+        segment_progress_by_id={
+            "seg_0001": 1.0,
+            "seg_0002": 0.5,
+            "seg_0003": 0.0,
+            "seg_0004": 0.0,
+        },
+        structure_confirmed=True,
+        confirmed_structure_fingerprint="abc123def456",
+        confirmed_at_settings_hash="settings123",
+        segments_loaded_for_source_token="report.docx:3:token",
+    )
+    prepared_run_context = _build_prepared_run_context(
+        structure_fingerprint="abc123def456",
+        segments=[
+            DocumentSegment(
+                segment_id="seg_0001",
+                ordinal=1,
+                level=1,
+                title="Chapter 1",
+                normalized_title="chapter 1",
+                start_paragraph_index=0,
+                end_paragraph_index=0,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0000",
+                paragraph_ids=("p0000",),
+                paragraph_count=1,
+                char_count=10,
+                word_count=2,
+                estimated_token_count=3,
+                structural_role="chapter",
+                confidence="high",
+                boundary_fingerprint="fp1",
+                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
+            ),
+            DocumentSegment(
+                segment_id="seg_0002",
+                ordinal=2,
+                level=1,
+                title="Chapter 2",
+                normalized_title="chapter 2",
+                start_paragraph_index=1,
+                end_paragraph_index=1,
+                start_paragraph_id="p0001",
+                end_paragraph_id="p0001",
+                paragraph_ids=("p0001",),
+                paragraph_count=1,
+                char_count=10,
+                word_count=2,
+                estimated_token_count=3,
+                structural_role="chapter",
+                confidence="high",
+                boundary_fingerprint="fp2",
+                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
+            ),
+            DocumentSegment(
+                segment_id="seg_0003",
+                ordinal=3,
+                level=1,
+                title="Chapter 3",
+                normalized_title="chapter 3",
+                start_paragraph_index=2,
+                end_paragraph_index=2,
+                start_paragraph_id="p0002",
+                end_paragraph_id="p0002",
+                paragraph_ids=("p0002",),
+                paragraph_count=1,
+                char_count=10,
+                word_count=2,
+                estimated_token_count=3,
+                structural_role="chapter",
+                confidence="high",
+                boundary_fingerprint="fp3",
+                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
+            ),
+            DocumentSegment(
+                segment_id="seg_0004",
+                ordinal=4,
+                level=1,
+                title="Chapter 4",
+                normalized_title="chapter 4",
+                start_paragraph_index=3,
+                end_paragraph_index=3,
+                start_paragraph_id="p0003",
+                end_paragraph_id="p0003",
+                paragraph_ids=("p0003",),
+                paragraph_count=1,
+                char_count=10,
+                word_count=2,
+                estimated_token_count=3,
+                structural_role="chapter",
+                confidence="high",
+                boundary_fingerprint="fp4",
+                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
+            ),
+        ],
+        segment_to_job={"seg_0001": (0,), "seg_0002": (1,), "seg_0003": (2,), "seg_0004": (3,)},
+    )
+    captions = []
+
+    monkeypatch.setattr(app, "_build_structure_settings_hash", lambda **kwargs: "settings123")
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app.st, "columns", lambda n: [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)])
+    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "caption", lambda message, **kwargs: captions.append(message))
+    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "expander", lambda *args, **kwargs: type("FakeExpander", (), {"__enter__": lambda self: self, "__exit__": lambda self, exc_type, exc, tb: False})())
+
+    app._render_analysis_review_panel(
+        prepared_run_context=prepared_run_context,
+        uploaded_file_token="report.docx:3:token",
+        chunk_size=6000,
+    )
+
+    assert any(
+        message == "Segment status summary: pending 1 | processing 1 | completed 1 | failed 1"
+        for message in captions
+    )
 
 
 def test_render_analysis_review_panel_clears_confirmation_when_selection_changes(monkeypatch):

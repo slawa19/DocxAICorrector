@@ -555,6 +555,53 @@ def _build_segment_runtime_badge(segment_status: str, segment_progress: float) -
     return normalized_status
 
 
+def _build_segment_status_summary_line(*, segments: list[object], segment_status_by_id: dict[str, str]) -> str:
+    if not segments:
+        return ""
+    ordered_statuses = ("pending", "queued", "processing", "completed", "failed")
+    counts = {status: 0 for status in ordered_statuses}
+    for segment in segments:
+        segment_id = str(getattr(segment, "segment_id", "") or "").strip()
+        if not segment_id:
+            continue
+        normalized_status = str(segment_status_by_id.get(segment_id, "pending") or "pending").strip().lower() or "pending"
+        if normalized_status not in counts:
+            continue
+        counts[normalized_status] += 1
+    fragments = [f"{status} {count}" for status, count in counts.items() if count > 0]
+    if not fragments:
+        return ""
+    return "Segment status summary: " + " | ".join(fragments)
+
+
+def _segment_matches_review_filters(
+    *,
+    segment: object,
+    segment_status_by_id: dict[str, str],
+    status_filter: str,
+    search_query: str,
+) -> bool:
+    normalized_filter = str(status_filter or "all").strip().lower() or "all"
+    normalized_query = " ".join(str(search_query or "").strip().lower().split())
+    segment_status = str(
+        segment_status_by_id.get(str(getattr(segment, "segment_id", "") or ""), "pending") or "pending"
+    ).strip().lower() or "pending"
+    segment_title = " ".join(str(getattr(segment, "title", "") or "").strip().lower().split())
+    segment_warning_text = " ".join(
+        str(item).strip().lower()
+        for item in (getattr(segment, "warnings", ()) or ())
+        if str(item).strip()
+    )
+    if normalized_filter == "low_confidence":
+        if str(getattr(segment, "confidence", "") or "").strip().lower() != "low":
+            return False
+    elif normalized_filter != "all" and segment_status != normalized_filter:
+        return False
+    if not normalized_query:
+        return True
+    return normalized_query in segment_title or normalized_query in segment_warning_text
+
+
 def _render_analysis_review_panel(*, prepared_run_context, uploaded_file_token: str, chunk_size: int) -> str | None:
     segments = list(getattr(prepared_run_context, "segments", []) or [])
     if not segments:
@@ -594,9 +641,63 @@ def _render_analysis_review_panel(*, prepared_run_context, uploaded_file_token: 
     segment_status_by_id = get_segment_status_by_id()
     segment_progress_by_id = get_segment_progress_by_id()
     active_segment_id = get_active_segment_id()
+    search_query = str(st.session_state.get("chapter_selector_search", "") or "")
+    status_filter_options = {
+        "All segments": "all",
+        "Pending": "pending",
+        "Queued": "queued",
+        "Processing": "processing",
+        "Completed": "completed",
+        "Failed": "failed",
+        "Low confidence": "low_confidence",
+    }
+    filter_labels = list(status_filter_options.keys())
+    current_filter_value = str(st.session_state.get("chapter_selector_filter", "all") or "all")
+    current_filter_label = next(
+        (label for label, value in status_filter_options.items() if value == current_filter_value),
+        "All segments",
+    )
+    selected_filter_label = st.selectbox(
+        "Status Filter",
+        filter_labels,
+        index=filter_labels.index(current_filter_label),
+        key="chapter_selector_filter_selectbox",
+    )
+    selected_filter_value = status_filter_options[selected_filter_label]
+    st.session_state.chapter_selector_filter = selected_filter_value
+    search_query = st.text_input(
+        "Search Chapters",
+        value=search_query,
+        key="chapter_selector_search_input",
+        placeholder="Search by title or warning",
+    )
+    st.session_state.chapter_selector_search = search_query
+    status_summary_line = _build_segment_status_summary_line(
+        segments=segments,
+        segment_status_by_id=segment_status_by_id,
+    )
+    if status_summary_line:
+        st.caption(status_summary_line)
     paragraphs = list(getattr(prepared_run_context, "paragraphs", []) or [])
     updated_selection: list[str] = []
-    for segment in segments:
+    visible_segments = [
+        segment
+        for segment in segments
+        if _segment_matches_review_filters(
+            segment=segment,
+            segment_status_by_id=segment_status_by_id,
+            status_filter=selected_filter_value,
+            search_query=search_query,
+        )
+    ]
+    st.caption(f"Visible segments: {len(visible_segments)}/{len(segments)}")
+    visible_segment_ids = {
+        str(getattr(segment, "segment_id", "") or "").strip()
+        for segment in visible_segments
+        if str(getattr(segment, "segment_id", "") or "").strip()
+    }
+    updated_selection = [segment_id for segment_id in selected_segment_ids if segment_id not in visible_segment_ids]
+    for segment in visible_segments:
         segment_job_count = len((getattr(prepared_run_context, "segment_to_job", {}) or {}).get(segment.segment_id, ()))
         segment_status = segment_status_by_id.get(segment.segment_id, "pending")
         segment_progress = segment_progress_by_id.get(segment.segment_id, 0.0)
@@ -632,6 +733,8 @@ def _render_analysis_review_panel(*, prepared_run_context, uploaded_file_token: 
                     st.caption(_format_segment_evidence_line(evidence))
             else:
                 st.caption("Boundary evidence: n/a")
+    if not visible_segments:
+        st.info("No segments match the current filter/search.")
     if updated_selection != selected_segment_ids:
         set_selected_segment_ids(updated_selection)
         selected_segment_ids = updated_selection

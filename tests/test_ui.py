@@ -1165,6 +1165,40 @@ def test_render_live_status_shows_active_segment_caption(monkeypatch):
     assert any(text == "Активный сегмент: Chapter 1" for text in target.caption_calls)
 
 
+def test_render_live_status_shows_segment_status_summary(monkeypatch):
+    session_state = SessionState(
+        processing_status={
+            "is_running": True,
+            "phase": "processing",
+            "stage": "Обработка блока",
+            "detail": "Идет работа.",
+            "current_block": 1,
+            "block_count": 4,
+            "target_chars": 100,
+            "context_chars": 25,
+            "progress": 0.25,
+            "segment_status_by_id": {
+                "seg_0001": "completed",
+                "seg_0002": "processing",
+                "seg_0003": "pending",
+                "seg_0004": "failed",
+            },
+            "started_at": None,
+        },
+        activity_feed=[],
+    )
+    target = FakeLiveStatusTarget()
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+
+    ui.render_live_status(target)
+
+    assert any(
+        text == "Сегменты: pending 1 | processing 1 | completed 1 | failed 1"
+        for text in target.caption_calls
+    )
+
+
 def test_render_live_status_uses_target_warning_for_stopped_processing(monkeypatch):
     session_state = SessionState(
         processing_status={

@@ -1426,6 +1426,9 @@ flowchart TD
 - [x] Add `selected_segment_ids` to processing context.
 - [x] Filter jobs by selected segments.
 - [x] Add segment-level status updates, preferably by extending existing event payloads in Phase 1.
+- [x] Revert `queued` and `processing` segment statuses to `pending` when a run ends with `STOPPED`, while keeping `completed` and `failed` statuses intact.
+- [x] Show a minimal segment status summary in the analysis/review UI.
+- [x] Add minimal chapter selector filter/search controls for status and title review.
 - If dedicated `Segment*Event` dataclasses are introduced, update the `ProcessingEvent` type union.
 
 ### Phase 3: Structure Reproducibility And Retry

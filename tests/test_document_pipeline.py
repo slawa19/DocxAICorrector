@@ -2788,6 +2788,121 @@ def test_run_document_processing_stops_before_second_block():
     assert runtime["log"][-1]["status"] == "STOP"
 
 
+def test_run_document_processing_emits_segment_statuses_during_segmented_run_before_stopped():
+    runtime = _build_runtime_capture()
+    stop_checks = {"count": 0}
+
+    def should_stop(runtime):
+        stop_checks["count"] += 1
+        return stop_checks["count"] >= 2
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[
+            {
+                "target_text": "block-1",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 7,
+                "context_chars": 0,
+                "segment_id": "seg_0001",
+            },
+            {
+                "target_text": "block-2",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 7,
+                "context_chars": 0,
+                "segment_id": "seg_0002",
+            },
+        ],
+        source_paragraphs=[
+            SimpleNamespace(segment_id="seg_0001", text="Chapter 1"),
+            SimpleNamespace(segment_id="seg_0002", text="Chapter 2"),
+        ],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=should_stop,
+        generate_markdown_block=lambda **kwargs: "ok",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
+    )
+
+    segment_status_events = [payload for payload in runtime["status"] if "segment_status_by_id" in payload]
+
+    assert result == "stopped"
+    assert segment_status_events[0]["segment_status_by_id"] == {"seg_0001": "processing", "seg_0002": "pending"}
+    assert segment_status_events[1]["segment_status_by_id"] == {"seg_0001": "completed", "seg_0002": "pending"}
+
+
+def test_run_document_processing_emits_active_segment_before_failed_terminal_result():
+    runtime = _build_runtime_capture()
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[
+            {
+                "target_text": "block-1",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 7,
+                "context_chars": 0,
+                "segment_id": "seg_0001",
+            },
+        ],
+        source_paragraphs=[SimpleNamespace(segment_id="seg_0001", text="Chapter 1")],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
+    )
+
+    assert result == "failed"
+    assert runtime["status"][0]["active_segment_id"] == "seg_0001"
+    assert runtime["status"][0]["segment_status_by_id"] == {"seg_0001": "processing"}
+    assert runtime["finalize"][-1][3] == "error"
+
+
 def test_run_document_processing_end_to_end_produces_openable_docx_artifact(tmp_path):
     image_path = tmp_path / "pipeline-image.png"
     image_path.write_bytes(PNG_BYTES)

@@ -101,6 +101,8 @@ def test_init_session_state_initializes_image_processing_summary(monkeypatch):
     assert session_state.confirmed_structure_fingerprint == ""
     assert session_state.confirmed_at_settings_hash == ""
     assert session_state.segments_loaded_for_source_token == ""
+    assert session_state.chapter_selector_search == ""
+    assert session_state.chapter_selector_filter == "all"
 
 
 def test_reset_image_state_restores_image_defaults(monkeypatch):
@@ -255,6 +257,8 @@ def test_reset_run_state_can_preserve_preparation_state(monkeypatch):
             "manifest_path": ".run/structure_manifests/report.segments.json",
         },
         selected_segment_ids=["seg_0001", "seg_0002"],
+        chapter_selector_search="chapter",
+        chapter_selector_filter="failed",
         segment_status_by_id={"seg_0001": "completed", "seg_0002": "processing"},
         segment_progress_by_id={"seg_0001": 1.0, "seg_0002": 0.5},
         active_segment_id="seg_0002",
@@ -289,6 +293,8 @@ def test_reset_run_state_can_preserve_preparation_state(monkeypatch):
     assert session_state.structure_manifest_notice_token == "report.docx:3:abc"
     assert session_state.structure_manifest_notice_details["file_token"] == "report.docx:3:abc"
     assert session_state.selected_segment_ids == ["seg_0001", "seg_0002"]
+    assert session_state.chapter_selector_search == "chapter"
+    assert session_state.chapter_selector_filter == "failed"
     assert session_state.segment_status_by_id == {"seg_0001": "completed", "seg_0002": "processing"}
     assert session_state.segment_progress_by_id == {"seg_0001": 1.0, "seg_0002": 0.5}
     assert session_state.active_segment_id == "seg_0002"
@@ -488,6 +494,8 @@ def test_clear_structure_review_state_resets_analysis_flags(monkeypatch):
         confirmed_structure_fingerprint="abc",
         confirmed_at_settings_hash="settings",
         segments_loaded_for_source_token="report.docx:3:abc",
+        chapter_selector_search="chapter",
+        chapter_selector_filter="failed",
     )
     monkeypatch.setattr(state.st, "session_state", session_state)
 
@@ -502,6 +510,8 @@ def test_clear_structure_review_state_resets_analysis_flags(monkeypatch):
     assert session_state.confirmed_structure_fingerprint == ""
     assert session_state.confirmed_at_settings_hash == ""
     assert session_state.segments_loaded_for_source_token == ""
+    assert session_state.chapter_selector_search == ""
+    assert session_state.chapter_selector_filter == "all"
 
 
 def test_text_transform_assessment_helper_roundtrip_state(monkeypatch):
@@ -600,7 +610,7 @@ def test_mark_preparation_started_clears_previous_failure_and_context(monkeypatc
 
 
 def test_apply_preparation_complete_initializes_structure_review_state(monkeypatch):
-    session_state = SessionState(selected_source_token="")
+    session_state = SessionState(selected_source_token="", chapter_selector_search="old", chapter_selector_filter="completed")
     monkeypatch.setattr(state.st, "session_state", session_state)
 
     prepared_run_context = type(
@@ -632,6 +642,8 @@ def test_apply_preparation_complete_initializes_structure_review_state(monkeypat
     assert session_state.confirmed_structure_fingerprint == ""
     assert session_state.confirmed_at_settings_hash == ""
     assert session_state.segments_loaded_for_source_token == "report.docx:3:abc"
+    assert session_state.chapter_selector_search == ""
+    assert session_state.chapter_selector_filter == "all"
 
 
 def test_state_read_helpers_expose_processing_and_persisted_source_state(monkeypatch):
@@ -856,6 +868,123 @@ def test_finalize_processing_status_clears_active_segment(monkeypatch):
     assert session_state.processing_status["active_segment_title"] == ""
     assert session_state.active_segment_id == ""
     assert session_state.active_segment_title == ""
+
+
+def test_finalize_processing_status_reverts_queued_and_processing_segments_on_stopped(monkeypatch):
+    session_state = SessionState(
+        processing_status={
+            "stage": "run",
+            "detail": "detail",
+            "segment_status_by_id": {
+                "seg_0001": "completed",
+                "seg_0002": "queued",
+                "seg_0003": "processing",
+                "seg_0004": "failed",
+            },
+            "segment_progress_by_id": {
+                "seg_0001": 1.0,
+                "seg_0002": 0.0,
+                "seg_0003": 0.5,
+                "seg_0004": 0.25,
+            },
+            "active_segment_id": "seg_0003",
+            "active_segment_title": "Chapter 3",
+        },
+        segment_status_by_id={
+            "seg_0001": "completed",
+            "seg_0002": "queued",
+            "seg_0003": "processing",
+            "seg_0004": "failed",
+        },
+        segment_progress_by_id={
+            "seg_0001": 1.0,
+            "seg_0002": 0.0,
+            "seg_0003": 0.5,
+            "seg_0004": 0.25,
+        },
+        active_segment_id="seg_0003",
+        active_segment_title="Chapter 3",
+    )
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    state.finalize_processing_status("stopped", "user stop", 0.5, "stopped")
+
+    assert session_state.processing_status["segment_status_by_id"] == {
+        "seg_0001": "completed",
+        "seg_0002": "pending",
+        "seg_0003": "pending",
+        "seg_0004": "failed",
+    }
+    assert session_state.processing_status["segment_progress_by_id"] == {
+        "seg_0001": 1.0,
+        "seg_0002": 0.0,
+        "seg_0003": 0.0,
+        "seg_0004": 0.25,
+    }
+    assert session_state.segment_status_by_id == {
+        "seg_0001": "completed",
+        "seg_0002": "pending",
+        "seg_0003": "pending",
+        "seg_0004": "failed",
+    }
+    assert session_state.segment_progress_by_id == {
+        "seg_0001": 1.0,
+        "seg_0002": 0.0,
+        "seg_0003": 0.0,
+        "seg_0004": 0.25,
+    }
+
+
+def test_finalize_processing_status_marks_active_segment_failed_on_error(monkeypatch):
+    session_state = SessionState(
+        processing_status={
+            "stage": "run",
+            "detail": "detail",
+            "segment_status_by_id": {
+                "seg_0001": "completed",
+                "seg_0002": "processing",
+                "seg_0003": "pending",
+            },
+            "segment_progress_by_id": {
+                "seg_0001": 1.0,
+                "seg_0002": 0.5,
+                "seg_0003": 0.0,
+            },
+            "active_segment_id": "seg_0002",
+            "active_segment_title": "Chapter 2",
+        },
+        segment_status_by_id={
+            "seg_0001": "completed",
+            "seg_0002": "processing",
+            "seg_0003": "pending",
+        },
+        segment_progress_by_id={
+            "seg_0001": 1.0,
+            "seg_0002": 0.5,
+            "seg_0003": 0.0,
+        },
+        active_segment_id="seg_0002",
+        active_segment_title="Chapter 2",
+    )
+    monkeypatch.setattr(state.st, "session_state", session_state)
+
+    state.finalize_processing_status("failed", "boom", 0.5, "error")
+
+    assert session_state.processing_status["segment_status_by_id"] == {
+        "seg_0001": "completed",
+        "seg_0002": "failed",
+        "seg_0003": "pending",
+    }
+    assert session_state.processing_status["segment_progress_by_id"] == {
+        "seg_0001": 1.0,
+        "seg_0002": 0.5,
+        "seg_0003": 0.0,
+    }
+    assert session_state.segment_status_by_id == {
+        "seg_0001": "completed",
+        "seg_0002": "failed",
+        "seg_0003": "pending",
+    }
 
 
 def test_request_processing_stop_marks_flag_and_sets_event(monkeypatch):
