@@ -1,33 +1,39 @@
 # Job-Level Retry Reuse Spec
 
 Date: 2026-05-07
-Status: Draft for approval
+Status: Implementation in progress
 
 ## Problem
 
-The chapter review flow now supports two retry levels:
+The core durable retry slice is now implemented. The chapter review flow supports three practical retry levels with defined precedence:
 
 - segment-level `Retry Failed` for failed segments from the current session;
 - current-session job-level narrowing when the visible block journal (`run_log`) clearly identifies failed jobs inside those failed segments.
+- persisted job-level narrowing for the same prepared document identity when current-session journal evidence is no longer available.
 
-That still leaves the main remaining Phase 3 gap open: there is no durable retry contract for failed jobs across reruns, browser refreshes, or later sessions working on the same prepared document identity.
+The remaining Phase 3 follow-up is narrower now:
 
-Today the app has no persisted source of truth for per-job terminal outcomes. The only job-granular signal is the current-session `run_log`, which is intentionally ephemeral and UI-oriented.
+- explicit `stopped` persistence still depends on finding a stop boundary that truly knows the active in-flight `job_id`;
+- prompt enrichment is now block-aware during execution, but persisted per-segment continuity handoff still does not exist.
 
 ## Current State
 
 ### Existing working behavior
 
 - `ui/structure_review_panel.py` can build a retry payload from failed segments.
-- The same helper can now narrow that payload to failed jobs when current-session `run_log` block entries contain unambiguous latest `ERROR` or `FAILED` statuses for the corresponding block indexes.
-- `pipeline/reassembly.py` and `runtime/artifacts.py` already persist segment-level translated result records under `.run/segment_results/` keyed by `prepared_source_key` and `structure_fingerprint`.
+- The same helper now resolves retry candidates with precedence `current-session run_log -> persisted job registry -> segment fallback`.
+- `runtime/artifacts.py` persists and loads job-result records under `.run/job_results/…`, preferring payload `updated_at` over filesystem mtime when selecting the latest record per `job_id`.
+- `pipeline.job_results.persist_terminal_job_result(...)` already writes terminal `completed` and `failed` job outcomes with `updated_at`, `block_index`, `target_chars`, and `context_chars` when available.
+- `processing/preparation.py` now populates `DocumentContextProfile.detected_author` from DOCX core properties when reliable metadata exists on the source bytes.
+- Segment-scoped actions now fail fast when the current prepared identity advertises `segment_job_mapping_incomplete`, so stale cross-boundary jobs are not reused for `Process Selected` or `Retry Failed`.
+- Prompt enrichment now works at two levels: selected/retry launches append run-scoped chapter scope and immediate neighboring segment titles to `document_context_prompt`, and block execution appends current-segment framing plus previous/next segment titles to the effective generation prompt for each translated block.
+- Direct regression coverage now protects deterministic `segment_id`, `boundary_fingerprint`, and `structure_fingerprint` behavior in `tests/test_preparation.py`.
 
 ### Current gaps
 
-- There is no persisted job outcome registry.
-- `run_log` is session-scoped, UI-facing, truncated, and not a safe cross-session retry source.
-- Segment result records are intentionally aggregate artifacts; they do not encode per-job failure state.
-- Selected-run payloads currently pass filtered jobs only; they do not expose a durable original job identity contract that can be reused independently of current in-memory order.
+- Explicit `stopped` persistence is still not wired. The current stop check in block execution happens before the next job starts, so the default stop boundary only knows the last completed block index, not a reliable active in-flight `job_id`.
+- Reliable author extraction is currently DOCX-only. PDF/DOC and other non-DOCX paths still do not expose trustworthy author metadata through the current extraction/runtime contract.
+- Prompt enrichment now provides current-run continuity through block framing plus previous completed segment summary, but there is still no persisted per-segment summary handoff across runs.
 
 ## Goals
 
@@ -185,12 +191,10 @@ Dependency direction:
 
 ## Consumer Update Plan
 
-1. Add `job_id` to prepared jobs and selected-payload builders.
-2. Add job result artifact writer/loader helpers and constants.
-3. Thread a `write_job_result_registry` dependency through processing contracts.
-4. Persist `completed` and `failed` terminal job records from the pipeline.
-5. Teach `Retry Failed` to use persisted failed-job records when current-session journal evidence is missing.
-6. Update captions/tests/spec references.
+1. Keep the existing `job_id` and persisted job-result registry contract stable.
+2. Decide whether any stop boundary can surface an active in-flight `job_id` without a broad pipeline refactor; only then add explicit `stopped` persistence.
+3. Decide whether the current run-scoped plus block-scoped continuity should gain persisted per-segment handoff across runs, rather than only current-run state.
+4. Keep captions, tests, and spec text aligned with the already-implemented retry precedence and registry behavior.
 
 ## What Does Not Change
 
@@ -221,6 +225,29 @@ Mitigation:
 - use `run_log` only as the highest-priority session signal;
 - durable retry state comes from a dedicated registry, not from journal parsing alone.
 
+## Adjacent Follow-Up Backlog
+
+These items were re-checked against the current code after multiple chapter-workflow reviews. Only still-relevant gaps are tracked here; already implemented or stale review comments are intentionally excluded.
+
+### P0. Reconcile the canonical reassembly contract
+
+- The chapter-workflow spec still points to `src/docxaicorrector/document/reassembly.py`, while the implementation lives in `src/docxaicorrector/pipeline/reassembly.py`.
+- The current reassembly manifest also drifted from the chapter-workflow spec example: runtime payloads already include `source_token` and `run_id`, but `coverage.paragraph_ranges` uses structured range objects and `segments[]` does not yet expose the richer per-segment artifact/status shape shown in the spec.
+- Resolve this as one contract change: either move/alias the module and align the runtime manifest to the documented shape, or update the chapter-workflow spec and tests to the implementation contract.
+
+### P1. Complete chapter-scoped prompt context enrichment
+
+- Selected and retry runs now append selected chapter scope plus immediate previous/next segment titles to the shared `document_context_prompt`.
+- `_build_document_context_profile(...)` now populates `detected_author` from DOCX core properties when reliable source metadata exists.
+- Prompt enrichment now injects per-job continuity during execution through current block framing and previous completed segment summary.
+- Required follow-up: extend author extraction beyond DOCX when reliable non-DOCX metadata becomes available, and decide whether continuity needs persisted per-segment handoff across runs.
+
+### P3. Clean up transitional compatibility surface once contracts settle
+
+- `DocumentContextProfile.__init__(..., outline_entries=...)` still accepts the legacy alias in addition to `segment_outline`.
+- Session/UI guidance in the chapter-workflow spec still mentions optional keys such as `expanded_segment_ids` and `reassembly_mode`, while the implementation derives that behavior without dedicated stored keys.
+- After the chapter workflow contract stabilizes, either remove these compatibility leftovers from code or make them explicit in the canonical spec instead of leaving them ambiguous.
+
 ## Verification Criteria
 
 Targeted verification:
@@ -240,4 +267,4 @@ Final verification:
 
 ## Approval Gate
 
-This change crosses multiple runtime, pipeline, artifact, and UI boundaries. Implementation should not begin until this specification is explicitly approved.
+This change crosses multiple runtime, pipeline, artifact, and UI boundaries. Implementation is now in progress and should continue against this specification in small, validated slices.

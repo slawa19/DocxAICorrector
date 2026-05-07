@@ -3,6 +3,7 @@ from collections.abc import Callable, Mapping, Sequence
 from threading import Lock
 from typing import Any, cast
 
+from docxaicorrector.chapter_workflow.service import build_document_context_prompt as build_chapter_workflow_document_context_prompt
 from docxaicorrector.core.config import (
     get_client,
     get_client_for_model_selector,
@@ -43,6 +44,7 @@ from docxaicorrector.image.generation import (
 from docxaicorrector.image.pipeline import ImageProcessingContext, process_document_images as process_document_images_impl
 from docxaicorrector.image.validation import validate_redraw_result
 from docxaicorrector.core.logger import log_event, present_error
+from docxaicorrector.pipeline.contracts import SegmentSelection
 from docxaicorrector.processing.processing_runtime import (
     RuntimeEventEmitterDependencies,
     build_runtime_event_emitters,
@@ -54,6 +56,16 @@ from docxaicorrector.processing.processing_runtime import (
 import docxaicorrector.ui.application_flow as application_flow
 from docxaicorrector.runtime.events import AppendLogEvent, FinalizeProcessingStatusEvent, PushActivityEvent, SetStateEvent, WorkerCompleteEvent
 from docxaicorrector.runtime.state import append_image_log, append_log, finalize_processing_status, push_activity, set_processing_status
+
+
+def _normalize_segment_selection_ids(
+    *,
+    selected_segment_ids: Sequence[str] | None = None,
+    segment_selection: SegmentSelection | None = None,
+) -> list[str] | None:
+    raw_ids: Sequence[object] = segment_selection.selected_segment_ids if segment_selection is not None else (selected_segment_ids or ())
+    normalized_ids = [str(segment_id).strip() for segment_id in raw_ids if str(segment_id).strip()]
+    return normalized_ids or None
 
 
 @dataclass(frozen=True)
@@ -145,6 +157,7 @@ class ProcessingService:
         structure_fingerprint: str | None = None,
         jobs: Sequence[Mapping[str, object]],
         selected_segment_ids: Sequence[str] | None = None,
+        segment_selection: SegmentSelection | None = None,
         document_segments: Sequence[object] | None = None,
         output_mode: str | None = None,
         include_front_matter: bool = False,
@@ -163,6 +176,10 @@ class ProcessingService:
         document_context_prompt: str = "",
     ) -> str:
         deps = self.dependencies
+        normalized_selected_segment_ids = _normalize_segment_selection_ids(
+            selected_segment_ids=selected_segment_ids,
+            segment_selection=segment_selection,
+        )
         get_provider_client_bound: Any = None
         if deps.get_provider_client_fn is not None:
             _get_provider_client_fn = deps.get_provider_client_fn
@@ -196,7 +213,8 @@ class ProcessingService:
             prepared_source_key=prepared_source_key,
             structure_fingerprint=structure_fingerprint,
             jobs=cast(list[dict[str, str | int]], list(jobs)),
-            selected_segment_ids=selected_segment_ids,
+            selected_segment_ids=normalized_selected_segment_ids,
+            segment_selection=segment_selection,
             document_segments=document_segments,
             output_mode=output_mode,
             include_front_matter=include_front_matter,
@@ -247,6 +265,7 @@ class ProcessingService:
         structure_fingerprint: str | None = None,
         jobs: Sequence[Mapping[str, object]],
         selected_segment_ids: Sequence[str] | None = None,
+        segment_selection: SegmentSelection | None = None,
         document_segments: Sequence[object] | None = None,
         output_mode: str | None = None,
         include_front_matter: bool = False,
@@ -273,6 +292,7 @@ class ProcessingService:
                 structure_fingerprint=structure_fingerprint,
                 jobs=jobs,
                 selected_segment_ids=selected_segment_ids,
+                segment_selection=segment_selection,
                 document_segments=document_segments,
                 output_mode=output_mode,
                 include_front_matter=include_front_matter,
@@ -369,18 +389,24 @@ class ProcessingService:
         processing_app_config = dict(app_config)
         processing_app_config["translation_domain_default"] = str(getattr(prepared, "translation_domain", "general") or "general")
         processing_app_config["translation_domain_instructions"] = str(getattr(prepared, "translation_domain_instructions", "") or "")
-        document_context_prompt = ""
         document_context_profile = getattr(prepared, "document_context_profile", None)
-        prompt_builder = getattr(document_context_profile, "to_prompt_text", None)
-        if callable(prompt_builder):
-            document_context_prompt = str(prompt_builder() or "").strip()
+        prepared_selected_segment_ids = list(getattr(prepared, "selected_segment_ids", ()) or [])
+        prepared_segment_selection = (
+            SegmentSelection(selected_segment_ids=tuple(prepared_selected_segment_ids))
+            if prepared_selected_segment_ids
+            else None
+        )
+        document_context_prompt = build_chapter_workflow_document_context_prompt(
+            prepared_run_context=prepared,
+            segment_selection=prepared_segment_selection,
+        )
         result = self.run_document_processing(
             uploaded_file=prepared.uploaded_filename,
-                source_token=str(getattr(document_context_profile, "source_token", "") or ""),
+            source_token=str(getattr(document_context_profile, "source_token", "") or ""),
             prepared_source_key=str(getattr(prepared, "prepared_source_key", "") or ""),
             structure_fingerprint=str(getattr(prepared, "structure_fingerprint", "") or ""),
             jobs=cast(Sequence[Mapping[str, object]], jobs),
-            selected_segment_ids=list(getattr(prepared, "selected_segment_ids", ()) or []) or None,
+            segment_selection=prepared_segment_selection,
             document_segments=list(getattr(prepared, "segments", []) or []),
             source_paragraphs=prepared.paragraphs,
             image_assets=prepared.image_assets,

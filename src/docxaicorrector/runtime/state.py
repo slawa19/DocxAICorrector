@@ -4,6 +4,7 @@ import queue
 import threading
 import time
 import logging
+from collections.abc import Sequence
 from typing import Any, TYPE_CHECKING
 from uuid import uuid4
 from dataclasses import dataclass

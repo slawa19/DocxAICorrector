@@ -4,6 +4,7 @@ from threading import Event, Thread
 from docx import Document
 import pytest
 
+import docxaicorrector.document.segments as document_segments
 import docxaicorrector.processing.preparation as preparation
 from docxaicorrector.core.config import ModelRegistry, TextModelConfig
 from docxaicorrector.core.models import DocumentBlock
@@ -587,8 +588,63 @@ def test_prepare_document_for_processing_detects_segments_and_builds_segment_map
     assert "КОНТЕКСТ ДОКУМЕНТА" in document_context_profile.to_prompt_text()
 
 
+def test_prepare_document_for_processing_populates_detected_author_from_docx_metadata(monkeypatch):
+    session_state = {"preparation_cache": {}}
+    paragraphs = [
+        ParagraphUnit(text="Chapter 1", role="heading", heading_level=1, heading_source="explicit", paragraph_id="p0000", source_index=0),
+        ParagraphUnit(text="Body text", role="body", paragraph_id="p0001", source_index=1),
+    ]
+    config_state = {
+        "paragraph_boundary_normalization_enabled": True,
+        "paragraph_boundary_normalization_mode": "high_only",
+        "paragraph_boundary_ai_review_enabled": False,
+        "paragraph_boundary_ai_review_mode": "off",
+        "relation_normalization_enabled": True,
+        "relation_normalization_profile": "phase2_default",
+        "relation_normalization_enabled_relation_kinds": (),
+        "structure_recognition_enabled": False,
+        "structure_recognition_mode": "off",
+        "structure_validation_enabled": True,
+        "translation_domain_default": "general",
+        "source_language_default": "en",
+        "target_language_default": "ru",
+    }
+    document = Document()
+    document.core_properties.author = "Jane Example"
+    document.add_paragraph("Ignored by stub")
+    buffer = BytesIO()
+    document.save(buffer)
+
+    monkeypatch.setattr(
+        preparation,
+        "extract_document_content_with_normalization_reports",
+        lambda uploaded_file, *, app_config=None: _build_extract_result(paragraphs, [], _build_report(raw=2, logical=2)),
+    )
+    monkeypatch.setattr(preparation, "build_document_text", lambda prepared_paragraphs: "\n".join(paragraph.text for paragraph in prepared_paragraphs))
+    monkeypatch.setattr(
+        preparation,
+        "build_semantic_blocks",
+        lambda prepared_paragraphs, max_chars, relations=None, hard_boundary_paragraph_ids=None: [DocumentBlock(paragraphs=list(prepared_paragraphs))],
+    )
+    monkeypatch.setattr(
+        preparation,
+        "build_editing_jobs",
+        lambda blocks, max_chars, processing_operation="edit": [{"target_text": "Body text", "context_before": "", "context_after": ""}],
+    )
+    monkeypatch.setattr(preparation, "load_app_config", lambda: dict(config_state))
+
+    prepared = preparation.prepare_document_for_processing(
+        uploaded_payload=_build_uploaded_payload("report.docx", buffer.getvalue(), "report.docx:10:hash"),
+        chunk_size=6000,
+        session_state=session_state,
+    )
+
+    assert prepared.document_context_profile.detected_author == "Jane Example"
+
+
 def test_prepare_document_for_processing_adds_warning_when_job_spans_multiple_segments(monkeypatch):
     session_state = {"preparation_cache": {}}
+    warning_messages = []
     paragraphs = [
         ParagraphUnit(text="Chapter 1", role="heading", heading_level=1, heading_source="explicit", paragraph_id="p0000", source_index=0),
         ParagraphUnit(text="First chapter body", role="body", paragraph_id="p0001", source_index=1),
@@ -616,6 +672,11 @@ def test_prepare_document_for_processing_adds_warning_when_job_spans_multiple_se
     monkeypatch.setattr(preparation, "build_document_text", lambda items: "\n\n".join(paragraph.text for paragraph in items))
     monkeypatch.setattr(preparation, "load_app_config", lambda: dict(config_state))
     monkeypatch.setattr(
+        document_segments.logger,
+        "warning",
+        lambda message, *args: warning_messages.append(message % args if args else message),
+    )
+    monkeypatch.setattr(
         preparation,
         "build_semantic_blocks",
         lambda paragraphs, max_chars, relations=None, hard_boundary_paragraph_ids=None: [DocumentBlock(paragraphs=list(paragraphs))],
@@ -625,6 +686,7 @@ def test_prepare_document_for_processing_adds_warning_when_job_spans_multiple_se
         "build_editing_jobs",
         lambda blocks, max_chars, processing_operation=None: [
             {
+                "job_id": "job-cross-boundary",
                 "paragraph_ids": ["p0001", "p0002"],
                 "paragraph_count": 2,
                 "target_text": "cross-segment job",
@@ -643,6 +705,13 @@ def test_prepare_document_for_processing_adds_warning_when_job_spans_multiple_se
     assert prepared.segment_to_job is not None
     assert all(indexes == () for indexes in prepared.segment_to_job.values())
     assert "segment_job_mapping_incomplete" in prepared.segment_diagnostics.warnings
+    assert any(
+        "segment_to_job_mapping_unassigned" in message
+        and "job-cross-boundary" in message
+        and "p0001" in message
+        and "p0002" in message
+        for message in warning_messages
+    )
 
 
 def test_prepare_document_for_processing_fails_on_invalid_segment_coverage(monkeypatch):
@@ -728,6 +797,180 @@ def test_prepare_document_for_processing_fails_on_invalid_segment_coverage(monke
             processing_operation="translate",
             session_state=session_state,
         )
+
+
+def test_detect_document_segments_splits_oversized_heading_ranges_into_parent_and_children():
+    paragraphs = [
+        ParagraphUnit(text="Chapter 1", role="heading", heading_level=1, heading_source="explicit", paragraph_id="p0000", source_index=0),
+        ParagraphUnit(text="A" * 12000, role="body", paragraph_id="p0001", source_index=1),
+        ParagraphUnit(text="B" * 12000, role="body", paragraph_id="p0002", source_index=2),
+        ParagraphUnit(text="C" * 12000, role="body", paragraph_id="p0003", source_index=3),
+    ]
+
+    segments, diagnostics, structure_fingerprint = preparation.detect_document_segments(
+        paragraphs,
+        source_content_hash16="abcd1234ef567890",
+        chunk_size=6000,
+    )
+
+    assert structure_fingerprint
+    assert [segment.title for segment in segments] == ["Chapter 1", "Chapter 1 Part 1", "Chapter 1 Part 2"]
+    assert [segment.level for segment in segments] == [1, 2, 2]
+    assert segments[0].parent_segment_id is None
+    assert segments[1].parent_segment_id == segments[0].segment_id
+    assert segments[2].parent_segment_id == segments[0].segment_id
+    assert segments[0].start_paragraph_index == 0 and segments[0].end_paragraph_index == 0
+    assert segments[1].start_paragraph_index == 1 and segments[1].end_paragraph_index == 2
+    assert segments[2].start_paragraph_index == 3 and segments[2].end_paragraph_index == 3
+    assert diagnostics.segment_count == 3
+    assert diagnostics.low_confidence_count == 2
+    assert "low_confidence_segments_present" in diagnostics.warnings
+
+
+def test_detect_document_segments_adds_all_caps_typography_evidence_for_heading_candidates():
+    paragraphs = [
+        ParagraphUnit(text="APPENDIX", role="body", paragraph_id="p0000", source_index=0),
+        ParagraphUnit(text="Body paragraph", role="body", paragraph_id="p0001", source_index=1),
+    ]
+
+    segments, diagnostics, structure_fingerprint = preparation.detect_document_segments(
+        paragraphs,
+        source_content_hash16="abcd1234ef567890",
+        chunk_size=6000,
+    )
+
+    assert structure_fingerprint
+    assert diagnostics.segment_count >= 1
+    typography_evidence = [
+        evidence
+        for evidence in segments[0].boundary_evidence
+        if evidence.source == "typography"
+    ]
+    assert typography_evidence
+    assert typography_evidence[0].details["is_all_caps"] is True
+    assert typography_evidence[0].details["is_bold"] is False
+
+
+def test_detect_document_segments_is_deterministic_for_same_input():
+    paragraphs = [
+        ParagraphUnit(text="Contents", role="body", structural_role="toc_header", paragraph_id="p0000", source_index=0),
+        ParagraphUnit(text="1 Chapter 1", role="body", structural_role="toc_entry", paragraph_id="p0001", source_index=1),
+        ParagraphUnit(text="Chapter 1", role="heading", heading_level=1, heading_source="explicit", paragraph_id="p0002", source_index=2),
+        ParagraphUnit(text="First chapter body", role="body", paragraph_id="p0003", source_index=3),
+        ParagraphUnit(text="Chapter 2", role="heading", heading_level=1, heading_source="explicit", paragraph_id="p0004", source_index=4),
+        ParagraphUnit(text="Second chapter body", role="body", paragraph_id="p0005", source_index=5),
+    ]
+
+    first_segments, first_diagnostics, first_structure_fingerprint = preparation.detect_document_segments(
+        paragraphs,
+        source_content_hash16="abcd1234ef567890",
+        chunk_size=6000,
+    )
+    second_segments, second_diagnostics, second_structure_fingerprint = preparation.detect_document_segments(
+        paragraphs,
+        source_content_hash16="abcd1234ef567890",
+        chunk_size=6000,
+    )
+
+    assert first_structure_fingerprint == second_structure_fingerprint
+    assert first_diagnostics == second_diagnostics
+    assert [
+        (
+            segment.segment_id,
+            segment.parent_segment_id,
+            segment.boundary_fingerprint,
+            segment.start_paragraph_id,
+            segment.end_paragraph_id,
+            segment.title,
+        )
+        for segment in first_segments
+    ] == [
+        (
+            segment.segment_id,
+            segment.parent_segment_id,
+            segment.boundary_fingerprint,
+            segment.start_paragraph_id,
+            segment.end_paragraph_id,
+            segment.title,
+        )
+        for segment in second_segments
+    ]
+
+
+def test_prepare_document_for_processing_maps_jobs_for_split_oversized_heading_segments(monkeypatch):
+    session_state = {"preparation_cache": {}}
+    paragraphs = [
+        ParagraphUnit(text="Chapter 1", role="heading", heading_level=1, heading_source="explicit", paragraph_id="p0000", source_index=0),
+        ParagraphUnit(text="A" * 12000, role="body", paragraph_id="p0001", source_index=1),
+        ParagraphUnit(text="B" * 12000, role="body", paragraph_id="p0002", source_index=2),
+        ParagraphUnit(text="C" * 12000, role="body", paragraph_id="p0003", source_index=3),
+    ]
+    captured = {}
+    config_state = {
+        "paragraph_boundary_normalization_enabled": True,
+        "paragraph_boundary_normalization_mode": "high_only",
+        "paragraph_boundary_ai_review_enabled": False,
+        "paragraph_boundary_ai_review_mode": "off",
+        "relation_normalization_enabled": True,
+        "relation_normalization_profile": "phase2_default",
+        "relation_normalization_enabled_relation_kinds": (),
+        "structure_recognition_enabled": False,
+        "structure_recognition_mode": "off",
+        "structure_validation_enabled": True,
+    }
+
+    monkeypatch.setattr(
+        preparation,
+        "extract_document_content_with_normalization_reports",
+        lambda uploaded_file, app_config=None: _build_extract_result(paragraphs, [], None),
+    )
+    monkeypatch.setattr(preparation, "build_document_text", lambda items: "\n\n".join(paragraph.text for paragraph in items))
+    monkeypatch.setattr(preparation, "load_app_config", lambda: dict(config_state))
+
+    def fake_build_semantic_blocks(paragraphs, max_chars, relations=None, hard_boundary_paragraph_ids=None):
+        captured["hard_boundary_paragraph_ids"] = set(hard_boundary_paragraph_ids or set())
+        blocks = []
+        current_block = []
+        for paragraph in paragraphs:
+            paragraph_id = str(getattr(paragraph, "paragraph_id", "") or "")
+            if current_block and paragraph_id in captured["hard_boundary_paragraph_ids"]:
+                blocks.append(DocumentBlock(paragraphs=list(current_block)))
+                current_block = []
+            current_block.append(paragraph)
+        if current_block:
+            blocks.append(DocumentBlock(paragraphs=list(current_block)))
+        return blocks
+
+    monkeypatch.setattr(preparation, "build_semantic_blocks", fake_build_semantic_blocks)
+    monkeypatch.setattr(
+        preparation,
+        "build_editing_jobs",
+        lambda blocks, max_chars, processing_operation=None: [
+            {
+                "paragraph_ids": [str(getattr(paragraph, "paragraph_id", "") or "") for paragraph in block.paragraphs],
+                "paragraph_count": len(block.paragraphs),
+                "target_text": "block",
+                "context_text": "",
+            }
+            for block in blocks
+        ],
+    )
+
+    prepared = preparation.prepare_document_for_processing(
+        uploaded_payload=_build_uploaded_payload("report.docx", b"docx-bytes", "report.docx:10:hash"),
+        chunk_size=6000,
+        processing_operation="translate",
+        session_state=session_state,
+    )
+
+    assert [segment.title for segment in prepared.segments or []] == ["Chapter 1", "Chapter 1 Part 1", "Chapter 1 Part 2"]
+    assert captured["hard_boundary_paragraph_ids"] == {"p0001", "p0003"}
+    assert prepared.segments is not None
+    assert prepared.segment_to_job == {
+        prepared.segments[0].segment_id: (0,),
+        prepared.segments[1].segment_id: (1,),
+        prepared.segments[2].segment_id: (2,),
+    }
 
 
 def test_prepare_document_for_processing_postprocess_toggle_does_not_change_cache_key_or_request_marker(monkeypatch):

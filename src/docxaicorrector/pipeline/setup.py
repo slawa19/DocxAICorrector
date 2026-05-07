@@ -3,6 +3,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal
 
 from docxaicorrector.core.models import ImageMode
+from docxaicorrector.pipeline.contracts import SegmentSelection
 
 
 PipelineResult = Literal["succeeded", "failed", "stopped"]
@@ -118,6 +119,7 @@ def build_processing_context(
     structure_fingerprint: str | None = None,
     jobs: object,
     selected_segment_ids: Sequence[Any] | None = None,
+    segment_selection: SegmentSelection | None = None,
     document_segments: Sequence[Any] | None = None,
     output_mode: str | None = None,
     include_front_matter: bool = False,
@@ -149,8 +151,21 @@ def build_processing_context(
         model_provider = resolved_selector.provider
         model_id = resolved_selector.model_id
     normalized_selected_segment_ids = tuple(
-        str(segment_id) for segment_id in (selected_segment_ids or ()) if str(segment_id).strip()
+        str(segment_id).strip()
+        for segment_id in (
+            getattr(segment_selection, "selected_segment_ids", ()) if segment_selection is not None else (selected_segment_ids or ())
+        )
+        if str(segment_id).strip()
     )
+    resolved_segment_selection = None
+    if segment_selection is not None and normalized_selected_segment_ids:
+        resolved_segment_selection = SegmentSelection(
+            selected_segment_ids=normalized_selected_segment_ids,
+            include_descendants=bool(segment_selection.include_descendants),
+            include_front_matter=bool(segment_selection.include_front_matter),
+            include_toc=bool(segment_selection.include_toc),
+            output_mode=str(segment_selection.output_mode or "selected_only") or "selected_only",
+        )
     return context_factory_fn(
         uploaded_file=uploaded_file,
         uploaded_filename=dependencies.resolve_uploaded_filename(uploaded_file),
@@ -183,6 +198,7 @@ def build_processing_context(
         model_provider=model_provider,
         model_id=model_id,
         document_context_prompt=str(document_context_prompt or app_config.get("document_context_prompt", "") or ""),
+        segment_selection=resolved_segment_selection,
     )
 
 
@@ -195,6 +211,7 @@ def build_processing_run_components(
     structure_fingerprint: str | None = None,
     jobs: object,
     selected_segment_ids: object = None,
+    segment_selection: SegmentSelection | None = None,
     document_segments: object = None,
     output_mode: str | None = None,
     include_front_matter: bool = False,
@@ -276,6 +293,7 @@ def build_processing_run_components(
         structure_fingerprint=structure_fingerprint,
         jobs=jobs,
         selected_segment_ids=selected_segment_ids,
+        segment_selection=segment_selection,
         document_segments=document_segments,
         output_mode=output_mode,
         include_front_matter=include_front_matter,

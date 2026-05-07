@@ -3,6 +3,7 @@ import threading
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
+from datetime import datetime
 from pathlib import Path
 
 from docxaicorrector.core.constants import JOB_RESULT_REGISTRY_DIR, SEGMENT_RESULT_REGISTRY_DIR, STRUCTURE_MANIFESTS_DIR, UI_RESULT_ARTIFACTS_DIR
@@ -236,14 +237,25 @@ def load_job_result_registry(
         status = str(payload.get("status") or "").strip()
         if not job_id or not status:
             continue
-        try:
-            modified_at = artifact_path.stat().st_mtime
-        except OSError:
-            modified_at = 0.0
+        precedence_timestamp = _resolve_job_result_precedence_timestamp(artifact_path=artifact_path, payload=payload)
         previous = records_by_job_id.get(job_id)
-        if previous is None or modified_at >= previous[0]:
-            records_by_job_id[job_id] = (modified_at, payload)
+        if previous is None or precedence_timestamp >= previous[0]:
+            records_by_job_id[job_id] = (precedence_timestamp, payload)
     return {job_id: payload for job_id, (_, payload) in records_by_job_id.items()}
+
+
+def _resolve_job_result_precedence_timestamp(*, artifact_path: Path, payload: Mapping[str, object]) -> float:
+    raw_updated_at = str(payload.get("updated_at") or "").strip()
+    if raw_updated_at:
+        normalized_updated_at = raw_updated_at.replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(normalized_updated_at).timestamp()
+        except ValueError:
+            pass
+    try:
+        return artifact_path.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def _to_jsonable(value: object) -> object:

@@ -16,6 +16,7 @@ from docx import Document
 
 from docxaicorrector.core.models import ParagraphUnit
 from docxaicorrector.document._document import extract_document_content_from_docx
+from docxaicorrector.pipeline.contracts import SegmentSelection
 
 
 PNG_BYTES = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK3cAAAAASUVORK5CYII=")
@@ -532,6 +533,39 @@ def test_run_document_processing_preserves_selected_with_context_output_mode_for
     assert captured["artifact_kwargs"]["assembly_mode"] == "selected_chapters"
     assert captured["artifact_kwargs"]["result_manifest"]["output_mode"] == "selected_with_context"
     assert captured["artifact_kwargs"]["result_manifest"]["selected_segment_ids"] == ["seg_0001", "seg_0002"]
+
+
+def test_run_document_processing_persists_segment_selection_in_result_manifest():
+    runtime = _build_runtime_capture()
+    captured = {}
+
+    def write_ui_result_artifacts(**kwargs):
+        captured["artifact_kwargs"] = kwargs
+        return {
+            "markdown_path": "/tmp/mariana.result.md",
+            "docx_path": "/tmp/mariana.result.docx",
+        }
+
+    result = _run_processing(
+        runtime,
+        write_ui_result_artifacts=write_ui_result_artifacts,
+        selected_segment_ids=None,
+        segment_selection=SegmentSelection(
+            selected_segment_ids=("seg_0003",),
+            include_descendants=False,
+            output_mode="selected_only",
+        ),
+    )
+
+    assert result == "succeeded"
+    assert captured["artifact_kwargs"]["result_manifest"]["selected_segment_ids"] == ["seg_0003"]
+    assert captured["artifact_kwargs"]["result_manifest"]["segment_selection"] == {
+        "selected_segment_ids": ["seg_0003"],
+        "include_descendants": False,
+        "include_front_matter": False,
+        "include_toc": False,
+        "output_mode": "selected_only",
+    }
 
 
 def test_build_reassembly_plan_expands_selected_with_context_with_structural_context_only():
@@ -1070,17 +1104,20 @@ def test_run_document_processing_persists_completed_job_result_records(monkeypat
     )
 
     assert result == "succeeded"
-    assert captured["job_records"] == [
-        {
-            "schema_version": 1,
-            "prepared_source_key": "prep:report:1234",
-            "structure_fingerprint": "struct-abc",
-            "job_id": "job_0000",
-            "segment_id": "seg_0001",
-            "status": "completed",
-            "block_index": 1,
-        }
-    ]
+    assert len(captured["job_records"]) == 1
+    completed_record = dict(captured["job_records"][0])
+    assert isinstance(completed_record.pop("updated_at", ""), str)
+    assert completed_record == {
+        "schema_version": 1,
+        "prepared_source_key": "prep:report:1234",
+        "structure_fingerprint": "struct-abc",
+        "job_id": "job_0000",
+        "segment_id": "seg_0001",
+        "status": "completed",
+        "block_index": 1,
+        "target_chars": 5,
+        "context_chars": 0,
+    }
 
 
 def test_build_segment_result_records_maps_assembly_entries_to_segments():
@@ -1953,6 +1990,137 @@ def test_run_document_processing_merges_document_context_prompt_into_system_prom
     assert "ДОМЕН ПЕРЕВОДА" in prompts[0]["source_text"]
     assert "КОНТЕКСТ ДОКУМЕНТА" in prompts[0]["source_text"]
     assert "Great Tribulation -> die grosse Trubsal" in prompts[0]["source_text"]
+
+
+def test_run_document_processing_appends_block_segment_focus_to_generation_prompt():
+    runtime = _build_runtime_capture()
+    generated_calls = []
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[
+            {
+                "segment_id": "seg_0002",
+                "target_text": "block",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 5,
+                "context_chars": 0,
+            }
+        ],
+        document_segments=[
+            SimpleNamespace(segment_id="seg_0001", ordinal=1, level=1, structural_role="chapter", title="Chapter 1"),
+            SimpleNamespace(segment_id="seg_0002", ordinal=2, level=1, structural_role="chapter", title="Chapter 2"),
+            SimpleNamespace(segment_id="seg_0003", ordinal=3, level=1, structural_role="chapter", title="Chapter 3"),
+        ],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4-mini",
+        max_retries=1,
+        processing_operation="translate",
+        source_language="en",
+        target_language="de",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **kwargs: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: generated_calls.append(dict(kwargs)) or "translated",
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
+    )
+
+    assert result == "succeeded"
+    assert "ТЕКУЩИЙ БЛОК ДОКУМЕНТА" in generated_calls[0]["system_prompt"]
+    assert "Текущий сегмент: #2 | L1 | chapter | Chapter 2" in generated_calls[0]["system_prompt"]
+    assert "Предыдущий сегмент: Chapter 1" in generated_calls[0]["system_prompt"]
+    assert "Следующий сегмент: Chapter 3" in generated_calls[0]["system_prompt"]
+
+
+def test_run_document_processing_appends_previous_completed_segment_summary_to_next_segment_prompt():
+    runtime = _build_runtime_capture()
+    generated_calls = []
+
+    def generate_markdown_block(**kwargs):
+        generated_calls.append(dict(kwargs))
+        if kwargs["target_text"] == "chapter-one-block":
+            return "Translated chapter one summary sentence. Additional translated detail for continuity."
+        return "Translated chapter two body."
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[
+            {
+                "segment_id": "seg_0001",
+                "target_text": "chapter-one-block",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 17,
+                "context_chars": 0,
+            },
+            {
+                "segment_id": "seg_0002",
+                "target_text": "chapter-two-block",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 17,
+                "context_chars": 0,
+            },
+        ],
+        document_segments=[
+            SimpleNamespace(segment_id="seg_0001", ordinal=1, level=1, structural_role="chapter", title="Chapter 1"),
+            SimpleNamespace(segment_id="seg_0002", ordinal=2, level=1, structural_role="chapter", title="Chapter 2"),
+        ],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4-mini",
+        max_retries=1,
+        processing_operation="translate",
+        source_language="en",
+        target_language="de",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **kwargs: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=generate_markdown_block,
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: b"final-docx",
+    )
+
+    assert result == "succeeded"
+    assert len(generated_calls) == 2
+    assert "СВОДКА ПРЕДЫДУЩЕГО ЗАВЕРШЁННОГО СЕГМЕНТА" in generated_calls[1]["system_prompt"]
+    assert "Сегмент: Chapter 1" in generated_calls[1]["system_prompt"]
+    assert "Translated chapter one summary sentence." in generated_calls[1]["system_prompt"]
 
 
 def test_run_document_processing_skips_second_pass_outside_translate_mode():
@@ -3742,19 +3910,22 @@ def test_run_document_processing_persists_failed_job_result_records(monkeypatch)
     )
 
     assert result == "failed"
-    assert captured["job_records"] == [
-        {
-            "schema_version": 1,
-            "prepared_source_key": "prep:report:1234",
-            "structure_fingerprint": "struct-abc",
-            "job_id": "job_0000",
-            "segment_id": "seg_0001",
-            "status": "failed",
-            "block_index": 1,
-            "error_code": "block_failed",
-            "error_message": "Ошибка обработки блока: boom",
-        }
-    ]
+    assert len(captured["job_records"]) == 1
+    failed_record = dict(captured["job_records"][0])
+    assert isinstance(failed_record.pop("updated_at", ""), str)
+    assert failed_record == {
+        "schema_version": 1,
+        "prepared_source_key": "prep:report:1234",
+        "structure_fingerprint": "struct-abc",
+        "job_id": "job_0000",
+        "segment_id": "seg_0001",
+        "status": "failed",
+        "block_index": 1,
+        "target_chars": 5,
+        "context_chars": 0,
+        "error_code": "block_failed",
+        "error_message": "Ошибка обработки блока: boom",
+    }
 
 
 def test_run_document_processing_end_to_end_produces_openable_docx_artifact(tmp_path):

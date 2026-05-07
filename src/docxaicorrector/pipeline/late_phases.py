@@ -813,6 +813,7 @@ def run_docx_build_phase(
 ) -> Any | None:
     reassembly_plan = build_reassembly_plan(
         selected_segment_ids=getattr(context, "selected_segment_ids", None),
+        segment_selection=getattr(context, "segment_selection", None),
         output_mode=str(getattr(context, "output_mode", "") or ""),
         include_front_matter=bool(getattr(context, "include_front_matter", False)),
         include_toc=bool(getattr(context, "include_toc", False)),
@@ -1309,6 +1310,7 @@ def finalize_processing_success(
     try:
         reassembly_plan = build_reassembly_plan(
             selected_segment_ids=getattr(context, "selected_segment_ids", None),
+            segment_selection=getattr(context, "segment_selection", None),
             output_mode=str(getattr(context, "output_mode", "") or ""),
             include_front_matter=bool(getattr(context, "include_front_matter", False)),
             include_toc=bool(getattr(context, "include_toc", False)),

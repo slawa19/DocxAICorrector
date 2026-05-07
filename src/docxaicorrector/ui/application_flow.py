@@ -1,14 +1,21 @@
 import logging
 import time
 from dataclasses import dataclass, field
-from hashlib import sha256
 from pathlib import Path
 from typing import Any, Protocol, TypedDict, cast
 
+from docxaicorrector.chapter_workflow.service import (
+    build_structure_manifest_payload as build_chapter_workflow_structure_manifest_payload,
+    export_structure_manifest as export_chapter_workflow_structure_manifest,
+)
 from docxaicorrector.document._document import summarize_boundary_normalization_metrics, validate_docx_source_bytes
 from docxaicorrector.core.models import StructureRecognitionSummary
-from docxaicorrector.document.segments import CHAPTER_SEGMENTS_DETECTOR_VERSION, DocumentContextProfile, DocumentSegment, SegmentDetectionReport
-from docxaicorrector.runtime.artifacts import write_structure_manifest_artifact
+from docxaicorrector.document.segments import (
+    CHAPTER_SEGMENTS_DETECTOR_VERSION,
+    DocumentContextProfile,
+    DocumentSegment,
+    SegmentDetectionReport,
+)
 from docxaicorrector.processing.preparation import (
     build_layout_cleanup_status_note,
     build_structure_processing_status_note,
@@ -430,73 +437,17 @@ def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: 
 
 
 def build_structure_manifest_payload(*, prepared_run_context: PreparedRunContext, app_config: dict[str, object] | None = None) -> dict[str, Any]:
-    config: dict[str, Any] = cast(dict[str, Any], {} if app_config is None else dict(app_config))
-    uploaded_bytes = bytes(getattr(prepared_run_context, "uploaded_file_bytes", b"") or b"")
-    source_name = str(getattr(prepared_run_context, "uploaded_filename", "document.docx") or "document.docx")
-    segments = list(getattr(prepared_run_context, "segments", []) or [])
-    diagnostics = getattr(prepared_run_context, "segment_diagnostics", SegmentDetectionReport())
-    return {
-        "schema_version": 1,
-        "source_name": source_name,
-        "source_content_hash16": sha256(uploaded_bytes).hexdigest()[:16],
-        "prepared_source_key": str(getattr(prepared_run_context, "prepared_source_key", "") or ""),
-        "ordered_segment_ids": [segment.segment_id for segment in segments if str(segment.segment_id or "").strip()],
-        "detector_version": str(getattr(prepared_run_context, "detector_version", CHAPTER_SEGMENTS_DETECTOR_VERSION) or CHAPTER_SEGMENTS_DETECTOR_VERSION),
-        "detector_config": {
-            "chunk_size": int(config.get("chunk_size", 0) or 0),
-            "structure_recognition_mode": str(getattr(prepared_run_context, "structure_recognition_mode", "off") or "off"),
-            "min_confidence": str(config.get("structure_recognition_min_confidence", "medium") or "medium"),
-        },
-        "structure_fingerprint": str(getattr(prepared_run_context, "structure_fingerprint", "") or ""),
-        "summary": {
-            "paragraph_count": len(getattr(prepared_run_context, "paragraphs", []) or []),
-            "segment_count": int(getattr(diagnostics, "segment_count", len(segments)) or len(segments)),
-            "toc_entry_count": int(getattr(diagnostics, "toc_entry_count", 0) or 0),
-            "toc_matched_count": int(getattr(diagnostics, "toc_matched_count", 0) or 0),
-            "low_confidence_count": int(getattr(diagnostics, "low_confidence_count", 0) or 0),
-        },
-        "segments": [
-            {
-                "segment_id": segment.segment_id,
-                "parent_segment_id": segment.parent_segment_id,
-                "ordinal": segment.ordinal,
-                "level": segment.level,
-                "title": segment.title,
-                "normalized_title": segment.normalized_title,
-                "start_paragraph_index": segment.start_paragraph_index,
-                "end_paragraph_index": segment.end_paragraph_index,
-                "start_paragraph_id": segment.start_paragraph_id,
-                "end_paragraph_id": segment.end_paragraph_id,
-                "paragraph_count": segment.paragraph_count,
-                "word_count": segment.word_count,
-                "char_count": segment.char_count,
-                "estimated_token_count": segment.estimated_token_count,
-                "structural_role": segment.structural_role,
-                "confidence": segment.confidence,
-                "boundary_fingerprint": segment.boundary_fingerprint,
-                "warnings": list(segment.warnings),
-                "evidence": [
-                    {
-                        "source": evidence.source,
-                        "confidence": evidence.confidence,
-                        "details": dict(evidence.details),
-                    }
-                    for evidence in segment.boundary_evidence
-                ],
-            }
-            for segment in segments
-        ],
-    }
+    return build_chapter_workflow_structure_manifest_payload(
+        prepared_run_context=prepared_run_context,
+        app_config=app_config,
+    )
 
 
 def export_structure_manifest(*, prepared_run_context: PreparedRunContext, app_config: dict[str, object] | None = None) -> str:
-    manifest_payload = build_structure_manifest_payload(prepared_run_context=prepared_run_context, app_config=app_config)
-    manifest_path = write_structure_manifest_artifact(
-        source_name=str(getattr(prepared_run_context, "uploaded_filename", "document.docx") or "document.docx"),
-        manifest_payload=manifest_payload,
+    return export_chapter_workflow_structure_manifest(
+        prepared_run_context=prepared_run_context,
+        app_config=app_config,
     )
-    prepared_run_context.exported_structure_manifest_path = manifest_path
-    return manifest_path
 
 
 def has_restartable_source(

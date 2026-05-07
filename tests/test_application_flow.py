@@ -347,7 +347,7 @@ def test_build_structure_manifest_payload_serializes_detected_segments():
                 word_count=20,
                 estimated_token_count=30,
                 structural_role="chapter",
-                confidence="high",
+                confidence="low",
                 boundary_fingerprint="beefcafe",
                 boundary_evidence=(
                     SegmentBoundaryEvidence(
@@ -356,13 +356,16 @@ def test_build_structure_manifest_payload_serializes_detected_segments():
                         details={"heading_level": 1},
                     ),
                 ),
+                warnings=("low_confidence_boundary",),
             )
         ],
         segment_diagnostics=SegmentDetectionReport(
             segment_count=1,
-            high_confidence_count=1,
+            high_confidence_count=0,
+            low_confidence_count=1,
             toc_entry_count=2,
             toc_matched_count=1,
+            warnings=("low_confidence_segments_present",),
         ),
         structure_fingerprint="abc123def456",
         detector_version="chapter_segments_v1",
@@ -378,6 +381,7 @@ def test_build_structure_manifest_payload_serializes_detected_segments():
     assert payload["source_name"] == "report.docx"
     assert payload["prepared_source_key"] == "report.docx:3:token:6000"
     assert payload["ordered_segment_ids"] == ["seg_0001_abcd1234"]
+    assert payload["warning_messages"] == ["Low-confidence segment boundaries detected"]
     assert payload["detector_version"] == "chapter_segments_v1"
     assert payload["detector_config"] == {
         "chunk_size": 6000,
@@ -390,9 +394,11 @@ def test_build_structure_manifest_payload_serializes_detected_segments():
         "segment_count": 1,
         "toc_entry_count": 2,
         "toc_matched_count": 1,
-        "low_confidence_count": 0,
+        "low_confidence_count": 1,
     }
     assert payload["segments"][0]["segment_id"] == "seg_0001_abcd1234"
+    assert payload["segments"][0]["warnings"] == ["low_confidence_boundary"]
+    assert payload["segments"][0]["warning_messages"] == ["Boundary confidence is low"]
     assert payload["segments"][0]["evidence"] == [
         {
             "source": "heading_style",

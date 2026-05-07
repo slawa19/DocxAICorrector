@@ -5,10 +5,13 @@ import hashlib
 import inspect
 import json
 import logging
+from io import BytesIO
 from pathlib import Path
 from threading import Event, Lock
 from collections.abc import Mapping, Sequence
 from typing import Any
+
+from docx import Document as DocxDocument
 
 from docxaicorrector.core.config import get_client, get_model_role_value, load_app_config
 from docxaicorrector.core.constants import RUN_DIR
@@ -837,6 +840,17 @@ def _build_document_context_glossary_terms(*, translation_domain: str, source_te
     return tuple(glossary_terms)
 
 
+def _extract_docx_detected_author(*, source_bytes: bytes, source_format: str) -> str | None:
+    if str(source_format or "").strip().lower() != "docx" or not source_bytes:
+        return None
+    try:
+        document = DocxDocument(BytesIO(source_bytes))
+    except Exception:
+        return None
+    author = str(getattr(document.core_properties, "author", "") or "").strip()
+    return author or None
+
+
 def _build_document_context_profile(
     *,
     segments: Sequence[DocumentSegment],
@@ -845,6 +859,7 @@ def _build_document_context_profile(
     source_text: str,
     source_token: str,
     source_title: str,
+    detected_author: str | None,
     structure_fingerprint: str,
     source_language: str,
     target_language: str,
@@ -867,6 +882,7 @@ def _build_document_context_profile(
         source_token=source_token,
         structure_fingerprint=structure_fingerprint,
         source_title=source_title,
+        detected_author=detected_author,
         source_language=source_language,
         target_language=target_language,
         translation_domain=translation_domain,
@@ -1032,6 +1048,7 @@ def _prepare_document_for_processing(
         translation_domain=translation_domain,
         source_text=source_text,
     )
+    detected_author = _extract_docx_detected_author(source_bytes=source_bytes, source_format=source_format)
     document_context_profile = _build_document_context_profile(
         segments=segments,
         translation_domain=translation_domain,
@@ -1039,6 +1056,7 @@ def _prepare_document_for_processing(
         source_text=source_text,
         source_token=str(source_token or "").strip(),
         source_title=Path(str(source_name or "")).stem,
+        detected_author=detected_author,
         structure_fingerprint=structure_fingerprint,
         source_language=str(app_config.get("source_language", app_config.get("source_language_default", "en")) or "en").strip().lower() or "en",
         target_language=str(app_config.get("target_language", app_config.get("target_language_default", "ru")) or "ru").strip().lower() or "ru",
@@ -1153,18 +1171,21 @@ def _prepare_document_for_processing(
         processing_operation=processing_operation,
     )
     jobs = _attach_prepared_job_ids(jobs)
-    segment_to_job = build_segment_to_job_mapping(segments, jobs)
-    coverage_warnings = validate_segment_coverage(
-        paragraphs=paragraphs,
-        segments=segments,
-        jobs=jobs,
-        segment_to_job=segment_to_job,
-    )
-    if coverage_warnings:
-        segment_diagnostics = replace(
-            segment_diagnostics,
-            warnings=tuple(dict.fromkeys((*segment_diagnostics.warnings, *coverage_warnings))),
+    if _supports_segment_detection(paragraphs):
+        segment_to_job = build_segment_to_job_mapping(segments, jobs)
+        coverage_warnings = validate_segment_coverage(
+            paragraphs=paragraphs,
+            segments=segments,
+            jobs=jobs,
+            segment_to_job=segment_to_job,
         )
+        if coverage_warnings:
+            segment_diagnostics = replace(
+                segment_diagnostics,
+                warnings=tuple(dict.fromkeys((*segment_diagnostics.warnings, *coverage_warnings))),
+            )
+    else:
+        segment_to_job = {}
     emit_preparation_progress(
         progress_callback,
         stage="Задания собраны",

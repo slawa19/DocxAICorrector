@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 from collections.abc import Mapping
 from typing import Any
 
@@ -34,7 +35,14 @@ def persist_terminal_job_result(
         "segment_id": str(job.get("segment_id") or "").strip(),
         "status": status,
         "block_index": index,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
+    target_chars = job.get("target_chars")
+    if isinstance(target_chars, int) and not isinstance(target_chars, bool):
+        record["target_chars"] = target_chars
+    context_chars = job.get("context_chars")
+    if isinstance(context_chars, int) and not isinstance(context_chars, bool):
+        record["context_chars"] = context_chars
     if error_code:
         record["error_code"] = error_code
     if error_message:

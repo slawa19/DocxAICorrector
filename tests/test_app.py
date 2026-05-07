@@ -81,12 +81,22 @@ def test_build_document_context_prompt_includes_outline_and_glossary_terms():
             document_context_profile=DocumentContextProfile(
                 outline_entries=(SegmentOutlineEntry(segment_id="seg_0001", title="Chapter 1", level=1),),
                 glossary_terms=(GlossaryTerm(source_term="Great Tribulation", target_term="die grosse Trubsal"),),
-            )
+            ),
+            segments=[
+                SimpleNamespace(segment_id="seg_0001", ordinal=1, level=1, structural_role="chapter", title="Chapter 1"),
+                SimpleNamespace(segment_id="seg_0002", ordinal=2, level=1, structural_role="chapter", title="Chapter 2"),
+                SimpleNamespace(segment_id="seg_0003", ordinal=3, level=1, structural_role="chapter", title="Chapter 3"),
+            ],
         ),
+        selected_segment_ids=["seg_0002"],
     )
 
     assert "Chapter 1" in prompt
     assert "Great Tribulation" in prompt
+    assert "ФОКУС ТЕКУЩЕГО ЗАПУСКА" in prompt
+    assert "#2 | Chapter 2" in prompt
+    assert "Предыдущий сегмент: Chapter 1" in prompt
+    assert "Следующий сегмент: Chapter 3" in prompt
 
 
 def test_start_background_processing_forwards_explicit_output_mode(monkeypatch):

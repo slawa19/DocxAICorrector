@@ -256,6 +256,7 @@ class ProcessingContext:
     model_provider: str | None = None
     model_id: str | None = None
     document_context_prompt: str = ""
+    segment_selection: SegmentSelection | None = None
 
 
 @dataclass

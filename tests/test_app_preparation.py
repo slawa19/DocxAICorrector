@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import docxaicorrector.chapter_workflow.service as chapter_workflow_service
 import docxaicorrector.processing.processing_runtime as processing_runtime
 import docxaicorrector.ui._app as app
 import docxaicorrector.ui.application_flow as application_flow
@@ -7,6 +8,7 @@ import docxaicorrector.ui.compare_panel as compare_panel
 from docxaicorrector.core.models import StructureRecognitionSummary
 from docxaicorrector.core.models import StructureRepairReport
 from docxaicorrector.document.segments import DocumentContextProfile, DocumentSegment, GlossaryTerm, SegmentBoundaryEvidence, SegmentDetectionReport
+from docxaicorrector.pipeline.contracts import SegmentSelection
 from docxaicorrector.structure.validation import StructureValidationReport
 from conftest import SessionState as SessionState
 
@@ -1043,17 +1045,15 @@ def test_render_analysis_review_panel_renders_selector_and_disabled_process_sele
     )
 
     assert action is None
-    assert subheader_calls == ["Chapter Selector"]
-    assert caption_calls[0] == "Structure fingerprint: abc123def456"
-    assert caption_calls[1] == "Detector version: chapter_segments_v1"
-    assert selectbox_calls == [("Status Filter", ("All segments", "Pending", "Queued", "Processing", "Completed", "Failed", "Skipped", "Low confidence"), 0)]
-    assert text_input_calls == [("Search Chapters", "")]
+    assert subheader_calls == ["Review Sections Before Partial Translation"]
+    assert selectbox_calls == [("Status Filter", ("All sections", "Pending", "Queued", "Processing", "Completed", "Failed", "Skipped", "Low confidence"), 0)]
+    assert text_input_calls == [("Search Sections", "")]
     assert checkbox_calls and checkbox_calls[0][1]["value"] is True
-    assert expander_calls == [("Boundary preview: Chapter 1", False)]
-    assert any(message == "Starts: p1" for message in caption_calls)
-    assert any(message == "Ends: p2" for message in caption_calls)
-    assert any(message == "Boundary fingerprint: beefcafe" for message in caption_calls)
-    assert write_calls == ["Boundary evidence:"]
+    assert expander_calls == [("Advanced structure tools", False), ("Included text preview: Chapter 1", False)]
+    assert any(message == "Starts with: p1" for message in caption_calls)
+    assert any(message == "Ends with: p2" for message in caption_calls)
+    assert not any("Boundary fingerprint:" in message for message in caption_calls)
+    assert not write_calls
     assert selected_col.calls == [
         (
             "Process Selected",
@@ -1084,9 +1084,12 @@ def test_render_analysis_review_panel_renders_selector_and_disabled_process_sele
             "key": "process_entire_book_button",
         },
     )]
-    assert any("Selected: 1/1 segments" in message for message in info_calls)
-    assert any("Confidence H/M/L:" in message for message in info_calls)
-    assert any("TOC matched: 1/1" in message for message in info_calls)
+    assert any(
+        message == "Detected 1 reviewable section for partial translation. Review the list below to decide what should be translated separately."
+        for message in info_calls
+    )
+    assert any(message == "Will translate: 1/1 sections | 20/20 words" for message in info_calls)
+    assert any(message.startswith("Confidence overview:") for message in caption_calls)
     assert any(
         message == "Structure not confirmed. Process Selected stays disabled until the current outline is reviewed and confirmed."
         for message in caption_calls
@@ -1297,13 +1300,13 @@ def test_render_analysis_review_panel_filters_segments_by_status_and_search(monk
     )
 
     assert checkbox_labels == [
-        "Appendix Notes | 2 words | high | appendix | approx. 1 jobs | failed 0%"
+        "Appendix Notes | 2 words | appendix | clear boundary | failed 0%"
     ]
     assert session_state.chapter_selector_filter == "failed"
     assert session_state.chapter_selector_search == "appendix"
     assert session_state.selected_segment_ids == ["seg_0001", "seg_0002"]
-    assert any(message == "Visible segments: 1/2" for message in caption_calls)
-    assert any("Selected: 2/2 segments" in message for message in info_calls)
+    assert any(message == "Visible sections: 1/2" for message in caption_calls)
+    assert any(message == "Will translate: 2/2 sections | 4/4 words" for message in info_calls)
 
 
 def test_render_analysis_review_panel_shows_empty_filter_result_notice(monkeypatch):
@@ -1377,7 +1380,7 @@ def test_render_analysis_review_panel_shows_empty_filter_result_notice(monkeypat
         chunk_size=6000,
     )
 
-    assert "No segments match the current filter/search." in info_calls
+    assert "No sections match the current filter/search." in info_calls
 
 
 def test_render_analysis_review_panel_disables_locked_segment_checkboxes(monkeypatch):
@@ -1497,7 +1500,10 @@ def test_render_analysis_review_panel_disables_locked_segment_checkboxes(monkeyp
     assert checkbox_calls[0][1]["disabled"] is True
     assert checkbox_calls[1][1]["disabled"] is True
     assert checkbox_calls[2][1]["disabled"] is False
-    assert any(message == "Locked while queued/processing: 2" for message in caption_calls)
+    assert any(
+        message == "Currently unavailable in this view: 2 sections already queued or processing."
+        for message in caption_calls
+    )
 
 
 def test_render_analysis_review_panel_supports_skipped_status_filter(monkeypatch):
@@ -1592,7 +1598,7 @@ def test_render_analysis_review_panel_supports_skipped_status_filter(monkeypatch
     )
 
     assert checkbox_labels == [
-        "Appendix A | 2 words | high | appendix | approx. 1 jobs | skipped"
+        "Appendix A | 2 words | appendix | clear boundary | skipped"
     ]
 
 
@@ -1809,7 +1815,7 @@ def test_render_analysis_review_panel_shows_low_confidence_warning_and_manifest(
                 boundary_evidence=(
                     SegmentBoundaryEvidence(source="numbering_pattern", confidence="medium", details={"text_preview": "Chapter 2"}),
                 ),
-                warnings=("No TOC match",),
+                warnings=("low_confidence_boundary",),
             )
         ],
         segment_diagnostics=SegmentDetectionReport(
@@ -1819,7 +1825,7 @@ def test_render_analysis_review_panel_shows_low_confidence_warning_and_manifest(
             low_confidence_count=1,
             toc_entry_count=4,
             toc_matched_count=2,
-            warnings=("1 low-confidence segment detected",),
+            warnings=("low_confidence_segments_present",),
         ),
         segment_to_job={"seg_0002": (1, 2)},
     )
@@ -1858,8 +1864,8 @@ def test_render_analysis_review_panel_shows_low_confidence_warning_and_manifest(
     )
 
     assert warnings == [
-        "Structure warnings: 1 low-confidence segment detected",
-        "Low-confidence segment: Chapter 2. No TOC match",
+        "Some section boundaries need manual review before partial translation: Low-confidence segment boundaries detected",
+        "Review this section before partial translation: Chapter 2. Boundary confidence is low",
     ]
     assert any(message == "Manifest path: .run/structure_manifests/20260506_094000_report.segments.json" for message in captions)
 
@@ -2240,11 +2246,11 @@ def test_render_analysis_review_panel_shows_completed_and_failed_status_hints(mo
     )
 
     assert any(
-        message == "Completed in this session. This segment can be selected again for reprocess/export later."
+        message == "Completed in this session. You can select this section again if you need a revised translation."
         for message in captions
     )
     assert any(
-        message == "Failed in this session. Use Retry Failed to rerun this segment, or select it manually for reprocessing."
+        message == "Failed in this session. Use Retry Failed or select this section again for another translation pass."
         for message in captions
     )
 
@@ -2378,7 +2384,7 @@ def test_render_analysis_review_panel_shows_segment_status_summary(monkeypatch):
     )
 
     assert any(
-        message == "Segment status summary: pending 1 | processing 1 | completed 1 | failed 1"
+        message == "Section status: pending 1 | processing 1 | completed 1 | failed 1"
         for message in captions
     )
 
@@ -2443,11 +2449,11 @@ def test_render_analysis_review_panel_shows_selected_status_summary(monkeypatch)
     )
 
     assert any(
-        message == "Selected segment statuses: completed 1 | failed 1"
+        message == "Selected section status: completed 1 | failed 1"
         for message in captions
     )
     assert any(
-        message == "Selected launch payload excludes 1 locked segment(s) that are currently queued or processing."
+        message == "This launch will skip 1 section that is already queued or processing."
         for message in captions
     )
 
@@ -2605,8 +2611,6 @@ def test_render_analysis_review_panel_shows_explicit_fingerprint_invalidation_su
     assert session_state.confirmed_at_settings_hash == ""
     assert warnings == [
         "Structure confirmation invalidated.\n"
-        "Previous confirmed fingerprint: oldfingerprint\n"
-        "Current fingerprint: newfingerprint\n"
         "Detected chapter structure changed after re-analysis.\n"
         "Review the chapter list and confirm structure again before processing selected chapters."
     ]
@@ -2677,8 +2681,6 @@ def test_render_analysis_review_panel_shows_explicit_settings_invalidation_summa
     assert session_state.confirmed_at_settings_hash == ""
     assert warnings == [
         "Structure confirmation invalidated.\n"
-        "Previous confirmed fingerprint: samefingerprint\n"
-        "Current fingerprint: samefingerprint\n"
         "Detection-affecting settings changed since the last confirmation.\n"
         "Review the chapter list and confirm structure again before processing selected chapters."
     ]
@@ -2772,8 +2774,187 @@ def test_render_analysis_review_panel_invalidates_confirmation_when_additional_d
     assert session_state.structure_confirmed is False
     assert warnings == [
         "Structure confirmation invalidated.\n"
-        "Previous confirmed fingerprint: samefingerprint\n"
-        "Current fingerprint: samefingerprint\n"
+        "Detection-affecting settings changed since the last confirmation.\n"
+        "Review the chapter list and confirm structure again before processing selected chapters."
+    ]
+
+
+def test_render_analysis_review_panel_keeps_confirmation_when_only_chunk_size_changes_for_stable_outline(monkeypatch):
+    session_state = SessionState(
+        selected_segment_ids=["seg_0001"],
+        structure_confirmed=True,
+        confirmed_structure_fingerprint="samefingerprint",
+        confirmed_structure_segment_ids=["seg_0001"],
+        confirmed_at_settings_hash="baseline123",
+        segments_loaded_for_source_token="report.docx:3:token",
+    )
+    prepared_run_context = _build_prepared_run_context(
+        structure_fingerprint="samefingerprint",
+        detector_version="segments_v2",
+        segments=[
+            DocumentSegment(
+                segment_id="seg_0001",
+                ordinal=1,
+                level=1,
+                title="Chapter 1",
+                normalized_title="chapter 1",
+                start_paragraph_index=0,
+                end_paragraph_index=0,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0000",
+                paragraph_ids=("p0000",),
+                paragraph_count=1,
+                char_count=10,
+                word_count=2,
+                estimated_token_count=3,
+                structural_role="chapter",
+                confidence="high",
+                boundary_fingerprint="fp1",
+                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
+            )
+        ],
+        segment_to_job={"seg_0001": (0,)},
+    )
+    warnings = []
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app.st, "columns", lambda n: [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)])
+    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
+    monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
+    monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "warning", lambda message, **kwargs: warnings.append(message))
+    monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        app.st,
+        "expander",
+        lambda *args, **kwargs: type("FakeExpander", (), {"__enter__": lambda self: self, "__exit__": lambda self, exc_type, exc, tb: False})(),
+    )
+
+    session_state.confirmed_at_settings_hash = app._build_structure_settings_hash(
+        uploaded_file_token="report.docx:3:token",
+        prepared_run_context=prepared_run_context,
+        chunk_size=6000,
+        app_config={
+            "paragraph_boundary_normalization_enabled": True,
+            "paragraph_boundary_normalization_mode": "high_only",
+            "paragraph_boundary_ai_review_enabled": False,
+            "paragraph_boundary_ai_review_mode": "off",
+            "structure_recognition_min_confidence": "medium",
+            "structure_validation_enabled": True,
+        },
+    )
+
+    app._render_analysis_review_panel(
+        prepared_run_context=prepared_run_context,
+        uploaded_file_token="report.docx:3:token",
+        chunk_size=12000,
+        app_config={
+            "paragraph_boundary_normalization_enabled": True,
+            "paragraph_boundary_normalization_mode": "high_only",
+            "paragraph_boundary_ai_review_enabled": False,
+            "paragraph_boundary_ai_review_mode": "off",
+            "structure_recognition_min_confidence": "medium",
+            "structure_validation_enabled": True,
+        },
+    )
+
+    assert session_state.structure_confirmed is True
+    assert warnings == []
+
+
+def test_render_analysis_review_panel_invalidates_confirmation_when_only_chunk_size_changes_for_oversized_split_outline(monkeypatch):
+    session_state = SessionState(
+        selected_segment_ids=["seg_0001"],
+        structure_confirmed=True,
+        confirmed_structure_fingerprint="samefingerprint",
+        confirmed_structure_segment_ids=["seg_0001"],
+        confirmed_at_settings_hash="baseline123",
+        segments_loaded_for_source_token="report.docx:3:token",
+    )
+    prepared_run_context = _build_prepared_run_context(
+        structure_fingerprint="samefingerprint",
+        detector_version="segments_v2",
+        segments=[
+            DocumentSegment(
+                segment_id="seg_0001",
+                ordinal=1,
+                level=1,
+                title="Chapter 1",
+                normalized_title="chapter 1",
+                start_paragraph_index=0,
+                end_paragraph_index=0,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0000",
+                paragraph_ids=("p0000",),
+                paragraph_count=1,
+                char_count=10,
+                word_count=2,
+                estimated_token_count=3,
+                structural_role="chapter",
+                confidence="high",
+                boundary_fingerprint="fp1",
+                boundary_evidence=(
+                    SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),
+                    SegmentBoundaryEvidence(source="oversized_heading_split", confidence="medium", details={"fallback_segment_max_chars": 24000}),
+                ),
+            )
+        ],
+        segment_to_job={"seg_0001": (0,)},
+    )
+    warnings = []
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app.st, "columns", lambda n: [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)])
+    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
+    monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
+    monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "warning", lambda message, **kwargs: warnings.append(message))
+    monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        app.st,
+        "expander",
+        lambda *args, **kwargs: type("FakeExpander", (), {"__enter__": lambda self: self, "__exit__": lambda self, exc_type, exc, tb: False})(),
+    )
+
+    session_state.confirmed_at_settings_hash = app._build_structure_settings_hash(
+        uploaded_file_token="report.docx:3:token",
+        prepared_run_context=prepared_run_context,
+        chunk_size=6000,
+        app_config={
+            "paragraph_boundary_normalization_enabled": True,
+            "paragraph_boundary_normalization_mode": "high_only",
+            "paragraph_boundary_ai_review_enabled": False,
+            "paragraph_boundary_ai_review_mode": "off",
+            "structure_recognition_min_confidence": "medium",
+            "structure_validation_enabled": True,
+        },
+    )
+
+    app._render_analysis_review_panel(
+        prepared_run_context=prepared_run_context,
+        uploaded_file_token="report.docx:3:token",
+        chunk_size=12000,
+        app_config={
+            "paragraph_boundary_normalization_enabled": True,
+            "paragraph_boundary_normalization_mode": "high_only",
+            "paragraph_boundary_ai_review_enabled": False,
+            "paragraph_boundary_ai_review_mode": "off",
+            "structure_recognition_min_confidence": "medium",
+            "structure_validation_enabled": True,
+        },
+    )
+
+    assert session_state.structure_confirmed is False
+    assert warnings == [
+        "Structure confirmation invalidated.\n"
         "Detection-affecting settings changed since the last confirmation.\n"
         "Review the chapter list and confirm structure again before processing selected chapters."
     ]
@@ -2941,7 +3122,7 @@ def test_render_analysis_review_panel_returns_selected_action_when_confirmed(mon
         {
             "use_container_width": True,
             "disabled": False,
-            "help": "Processes only the selected chapters and produces a partial output artifact.",
+            "help": "Processes only the selected sections and produces a partial output artifact.",
             "key": "process_selected_button",
         },
     )]
@@ -3040,7 +3221,7 @@ def test_render_analysis_review_panel_returns_start_selected_with_context_when_r
             {
                 "use_container_width": True,
                 "disabled": False,
-                "help": "Processes only the selected chapters and produces a partial output artifact.",
+                    "help": "Processes only the selected sections and produces a partial output artifact.",
                 "key": "process_selected_button",
             },
         ),
@@ -3049,7 +3230,7 @@ def test_render_analysis_review_panel_returns_start_selected_with_context_when_r
             {
                 "use_container_width": True,
                 "disabled": False,
-                "help": "Processes the selected chapters and prepends leading structural context such as front matter or TOC as source-backed content.",
+                    "help": "Processes the selected sections and prepends leading structural context such as front matter or TOC as source-backed content.",
                 "key": "process_selected_with_context_button",
             },
         ),
@@ -3168,7 +3349,132 @@ def test_render_analysis_review_panel_returns_start_retry_failed_when_requested(
             {
                 "use_container_width": True,
                 "disabled": False,
-                "help": "Reruns only the segments marked failed in the current session.",
+                "help": "Reruns only the segments marked failed for this prepared document.",
+                "key": "retry_failed_segments_button",
+            },
+        ),
+    ]
+
+
+def test_render_analysis_review_panel_uses_persisted_retry_help_when_available(monkeypatch):
+    class FakeColumn:
+        def __init__(self, result=False):
+            self._result = result
+            self.calls = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def button(self, label, **kwargs):
+            self.calls.append((label, kwargs))
+            return self._result
+
+    session_state = SessionState(
+        selected_segment_ids=[],
+        structure_confirmed=True,
+        confirmed_structure_fingerprint="fp123",
+        confirmed_at_settings_hash="settings123",
+        segments_loaded_for_source_token="report.docx:3:token",
+        segment_status_by_id={},
+        segment_progress_by_id={"seg_failed": 0.0},
+        run_log=[],
+    )
+    prepared_run_context = _build_prepared_run_context(
+        prepared_source_key="report.docx:prep",
+        structure_fingerprint="fp123",
+        segments=[
+            DocumentSegment(
+                segment_id="seg_failed",
+                ordinal=1,
+                level=1,
+                title="Chapter 1",
+                normalized_title="chapter 1",
+                start_paragraph_index=0,
+                end_paragraph_index=0,
+                start_paragraph_id="p0001",
+                end_paragraph_id="p0001",
+                paragraph_ids=("p0001",),
+                paragraph_count=1,
+                char_count=100,
+                word_count=20,
+                estimated_token_count=30,
+                structural_role="body_range",
+                confidence="high",
+                boundary_fingerprint="bf1",
+            )
+        ],
+        paragraphs=[SimpleNamespace(paragraph_id="p0001", text="Paragraph 1")],
+        jobs=[{"job_id": "job_0001", "paragraph_ids": ["p0001"], "target_text": "Paragraph 1", "context_before": "", "context_after": "", "target_chars": 11, "context_chars": 0}],
+        segment_to_job={"seg_failed": (0,)},
+    )
+    confirm_col = FakeColumn(result=False)
+    selected_col = FakeColumn(result=False)
+    full_book_col = FakeColumn(result=False)
+    bulk_select_col = FakeColumn(result=False)
+    bulk_clear_col = FakeColumn(result=False)
+    bulk_all_col = FakeColumn(result=False)
+
+    monkeypatch.setattr(chapter_workflow_service, "load_job_result_registry", lambda **kwargs: {"job_0001": {"job_id": "job_0001", "status": "failed"}})
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(
+        app.st,
+        "columns",
+        _two_stage_columns(
+            [bulk_select_col, bulk_clear_col, bulk_all_col],
+            [confirm_col, selected_col, full_book_col],
+        ),
+    )
+    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
+    monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
+    monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_build_structure_settings_hash", lambda **kwargs: "settings123")
+    monkeypatch.setattr(
+        app.st,
+        "expander",
+        lambda *args, **kwargs: type("FakeExpander", (), {"__enter__": lambda self: self, "__exit__": lambda self, exc_type, exc, tb: False})(),
+    )
+
+    action = app._render_analysis_review_panel(
+        prepared_run_context=prepared_run_context,
+        uploaded_file_token="report.docx:3:token",
+        chunk_size=6000,
+    )
+
+    assert action is None
+    assert selected_col.calls == [
+        (
+            "Process Selected",
+            {
+                "use_container_width": True,
+                "disabled": True,
+                "help": "Process Selected unavailable: keep at least one selectable segment selected.",
+                "key": "process_selected_button",
+            },
+        ),
+        (
+            "Selected + Context",
+            {
+                "use_container_width": True,
+                "disabled": True,
+                "help": "Process Selected unavailable: keep at least one selectable segment selected.",
+                "key": "process_selected_with_context_button",
+            },
+        ),
+        (
+            "Retry Failed",
+            {
+                "use_container_width": True,
+                "disabled": False,
+                "help": "Reruns only the failed jobs recorded in persisted retry state for this prepared document.",
                 "key": "retry_failed_segments_button",
             },
         ),
@@ -3259,7 +3565,7 @@ def test_render_analysis_review_panel_shows_confirmed_outline_summary(monkeypatc
     )
 
     assert any(
-        message == "Structure confirmed for fingerprint abc123def456 | selected top-level 1 | selected nested 1"
+        message == "Structure confirmed | selected main 1 section | selected nested 1 section"
         for message in caption_calls
     )
 
@@ -3793,6 +4099,51 @@ def test_build_selected_processing_payload_filters_jobs_paragraphs_and_images():
     assert payload["include_toc"] is False
 
 
+def test_build_selected_processing_payload_includes_image_assets_not_in_job_paragraph_ids():
+    """Image paragraphs in a selected segment but not listed in any job's paragraph_ids
+    must still appear in filtered_image_assets. Otherwise inspect_placeholder_integrity
+    marks their placeholders as 'unexpected' and the DOCX build fails."""
+    image_asset = type("ImageAssetStub", (), {"image_id": "img_002"})()
+    paragraphs = [
+        type("ParagraphStub", (), {"paragraph_id": "p0000", "asset_id": None, "attached_to_asset_id": None})(),
+        # Image paragraph: belongs to the segment but is NOT listed in any job's paragraph_ids
+        type("ParagraphStub", (), {"paragraph_id": "p0001_img", "asset_id": "img_002", "attached_to_asset_id": None})(),
+        type("ParagraphStub", (), {"paragraph_id": "p0002", "asset_id": None, "attached_to_asset_id": None})(),
+    ]
+    prepared_run_context = _build_prepared_run_context(
+        paragraphs=paragraphs,
+        image_assets=[image_asset],
+        jobs=[
+            # Job explicitly lists p0000 and p0002 but omits the image paragraph p0001_img
+            {"target_text": "block-1", "paragraph_ids": ["p0000", "p0002"]},
+        ],
+        segments=[
+            DocumentSegment(
+                segment_id="seg_0001",
+                ordinal=1,
+                title="Chapter 1",
+                start_paragraph_index=0,
+                end_paragraph_index=2,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0002",
+                # segment covers all three paragraphs including the image paragraph
+                paragraph_ids=("p0000", "p0001_img", "p0002"),
+            ),
+        ],
+        segment_to_job={"seg_0001": (0,)},
+    )
+
+    payload = app._build_selected_processing_payload(
+        prepared_run_context=prepared_run_context,
+        selected_segment_ids=["seg_0001"],
+    )
+
+    assert payload["image_assets"] == [image_asset], (
+        "image asset for a paragraph in the selected segment must be included "
+        "even if its paragraph_id is absent from all job paragraph_ids"
+    )
+
+
 def test_build_selected_processing_payload_preserves_job_ids():
     prepared_run_context = _build_prepared_run_context(
         jobs=[
@@ -3990,16 +4341,16 @@ def test_render_analysis_review_panel_selects_parent_with_descendants(monkeypatc
 
     assert session_state.selected_segment_ids == ["seg_parent", "seg_child"]
     assert any(
-        "Part I | 2 words | high | part | +1 descendants | approx. 0 direct jobs | 1 descendant jobs | pending"
+        "Part I | 2 words | part | includes 1 nested section | clear boundary | pending"
         in label
         for label in checkbox_labels
     )
-    assert any("- Chapter 1 | 2 words | high | chapter | parent: Part I | approx. 1 jobs | pending" in label for label in checkbox_labels)
-    assert any(message == "Selected: 2/3 segments | 4/6 words | approx. 1/2 jobs" for message in info_calls)
-    assert any(message == "Visible structure: 2 top-level | 1 nested | max level 2" for message in caption_calls)
-    assert any(message == "Selected structure: top-level 1 | nested 1" for message in caption_calls)
+    assert any("Chapter 1 | 2 words | chapter | under Part I | clear boundary | pending" in label for label in checkbox_labels)
+    assert any(message == "Will translate: 2/3 sections | 4/6 words" for message in info_calls)
+    assert any(message == "Hierarchy in current view: 2 main sections | 1 nested section" for message in caption_calls)
+    assert any(message == "Selection hierarchy: 1 main section | 1 nested section" for message in caption_calls)
     assert any(
-        message == "Selected coverage includes 1 descendant segments under selected parent sections."
+        message == "Selection also includes 1 nested section under chosen parent sections."
         for message in caption_calls
     )
 
@@ -4161,6 +4512,54 @@ def test_build_selected_processing_payload_skips_locked_descendants():
     assert payload["source_paragraphs"] == [paragraphs[0]]
 
 
+def test_build_selected_processing_payload_respects_segment_selection_without_descendants():
+    paragraphs = [
+        type("ParagraphStub", (), {"paragraph_id": "p0000", "asset_id": None, "attached_to_asset_id": None})(),
+        type("ParagraphStub", (), {"paragraph_id": "p0001", "asset_id": None, "attached_to_asset_id": None})(),
+    ]
+    prepared_run_context = _build_prepared_run_context(
+        paragraphs=paragraphs,
+        jobs=[
+            {"target_text": "parent-block", "paragraph_ids": ["p0000"]},
+            {"target_text": "child-block", "paragraph_ids": ["p0001"]},
+        ],
+        segments=[
+            DocumentSegment(
+                segment_id="seg_parent",
+                ordinal=1,
+                title="Part I",
+                start_paragraph_index=0,
+                end_paragraph_index=0,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0000",
+                paragraph_ids=("p0000",),
+            ),
+            DocumentSegment(
+                segment_id="seg_child",
+                parent_segment_id="seg_parent",
+                ordinal=2,
+                title="Chapter 1",
+                start_paragraph_index=1,
+                end_paragraph_index=1,
+                start_paragraph_id="p0001",
+                end_paragraph_id="p0001",
+                paragraph_ids=("p0001",),
+            ),
+        ],
+        segment_to_job={"seg_parent": (0,), "seg_child": (1,)},
+    )
+
+    payload = app._build_selected_processing_payload(
+        prepared_run_context=prepared_run_context,
+        selected_segment_ids=None,
+        segment_selection=SegmentSelection(selected_segment_ids=("seg_parent",), include_descendants=False),
+    )
+
+    assert payload["selected_segment_ids"] == ["seg_parent"]
+    assert payload["jobs"] == [{"target_text": "parent-block", "paragraph_ids": ["p0000"]}]
+    assert payload["source_paragraphs"] == [paragraphs[0]]
+
+
 def test_build_retry_failed_processing_state_targets_failed_segments_only():
     paragraphs = [
         type("ParagraphStub", (), {"paragraph_id": "p0000", "asset_id": None, "attached_to_asset_id": None})(),
@@ -4261,6 +4660,208 @@ def test_build_retry_failed_processing_state_prefers_failed_jobs_from_current_se
         "include_toc": False,
     }
     assert retry_state["uses_job_index_filter"] is True
+    assert retry_state["retry_job_source"] == "current_session_jobs"
+
+
+def test_build_retry_failed_processing_state_uses_persisted_failed_jobs_when_session_log_missing(monkeypatch):
+    paragraphs = [
+        type("ParagraphStub", (), {"paragraph_id": "p0000", "asset_id": None, "attached_to_asset_id": None})(),
+        type("ParagraphStub", (), {"paragraph_id": "p0001", "asset_id": None, "attached_to_asset_id": None})(),
+    ]
+    prepared_run_context = _build_prepared_run_context(
+        prepared_source_key="report.docx:prep",
+        structure_fingerprint="struct-123",
+        paragraphs=paragraphs,
+        jobs=[
+            {"job_id": "job_0000", "target_text": "completed-block", "paragraph_ids": ["p0000"]},
+            {"job_id": "job_0001", "target_text": "failed-block", "paragraph_ids": ["p0001"]},
+        ],
+        segments=[
+            DocumentSegment(
+                segment_id="seg_failed",
+                ordinal=1,
+                title="Chapter 1",
+                start_paragraph_index=0,
+                end_paragraph_index=1,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0001",
+                paragraph_ids=("p0000", "p0001"),
+            ),
+        ],
+        segment_to_job={"seg_failed": (0, 1)},
+    )
+    monkeypatch.setattr(
+        chapter_workflow_service,
+        "load_job_result_registry",
+        lambda **kwargs: {
+            "job_0000": {"job_id": "job_0000", "status": "completed"},
+            "job_0001": {"job_id": "job_0001", "status": "failed"},
+        },
+    )
+
+    retry_state = app._build_retry_failed_processing_state(
+        prepared_run_context=prepared_run_context,
+        segment_status_by_id={"seg_failed": "failed"},
+        run_log=[],
+    )
+
+    assert retry_state["effective_selected_segment_ids"] == ["seg_failed"]
+    assert retry_state["selected_job_count"] == 1
+    assert retry_state["payload"] == {
+        "selected_segment_ids": ["seg_failed"],
+        "jobs": [{"job_id": "job_0001", "target_text": "failed-block", "paragraph_ids": ["p0001"]}],
+        "source_paragraphs": [paragraphs[1]],
+        "image_assets": [],
+        "include_front_matter": False,
+        "include_toc": False,
+    }
+    assert retry_state["uses_job_index_filter"] is True
+    assert retry_state["retry_job_source"] == "persisted_jobs"
+
+
+def test_build_retry_failed_processing_state_uses_persisted_failed_jobs_after_session_state_reset(monkeypatch):
+    paragraphs = [
+        type("ParagraphStub", (), {"paragraph_id": "p0000", "asset_id": None, "attached_to_asset_id": None})(),
+        type("ParagraphStub", (), {"paragraph_id": "p0001", "asset_id": None, "attached_to_asset_id": None})(),
+    ]
+    prepared_run_context = _build_prepared_run_context(
+        prepared_source_key="report.docx:prep",
+        structure_fingerprint="struct-123",
+        paragraphs=paragraphs,
+        jobs=[
+            {"job_id": "job_0000", "target_text": "completed-block", "paragraph_ids": ["p0000"]},
+            {"job_id": "job_0001", "target_text": "failed-block", "paragraph_ids": ["p0001"]},
+        ],
+        segments=[
+            DocumentSegment(
+                segment_id="seg_failed",
+                ordinal=1,
+                title="Chapter 1",
+                start_paragraph_index=0,
+                end_paragraph_index=1,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0001",
+                paragraph_ids=("p0000", "p0001"),
+            ),
+        ],
+        segment_to_job={"seg_failed": (0, 1)},
+    )
+    monkeypatch.setattr(
+        chapter_workflow_service,
+        "load_job_result_registry",
+        lambda **kwargs: {
+            "job_0000": {"job_id": "job_0000", "status": "completed"},
+            "job_0001": {"job_id": "job_0001", "status": "failed"},
+        },
+    )
+
+    retry_state = app._build_retry_failed_processing_state(
+        prepared_run_context=prepared_run_context,
+        segment_status_by_id={},
+        run_log=[],
+    )
+
+    assert retry_state["effective_selected_segment_ids"] == ["seg_failed"]
+    assert retry_state["selected_job_count"] == 1
+    assert retry_state["retry_job_source"] == "persisted_jobs"
+
+
+def test_build_effective_selected_processing_state_blocks_when_segment_job_mapping_is_incomplete():
+    paragraphs = [
+        type("ParagraphStub", (), {"paragraph_id": "p0000", "asset_id": None, "attached_to_asset_id": None})(),
+    ]
+    prepared_run_context = _build_prepared_run_context(
+        paragraphs=paragraphs,
+        jobs=[
+            {"job_id": "job_0000", "target_text": "failed-block", "paragraph_ids": ["p0000"]},
+        ],
+        segments=[
+            DocumentSegment(
+                segment_id="seg_failed",
+                ordinal=1,
+                title="Chapter 1",
+                start_paragraph_index=0,
+                end_paragraph_index=0,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0000",
+                paragraph_ids=("p0000",),
+            ),
+        ],
+        segment_to_job={"seg_failed": (0,)},
+        segment_diagnostics=SegmentDetectionReport(warnings=("segment_job_mapping_incomplete",)),
+    )
+
+    selected_state = app._build_effective_selected_processing_state(
+        prepared_run_context=prepared_run_context,
+        selected_segment_ids=["seg_failed"],
+        segment_status_by_id={"seg_failed": "pending"},
+    )
+
+    assert selected_state["effective_selected_segment_ids"] == ["seg_failed"]
+    assert selected_state["selected_job_count"] == 0
+    assert selected_state["selection_blocked_reason"] == "segment_job_mapping_incomplete"
+    assert selected_state["payload"] == {
+        "selected_segment_ids": ["seg_failed"],
+        "jobs": [],
+        "source_paragraphs": [],
+        "image_assets": [],
+        "include_front_matter": False,
+        "include_toc": False,
+    }
+
+
+def test_build_retry_failed_processing_state_blocks_when_segment_job_mapping_is_incomplete(monkeypatch):
+    paragraphs = [
+        type("ParagraphStub", (), {"paragraph_id": "p0000", "asset_id": None, "attached_to_asset_id": None})(),
+    ]
+    prepared_run_context = _build_prepared_run_context(
+        prepared_source_key="report.docx:prep",
+        structure_fingerprint="struct-123",
+        paragraphs=paragraphs,
+        jobs=[
+            {"job_id": "job_0000", "target_text": "failed-block", "paragraph_ids": ["p0000"]},
+        ],
+        segments=[
+            DocumentSegment(
+                segment_id="seg_failed",
+                ordinal=1,
+                title="Chapter 1",
+                start_paragraph_index=0,
+                end_paragraph_index=0,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0000",
+                paragraph_ids=("p0000",),
+            ),
+        ],
+        segment_to_job={"seg_failed": (0,)},
+        segment_diagnostics=SegmentDetectionReport(warnings=("segment_job_mapping_incomplete",)),
+    )
+    monkeypatch.setattr(
+        chapter_workflow_service,
+        "load_job_result_registry",
+        lambda **kwargs: {
+            "job_0000": {"job_id": "job_0000", "status": "failed"},
+        },
+    )
+
+    retry_state = app._build_retry_failed_processing_state(
+        prepared_run_context=prepared_run_context,
+        segment_status_by_id={"seg_failed": "failed"},
+        run_log=[],
+    )
+
+    assert retry_state["effective_selected_segment_ids"] == ["seg_failed"]
+    assert retry_state["selected_job_count"] == 0
+    assert retry_state["selection_blocked_reason"] == "segment_job_mapping_incomplete"
+    assert retry_state["retry_job_source"] == "blocked_incomplete_mapping"
+    assert retry_state["payload"] == {
+        "selected_segment_ids": ["seg_failed"],
+        "jobs": [],
+        "source_paragraphs": [],
+        "image_assets": [],
+        "include_front_matter": False,
+        "include_toc": False,
+    }
 
 
 def test_render_analysis_review_panel_uses_effective_selected_payload_for_ready_state(monkeypatch):
@@ -4311,14 +4912,14 @@ def test_render_analysis_review_panel_uses_effective_selected_payload_for_ready_
         chunk_size=6000,
     )
 
-    assert any(message == "Selected: 1/2 segments | 2/4 words | approx. 0/1 jobs" for message in info_calls)
+    assert any(message == "Will translate: 1/2 sections | 2/4 words" for message in info_calls)
     assert any(
-        message == "Process Selected unavailable: the current selection does not resolve to any selectable jobs."
+        message == "Process Selected unavailable: the current selection does not map to any translatable content."
         for message in caption_calls
     )
-    assert not any(message == "Ready: confirmed structure | selection resolves to processable jobs." for message in caption_calls)
+    assert not any(message == "Ready: confirmed structure | selection maps to translatable content." for message in caption_calls)
     assert any(
-        message == "Selected launch payload excludes 1 locked segment(s) that are currently queued or processing."
+        message == "This launch will skip 1 section that is already queued or processing."
         for message in caption_calls
     )
 
@@ -4408,7 +5009,7 @@ def test_render_analysis_review_panel_shows_visible_structure_summary_only_for_n
         chunk_size=6000,
     )
 
-    assert any(message == "Visible structure: 1 top-level | 1 nested | max level 2" for message in caption_calls)
+    assert any(message == "Hierarchy in current view: 1 main section | 1 nested section" for message in caption_calls)
 
 
 def test_render_analysis_review_panel_shows_ready_caption_when_can_process_selected(monkeypatch):
@@ -4475,11 +5076,171 @@ def test_render_analysis_review_panel_shows_ready_caption_when_can_process_selec
     )
 
     assert any(
-        message == "Ready: confirmed structure | selection resolves to processable jobs."
+        message == "Ready: confirmed structure | selection maps to translatable content."
         for message in caption_calls
     )
     assert not any(
         "Process Selected unavailable" in message
+        for message in caption_calls
+    )
+
+
+def test_render_analysis_review_panel_sanitizes_noisy_segment_titles(monkeypatch):
+    session_state = SessionState(
+        selected_segment_ids=["seg_0001"],
+        structure_confirmed=False,
+        confirmed_structure_fingerprint="",
+        confirmed_at_settings_hash="",
+        segments_loaded_for_source_token="report.docx:3:token",
+    )
+    prepared_run_context = _build_prepared_run_context(
+        structure_fingerprint="abc123def456",
+        paragraphs=[
+            type("ParagraphStub", (), {"paragraph_id": "p0000", "text": "[[DOCX_IMAGE_img_006]] **Экологические потребности**"})(),
+        ],
+        segments=[
+            DocumentSegment(
+                segment_id="seg_0001",
+                ordinal=1,
+                level=1,
+                title="[[DOCX_IMAGE_img_006]] **Экологические потребности**",
+                normalized_title="ecological needs",
+                start_paragraph_index=0,
+                end_paragraph_index=0,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0000",
+                paragraph_ids=("p0000",),
+                paragraph_count=1,
+                char_count=20,
+                word_count=2,
+                estimated_token_count=3,
+                structural_role="section",
+                confidence="medium",
+                boundary_fingerprint="fp1",
+                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="medium", details={}),),
+            )
+        ],
+        segment_to_job={"seg_0001": (0,)},
+    )
+    checkbox_labels = []
+    expander_calls = []
+    caption_calls = []
+
+    class FakeExpander:
+        def __init__(self, label, expanded=False):
+            expander_calls.append((label, expanded))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app.st, "columns", lambda n: [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)])
+    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: checkbox_labels.append(label) or kwargs.get("value", False))
+    monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
+    monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "caption", lambda message, **kwargs: caption_calls.append(message))
+    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "expander", lambda label, expanded=False, **kwargs: FakeExpander(label, expanded))
+
+    app._render_analysis_review_panel(
+        prepared_run_context=prepared_run_context,
+        uploaded_file_token="report.docx:3:token",
+        chunk_size=6000,
+    )
+
+    assert any("[[DOCX_IMAGE" not in label and "**" not in label for label in checkbox_labels)
+    assert any(call[0] == "Included text preview: Экологические потребности" for call in expander_calls)
+    assert any(message == "Starts with: Экологические потребности" for message in caption_calls)
+
+
+def test_render_analysis_review_panel_explains_incomplete_segment_job_mapping(monkeypatch):
+    session_state = SessionState(
+        selected_segment_ids=["seg_failed"],
+        segment_status_by_id={"seg_failed": "failed"},
+        segment_progress_by_id={"seg_failed": 0.0},
+        structure_confirmed=True,
+        confirmed_structure_fingerprint="abc123def456",
+        confirmed_at_settings_hash="settings123",
+        segments_loaded_for_source_token="report.docx:3:token",
+    )
+    paragraphs = [
+        type("ParagraphStub", (), {"paragraph_id": "p0000", "asset_id": None, "attached_to_asset_id": None})(),
+    ]
+    prepared_run_context = _build_prepared_run_context(
+        structure_fingerprint="abc123def456",
+        paragraphs=paragraphs,
+        jobs=[{"job_id": "job_0000", "target_text": "failed-block", "paragraph_ids": ["p0000"]}],
+        segments=[
+            DocumentSegment(
+                segment_id="seg_failed",
+                ordinal=1,
+                title="Chapter 1",
+                start_paragraph_index=0,
+                end_paragraph_index=0,
+                start_paragraph_id="p0000",
+                end_paragraph_id="p0000",
+                paragraph_ids=("p0000",),
+                paragraph_count=1,
+                char_count=10,
+                word_count=2,
+                estimated_token_count=3,
+                structural_role="chapter",
+                confidence="high",
+                boundary_fingerprint="fp_failed",
+                boundary_evidence=(SegmentBoundaryEvidence(source="heading_style", confidence="high", details={}),),
+            ),
+        ],
+        segment_to_job={"seg_failed": (0,)},
+        segment_diagnostics=SegmentDetectionReport(warnings=("segment_job_mapping_incomplete",)),
+    )
+    caption_calls = []
+
+    monkeypatch.setattr(app, "_build_structure_settings_hash", lambda **kwargs: "settings123")
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(
+        app.st,
+        "columns",
+        _two_stage_columns(
+            [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)],
+            [FakeColumn(result=False), FakeColumn(result=False), FakeColumn(result=False)],
+        ),
+    )
+    monkeypatch.setattr(app.st, "checkbox", lambda label, **kwargs: kwargs.get("value", False))
+    monkeypatch.setattr(app.st, "selectbox", lambda label, options, index=0, **kwargs: options[index])
+    monkeypatch.setattr(app.st, "text_input", lambda label, value="", **kwargs: value)
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "subheader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "caption", lambda message, **kwargs: caption_calls.append(message))
+    monkeypatch.setattr(app.st, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "success", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        app.st,
+        "expander",
+        lambda *args, **kwargs: type("FakeExpander", (), {"__enter__": lambda self: self, "__exit__": lambda self, exc_type, exc, tb: False})(),
+    )
+
+    app._render_analysis_review_panel(
+        prepared_run_context=prepared_run_context,
+        uploaded_file_token="report.docx:3:token",
+        chunk_size=6000,
+    )
+
+    assert any(
+        message == "Process Selected unavailable: the current section boundaries no longer match the prepared document. Re-prepare the document before partial translation."
+        for message in caption_calls
+    )
+    assert any(
+        message.endswith(
+            "Retry Failed unavailable: the current section boundaries no longer match the prepared document. Re-prepare the document before rerunning failed sections."
+        )
         for message in caption_calls
     )
 

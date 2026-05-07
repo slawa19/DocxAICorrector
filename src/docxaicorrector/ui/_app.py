@@ -14,6 +14,7 @@ st.set_page_config(
 from docxaicorrector.core.constants import APP_READY_PATH, MAX_DOCX_ARCHIVE_SIZE_BYTES
 import docxaicorrector.ui.application_flow as application_flow
 import docxaicorrector.ui.compare_panel as compare_panel
+from docxaicorrector.chapter_workflow.service import build_document_context_prompt as build_chapter_workflow_document_context_prompt
 from docxaicorrector.ui.recommended_text_settings import (
     ManualTextSettingsOverride,
     RecommendedTextSettings,
@@ -130,6 +131,7 @@ from docxaicorrector.ui.structure_review_panel import (
     _render_analysis_review_panel as _structure_review_panel_render_analysis_review_panel,
 )
 from docxaicorrector.runtime.workflow_state import IdleViewState, ProcessingOutcome, has_restartable_outcome
+from docxaicorrector.pipeline.contracts import SegmentSelection
 
 PERSISTED_SOURCE_TTL_SECONDS = 12 * 60 * 60
 APP_READY_FRESHNESS_WINDOW_SECONDS = 15.0
@@ -227,14 +229,17 @@ def _show_notice(*, level: str, message: str) -> None:
     raise ValueError(f"Unsupported Streamlit notice level: {level}")
 
 
-def _build_document_context_prompt(*, prepared_run_context: object) -> str:
-    document_context_profile = getattr(prepared_run_context, "document_context_profile", None)
-    prompt_builder = getattr(document_context_profile, "to_prompt_text", None)
-    if callable(prompt_builder):
-        document_context_prompt = str(prompt_builder() or "").strip()
-        if document_context_prompt:
-            return document_context_prompt
-    return ""
+def _build_document_context_prompt(
+    *,
+    prepared_run_context: object,
+    selected_segment_ids: list[str] | None = None,
+    segment_selection: SegmentSelection | None = None,
+) -> str:
+    return build_chapter_workflow_document_context_prompt(
+        prepared_run_context=prepared_run_context,
+        selected_segment_ids=selected_segment_ids,
+        segment_selection=segment_selection,
+    )
 
 
 def _get_prepared_segments(prepared_run_context: object) -> list[SegmentLike]:
@@ -250,6 +255,7 @@ def _start_background_processing(
     structure_fingerprint: str | None = None,
     jobs: list[dict[str, str | int]],
     selected_segment_ids: list[str] | None = None,
+    segment_selection: SegmentSelection | None = None,
     document_segments: list | None = None,
     output_mode: str | None = None,
     include_front_matter: bool = False,
@@ -269,13 +275,14 @@ def _start_background_processing(
         *,
         runtime,
         uploaded_filename,
-        source_token,
-        run_id,
+        source_token="",
+        run_id="",
         prepared_source_key,
         structure_fingerprint,
         jobs,
         selected_segment_ids,
-        document_segments,
+        segment_selection=None,
+        document_segments=None,
         output_mode,
         include_front_matter,
         include_toc,
@@ -301,6 +308,7 @@ def _start_background_processing(
             structure_fingerprint=structure_fingerprint,
             jobs=jobs,
             selected_segment_ids=selected_segment_ids,
+            segment_selection=segment_selection,
             document_segments=document_segments,
             output_mode=output_mode,
             include_front_matter=include_front_matter,
@@ -326,6 +334,7 @@ def _start_background_processing(
         structure_fingerprint=structure_fingerprint,
         jobs=jobs,
         selected_segment_ids=selected_segment_ids,
+        segment_selection=segment_selection,
         document_segments=document_segments,
         output_mode=output_mode,
         include_front_matter=include_front_matter,
@@ -1138,12 +1147,18 @@ def main() -> None:
             target_language=target_language,
         )
     elif action == "start_selected":
+        requested_segment_selection = SegmentSelection(selected_segment_ids=tuple(get_selected_segment_ids()))
         selected_processing_state = _build_effective_selected_processing_state(
             prepared_run_context=prepared_run_context,
             selected_segment_ids=get_selected_segment_ids(),
+            segment_selection=requested_segment_selection,
             segment_status_by_id=get_segment_status_by_id(),
         )
         selected_processing_payload = selected_processing_state["payload"]
+        effective_segment_selection = SegmentSelection(
+            selected_segment_ids=tuple(selected_processing_payload["selected_segment_ids"]),
+            include_descendants=False,
+        )
         _start_background_processing(
             uploaded_filename=uploaded_filename,
             uploaded_token=uploaded_file_token,
@@ -1152,6 +1167,7 @@ def main() -> None:
             structure_fingerprint=str(getattr(prepared_run_context, "structure_fingerprint", "") or ""),
             jobs=cast(list[dict[str, str | int]], selected_processing_payload["jobs"]),
             selected_segment_ids=selected_processing_payload["selected_segment_ids"],
+            segment_selection=effective_segment_selection,
             document_segments=list(getattr(prepared_run_context, "segments", []) or []),
             output_mode="selected_only",
             include_front_matter=False,
@@ -1160,7 +1176,11 @@ def main() -> None:
             image_assets=selected_processing_payload["image_assets"],
             image_mode=image_mode,
             app_config=app_config,
-            document_context_prompt=document_context_prompt,
+            document_context_prompt=_build_document_context_prompt(
+                prepared_run_context=prepared_run_context,
+                selected_segment_ids=selected_processing_payload["selected_segment_ids"],
+                segment_selection=effective_segment_selection,
+            ),
             model=model,
             max_retries=max_retries,
             processing_operation=processing_operation,
@@ -1170,14 +1190,20 @@ def main() -> None:
         st.rerun()
     elif action == "start_selected_with_context":
         include_front_matter, include_toc = _structure_review_panel_get_selected_context_policy()
+        requested_segment_selection = SegmentSelection(selected_segment_ids=tuple(get_selected_segment_ids()))
         selected_processing_state = _build_effective_selected_processing_state(
             prepared_run_context=prepared_run_context,
             selected_segment_ids=get_selected_segment_ids(),
+            segment_selection=requested_segment_selection,
             segment_status_by_id=get_segment_status_by_id(),
             include_front_matter=include_front_matter,
             include_toc=include_toc,
         )
         selected_processing_payload = selected_processing_state["payload"]
+        effective_segment_selection = SegmentSelection(
+            selected_segment_ids=tuple(selected_processing_payload["selected_segment_ids"]),
+            include_descendants=False,
+        )
         _start_background_processing(
             uploaded_filename=uploaded_filename,
             uploaded_token=uploaded_file_token,
@@ -1186,6 +1212,7 @@ def main() -> None:
             structure_fingerprint=str(getattr(prepared_run_context, "structure_fingerprint", "") or ""),
             jobs=cast(list[dict[str, str | int]], selected_processing_payload["jobs"]),
             selected_segment_ids=selected_processing_payload["selected_segment_ids"],
+            segment_selection=effective_segment_selection,
             document_segments=list(getattr(prepared_run_context, "segments", []) or []),
             output_mode="selected_with_context",
             include_front_matter=bool(selected_processing_payload["include_front_matter"]),
@@ -1194,7 +1221,11 @@ def main() -> None:
             image_assets=image_assets,
             image_mode=image_mode,
             app_config=app_config,
-            document_context_prompt=document_context_prompt,
+            document_context_prompt=_build_document_context_prompt(
+                prepared_run_context=prepared_run_context,
+                selected_segment_ids=selected_processing_payload["selected_segment_ids"],
+                segment_selection=effective_segment_selection,
+            ),
             model=model,
             max_retries=max_retries,
             processing_operation=processing_operation,
@@ -1208,6 +1239,10 @@ def main() -> None:
             segment_status_by_id=get_segment_status_by_id(),
         )
         retry_failed_payload = retry_failed_state["payload"]
+        retry_segment_selection = SegmentSelection(
+            selected_segment_ids=tuple(retry_failed_payload["selected_segment_ids"]),
+            include_descendants=False,
+        )
         _start_background_processing(
             uploaded_filename=uploaded_filename,
             uploaded_token=uploaded_file_token,
@@ -1216,6 +1251,7 @@ def main() -> None:
             structure_fingerprint=str(getattr(prepared_run_context, "structure_fingerprint", "") or ""),
             jobs=cast(list[dict[str, str | int]], retry_failed_payload["jobs"]),
             selected_segment_ids=retry_failed_payload["selected_segment_ids"],
+            segment_selection=retry_segment_selection,
             document_segments=list(getattr(prepared_run_context, "segments", []) or []),
             output_mode="selected_only",
             include_front_matter=False,
@@ -1224,7 +1260,11 @@ def main() -> None:
             image_assets=retry_failed_payload["image_assets"],
             image_mode=image_mode,
             app_config=app_config,
-            document_context_prompt=document_context_prompt,
+            document_context_prompt=_build_document_context_prompt(
+                prepared_run_context=prepared_run_context,
+                selected_segment_ids=retry_failed_payload["selected_segment_ids"],
+                segment_selection=retry_segment_selection,
+            ),
             model=model,
             max_retries=max_retries,
             processing_operation=processing_operation,

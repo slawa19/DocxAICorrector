@@ -3,6 +3,7 @@ from typing import Any, cast
 import docxaicorrector.processing.processing_service as processing_service
 from docxaicorrector.core.models import ImageAsset
 from docxaicorrector.document.segments import DocumentContextProfile, GlossaryTerm
+from docxaicorrector.pipeline.contracts import SegmentSelection
 from docxaicorrector.processing.processing_service import ProcessingService
 from docxaicorrector.pipeline.contracts import ProcessingContext, ProcessingDependencies
 from docxaicorrector.pipeline.setup import initialize_processing_run
@@ -173,6 +174,38 @@ def test_run_processing_worker_emits_success_outcome_and_runtime_events():
     assert emitted_events[-1] == WorkerCompleteEvent(outcome="succeeded")
 
 
+def test_run_document_processing_resolves_selected_segment_ids_from_segment_selection():
+    captured = {}
+    service = _build_service(
+        run_document_processing_impl_fn=lambda **kwargs: (captured.setdefault("run", kwargs), "succeeded")[1],
+    )
+
+    result = service.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[
+            {
+                "target_text": "x",
+                "context_before": "",
+                "context_after": "",
+                "target_chars": 1,
+                "context_chars": 0,
+            }
+        ],
+        selected_segment_ids=None,
+        segment_selection=SegmentSelection(selected_segment_ids=("seg_0001", "seg_0002"), include_descendants=False),
+        image_assets=[],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime={},
+    )
+
+    assert result == "succeeded"
+    assert captured["run"]["selected_segment_ids"] == ["seg_0001", "seg_0002"]
+
+
 def test_get_processing_service_returns_singleton_until_reset(monkeypatch):
     processing_service.reset_processing_service()
 
@@ -304,6 +337,11 @@ def test_run_prepared_background_document_passes_prepared_payload_into_processin
             "uploaded_filename": "prepared-report.docx",
             "jobs": [{"target_text": "one", "job_id": "job_0000"}],
             "selected_segment_ids": ["seg_0001", "seg_0002"],
+            "segments": [
+                type("SegmentStub", (), {"segment_id": "seg_0001", "ordinal": 1, "level": 1, "structural_role": "chapter", "title": "Chapter 1"})(),
+                type("SegmentStub", (), {"segment_id": "seg_0002", "ordinal": 2, "level": 1, "structural_role": "chapter", "title": "Chapter 2"})(),
+                type("SegmentStub", (), {"segment_id": "seg_0003", "ordinal": 3, "level": 1, "structural_role": "chapter", "title": "Chapter 3"})(),
+            ],
             "paragraphs": ["p1"],
             "image_assets": ["img1"],
             "translation_domain": "theology",
@@ -344,6 +382,10 @@ def test_run_prepared_background_document_passes_prepared_payload_into_processin
     assert captured["run"]["app_config"]["translation_domain_default"] == "theology"
     assert captured["run"]["app_config"]["translation_domain_instructions"] == "TERM PLAN"
     assert "Great Tribulation" in captured["run"]["document_context_prompt"]
+    assert "ФОКУС ТЕКУЩЕГО ЗАПУСКА" in captured["run"]["document_context_prompt"]
+    assert "#1 | Chapter 1" in captured["run"]["document_context_prompt"]
+    assert "#2 | Chapter 2" in captured["run"]["document_context_prompt"]
+    assert "Следующий сегмент: Chapter 3" in captured["run"]["document_context_prompt"]
 
 
 def test_run_processing_worker_passes_selected_segment_ids_to_pipeline(monkeypatch):
@@ -438,11 +480,15 @@ def test_initialize_processing_run_builds_segment_runtime_metadata():
     context = ProcessingContext(
         uploaded_file="report.docx",
         uploaded_filename="report.docx",
+            source_token="report.docx:token",
+            run_id="run-123",
         jobs=[
             {"target_text": "block-1", "target_chars": 7, "context_chars": 0, "segment_id": "seg_0001"},
             {"target_text": "block-2", "target_chars": 7, "context_chars": 0, "segment_id": "seg_0002"},
         ],
         selected_segment_ids=("seg_0001", "seg_0002"),
+            document_segments=(),
+            segment_selection_mode="selected_segments",
         output_mode="selected_only",
         include_front_matter=False,
         include_toc=False,

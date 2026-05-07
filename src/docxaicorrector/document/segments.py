@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import hashlib
+import logging
 import re
 from collections.abc import Mapping, Sequence
 
@@ -18,6 +19,14 @@ _BIBLIOGRAPHY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _CHAPTER_PATTERN = re.compile(r"^(?:chapter|part|глава|часть)\b", re.IGNORECASE)
+OVERSIZED_HEADING_SPLIT_EVIDENCE_SOURCE = "oversized_heading_split"
+_SEGMENT_WARNING_MESSAGES: dict[str, str] = {
+    "low_confidence_boundary": "Boundary confidence is low",
+    "low_confidence_segments_present": "Low-confidence segment boundaries detected",
+    "no_heading_boundaries_detected": "No heading boundaries were detected; using fallback segmentation",
+    "segment_job_mapping_incomplete": "Some processing blocks span multiple segments; review chapter boundaries",
+}
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -77,6 +86,22 @@ class SegmentOutlineEntry:
     title: str = ""
     level: int = 1
     structural_role: str = "body_range"
+
+
+def humanize_segment_warning(warning: object) -> str:
+    raw_warning = str(warning or "").strip()
+    if not raw_warning:
+        return ""
+    return _SEGMENT_WARNING_MESSAGES.get(raw_warning, raw_warning)
+
+
+def humanize_segment_warnings(warnings: Sequence[object]) -> tuple[str, ...]:
+    messages: list[str] = []
+    for warning in warnings:
+        message = humanize_segment_warning(warning)
+        if message and message not in messages:
+            messages.append(message)
+    return tuple(messages)
 
 
 @dataclass(frozen=True, init=False)
@@ -240,20 +265,15 @@ def detect_document_segments(
                 else len(paragraph_list)
             )
             segment_end = next_start_index - 1
-            segments.append(
-                _build_segment(
+            segments.extend(
+                _build_heading_segments(
                     paragraph_list,
-                    start_index=candidate.start_index,
+                    candidate=candidate,
                     end_index=segment_end,
-                    ordinal=len(segments) + 1,
-                    level=candidate.level,
-                    title=candidate.title,
-                    normalized_title=candidate.normalized_title,
-                    structural_role=candidate.structural_role,
-                    confidence=candidate.confidence,
-                    boundary_evidence=candidate.boundary_evidence,
+                    start_ordinal=len(segments) + 1,
                     source_content_hash16=source_content_hash16,
                     detector_version=detector_version,
+                    fallback_max_chars=fallback_max_chars,
                 )
             )
             cursor = segment_end + 1
@@ -318,6 +338,7 @@ def build_segment_to_job_mapping(
         }
         if not paragraph_ids:
             continue
+        matched_segment = False
         for segment in segments:
             segment_id = segment.segment_id
             if not segment_id:
@@ -325,7 +346,18 @@ def build_segment_to_job_mapping(
             segment_paragraph_ids = paragraph_sets.get(segment_id, set())
             if paragraph_ids.issubset(segment_paragraph_ids):
                 mapping.setdefault(segment_id, []).append(job_index)
+                matched_segment = True
                 break
+        if not matched_segment:
+            job_id = ""
+            if isinstance(job, dict):
+                job_id = str(job.get("job_id", "") or job.get("id", "") or "").strip()
+            logger.warning(
+                "segment_to_job_mapping_unassigned job_index=%s job_id=%s paragraph_ids=%s",
+                job_index,
+                job_id or "<missing>",
+                sorted(paragraph_ids),
+            )
     return {segment_id: tuple(indexes) for segment_id, indexes in mapping.items()}
 
 
@@ -450,12 +482,14 @@ def _collect_heading_candidates(
                 )
             )
         if _has_typography_heading_signal(paragraph, text):
+            is_all_caps = _is_all_caps_text(text)
             evidence.append(
                 SegmentBoundaryEvidence(
                     source="typography",
                     confidence="medium" if getattr(paragraph, "role", "") == "heading" else "low",
                     details={
                         "is_bold": bool(getattr(paragraph, "is_bold", False)),
+                        "is_all_caps": is_all_caps,
                         "alignment": getattr(paragraph, "paragraph_alignment", None),
                         "font_size_pt": getattr(paragraph, "font_size_pt", None),
                     },
@@ -605,6 +639,75 @@ def _build_gap_segments(
     ]
 
 
+def _build_heading_segments(
+    paragraphs: Sequence[ParagraphUnit],
+    *,
+    candidate: _SegmentStartCandidate,
+    end_index: int,
+    start_ordinal: int,
+    source_content_hash16: str,
+    detector_version: str,
+    fallback_max_chars: int,
+) -> list[DocumentSegment]:
+    total_char_count = _range_char_count(paragraphs, candidate.start_index, end_index)
+    if total_char_count <= fallback_max_chars or candidate.start_index >= end_index:
+        return [
+            _build_segment(
+                paragraphs,
+                start_index=candidate.start_index,
+                end_index=end_index,
+                ordinal=start_ordinal,
+                level=candidate.level,
+                title=candidate.title,
+                normalized_title=candidate.normalized_title,
+                structural_role=candidate.structural_role,
+                confidence=candidate.confidence,
+                boundary_evidence=candidate.boundary_evidence,
+                source_content_hash16=source_content_hash16,
+                detector_version=detector_version,
+            )
+        ]
+
+    split_evidence = SegmentBoundaryEvidence(
+        source=OVERSIZED_HEADING_SPLIT_EVIDENCE_SOURCE,
+        confidence="medium",
+        details={
+            "fallback_segment_max_chars": fallback_max_chars,
+            "total_char_count": total_char_count,
+            "body_start_index": candidate.start_index + 1,
+            "end_index": end_index,
+        },
+    )
+
+    parent_segment = _build_segment(
+        paragraphs,
+        start_index=candidate.start_index,
+        end_index=candidate.start_index,
+        ordinal=start_ordinal,
+        level=candidate.level,
+        title=candidate.title,
+        normalized_title=candidate.normalized_title,
+        structural_role=candidate.structural_role,
+        confidence=candidate.confidence,
+        boundary_evidence=tuple((*candidate.boundary_evidence, split_evidence)),
+        source_content_hash16=source_content_hash16,
+        detector_version=detector_version,
+    )
+    child_segments = _build_fallback_segments(
+        paragraphs,
+        start_index=candidate.start_index + 1,
+        end_index=end_index,
+        start_ordinal=start_ordinal + 1,
+        source_content_hash16=source_content_hash16,
+        detector_version=detector_version,
+        fallback_max_chars=fallback_max_chars,
+        structural_role=candidate.structural_role,
+        title_prefix=f"{candidate.title} Part",
+        level=min(candidate.level + 1, 6),
+    )
+    return [parent_segment, *child_segments]
+
+
 def _build_fallback_segments(
     paragraphs: Sequence[ParagraphUnit],
     *,
@@ -616,6 +719,7 @@ def _build_fallback_segments(
     fallback_max_chars: int,
     structural_role: str,
     title_prefix: str,
+    level: int = 1,
 ) -> list[DocumentSegment]:
     segments: list[DocumentSegment] = []
     range_start = start_index
@@ -631,7 +735,7 @@ def _build_fallback_segments(
                     start_index=range_start,
                     end_index=index - 1,
                     ordinal=ordinal,
-                    level=1,
+                    level=level,
                     title=f"{title_prefix} {len(segments) + 1}",
                     normalized_title=_normalize_segment_title(f"{title_prefix} {len(segments) + 1}"),
                     structural_role=structural_role,
@@ -658,7 +762,7 @@ def _build_fallback_segments(
                 start_index=range_start,
                 end_index=end_index,
                 ordinal=ordinal,
-                level=1,
+                level=level,
                 title=f"{title_prefix} {len(segments) + 1}",
                 normalized_title=_normalize_segment_title(f"{title_prefix} {len(segments) + 1}"),
                 structural_role=structural_role,
@@ -809,10 +913,19 @@ def _has_typography_heading_signal(paragraph: ParagraphUnit, text: str) -> bool:
         return False
     if bool(getattr(paragraph, "is_bold", False)):
         return True
+    if _is_all_caps_text(normalized_text):
+        return True
     if str(getattr(paragraph, "paragraph_alignment", "") or "").strip().lower() == "center":
         return True
     font_size = getattr(paragraph, "font_size_pt", None)
     return isinstance(font_size, (int, float)) and float(font_size) >= 14.0
+
+
+def _is_all_caps_text(text: str) -> bool:
+    alpha_chars = [char for char in str(text or "") if char.isalpha()]
+    if len(alpha_chars) < 2:
+        return False
+    return "".join(alpha_chars).upper() == "".join(alpha_chars)
 
 
 def _is_toc_structural_role(paragraph: ParagraphUnit) -> bool:

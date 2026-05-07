@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal, TypeAlias, TypeVar, cast
 
 from docxaicorrector.core.constants import SEGMENT_RESULT_REGISTRY_DIR
+from docxaicorrector.pipeline.contracts import SegmentSelection
 
 
 AssemblyMode: TypeAlias = Literal["selected_chapters", "full_document"]
@@ -20,6 +21,7 @@ class ReassemblyPlan:
     selected_segment_ids: tuple[str, ...]
     included_segment_ids: tuple[str, ...]
     selected_segment_count: int | None
+    segment_selection: SegmentSelection | None = None
 
 
 @dataclass(frozen=True)
@@ -35,20 +37,27 @@ T = TypeVar("T")
 def build_reassembly_plan(
     *,
     selected_segment_ids: Sequence[object] | None,
+    segment_selection: SegmentSelection | None = None,
     output_mode: str | None,
     include_front_matter: bool = False,
     include_toc: bool = False,
     jobs: Sequence[object],
     source_paragraphs: Sequence[object] | None = None,
 ) -> ReassemblyPlan:
-    normalized_selected_ids = _normalize_segment_ids(selected_segment_ids)
+    normalized_selected_ids = _normalize_segment_ids(
+        segment_selection.selected_segment_ids if segment_selection is not None else selected_segment_ids
+    )
     if normalized_selected_ids:
-        effective_output_mode = _coerce_selected_output_mode(output_mode)
+        effective_output_mode = _coerce_selected_output_mode(
+            output_mode if str(output_mode or "").strip() else getattr(segment_selection, "output_mode", None)
+        )
+        resolved_include_front_matter = bool(include_front_matter or getattr(segment_selection, "include_front_matter", False))
+        resolved_include_toc = bool(include_toc or getattr(segment_selection, "include_toc", False))
         if effective_output_mode == "selected_with_context":
             included_segment_ids = _resolve_selected_with_context_included_segment_ids(
                 selected_segment_ids=normalized_selected_ids,
-                include_front_matter=include_front_matter,
-                include_toc=include_toc,
+                include_front_matter=resolved_include_front_matter,
+                include_toc=resolved_include_toc,
                 source_paragraphs=source_paragraphs,
             )
         else:
@@ -59,6 +68,17 @@ def build_reassembly_plan(
             selected_segment_ids=normalized_selected_ids,
             included_segment_ids=included_segment_ids,
             selected_segment_count=len(normalized_selected_ids),
+            segment_selection=(
+                SegmentSelection(
+                    selected_segment_ids=normalized_selected_ids,
+                    include_descendants=bool(segment_selection.include_descendants),
+                    include_front_matter=resolved_include_front_matter,
+                    include_toc=resolved_include_toc,
+                    output_mode=effective_output_mode,
+                )
+                if segment_selection is not None
+                else None
+            ),
         )
     effective_output_mode = _coerce_full_document_output_mode(output_mode)
     included_segment_ids = _resolve_included_segment_ids(
@@ -72,6 +92,7 @@ def build_reassembly_plan(
         selected_segment_ids=(),
         included_segment_ids=included_segment_ids,
         selected_segment_count=None,
+        segment_selection=None,
     )
 
 
@@ -116,6 +137,14 @@ def build_reassembly_result_manifest(
         manifest["run_id"] = str(run_id).strip()
     if plan.selected_segment_ids:
         manifest["selected_segment_ids"] = list(plan.selected_segment_ids)
+    if plan.segment_selection is not None:
+        manifest["segment_selection"] = {
+            "selected_segment_ids": list(plan.segment_selection.selected_segment_ids),
+            "include_descendants": bool(plan.segment_selection.include_descendants),
+            "include_front_matter": bool(plan.segment_selection.include_front_matter),
+            "include_toc": bool(plan.segment_selection.include_toc),
+            "output_mode": str(plan.segment_selection.output_mode or plan.output_mode),
+        }
     return manifest
 
 

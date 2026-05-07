@@ -1,7 +1,7 @@
 # Chapter Workflow Contract Alignment Spec
 
 Date: 2026-05-07
-Status: Draft for approval
+Status: Implementation in progress
 
 ## Problem
 
@@ -24,27 +24,28 @@ Two review passes identified a mixed set of valid gaps, overstatements, and alre
 ### Already working and not to be regressed
 
 - Segment detection, segment diagnostics, structure fingerprinting, and manifest export are implemented.
+- Guardrails already prevent silent segment-scoped execution when coverage is invalid, mapping is incomplete, or the outline is not confirmed.
 - Segment-aware job filtering and hard semantic boundaries are implemented.
+- Segment coverage validation and stale cross-boundary mapping blocking are implemented.
 - STOPPED runs already revert queued and processing segment statuses back to pending.
 - Minimal failed-segment retry exists, with current-session failed-job narrowing when run log evidence is available.
+- Persisted failed-job reuse for the same prepared identity now exists and is preferred after current-session run-log evidence.
 - Reassembly foundations exist for `selected_only`, `selected_with_context`, `hybrid_document`, and `final_translated_book`.
+- Reassembly manifests already include `source_token`, `run_id`, `coverage.segment_ids`, and `coverage.paragraph_ranges`.
+- `ProcessingContext` and `ProcessingState` already carry the current segment-aware fields used by the pipeline.
+- `DocumentContextProfile` is already expanded, and `detected_author` now populates from DOCX core properties when source metadata is available.
 - UI full-book launch already upgrades to `final_translated_book` when all required non-skipped segments are complete in the current session.
+- Structure confirmation already persists `confirmed_segment_ids` alongside the confirmed fingerprint and settings hash.
+- Deterministic `segment_id`, `boundary_fingerprint`, and `structure_fingerprint` behavior is protected by direct regression tests.
 - Generic runtime events remain acceptable for the current phase; dedicated `Segment*Event` classes are optional, not mandatory.
 
 ### Confirmed gaps to address
 
-1. `DocumentContextProfile` is under-modeled relative to the current spec contract.
-2. `ProcessingContext` and `ProcessingState` are missing several segment-aware contract fields.
-3. `SegmentSelection` does not exist as a first-class orchestration type.
-4. Segment detection lacks explicit post-build coverage validation.
-5. Oversized heading-based segments are not split into synthetic child segments.
-6. Structure confirmation stores only fingerprint and settings hash, not the ordered confirmed outline snapshot.
-7. Reassembly result manifest is narrower than the spec examples.
-8. The API section has no dedicated internal service boundary yet; logic is still mostly embedded in UI orchestration.
-9. Detection signals are missing all-caps typography use and page or section break evidence.
-10. The structure settings hash is broader than necessary around `chunk_size`.
-11. Segment-to-job mapping silently drops anomalous cross-boundary jobs.
-12. Warnings are machine-readable keys without a dedicated user-facing normalization layer.
+1. `SegmentSelection` now drives selected/retry orchestration, survives into pipeline context, and is persisted into selected-run result manifests, but block execution and most downstream processing logic still act on normalized `selected_segment_ids` rather than the richer selection object.
+2. Prompt enrichment now includes current block-specific segment framing during translated block execution and current-run previous completed segment summary, but it still does not persist continuity state across runs.
+3. `detected_author` is still limited by the source contract: DOCX core properties are supported, but non-DOCX author metadata is not reliably available.
+4. Page or section break evidence remains deferred because the current extraction contract does not expose that metadata.
+5. The primary structure-review surface still exposes technical detector details and raw noisy titles instead of clearly answering which parts of the document will enter partial translation.
 
 ### Explicitly not treated as defects in this change
 
@@ -57,15 +58,15 @@ Two review passes identified a mixed set of valid gaps, overstatements, and alre
 ## Goals
 
 1. Bring the chapter workflow implementation back into a coherent contract shape across spec, runtime, UI, and reassembly.
-2. Fix the highest-signal correctness gaps first, especially contract completeness and segment validation.
-3. Preserve existing working UX and processing behavior while tightening internal data contracts.
-4. Introduce an internal service boundary for chapter workflow actions without requiring immediate HTTP exposure.
+2. Keep the spec focused on real remaining gaps rather than already-landed implementation.
+3. Redesign the structure-review surface so it is understandable to a normal user reviewing partial translation scope.
+4. Continue moving selection/retry orchestration toward stable service-layer contracts without requiring immediate HTTP exposure.
 
 ## Non-Goals
 
 - No FastAPI or Flask server in this slice.
 - No database-backed persistence model.
-- No large UI redesign beyond modest structure review ergonomics already implied by the contract.
+- No new backend workflow or detector family just to support the UI redesign.
 - No new nested chapter tree UI model.
 - No dedicated event-family redesign.
 
@@ -124,7 +125,8 @@ Add a first-class `SegmentSelection` model that captures:
 
 Implementation rule:
 
-- selected-run payload builders and UI launch actions should derive from this model rather than reassembling selection state ad hoc.
+- selected-run payload builders and UI launch actions should derive from this model rather than reassembling selection state ad hoc;
+- downstream execution may continue consuming normalized `selected_segment_ids` until a later contract pass needs the richer object end-to-end, but pipeline context and selected-run manifests should preserve the richer selection metadata when it is available.
 
 ### 4. Add segment coverage validation
 
@@ -201,6 +203,11 @@ If raw extraction does not yet expose page or section break metadata, this slice
 - add the paragraph fields if extraction can provide them cheaply; or
 - explicitly mark that evidence path as deferred in the chapter workflow spec after confirming extraction limitations.
 
+Extraction review 2026-05-07:
+
+- current `ParagraphUnit` and the active extraction path do not expose `page_break`, `section_break`, or equivalent paragraph-boundary metadata;
+- page or section break evidence is therefore deferred until the extraction contract grows those fields.
+
 ### 10. Narrow structure settings invalidation
 
 Refine `_build_structure_settings_hash(...)` so `chunk_size` only invalidates confirmation when it can change the effective segment structure, especially synthetic oversized-segment splitting.
@@ -215,6 +222,25 @@ When a job cannot be assigned to any segment because it crosses segment boundari
 ### 12. Normalize user-facing warnings
 
 Keep machine-readable warning keys in detection/report structures if needed, but add a single mapping layer for UI and manifest-facing human-readable messages.
+
+Rules:
+
+- primary review messages should explain whether the outline is ready, what will be translated, and what must be reviewed first;
+- job-level and fingerprint-level diagnostics should not appear inline in the main review list;
+- when mapping is incomplete, explain the remediation in document terms (`re-prepare the document`) rather than pipeline terms.
+
+### 13. Redesign the structure review surface
+
+Reframe the chapter selector as a section-review surface.
+
+Rules:
+
+- the main surface must answer `what will be translated if I run a partial translation now?`;
+- section titles shown to the user must be sanitized to remove image placeholders, markdown markup, and other extraction noise where possible;
+- inline labels should prefer user-facing concepts such as section type, hierarchy, word count, confidence, and current run status;
+- raw boundary fingerprints, detector versions, and manifest comparison tools must move behind an advanced/debug affordance instead of appearing inline in the main review path;
+- boundary inspection should use a plain-language included-text preview (`starts with`, `ends with`) rather than raw boundary diagnostics;
+- image placeholders inside a title must not cause the UI to present a section as if it were an image block.
 
 ## Module Boundaries And Dependency Direction
 
@@ -273,6 +299,7 @@ Responsibilities:
 
 - store full confirmation snapshot;
 - consume normalized warning messages;
+- present a user-first section review surface while keeping advanced diagnostics available on demand;
 - build launches via the new service boundary rather than ad hoc payload assembly.
 
 ### Service boundary layer
@@ -296,7 +323,8 @@ Responsibilities:
 6. Upgrade reassembly manifest fields.
 7. Extract internal chapter workflow service boundary.
 8. Tighten detection evidence, settings invalidation, and anomaly logging.
-9. Add or update focused tests for each changed slice.
+9. Redesign the review surface to hide internals behind advanced tools and sanitize titles/previews.
+10. Add or update focused tests for each changed slice.
 
 ## Verification Criteria
 
@@ -308,24 +336,26 @@ At minimum, the implementation is acceptable when all of the following are true:
 4. Confirmation stores enough state to validate the confirmed full outline, not only the fingerprint.
 5. Reassembly result manifests expose the newly required contract fields.
 6. Existing STOPPED rollback, retry behavior, and full-book gating remain intact.
-7. Focused tests covering touched slices pass.
+7. The primary review surface tells the user what will be translated without exposing raw internal detector identifiers inline.
+8. Focused tests covering touched slices pass.
 
 ## Implementation Checklist
 
-- [ ] Expand `DocumentContextProfile` and its builders.
-- [ ] Add `SegmentSelection` model.
-- [ ] Extend `ProcessingContext` and `ProcessingState`.
-- [ ] Add paragraph coverage validation for detected segments.
-- [ ] Add synthetic child splitting for oversized heading-based segments.
-- [ ] Persist ordered confirmed segment ids alongside fingerprint and settings hash.
-- [ ] Upgrade reassembly manifest contract with source token, run id, and paragraph coverage.
-- [ ] Extract internal chapter workflow service boundary.
-- [ ] Add all-caps typography support.
-- [ ] Add page or section break evidence or explicitly mark it deferred after extraction review.
-- [ ] Narrow structure settings hash invalidation around `chunk_size`.
-- [ ] Add anomaly logging for cross-boundary job mapping.
-- [ ] Normalize human-readable structure warnings.
-- [ ] Run focused verification for touched slices.
+- [x] Expand `DocumentContextProfile` and its builders.
+- [x] Add `SegmentSelection` model.
+- [x] Thread `SegmentSelection` through selected/retry UI-service launch orchestration.
+- [x] Extend `ProcessingContext` and `ProcessingState`.
+- [x] Add paragraph coverage validation for detected segments.
+- [x] Add synthetic child splitting for oversized heading-based segments.
+- [x] Persist ordered confirmed segment ids alongside fingerprint and settings hash.
+- [x] Upgrade reassembly manifest contract with source token, run id, and paragraph coverage.
+- [x] Extract internal chapter workflow service boundary.
+- [x] Add all-caps typography support.
+- [x] Add page or section break evidence or explicitly mark it deferred after extraction review.
+- [x] Narrow structure settings hash invalidation around `chunk_size`.
+- [x] Add anomaly logging for cross-boundary job mapping.
+- [x] Normalize human-readable structure warnings.
+- [x] Run focused verification for touched slices.
 
 ## What Does Not Change
 

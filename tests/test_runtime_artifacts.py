@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 from docxaicorrector.runtime.artifacts import (
@@ -261,6 +262,7 @@ def test_write_job_result_registry_persists_job_records_in_identity_tree(tmp_pat
                 "job_id": "job_0007",
                 "segment_id": "seg_0002",
                 "status": "failed",
+                "updated_at": "2026-05-07T12:00:00+00:00",
                 "error_code": "block_failed",
             }
         ],
@@ -277,6 +279,7 @@ def test_write_job_result_registry_persists_job_records_in_identity_tree(tmp_pat
         "job_id": "job_0007",
         "segment_id": "seg_0002",
         "status": "failed",
+        "updated_at": "2026-05-07T12:00:00+00:00",
         "error_code": "block_failed",
     }
 
@@ -330,4 +333,55 @@ def test_load_job_result_registry_keeps_latest_record_per_job_id(tmp_path):
             "job_id": "job_0002",
             "status": "completed",
         },
+    }
+
+
+def test_load_job_result_registry_prefers_payload_updated_at_over_file_mtime(tmp_path):
+    target_dir = tmp_path / "prep_report_1234" / "struct-abc"
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    older_payload_newer_file = target_dir / "job_0001_newer-file.job-result.json"
+    newer_payload_older_file = target_dir / "job_0001_older-file.job-result.json"
+
+    older_payload_newer_file.write_text(
+        json.dumps(
+            {
+                "prepared_source_key": "prep:report:1234",
+                "structure_fingerprint": "struct-abc",
+                "job_id": "job_0001",
+                "status": "completed",
+                "updated_at": "2026-05-07T11:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    newer_payload_older_file.write_text(
+        json.dumps(
+            {
+                "prepared_source_key": "prep:report:1234",
+                "structure_fingerprint": "struct-abc",
+                "job_id": "job_0001",
+                "status": "failed",
+                "updated_at": "2026-05-07T12:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    os.utime(newer_payload_older_file, (1_700_000_000, 1_700_000_000))
+    os.utime(older_payload_newer_file, (1_800_000_000, 1_800_000_000))
+
+    loaded = load_job_result_registry(
+        prepared_source_key="prep:report:1234",
+        structure_fingerprint="struct-abc",
+        input_dir=tmp_path,
+    )
+
+    assert loaded == {
+        "job_0001": {
+            "prepared_source_key": "prep:report:1234",
+            "structure_fingerprint": "struct-abc",
+            "job_id": "job_0001",
+            "status": "failed",
+            "updated_at": "2026-05-07T12:00:00+00:00",
+        }
     }

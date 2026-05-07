@@ -77,6 +77,149 @@ def _build_prompt_source_text(*, context: Any) -> str:
     return "\n\n".join(parts)
 
 
+def _build_block_segment_focus_prompt(*, context: Any, initialization: Any, index: int) -> str:
+    if getattr(context, "processing_operation", "") != "translate":
+        return ""
+
+    segment_ids_by_job = tuple(getattr(initialization, "segment_ids_by_job", ()) or ())
+    if not segment_ids_by_job or index <= 0:
+        return ""
+
+    active_segment_index = min(index - 1, len(segment_ids_by_job) - 1)
+    active_segment_id = segment_ids_by_job[active_segment_index]
+    if active_segment_id is None:
+        return ""
+
+    ordered_segments = [
+        segment
+        for segment in list(getattr(context, "document_segments", ()) or ())
+        if str(getattr(segment, "segment_id", "") or "").strip()
+    ]
+    if not ordered_segments:
+        return ""
+
+    ordered_segment_ids = [str(getattr(segment, "segment_id", "") or "").strip() for segment in ordered_segments]
+    try:
+        segment_position = ordered_segment_ids.index(str(active_segment_id))
+    except ValueError:
+        return ""
+
+    active_segment = ordered_segments[segment_position]
+    segment_titles_by_id = dict(getattr(initialization, "segment_titles_by_id", {}) or {})
+    active_title = str(
+        getattr(active_segment, "title", "") or segment_titles_by_id.get(str(active_segment_id), active_segment_id)
+    ).strip()
+    if not active_title:
+        return ""
+
+    active_level = max(1, int(getattr(active_segment, "level", 1) or 1))
+    active_ordinal = max(1, int(getattr(active_segment, "ordinal", segment_position + 1) or (segment_position + 1)))
+    active_role = str(getattr(active_segment, "structural_role", "body_range") or "body_range").strip() or "body_range"
+
+    lines = [f"- Текущий сегмент: #{active_ordinal} | L{active_level} | {active_role} | {active_title}"]
+
+    if segment_position > 0:
+        previous_title = str(getattr(ordered_segments[segment_position - 1], "title", "") or "").strip()
+        if previous_title:
+            lines.append(f"- Предыдущий сегмент: {previous_title}")
+    if segment_position + 1 < len(ordered_segments):
+        next_title = str(getattr(ordered_segments[segment_position + 1], "title", "") or "").strip()
+        if next_title:
+            lines.append(f"- Следующий сегмент: {next_title}")
+
+    return "ТЕКУЩИЙ БЛОК ДОКУМЕНТА:\n" + "\n".join(lines)
+
+
+def _resolve_job_segment_id(*, initialization: Any, index: int) -> str | None:
+    segment_ids_by_job = tuple(getattr(initialization, "segment_ids_by_job", ()) or ())
+    if not segment_ids_by_job or index <= 0 or index > len(segment_ids_by_job):
+        return None
+    segment_id = segment_ids_by_job[index - 1]
+    return str(segment_id).strip() if isinstance(segment_id, str) and str(segment_id).strip() else None
+
+
+def _mark_segment_progress_after_completed_block(*, state: Any, initialization: Any, index: int, processed_chunk: str) -> None:
+    segment_id = _resolve_job_segment_id(initialization=initialization, index=index)
+    if not segment_id:
+        return
+
+    state.segment_outputs.setdefault(segment_id, []).append(str(processed_chunk or ""))
+
+    segment_ids_by_job = tuple(getattr(initialization, "segment_ids_by_job", ()) or ())
+    next_segment_id = None
+    if index < len(segment_ids_by_job):
+        raw_next_segment_id = segment_ids_by_job[index]
+        if isinstance(raw_next_segment_id, str) and str(raw_next_segment_id).strip():
+            next_segment_id = str(raw_next_segment_id).strip()
+    if next_segment_id != segment_id:
+        state.completed_segment_ids.add(segment_id)
+
+
+def _build_previous_completed_segment_summary_prompt(*, context: Any, state: Any, initialization: Any, index: int) -> str:
+    if getattr(context, "processing_operation", "") != "translate":
+        return ""
+
+    current_segment_id = _resolve_job_segment_id(initialization=initialization, index=index)
+    if not current_segment_id:
+        return ""
+
+    ordered_segments = [
+        segment
+        for segment in list(getattr(context, "document_segments", ()) or ())
+        if str(getattr(segment, "segment_id", "") or "").strip()
+    ]
+    if not ordered_segments:
+        return ""
+
+    ordered_segment_ids = [str(getattr(segment, "segment_id", "") or "").strip() for segment in ordered_segments]
+    try:
+        current_segment_position = ordered_segment_ids.index(current_segment_id)
+    except ValueError:
+        return ""
+
+    previous_completed_segment = None
+    for previous_position in range(current_segment_position - 1, -1, -1):
+        candidate_segment = ordered_segments[previous_position]
+        candidate_segment_id = str(getattr(candidate_segment, "segment_id", "") or "").strip()
+        if not candidate_segment_id:
+            continue
+        if candidate_segment_id not in set(getattr(state, "completed_segment_ids", set()) or set()):
+            continue
+        candidate_outputs = list(getattr(state, "segment_outputs", {}).get(candidate_segment_id, []) or [])
+        if not candidate_outputs:
+            continue
+        previous_completed_segment = (candidate_segment, candidate_outputs)
+        break
+
+    if previous_completed_segment is None:
+        return ""
+
+    segment, outputs = previous_completed_segment
+    segment_title = str(getattr(segment, "title", "") or "").strip() or str(getattr(segment, "segment_id", "") or "").strip()
+    summary_text = " ".join(part.strip() for part in outputs if str(part or "").strip())
+    summary_text = " ".join(summary_text.split())
+    if not summary_text:
+        return ""
+    summary_excerpt = summary_text[:280].rstrip()
+    if len(summary_text) > 280:
+        summary_excerpt += "..."
+    return (
+        "СВОДКА ПРЕДЫДУЩЕГО ЗАВЕРШЁННОГО СЕГМЕНТА:\n"
+        f"- Сегмент: {segment_title}\n"
+        f"- Краткое содержание текущего перевода: {summary_excerpt}"
+    )
+
+
+def _combine_system_prompt_with_block_focus(*, system_prompt: str, block_focus_prompt: str) -> str:
+    base_prompt = str(system_prompt or "").strip()
+    focus_prompt = str(block_focus_prompt or "").strip()
+    if not focus_prompt:
+        return base_prompt
+    if not base_prompt:
+        return focus_prompt
+    return f"{base_prompt}\n\n{focus_prompt}"
+
+
 def _get_cached_system_prompt(*, context: Any, dependencies: Any, state: Any, resolve_system_prompt_fn: Any, prompt_variant: str) -> str:
     prompt_source_text = _build_prompt_source_text(context=context)
     if prompt_variant == "toc_translate":
@@ -121,17 +264,39 @@ def _generate_block_chunk(
     *,
     context: Any,
     dependencies: Any,
+    state: Any,
     initialization: Any,
+    index: int,
     payload: Any,
     marker_mode_enabled: bool,
     system_prompt: str,
 ) -> str:
     client = initialization.text_client or initialization.client
     model_id = context.model_id or initialization.text_model_id or context.model
+    block_system_prompt = _combine_system_prompt_with_block_focus(
+        system_prompt=system_prompt,
+        block_focus_prompt="\n\n".join(
+            part
+            for part in (
+                _build_block_segment_focus_prompt(
+                    context=context,
+                    initialization=initialization,
+                    index=index,
+                ),
+                _build_previous_completed_segment_summary_prompt(
+                    context=context,
+                    state=state,
+                    initialization=initialization,
+                    index=index,
+                ),
+            )
+            if part
+        ),
+    )
     return dependencies.generate_markdown_block(
         client=client,
         model=model_id,
-        system_prompt=system_prompt,
+        system_prompt=block_system_prompt,
         target_text=payload.target_text_with_markers if marker_mode_enabled else payload.target_text,
         context_before=payload.context_before,
         context_after=payload.context_after,
@@ -189,7 +354,9 @@ def _validate_toc_chunk_with_retries(
         processed_chunk = _generate_block_chunk(
             context=context,
             dependencies=dependencies,
+            state=state,
             initialization=initialization,
+            index=index,
             payload=payload,
             marker_mode_enabled=marker_mode_enabled,
             system_prompt=system_prompt,
@@ -483,7 +650,9 @@ def execute_processing_block(
         processed_chunk = _generate_block_chunk(
             context=context,
             dependencies=dependencies,
+            state=state,
             initialization=initialization,
+            index=index,
             payload=payload,
             marker_mode_enabled=marker_mode_enabled,
             system_prompt=system_prompt,
@@ -546,6 +715,12 @@ def emit_block_completed(
     processed_chunk: str,
     current_markdown_fn: Any,
 ) -> None:
+    _mark_segment_progress_after_completed_block(
+        state=state,
+        initialization=initialization,
+        index=index,
+        processed_chunk=processed_chunk,
+    )
     segment_status_by_id, segment_progress_by_id, active_segment_id, active_segment_title = _resolve_segment_status_payload(
         initialization=initialization,
         index=index,
