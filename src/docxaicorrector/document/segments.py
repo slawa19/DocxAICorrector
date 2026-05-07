@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from docxaicorrector.core.models import ParagraphUnit
 from docxaicorrector.document.roles import has_heading_text_signal, infer_heuristic_heading_level
@@ -77,6 +77,99 @@ class SegmentOutlineEntry:
     title: str = ""
     level: int = 1
     structural_role: str = "body_range"
+
+
+@dataclass(frozen=True, init=False)
+class DocumentContextProfile:
+    source_token: str
+    structure_fingerprint: str
+    source_title: str | None
+    detected_author: str | None
+    source_language: str
+    target_language: str
+    translation_domain: str
+    style_instructions: str
+    glossary_terms: tuple[GlossaryTerm, ...]
+    segment_outline: tuple[SegmentOutlineEntry, ...]
+
+    def __init__(
+        self,
+        *,
+        source_token: str = "",
+        structure_fingerprint: str = "",
+        source_title: str | None = None,
+        detected_author: str | None = None,
+        source_language: str = "",
+        target_language: str = "",
+        translation_domain: str = "general",
+        style_instructions: str = "",
+        glossary_terms: tuple[GlossaryTerm, ...] = (),
+        segment_outline: tuple[SegmentOutlineEntry, ...] = (),
+        outline_entries: tuple[SegmentOutlineEntry, ...] | None = None,
+    ) -> None:
+        resolved_outline = segment_outline if segment_outline else tuple(outline_entries or ())
+        object.__setattr__(self, "source_token", str(source_token or "").strip())
+        object.__setattr__(self, "structure_fingerprint", str(structure_fingerprint or "").strip())
+        object.__setattr__(self, "source_title", str(source_title).strip() if isinstance(source_title, str) and str(source_title).strip() else None)
+        object.__setattr__(self, "detected_author", str(detected_author).strip() if isinstance(detected_author, str) and str(detected_author).strip() else None)
+        object.__setattr__(self, "source_language", str(source_language or "").strip())
+        object.__setattr__(self, "target_language", str(target_language or "").strip())
+        object.__setattr__(self, "translation_domain", str(translation_domain or "general").strip() or "general")
+        object.__setattr__(self, "style_instructions", str(style_instructions or "").strip())
+        object.__setattr__(self, "glossary_terms", tuple(glossary_terms or ()))
+        object.__setattr__(self, "segment_outline", tuple(resolved_outline))
+
+    @property
+    def outline_entries(self) -> tuple[SegmentOutlineEntry, ...]:
+        return self.segment_outline
+
+    def to_prompt_text(self, *, max_outline_entries: int = 10, max_glossary_terms: int = 8) -> str:
+        sections: list[str] = []
+
+        header_lines: list[str] = []
+        if self.source_title:
+            header_lines.append(f"- Название: {self.source_title}")
+        if self.detected_author:
+            header_lines.append(f"- Автор: {self.detected_author}")
+        if self.source_language or self.target_language:
+            header_lines.append(
+                f"- Языки: {self.source_language or 'n/a'} -> {self.target_language or 'n/a'}"
+            )
+        if self.translation_domain:
+            header_lines.append(f"- Домен: {self.translation_domain}")
+        if self.structure_fingerprint:
+            header_lines.append(f"- Структурный отпечаток: {self.structure_fingerprint}")
+        if header_lines:
+            sections.append("МЕТАДАННЫЕ ДОКУМЕНТА:\n" + "\n".join(header_lines))
+
+        if self.style_instructions:
+            sections.append("СТИЛЕВЫЕ УКАЗАНИЯ ДЛЯ ДОКУМЕНТА:\n" + self.style_instructions)
+
+        if self.segment_outline:
+            outline_lines = [
+                f"- L{max(1, int(entry.level or 1))} | {str(entry.structural_role or 'body_range').strip() or 'body_range'} | {str(entry.title or '').strip()}"
+                for entry in self.segment_outline[:max_outline_entries]
+                if str(entry.title or '').strip()
+            ]
+            if outline_lines:
+                if len(self.segment_outline) > max_outline_entries:
+                    outline_lines.append("- ...")
+                sections.append("КРАТКИЙ ПЛАН ДОКУМЕНТА:\n" + "\n".join(outline_lines))
+
+        if self.glossary_terms:
+            glossary_lines = [
+                f"- {str(term.source_term or '').strip()} -> {str(term.target_term or '').strip()}"
+                for term in self.glossary_terms[:max_glossary_terms]
+                if str(term.source_term or '').strip() and str(term.target_term or '').strip()
+            ]
+            if glossary_lines:
+                if len(self.glossary_terms) > max_glossary_terms:
+                    glossary_lines.append("- ...")
+                sections.append("ТЕРМИНЫ И КОНСИСТЕНТНЫЕ ЭКВИВАЛЕНТЫ ДЛЯ ЭТОГО ДОКУМЕНТА:\n" + "\n".join(glossary_lines))
+
+        if not sections:
+            return ""
+        return "КОНТЕКСТ ДОКУМЕНТА ДЛЯ ТЕКУЩЕГО ЗАПУСКА:\n\n" + "\n\n".join(sections)
 
 
 @dataclass(frozen=True)
@@ -234,6 +327,72 @@ def build_segment_to_job_mapping(
                 mapping.setdefault(segment_id, []).append(job_index)
                 break
     return {segment_id: tuple(indexes) for segment_id, indexes in mapping.items()}
+
+
+def validate_segment_coverage(
+    *,
+    paragraphs: Sequence[ParagraphUnit],
+    segments: Sequence[DocumentSegment],
+    jobs: Sequence[dict[str, object]] = (),
+    segment_to_job: Mapping[str, tuple[int, ...]] | None = None,
+) -> tuple[str, ...]:
+    paragraph_count = len(paragraphs)
+    errors: list[str] = []
+    coverage_counts = [0] * paragraph_count
+
+    if paragraph_count and not segments:
+        errors.append("segments_missing_for_nonempty_document")
+
+    for segment in segments:
+        segment_id = str(segment.segment_id or "").strip() or "<missing_segment_id>"
+        start_index = int(segment.start_paragraph_index)
+        end_index = int(segment.end_paragraph_index)
+        if start_index < 0 or end_index < start_index or end_index >= paragraph_count:
+            errors.append(f"invalid_segment_range:{segment_id}")
+            continue
+        expected_indexes = range(start_index, end_index + 1)
+        expected_paragraph_ids = tuple(
+            _resolve_paragraph_id(paragraphs[index], fallback_index=index) for index in expected_indexes
+        )
+        if int(segment.paragraph_count or 0) != len(expected_paragraph_ids):
+            errors.append(f"segment_paragraph_count_mismatch:{segment_id}")
+        if tuple(segment.paragraph_ids) != expected_paragraph_ids:
+            errors.append(f"segment_paragraph_ids_mismatch:{segment_id}")
+        if expected_paragraph_ids:
+            if str(segment.start_paragraph_id or "") != expected_paragraph_ids[0]:
+                errors.append(f"segment_start_paragraph_mismatch:{segment_id}")
+            if str(segment.end_paragraph_id or "") != expected_paragraph_ids[-1]:
+                errors.append(f"segment_end_paragraph_mismatch:{segment_id}")
+        for index in expected_indexes:
+            coverage_counts[index] += 1
+
+    uncovered_indexes = [index for index, count in enumerate(coverage_counts) if count == 0]
+    overlapping_indexes = [index for index, count in enumerate(coverage_counts) if count > 1]
+    if uncovered_indexes:
+        errors.append("uncovered_paragraph_indexes")
+    if overlapping_indexes:
+        errors.append("overlapping_segment_ranges")
+    if errors:
+        raise ValueError("invalid_segment_coverage: " + ", ".join(dict.fromkeys(errors)))
+
+    warnings: list[str] = []
+    resolved_mapping = dict(segment_to_job or build_segment_to_job_mapping(segments, jobs))
+    mapped_job_indexes = {
+        int(job_index)
+        for job_indexes in resolved_mapping.values()
+        for job_index in job_indexes
+    }
+    for job_index, job in enumerate(jobs):
+        raw_ids = job.get("paragraph_ids") if isinstance(job, dict) else None
+        paragraph_ids = {
+            str(paragraph_id)
+            for paragraph_id in (raw_ids if isinstance(raw_ids, (list, tuple, set, frozenset)) else ())
+            if str(paragraph_id).strip()
+        }
+        if paragraph_ids and job_index not in mapped_job_indexes:
+            warnings.append("segment_job_mapping_incomplete")
+            break
+    return tuple(warnings)
 
 
 def _collect_toc_regions(paragraphs: Sequence[ParagraphUnit]) -> list[tuple[int, int]]:

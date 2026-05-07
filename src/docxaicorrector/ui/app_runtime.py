@@ -142,7 +142,7 @@ def start_background_preparation(*, worker_target, uploaded_payload, upload_mark
     )
 
 
-def start_background_processing(*, worker_target, uploaded_filename: str, uploaded_token: str, source_bytes: bytes, jobs, selected_segment_ids=None, output_mode: str | None = None, source_paragraphs=None, image_assets=None, image_mode: str, app_config: dict[str, object], model: str, max_retries: int, processing_operation: str = "edit", source_language: str = "en", target_language: str = "ru") -> None:
+def start_background_processing(*, worker_target, uploaded_filename: str, uploaded_token: str, source_bytes: bytes, prepared_source_key: str | None = None, structure_fingerprint: str | None = None, jobs, selected_segment_ids=None, document_segments=None, output_mode: str | None = None, include_front_matter: bool = False, include_toc: bool = False, source_paragraphs=None, image_assets=None, image_mode: str, app_config: dict[str, object], model: str, max_retries: int, processing_operation: str = "edit", source_language: str = "en", target_language: str = "ru") -> None:
     """Start processing with the canonical state owners pre-bound for UI code."""
     start_background_processing_impl(
         worker_target=worker_target,
@@ -152,9 +152,14 @@ def start_background_processing(*, worker_target, uploaded_filename: str, upload
         uploaded_filename=uploaded_filename,
         uploaded_token=uploaded_token,
         source_bytes=source_bytes,
+        prepared_source_key=prepared_source_key,
+        structure_fingerprint=structure_fingerprint,
         jobs=jobs,
         selected_segment_ids=selected_segment_ids,
+        document_segments=document_segments,
         output_mode=output_mode,
+        include_front_matter=include_front_matter,
+        include_toc=include_toc,
         source_paragraphs=source_paragraphs,
         image_assets=image_assets or [],
         image_mode=image_mode,

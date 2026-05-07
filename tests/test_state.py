@@ -455,6 +455,7 @@ def test_structure_review_state_helpers_roundtrip(monkeypatch):
     state.set_structure_confirmation_state(
         structure_confirmed=True,
         confirmed_structure_fingerprint="abc123def456",
+        confirmed_segment_ids=["seg_0001", "seg_0002"],
         confirmed_at_settings_hash="settings123",
         segments_loaded_for_source_token="report.docx:3:abc",
     )
@@ -462,6 +463,7 @@ def test_structure_review_state_helpers_roundtrip(monkeypatch):
     assert state.get_selected_segment_ids() == ["seg_0001", "seg_0002"]
     assert state.get_structure_confirmed() is True
     assert state.get_confirmed_structure_fingerprint() == "abc123def456"
+    assert state.get_confirmed_structure_segment_ids() == ["seg_0001", "seg_0002"]
     assert state.get_confirmed_at_settings_hash() == "settings123"
     assert state.get_segments_loaded_for_source_token() == "report.docx:3:abc"
 
@@ -492,6 +494,7 @@ def test_clear_structure_review_state_resets_analysis_flags(monkeypatch):
         active_segment_title="Chapter 1",
         structure_confirmed=True,
         confirmed_structure_fingerprint="abc",
+        confirmed_structure_segment_ids=["seg_0001"],
         confirmed_at_settings_hash="settings",
         segments_loaded_for_source_token="report.docx:3:abc",
         chapter_selector_search="chapter",
@@ -508,6 +511,7 @@ def test_clear_structure_review_state_resets_analysis_flags(monkeypatch):
     assert session_state.active_segment_title == ""
     assert session_state.structure_confirmed is False
     assert session_state.confirmed_structure_fingerprint == ""
+    assert session_state.confirmed_structure_segment_ids == []
     assert session_state.confirmed_at_settings_hash == ""
     assert session_state.segments_loaded_for_source_token == ""
     assert session_state.chapter_selector_search == ""

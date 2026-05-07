@@ -29,7 +29,13 @@ from docxaicorrector.generation.formatting_diagnostics_retention import (
     load_formatting_diagnostics_payloads,
 )
 from docxaicorrector.generation._generation import strip_markdown_for_narration
-from docxaicorrector.pipeline.reassembly import build_reassembly_plan, build_reassembly_result_manifest
+from docxaicorrector.pipeline.reassembly import (
+    assemble_hybrid_document,
+    build_reassembly_plan,
+    build_reassembly_result_manifest,
+    build_segment_result_records,
+    load_segment_result_records,
+)
 from docxaicorrector.processing.preparation import humanize_quality_gate_reasons
 
 
@@ -805,6 +811,14 @@ def run_docx_build_phase(
     current_markdown_fn: Callable[[Sequence[str]], str],
     call_docx_restorer_with_optional_registry_fn: Callable[[Any, bytes, Any, Any], bytes],
 ) -> Any | None:
+    reassembly_plan = build_reassembly_plan(
+        selected_segment_ids=getattr(context, "selected_segment_ids", None),
+        output_mode=str(getattr(context, "output_mode", "") or ""),
+        include_front_matter=bool(getattr(context, "include_front_matter", False)),
+        include_toc=bool(getattr(context, "include_toc", False)),
+        jobs=list(getattr(context, "jobs", ()) or ()),
+        source_paragraphs=cast(Sequence[object] | None, getattr(context, "source_paragraphs", None)),
+    )
     assembly_result = assemble_final_markdown(
         processed_chunks=state.processed_chunks,
         generated_paragraph_registry=state.generated_paragraph_registry,
@@ -812,6 +826,156 @@ def run_docx_build_phase(
     )
     _log_boundary_recovery_diagnostics(dependencies=dependencies, context=context, assembly_result=assembly_result)
     final_markdown = assembly_result.final_markdown
+    assembly_registry = build_generated_paragraph_registry_from_entries(assembly_result.entries)
+    result_manifest = build_reassembly_result_manifest(
+        source_name=context.uploaded_filename,
+        source_token=str(getattr(context, "source_token", "") or ""),
+        run_id=str(getattr(context, "run_id", "") or ""),
+        plan=reassembly_plan,
+        jobs=list(getattr(context, "jobs", ()) or ()),
+        source_paragraphs=cast(Sequence[object] | None, getattr(context, "source_paragraphs", None)),
+    )
+    current_segment_records = {
+        str(record.get("segment_id") or ""): record
+        for record in build_segment_result_records(
+            source_name=context.uploaded_filename,
+            prepared_source_key=str(getattr(context, "prepared_source_key", "") or ""),
+            structure_fingerprint=str(getattr(context, "structure_fingerprint", "") or ""),
+            plan=reassembly_plan,
+            source_paragraphs=cast(Sequence[object] | None, getattr(context, "source_paragraphs", None)),
+            assembly_entries=assembly_result.entries,
+            result_artifact_paths={},
+        )
+        if str(record.get("segment_id") or "").strip()
+    }
+    if reassembly_plan.output_mode == "hybrid_document":
+        persisted_segment_records = load_segment_result_records(
+            prepared_source_key=str(getattr(context, "prepared_source_key", "") or ""),
+            structure_fingerprint=str(getattr(context, "structure_fingerprint", "") or ""),
+        )
+        hybrid_result = assemble_hybrid_document(
+            plan=reassembly_plan,
+            source_paragraphs=cast(Sequence[object] | None, getattr(context, "source_paragraphs", None)),
+            current_segment_records=current_segment_records,
+            persisted_segment_records=persisted_segment_records,
+        )
+        if hybrid_result.final_markdown:
+            final_markdown = hybrid_result.final_markdown
+            assembly_registry = hybrid_result.generated_paragraph_registry
+            result_manifest = build_reassembly_result_manifest(
+                source_name=context.uploaded_filename,
+                source_token=str(getattr(context, "source_token", "") or ""),
+                run_id=str(getattr(context, "run_id", "") or ""),
+                plan=reassembly_plan,
+                jobs=list(getattr(context, "jobs", ()) or ()),
+                source_paragraphs=cast(Sequence[object] | None, getattr(context, "source_paragraphs", None)),
+                segment_provenance_by_id=hybrid_result.segment_provenance_by_id,
+            )
+            dependencies.log_event(
+                logging.INFO,
+                "hybrid_document_assembled",
+                "Собран mixed hybrid_document из translated registry и source-backed fallback segments.",
+                filename=context.uploaded_filename,
+                translated_segment_count=sum(1 for value in hybrid_result.segment_provenance_by_id.values() if value == "translated"),
+                source_segment_count=sum(1 for value in hybrid_result.segment_provenance_by_id.values() if value == "source"),
+            )
+    elif reassembly_plan.output_mode == "final_translated_book":
+        final_book_result = assemble_hybrid_document(
+            plan=reassembly_plan,
+            source_paragraphs=cast(Sequence[object] | None, getattr(context, "source_paragraphs", None)),
+            current_segment_records=current_segment_records,
+            persisted_segment_records={},
+        )
+        incomplete_segment_ids = [
+            segment_id
+            for segment_id in reassembly_plan.included_segment_ids
+            if final_book_result.segment_provenance_by_id.get(segment_id) != "translated"
+        ]
+        if incomplete_segment_ids:
+            error_message = dependencies.present_error(
+                "final_translated_book_incomplete",
+                RuntimeError(
+                    "Missing translated segments for final_translated_book: " + ", ".join(incomplete_segment_ids)
+                ),
+                "Итоговая книга недоступна",
+                filename=context.uploaded_filename,
+                missing_segment_count=len(incomplete_segment_ids),
+                missing_segment_ids=incomplete_segment_ids,
+            )
+            emitters.emit_state(
+                context.runtime,
+                last_error=error_message,
+                latest_docx_bytes=None,
+                latest_narration_text=None,
+            )
+            emit_failed_result(
+                emitters=emitters,
+                runtime=context.runtime,
+                finalize_stage="Итоговая книга недоступна",
+                detail=error_message,
+                progress=1.0,
+                activity_message="Сборка final_translated_book остановлена: не все обязательные сегменты переведены.",
+                block_index=job_count,
+                block_count=job_count,
+                target_chars=len(final_markdown),
+                context_chars=0,
+                log_details=error_message,
+            )
+            dependencies.log_event(
+                logging.WARNING,
+                "final_translated_book_incomplete",
+                "Не удалось собрать final_translated_book: не все обязательные сегменты имеют translated output.",
+                filename=context.uploaded_filename,
+                missing_segment_count=len(incomplete_segment_ids),
+                missing_segment_ids=incomplete_segment_ids,
+            )
+            return None
+        if final_book_result.final_markdown:
+            final_markdown = final_book_result.final_markdown
+            assembly_registry = final_book_result.generated_paragraph_registry
+            result_manifest = build_reassembly_result_manifest(
+                source_name=context.uploaded_filename,
+                source_token=str(getattr(context, "source_token", "") or ""),
+                run_id=str(getattr(context, "run_id", "") or ""),
+                plan=reassembly_plan,
+                jobs=list(getattr(context, "jobs", ()) or ()),
+                source_paragraphs=cast(Sequence[object] | None, getattr(context, "source_paragraphs", None)),
+                segment_provenance_by_id=final_book_result.segment_provenance_by_id,
+            )
+            dependencies.log_event(
+                logging.INFO,
+                "final_translated_book_assembled",
+                "Собран final_translated_book только из translated segment outputs текущего запуска.",
+                filename=context.uploaded_filename,
+                translated_segment_count=sum(1 for value in final_book_result.segment_provenance_by_id.values() if value == "translated"),
+            )
+    elif reassembly_plan.output_mode == "selected_with_context":
+        selected_with_context_result = assemble_hybrid_document(
+            plan=reassembly_plan,
+            source_paragraphs=cast(Sequence[object] | None, getattr(context, "source_paragraphs", None)),
+            current_segment_records=current_segment_records,
+            persisted_segment_records={},
+        )
+        if selected_with_context_result.final_markdown:
+            final_markdown = selected_with_context_result.final_markdown
+            assembly_registry = selected_with_context_result.generated_paragraph_registry
+            result_manifest = build_reassembly_result_manifest(
+                source_name=context.uploaded_filename,
+                source_token=str(getattr(context, "source_token", "") or ""),
+                run_id=str(getattr(context, "run_id", "") or ""),
+                plan=reassembly_plan,
+                jobs=list(getattr(context, "jobs", ()) or ()),
+                source_paragraphs=cast(Sequence[object] | None, getattr(context, "source_paragraphs", None)),
+                segment_provenance_by_id=selected_with_context_result.segment_provenance_by_id,
+            )
+            dependencies.log_event(
+                logging.INFO,
+                "selected_with_context_assembled",
+                "Собран selected_with_context из leading structural source context и translated selected segments.",
+                filename=context.uploaded_filename,
+                translated_segment_count=sum(1 for value in selected_with_context_result.segment_provenance_by_id.values() if value == "translated"),
+                source_segment_count=sum(1 for value in selected_with_context_result.segment_provenance_by_id.values() if value == "source"),
+            )
     emitters.emit_status(
         context.runtime,
         stage="Сборка DOCX",
@@ -830,7 +994,6 @@ def run_docx_build_phase(
     try:
         docx_bytes = dependencies.convert_markdown_to_docx_bytes(final_markdown)
         if context.source_paragraphs:
-            assembly_registry = build_generated_paragraph_registry_from_entries(assembly_result.entries)
             docx_bytes = call_docx_restorer_with_optional_registry_fn(
                 dependencies.preserve_source_paragraph_properties,
                 docx_bytes,
@@ -929,8 +1092,11 @@ def run_docx_build_phase(
 
     return {
         "docx_bytes": docx_bytes,
+        "final_markdown": final_markdown,
         "latest_result_notice": latest_result_notice,
         "formatting_diagnostics_artifacts": list(formatting_diagnostics_artifacts),
+        "assembly_entries": list(assembly_result.entries),
+        "result_manifest": result_manifest,
     }
 
 
@@ -950,7 +1116,9 @@ def finalize_processing_success(
         source_paragraphs=context.source_paragraphs,
     )
     _log_boundary_recovery_diagnostics(dependencies=dependencies, context=context, assembly_result=assembly_result)
-    final_markdown = _normalize_final_markdown_for_runtime_display(assembly_result.final_markdown)
+    final_markdown = _normalize_final_markdown_for_runtime_display(
+        str(docx_phase.get("final_markdown") or assembly_result.final_markdown)
+    )
     formatting_diagnostics_artifacts = cast(
         Sequence[str],
         docx_phase.get("formatting_diagnostics_artifacts") or [],
@@ -1142,14 +1310,18 @@ def finalize_processing_success(
         reassembly_plan = build_reassembly_plan(
             selected_segment_ids=getattr(context, "selected_segment_ids", None),
             output_mode=str(getattr(context, "output_mode", "") or ""),
+            include_front_matter=bool(getattr(context, "include_front_matter", False)),
+            include_toc=bool(getattr(context, "include_toc", False)),
             jobs=list(getattr(context, "jobs", ()) or ()),
+            source_paragraphs=cast(Sequence[object] | None, getattr(context, "source_paragraphs", None)),
         )
         artifact_writer_kwargs = {
             "source_name": context.uploaded_filename,
             "markdown_text": final_markdown,
             "docx_bytes": docx_phase["docx_bytes"],
             "assembly_mode": reassembly_plan.assembly_mode,
-            "result_manifest": build_reassembly_result_manifest(
+            "result_manifest": docx_phase.get("result_manifest")
+            or build_reassembly_result_manifest(
                 source_name=context.uploaded_filename,
                 plan=reassembly_plan,
                 jobs=list(getattr(context, "jobs", ()) or ()),
@@ -1185,6 +1357,37 @@ def finalize_processing_success(
             filename=context.uploaded_filename,
             artifact_paths=result_artifact_paths,
         )
+        segment_result_records = build_segment_result_records(
+            source_name=context.uploaded_filename,
+            prepared_source_key=str(getattr(context, "prepared_source_key", "") or ""),
+            structure_fingerprint=str(getattr(context, "structure_fingerprint", "") or ""),
+            plan=reassembly_plan,
+            source_paragraphs=cast(Sequence[object] | None, getattr(context, "source_paragraphs", None)),
+            assembly_entries=cast(Sequence[object], docx_phase.get("assembly_entries") or assembly_result.entries),
+            result_artifact_paths=result_artifact_paths,
+        )
+        if segment_result_records:
+            try:
+                segment_registry_paths = dict(
+                    dependencies.write_segment_result_registry(records=segment_result_records)
+                )
+            except OSError as exc:
+                dependencies.log_event(
+                    logging.WARNING,
+                    "segment_result_registry_save_failed",
+                    "Не удалось сохранить persisted segment result registry.",
+                    filename=context.uploaded_filename,
+                    error_message=str(exc),
+                )
+            else:
+                dependencies.log_event(
+                    logging.INFO,
+                    "segment_result_registry_saved",
+                    "Сохранён persisted segment result registry для итоговой сборки.",
+                    filename=context.uploaded_filename,
+                    segment_count=len(segment_result_records),
+                    artifact_paths=segment_registry_paths,
+                )
         if narration_text is not None and "tts_text_path" in result_artifact_paths:
             dependencies.log_event(
                 logging.INFO,

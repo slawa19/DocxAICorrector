@@ -2,6 +2,7 @@ from io import BytesIO
 from threading import Event, Thread
 
 from docx import Document
+import pytest
 
 import docxaicorrector.processing.preparation as preparation
 from docxaicorrector.core.config import ModelRegistry, TextModelConfig
@@ -336,6 +337,32 @@ def test_prepare_document_for_processing_passes_processing_operation_to_job_buil
     assert captured["processing_operation"] == "translate"
 
 
+def test_prepare_document_for_processing_assigns_stable_job_ids(monkeypatch):
+    monkeypatch.setattr(
+        preparation,
+        "extract_document_content_with_normalization_reports",
+        lambda uploaded_file: _build_extract_result([_build_paragraph(source_index=0, text="Contents")], [], None),
+    )
+    monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "Contents")
+    monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars, relations=None: ["block-1", "block-2"])
+    monkeypatch.setattr(
+        preparation,
+        "build_editing_jobs",
+        lambda blocks, max_chars, processing_operation="edit": [
+            {"target_text": "First block", "target_chars": 11, "context_chars": 0},
+            {"target_text": "Second block", "target_chars": 12, "context_chars": 0},
+        ],
+    )
+
+    result = preparation.prepare_document_for_processing(
+        uploaded_payload=_build_uploaded_payload("report.docx", b"docx-bytes", "report.docx:10:hash"),
+        chunk_size=6000,
+        session_state={"preparation_cache": {}},
+    )
+
+    assert [job["job_id"] for job in result.jobs] == ["job_0000", "job_0001"]
+
+
 def test_prepare_document_for_processing_keeps_toc_jobs_operation_aware_across_cache_entries(monkeypatch):
     calls = {"count": 0}
     session_state = {"preparation_cache": {}}
@@ -446,6 +473,7 @@ def test_prepare_document_for_processing_jobs_include_narration_metadata_without
         "structure_recognition_enabled": False,
         "structure_recognition_mode": "off",
         "structure_validation_enabled": True,
+        "translation_domain_default": "theology",
     }
 
     monkeypatch.setattr(
@@ -475,9 +503,9 @@ def test_prepare_document_for_processing_detects_segments_and_builds_segment_map
         ParagraphUnit(text="Contents", role="body", structural_role="toc_header", paragraph_id="p0000", source_index=0),
         ParagraphUnit(text="Chapter 1........ 12", role="body", structural_role="toc_entry", paragraph_id="p0001", source_index=1),
         ParagraphUnit(text="Chapter 1", role="heading", heading_level=1, heading_source="explicit", paragraph_id="p0002", source_index=2),
-        ParagraphUnit(text="First chapter body", role="body", paragraph_id="p0003", source_index=3),
+        ParagraphUnit(text="First chapter body about Great Tribulation", role="body", paragraph_id="p0003", source_index=3),
         ParagraphUnit(text="Chapter 2", role="heading", heading_level=1, heading_source="explicit", paragraph_id="p0004", source_index=4),
-        ParagraphUnit(text="Second chapter body", role="body", paragraph_id="p0005", source_index=5),
+        ParagraphUnit(text="Second chapter body about the Antichrist", role="body", paragraph_id="p0005", source_index=5),
     ]
     captured = {}
 
@@ -497,6 +525,7 @@ def test_prepare_document_for_processing_detects_segments_and_builds_segment_map
         "structure_recognition_enabled": False,
         "structure_recognition_mode": "off",
         "structure_validation_enabled": True,
+        "translation_domain_default": "theology",
     }
 
     monkeypatch.setattr(
@@ -538,6 +567,167 @@ def test_prepare_document_for_processing_detects_segments_and_builds_segment_map
     assert segment_to_job[segments[2].segment_id] == (2,)
     assert paragraphs[2].segment_boundary_before is True
     assert paragraphs[4].segment_boundary_before is True
+    document_context_profile = prepared.document_context_profile
+    assert document_context_profile.source_token == "report.docx:10:hash"
+    assert document_context_profile.structure_fingerprint == prepared.structure_fingerprint
+    assert document_context_profile.source_title == "report"
+    assert document_context_profile.source_language == "en"
+    assert document_context_profile.target_language == "ru"
+    assert document_context_profile.translation_domain == "theology"
+    assert document_context_profile.style_instructions == prepared.translation_domain_instructions
+    assert [entry.title for entry in document_context_profile.outline_entries[:3]] == [
+        "Table of Contents",
+        "Chapter 1",
+        "Chapter 2",
+    ]
+    assert {term.source_term for term in document_context_profile.glossary_terms} >= {
+        "Great Tribulation",
+        "Antichrist",
+    }
+    assert "КОНТЕКСТ ДОКУМЕНТА" in document_context_profile.to_prompt_text()
+
+
+def test_prepare_document_for_processing_adds_warning_when_job_spans_multiple_segments(monkeypatch):
+    session_state = {"preparation_cache": {}}
+    paragraphs = [
+        ParagraphUnit(text="Chapter 1", role="heading", heading_level=1, heading_source="explicit", paragraph_id="p0000", source_index=0),
+        ParagraphUnit(text="First chapter body", role="body", paragraph_id="p0001", source_index=1),
+        ParagraphUnit(text="Chapter 2", role="heading", heading_level=1, heading_source="explicit", paragraph_id="p0002", source_index=2),
+        ParagraphUnit(text="Second chapter body", role="body", paragraph_id="p0003", source_index=3),
+    ]
+    config_state = {
+        "paragraph_boundary_normalization_enabled": True,
+        "paragraph_boundary_normalization_mode": "high_only",
+        "paragraph_boundary_ai_review_enabled": False,
+        "paragraph_boundary_ai_review_mode": "off",
+        "relation_normalization_enabled": True,
+        "relation_normalization_profile": "phase2_default",
+        "relation_normalization_enabled_relation_kinds": (),
+        "structure_recognition_enabled": False,
+        "structure_recognition_mode": "off",
+        "structure_validation_enabled": True,
+    }
+
+    monkeypatch.setattr(
+        preparation,
+        "extract_document_content_with_normalization_reports",
+        lambda uploaded_file, app_config=None: _build_extract_result(paragraphs, [], None),
+    )
+    monkeypatch.setattr(preparation, "build_document_text", lambda items: "\n\n".join(paragraph.text for paragraph in items))
+    monkeypatch.setattr(preparation, "load_app_config", lambda: dict(config_state))
+    monkeypatch.setattr(
+        preparation,
+        "build_semantic_blocks",
+        lambda paragraphs, max_chars, relations=None, hard_boundary_paragraph_ids=None: [DocumentBlock(paragraphs=list(paragraphs))],
+    )
+    monkeypatch.setattr(
+        preparation,
+        "build_editing_jobs",
+        lambda blocks, max_chars, processing_operation=None: [
+            {
+                "paragraph_ids": ["p0001", "p0002"],
+                "paragraph_count": 2,
+                "target_text": "cross-segment job",
+                "context_text": "",
+            }
+        ],
+    )
+
+    prepared = preparation.prepare_document_for_processing(
+        uploaded_payload=_build_uploaded_payload("report.docx", b"docx-bytes", "report.docx:10:hash"),
+        chunk_size=6000,
+        processing_operation="translate",
+        session_state=session_state,
+    )
+
+    assert prepared.segment_to_job is not None
+    assert all(indexes == () for indexes in prepared.segment_to_job.values())
+    assert "segment_job_mapping_incomplete" in prepared.segment_diagnostics.warnings
+
+
+def test_prepare_document_for_processing_fails_on_invalid_segment_coverage(monkeypatch):
+    session_state = {"preparation_cache": {}}
+    paragraphs = [
+        ParagraphUnit(text="Chapter 1", role="heading", heading_level=1, heading_source="explicit", paragraph_id="p0000", source_index=0),
+        ParagraphUnit(text="Body 1", role="body", paragraph_id="p0001", source_index=1),
+        ParagraphUnit(text="Body 2", role="body", paragraph_id="p0002", source_index=2),
+    ]
+    config_state = {
+        "paragraph_boundary_normalization_enabled": True,
+        "paragraph_boundary_normalization_mode": "high_only",
+        "paragraph_boundary_ai_review_enabled": False,
+        "paragraph_boundary_ai_review_mode": "off",
+        "relation_normalization_enabled": True,
+        "relation_normalization_profile": "phase2_default",
+        "relation_normalization_enabled_relation_kinds": (),
+        "structure_recognition_enabled": False,
+        "structure_recognition_mode": "off",
+        "structure_validation_enabled": True,
+    }
+
+    monkeypatch.setattr(
+        preparation,
+        "extract_document_content_with_normalization_reports",
+        lambda uploaded_file, app_config=None: _build_extract_result(paragraphs, [], None),
+    )
+    monkeypatch.setattr(preparation, "build_document_text", lambda items: "\n\n".join(paragraph.text for paragraph in items))
+    monkeypatch.setattr(preparation, "load_app_config", lambda: dict(config_state))
+    monkeypatch.setattr(
+        preparation,
+        "build_semantic_blocks",
+        lambda paragraphs, max_chars, relations=None, hard_boundary_paragraph_ids=None: [DocumentBlock(paragraphs=list(paragraphs))],
+    )
+    monkeypatch.setattr(
+        preparation,
+        "build_editing_jobs",
+        lambda blocks, max_chars, processing_operation=None: [
+            {
+                "paragraph_ids": ["p0000", "p0001", "p0002"],
+                "paragraph_count": 3,
+                "target_text": "full job",
+                "context_text": "",
+            }
+        ],
+    )
+
+    invalid_segments = [
+        preparation.DocumentSegment(
+            segment_id="seg_0001",
+            ordinal=1,
+            level=1,
+            title="Chapter 1",
+            normalized_title="chapter 1",
+            start_paragraph_index=0,
+            end_paragraph_index=1,
+            start_paragraph_id="p0000",
+            end_paragraph_id="p0001",
+            paragraph_ids=("p0000", "p0001"),
+            paragraph_count=2,
+            char_count=10,
+            word_count=2,
+            estimated_token_count=4,
+            structural_role="chapter",
+            confidence="high",
+            boundary_fingerprint="fp1",
+        )
+    ]
+    monkeypatch.setattr(
+        preparation,
+        "detect_document_segments",
+        lambda paragraphs, source_content_hash16, chunk_size: (
+            invalid_segments,
+            preparation.SegmentDetectionReport(segment_count=1),
+            "fp-structure",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="invalid_segment_coverage: uncovered_paragraph_indexes"):
+        preparation.prepare_document_for_processing(
+            uploaded_payload=_build_uploaded_payload("report.docx", b"docx-bytes", "report.docx:10:hash"),
+            chunk_size=6000,
+            processing_operation="translate",
+            session_state=session_state,
+        )
 
 
 def test_prepare_document_for_processing_postprocess_toggle_does_not_change_cache_key_or_request_marker(monkeypatch):

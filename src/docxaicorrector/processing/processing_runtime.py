@@ -12,6 +12,7 @@ from io import BytesIO
 from pathlib import Path
 from collections.abc import Callable
 from typing import Protocol, cast, runtime_checkable
+from uuid import uuid4
 
 import streamlit as st
 
@@ -934,9 +935,14 @@ def start_background_processing(
     uploaded_filename: str,
     uploaded_token: str,
     source_bytes: bytes,
+    prepared_source_key: str | None = None,
+    structure_fingerprint: str | None = None,
     jobs: list[dict[str, str | int]],
     selected_segment_ids: list[str] | None = None,
+    document_segments: list | None = None,
     output_mode: str | None = None,
+    include_front_matter: bool = False,
+    include_toc: bool = False,
     source_paragraphs: list | None = None,
     image_assets: list,
     image_mode: str,
@@ -973,6 +979,7 @@ def start_background_processing(
     processing_events = queue.Queue()
     stop_event = threading.Event()
     runtime = BackgroundRuntime(processing_events, stop_event)
+    run_id = uuid4().hex
 
     push_activity("Запуск обработки документа.")
     set_processing_status(
@@ -989,9 +996,16 @@ def start_background_processing(
         kwargs={
             "runtime": runtime,
             "uploaded_filename": uploaded_filename,
+            "source_token": uploaded_token,
+            "run_id": run_id,
+            "prepared_source_key": prepared_source_key,
+            "structure_fingerprint": structure_fingerprint,
             "jobs": jobs,
             "selected_segment_ids": selected_segment_ids,
+            "document_segments": document_segments,
             "output_mode": output_mode,
+            "include_front_matter": include_front_matter,
+            "include_toc": include_toc,
             "source_paragraphs": source_paragraphs,
             "image_assets": image_assets,
             "image_mode": image_mode,

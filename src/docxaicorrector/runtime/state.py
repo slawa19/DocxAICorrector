@@ -514,6 +514,10 @@ def get_confirmed_structure_fingerprint() -> str:
     return str(st.session_state.get("confirmed_structure_fingerprint") or "")
 
 
+def get_confirmed_structure_segment_ids() -> list[str]:
+    return [str(segment_id) for segment_id in (st.session_state.get("confirmed_structure_segment_ids") or []) if str(segment_id).strip()]
+
+
 def get_confirmed_at_settings_hash() -> str:
     return str(st.session_state.get("confirmed_at_settings_hash") or "")
 
@@ -568,11 +572,15 @@ def set_structure_confirmation_state(
     *,
     structure_confirmed: bool,
     confirmed_structure_fingerprint: str = "",
+    confirmed_segment_ids: Sequence[str] | None = None,
     confirmed_at_settings_hash: str = "",
     segments_loaded_for_source_token: str = "",
 ) -> None:
     st.session_state.structure_confirmed = bool(structure_confirmed)
     st.session_state.confirmed_structure_fingerprint = confirmed_structure_fingerprint
+    st.session_state.confirmed_structure_segment_ids = [
+        str(segment_id) for segment_id in (confirmed_segment_ids or []) if str(segment_id).strip()
+    ]
     st.session_state.confirmed_at_settings_hash = confirmed_at_settings_hash
     st.session_state.segments_loaded_for_source_token = segments_loaded_for_source_token
 
@@ -585,6 +593,7 @@ def clear_structure_review_state() -> None:
     st.session_state.active_segment_title = ""
     st.session_state.structure_confirmed = False
     st.session_state.confirmed_structure_fingerprint = ""
+    st.session_state.confirmed_structure_segment_ids = []
     st.session_state.confirmed_at_settings_hash = ""
     st.session_state.segments_loaded_for_source_token = ""
     st.session_state.chapter_selector_search = ""
@@ -722,6 +731,7 @@ def init_session_state() -> None:
     st.session_state.setdefault("active_segment_title", "")
     st.session_state.setdefault("structure_confirmed", False)
     st.session_state.setdefault("confirmed_structure_fingerprint", "")
+    st.session_state.setdefault("confirmed_structure_segment_ids", [])
     st.session_state.setdefault("confirmed_at_settings_hash", "")
     st.session_state.setdefault("segments_loaded_for_source_token", "")
     st.session_state.setdefault("chapter_selector_search", "")
@@ -773,6 +783,7 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
     confirmed_structure_fingerprint = (
         str(st.session_state.get("confirmed_structure_fingerprint", "")) if preserve_preparation else ""
     )
+    confirmed_structure_segment_ids = list(st.session_state.get("confirmed_structure_segment_ids", [])) if preserve_preparation else []
     confirmed_at_settings_hash = (
         str(st.session_state.get("confirmed_at_settings_hash", "")) if preserve_preparation else ""
     )
@@ -824,6 +835,7 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
             active_segment_title = ""
             structure_confirmed = False
             confirmed_structure_fingerprint = ""
+            confirmed_structure_segment_ids = []
             confirmed_at_settings_hash = ""
             segments_loaded_for_source_token = ""
     else:
@@ -845,6 +857,7 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
         active_segment_title = ""
         structure_confirmed = False
         confirmed_structure_fingerprint = ""
+        confirmed_structure_segment_ids = []
         confirmed_at_settings_hash = ""
         segments_loaded_for_source_token = ""
     st.session_state.run_log = []
@@ -897,6 +910,7 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
     st.session_state.active_segment_title = active_segment_title
     st.session_state.structure_confirmed = structure_confirmed
     st.session_state.confirmed_structure_fingerprint = confirmed_structure_fingerprint
+    st.session_state.confirmed_structure_segment_ids = confirmed_structure_segment_ids
     st.session_state.confirmed_at_settings_hash = confirmed_at_settings_hash
     st.session_state.segments_loaded_for_source_token = segments_loaded_for_source_token
     clear_restart_source(completed_source)

@@ -12,6 +12,8 @@ from docxaicorrector.runtime.state import (
     get_active_segment_id,
     get_confirmed_at_settings_hash,
     get_confirmed_structure_fingerprint,
+    get_confirmed_structure_segment_ids,
+    get_run_log,
     get_segment_progress_by_id,
     get_segment_status_by_id,
     get_segments_loaded_for_source_token,
@@ -20,6 +22,7 @@ from docxaicorrector.runtime.state import (
     get_structure_manifest_notice_details,
     get_structure_manifest_notice_token,
     set_selected_segment_ids,
+    set_structure_manifest_notice,
     set_structure_confirmation_state,
 )
 
@@ -57,6 +60,8 @@ class SelectedProcessingPayload(TypedDict):
     jobs: list[dict[str, object]]
     source_paragraphs: list[object]
     image_assets: list[object]
+    include_front_matter: bool
+    include_toc: bool
 
 
 class EffectiveSelectedProcessingState(TypedDict):
@@ -66,6 +71,7 @@ class EffectiveSelectedProcessingState(TypedDict):
     selected_word_count: int
     selected_job_count: int
     excluded_locked_segment_ids: list[str]
+    uses_job_index_filter: bool
 
 
 def _show_notice(*, level: str, message: str) -> None:
@@ -161,14 +167,17 @@ def _sync_structure_review_state(
             selected_segment_ids = normalized_selected
     structure_confirmed = get_structure_confirmed()
     confirmed_fingerprint = get_confirmed_structure_fingerprint()
+    confirmed_segment_ids = get_confirmed_structure_segment_ids()
     confirmed_settings_hash = get_confirmed_at_settings_hash()
     confirmation_invalidated = False
     fingerprint_changed = structure_confirmed and confirmed_fingerprint != current_fingerprint
+    segment_ids_changed = structure_confirmed and confirmed_segment_ids != segment_ids
     settings_changed = structure_confirmed and confirmed_settings_hash != current_settings_hash
-    if structure_confirmed and (fingerprint_changed or settings_changed):
+    if structure_confirmed and (fingerprint_changed or segment_ids_changed or settings_changed):
         set_structure_confirmation_state(
             structure_confirmed=False,
             confirmed_structure_fingerprint="",
+            confirmed_segment_ids=[],
             confirmed_at_settings_hash="",
             segments_loaded_for_source_token=uploaded_file_token,
         )
@@ -183,6 +192,7 @@ def _sync_structure_review_state(
         "confirmation_invalidated": confirmation_invalidated,
         "confirmed_fingerprint_before_invalidation": confirmed_fingerprint,
         "fingerprint_changed": fingerprint_changed,
+        "segment_ids_changed": segment_ids_changed,
         "settings_changed": settings_changed,
     }
 
@@ -253,8 +263,12 @@ def _build_selected_processing_payload(
     *,
     prepared_run_context,
     selected_segment_ids: list[str] | None,
+    selected_job_indexes: list[int] | None = None,
     segment_status_by_id: dict[str, str] | None = None,
+    include_front_matter: bool = False,
+    include_toc: bool = False,
 ) -> SelectedProcessingPayload:
+    explicit_selected_job_indexes = list(selected_job_indexes or [])
     segments = _get_prepared_segments(prepared_run_context)
     parent_to_children_map = _build_segment_parent_to_children_map(segments)
     expanded_selected_segment_ids = _expand_segment_ids_for_selection(
@@ -270,6 +284,8 @@ def _build_selected_processing_payload(
             "jobs": [],
             "source_paragraphs": [],
             "image_assets": [],
+            "include_front_matter": bool(include_front_matter),
+            "include_toc": bool(include_toc),
         }
 
     selected_segments = [segment for segment in segments if segment.segment_id in selected_segment_id_set]
@@ -287,13 +303,27 @@ def _build_selected_processing_payload(
             for job_index in (segment_to_job.get(segment.segment_id, ()) or ())
         }
     )
+    explicit_selected_job_index_set = {
+        int(job_index)
+        for job_index in explicit_selected_job_indexes
+        if isinstance(job_index, int) and job_index >= 0
+    }
+    if explicit_selected_job_index_set:
+        selected_job_indexes = [job_index for job_index in selected_job_indexes if job_index in explicit_selected_job_index_set]
     all_jobs = list(getattr(prepared_run_context, "jobs", []) or [])
     filtered_jobs = [all_jobs[job_index] for job_index in selected_job_indexes if 0 <= job_index < len(all_jobs)]
+    job_selected_paragraph_ids = {
+        str(paragraph_id).strip()
+        for job in filtered_jobs
+        if isinstance(job, Mapping)
+        for paragraph_id in (job.get("paragraph_ids", ()) or ())
+        if str(paragraph_id).strip()
+    }
     all_paragraphs = list(getattr(prepared_run_context, "paragraphs", []) or [])
     filtered_paragraphs = [
         paragraph
         for paragraph in all_paragraphs
-        if str(getattr(paragraph, "paragraph_id", "") or "").strip() in selected_paragraph_ids
+        if str(getattr(paragraph, "paragraph_id", "") or "").strip() in (job_selected_paragraph_ids or selected_paragraph_ids)
     ]
     selected_asset_ids = {
         str(asset_id).strip()
@@ -314,6 +344,8 @@ def _build_selected_processing_payload(
         "jobs": filtered_jobs,
         "source_paragraphs": filtered_paragraphs,
         "image_assets": filtered_image_assets,
+        "include_front_matter": bool(include_front_matter),
+        "include_toc": bool(include_toc),
     }
 
 
@@ -321,12 +353,18 @@ def _build_effective_selected_processing_state(
     *,
     prepared_run_context,
     selected_segment_ids: list[str] | None,
+    selected_job_indexes: list[int] | None = None,
     segment_status_by_id: dict[str, str] | None = None,
+    include_front_matter: bool = False,
+    include_toc: bool = False,
 ) -> EffectiveSelectedProcessingState:
     payload = _build_selected_processing_payload(
         prepared_run_context=prepared_run_context,
         selected_segment_ids=selected_segment_ids,
+        selected_job_indexes=selected_job_indexes,
         segment_status_by_id=segment_status_by_id,
+        include_front_matter=include_front_matter,
+        include_toc=include_toc,
     )
     segments = _get_prepared_segments(prepared_run_context)
     effective_selected_segment_ids = [
@@ -356,7 +394,93 @@ def _build_effective_selected_processing_state(
         "selected_word_count": selected_word_count,
         "selected_job_count": selected_job_count,
         "excluded_locked_segment_ids": excluded_locked_segment_ids,
+        "uses_job_index_filter": bool(selected_job_indexes),
     }
+
+
+def _build_latest_block_status_by_job_index(run_log: list[object] | None = None) -> dict[int, str]:
+    latest_status_by_job_index: dict[int, str] = {}
+    for entry in list(run_log or get_run_log()):
+        if not isinstance(entry, Mapping):
+            continue
+        if str(entry.get("kind", "") or "").strip().lower() != "block":
+            continue
+        raw_block_index = entry.get("block_index")
+        if isinstance(raw_block_index, bool) or not isinstance(raw_block_index, int) or raw_block_index <= 0:
+            continue
+        status = str(entry.get("status", "") or "").strip().lower()
+        if not status:
+            continue
+        latest_status_by_job_index[raw_block_index - 1] = status
+    return latest_status_by_job_index
+
+
+def _resolve_retry_failed_job_indexes(
+    *,
+    prepared_run_context,
+    failed_segment_ids: list[str],
+    run_log: list[object] | None = None,
+) -> list[int]:
+    if not failed_segment_ids:
+        return []
+    segment_to_job = dict(getattr(prepared_run_context, "segment_to_job", {}) or {})
+    candidate_job_indexes = {
+        int(job_index)
+        for segment_id in failed_segment_ids
+        for job_index in (segment_to_job.get(segment_id, ()) or ())
+        if isinstance(job_index, int) and job_index >= 0
+    }
+    if not candidate_job_indexes:
+        return []
+    latest_status_by_job_index = _build_latest_block_status_by_job_index(run_log)
+    failed_job_indexes = sorted(
+        job_index
+        for job_index in candidate_job_indexes
+        if latest_status_by_job_index.get(job_index) in {"error", "failed"}
+    )
+    return failed_job_indexes
+
+
+def _resolve_failed_segment_ids(*, prepared_run_context, segment_status_by_id: dict[str, str] | None = None) -> list[str]:
+    segments = _get_prepared_segments(prepared_run_context)
+    return [
+        segment.segment_id
+        for segment in segments
+        if str(getattr(segment, "segment_id", "") or "").strip()
+        and _normalize_segment_status(
+            (segment_status_by_id or {}).get(str(getattr(segment, "segment_id", "") or ""), "pending")
+        )
+        == "failed"
+    ]
+
+
+def _build_retry_failed_processing_state(
+    *,
+    prepared_run_context,
+    segment_status_by_id: dict[str, str] | None = None,
+    run_log: list[object] | None = None,
+) -> EffectiveSelectedProcessingState:
+    failed_segment_ids = _resolve_failed_segment_ids(
+        prepared_run_context=prepared_run_context,
+        segment_status_by_id=segment_status_by_id,
+    )
+    retry_failed_job_indexes = _resolve_retry_failed_job_indexes(
+        prepared_run_context=prepared_run_context,
+        failed_segment_ids=failed_segment_ids,
+        run_log=run_log,
+    )
+    return _build_effective_selected_processing_state(
+        prepared_run_context=prepared_run_context,
+        selected_segment_ids=failed_segment_ids,
+        selected_job_indexes=retry_failed_job_indexes or None,
+        segment_status_by_id=segment_status_by_id,
+    )
+
+
+def _get_selected_context_policy() -> tuple[bool, bool]:
+    include_front_matter = bool(st.session_state.get("selected_context_include_front_matter_checkbox", True))
+    include_toc = bool(st.session_state.get("selected_context_include_toc_checkbox", True))
+    return include_front_matter, include_toc
 
 
 def _count_segment_descendant_jobs(*, segment_id: str, parent_to_children_map: dict[str, list[str]], segment_to_job: dict[str, tuple[int, ...]]) -> int:
@@ -628,6 +752,43 @@ def _build_manifest_comparison_notice(
     return ("caption", f"Last exported manifest: {manifest_path}{fingerprint_suffix}{match_suffix}")
 
 
+def _import_structure_manifest_notice(*, uploaded_file_token: str, uploaded_manifest_file: object) -> tuple[str, str] | None:
+    if uploaded_manifest_file is None:
+        return None
+
+    filename = str(getattr(uploaded_manifest_file, "name", "structure-manifest.json") or "structure-manifest.json").strip()
+    getvalue = getattr(uploaded_manifest_file, "getvalue", None)
+    if not callable(getvalue):
+        return ("warning", f"Unable to read imported structure manifest: {filename}")
+    try:
+        raw_payload = getvalue()
+        if isinstance(raw_payload, bytes):
+            payload_bytes = raw_payload
+        elif isinstance(raw_payload, bytearray):
+            payload_bytes = bytes(raw_payload)
+        else:
+            return ("warning", f"Unable to read imported structure manifest bytes: {filename}")
+        manifest_payload = json.loads(payload_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return ("warning", f"Unable to parse imported structure manifest {filename}: {exc}")
+    if not isinstance(manifest_payload, dict):
+        return ("warning", f"Imported structure manifest must be a JSON object: {filename}")
+
+    structure_fingerprint = str(manifest_payload.get("structure_fingerprint", "") or "").strip()
+    if not structure_fingerprint:
+        return ("warning", f"Imported structure manifest does not contain structure_fingerprint: {filename}")
+
+    set_structure_manifest_notice(
+        file_token=uploaded_file_token,
+        details={
+            "file_token": uploaded_file_token,
+            "manifest_path": f"Imported manifest: {filename}",
+            "structure_fingerprint": structure_fingerprint,
+        },
+    )
+    return ("caption", f"Imported structure manifest ready for comparison: {filename}")
+
+
 def _build_process_selected_unavailable_note(
     *,
     structure_confirmed: bool,
@@ -699,10 +860,31 @@ def _build_segment_status_hint(segment_status: str) -> str:
     if normalized_status == "completed":
         return "Completed in this session. This segment can be selected again for reprocess/export later."
     if normalized_status == "failed":
-        return "Failed in this session. Retry UI is not available yet in the current phase."
+        return "Failed in this session. Use Retry Failed to rerun this segment, or select it manually for reprocessing."
     if normalized_status == "skipped":
         return "Skipped in the current session workflow. Usually excluded by default."
     return ""
+
+
+def _render_terminology_review(*, prepared_run_context: object) -> None:
+    document_context_profile = getattr(prepared_run_context, "document_context_profile", None)
+    glossary_terms = list(getattr(document_context_profile, "glossary_terms", ()) or ())
+    if not glossary_terms:
+        return
+
+    translation_domain = str(getattr(prepared_run_context, "translation_domain", "general") or "general").strip() or "general"
+    with st.expander(f"Terminology Review ({len(glossary_terms)})", expanded=False):
+        st.caption(
+            "Session-scoped glossary candidates extracted from the current analysis. "
+            "These terms are already injected into translate prompts for this run."
+        )
+        st.caption(f"Domain: {translation_domain}")
+        for term in glossary_terms:
+            source_term = str(getattr(term, "source_term", "") or "").strip()
+            target_term = str(getattr(term, "target_term", "") or "").strip()
+            if not source_term or not target_term:
+                continue
+            st.write(f"- {source_term} -> {target_term}")
 
 
 def _render_analysis_review_panel(
@@ -746,10 +928,24 @@ def _render_analysis_review_panel(
         diagnostic_warnings = tuple(str(item).strip() for item in getattr(diagnostics, "warnings", ()) if str(item).strip())
         if diagnostic_warnings:
             st.warning("Structure warnings: " + "; ".join(diagnostic_warnings))
+    _render_terminology_review(prepared_run_context=prepared_run_context)
 
     manifest_path = str(getattr(prepared_run_context, "exported_structure_manifest_path", "") or "")
     if manifest_path:
         st.caption(f"Manifest path: {manifest_path}")
+    imported_manifest_file = st.file_uploader(
+        "Compare Structure Manifest",
+        type=["json"],
+        key="compare_structure_manifest_file_uploader",
+        help="Import a previously exported .segments.json manifest to compare its fingerprint with the current analysis.",
+    )
+    imported_manifest_notice = _import_structure_manifest_notice(
+        uploaded_file_token=uploaded_file_token,
+        uploaded_manifest_file=imported_manifest_file,
+    )
+    if imported_manifest_notice is not None:
+        notice_level, notice_message = imported_manifest_notice
+        _show_notice(level=notice_level, message=notice_message)
     manifest_comparison_notice = _build_manifest_comparison_notice(
         uploaded_file_token=uploaded_file_token,
         current_fingerprint=str(review_state["fingerprint"]),
@@ -961,10 +1157,13 @@ def _render_analysis_review_panel(
         set_selected_segment_ids(updated_selection)
         selected_segment_ids = updated_selection
 
+    include_front_matter, include_toc = _get_selected_context_policy()
     effective_selected_state = _build_effective_selected_processing_state(
         prepared_run_context=prepared_run_context,
         selected_segment_ids=selected_segment_ids,
         segment_status_by_id=segment_status_by_id,
+        include_front_matter=include_front_matter,
+        include_toc=include_toc,
     )
     effective_selected_segment_ids = effective_selected_state["effective_selected_segment_ids"]
     selected_segments = effective_selected_state["effective_selected_segments"]
@@ -1010,20 +1209,49 @@ def _render_analysis_review_panel(
         st.caption("Ready: confirmed structure | selection resolves to processable jobs.")
     elif process_selected_unavailable_note:
         st.caption(process_selected_unavailable_note)
-    failed_segment_count = sum(
-        1
-        for seg in segments
-        if _normalize_segment_status(
-            segment_status_by_id.get(str(getattr(seg, "segment_id", "") or ""), "pending")
+    if can_process_selected:
+        st.checkbox(
+            "Include Front Matter",
+            value=include_front_matter,
+            key="selected_context_include_front_matter_checkbox",
+            help="When enabled, Selected + Context prepends front matter segments as source-backed context.",
         )
-        == "failed"
+        st.checkbox(
+            "Include TOC",
+            value=include_toc,
+            key="selected_context_include_toc_checkbox",
+            help="When enabled, Selected + Context prepends table-of-contents segments as source-backed context.",
+        )
+    retry_failed_state = _build_retry_failed_processing_state(
+        prepared_run_context=prepared_run_context,
+        segment_status_by_id=segment_status_by_id,
     )
-    if failed_segment_count > 0:
-        st.caption(
-            f"{failed_segment_count} segment(s) failed in this session. "
-            "Segment retry is not available in Phase 2 — "
-            "reselect failed segments and rerun, or use Process Entire Book as a fallback."
+    retry_failed_segment_ids = retry_failed_state["effective_selected_segment_ids"]
+    retry_failed_job_count = retry_failed_state["selected_job_count"]
+    failed_segment_count = len(
+        _resolve_failed_segment_ids(
+            prepared_run_context=prepared_run_context,
+            segment_status_by_id=segment_status_by_id,
         )
+    )
+    can_retry_failed = structure_confirmed and bool(retry_failed_segment_ids) and retry_failed_job_count > 0
+    retry_failed_unavailable_note = ""
+    if failed_segment_count > 0 and not can_retry_failed:
+        if not structure_confirmed:
+            retry_failed_unavailable_note = "Retry Failed unavailable: confirm the current outline before rerunning failed segments."
+        else:
+            retry_failed_unavailable_note = "Retry Failed unavailable: failed segments do not currently resolve to selectable jobs."
+    if failed_segment_count > 0:
+        if can_retry_failed:
+            st.caption(
+                f"{failed_segment_count} segment(s) failed in this session. "
+                "Retry Failed is ready to rerun only those failed segments."
+            )
+        else:
+            st.caption(
+                f"{failed_segment_count} segment(s) failed in this session. "
+                f"{retry_failed_unavailable_note}"
+            )
     can_build_final_book = _can_build_final_translated_book(
         segments=segments,
         segment_status_by_id=segment_status_by_id,
@@ -1037,6 +1265,7 @@ def _render_analysis_review_panel(
         set_structure_confirmation_state(
             structure_confirmed=True,
             confirmed_structure_fingerprint=current_fingerprint,
+            confirmed_segment_ids=review_state["segment_ids"],
             confirmed_at_settings_hash=current_settings_hash,
             segments_loaded_for_source_token=uploaded_file_token,
         )
@@ -1061,6 +1290,34 @@ def _render_analysis_review_panel(
         key="process_selected_button",
     ):
         return "start_selected"
+    if selected_col.button(
+        "Selected + Context",
+        use_container_width=True,
+        disabled=not can_process_selected,
+        help=(
+            "Processes the selected chapters and prepends leading structural context such as front matter or TOC as source-backed content."
+            if can_process_selected
+            else process_selected_unavailable_note
+        ),
+        key="process_selected_with_context_button",
+    ):
+        return "start_selected_with_context"
+    if failed_segment_count > 0 and selected_col.button(
+        "Retry Failed",
+        use_container_width=True,
+        disabled=not can_retry_failed,
+        help=(
+            (
+                "Reruns only the failed jobs recorded in the current session for the failed segments."
+                if retry_failed_state["uses_job_index_filter"]
+                else "Reruns only the segments marked failed in the current session."
+            )
+            if can_retry_failed
+            else retry_failed_unavailable_note
+        ),
+        key="retry_failed_segments_button",
+    ):
+        return "start_retry_failed"
     if full_book_col.button("Process Entire Book", type="primary", use_container_width=True, key="process_entire_book_button"):
         return "start_final_book" if can_build_final_book else "start_full_book"
     if structure_confirmed:
@@ -1075,6 +1332,13 @@ def _render_analysis_review_panel(
         )
         if can_process_selected:
             st.caption("Process Selected now runs only the chosen chapters and produces a partial output artifact.")
+            st.caption("Selected + Context prepends leading source-backed structural context such as front matter or TOC before the first selected chapter.")
+        if can_retry_failed:
+            st.caption(
+                "Retry Failed reruns only the failed jobs recorded in the current session for the failed segments."
+                if retry_failed_state["uses_job_index_filter"]
+                else "Retry Failed reruns only the segments marked failed in the current session."
+            )
         if can_build_final_book:
             st.caption("Process Entire Book is ready to produce the final translated book for the current session.")
     else:

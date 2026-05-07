@@ -1,11 +1,11 @@
 import json
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 
-from docxaicorrector.core.constants import STRUCTURE_MANIFESTS_DIR, UI_RESULT_ARTIFACTS_DIR
+from docxaicorrector.core.constants import JOB_RESULT_REGISTRY_DIR, SEGMENT_RESULT_REGISTRY_DIR, STRUCTURE_MANIFESTS_DIR, UI_RESULT_ARTIFACTS_DIR
 from docxaicorrector.runtime.artifact_retention import (
     STRUCTURE_MANIFESTS_MAX_AGE_SECONDS,
     STRUCTURE_MANIFESTS_MAX_COUNT,
@@ -153,6 +153,97 @@ def write_structure_manifest_artifact(
         emit_log=False,
     )
     return str(manifest_path)
+
+
+def write_segment_result_registry(
+    *,
+    records: Sequence[Mapping[str, object]],
+    output_dir: Path = SEGMENT_RESULT_REGISTRY_DIR,
+) -> dict[str, str]:
+    persisted_paths: dict[str, str] = {}
+    for record in records:
+        prepared_source_key = str(record.get("prepared_source_key") or "").strip()
+        structure_fingerprint = str(record.get("structure_fingerprint") or "").strip()
+        segment_id = str(record.get("segment_id") or "").strip()
+        if not prepared_source_key or not structure_fingerprint or not segment_id:
+            continue
+        target_dir = (
+            output_dir
+            / _sanitize_artifact_stem(prepared_source_key)
+            / _sanitize_artifact_stem(structure_fingerprint)
+        )
+        target_dir.mkdir(parents=True, exist_ok=True)
+        artifact_path = target_dir / f"{_sanitize_artifact_stem(segment_id)}.segment-result.json"
+        artifact_path.write_text(
+            json.dumps(_to_jsonable(record), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        persisted_paths[segment_id] = str(artifact_path)
+    return persisted_paths
+
+
+def write_job_result_registry(
+    *,
+    records: Sequence[Mapping[str, object]],
+    output_dir: Path = JOB_RESULT_REGISTRY_DIR,
+) -> dict[str, str]:
+    persisted_paths: dict[str, str] = {}
+    for record in records:
+        prepared_source_key = str(record.get("prepared_source_key") or "").strip()
+        structure_fingerprint = str(record.get("structure_fingerprint") or "").strip()
+        job_id = str(record.get("job_id") or "").strip()
+        if not prepared_source_key or not structure_fingerprint or not job_id:
+            continue
+        target_dir = (
+            output_dir
+            / _sanitize_artifact_stem(prepared_source_key)
+            / _sanitize_artifact_stem(structure_fingerprint)
+        )
+        target_dir.mkdir(parents=True, exist_ok=True)
+        artifact_path = target_dir / f"{_sanitize_artifact_stem(job_id)}.job-result.json"
+        artifact_path.write_text(
+            json.dumps(_to_jsonable(record), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        persisted_paths[job_id] = str(artifact_path)
+    return persisted_paths
+
+
+def load_job_result_registry(
+    *,
+    prepared_source_key: str,
+    structure_fingerprint: str,
+    input_dir: Path = JOB_RESULT_REGISTRY_DIR,
+) -> dict[str, dict[str, object]]:
+    normalized_source_key = _sanitize_artifact_stem(prepared_source_key)
+    normalized_fingerprint = _sanitize_artifact_stem(structure_fingerprint)
+    if not normalized_source_key or not normalized_fingerprint:
+        return {}
+
+    target_dir = input_dir / normalized_source_key / normalized_fingerprint
+    if not target_dir.exists():
+        return {}
+
+    records_by_job_id: dict[str, tuple[float, dict[str, object]]] = {}
+    for artifact_path in target_dir.glob("*.job-result.json"):
+        try:
+            payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        job_id = str(payload.get("job_id") or "").strip()
+        status = str(payload.get("status") or "").strip()
+        if not job_id or not status:
+            continue
+        try:
+            modified_at = artifact_path.stat().st_mtime
+        except OSError:
+            modified_at = 0.0
+        previous = records_by_job_id.get(job_id)
+        if previous is None or modified_at >= previous[0]:
+            records_by_job_id[job_id] = (modified_at, payload)
+    return {job_id: payload for job_id, (_, payload) in records_by_job_id.items()}
 
 
 def _to_jsonable(value: object) -> object:

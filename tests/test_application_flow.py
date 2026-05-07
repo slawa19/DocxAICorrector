@@ -12,7 +12,7 @@ import docxaicorrector.runtime.state as state
 import docxaicorrector.ui.application_flow as application_flow
 from conftest import SessionState as SessionState  # noqa: F811
 from docx import Document
-from docxaicorrector.document.segments import DocumentSegment, SegmentBoundaryEvidence, SegmentDetectionReport
+from docxaicorrector.document.segments import DocumentContextProfile, DocumentSegment, SegmentBoundaryEvidence, SegmentDetectionReport, SegmentOutlineEntry
 
 
 @pytest.fixture(autouse=True)
@@ -277,6 +277,9 @@ def test_prepare_run_context_keeps_best_effort_warning_when_quality_gate_warns(m
 def test_prepare_run_context_copies_segment_fields_from_prepared_document(monkeypatch):
     monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: None)
     session_state = SessionState(selected_source_token="", prepared_source_key="")
+    document_context_profile = DocumentContextProfile(
+        outline_entries=(SegmentOutlineEntry(segment_id="seg_0001_abcd1234", title="Chapter 1", level=1),),
+    )
 
     prepared_document = SimpleNamespace(
         source_text="text",
@@ -290,6 +293,7 @@ def test_prepare_run_context_copies_segment_fields_from_prepared_document(monkey
         structure_fingerprint="abc123def456",
         detector_version="chapter_segments_v1",
         segment_to_job={"seg_0001_abcd1234": (0,)},
+        document_context_profile=document_context_profile,
     )
 
     prepared_run_context = application_flow.prepare_run_context(
@@ -309,6 +313,7 @@ def test_prepare_run_context_copies_segment_fields_from_prepared_document(monkey
     assert prepared_run_context.structure_fingerprint == "abc123def456"
     assert prepared_run_context.detector_version == "chapter_segments_v1"
     assert prepared_run_context.segment_to_job == {"seg_0001_abcd1234": (0,)}
+    assert prepared_run_context.document_context_profile == document_context_profile
 
 
 def test_build_structure_manifest_payload_serializes_detected_segments():
@@ -372,6 +377,7 @@ def test_build_structure_manifest_payload_serializes_detected_segments():
     assert payload["schema_version"] == 1
     assert payload["source_name"] == "report.docx"
     assert payload["prepared_source_key"] == "report.docx:3:token:6000"
+    assert payload["ordered_segment_ids"] == ["seg_0001_abcd1234"]
     assert payload["detector_version"] == "chapter_segments_v1"
     assert payload["detector_config"] == {
         "chunk_size": 6000,

@@ -2,6 +2,7 @@ import logging
 import time
 from typing import Any, Literal, TypeAlias
 
+from docxaicorrector.pipeline.job_results import persist_terminal_job_result
 from docxaicorrector.pipeline.output_validation import validate_translated_toc_block
 
 
@@ -60,7 +61,24 @@ def _resolve_block_prompt_variant(*, context: Any, payload: Any) -> str:
     return "default"
 
 
+def _build_prompt_source_text(*, context: Any) -> str:
+    parts: list[str] = []
+    translation_domain_instructions = str(getattr(context, "translation_domain_instructions", "") or "").strip()
+    if translation_domain_instructions:
+        parts.append(translation_domain_instructions)
+    if getattr(context, "processing_operation", "") == "translate":
+        document_context_prompt = str(
+            getattr(context, "document_context_prompt", "")
+            or getattr(context, "app_config", {}).get("document_context_prompt", "")
+            or ""
+        ).strip()
+        if document_context_prompt:
+            parts.append(document_context_prompt)
+    return "\n\n".join(parts)
+
+
 def _get_cached_system_prompt(*, context: Any, dependencies: Any, state: Any, resolve_system_prompt_fn: Any, prompt_variant: str) -> str:
+    prompt_source_text = _build_prompt_source_text(context=context)
     if prompt_variant == "toc_translate":
         if state.toc_system_prompt is None:
             state.toc_system_prompt = resolve_system_prompt_fn(
@@ -71,7 +89,7 @@ def _get_cached_system_prompt(*, context: Any, dependencies: Any, state: Any, re
                 editorial_intensity=str(context.app_config.get("editorial_intensity_default", "literary")),
                 prompt_variant="toc_translate",
                 translation_domain=context.translation_domain,
-                source_text=context.translation_domain_instructions,
+                source_text=prompt_source_text,
             )
         return state.toc_system_prompt
 
@@ -83,7 +101,7 @@ def _get_cached_system_prompt(*, context: Any, dependencies: Any, state: Any, re
             target_language=context.target_language,
             editorial_intensity=str(context.app_config.get("editorial_intensity_default", "literary")),
             translation_domain=context.translation_domain,
-            source_text=context.translation_domain_instructions,
+            source_text=prompt_source_text,
         )
     return state.system_prompt
 
@@ -547,6 +565,12 @@ def emit_block_completed(
         target_chars=payload.target_chars,
         context_chars=payload.context_chars,
         details=f"готово за {time.perf_counter() - state.started_at:.1f} сек. с начала запуска",
+    )
+    persist_terminal_job_result(
+        context=context,
+        dependencies=dependencies,
+        index=index,
+        status="completed",
     )
     emitters.emit_status(
         context.runtime,

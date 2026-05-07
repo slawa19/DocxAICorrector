@@ -1,7 +1,13 @@
 import json
 from pathlib import Path
 
-from docxaicorrector.runtime.artifacts import write_structure_manifest_artifact, write_ui_result_artifacts
+from docxaicorrector.runtime.artifacts import (
+    load_job_result_registry,
+    write_job_result_registry,
+    write_segment_result_registry,
+    write_structure_manifest_artifact,
+    write_ui_result_artifacts,
+)
 
 
 def test_write_ui_result_artifacts_persists_markdown_and_docx_pair(tmp_path):
@@ -208,4 +214,120 @@ def test_write_structure_manifest_artifact_persists_segments_json(tmp_path):
         "schema_version": 1,
         "structure_fingerprint": "abc123",
         "segments": [{"segment_id": "seg_0001_deadbeef", "title": "Chapter 1"}],
+    }
+
+
+def test_write_segment_result_registry_persists_segment_records_in_identity_tree(tmp_path):
+    artifact_paths = write_segment_result_registry(
+        records=[
+            {
+                "schema_version": 1,
+                "prepared_source_key": "prep:report:1234",
+                "structure_fingerprint": "struct-abc",
+                "segment_id": "seg_0001",
+                "translated_markdown": "Translated chapter",
+                "result_artifact_paths": {
+                    "markdown_path": "/tmp/report.result.md",
+                    "docx_path": "/tmp/report.result.docx",
+                },
+            }
+        ],
+        output_dir=tmp_path,
+    )
+
+    persisted_path = Path(artifact_paths["seg_0001"])
+
+    assert persisted_path == tmp_path / "prep_report_1234" / "struct-abc" / "seg_0001.segment-result.json"
+    assert json.loads(persisted_path.read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "prepared_source_key": "prep:report:1234",
+        "structure_fingerprint": "struct-abc",
+        "segment_id": "seg_0001",
+        "translated_markdown": "Translated chapter",
+        "result_artifact_paths": {
+            "markdown_path": "/tmp/report.result.md",
+            "docx_path": "/tmp/report.result.docx",
+        },
+    }
+
+
+def test_write_job_result_registry_persists_job_records_in_identity_tree(tmp_path):
+    artifact_paths = write_job_result_registry(
+        records=[
+            {
+                "schema_version": 1,
+                "prepared_source_key": "prep:report:1234",
+                "structure_fingerprint": "struct-abc",
+                "job_id": "job_0007",
+                "segment_id": "seg_0002",
+                "status": "failed",
+                "error_code": "block_failed",
+            }
+        ],
+        output_dir=tmp_path,
+    )
+
+    persisted_path = Path(artifact_paths["job_0007"])
+
+    assert persisted_path == tmp_path / "prep_report_1234" / "struct-abc" / "job_0007.job-result.json"
+    assert json.loads(persisted_path.read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "prepared_source_key": "prep:report:1234",
+        "structure_fingerprint": "struct-abc",
+        "job_id": "job_0007",
+        "segment_id": "seg_0002",
+        "status": "failed",
+        "error_code": "block_failed",
+    }
+
+
+def test_load_job_result_registry_keeps_latest_record_per_job_id(tmp_path):
+    target_dir = tmp_path / "prep_report_1234" / "struct-abc"
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    first_path = target_dir / "job_0001.job-result.json"
+    second_path = target_dir / "job_0002.job-result.json"
+
+    first_path.write_text(
+        json.dumps(
+            {
+                "prepared_source_key": "prep:report:1234",
+                "structure_fingerprint": "struct-abc",
+                "job_id": "job_0001",
+                "status": "failed",
+            }
+        ),
+        encoding="utf-8",
+    )
+    second_path.write_text(
+        json.dumps(
+            {
+                "prepared_source_key": "prep:report:1234",
+                "structure_fingerprint": "struct-abc",
+                "job_id": "job_0002",
+                "status": "completed",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_job_result_registry(
+        prepared_source_key="prep:report:1234",
+        structure_fingerprint="struct-abc",
+        input_dir=tmp_path,
+    )
+
+    assert loaded == {
+        "job_0001": {
+            "prepared_source_key": "prep:report:1234",
+            "structure_fingerprint": "struct-abc",
+            "job_id": "job_0001",
+            "status": "failed",
+        },
+        "job_0002": {
+            "prepared_source_key": "prep:report:1234",
+            "structure_fingerprint": "struct-abc",
+            "job_id": "job_0002",
+            "status": "completed",
+        },
     }

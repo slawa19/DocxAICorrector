@@ -1,6 +1,8 @@
 import logging
 from typing import Any, Literal, TypeAlias
 
+from docxaicorrector.pipeline.job_results import persist_terminal_job_result
+
 
 PipelineResult: TypeAlias = Literal["succeeded", "failed", "stopped"]
 
@@ -54,6 +56,14 @@ def handle_invalid_processing_job(
     )
     formatted_error = f"Ошибка на блоке {index}: {error_message}"
     emitters.emit_state(context.runtime, last_error=formatted_error, latest_docx_bytes=None)
+    persist_terminal_job_result(
+        context=context,
+        dependencies=dependencies,
+        index=index,
+        status="failed",
+        error_code="invalid_processing_job",
+        error_message=error_message,
+    )
     return emit_failed_result_fn(
         emitters=emitters,
         runtime=context.runtime,
@@ -126,6 +136,14 @@ def handle_block_generation_failure(
         last_error=formatted_error,
         latest_docx_bytes=None,
         latest_marker_diagnostics_artifact=marker_diagnostics_artifact,
+    )
+    persist_terminal_job_result(
+        context=context,
+        dependencies=dependencies,
+        index=index,
+        status="failed",
+        error_code=error_code,
+        error_message=error_message,
     )
     outcome = emit_failed_result_fn(
         emitters=emitters,
@@ -237,6 +255,14 @@ def handle_processed_block_rejection(
         )
         formatted_error = f"Ошибка на блоке {index}: {critical_message}"
         emitters.emit_state(context.runtime, last_error=formatted_error, latest_docx_bytes=None)
+        persist_terminal_job_result(
+            context=context,
+            dependencies=dependencies,
+            index=index,
+            status="failed",
+            error_code="empty_processed_block",
+            error_message=critical_message,
+        )
         return emit_failed_result_fn(
             emitters=emitters,
             runtime=context.runtime,
@@ -262,6 +288,14 @@ def handle_processed_block_rejection(
     )
     formatted_error = f"Ошибка на блоке {index}: {critical_message}"
     emitters.emit_state(context.runtime, last_error=formatted_error, latest_docx_bytes=None)
+    persist_terminal_job_result(
+        context=context,
+        dependencies=dependencies,
+        index=index,
+        status="failed",
+        error_code=str(rejection_details["classification"]),
+        error_message=critical_message,
+    )
     outcome = emit_failed_result_fn(
         emitters=emitters,
         runtime=context.runtime,
@@ -338,6 +372,14 @@ def handle_marker_registry_failure(
         last_error=formatted_error,
         latest_docx_bytes=None,
         latest_marker_diagnostics_artifact=marker_diagnostics_artifact,
+    )
+    persist_terminal_job_result(
+        context=context,
+        dependencies=dependencies,
+        index=index,
+        status="failed",
+        error_code="block_marker_registry_failed",
+        error_message=error_message,
     )
     outcome = emit_failed_result_fn(
         emitters=emitters,

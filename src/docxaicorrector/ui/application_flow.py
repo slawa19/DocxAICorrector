@@ -7,7 +7,7 @@ from typing import Any, Protocol, TypedDict, cast
 
 from docxaicorrector.document._document import summarize_boundary_normalization_metrics, validate_docx_source_bytes
 from docxaicorrector.core.models import StructureRecognitionSummary
-from docxaicorrector.document.segments import CHAPTER_SEGMENTS_DETECTOR_VERSION, DocumentSegment, SegmentDetectionReport
+from docxaicorrector.document.segments import CHAPTER_SEGMENTS_DETECTOR_VERSION, DocumentContextProfile, DocumentSegment, SegmentDetectionReport
 from docxaicorrector.runtime.artifacts import write_structure_manifest_artifact
 from docxaicorrector.processing.preparation import (
     build_layout_cleanup_status_note,
@@ -89,6 +89,7 @@ class PreparedRunContext:
     quality_gate_reasons: tuple[str, ...] = ()
     translation_domain: str = "general"
     translation_domain_instructions: str = ""
+    document_context_profile: DocumentContextProfile = field(default_factory=DocumentContextProfile)
     exported_structure_manifest_path: str = ""
 
     @property
@@ -423,6 +424,7 @@ def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: 
         translation_domain_instructions=str(
             getattr(prepared_document, "translation_domain_instructions", "") or ""
         ),
+        document_context_profile=getattr(prepared_document, "document_context_profile", DocumentContextProfile()),
         exported_structure_manifest_path=str(getattr(prepared_document, "exported_structure_manifest_path", "") or ""),
     )
 
@@ -438,6 +440,7 @@ def build_structure_manifest_payload(*, prepared_run_context: PreparedRunContext
         "source_name": source_name,
         "source_content_hash16": sha256(uploaded_bytes).hexdigest()[:16],
         "prepared_source_key": str(getattr(prepared_run_context, "prepared_source_key", "") or ""),
+        "ordered_segment_ids": [segment.segment_id for segment in segments if str(segment.segment_id or "").strip()],
         "detector_version": str(getattr(prepared_run_context, "detector_version", CHAPTER_SEGMENTS_DETECTOR_VERSION) or CHAPTER_SEGMENTS_DETECTOR_VERSION),
         "detector_config": {
             "chunk_size": int(config.get("chunk_size", 0) or 0),

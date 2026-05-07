@@ -1,7 +1,7 @@
 import logging
 import json
 from collections.abc import Callable, Mapping, Sequence
-from typing import Literal, TypeAlias
+from typing import Literal, TypeAlias, cast
 
 from docxaicorrector.generation.formatting_diagnostics_retention import (
     get_formatting_diagnostics_dir,
@@ -98,7 +98,11 @@ from docxaicorrector.pipeline.contracts import (
     ModelSelectorResolver,
     ProviderClientFactory,
 )
-from docxaicorrector.runtime.artifacts import write_ui_result_artifacts as write_ui_result_artifacts_impl
+from docxaicorrector.runtime.artifacts import (
+    write_job_result_registry as write_job_result_registry_impl,
+    write_segment_result_registry as write_segment_result_registry_impl,
+    write_ui_result_artifacts as write_ui_result_artifacts_impl,
+)
 
 
 JobValue: TypeAlias = object
@@ -246,6 +250,8 @@ def _build_processing_dependencies(
     preserve_source_paragraph_properties: ParagraphPropertiesPreserver,
     reinsert_inline_images: ImageReinserter,
     write_ui_result_artifacts: ResultArtifactWriter,
+    write_segment_result_registry,
+    write_job_result_registry,
     get_provider_client: ProviderClientFactory | None = None,
     get_client_for_model_selector: ModelSelectorClientFactory | None = None,
     resolve_model_selector: ModelSelectorResolver | None = None,
@@ -268,6 +274,8 @@ def _build_processing_dependencies(
         preserve_source_paragraph_properties=preserve_source_paragraph_properties,
         reinsert_inline_images=reinsert_inline_images,
         write_ui_result_artifacts=write_ui_result_artifacts,
+        write_segment_result_registry=write_segment_result_registry,
+        write_job_result_registry=write_job_result_registry,
     )
 
 
@@ -292,9 +300,16 @@ def _build_processing_emitters(
 def _build_processing_context(
     *,
     uploaded_file: object,
+    source_token: str | None = None,
+    run_id: str | None = None,
+    prepared_source_key: str | None = None,
+    structure_fingerprint: str | None = None,
     jobs: ProcessingJobs,
     selected_segment_ids: Sequence[str] | None = None,
+    document_segments: Sequence[object] | None = None,
     output_mode: str | None = None,
+    include_front_matter: bool = False,
+    include_toc: bool = False,
     source_paragraphs: Sequence[ParagraphLike] | None,
     image_assets: Sequence[ImageAssetLike],
     image_mode: str,
@@ -307,12 +322,20 @@ def _build_processing_context(
     on_progress: ProgressCallback,
     runtime: object,
     dependencies: ProcessingDependencies,
+    document_context_prompt: str = "",
 ) -> ProcessingContext:
     return _build_processing_context_impl(
         uploaded_file=uploaded_file,
+        source_token=source_token,
+        run_id=run_id,
+        prepared_source_key=prepared_source_key,
+        structure_fingerprint=structure_fingerprint,
         jobs=jobs,
         selected_segment_ids=selected_segment_ids,
+        document_segments=document_segments,
         output_mode=output_mode,
+        include_front_matter=include_front_matter,
+        include_toc=include_toc,
         source_paragraphs=source_paragraphs,
         image_assets=image_assets,
         image_mode=image_mode,
@@ -326,15 +349,23 @@ def _build_processing_context(
         runtime=runtime,
         dependencies=dependencies,
         context_factory_fn=ProcessingContext,
+        document_context_prompt=document_context_prompt,
     )
 
 
 def _build_processing_run_components(
     *,
     uploaded_file: object,
+    source_token: str | None = None,
+    run_id: str | None = None,
+    prepared_source_key: str | None = None,
+    structure_fingerprint: str | None = None,
     jobs: ProcessingJobs,
     selected_segment_ids: Sequence[str] | None = None,
+    document_segments: Sequence[object] | None = None,
     output_mode: str | None = None,
+    include_front_matter: bool = False,
+    include_toc: bool = False,
     source_paragraphs: Sequence[ParagraphLike] | None,
     image_assets: Sequence[ImageAssetLike],
     image_mode: str,
@@ -365,19 +396,30 @@ def _build_processing_run_components(
     preserve_source_paragraph_properties: ParagraphPropertiesPreserver,
     reinsert_inline_images: ImageReinserter,
     write_ui_result_artifacts: ResultArtifactWriter,
+    write_segment_result_registry,
+    write_job_result_registry,
     get_provider_client: Callable[[str], object] | None = None,
     get_client_for_model_selector: Callable[[str, str], object] | None = None,
     resolve_model_selector: Callable[[str, str | None], object] | None = None,
+    document_context_prompt: str = "",
 ) -> ProcessingRunComponents:
     return _build_processing_run_components_impl(
         uploaded_file=uploaded_file,
+        source_token=source_token,
+        run_id=run_id,
+        prepared_source_key=prepared_source_key,
+        structure_fingerprint=structure_fingerprint,
         jobs=jobs,
         selected_segment_ids=selected_segment_ids,
+        document_segments=document_segments,
         output_mode=output_mode,
+        include_front_matter=include_front_matter,
+        include_toc=include_toc,
         source_paragraphs=source_paragraphs,
         image_assets=image_assets,
         image_mode=image_mode,
         app_config=app_config,
+        document_context_prompt=document_context_prompt,
         model=model,
         max_retries=max_retries,
         processing_operation=processing_operation,
@@ -411,6 +453,8 @@ def _build_processing_run_components(
         preserve_source_paragraph_properties=preserve_source_paragraph_properties,
         reinsert_inline_images=reinsert_inline_images,
         write_ui_result_artifacts=write_ui_result_artifacts,
+        write_segment_result_registry=write_segment_result_registry,
+        write_job_result_registry=write_job_result_registry,
     )
 
 
@@ -853,8 +897,11 @@ def _run_docx_build_phase(
         return None
     return DocxBuildPhaseResult(
         docx_bytes=phase_result["docx_bytes"],
+        final_markdown=str(phase_result.get("final_markdown") or ""),
         latest_result_notice=phase_result["latest_result_notice"],
         formatting_diagnostics_artifacts=list(phase_result.get("formatting_diagnostics_artifacts") or []),
+        assembly_entries=list(phase_result.get("assembly_entries") or []),
+        result_manifest=cast(Mapping[str, object] | None, phase_result.get("result_manifest")),
     )
 
 
@@ -874,8 +921,11 @@ def _finalize_processing_success(
         state=state,
         docx_phase={
             "docx_bytes": docx_phase.docx_bytes,
+            "final_markdown": docx_phase.final_markdown,
             "latest_result_notice": docx_phase.latest_result_notice,
             "formatting_diagnostics_artifacts": list(docx_phase.formatting_diagnostics_artifacts),
+            "assembly_entries": list(docx_phase.assembly_entries),
+            "result_manifest": docx_phase.result_manifest,
         },
         job_count=job_count,
         current_markdown_fn=_current_markdown,
@@ -885,9 +935,16 @@ def _finalize_processing_success(
 def run_document_processing(
     *,
     uploaded_file: object,
+    source_token: str | None = None,
+    run_id: str | None = None,
+    prepared_source_key: str | None = None,
+    structure_fingerprint: str | None = None,
     jobs: ProcessingJobs,
     selected_segment_ids: Sequence[str] | None = None,
+    document_segments: Sequence[object] | None = None,
     output_mode: str | None = None,
+    include_front_matter: bool = False,
+    include_toc: bool = False,
     source_paragraphs: Sequence[ParagraphLike] | None = None,
     image_assets: Sequence[ImageAssetLike],
     image_mode: str,
@@ -921,16 +978,25 @@ def run_document_processing(
     get_provider_client: Callable[[str], object] | None = None,
     get_client_for_model_selector: Callable[[str, str], object] | None = None,
     resolve_model_selector: Callable[[str, str | None], object] | None = None,
+    document_context_prompt: str = "",
 ) -> PipelineResult:
     components = _build_processing_run_components(
         uploaded_file=uploaded_file,
+        source_token=source_token,
+        run_id=run_id,
+        prepared_source_key=prepared_source_key,
+        structure_fingerprint=structure_fingerprint,
         jobs=jobs,
         selected_segment_ids=selected_segment_ids,
+        document_segments=document_segments,
         output_mode=output_mode,
+        include_front_matter=include_front_matter,
+        include_toc=include_toc,
         source_paragraphs=source_paragraphs,
         image_assets=image_assets,
         image_mode=image_mode,
         app_config=app_config,
+        document_context_prompt=document_context_prompt,
         model=model,
         max_retries=max_retries,
         processing_operation=processing_operation,
@@ -960,6 +1026,8 @@ def run_document_processing(
         preserve_source_paragraph_properties=preserve_source_paragraph_properties,
         reinsert_inline_images=reinsert_inline_images,
         write_ui_result_artifacts=write_ui_result_artifacts,
+        write_job_result_registry=write_job_result_registry_impl,
+        write_segment_result_registry=write_segment_result_registry_impl,
     )
     return _execute_processing_run(
         context=components.context,

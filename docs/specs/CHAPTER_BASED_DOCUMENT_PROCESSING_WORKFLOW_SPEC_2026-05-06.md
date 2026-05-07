@@ -1268,6 +1268,12 @@ Retry UI and retry API are Phase 3 capabilities.
 Before Phase 3, failed segments may be shown in the UI, but retry controls should be visible and disabled, or omitted entirely.
 ```
 
+Current implementation note:
+
+```text
+The current Streamlit chapter review flow now implements a minimal Phase 3 `Retry Failed` action that reruns failed segments from the current session through the existing selected-segment processing path. Job-level failed-job-only reuse remains a later refinement.
+```
+
 ### Start Full-Book Processing
 
 ```http
@@ -1359,7 +1365,7 @@ UI behavior:
 
 - Failed chapter shows a red badge.
 - Expandable error details show failed block index, error code, retry count, and last message.
-- Retry button reuses completed job outputs and runs only failed or pending jobs once Phase 3 retry support exists.
+- Retry button is now available in the chapter review panel and reruns failed segments from the current session through the existing selected-segment path; later refinements may narrow this further to failed jobs only when enough per-job retry state exists.
 - The chapter selector remains available after failure.
 
 ## Edge Cases
@@ -1419,7 +1425,7 @@ flowchart TD
 - `Phase 1` is effectively complete.
 - `Phase 2` is mostly complete, with remaining UX/contract polish and consistency work around selection semantics and selector clarity.
 - `Milestone B.5` is implemented: the chapter/segment review subsystem now lives in `src/docxaicorrector/ui/structure_review_panel.py`, while `src/docxaicorrector/ui/_app.py` remains the orchestration shell that composes it.
-- `Phase 3` is partially complete: structure reproducibility and confirmation invalidation are in place, but retry and richer manual comparison flows remain open.
+- `Phase 3` is partially complete: structure reproducibility, confirmation invalidation, and a minimal failed-segment retry flow are now in place, but richer manual comparison and deeper job-level retry behavior remain open.
 - `Phase 4` and `Phase 5` remain largely ahead.
 
 ### Autonomous Execution Plan
@@ -1521,9 +1527,9 @@ Milestone definitions:
 
 - Keep processing state session scoped.
 - [x] Compare repeated same-session detections by `structure_fingerprint` and show an explicit analysis-panel invalidation summary with previous/current fingerprint details when confirmation becomes invalid.
-- Optionally allow importing/exporting structure manifests for manual comparison.
-- [x] Show explicit panel-level notice for failed segments with count and clear "retry not available in Phase 2" message; per-segment status hint also records the same in `_build_segment_status_hint`.
-- Add failed-segment retry (deferred to Phase 3 proper or Milestone C retry path).
+- [x] Allow exporting structure manifests and importing a previously exported `.segments.json` manifest for manual fingerprint comparison in the analysis review panel.
+- [x] Show explicit panel-level notice for failed segments with count and actionable retry guidance in the chapter review panel; per-segment status hint now points to `Retry Failed` or manual reselection.
+- [x] Add minimal failed-segment retry in the current chapter review flow via `Retry Failed`, which reruns failed segments from the current session through the existing selected-segment processing path; when the current-session block journal clearly identifies failed jobs inside those segments, narrow the retry payload to only those failed jobs. Cross-session or persisted job-level retry-only reuse remains future work.
 - [x] Invalidate structure confirmation when detection-affecting settings change.
 - [x] Store and compare `confirmed_at_settings_hash` for detection-affecting settings.
 
@@ -1534,23 +1540,33 @@ Milestone definitions:
 - [x] Thread explicit `output_mode` through the current UI, worker, API, and processing contracts for the currently supported modes `selected_only` and `legacy_full_document`, instead of deriving it only from `selected_segment_ids` during finalization.
 - Support `selected_only`, `selected_with_context`, `hybrid_document`, and `final_translated_book` output modes consistently across UI, API, and processing contracts.
 - [x] Preserve explicit `selected_with_context` through the current processing/reassembly contract for selected-segment runs, instead of collapsing every selected run back to `selected_only` during finalization.
-- [x] Preserve explicit `hybrid_document` through the current processing/reassembly contract for full-document runs, so manifest/output-mode plumbing stays honest before true hybrid reassembly behavior is implemented.
+- [x] Implement a true `hybrid_document` assembly path for full-document runs: read persisted segment records from `.run/segment_results/`, merge them with current-run translated segments, fall back to source-backed segment markdown for missing segments, and carry segment provenance into the result manifest.
+- [x] Implement a real `selected_with_context` assembly path for selected runs: expand included segments with leading structural context such as front matter or TOC before the first selected segment, keep selected segments translated from the current run, and use source-backed fallback for the prepended context while recording per-segment provenance in the manifest.
+- [x] Implement a dedicated `final_translated_book` assembly path for full-document runs: assemble the final artifact only from translated segment outputs of the current run, enforce the completion precondition at reassemble time, and fail the run if any required full-document segment would otherwise fall back to source or remain missing.
 - [x] Write segment-aware result artifact manifests (`.result.manifest.json`) for current runs, including included segment ids and per-segment job counts. Current Phase 4 foundation deliberately omits segment titles unless a canonical segment-title source is available in the processing contract.
 - [x] Gate the current UI full-book launch so it requests `final_translated_book` only when all required non-skipped segments are complete in the current session; otherwise it stays on `legacy_full_document`.
+- [x] Persist a per-segment translated result registry derived from final assembly entries, keyed by `prepared_source_key` and `structure_fingerprint`, and save it under `.run/segment_results/` as the real foundation for future `hybrid_document` reassembly.
 
 Current contract note for the Phase 4 foundation:
 
-- full-document runs currently use the temporary manifest `output_mode` placeholder `legacy_full_document` by default, but the current UI now upgrades that request to `final_translated_book` when all required non-skipped segments are already completed in the session.
-- selected-segment runs now preserve `selected_with_context` in the current processing/reassembly contract, but the actual context-enrichment artifact behavior is still a later Phase 4 slice.
-- full-document runs also preserve explicit `hybrid_document` in the current processing/reassembly contract, but the actual mixed translated-plus-source artifact assembly is still a later Phase 4 slice.
+- full-document runs currently use the temporary manifest `output_mode` placeholder `legacy_full_document` by default, but the current UI now upgrades that request to `final_translated_book` when all required non-skipped segments are already completed in the session; the dedicated `final_translated_book` reassembly path then enforces that every included segment has translated output and rejects the run if any segment would fall back to source.
+- selected-segment `selected_with_context` runs now prepend leading source-backed structural context such as front matter or TOC before the first selected segment and keep the selected segment output translated from the current run; the chapter review panel now exposes this path directly as a `Selected + Context` action alongside `Process Selected`, with explicit `include_front_matter` and `include_toc` toggles.
+- full-document `hybrid_document` runs now assemble a mixed artifact from current translated segments, persisted translated registry records, and source-backed fallback segments in original segment order; the manifest records per-segment provenance as `translated` or `source`.
 
 ### Phase 5: Translation Memory And Consistency
 
-- Add document context profile.
-- Extract glossary candidates.
-- Keep translation memory scoped to the current analysis/session in the first implementation.
-- Inject glossary and segment summaries into prompts.
-- Add UI for terminology review in a later iteration if needed.
+- [x] Add document context profile.
+- [x] Extract glossary candidates.
+- [x] Keep translation memory scoped to the current analysis/session in the first implementation.
+- [x] Inject glossary and segment summaries into prompts.
+- [x] Add UI for terminology review in a later iteration if needed.
+
+Current contract note for the initial Phase 5 slice:
+
+- preparation now builds a session-scoped `DocumentContextProfile` from detected segment outline entries and glossary hits extracted from the current source text;
+- `PreparedDocumentData` and `PreparedRunContext` now retain that profile for the active analysis/session;
+- translate-mode prompt loading now appends the rendered document context block to the existing `translation_domain_instructions`, so glossary candidates and structural segment summaries reach the system prompt without introducing persisted cross-session memory yet.
+- the chapter review UI now exposes a read-only terminology review expander for the current session glossary candidates, so the user can inspect the extracted preferred term mappings before running or rerunning translation.
 
 ## Recommended Decision
 

@@ -1,6 +1,6 @@
 from collections import OrderedDict
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import inspect
 import json
@@ -33,15 +33,19 @@ from docxaicorrector.runtime.artifact_retention import (
 )
 from docxaicorrector.document.segments import (
     CHAPTER_SEGMENTS_DETECTOR_VERSION,
+    DocumentContextProfile,
     DocumentSegment,
+    GlossaryTerm,
     SegmentDetectionReport,
+    SegmentOutlineEntry,
     build_segment_to_job_mapping,
     detect_document_segments,
     resolve_segment_hard_boundary_paragraph_ids,
+    validate_segment_coverage,
 )
 from docxaicorrector.structure.recognition import apply_structure_map, build_structure_map
 from docxaicorrector.structure.validation import StructureValidationReport, validate_structure_quality, write_structure_validation_debug_artifact
-from docxaicorrector.text.translation_domains import build_translation_domain_instructions
+from docxaicorrector.text.translation_domains import build_terminology_plan, build_translation_domain_instructions
 
 
 _REASON_LABELS: dict[str, str] = {
@@ -100,6 +104,7 @@ class PreparedDocumentData:
     quality_gate_reasons: tuple[str, ...] = ()
     translation_domain: str = "general"
     translation_domain_instructions: str = ""
+    document_context_profile: DocumentContextProfile = field(default_factory=DocumentContextProfile)
     cached: bool = False
 
     @property
@@ -770,6 +775,15 @@ def build_prepared_source_key(
     )
 
 
+def _attach_prepared_job_ids(jobs: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    prepared_jobs: list[dict[str, Any]] = []
+    for index, job in enumerate(jobs):
+        normalized_job = dict(job)
+        normalized_job["job_id"] = str(normalized_job.get("job_id", "") or "").strip() or f"job_{index:04d}"
+        prepared_jobs.append(normalized_job)
+    return prepared_jobs
+
+
 def _build_editing_jobs_with_optional_operation(*, blocks, max_chars: int, processing_operation: str):
     signature = inspect.signature(build_editing_jobs)
     if "processing_operation" not in signature.parameters:
@@ -798,6 +812,70 @@ def _build_semantic_blocks_with_optional_boundaries(*, paragraphs, max_chars: in
     return build_semantic_blocks(paragraphs, max_chars=max_chars, relations=relations)
 
 
+def _build_document_context_glossary_terms(*, translation_domain: str, source_text: str) -> tuple[GlossaryTerm, ...]:
+    terminology_plan = build_terminology_plan(source_text=source_text, translation_domain=translation_domain)
+    if not terminology_plan:
+        return ()
+
+    glossary_terms: list[GlossaryTerm] = []
+    for line in terminology_plan.splitlines():
+        normalized_line = str(line or "").strip()
+        if not normalized_line or "->" not in normalized_line:
+            continue
+        source_term, target_term = normalized_line.split("->", 1)
+        source_term = source_term.strip()
+        target_term = target_term.strip()
+        if not source_term or not target_term:
+            continue
+        glossary_terms.append(
+            GlossaryTerm(
+                source_term=source_term,
+                target_term=target_term,
+                confidence="medium",
+            )
+        )
+    return tuple(glossary_terms)
+
+
+def _build_document_context_profile(
+    *,
+    segments: Sequence[DocumentSegment],
+    translation_domain: str,
+    translation_domain_instructions: str,
+    source_text: str,
+    source_token: str,
+    source_title: str,
+    structure_fingerprint: str,
+    source_language: str,
+    target_language: str,
+) -> DocumentContextProfile:
+    outline_entries = tuple(
+        SegmentOutlineEntry(
+            segment_id=str(getattr(segment, "segment_id", "") or "").strip(),
+            title=str(getattr(segment, "title", "") or "").strip(),
+            level=max(1, int(getattr(segment, "level", 1) or 1)),
+            structural_role=str(getattr(segment, "structural_role", "body_range") or "body_range").strip() or "body_range",
+        )
+        for segment in segments
+        if str(getattr(segment, "segment_id", "") or "").strip() and str(getattr(segment, "title", "") or "").strip()
+    )
+    glossary_terms = _build_document_context_glossary_terms(
+        translation_domain=translation_domain,
+        source_text=source_text,
+    )
+    return DocumentContextProfile(
+        source_token=source_token,
+        structure_fingerprint=structure_fingerprint,
+        source_title=source_title,
+        source_language=source_language,
+        target_language=target_language,
+        translation_domain=translation_domain,
+        style_instructions=translation_domain_instructions,
+        outline_entries=outline_entries,
+        glossary_terms=glossary_terms,
+    )
+
+
 def _supports_segment_detection(paragraphs: Sequence[Any]) -> bool:
     return all(hasattr(paragraph, "text") and hasattr(paragraph, "role") for paragraph in paragraphs)
 
@@ -815,6 +893,7 @@ def _prepare_document_for_processing(
     source_bytes: bytes,
     chunk_size: int,
     *,
+    source_token: str = "",
     source_format: str = "docx",
     conversion_backend: str | None = None,
     app_config: Mapping[str, Any],
@@ -953,6 +1032,17 @@ def _prepare_document_for_processing(
         translation_domain=translation_domain,
         source_text=source_text,
     )
+    document_context_profile = _build_document_context_profile(
+        segments=segments,
+        translation_domain=translation_domain,
+        translation_domain_instructions=translation_domain_instructions,
+        source_text=source_text,
+        source_token=str(source_token or "").strip(),
+        source_title=Path(str(source_name or "")).stem,
+        structure_fingerprint=structure_fingerprint,
+        source_language=str(app_config.get("source_language", app_config.get("source_language_default", "en")) or "en").strip().lower() or "en",
+        target_language=str(app_config.get("target_language", app_config.get("target_language_default", "ru")) or "ru").strip().lower() or "ru",
+    )
     emit_preparation_progress(
         progress_callback,
         stage="Текст собран",
@@ -1062,7 +1152,19 @@ def _prepare_document_for_processing(
         max_chars=chunk_size,
         processing_operation=processing_operation,
     )
+    jobs = _attach_prepared_job_ids(jobs)
     segment_to_job = build_segment_to_job_mapping(segments, jobs)
+    coverage_warnings = validate_segment_coverage(
+        paragraphs=paragraphs,
+        segments=segments,
+        jobs=jobs,
+        segment_to_job=segment_to_job,
+    )
+    if coverage_warnings:
+        segment_diagnostics = replace(
+            segment_diagnostics,
+            warnings=tuple(dict.fromkeys((*segment_diagnostics.warnings, *coverage_warnings))),
+        )
     emit_preparation_progress(
         progress_callback,
         stage="Задания собраны",
@@ -1112,6 +1214,7 @@ def _prepare_document_for_processing(
         quality_gate_reasons=quality_gate_reasons,
         translation_domain=translation_domain,
         translation_domain_instructions=translation_domain_instructions,
+        document_context_profile=document_context_profile,
         cached=False,
     )
 
@@ -1173,6 +1276,7 @@ def _clone_prepared_document(data: PreparedDocumentData, prepared_source_key: st
         conversion_backend=data.conversion_backend,
         translation_domain=data.translation_domain,
         translation_domain_instructions=data.translation_domain_instructions,
+        document_context_profile=data.document_context_profile,
         cached=cached,
     )
 
@@ -1332,6 +1436,7 @@ def prepare_document_for_processing(
             uploaded_payload.filename,
             uploaded_payload.content_bytes,
             chunk_size,
+            source_token=str(uploaded_payload.file_token or "").strip(),
             source_format=str(getattr(uploaded_payload, "source_format", "docx") or "docx"),
             conversion_backend=getattr(uploaded_payload, "conversion_backend", None),
             app_config=resolved_config,

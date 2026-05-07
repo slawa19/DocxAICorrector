@@ -112,9 +112,16 @@ def build_processing_emitters(
 def build_processing_context(
     *,
     uploaded_file: object,
+    source_token: str | None = None,
+    run_id: str | None = None,
+    prepared_source_key: str | None = None,
+    structure_fingerprint: str | None = None,
     jobs: object,
     selected_segment_ids: Sequence[Any] | None = None,
+    document_segments: Sequence[Any] | None = None,
     output_mode: str | None = None,
+    include_front_matter: bool = False,
+    include_toc: bool = False,
     source_paragraphs: object,
     image_assets: object,
     image_mode: str,
@@ -128,6 +135,7 @@ def build_processing_context(
     runtime: object,
     dependencies: Any,
     context_factory_fn: Callable[..., Any],
+    document_context_prompt: str = "",
 ) -> Any:
     effective_image_mode = ImageMode.NO_CHANGE.value if processing_operation == "audiobook" else image_mode
     model_selector = model
@@ -140,12 +148,23 @@ def build_processing_context(
         canonical_model_selector = resolved_selector.canonical_selector
         model_provider = resolved_selector.provider
         model_id = resolved_selector.model_id
+    normalized_selected_segment_ids = tuple(
+        str(segment_id) for segment_id in (selected_segment_ids or ()) if str(segment_id).strip()
+    )
     return context_factory_fn(
         uploaded_file=uploaded_file,
         uploaded_filename=dependencies.resolve_uploaded_filename(uploaded_file),
+        source_token=str(source_token or "").strip(),
+        run_id=str(run_id or "").strip(),
+        prepared_source_key=str(prepared_source_key or "").strip(),
+        structure_fingerprint=str(structure_fingerprint or "").strip(),
         jobs=jobs,
-        selected_segment_ids=tuple(str(segment_id) for segment_id in (selected_segment_ids or ()) if str(segment_id).strip()) or None,
-        output_mode=str(output_mode or "").strip() or ("selected_only" if selected_segment_ids else "legacy_full_document"),
+        selected_segment_ids=normalized_selected_segment_ids or None,
+        document_segments=tuple(document_segments or ()),
+        segment_selection_mode="selected" if normalized_selected_segment_ids else "all",
+        output_mode=str(output_mode or "").strip() or ("selected_only" if normalized_selected_segment_ids else "legacy_full_document"),
+        include_front_matter=bool(include_front_matter),
+        include_toc=bool(include_toc),
         source_paragraphs=source_paragraphs,
         image_assets=image_assets,
         image_mode=effective_image_mode,
@@ -163,15 +182,23 @@ def build_processing_context(
         canonical_model_selector=canonical_model_selector,
         model_provider=model_provider,
         model_id=model_id,
+        document_context_prompt=str(document_context_prompt or app_config.get("document_context_prompt", "") or ""),
     )
 
 
 def build_processing_run_components(
     *,
     uploaded_file: object,
+    source_token: str | None = None,
+    run_id: str | None = None,
+    prepared_source_key: str | None = None,
+    structure_fingerprint: str | None = None,
     jobs: object,
     selected_segment_ids: object = None,
+    document_segments: object = None,
     output_mode: str | None = None,
+    include_front_matter: bool = False,
+    include_toc: bool = False,
     source_paragraphs: object,
     image_assets: object,
     image_mode: str,
@@ -206,9 +233,12 @@ def build_processing_run_components(
     preserve_source_paragraph_properties: Any,
     reinsert_inline_images: Any,
     write_ui_result_artifacts: Any,
+    write_segment_result_registry: Any,
+    write_job_result_registry: Any = None,
     get_provider_client_fn: Any = None,
     get_client_for_model_selector_fn: Any = None,
     resolve_model_selector_fn: Any = None,
+    document_context_prompt: str = "",
 ) -> Any:
     dependencies = dependency_builder_fn(
         resolve_uploaded_filename=resolve_uploaded_filename,
@@ -228,6 +258,8 @@ def build_processing_run_components(
         preserve_source_paragraph_properties=preserve_source_paragraph_properties,
         reinsert_inline_images=reinsert_inline_images,
         write_ui_result_artifacts=write_ui_result_artifacts,
+        write_segment_result_registry=write_segment_result_registry,
+        write_job_result_registry=write_job_result_registry,
     )
     emitters = emitters_builder_fn(
         emit_state=emit_state,
@@ -238,9 +270,16 @@ def build_processing_run_components(
     )
     context = context_builder_fn(
         uploaded_file=uploaded_file,
+        source_token=source_token,
+        run_id=run_id,
+        prepared_source_key=prepared_source_key,
+        structure_fingerprint=structure_fingerprint,
         jobs=jobs,
         selected_segment_ids=selected_segment_ids,
+        document_segments=document_segments,
         output_mode=output_mode,
+        include_front_matter=include_front_matter,
+        include_toc=include_toc,
         source_paragraphs=source_paragraphs,
         image_assets=image_assets,
         image_mode=image_mode,
@@ -253,6 +292,7 @@ def build_processing_run_components(
         on_progress=on_progress,
         runtime=runtime,
         dependencies=dependencies,
+        document_context_prompt=document_context_prompt,
     )
     return run_components_factory_fn(
         dependencies=dependencies,

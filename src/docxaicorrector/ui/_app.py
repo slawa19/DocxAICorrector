@@ -122,6 +122,8 @@ from docxaicorrector.ui.structure_review_panel import (
     SelectedProcessingPayload,
     StructureReviewState,
     _build_effective_selected_processing_state as _structure_review_panel_build_effective_selected_processing_state,
+    _build_retry_failed_processing_state as _structure_review_panel_build_retry_failed_processing_state,
+    _get_selected_context_policy as _structure_review_panel_get_selected_context_policy,
     _build_selected_processing_payload as _structure_review_panel_build_selected_processing_payload,
     _build_structure_settings_hash as _structure_review_panel_build_structure_settings_hash,
     _expand_segment_ids_for_selection as _structure_review_panel_expand_segment_ids_for_selection,
@@ -144,6 +146,7 @@ SidebarSettings: TypeAlias = tuple[str, int, int, str, bool, str, str, str, bool
 _build_structure_settings_hash = _structure_review_panel_build_structure_settings_hash
 _build_selected_processing_payload = _structure_review_panel_build_selected_processing_payload
 _build_effective_selected_processing_state = _structure_review_panel_build_effective_selected_processing_state
+_build_retry_failed_processing_state = _structure_review_panel_build_retry_failed_processing_state
 _expand_segment_ids_for_selection = _structure_review_panel_expand_segment_ids_for_selection
 
 
@@ -212,6 +215,9 @@ def _show_notice(*, level: str, message: str) -> None:
     if level == "warning":
         st.warning(message)
         return
+    if level == "error":
+        st.error(message)
+        return
     if level == "caption":
         st.caption(message)
         return
@@ -219,6 +225,16 @@ def _show_notice(*, level: str, message: str) -> None:
         st.info(message)
         return
     raise ValueError(f"Unsupported Streamlit notice level: {level}")
+
+
+def _build_document_context_prompt(*, prepared_run_context: object) -> str:
+    document_context_profile = getattr(prepared_run_context, "document_context_profile", None)
+    prompt_builder = getattr(document_context_profile, "to_prompt_text", None)
+    if callable(prompt_builder):
+        document_context_prompt = str(prompt_builder() or "").strip()
+        if document_context_prompt:
+            return document_context_prompt
+    return ""
 
 
 def _get_prepared_segments(prepared_run_context: object) -> list[SegmentLike]:
@@ -230,9 +246,14 @@ def _start_background_processing(
     uploaded_filename: str,
     uploaded_token: str,
     source_bytes: bytes,
+    prepared_source_key: str | None = None,
+    structure_fingerprint: str | None = None,
     jobs: list[dict[str, str | int]],
     selected_segment_ids: list[str] | None = None,
+    document_segments: list | None = None,
     output_mode: str | None = None,
+    include_front_matter: bool = False,
+    include_toc: bool = False,
     source_paragraphs: list,
     image_assets: list,
     image_mode: str,
@@ -242,14 +263,22 @@ def _start_background_processing(
     processing_operation: str = "edit",
     source_language: str = "en",
     target_language: str = "ru",
+    document_context_prompt: str = "",
 ) -> None:
     def worker_entrypoint(
         *,
         runtime,
         uploaded_filename,
+        source_token,
+        run_id,
+        prepared_source_key,
+        structure_fingerprint,
         jobs,
         selected_segment_ids,
+        document_segments,
         output_mode,
+        include_front_matter,
+        include_toc,
         source_paragraphs,
         image_assets,
         image_mode,
@@ -259,19 +288,28 @@ def _start_background_processing(
         processing_operation,
         source_language,
         target_language,
+        document_context_prompt=document_context_prompt,
     ) -> None:
         from docxaicorrector.processing.processing_service import get_processing_service
 
         get_processing_service().run_processing_worker(
             runtime=runtime,
             uploaded_filename=uploaded_filename,
+            source_token=source_token,
+            run_id=run_id,
+            prepared_source_key=prepared_source_key,
+            structure_fingerprint=structure_fingerprint,
             jobs=jobs,
             selected_segment_ids=selected_segment_ids,
+            document_segments=document_segments,
             output_mode=output_mode,
+            include_front_matter=include_front_matter,
+            include_toc=include_toc,
             source_paragraphs=source_paragraphs,
             image_assets=image_assets,
             image_mode=image_mode,
             app_config=app_config,
+            document_context_prompt=document_context_prompt,
             model=model,
             max_retries=max_retries,
             processing_operation=processing_operation,
@@ -284,9 +322,14 @@ def _start_background_processing(
         uploaded_filename=uploaded_filename,
         uploaded_token=uploaded_token,
         source_bytes=source_bytes,
+        prepared_source_key=prepared_source_key,
+        structure_fingerprint=structure_fingerprint,
         jobs=jobs,
         selected_segment_ids=selected_segment_ids,
+        document_segments=document_segments,
         output_mode=output_mode,
+        include_front_matter=include_front_matter,
+        include_toc=include_toc,
         source_paragraphs=source_paragraphs,
         image_assets=image_assets,
         image_mode=image_mode,
@@ -1072,17 +1115,22 @@ def main() -> None:
         is_processing=False,
         emphasize_start=not has_completed_result,
     )
+    document_context_prompt = _build_document_context_prompt(prepared_run_context=prepared_run_context)
     if action == "start":
         _start_background_processing(
             uploaded_filename=uploaded_filename,
             uploaded_token=uploaded_file_token,
             source_bytes=uploaded_file_bytes,
+            prepared_source_key=str(getattr(prepared_run_context, "prepared_source_key", "") or ""),
+            structure_fingerprint=str(getattr(prepared_run_context, "structure_fingerprint", "") or ""),
             jobs=cast(list[dict[str, str | int]], jobs),
+            document_segments=list(getattr(prepared_run_context, "segments", []) or []),
             output_mode="legacy_full_document",
             source_paragraphs=paragraphs,
             image_assets=image_assets,
             image_mode=image_mode,
             app_config=app_config,
+            document_context_prompt=document_context_prompt,
             model=model,
             max_retries=max_retries,
             processing_operation=processing_operation,
@@ -1100,13 +1148,83 @@ def main() -> None:
             uploaded_filename=uploaded_filename,
             uploaded_token=uploaded_file_token,
             source_bytes=uploaded_file_bytes,
+            prepared_source_key=str(getattr(prepared_run_context, "prepared_source_key", "") or ""),
+            structure_fingerprint=str(getattr(prepared_run_context, "structure_fingerprint", "") or ""),
             jobs=cast(list[dict[str, str | int]], selected_processing_payload["jobs"]),
             selected_segment_ids=selected_processing_payload["selected_segment_ids"],
+            document_segments=list(getattr(prepared_run_context, "segments", []) or []),
             output_mode="selected_only",
+            include_front_matter=False,
+            include_toc=False,
             source_paragraphs=selected_processing_payload["source_paragraphs"],
             image_assets=selected_processing_payload["image_assets"],
             image_mode=image_mode,
             app_config=app_config,
+            document_context_prompt=document_context_prompt,
+            model=model,
+            max_retries=max_retries,
+            processing_operation=processing_operation,
+            source_language=source_language,
+            target_language=target_language,
+        )
+        st.rerun()
+    elif action == "start_selected_with_context":
+        include_front_matter, include_toc = _structure_review_panel_get_selected_context_policy()
+        selected_processing_state = _build_effective_selected_processing_state(
+            prepared_run_context=prepared_run_context,
+            selected_segment_ids=get_selected_segment_ids(),
+            segment_status_by_id=get_segment_status_by_id(),
+            include_front_matter=include_front_matter,
+            include_toc=include_toc,
+        )
+        selected_processing_payload = selected_processing_state["payload"]
+        _start_background_processing(
+            uploaded_filename=uploaded_filename,
+            uploaded_token=uploaded_file_token,
+            source_bytes=uploaded_file_bytes,
+            prepared_source_key=str(getattr(prepared_run_context, "prepared_source_key", "") or ""),
+            structure_fingerprint=str(getattr(prepared_run_context, "structure_fingerprint", "") or ""),
+            jobs=cast(list[dict[str, str | int]], selected_processing_payload["jobs"]),
+            selected_segment_ids=selected_processing_payload["selected_segment_ids"],
+            document_segments=list(getattr(prepared_run_context, "segments", []) or []),
+            output_mode="selected_with_context",
+            include_front_matter=bool(selected_processing_payload["include_front_matter"]),
+            include_toc=bool(selected_processing_payload["include_toc"]),
+            source_paragraphs=paragraphs,
+            image_assets=image_assets,
+            image_mode=image_mode,
+            app_config=app_config,
+            document_context_prompt=document_context_prompt,
+            model=model,
+            max_retries=max_retries,
+            processing_operation=processing_operation,
+            source_language=source_language,
+            target_language=target_language,
+        )
+        st.rerun()
+    elif action == "start_retry_failed":
+        retry_failed_state = _build_retry_failed_processing_state(
+            prepared_run_context=prepared_run_context,
+            segment_status_by_id=get_segment_status_by_id(),
+        )
+        retry_failed_payload = retry_failed_state["payload"]
+        _start_background_processing(
+            uploaded_filename=uploaded_filename,
+            uploaded_token=uploaded_file_token,
+            source_bytes=uploaded_file_bytes,
+            prepared_source_key=str(getattr(prepared_run_context, "prepared_source_key", "") or ""),
+            structure_fingerprint=str(getattr(prepared_run_context, "structure_fingerprint", "") or ""),
+            jobs=cast(list[dict[str, str | int]], retry_failed_payload["jobs"]),
+            selected_segment_ids=retry_failed_payload["selected_segment_ids"],
+            document_segments=list(getattr(prepared_run_context, "segments", []) or []),
+            output_mode="selected_only",
+            include_front_matter=False,
+            include_toc=False,
+            source_paragraphs=retry_failed_payload["source_paragraphs"],
+            image_assets=retry_failed_payload["image_assets"],
+            image_mode=image_mode,
+            app_config=app_config,
+            document_context_prompt=document_context_prompt,
             model=model,
             max_retries=max_retries,
             processing_operation=processing_operation,
@@ -1119,12 +1237,16 @@ def main() -> None:
             uploaded_filename=uploaded_filename,
             uploaded_token=uploaded_file_token,
             source_bytes=uploaded_file_bytes,
+            prepared_source_key=str(getattr(prepared_run_context, "prepared_source_key", "") or ""),
+            structure_fingerprint=str(getattr(prepared_run_context, "structure_fingerprint", "") or ""),
             jobs=cast(list[dict[str, str | int]], jobs),
+            document_segments=list(getattr(prepared_run_context, "segments", []) or []),
             output_mode="legacy_full_document",
             source_paragraphs=paragraphs,
             image_assets=image_assets,
             image_mode=image_mode,
             app_config=app_config,
+            document_context_prompt=document_context_prompt,
             model=model,
             max_retries=max_retries,
             processing_operation=processing_operation,
@@ -1137,12 +1259,16 @@ def main() -> None:
             uploaded_filename=uploaded_filename,
             uploaded_token=uploaded_file_token,
             source_bytes=uploaded_file_bytes,
+            prepared_source_key=str(getattr(prepared_run_context, "prepared_source_key", "") or ""),
+            structure_fingerprint=str(getattr(prepared_run_context, "structure_fingerprint", "") or ""),
             jobs=cast(list[dict[str, str | int]], jobs),
+            document_segments=list(getattr(prepared_run_context, "segments", []) or []),
             output_mode="final_translated_book",
             source_paragraphs=paragraphs,
             image_assets=image_assets,
             image_mode=image_mode,
             app_config=app_config,
+            document_context_prompt=document_context_prompt,
             model=model,
             max_retries=max_retries,
             processing_operation=processing_operation,

@@ -3,6 +3,8 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Siz
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, TypeAlias
 
+from docxaicorrector.document.segments import DocumentSegment
+
 
 PipelineResult: TypeAlias = Literal["succeeded", "failed", "stopped"]
 
@@ -152,8 +154,32 @@ class ResultArtifactWriter(Protocol):
     ) -> Mapping[str, str]: ...
 
 
+class SegmentResultRegistryWriter(Protocol):
+    def __call__(
+        self,
+        *,
+        records: Sequence[Mapping[str, object]],
+    ) -> Mapping[str, str]: ...
+
+
+class JobResultRegistryWriter(Protocol):
+    def __call__(
+        self,
+        *,
+        records: Sequence[Mapping[str, object]],
+    ) -> Mapping[str, str]: ...
+
+
 class ProcessingJobs(Sized, Protocol):
     def __iter__(self) -> Iterator[Mapping[str, object]]: ...
+
+
+def _noop_segment_result_registry_writer(*, records: Sequence[Mapping[str, object]]) -> Mapping[str, str]:
+    return {}
+
+
+def _noop_job_result_registry_writer(*, records: Sequence[Mapping[str, object]]) -> Mapping[str, str]:
+    return {}
 
 
 @dataclass(frozen=True)
@@ -172,6 +198,8 @@ class ProcessingDependencies:
     preserve_source_paragraph_properties: ParagraphPropertiesPreserver
     reinsert_inline_images: ImageReinserter
     write_ui_result_artifacts: ResultArtifactWriter
+    write_segment_result_registry: SegmentResultRegistryWriter = _noop_segment_result_registry_writer
+    write_job_result_registry: JobResultRegistryWriter = _noop_job_result_registry_writer
     get_provider_client: ProviderClientFactory | None = None
     get_client_for_model_selector: ModelSelectorClientFactory | None = None
     resolve_model_selector: ModelSelectorResolver | None = None
@@ -187,12 +215,27 @@ class ProcessingEmitters:
 
 
 @dataclass(frozen=True)
+class SegmentSelection:
+    selected_segment_ids: tuple[str, ...]
+    include_descendants: bool = True
+    include_front_matter: bool = False
+    include_toc: bool = False
+    output_mode: str = "selected_only"
+
+
+@dataclass(frozen=True)
 class ProcessingContext:
     uploaded_file: object
     uploaded_filename: str
+    source_token: str
+    run_id: str
     jobs: ProcessingJobs
     selected_segment_ids: Sequence[str] | None
+    document_segments: Sequence[DocumentSegment]
+    segment_selection_mode: str
     output_mode: str
+    include_front_matter: bool
+    include_toc: bool
     source_paragraphs: Sequence[ParagraphLike] | None
     image_assets: Sequence[ImageAssetLike]
     image_mode: str
@@ -206,10 +249,13 @@ class ProcessingContext:
     translation_domain_instructions: str
     on_progress: ProgressCallback
     runtime: object
+    prepared_source_key: str = ""
+    structure_fingerprint: str = ""
     model_selector: str = ""
     canonical_model_selector: str | None = None
     model_provider: str | None = None
     model_id: str | None = None
+    document_context_prompt: str = ""
 
 
 @dataclass
@@ -218,6 +264,9 @@ class ProcessingState:
     narration_chunks: list[str] = field(default_factory=list)
     excluded_narration_block_count: int = 0
     generated_paragraph_registry: list[dict[str, object]] = field(default_factory=list)
+    segment_outputs: dict[str, list[str]] = field(default_factory=dict)
+    completed_segment_ids: set[str] = field(default_factory=set)
+    failed_segment_ids: set[str] = field(default_factory=set)
     system_prompt: str | None = None
     toc_system_prompt: str | None = None
     second_pass_system_prompt: str | None = None
@@ -245,8 +294,11 @@ class ImageProcessingPhaseResult:
 @dataclass(frozen=True)
 class DocxBuildPhaseResult:
     docx_bytes: bytes
+    final_markdown: str
     latest_result_notice: dict[str, str] | None
     formatting_diagnostics_artifacts: list[str] = field(default_factory=list)
+    assembly_entries: list[Mapping[str, object]] = field(default_factory=list)
+    result_manifest: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -292,6 +344,8 @@ def build_processing_dependencies(
     preserve_source_paragraph_properties: ParagraphPropertiesPreserver,
     reinsert_inline_images: ImageReinserter,
     write_ui_result_artifacts: ResultArtifactWriter,
+    write_segment_result_registry: SegmentResultRegistryWriter,
+    write_job_result_registry: JobResultRegistryWriter = _noop_job_result_registry_writer,
 ) -> ProcessingDependencies:
     return ProcessingDependencies(
         resolve_uploaded_filename=resolve_uploaded_filename,
@@ -311,4 +365,6 @@ def build_processing_dependencies(
         preserve_source_paragraph_properties=preserve_source_paragraph_properties,
         reinsert_inline_images=reinsert_inline_images,
         write_ui_result_artifacts=write_ui_result_artifacts,
+        write_segment_result_registry=write_segment_result_registry,
+        write_job_result_registry=write_job_result_registry,
     )

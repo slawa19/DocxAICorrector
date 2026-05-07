@@ -139,9 +139,16 @@ class ProcessingService:
         self,
         *,
         uploaded_file,
+        source_token: str | None = None,
+        run_id: str | None = None,
+        prepared_source_key: str | None = None,
+        structure_fingerprint: str | None = None,
         jobs: Sequence[Mapping[str, object]],
         selected_segment_ids: Sequence[str] | None = None,
+        document_segments: Sequence[object] | None = None,
         output_mode: str | None = None,
+        include_front_matter: bool = False,
+        include_toc: bool = False,
         source_paragraphs: list | None = None,
         image_assets: list,
         image_mode: str,
@@ -153,6 +160,7 @@ class ProcessingService:
         target_language: str = "ru",
         on_progress,
         runtime=None,
+        document_context_prompt: str = "",
     ) -> str:
         deps = self.dependencies
         get_provider_client_bound: Any = None
@@ -183,13 +191,21 @@ class ProcessingService:
 
         return deps.run_document_processing_impl_fn(
             uploaded_file=uploaded_file,
+            source_token=source_token,
+            run_id=run_id,
+            prepared_source_key=prepared_source_key,
+            structure_fingerprint=structure_fingerprint,
             jobs=cast(list[dict[str, str | int]], list(jobs)),
             selected_segment_ids=selected_segment_ids,
+            document_segments=document_segments,
             output_mode=output_mode,
+            include_front_matter=include_front_matter,
+            include_toc=include_toc,
             source_paragraphs=source_paragraphs,
             image_assets=image_assets,
             image_mode=image_mode,
             app_config=app_config,
+            document_context_prompt=document_context_prompt,
             model=model,
             max_retries=max_retries,
             processing_operation=processing_operation,
@@ -225,9 +241,16 @@ class ProcessingService:
         *,
         runtime,
         uploaded_filename: str,
+        source_token: str | None = None,
+        run_id: str | None = None,
+        prepared_source_key: str | None = None,
+        structure_fingerprint: str | None = None,
         jobs: Sequence[Mapping[str, object]],
         selected_segment_ids: Sequence[str] | None = None,
+        document_segments: Sequence[object] | None = None,
         output_mode: str | None = None,
+        include_front_matter: bool = False,
+        include_toc: bool = False,
         source_paragraphs: list | None = None,
         image_assets: list,
         image_mode: str,
@@ -237,19 +260,28 @@ class ProcessingService:
         processing_operation: str = "edit",
         source_language: str = "en",
         target_language: str = "ru",
+        document_context_prompt: str = "",
     ) -> None:
         outcome = "failed"
         deps = self.dependencies
         try:
             outcome = self.run_document_processing(
                 uploaded_file=uploaded_filename,
+                source_token=source_token,
+                run_id=run_id,
+                prepared_source_key=prepared_source_key,
+                structure_fingerprint=structure_fingerprint,
                 jobs=jobs,
                 selected_segment_ids=selected_segment_ids,
+                document_segments=document_segments,
                 output_mode=output_mode,
+                include_front_matter=include_front_matter,
+                include_toc=include_toc,
                 source_paragraphs=source_paragraphs,
                 image_assets=image_assets,
                 image_mode=image_mode,
                 app_config=app_config,
+                document_context_prompt=document_context_prompt,
                 model=model,
                 max_retries=max_retries,
                 processing_operation=processing_operation,
@@ -337,14 +369,24 @@ class ProcessingService:
         processing_app_config = dict(app_config)
         processing_app_config["translation_domain_default"] = str(getattr(prepared, "translation_domain", "general") or "general")
         processing_app_config["translation_domain_instructions"] = str(getattr(prepared, "translation_domain_instructions", "") or "")
+        document_context_prompt = ""
+        document_context_profile = getattr(prepared, "document_context_profile", None)
+        prompt_builder = getattr(document_context_profile, "to_prompt_text", None)
+        if callable(prompt_builder):
+            document_context_prompt = str(prompt_builder() or "").strip()
         result = self.run_document_processing(
             uploaded_file=prepared.uploaded_filename,
+                source_token=str(getattr(document_context_profile, "source_token", "") or ""),
+            prepared_source_key=str(getattr(prepared, "prepared_source_key", "") or ""),
+            structure_fingerprint=str(getattr(prepared, "structure_fingerprint", "") or ""),
             jobs=cast(Sequence[Mapping[str, object]], jobs),
             selected_segment_ids=list(getattr(prepared, "selected_segment_ids", ()) or []) or None,
+            document_segments=list(getattr(prepared, "segments", []) or []),
             source_paragraphs=prepared.paragraphs,
             image_assets=prepared.image_assets,
             image_mode=image_mode,
             app_config=processing_app_config,
+            document_context_prompt=document_context_prompt,
             model=model,
             max_retries=max_retries,
             processing_operation=processing_operation,

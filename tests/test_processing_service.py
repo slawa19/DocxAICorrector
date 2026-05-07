@@ -2,6 +2,7 @@ from typing import Any, cast
 
 import docxaicorrector.processing.processing_service as processing_service
 from docxaicorrector.core.models import ImageAsset
+from docxaicorrector.document.segments import DocumentContextProfile, GlossaryTerm
 from docxaicorrector.processing.processing_service import ProcessingService
 from docxaicorrector.pipeline.contracts import ProcessingContext, ProcessingDependencies
 from docxaicorrector.pipeline.setup import initialize_processing_run
@@ -230,8 +231,6 @@ def test_build_processing_service_builds_runtime_emitters_from_processing_runtim
 
     processing_service.build_processing_service()
 
-    assert captured["dependencies"].set_processing_status is processing_service.set_processing_status
-    assert captured["dependencies"].finalize_processing_status is processing_service.finalize_processing_status
     assert captured["dependencies"].push_activity is processing_service.push_activity
     assert captured["dependencies"].append_log is processing_service.append_log
     assert captured["dependencies"].append_image_log is processing_service.append_image_log
@@ -257,6 +256,9 @@ def test_run_prepared_background_document_uses_preparation_and_job_mutator(monke
             "image_assets": ["img1"],
             "translation_domain": "theology",
             "translation_domain_instructions": "TERM PLAN",
+            "document_context_profile": DocumentContextProfile(
+                glossary_terms=(GlossaryTerm(source_term="Great Tribulation", target_term="Великая скорбь"),),
+            ),
         },
     )()
     captured = {}
@@ -300,12 +302,15 @@ def test_run_prepared_background_document_passes_prepared_payload_into_processin
         (),
         {
             "uploaded_filename": "prepared-report.docx",
-            "jobs": [{"target_text": "one"}],
+            "jobs": [{"target_text": "one", "job_id": "job_0000"}],
             "selected_segment_ids": ["seg_0001", "seg_0002"],
             "paragraphs": ["p1"],
             "image_assets": ["img1"],
             "translation_domain": "theology",
             "translation_domain_instructions": "TERM PLAN",
+            "document_context_profile": DocumentContextProfile(
+                glossary_terms=(GlossaryTerm(source_term="Great Tribulation", target_term="Великая скорбь"),),
+            ),
         },
     )()
 
@@ -330,7 +335,7 @@ def test_run_prepared_background_document_passes_prepared_payload_into_processin
     )
 
     assert captured["run"]["uploaded_file"] == "prepared-report.docx"
-    assert captured["run"]["jobs"] == [{"target_text": "one", "job_kind": "passthrough"}]
+    assert captured["run"]["jobs"] == [{"target_text": "one", "job_id": "job_0000", "job_kind": "passthrough"}]
     assert captured["run"]["selected_segment_ids"] == ["seg_0001", "seg_0002"]
     assert captured["run"]["source_paragraphs"] == ["p1"]
     assert captured["run"]["image_assets"] == ["img1"]
@@ -338,6 +343,7 @@ def test_run_prepared_background_document_passes_prepared_payload_into_processin
     assert captured["run"]["app_config"]["translation_second_pass_model"] == "gpt-5.4"
     assert captured["run"]["app_config"]["translation_domain_default"] == "theology"
     assert captured["run"]["app_config"]["translation_domain_instructions"] == "TERM PLAN"
+    assert "Great Tribulation" in captured["run"]["document_context_prompt"]
 
 
 def test_run_processing_worker_passes_selected_segment_ids_to_pipeline(monkeypatch):
@@ -437,6 +443,9 @@ def test_initialize_processing_run_builds_segment_runtime_metadata():
             {"target_text": "block-2", "target_chars": 7, "context_chars": 0, "segment_id": "seg_0002"},
         ],
         selected_segment_ids=("seg_0001", "seg_0002"),
+        output_mode="selected_only",
+        include_front_matter=False,
+        include_toc=False,
         source_paragraphs=cast(Any, [
             type("ParagraphStub", (), {"segment_id": "seg_0001", "text": "Chapter 1"})(),
             type("ParagraphStub", (), {"segment_id": "seg_0002", "text": "Chapter 2"})(),
