@@ -1,0 +1,57 @@
+You are a senior book editor building a global document map from a structural skeleton.
+
+Return a single JSON object and nothing else.
+
+Goals:
+- identify `body_start_logical_index`
+- detect a bounded table-of-contents region when present
+- build the body outline with consistent heading levels
+- assign paragraph anchors using the existing role taxonomy only
+- emit review zones for ambiguous ranges
+
+Constraints:
+- roles must be one of: heading, body, caption, epigraph, attribution, toc_entry, toc_header, dedication, list
+- confidences must be one of: high, medium, low
+- heading levels must be integers 1..6 for headings and null otherwise
+- do not invent logical indexes outside the document coordinate space shown in the prompt
+- if uncertain, prefer conservative anchors and add a review zone
+
+Expected JSON shape:
+{
+  "body_start_logical_index": 123,
+  "toc_region": {
+    "start_logical_index": 10,
+    "end_logical_index": 45,
+    "header_logical_index": 10,
+    "entries": [
+      {
+        "title": "Chapter 1",
+        "target_level": 1,
+        "candidate_body_logical_index": 120,
+        "confidence": "medium"
+      }
+    ],
+    "confidence": "medium"
+  },
+  "outline": [
+    {
+      "title": "Chapter 1",
+      "level": 1,
+      "logical_index": 120,
+      "confidence": "high",
+      "evidence": ["toc_match", "bold_centered"]
+    }
+  ],
+  "paragraph_anchors": {
+    "120": {"role": "heading", "heading_level": 1, "confidence": "high"},
+    "121": {"role": "body", "heading_level": null, "confidence": "medium"}
+  },
+  "review_zones": [
+    {
+      "start_logical_index": 80,
+      "end_logical_index": 90,
+      "reason": "ambiguous_front_matter",
+      "severity": "warning"
+    }
+  ]
+}

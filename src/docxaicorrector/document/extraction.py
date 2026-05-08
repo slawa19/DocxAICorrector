@@ -192,10 +192,23 @@ def extract_document_content_with_normalization_reports(
     raw_blocks, image_assets = _build_raw_document_blocks(document)
     normalization_mode, save_boundary_debug_artifacts = _resolve_paragraph_boundary_normalization_settings()
     normalized_blocks, boundary_report = _normalize_paragraph_boundaries(raw_blocks, mode=normalization_mode)
-    paragraphs = _build_logical_paragraph_units(normalized_blocks)
+    structure_recovery_enabled, structure_recovery_mode = _resolve_structure_recovery_runtime(app_config=app_config)
+    paragraphs = _build_logical_paragraph_units(
+        normalized_blocks,
+        structure_recovery_enabled=structure_recovery_enabled,
+        structure_recovery_mode=structure_recovery_mode,
+    )
     paragraphs = _normalize_inline_break_paragraphs(paragraphs)
-    promote_short_standalone_headings(paragraphs)
-    normalize_front_matter_display_title(paragraphs)
+    promote_short_standalone_headings(
+        paragraphs,
+        structure_recovery_enabled=structure_recovery_enabled,
+        structure_recovery_mode=structure_recovery_mode,
+    )
+    normalize_front_matter_display_title(
+        paragraphs,
+        structure_recovery_enabled=structure_recovery_enabled,
+        structure_recovery_mode=structure_recovery_mode,
+    )
     (
         cleanup_enabled,
         cleanup_min_repeat_count,
@@ -207,8 +220,15 @@ def extract_document_content_with_normalization_reports(
         enabled=cleanup_enabled,
         min_repeat_count=cleanup_min_repeat_count,
         max_repeated_text_chars=cleanup_max_repeated_text_chars,
+        structure_recovery_enabled=structure_recovery_enabled,
+        structure_recovery_mode=structure_recovery_mode,
     )
-    paragraphs, structure_repair_report = repair_pdf_derived_structure(paragraphs, app_config=app_config)
+    paragraphs, structure_repair_report = repair_pdf_derived_structure(
+        paragraphs,
+        app_config=app_config,
+        structure_recovery_enabled=structure_recovery_enabled,
+        structure_recovery_mode=structure_recovery_mode,
+    )
     _reassign_paragraph_identities(paragraphs)
     (
         relation_enabled,
@@ -229,7 +249,11 @@ def extract_document_content_with_normalization_reports(
         enabled_relation_kinds=enabled_relation_kinds if relation_enabled else (),
     )
     apply_relation_side_effects(paragraphs, relations)
-    reclassify_adjacent_captions(paragraphs)
+    reclassify_adjacent_captions(
+        paragraphs,
+        structure_recovery_enabled=structure_recovery_enabled,
+        structure_recovery_mode=structure_recovery_mode,
+    )
 
     if ai_review_enabled and ai_review_mode != "off":
         _run_paragraph_boundary_ai_review(
@@ -451,18 +475,37 @@ def _build_raw_table(table: Table, image_assets: list[ImageAsset], *, raw_index:
     )
 
 
-def _build_logical_paragraph_units(raw_blocks: list[RawBlock]) -> list[ParagraphUnit]:
+def _build_logical_paragraph_units(
+    raw_blocks: list[RawBlock],
+    *,
+    structure_recovery_enabled: bool = False,
+    structure_recovery_mode: str = "legacy",
+) -> list[ParagraphUnit]:
     paragraphs: list[ParagraphUnit] = []
+    signal_only = structure_recovery_enabled and structure_recovery_mode == "ai_first"
     for block in raw_blocks:
         if isinstance(block, RawParagraph):
+            role = block.role_hint
+            structural_role = block.role_hint
+            heading_level = block.heading_level
+            heading_source = block.heading_source
+            heuristic_role_hint = None
+            heuristic_heading_level_hint = None
+            if signal_only and block.role_hint == "heading" and block.heading_source == "heuristic":
+                role = "body"
+                structural_role = "body"
+                heuristic_role_hint = "heading"
+                heuristic_heading_level_hint = block.heading_level or 2
+                heading_level = None
+                heading_source = None
             paragraph = ParagraphUnit(
                 text=block.text,
-                role=block.role_hint,
-                asset_id=_extract_paragraph_asset_id(block.text, role=block.role_hint),
+                role=role,
+                asset_id=_extract_paragraph_asset_id(block.text, role=role),
                 paragraph_properties_xml=block.paragraph_properties_xml,
                 paragraph_alignment=block.paragraph_alignment,
-                heading_level=block.heading_level,
-                heading_source=block.heading_source,
+                heading_level=heading_level,
+                heading_source=heading_source,
                 list_kind=block.list_kind,
                 list_level=block.list_level,
                 list_numbering_format=block.list_numbering_format,
@@ -470,14 +513,16 @@ def _build_logical_paragraph_units(raw_blocks: list[RawBlock]) -> list[Paragraph
                 list_abstract_num_id=block.list_abstract_num_id,
                 list_num_xml=block.list_num_xml,
                 list_abstract_num_xml=block.list_abstract_num_xml,
-                structural_role=block.role_hint,
+                structural_role=structural_role,
                 role_confidence=infer_role_confidence(
-                    role=block.role_hint,
+                    role=role,
                     text=block.text,
                     normalized_style=block.style_name.strip().lower(),
                     explicit_heading_level=block.explicit_heading_level,
-                    heading_source=block.heading_source,
+                    heading_source=heading_source,
                 ),
+                heuristic_role_hint=heuristic_role_hint,
+                heuristic_heading_level_hint=heuristic_heading_level_hint,
                 style_name=block.style_name,
                 is_bold=block.is_bold,
                 is_italic=block.is_italic,
@@ -734,6 +779,18 @@ def _resolve_layout_artifact_cleanup_settings(*, app_config: Mapping[str, object
     )
 
 
+def _resolve_structure_recovery_runtime(*, app_config: Mapping[str, object] | None) -> tuple[bool, str]:
+    if app_config is None:
+        return False, "legacy"
+    structure_recovery_enabled = bool(app_config.get("structure_recovery_enabled", False))
+    structure_recovery_mode = str(app_config.get("structure_recovery_mode", "ai_first") or "ai_first").strip().lower()
+    if not structure_recovery_enabled:
+        return False, "legacy"
+    if structure_recovery_mode not in {"legacy", "ai_first"}:
+        return structure_recovery_enabled, "ai_first"
+    return structure_recovery_enabled, structure_recovery_mode
+
+
 def _resolve_paragraph_boundary_ai_review_settings() -> tuple[bool, str, int, int, int, str]:
     return _resolve_paragraph_boundary_ai_review_settings_impl(
         allowed_modes=PARAGRAPH_BOUNDARY_AI_REVIEW_MODE_VALUES,
@@ -907,6 +964,7 @@ def _write_layout_cleanup_report_artifact(
 
 def _assign_paragraph_identity(paragraph: ParagraphUnit, source_index: int) -> None:
     paragraph.source_index = source_index
+    paragraph.logical_index = source_index
     paragraph.paragraph_id = f"p{source_index:04d}"
     if not paragraph.structural_role or paragraph.structural_role == "body":
         paragraph.structural_role = paragraph.role

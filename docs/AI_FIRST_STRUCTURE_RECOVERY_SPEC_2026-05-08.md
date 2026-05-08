@@ -1004,3 +1004,39 @@ configuration changes rather than heuristic engineering.
 The spec does not eliminate the existing windowed classifier; it anchors it.
 That preserves the ability to revert to the legacy path through a single
 config flag and limits the blast radius of every slice.
+
+## Closed Checklist
+
+- [x] Added disabled-by-default `structure_recovery` config sections to `config.toml`.
+- [x] Added flat `AppConfig` / config-loader plumbing for `structure_recovery` defaults, env overrides, and clamps.
+- [x] Added stable `ParagraphUnit.logical_index` assignment in extraction identity plumbing.
+- [x] Versioned prepared-document and structure-map cache keys with structure recovery mode and coordinate schema version.
+- [x] Added focused config/preparation tests covering new defaults, env overrides, and logical-index-based cache-key behavior.
+- [x] Added explicit structure-recovery mode plumbing from extraction into role/layout/repair helpers while preserving legacy behavior when disabled.
+- [x] Made cleanup status text mode-aware so signal-only cleanup reports use `помечено`, not `удалено`.
+- [x] Switched `promote_short_standalone_headings(...)` and `normalize_front_matter_display_title(...)` to hint-only behavior in `ai_first` mode.
+- [x] Added `layout_cleanup` signal-only mode for `ai_first`: no paragraph removal, flag counts in report, and paragraph-level repeated/page-number flags.
+- [x] Switched TOC-derived heading promotion in `structure_repair.py` to hint-only behavior in `ai_first` while preserving legacy list/TOC boundary repairs.
+- [x] Projected extraction-time heuristic heading detection into advisory hints in `ai_first`, while keeping explicit headings authoritative.
+- [x] Switched adjacent caption reclassification to advisory `caption` hints in `ai_first` while preserving asset attachment side effects.
+- [x] Added advisory structural-role hints and switched bounded TOC region marking to signal-only behavior in `ai_first`.
+- [x] Switched compound TOC split-generated `toc_entry` pieces to advisory structural-role hints in `ai_first`.
+- [x] Switched compound TOC split-generated `list` and non-body structural pieces to advisory hints in `ai_first`.
+- [x] Switched `structure_repair` list-merge branches to signal-only list hints in `ai_first` instead of merging paragraphs.
+- [x] Preserved paragraph topology for compound TOC splitting in `ai_first` by storing embedded structure hints on the original paragraph.
+- [x] Added Stage 1 `DocumentMap*` dataclasses plus document-map cache-key scaffolding in preparation.
+- [x] Added deterministic Stage 1 document-map descriptor/sampling helpers and a public `build_document_map(...)` fallback scaffold.
+- [x] Wired the Stage 1 document-map scaffold into preparation behind `structure_recovery.document_map.enabled`, storing `PreparedDocumentData.document_map` without changing downstream classification yet.
+- [x] Added Stage 1 in-memory document-map cache reuse in preparation using the document-map cache key and stage tag.
+- [x] Added `.run/document_maps/<cache_key>.json` debug artifact writing with sampled indexes, prompt/schema version metadata, and full `DocumentMap` payload.
+- [x] Wired Stage 1 runtime to `structure_recovery.document_map.preview_chars` and `max_input_tokens`, so descriptor previews and deterministic sampling now honor the configured input budget.
+- [x] Added a real Stage 1 AI `DocumentMap` path with `prompts/document_map_system.txt`, schema validation, sparse-anchor default filling, and a one-shot retry on schema-invalid model output before deterministic fallback.
+- [x] Persisted terminal schema-invalid Stage 1 model outputs as malformed document-map artifacts for postmortem auditing instead of dropping them silently during fallback.
+- [x] Added Stage 2 anchor scaffolding on `ParagraphDescriptor` and `build_paragraph_descriptors(...)`, including `anchor_r` / `anchor_l` / `anchor_c` prompt payload fields.
+- [x] Extended structure-recognition prompt guidance with anchor consistency rules for high/medium/low confidence document-map anchors.
+- [x] Passed `document_map` through preparation into `build_structure_map(...)` and included anchor fingerprints in the structure-map cache key.
+- [x] Switched anchored structure recognition from pure count-based windowing to deterministic token-budgeted window shrinking using `structure_recovery.anchored_classification.target_input_tokens`.
+- [x] Propagated anchored `target_input_tokens` into `build_structure_map(...)` while preserving the legacy non-anchored windowing path when `document_map` is absent.
+- [x] Enforced deterministic document-map anchor guards during `apply_structure_map(...)` and switched anchored apply-thresholds to `structure_recovery.anchored_classification.min_confidence`.
+- [x] Added explicit structure-recognition prompt/schema versioning to structure-map cache keys and debug artifacts so prompt-only behavior changes bust stale cache entries.
+- [x] Added a minimal Stage 3 deterministic reconciliation pass that projects high-confidence document-map anchors back into `StructureMap`, reports outline/TOC mismatches, and runs before final Stage 2 apply.

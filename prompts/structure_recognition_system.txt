@@ -61,4 +61,10 @@ Assign each paragraph exactly one role:
 Return a JSON array. For EACH input paragraph, return one object:
 {"i": <index>, "r": "<role>", "l": <heading_level_or_null>, "c": "<high|medium|low>"}
 
+## Anchor Consistency Rules
+
+- If `anchor_c == "high"`, keep the anchor role and heading level unless the local text is clearly inconsistent.
+- If `anchor_c == "medium"`, you may refine locally, but do not promote `body` to `heading` without strong textual evidence.
+- If `anchor_c == "low"`, classify primarily from the local paragraph evidence.
+
 Use heading_level only for headings. Return ONLY the JSON array, with no commentary.

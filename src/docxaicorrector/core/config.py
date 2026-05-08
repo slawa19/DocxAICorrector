@@ -40,6 +40,7 @@ from docxaicorrector.core.config_structure_sections import (
     resolve_paragraph_boundary_settings as _resolve_paragraph_boundary_settings_impl,
     resolve_relation_normalization_settings as _resolve_relation_normalization_settings_impl,
     resolve_structure_recognition_settings as _resolve_structure_recognition_settings_impl,
+    resolve_structure_recovery_settings as _resolve_structure_recovery_settings_impl,
     resolve_structure_validation_settings as _resolve_structure_validation_settings_impl,
 )
 from docxaicorrector.core.constants import (
@@ -96,6 +97,7 @@ _LEGACY_TOML_MODEL_KEYS = (
     "reconstruction_model",
 )
 STRUCTURE_RECOGNITION_MODE_VALUES = ("off", "auto", "always")
+STRUCTURE_RECOVERY_MODE_VALUES = ("legacy", "ai_first")
 _EMITTED_MODEL_REGISTRY_LOG_KEYS: set[str] = set()
 
 
@@ -235,6 +237,26 @@ class AppConfig(Mapping[str, Any]):
     structure_recognition_min_confidence: str
     structure_recognition_cache_enabled: bool
     structure_recognition_save_debug_artifacts: bool
+    structure_recovery_enabled: bool
+    structure_recovery_mode: str
+    structure_recovery_coordinate_schema_version: int
+    structure_recovery_document_map_enabled: bool
+    structure_recovery_document_map_model: str
+    structure_recovery_document_map_timeout_seconds: int
+    structure_recovery_document_map_max_input_paragraphs: int
+    structure_recovery_document_map_max_input_tokens: int
+    structure_recovery_document_map_preview_chars: int
+    structure_recovery_document_map_cache_enabled: bool
+    structure_recovery_document_map_save_debug_artifacts: bool
+    structure_recovery_anchored_classification_max_window_paragraphs: int
+    structure_recovery_anchored_classification_overlap_paragraphs: int
+    structure_recovery_anchored_classification_preview_chars: int
+    structure_recovery_anchored_classification_target_input_tokens: int
+    structure_recovery_anchored_classification_min_confidence: str
+    structure_recovery_reconciliation_targeted_enabled: bool
+    structure_recovery_reconciliation_targeted_threshold: int
+    structure_recovery_reconciliation_targeted_max_paragraphs: int
+    structure_recovery_reconciliation_targeted_timeout_seconds: int
     structure_validation_enabled: bool
     structure_validation_min_paragraphs_for_auto_gate: int
     structure_validation_min_explicit_heading_density: float
@@ -893,6 +915,27 @@ def _resolve_structure_recognition_settings(
     )
 
 
+def _resolve_structure_recovery_settings(
+    *,
+    config_data: dict[str, object],
+) -> dict[str, Any]:
+    return _resolve_structure_recovery_settings_impl(
+        config_data=config_data,
+        parse_optional_config_section_fn=parse_optional_config_section,
+        parse_config_bool_fn=parse_config_bool,
+        parse_choice_str_fn=parse_choice_str,
+        parse_config_int_fn=parse_config_int,
+        parse_optional_config_str_fn=parse_optional_config_str,
+        parse_bool_env_fn=parse_bool_env,
+        parse_int_env_fn=parse_int_env,
+        parse_choice_env_fn=parse_choice_env,
+        parse_optional_str_env_fn=parse_optional_str_env,
+        clamp_int_fn=_clamp_int,
+        structure_recovery_mode_values=STRUCTURE_RECOVERY_MODE_VALUES,
+        structure_recognition_min_confidence_values=STRUCTURE_RECOGNITION_MIN_CONFIDENCE_VALUES,
+    )
+
+
 def _resolve_structure_validation_settings(
     *,
     structure_validation_config: dict[str, object],
@@ -1189,6 +1232,7 @@ def _build_app_config(
     relation_normalization_settings: Mapping[str, Any],
     layout_artifact_cleanup_settings: Mapping[str, Any],
     structure_recognition_settings: Mapping[str, Any],
+    structure_recovery_settings: Mapping[str, Any],
     structure_validation_settings: Mapping[str, Any],
     output_font_settings: Mapping[str, Any],
     semantic_validation_runtime_settings: Mapping[str, Any],
@@ -1203,6 +1247,7 @@ def _build_app_config(
             layout_artifact_cleanup_settings=layout_artifact_cleanup_settings,
             relation_normalization_settings=relation_normalization_settings,
             structure_recognition_settings=structure_recognition_settings,
+            structure_recovery_settings=structure_recovery_settings,
             structure_validation_settings=structure_validation_settings,
             output_font_settings=output_font_settings,
             semantic_validation_runtime_settings=semantic_validation_runtime_settings,
@@ -1231,6 +1276,7 @@ def load_app_config() -> AppConfig:
         resolve_layout_artifact_cleanup_settings_fn=_resolve_layout_artifact_cleanup_settings,
         resolve_relation_normalization_settings_fn=_resolve_relation_normalization_settings,
         resolve_structure_recognition_settings_fn=_resolve_structure_recognition_settings,
+        resolve_structure_recovery_settings_fn=_resolve_structure_recovery_settings,
         resolve_structure_validation_settings_fn=_resolve_structure_validation_settings,
         resolve_semantic_validation_and_runtime_settings_fn=_resolve_semantic_validation_and_runtime_settings,
         resolve_image_output_settings_fn=_resolve_image_output_settings,
@@ -1256,6 +1302,7 @@ def load_app_config() -> AppConfig:
         layout_artifact_cleanup_settings=resolved_sections.layout_artifact_cleanup_settings,
         relation_normalization_settings=resolved_sections.relation_normalization_settings,
         structure_recognition_settings=resolved_sections.structure_recognition_settings,
+        structure_recovery_settings=resolved_sections.structure_recovery_settings,
         structure_validation_settings=resolved_sections.structure_validation_settings,
         output_font_settings=resolved_sections.output_font_settings,
         semantic_validation_runtime_settings=resolved_sections.semantic_validation_runtime_settings,

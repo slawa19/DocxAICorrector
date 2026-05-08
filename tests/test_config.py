@@ -68,6 +68,26 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     assert app_config["structure_recognition_min_confidence"] == "medium"
     assert app_config["structure_recognition_cache_enabled"] is True
     assert app_config["structure_recognition_save_debug_artifacts"] is True
+    assert app_config["structure_recovery_enabled"] is False
+    assert app_config["structure_recovery_mode"] == "ai_first"
+    assert app_config["structure_recovery_coordinate_schema_version"] == 1
+    assert app_config["structure_recovery_document_map_enabled"] is False
+    assert app_config["structure_recovery_document_map_model"] == ""
+    assert app_config["structure_recovery_document_map_timeout_seconds"] == 120
+    assert app_config["structure_recovery_document_map_max_input_paragraphs"] == 6000
+    assert app_config["structure_recovery_document_map_max_input_tokens"] == 180000
+    assert app_config["structure_recovery_document_map_preview_chars"] == 120
+    assert app_config["structure_recovery_document_map_cache_enabled"] is True
+    assert app_config["structure_recovery_document_map_save_debug_artifacts"] is True
+    assert app_config["structure_recovery_anchored_classification_max_window_paragraphs"] == 3000
+    assert app_config["structure_recovery_anchored_classification_overlap_paragraphs"] == 0
+    assert app_config["structure_recovery_anchored_classification_preview_chars"] == 1500
+    assert app_config["structure_recovery_anchored_classification_target_input_tokens"] == 180000
+    assert app_config["structure_recovery_anchored_classification_min_confidence"] == "medium"
+    assert app_config["structure_recovery_reconciliation_targeted_enabled"] is False
+    assert app_config["structure_recovery_reconciliation_targeted_threshold"] == 3
+    assert app_config["structure_recovery_reconciliation_targeted_max_paragraphs"] == 60
+    assert app_config["structure_recovery_reconciliation_targeted_timeout_seconds"] == 60
     assert app_config["structure_validation_enabled"] is True
     assert app_config["structure_validation_min_paragraphs_for_auto_gate"] == 40
     assert app_config["structure_validation_min_explicit_heading_density"] == 0.003
@@ -127,6 +147,9 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["structure_recognition_min_confidence"] == "medium"
     assert app_config["structure_recognition_cache_enabled"] is True
     assert app_config["structure_recognition_save_debug_artifacts"] is True
+    assert app_config["structure_recovery_enabled"] is False
+    assert app_config["structure_recovery_mode"] == "ai_first"
+    assert app_config["structure_recovery_coordinate_schema_version"] == 1
     assert app_config["structure_validation_block_on_high_risk_noop"] is True
     assert app_config["relation_normalization_enabled"] is True
     assert app_config["relation_normalization_profile"] == "phase2_default"
@@ -363,6 +386,26 @@ def test_describe_provider_availability_reports_missing_key(monkeypatch):
         structure_recognition_min_confidence="medium",
         structure_recognition_cache_enabled=True,
         structure_recognition_save_debug_artifacts=True,
+        structure_recovery_enabled=False,
+        structure_recovery_mode="ai_first",
+        structure_recovery_coordinate_schema_version=1,
+        structure_recovery_document_map_enabled=False,
+        structure_recovery_document_map_model="",
+        structure_recovery_document_map_timeout_seconds=120,
+        structure_recovery_document_map_max_input_paragraphs=6000,
+        structure_recovery_document_map_max_input_tokens=180000,
+        structure_recovery_document_map_preview_chars=120,
+        structure_recovery_document_map_cache_enabled=True,
+        structure_recovery_document_map_save_debug_artifacts=True,
+        structure_recovery_anchored_classification_max_window_paragraphs=3000,
+        structure_recovery_anchored_classification_overlap_paragraphs=0,
+        structure_recovery_anchored_classification_preview_chars=1500,
+        structure_recovery_anchored_classification_target_input_tokens=180000,
+        structure_recovery_anchored_classification_min_confidence="medium",
+        structure_recovery_reconciliation_targeted_enabled=False,
+        structure_recovery_reconciliation_targeted_threshold=3,
+        structure_recovery_reconciliation_targeted_max_paragraphs=60,
+        structure_recovery_reconciliation_targeted_timeout_seconds=60,
         structure_validation_enabled=True,
         structure_validation_min_paragraphs_for_auto_gate=40,
         structure_validation_min_explicit_heading_density=0.003,
@@ -913,6 +956,29 @@ def test_load_app_config_applies_structure_recognition_env_overrides(monkeypatch
     assert app_config["structure_recognition_min_confidence"] == "high"
     assert app_config["structure_recognition_cache_enabled"] is False
     assert app_config["structure_recognition_save_debug_artifacts"] is False
+
+
+def test_load_app_config_applies_structure_recovery_env_overrides_and_clamps(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_ENABLED", "true")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_MODE", "legacy")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_DOCUMENT_MAP_ENABLED", "true")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_DOCUMENT_MAP_MODEL", "openai:gpt-5.4")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_DOCUMENT_MAP_MAX_INPUT_PARAGRAPHS", "999999")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_DOCUMENT_MAP_PREVIEW_CHARS", "5")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_ANCHORED_CLASSIFICATION_PREVIEW_CHARS", "999999")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_RECONCILIATION_TARGETED_MAX_PARAGRAPHS", "1")
+
+    app_config = config.load_app_config()
+
+    assert app_config["structure_recovery_enabled"] is True
+    assert app_config["structure_recovery_mode"] == "legacy"
+    assert app_config["structure_recovery_document_map_enabled"] is True
+    assert app_config["structure_recovery_document_map_model"] == "openai:gpt-5.4"
+    assert app_config["structure_recovery_document_map_max_input_paragraphs"] == 20000
+    assert app_config["structure_recovery_document_map_preview_chars"] == 40
+    assert app_config["structure_recovery_anchored_classification_preview_chars"] == 4000
+    assert app_config["structure_recovery_reconciliation_targeted_max_paragraphs"] == 10
 
 
 def test_load_app_config_prefers_mode_over_legacy_enabled(monkeypatch, tmp_path):

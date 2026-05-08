@@ -199,7 +199,13 @@ def resolve_effective_paragraph_font_size(paragraph) -> float | None:
     return _resolve_style_font_size(getattr(paragraph, "style", None))
 
 
-def promote_short_standalone_headings(paragraphs: list[ParagraphUnit]) -> None:
+def promote_short_standalone_headings(
+    paragraphs: list[ParagraphUnit],
+    *,
+    structure_recovery_enabled: bool = False,
+    structure_recovery_mode: str = "legacy",
+) -> None:
+    ai_first_mode = structure_recovery_enabled and structure_recovery_mode == "ai_first"
     if len(paragraphs) < 3:
         return
 
@@ -220,11 +226,11 @@ def promote_short_standalone_headings(paragraphs: list[ParagraphUnit]) -> None:
             continue
 
         if _is_very_short_standalone_heading_text(paragraph.text):
-            paragraph.role = "heading"
-            paragraph.structural_role = "heading"
-            paragraph.role_confidence = "heuristic"
-            paragraph.heading_source = "heuristic"
-            paragraph.heading_level = _infer_contextual_heading_level(paragraphs, index)
+            _apply_or_hint_short_heading(
+                paragraph,
+                heading_level=_infer_contextual_heading_level(paragraphs, index),
+                ai_first_mode=ai_first_mode,
+            )
             continue
 
         candidate_font_size = paragraph.font_size_pt
@@ -245,14 +251,20 @@ def promote_short_standalone_headings(paragraphs: list[ParagraphUnit]) -> None:
         if candidate_font_size < max(context_font_sizes) + required_delta:
             continue
 
-        paragraph.role = "heading"
-        paragraph.structural_role = "heading"
-        paragraph.role_confidence = "heuristic"
-        paragraph.heading_source = "heuristic"
-        paragraph.heading_level = _infer_contextual_heading_level(paragraphs, index)
+        _apply_or_hint_short_heading(
+            paragraph,
+            heading_level=_infer_contextual_heading_level(paragraphs, index),
+            ai_first_mode=ai_first_mode,
+        )
 
 
-def normalize_front_matter_display_title(paragraphs: list[ParagraphUnit]) -> None:
+def normalize_front_matter_display_title(
+    paragraphs: list[ParagraphUnit],
+    *,
+    structure_recovery_enabled: bool = False,
+    structure_recovery_mode: str = "legacy",
+) -> None:
+    ai_first_mode = structure_recovery_enabled and structure_recovery_mode == "ai_first"
     scan_limit = min(len(paragraphs), 12)
     if scan_limit == 0:
         return
@@ -262,11 +274,7 @@ def normalize_front_matter_display_title(paragraphs: list[ParagraphUnit]) -> Non
         return
 
     candidate = paragraphs[candidate_index]
-    candidate.role = "heading"
-    candidate.structural_role = "heading"
-    candidate.role_confidence = "heuristic"
-    candidate.heading_source = "heuristic"
-    candidate.heading_level = 1
+    _apply_or_hint_short_heading(candidate, heading_level=1, ai_first_mode=ai_first_mode)
 
     candidate_font_size = candidate.font_size_pt
     for index in range(scan_limit):
@@ -285,7 +293,27 @@ def normalize_front_matter_display_title(paragraphs: list[ParagraphUnit]) -> Non
         paragraph.heading_level = None
 
 
-def reclassify_adjacent_captions(paragraphs: list[ParagraphUnit]) -> None:
+def _apply_or_hint_short_heading(paragraph: ParagraphUnit, *, heading_level: int, ai_first_mode: bool) -> None:
+    if ai_first_mode:
+        if paragraph.role == "heading" and (paragraph.heading_source == "explicit" or paragraph.role_confidence == "explicit"):
+            return
+        paragraph.heuristic_role_hint = "heading"
+        paragraph.heuristic_heading_level_hint = heading_level
+        return
+    paragraph.role = "heading"
+    paragraph.structural_role = "heading"
+    paragraph.role_confidence = "heuristic"
+    paragraph.heading_source = "heuristic"
+    paragraph.heading_level = heading_level
+
+
+def reclassify_adjacent_captions(
+    paragraphs: list[ParagraphUnit],
+    *,
+    structure_recovery_enabled: bool = False,
+    structure_recovery_mode: str = "legacy",
+) -> None:
+    ai_first_mode = structure_recovery_enabled and structure_recovery_mode == "ai_first"
     for index, paragraph in enumerate(paragraphs):
         if index == 0:
             continue
@@ -296,6 +324,10 @@ def reclassify_adjacent_captions(paragraphs: list[ParagraphUnit]) -> None:
             continue
         if is_likely_caption_text(paragraph.text):
             if paragraph.role == "heading" and paragraph.heading_source != "heuristic":
+                continue
+            if ai_first_mode:
+                paragraph.heuristic_role_hint = "caption"
+                paragraph.heuristic_heading_level_hint = None
                 continue
             paragraph.role = "caption"
             paragraph.structural_role = "caption"

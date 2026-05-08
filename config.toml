@@ -144,6 +144,33 @@ min_confidence = "medium"
 cache_enabled = true
 save_debug_artifacts = true
 
+[structure_recovery]
+mode = "ai_first"
+enabled = false
+
+[structure_recovery.document_map]
+enabled = false
+model = ""
+timeout_seconds = 120
+max_input_paragraphs = 6000
+max_input_tokens = 180000
+preview_chars = 120
+cache_enabled = true
+save_debug_artifacts = true
+
+[structure_recovery.anchored_classification]
+max_window_paragraphs = 3000
+overlap_paragraphs = 0
+preview_chars = 1500
+target_input_tokens = 180000
+min_confidence = "medium"
+
+[structure_recovery.reconciliation]
+targeted_enabled = false
+targeted_threshold = 3
+targeted_max_paragraphs = 60
+targeted_timeout_seconds = 60
+
 [structure_validation]
 enabled = true
 min_paragraphs_for_auto_gate = 40

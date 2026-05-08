@@ -1,6 +1,6 @@
 from collections import OrderedDict
 from copy import deepcopy
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 import hashlib
 import inspect
 import json
@@ -23,7 +23,7 @@ from docxaicorrector.document._document import (
     summarize_boundary_normalization_metrics,
 )
 from docxaicorrector.core.logger import log_event
-from docxaicorrector.core.models import LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport, ParagraphRelation, RelationNormalizationReport
+from docxaicorrector.core.models import DocumentMap, LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport, ParagraphRelation, RelationNormalizationReport
 from docxaicorrector.core.models import StructureRecognitionSummary
 from docxaicorrector.core.models import StructureRepairReport
 from docxaicorrector.core.models import clone_prepared_image_asset
@@ -46,7 +46,18 @@ from docxaicorrector.document.segments import (
     resolve_segment_hard_boundary_paragraph_ids,
     validate_segment_coverage,
 )
-from docxaicorrector.structure.recognition import apply_structure_map, build_structure_map
+from docxaicorrector.structure.document_map import (
+    DOCUMENT_MAP_DESCRIPTOR_SCHEMA_VERSION,
+    DOCUMENT_MAP_PROMPT_VERSION,
+    build_document_map,
+)
+from docxaicorrector.structure.recognition import (
+    STRUCTURE_RECOGNITION_DESCRIPTOR_SCHEMA_VERSION,
+    STRUCTURE_RECOGNITION_PROMPT_VERSION,
+    apply_structure_map,
+    build_structure_map,
+)
+from docxaicorrector.structure.reconciliation import STRUCTURE_RECONCILIATION_SCHEMA_VERSION, reconcile_with_document_map
 from docxaicorrector.structure.validation import StructureValidationReport, validate_structure_quality, write_structure_validation_debug_artifact
 from docxaicorrector.text.translation_domains import build_terminology_plan, build_translation_domain_instructions
 
@@ -98,6 +109,7 @@ class PreparedDocumentData:
     relation_report: RelationNormalizationReport | None = None
     cleanup_report: LayoutArtifactCleanupReport | None = None
     structure_repair_report: StructureRepairReport | None = None
+    document_map: DocumentMap | None = None
     structure_map: StructureMap | None = None
     structure_recognition_summary: StructureRecognitionSummary = field(default_factory=StructureRecognitionSummary)
     structure_validation_report: StructureValidationReport | None = None
@@ -263,6 +275,11 @@ _STRUCTURE_MAP_CACHE_LIMIT = 8
 _structure_map_cache: OrderedDict[str, StructureMap] = OrderedDict()
 _structure_map_cache_lock = Lock()
 _STRUCTURE_MAP_DEBUG_DIR = RUN_DIR / "structure_maps"
+_DOCUMENT_MAP_CACHE_LIMIT = 8
+_document_map_cache: OrderedDict[str, DocumentMap] = OrderedDict()
+_document_map_cache_lock = Lock()
+_DOCUMENT_MAP_DEBUG_DIR = RUN_DIR / "document_maps"
+STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION = 1
 
 
 def _build_structure_recognition_summary(*, applied_metrics: dict[str, int], divergence_metrics: dict[str, int]) -> StructureRecognitionSummary:
@@ -342,14 +359,44 @@ def build_structure_processing_status_note(source: object | None) -> str:
     return ""
 
 
-def _build_structure_map_cache_key(*, paragraphs: list, app_config: Mapping[str, Any]) -> str:
+def _build_structure_map_cache_key(*, paragraphs: list, app_config: Mapping[str, Any], document_map: DocumentMap | None = None) -> str:
+    structure_recovery_mode = str(app_config.get("structure_recovery_mode", "ai_first") or "ai_first").strip().lower()
+    structure_recovery_enabled = bool(app_config.get("structure_recovery_enabled", False))
+    coordinate_schema_version = int(
+        app_config.get("structure_recovery_coordinate_schema_version", STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION)
+        or STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION
+    )
+    max_window_paragraphs, overlap_paragraphs, preview_chars, target_input_tokens = _resolve_structure_recognition_window_settings(
+        app_config=app_config,
+        document_map=document_map,
+    )
     payload = {
+        "stage": "structure_recognition_v1",
         "model": get_model_role_value(app_config, "structure_recognition"),
-        "max_window_paragraphs": int(app_config.get("structure_recognition_max_window_paragraphs", 1800) or 1800),
-        "overlap_paragraphs": int(app_config.get("structure_recognition_overlap_paragraphs", 50) or 50),
+        "prompt_version": STRUCTURE_RECOGNITION_PROMPT_VERSION,
+        "descriptor_schema_version": STRUCTURE_RECOGNITION_DESCRIPTOR_SCHEMA_VERSION,
+        "reconciliation_schema_version": STRUCTURE_RECONCILIATION_SCHEMA_VERSION,
+        "max_window_paragraphs": max_window_paragraphs,
+        "overlap_paragraphs": overlap_paragraphs,
+        "preview_chars": preview_chars,
+        "target_input_tokens": target_input_tokens,
+        "structure_recovery_enabled": structure_recovery_enabled,
+        "structure_recovery_mode": structure_recovery_mode,
+        "coordinate_schema_version": coordinate_schema_version,
+        "document_map_anchor_fingerprint": [
+            {
+                "index": int(index),
+                "role": str(anchor.role or "body"),
+                "heading_level": anchor.heading_level,
+                "confidence": str(anchor.confidence or "low"),
+            }
+            for index, anchor in sorted((document_map.paragraph_anchors or {}).items())
+        ]
+        if document_map is not None
+        else None,
         "paragraphs": [
             {
-                "index": int(paragraph.source_index),
+                "index": int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", -1))),
                 "text": str(paragraph.text or ""),
                 "style_name": str(paragraph.style_name or ""),
                 "is_bold": bool(paragraph.is_bold),
@@ -357,6 +404,77 @@ def _build_structure_map_cache_key(*, paragraphs: list, app_config: Mapping[str,
                 "font_size_pt": paragraph.font_size_pt,
                 "list_kind": paragraph.list_kind,
                 "heading_level": paragraph.heading_level if paragraph.heading_source == "explicit" else None,
+            }
+            for paragraph in paragraphs
+        ],
+    }
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _resolve_structure_recognition_window_settings(
+    *,
+    app_config: Mapping[str, Any],
+    document_map: DocumentMap | None,
+) -> tuple[int, int, int, int]:
+    if document_map is not None:
+        return (
+            int(app_config.get("structure_recovery_anchored_classification_max_window_paragraphs", 3000) or 3000),
+            int(app_config.get("structure_recovery_anchored_classification_overlap_paragraphs", 0) or 0),
+            int(app_config.get("structure_recovery_anchored_classification_preview_chars", 1500) or 1500),
+            int(app_config.get("structure_recovery_anchored_classification_target_input_tokens", 180000) or 180000),
+        )
+    return (
+        int(app_config.get("structure_recognition_max_window_paragraphs", 1800) or 1800),
+        int(app_config.get("structure_recognition_overlap_paragraphs", 50) or 50),
+        600,
+        int(app_config.get("structure_recovery_anchored_classification_target_input_tokens", 180000) or 180000),
+    )
+
+
+def _build_document_map_cache_key(*, paragraphs: list, app_config: Mapping[str, Any]) -> str:
+    structure_recovery_mode = str(app_config.get("structure_recovery_mode", "ai_first") or "ai_first").strip().lower()
+    structure_recovery_enabled = bool(app_config.get("structure_recovery_enabled", False))
+    coordinate_schema_version = int(
+        app_config.get("structure_recovery_coordinate_schema_version", STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION)
+        or STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION
+    )
+    preview_chars = int(app_config.get("structure_recovery_document_map_preview_chars", 120) or 120)
+    payload = {
+        "stage": "document_map_v1",
+        "model": str(app_config.get("structure_recovery_document_map_model", "") or ""),
+        "max_input_paragraphs": int(app_config.get("structure_recovery_document_map_max_input_paragraphs", 6000) or 6000),
+        "max_input_tokens": int(app_config.get("structure_recovery_document_map_max_input_tokens", 180000) or 180000),
+        "preview_chars": preview_chars,
+        "structure_recovery_enabled": structure_recovery_enabled,
+        "structure_recovery_mode": structure_recovery_mode,
+        "coordinate_schema_version": coordinate_schema_version,
+        "paragraphs": [
+            {
+                "index": int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", -1))),
+                "text_preview": str(paragraph.text or "")[:preview_chars],
+                "style_name": str(paragraph.style_name or ""),
+                "is_bold": bool(getattr(paragraph, "is_bold", False)),
+                "paragraph_alignment": getattr(paragraph, "paragraph_alignment", None),
+                "font_size_pt": getattr(paragraph, "font_size_pt", None),
+                "explicit_heading_level": getattr(paragraph, "heading_level", None)
+                if getattr(paragraph, "heading_source", None) == "explicit"
+                else None,
+                "heuristic_role_hint": getattr(paragraph, "heuristic_role_hint", None),
+                "heuristic_structural_role_hint": getattr(paragraph, "heuristic_structural_role_hint", None),
+                "heuristic_list_kind_hint": getattr(paragraph, "heuristic_list_kind_hint", None),
+                "heuristic_heading_level_hint": getattr(paragraph, "heuristic_heading_level_hint", None),
+                "is_repeated_across_pages": bool(getattr(paragraph, "is_repeated_across_pages", False)),
+                "is_likely_page_number": bool(getattr(paragraph, "is_likely_page_number", False)),
+                "embedded_structure_hints": [
+                    {
+                        "text": str(getattr(hint, "text", "") or "")[:preview_chars],
+                        "role": getattr(hint, "role", "body"),
+                        "structural_role": getattr(hint, "structural_role", "body"),
+                        "heading_level": getattr(hint, "heading_level", None),
+                        "list_kind": getattr(hint, "list_kind", None),
+                    }
+                    for hint in getattr(paragraph, "heuristic_embedded_structure_hints", ()) or ()
+                ],
             }
             for paragraph in paragraphs
         ],
@@ -384,11 +502,19 @@ def _store_cached_structure_map(cache_key: str, structure_map: StructureMap) -> 
 def _write_structure_map_debug_artifact(*, cache_key: str, structure_map: StructureMap, app_config: Mapping[str, Any]) -> str:
     _STRUCTURE_MAP_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
     artifact_path = _STRUCTURE_MAP_DEBUG_DIR / f"{cache_key}.json"
+    coordinate_schema_version = int(
+        app_config.get("structure_recovery_coordinate_schema_version", STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION)
+        or STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION
+    )
     artifact_path.write_text(
         json.dumps(
             {
                 "cache_key": cache_key,
+                "stage": "structure_recognition_v1",
                 "model": get_model_role_value(app_config, "structure_recognition"),
+                "prompt_version": STRUCTURE_RECOGNITION_PROMPT_VERSION,
+                "descriptor_schema_version": STRUCTURE_RECOGNITION_DESCRIPTOR_SCHEMA_VERSION,
+                "coordinate_schema_version": coordinate_schema_version,
                 "window_count": structure_map.window_count,
                 "classified_count": structure_map.classified_count,
                 "heading_count": structure_map.heading_count,
@@ -417,6 +543,58 @@ def _write_structure_map_debug_artifact(*, cache_key: str, structure_map: Struct
     return str(artifact_path)
 
 
+def _read_cached_document_map(cache_key: str) -> DocumentMap | None:
+    with _document_map_cache_lock:
+        cached = _document_map_cache.get(cache_key)
+        if cached is None:
+            return None
+        _document_map_cache.move_to_end(cache_key)
+        return deepcopy(cached)
+
+
+def _store_cached_document_map(cache_key: str, document_map: DocumentMap) -> None:
+    with _document_map_cache_lock:
+        _document_map_cache[cache_key] = deepcopy(document_map)
+        _document_map_cache.move_to_end(cache_key)
+        while len(_document_map_cache) > _DOCUMENT_MAP_CACHE_LIMIT:
+            _document_map_cache.popitem(last=False)
+
+
+def _write_document_map_debug_artifact(*, cache_key: str, document_map: DocumentMap, app_config: Mapping[str, Any]) -> str:
+    _DOCUMENT_MAP_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    artifact_path = _DOCUMENT_MAP_DEBUG_DIR / f"{cache_key}.json"
+    coordinate_schema_version = int(
+        app_config.get("structure_recovery_coordinate_schema_version", STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION)
+        or STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION
+    )
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "cache_key": cache_key,
+                "stage": "document_map_v1",
+                "model": str(app_config.get("structure_recovery_document_map_model", "") or ""),
+                "prompt_version": DOCUMENT_MAP_PROMPT_VERSION,
+                "descriptor_schema_version": DOCUMENT_MAP_DESCRIPTOR_SCHEMA_VERSION,
+                "coordinate_schema_version": coordinate_schema_version,
+                "sampled": bool(document_map.sampled),
+                "sampled_logical_indexes": list(document_map.sampled_logical_indexes),
+                "total_tokens_used": int(document_map.total_tokens_used or 0),
+                "processing_time_seconds": float(document_map.processing_time_seconds or 0.0),
+                "document_map": asdict(document_map),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    prune_artifact_dir(
+        target_dir=_DOCUMENT_MAP_DEBUG_DIR,
+        max_age_seconds=STRUCTURE_MAPS_MAX_AGE_SECONDS,
+        max_count=STRUCTURE_MAPS_MAX_COUNT,
+    )
+    return str(artifact_path)
+
+
 def _run_structure_recognition(
     *,
     paragraphs: list,
@@ -426,6 +604,7 @@ def _run_structure_recognition(
     normalization_report,
     relation_report,
     cleanup_report=None,
+    document_map: DocumentMap | None = None,
     source_format: str = "docx",
     conversion_backend: str | None = None,
 ) -> tuple[StructureMap | None, StructureRecognitionSummary]:
@@ -514,7 +693,11 @@ def _run_structure_recognition(
 
     try:
         baseline = _capture_structure_baseline(paragraphs)
-        cache_key = _build_structure_map_cache_key(paragraphs=paragraphs, app_config=app_config)
+        max_window_paragraphs, overlap_paragraphs, preview_chars, _target_input_tokens = _resolve_structure_recognition_window_settings(
+            app_config=app_config,
+            document_map=document_map,
+        )
+        cache_key = _build_structure_map_cache_key(paragraphs=paragraphs, app_config=app_config, document_map=document_map)
         structure_map = None
         if bool(app_config.get("structure_recognition_cache_enabled", True)):
             structure_map = _read_cached_structure_map(cache_key)
@@ -524,9 +707,12 @@ def _run_structure_recognition(
                     paragraphs,
                     client=get_client(),
                     model=get_model_role_value(app_config, "structure_recognition"),
-                    max_window_paragraphs=int(app_config.get("structure_recognition_max_window_paragraphs", 1800) or 1800),
-                    overlap_paragraphs=int(app_config.get("structure_recognition_overlap_paragraphs", 50) or 50),
+                    max_window_paragraphs=max_window_paragraphs,
+                    overlap_paragraphs=overlap_paragraphs,
                     timeout=float(app_config.get("structure_recognition_timeout_seconds", 60) or 60),
+                    document_map=document_map,
+                    preview_chars=preview_chars,
+                    target_input_tokens=None if document_map is None else _target_input_tokens,
                     progress_callback=_emit_structure_ai_progress,
                 )
             finally:
@@ -551,6 +737,12 @@ def _run_structure_recognition(
                     "structure_ai_total_windows": 1,
                 },
             )
+        if document_map is not None and structure_map is not None:
+            structure_map, _reconciliation_report = reconcile_with_document_map(
+                paragraphs,
+                document_map,
+                structure_map,
+            )
         if bool(app_config.get("structure_recognition_save_debug_artifacts", True)):
             artifact_path = _write_structure_map_debug_artifact(cache_key=cache_key, structure_map=structure_map, app_config=app_config)
             log_event(
@@ -569,7 +761,15 @@ def _run_structure_recognition(
         applied_metrics = apply_structure_map(
             paragraphs,
             structure_map,
-            min_confidence=str(app_config.get("structure_recognition_min_confidence", "medium")),
+            min_confidence=str(
+                app_config.get(
+                    "structure_recovery_anchored_classification_min_confidence",
+                    app_config.get("structure_recognition_min_confidence", "medium"),
+                )
+                if document_map is not None
+                else app_config.get("structure_recognition_min_confidence", "medium")
+            ),
+            document_map=document_map,
         )
         divergence_metrics = _build_structure_divergence_metrics(baseline=baseline, paragraphs=paragraphs)
     except Exception as exc:
@@ -616,6 +816,126 @@ def _run_structure_recognition(
     return structure_map, structure_summary
 
 
+def _run_document_map_stage(
+    *,
+    paragraphs: list,
+    image_assets: list,
+    app_config: Mapping[str, Any],
+    progress_callback,
+    normalization_report,
+    relation_report,
+    cleanup_report=None,
+    structure_repair_report=None,
+    source_format: str = "docx",
+    conversion_backend: str | None = None,
+) -> DocumentMap | None:
+    if not bool(app_config.get("structure_recovery_enabled", False)):
+        return None
+    if not bool(app_config.get("structure_recovery_document_map_enabled", False)):
+        return None
+
+    base_metrics = _build_preparation_stage_metrics(
+        paragraph_count=len(paragraphs),
+        image_count=len(image_assets),
+        normalization_report=normalization_report,
+        relation_report=relation_report,
+        cleanup_report=cleanup_report,
+        structure_repair_report=structure_repair_report,
+    )
+
+    def _emit_document_map_progress(event) -> None:
+        if event.event == "descriptors_built":
+            detail = (
+                f"Подготовлено {event.descriptor_count or 0} абзацев, "
+                f"выбрано {event.sampled_count or 0} координат для карты."
+            )
+            progress = 0.37
+        else:
+            detail = "Глобальная карта документа подготовлена."
+            progress = 0.4
+        emit_preparation_progress(
+            progress_callback,
+            stage="Карта документа…",
+            detail=detail,
+            progress=progress,
+            metrics={
+                **base_metrics,
+                "source_format": source_format,
+                "conversion_backend": conversion_backend,
+                "document_map_descriptor_count": event.descriptor_count,
+                "document_map_sampled_count": event.sampled_count,
+            },
+        )
+
+    try:
+        cache_key = _build_document_map_cache_key(paragraphs=paragraphs, app_config=app_config)
+        emit_preparation_progress(
+            progress_callback,
+            stage="Карта документа…",
+            detail="Строю глобальную карту документа для последующих Stage 2/3.",
+            progress=0.36,
+            metrics={**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend},
+        )
+        document_map = None
+        if bool(app_config.get("structure_recovery_document_map_cache_enabled", True)):
+            document_map = _read_cached_document_map(cache_key)
+        if document_map is None:
+            document_map = build_document_map(
+                paragraphs,
+                client=get_client(),
+                model=str(app_config.get("structure_recovery_document_map_model", "") or ""),
+                timeout=float(app_config.get("structure_recovery_document_map_timeout_seconds", 60) or 60),
+                max_input_paragraphs=int(app_config.get("structure_recovery_document_map_max_input_paragraphs", 6000) or 6000),
+                max_input_tokens=int(app_config.get("structure_recovery_document_map_max_input_tokens", 180000) or 180000),
+                preview_chars=int(app_config.get("structure_recovery_document_map_preview_chars", 120) or 120),
+                progress_callback=_emit_document_map_progress,
+            )
+            if bool(app_config.get("structure_recovery_document_map_cache_enabled", True)):
+                _store_cached_document_map(cache_key, document_map)
+        else:
+            emit_preparation_progress(
+                progress_callback,
+                stage="Карта документа…",
+                detail="Использую сохранённую карту документа.",
+                progress=0.4,
+                metrics={
+                    **base_metrics,
+                    "source_format": source_format,
+                    "conversion_backend": conversion_backend,
+                    "document_map_descriptor_count": len(paragraphs),
+                    "document_map_sampled_count": len(document_map.sampled_logical_indexes),
+                },
+            )
+        if bool(app_config.get("structure_recovery_document_map_save_debug_artifacts", True)):
+            artifact_path = _write_document_map_debug_artifact(
+                cache_key=cache_key,
+                document_map=document_map,
+                app_config=app_config,
+            )
+            log_event(
+                logging.INFO,
+                "document_map_debug_artifact_saved",
+                "Сохранён debug artifact глобальной карты документа.",
+                artifact_path=artifact_path,
+            )
+        return document_map
+    except Exception as exc:
+        log_event(
+            logging.WARNING,
+            "document_map_fallback",
+            "Построение глобальной карты документа завершилось fallback-путём.",
+            error_message=str(exc),
+        )
+        emit_preparation_progress(
+            progress_callback,
+            stage="Карта документа: fallback",
+            detail="Глобальная карта документа недоступна. Продолжаю без неё.",
+            progress=0.4,
+            metrics={**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend},
+        )
+        return None
+
+
 PREPARATION_CACHE_LIMIT = 2
 _shared_preparation_cache: OrderedDict[str, PreparedDocumentData] = OrderedDict()
 _shared_preparation_cache_lock = Lock()
@@ -653,6 +973,27 @@ def _resolve_structure_recognition_mode(app_config: Mapping[str, Any]) -> str:
 def build_layout_cleanup_status_note(cleanup_report) -> str:
     if cleanup_report is None:
         return ""
+    cleanup_mode = str(getattr(cleanup_report, "cleanup_mode", "remove") or "remove").strip().lower()
+    if cleanup_mode == "flag":
+        flagged_count = int(
+            getattr(cleanup_report, "flagged_page_number_count", 0)
+            or 0
+        ) + int(
+            getattr(cleanup_report, "flagged_repeated_artifact_count", 0)
+            or 0
+        ) + int(
+            getattr(cleanup_report, "flagged_empty_or_whitespace_count", 0)
+            or 0
+        )
+        if flagged_count <= 0:
+            return ""
+        page_numbers = int(getattr(cleanup_report, "flagged_page_number_count", 0) or 0)
+        repeated = int(getattr(cleanup_report, "flagged_repeated_artifact_count", 0) or 0)
+        empty = int(getattr(cleanup_report, "flagged_empty_or_whitespace_count", 0) or 0)
+        return (
+            f"Очистка: помечено {flagged_count} служебных элементов "
+            f"({page_numbers} номеров страниц, {repeated} повторяющихся колонтитулов, {empty} пустых абзацев)."
+        )
     removed_count = int(getattr(cleanup_report, "removed_paragraph_count", 0) or 0)
     if removed_count <= 0:
         return ""
@@ -802,18 +1143,27 @@ def build_prepared_source_key(
     layout_artifact_cleanup_key: str = "1:3:80",
     structure_recognition_enabled: bool = False,
     structure_recognition_mode: str | None = None,
+    structure_recovery_enabled: bool = False,
+    structure_recovery_mode: str = "ai_first",
+    structure_recovery_coordinate_schema_version: int = STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION,
     structure_validation_enabled: bool = True,
 ) -> str:
     resolved_mode = (structure_recognition_mode or ("always" if structure_recognition_enabled else "off")).strip().lower()
     resolved_operation = str(processing_operation or "edit").strip().lower() or "edit"
     structure_recognition_suffix = f":sr={resolved_mode}"
+    structure_recovery_suffix = (
+        ":srec="
+        f"{1 if structure_recovery_enabled else 0}:"
+        f"{str(structure_recovery_mode or 'ai_first').strip().lower() or 'ai_first'}:"
+        f"c{int(structure_recovery_coordinate_schema_version or STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION)}"
+    )
     if resolved_mode == "auto":
         structure_recognition_suffix += f":sv={1 if structure_validation_enabled else 0}"
     operation_suffix = "" if resolved_operation == "edit" else f":op={resolved_operation}"
     return (
         f"{uploaded_file_token}:{chunk_size}:{paragraph_boundary_normalization_mode}:"
         f"{paragraph_boundary_ai_review_mode}:{relation_normalization_key}:lc={layout_artifact_cleanup_key}"
-        f"{structure_recognition_suffix}{operation_suffix}"
+        f"{structure_recognition_suffix}{structure_recovery_suffix}{operation_suffix}"
     )
 
 
@@ -1052,6 +1402,18 @@ def _prepare_document_for_processing(
                         "conversion_backend": conversion_backend,
                     },
                 )
+    document_map = _run_document_map_stage(
+        paragraphs=paragraphs,
+        image_assets=image_assets,
+        app_config=app_config,
+        progress_callback=progress_callback,
+        normalization_report=normalization_report,
+        relation_report=relation_report,
+        cleanup_report=cleanup_report,
+        structure_repair_report=structure_repair_report,
+        source_format=source_format,
+        conversion_backend=conversion_backend,
+    )
     structure_ai_attempted = should_run_ai
     structure_map, structure_summary = (
         _run_structure_recognition(
@@ -1062,6 +1424,7 @@ def _prepare_document_for_processing(
             normalization_report=normalization_report,
             relation_report=relation_report,
             cleanup_report=cleanup_report,
+            document_map=document_map,
             source_format=source_format,
             conversion_backend=conversion_backend,
         )
@@ -1276,6 +1639,7 @@ def _prepare_document_for_processing(
         relation_report=relation_report,
         cleanup_report=cleanup_report,
         structure_repair_report=structure_repair_report,
+        document_map=document_map,
         structure_map=structure_map,
         structure_recognition_summary=structure_summary,
         structure_validation_report=structure_validation_report,
@@ -1336,6 +1700,7 @@ def _clone_prepared_document(data: PreparedDocumentData, prepared_source_key: st
         relation_report=deepcopy(data.relation_report),
         cleanup_report=deepcopy(data.cleanup_report),
         structure_repair_report=deepcopy(data.structure_repair_report),
+        document_map=deepcopy(data.document_map),
         structure_map=deepcopy(data.structure_map),
         structure_recognition_summary=data.structure_recognition_summary,
         structure_validation_report=deepcopy(data.structure_validation_report),
@@ -1405,6 +1770,8 @@ def clear_preparation_cache(*, session_state=None, clear_shared: bool = False) -
     if clear_shared:
         with _shared_preparation_cache_lock:
             _shared_preparation_cache.clear()
+        with _document_map_cache_lock:
+            _document_map_cache.clear()
 
 
 def prepare_document_for_processing(
@@ -1451,6 +1818,12 @@ def prepare_document_for_processing(
         layout_artifact_cleanup_key=layout_cleanup_key,
         structure_recognition_enabled=bool(resolved_config.get("structure_recognition_enabled", False)),
         structure_recognition_mode=str(resolved_config.get("structure_recognition_mode", "") or ""),
+        structure_recovery_enabled=bool(resolved_config.get("structure_recovery_enabled", False)),
+        structure_recovery_mode=str(resolved_config.get("structure_recovery_mode", "ai_first") or "ai_first"),
+        structure_recovery_coordinate_schema_version=int(
+            resolved_config.get("structure_recovery_coordinate_schema_version", STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION)
+            or STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION
+        ),
         structure_validation_enabled=bool(resolved_config.get("structure_validation_enabled", True)),
     )
     cached, in_flight, cache_level = _read_or_reserve_cached_prepared_document(

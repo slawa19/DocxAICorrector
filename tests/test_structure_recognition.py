@@ -5,7 +5,7 @@ import threading
 import pytest
 
 import docxaicorrector.structure.recognition as structure_recognition
-from docxaicorrector.core.models import ParagraphClassification, ParagraphUnit, StructureMap
+from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, ParagraphClassification, ParagraphUnit, StructureMap
 from docxaicorrector.structure.recognition import StructureRecognitionProgress
 
 
@@ -75,6 +75,154 @@ def test_build_paragraph_descriptors_includes_richer_context_and_risk_flags():
     assert len(descriptors[3].text_preview) == 600
 
 
+def test_build_paragraph_descriptors_include_document_map_anchors_when_provided():
+    paragraphs = [
+        _paragraph(source_index=0, text="ГЛАВА 1", heading_level=1, heading_source="explicit"),
+        _paragraph(source_index=1, text="Основной текст"),
+    ]
+    paragraphs[0].logical_index = 10
+    paragraphs[1].logical_index = 11
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10, 11),
+    )
+
+    descriptors = structure_recognition.build_paragraph_descriptors(paragraphs, document_map=document_map)
+
+    assert descriptors[0].anchor_role == "heading"
+    assert descriptors[0].anchor_heading_level == 1
+    assert descriptors[0].anchor_confidence == "high"
+    assert descriptors[0].to_prompt_dict()["anchor_r"] == "heading"
+    assert descriptors[1].anchor_role is None
+
+
+def test_build_paragraph_descriptors_honors_custom_preview_chars():
+    paragraphs = [_paragraph(source_index=0, text="Очень длинный абзац " + ("текста " * 50))]
+
+    descriptors = structure_recognition.build_paragraph_descriptors(paragraphs, preview_chars=40)
+
+    assert len(descriptors[0].text_preview) == 40
+
+
+def test_iter_descriptor_windows_respects_token_budget_for_large_anchored_windows(monkeypatch):
+    descriptors = [
+        structure_recognition.ParagraphDescriptor(
+            index=index,
+            text_preview="text " * 80,
+            text_length=400,
+            style_name="Body Text",
+            is_bold=False,
+            is_centered=False,
+            is_all_caps=False,
+            font_size_pt=12.0,
+            has_numbering=False,
+            explicit_heading_level=None,
+            anchor_role="body",
+            anchor_heading_level=None,
+            anchor_confidence="low",
+        )
+        for index in range(5)
+    ]
+
+    monkeypatch.setattr(
+        structure_recognition,
+        "_estimate_descriptor_window_tokens",
+        lambda descriptors: 200 if len(descriptors) > 1 else 50,
+    )
+
+    windows = list(
+        structure_recognition._iter_descriptor_windows(
+            descriptors,
+            max_window_paragraphs=5,
+            overlap_paragraphs=0,
+            target_input_tokens=100,
+        )
+    )
+
+    assert [[descriptor.index for descriptor in window] for window in windows] == [[0], [1], [2], [3], [4]]
+
+
+def test_build_structure_map_forwards_document_map_anchors_into_descriptors(monkeypatch):
+    paragraphs = [_paragraph(source_index=0, text="ГЛАВА 1"), _paragraph(source_index=1, text="Основной текст")]
+    paragraphs[0].logical_index = 10
+    paragraphs[1].logical_index = 11
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10, 11),
+    )
+    captured = {}
+
+    def _fake_classify_descriptor_window_with_fallback(**kwargs):
+        captured["descriptors"] = list(kwargs["descriptors"])
+        return [(list(kwargs["descriptors"]), [])], 0
+
+    monkeypatch.setattr(
+        structure_recognition,
+        "_classify_descriptor_window_with_fallback",
+        _fake_classify_descriptor_window_with_fallback,
+    )
+
+    structure_recognition.build_structure_map(
+        paragraphs,
+        client=object(),
+        model="gpt-5-mini",
+        document_map=document_map,
+    )
+
+    assert captured["descriptors"][0].anchor_role == "heading"
+    assert captured["descriptors"][0].anchor_heading_level == 1
+    assert captured["descriptors"][0].anchor_confidence == "high"
+
+
+def test_build_structure_map_passes_target_input_tokens_to_window_builder(monkeypatch):
+    paragraphs = [_paragraph(source_index=0, text="ГЛАВА 1"), _paragraph(source_index=1, text="Основной текст")]
+    captured = {}
+
+    def _fake_iter_descriptor_windows(descriptors, *, max_window_paragraphs, overlap_paragraphs, target_input_tokens=None):
+        captured["max_window_paragraphs"] = max_window_paragraphs
+        captured["overlap_paragraphs"] = overlap_paragraphs
+        captured["target_input_tokens"] = target_input_tokens
+        return [list(descriptors)]
+
+    monkeypatch.setattr(structure_recognition, "_iter_descriptor_windows", _fake_iter_descriptor_windows)
+    monkeypatch.setattr(
+        structure_recognition,
+        "_classify_descriptor_window_with_fallback",
+        lambda **kwargs: ([(list(kwargs["descriptors"]), [])], 0),
+    )
+
+    structure_recognition.build_structure_map(
+        paragraphs,
+        client=object(),
+        model="gpt-5-mini",
+        max_window_paragraphs=3000,
+        overlap_paragraphs=0,
+        target_input_tokens=180000,
+    )
+
+    assert captured == {
+        "max_window_paragraphs": 3000,
+        "overlap_paragraphs": 0,
+        "target_input_tokens": 180000,
+    }
+
+
 def test_apply_structure_map_respects_explicit_and_adjacent_priority_rules():
     explicit_heading = _paragraph(source_index=0, text="Глава", role="heading", role_confidence="explicit", heading_level=1, heading_source="explicit")
     adjacent_caption = _paragraph(source_index=1, text="Рисунок 1", role="caption", role_confidence="adjacent", structural_role="caption")
@@ -107,6 +255,113 @@ def test_apply_structure_map_respects_explicit_and_adjacent_priority_rules():
     assert heuristic_heading.structural_role == "attribution"
     assert heuristic_heading.heading_level is None
     assert heuristic_heading.heading_source is None
+
+
+def test_apply_structure_map_preserves_conflicting_high_confidence_anchor():
+    paragraph = _paragraph(source_index=0, text="ГЛАВА 1")
+    paragraph.logical_index = 10
+    structure_map = StructureMap(
+        classifications={
+            0: ParagraphClassification(index=0, role="body", heading_level=None, confidence="high"),
+        },
+        model_used="gpt-4o-mini",
+        total_tokens_used=10,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+
+    structure_recognition.apply_structure_map(
+        [paragraph],
+        structure_map,
+        document_map=document_map,
+    )
+
+    assert paragraph.role == "body"
+    assert paragraph.role_confidence == "heuristic"
+
+
+def test_apply_structure_map_blocks_medium_anchor_body_to_heading_promotion():
+    paragraph = _paragraph(source_index=0, text="Введение")
+    paragraph.logical_index = 10
+    structure_map = StructureMap(
+        classifications={
+            0: ParagraphClassification(index=0, role="heading", heading_level=2, confidence="high"),
+        },
+        model_used="gpt-4o-mini",
+        total_tokens_used=10,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(),
+        paragraph_anchors={10: DocumentMapAnchor(role="body", heading_level=None, confidence="medium")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+
+    structure_recognition.apply_structure_map(
+        [paragraph],
+        structure_map,
+        document_map=document_map,
+    )
+
+    assert paragraph.role == "body"
+    assert paragraph.role_confidence == "heuristic"
+
+
+def test_apply_structure_map_allows_high_confidence_medium_anchor_refinement():
+    paragraph = _paragraph(source_index=0, text="Цитата")
+    paragraph.logical_index = 10
+    structure_map = StructureMap(
+        classifications={
+            0: ParagraphClassification(index=0, role="epigraph", heading_level=None, confidence="high"),
+        },
+        model_used="gpt-4o-mini",
+        total_tokens_used=10,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(),
+        paragraph_anchors={10: DocumentMapAnchor(role="body", heading_level=None, confidence="medium")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+
+    structure_recognition.apply_structure_map(
+        [paragraph],
+        structure_map,
+        min_confidence="high",
+        document_map=document_map,
+    )
+
+    assert paragraph.role == "body"
+    assert paragraph.structural_role == "epigraph"
+    assert paragraph.role_confidence == "ai"
 
 
 def test_iter_descriptor_windows_uses_overlap_for_large_inputs():

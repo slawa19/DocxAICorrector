@@ -314,6 +314,225 @@ def resolve_structure_recognition_settings(
     }
 
 
+def resolve_structure_recovery_settings(
+    *,
+    config_data: dict[str, object],
+    parse_optional_config_section_fn: Any,
+    parse_config_bool_fn: Any,
+    parse_choice_str_fn: Any,
+    parse_config_int_fn: Any,
+    parse_optional_config_str_fn: Any,
+    parse_bool_env_fn: Any,
+    parse_int_env_fn: Any,
+    parse_choice_env_fn: Any,
+    parse_optional_str_env_fn: Any,
+    clamp_int_fn: Any,
+    structure_recovery_mode_values: tuple[str, ...],
+    structure_recognition_min_confidence_values: tuple[str, ...],
+) -> dict[str, Any]:
+    structure_recovery_config = parse_optional_config_section_fn(config_data, "structure_recovery")
+    document_map_config = parse_optional_config_section_fn(
+        structure_recovery_config,
+        "document_map",
+        parent_name="structure_recovery",
+    )
+    anchored_classification_config = parse_optional_config_section_fn(
+        structure_recovery_config,
+        "anchored_classification",
+        parent_name="structure_recovery",
+    )
+    reconciliation_config = parse_optional_config_section_fn(
+        structure_recovery_config,
+        "reconciliation",
+        parent_name="structure_recovery",
+    )
+
+    structure_recovery_enabled = parse_config_bool_fn(structure_recovery_config, "enabled", False)
+    structure_recovery_mode = parse_choice_str_fn(
+        structure_recovery_config,
+        "mode",
+        "ai_first",
+        set(structure_recovery_mode_values),
+    )
+
+    document_map_enabled = parse_config_bool_fn(document_map_config, "enabled", False)
+    raw_document_map_model = document_map_config.get("model")
+    if raw_document_map_model is None:
+        document_map_model = ""
+    elif not isinstance(raw_document_map_model, str):
+        raise RuntimeError("Некорректное поле model в structure_recovery.document_map: ожидается строка")
+    else:
+        document_map_model = raw_document_map_model.strip()
+    document_map_timeout_seconds = parse_config_int_fn(document_map_config, "timeout_seconds", 120)
+    document_map_max_input_paragraphs = parse_config_int_fn(document_map_config, "max_input_paragraphs", 6000)
+    document_map_max_input_tokens = parse_config_int_fn(document_map_config, "max_input_tokens", 180000)
+    document_map_preview_chars = parse_config_int_fn(document_map_config, "preview_chars", 120)
+    document_map_cache_enabled = parse_config_bool_fn(document_map_config, "cache_enabled", True)
+    document_map_save_debug_artifacts = parse_config_bool_fn(document_map_config, "save_debug_artifacts", True)
+
+    anchored_max_window_paragraphs = parse_config_int_fn(
+        anchored_classification_config,
+        "max_window_paragraphs",
+        3000,
+    )
+    anchored_overlap_paragraphs = parse_config_int_fn(anchored_classification_config, "overlap_paragraphs", 0)
+    anchored_preview_chars = parse_config_int_fn(anchored_classification_config, "preview_chars", 1500)
+    anchored_target_input_tokens = parse_config_int_fn(
+        anchored_classification_config,
+        "target_input_tokens",
+        180000,
+    )
+    anchored_min_confidence = parse_choice_str_fn(
+        anchored_classification_config,
+        "min_confidence",
+        "medium",
+        set(structure_recognition_min_confidence_values),
+    )
+
+    reconciliation_targeted_enabled = parse_config_bool_fn(reconciliation_config, "targeted_enabled", False)
+    reconciliation_targeted_threshold = parse_config_int_fn(reconciliation_config, "targeted_threshold", 3)
+    reconciliation_targeted_max_paragraphs = parse_config_int_fn(reconciliation_config, "targeted_max_paragraphs", 60)
+    reconciliation_targeted_timeout_seconds = parse_config_int_fn(
+        reconciliation_config,
+        "targeted_timeout_seconds",
+        60,
+    )
+
+    structure_recovery_enabled = parse_bool_env_fn("DOCX_AI_STRUCTURE_RECOVERY_ENABLED", structure_recovery_enabled)
+    structure_recovery_mode = parse_choice_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_MODE",
+        default=structure_recovery_mode,
+        allowed_values=set(structure_recovery_mode_values),
+    )
+    document_map_enabled = parse_bool_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_DOCUMENT_MAP_ENABLED",
+        document_map_enabled,
+    )
+    document_map_model = parse_optional_str_env_fn("DOCX_AI_STRUCTURE_RECOVERY_DOCUMENT_MAP_MODEL") or document_map_model
+    document_map_timeout_seconds = parse_int_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_DOCUMENT_MAP_TIMEOUT_SECONDS",
+        document_map_timeout_seconds,
+    )
+    document_map_max_input_paragraphs = parse_int_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_DOCUMENT_MAP_MAX_INPUT_PARAGRAPHS",
+        document_map_max_input_paragraphs,
+    )
+    document_map_max_input_tokens = parse_int_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_DOCUMENT_MAP_MAX_INPUT_TOKENS",
+        document_map_max_input_tokens,
+    )
+    document_map_preview_chars = parse_int_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_DOCUMENT_MAP_PREVIEW_CHARS",
+        document_map_preview_chars,
+    )
+    document_map_cache_enabled = parse_bool_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_DOCUMENT_MAP_CACHE_ENABLED",
+        document_map_cache_enabled,
+    )
+    document_map_save_debug_artifacts = parse_bool_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_DOCUMENT_MAP_SAVE_DEBUG_ARTIFACTS",
+        document_map_save_debug_artifacts,
+    )
+
+    anchored_max_window_paragraphs = parse_int_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_ANCHORED_CLASSIFICATION_MAX_WINDOW_PARAGRAPHS",
+        anchored_max_window_paragraphs,
+    )
+    anchored_overlap_paragraphs = parse_int_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_ANCHORED_CLASSIFICATION_OVERLAP_PARAGRAPHS",
+        anchored_overlap_paragraphs,
+    )
+    anchored_preview_chars = parse_int_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_ANCHORED_CLASSIFICATION_PREVIEW_CHARS",
+        anchored_preview_chars,
+    )
+    anchored_target_input_tokens = parse_int_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_ANCHORED_CLASSIFICATION_TARGET_INPUT_TOKENS",
+        anchored_target_input_tokens,
+    )
+    anchored_min_confidence = parse_choice_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_ANCHORED_CLASSIFICATION_MIN_CONFIDENCE",
+        default=anchored_min_confidence,
+        allowed_values=set(structure_recognition_min_confidence_values),
+    )
+
+    reconciliation_targeted_enabled = parse_bool_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_RECONCILIATION_TARGETED_ENABLED",
+        reconciliation_targeted_enabled,
+    )
+    reconciliation_targeted_threshold = parse_int_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_RECONCILIATION_TARGETED_THRESHOLD",
+        reconciliation_targeted_threshold,
+    )
+    reconciliation_targeted_max_paragraphs = parse_int_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_RECONCILIATION_TARGETED_MAX_PARAGRAPHS",
+        reconciliation_targeted_max_paragraphs,
+    )
+    reconciliation_targeted_timeout_seconds = parse_int_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_RECONCILIATION_TARGETED_TIMEOUT_SECONDS",
+        reconciliation_targeted_timeout_seconds,
+    )
+
+    return {
+        "structure_recovery_enabled": structure_recovery_enabled,
+        "structure_recovery_mode": structure_recovery_mode,
+        "structure_recovery_coordinate_schema_version": 1,
+        "structure_recovery_document_map_enabled": document_map_enabled,
+        "structure_recovery_document_map_model": document_map_model,
+        "structure_recovery_document_map_timeout_seconds": clamp_int_fn(document_map_timeout_seconds, minimum=1, maximum=600),
+        "structure_recovery_document_map_max_input_paragraphs": clamp_int_fn(
+            document_map_max_input_paragraphs,
+            minimum=100,
+            maximum=20000,
+        ),
+        "structure_recovery_document_map_max_input_tokens": clamp_int_fn(
+            document_map_max_input_tokens,
+            minimum=1000,
+            maximum=400000,
+        ),
+        "structure_recovery_document_map_preview_chars": clamp_int_fn(document_map_preview_chars, minimum=40, maximum=400),
+        "structure_recovery_document_map_cache_enabled": document_map_cache_enabled,
+        "structure_recovery_document_map_save_debug_artifacts": document_map_save_debug_artifacts,
+        "structure_recovery_anchored_classification_max_window_paragraphs": clamp_int_fn(
+            anchored_max_window_paragraphs,
+            minimum=100,
+            maximum=6000,
+        ),
+        "structure_recovery_anchored_classification_overlap_paragraphs": clamp_int_fn(
+            anchored_overlap_paragraphs,
+            minimum=0,
+            maximum=500,
+        ),
+        "structure_recovery_anchored_classification_preview_chars": clamp_int_fn(
+            anchored_preview_chars,
+            minimum=200,
+            maximum=4000,
+        ),
+        "structure_recovery_anchored_classification_target_input_tokens": clamp_int_fn(
+            anchored_target_input_tokens,
+            minimum=1000,
+            maximum=400000,
+        ),
+        "structure_recovery_anchored_classification_min_confidence": anchored_min_confidence,
+        "structure_recovery_reconciliation_targeted_enabled": reconciliation_targeted_enabled,
+        "structure_recovery_reconciliation_targeted_threshold": clamp_int_fn(
+            reconciliation_targeted_threshold,
+            minimum=1,
+            maximum=20,
+        ),
+        "structure_recovery_reconciliation_targeted_max_paragraphs": clamp_int_fn(
+            reconciliation_targeted_max_paragraphs,
+            minimum=10,
+            maximum=200,
+        ),
+        "structure_recovery_reconciliation_targeted_timeout_seconds": clamp_int_fn(
+            reconciliation_targeted_timeout_seconds,
+            minimum=1,
+            maximum=300,
+        ),
+    }
+
+
 def resolve_structure_validation_settings(
     *,
     structure_validation_config: dict[str, object],

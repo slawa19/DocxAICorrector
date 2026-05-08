@@ -5,7 +5,7 @@ from copy import deepcopy
 from collections.abc import Mapping, Sequence
 
 from docxaicorrector.document.roles import detect_explicit_list_kind, has_heading_text_signal
-from docxaicorrector.core.models import ParagraphUnit, StructureRepairDecision, StructureRepairReport
+from docxaicorrector.core.models import EmbeddedStructureHint, ParagraphUnit, StructureRepairDecision, StructureRepairReport
 
 
 _TOC_HEADER_VALUES = {"contents", "table of contents", "содержание"}
@@ -30,8 +30,11 @@ def repair_pdf_derived_structure(
     paragraphs: Sequence[ParagraphUnit],
     *,
     app_config: Mapping[str, object] | None = None,
+    structure_recovery_enabled: bool = False,
+    structure_recovery_mode: str = "legacy",
 ) -> tuple[list[ParagraphUnit], StructureRepairReport]:
     repaired = [deepcopy(paragraph) for paragraph in paragraphs]
+    signal_only = structure_recovery_enabled and structure_recovery_mode == "ai_first"
     decisions: list[StructureRepairDecision] = []
     repaired_bullet_items = 0
     repaired_numbered_items = 0
@@ -45,9 +48,10 @@ def repair_pdf_derived_structure(
         decisions=decisions,
         repaired_bullet_items=repaired_bullet_items,
         repaired_numbered_items=repaired_numbered_items,
+        signal_only=signal_only,
     )
 
-    toc_regions = _find_bounded_toc_regions(repaired)
+    toc_regions = _find_bounded_toc_regions(repaired, signal_only=signal_only)
     toc_title_variants: dict[str, str] = {}
     for start, end in toc_regions:
         bounded_toc_regions += 1
@@ -71,6 +75,7 @@ def repair_pdf_derived_structure(
         repaired,
         toc_title_variants=toc_title_variants,
         decisions=decisions,
+        signal_only=signal_only,
     )
     toc_body_boundary_repairs += split_boundary_repairs
     heading_candidates_from_toc += split_heading_candidates
@@ -80,12 +85,13 @@ def repair_pdf_derived_structure(
         decisions=decisions,
         repaired_bullet_items=repaired_bullet_items,
         repaired_numbered_items=repaired_numbered_items,
+        signal_only=signal_only,
     )
 
     toc_titles = set(toc_title_variants)
     if toc_titles:
         for paragraph in repaired:
-            if paragraph.structural_role in {"toc_header", "toc_entry"}:
+            if _effective_structural_role(paragraph) in {"toc_header", "toc_entry"}:
                 continue
             if paragraph.role == "heading":
                 continue
@@ -94,10 +100,7 @@ def repair_pdf_derived_structure(
                 continue
             if _looks_like_citation_or_marker(paragraph.text):
                 continue
-            paragraph.role = "heading"
-            paragraph.structural_role = "heading"
-            paragraph.heading_source = "heuristic"
-            paragraph.heading_level = paragraph.heading_level or 2
+            _apply_or_hint_heading_candidate(paragraph, signal_only=signal_only)
             heading_candidates_from_toc += 1
             decisions.append(
                 StructureRepairDecision(
@@ -139,6 +142,7 @@ def _merge_list_fragments(
     decisions: list[StructureRepairDecision],
     repaired_bullet_items: int,
     repaired_numbered_items: int,
+    signal_only: bool,
 ) -> tuple[list[ParagraphUnit], int, int]:
     repaired = list(paragraphs)
     index = 0
@@ -147,6 +151,21 @@ def _merge_list_fragments(
         following = repaired[index + 1]
         marker_kind = _isolated_marker_kind(current)
         if marker_kind is not None and _can_merge_marker_with_following(current, following):
+            if signal_only:
+                if following.heuristic_role_hint == "list" and following.heuristic_list_kind_hint == marker_kind:
+                    index += 1
+                    continue
+                _apply_or_hint_list_candidate(following, list_kind=marker_kind, signal_only=True)
+                decisions.append(
+                    StructureRepairDecision(
+                        action="hint_isolated_list_marker",
+                        paragraph_indexes=(current.source_index, following.source_index),
+                        reason=f"isolated_{marker_kind}_marker_followed_by_body",
+                        details={"hint_text_preview": following.text[:120]},
+                    )
+                )
+                index += 1
+                continue
             merged = _merge_marker_with_following(current, following, marker_kind=marker_kind)
             repaired[index : index + 2] = [merged]
             decisions.append(
@@ -165,6 +184,18 @@ def _merge_list_fragments(
 
         fragment_kind = _split_list_lead_fragment_kind(current)
         if fragment_kind is None or not _can_merge_marker_with_following(current, following):
+            index += 1
+            continue
+        if signal_only:
+            _apply_or_hint_list_candidate(current, list_kind=fragment_kind, signal_only=True)
+            decisions.append(
+                StructureRepairDecision(
+                    action="hint_split_list_lead_fragment",
+                    paragraph_indexes=(current.source_index, following.source_index),
+                    reason=f"split_{fragment_kind}_item_lead_followed_by_body",
+                    details={"hint_text_preview": current.text[:120]},
+                )
+            )
             index += 1
             continue
         merged = _merge_split_list_lead_with_following(current, following, marker_kind=fragment_kind)
@@ -187,6 +218,8 @@ def _merge_list_fragments(
 def _split_list_lead_fragment_kind(paragraph: ParagraphUnit) -> str | None:
     if paragraph.role == "heading":
         return None
+    if paragraph.heuristic_role_hint == "list" or paragraph.heuristic_list_kind_hint is not None:
+        return None
     text = str(paragraph.text or "").strip()
     explicit_kind = detect_explicit_list_kind(text)
     if explicit_kind is None:
@@ -204,7 +237,7 @@ def _split_list_lead_fragment_kind(paragraph: ParagraphUnit) -> str | None:
 def _can_merge_marker_with_following(current: ParagraphUnit, following: ParagraphUnit) -> bool:
     if following.role in {"heading", "image", "table", "caption"}:
         return False
-    if following.structural_role in {"toc_header", "toc_entry", "caption"}:
+    if _effective_structural_role(following) in {"toc_header", "toc_entry", "caption"}:
         return False
     if not str(following.text or "").strip():
         return False
@@ -249,7 +282,7 @@ def _merge_split_list_lead_with_following(current: ParagraphUnit, following: Par
     return merged
 
 
-def _find_bounded_toc_regions(paragraphs: Sequence[ParagraphUnit]) -> list[tuple[int, int]]:
+def _find_bounded_toc_regions(paragraphs: Sequence[ParagraphUnit], *, signal_only: bool) -> list[tuple[int, int]]:
     regions: list[tuple[int, int]] = []
     index = 0
     while index < len(paragraphs):
@@ -263,21 +296,29 @@ def _find_bounded_toc_regions(paragraphs: Sequence[ParagraphUnit]) -> list[tuple
             allow_plain_entry=look_ahead > index + 1,
         ):
             entry = paragraphs[look_ahead]
-            entry.role = "body"
-            entry.structural_role = "toc_entry"
-            entry.heading_level = None
-            entry.heading_source = None
+            _apply_or_hint_toc_structural_role(entry, structural_role="toc_entry", signal_only=signal_only)
             look_ahead += 1
         if look_ahead - index >= 3:
-            paragraph.role = "body"
-            paragraph.structural_role = "toc_header"
-            paragraph.heading_level = None
-            paragraph.heading_source = None
+            _apply_or_hint_toc_structural_role(paragraph, structural_role="toc_header", signal_only=signal_only)
             regions.append((index, look_ahead - 1))
             index = look_ahead
             continue
         index += 1
     return regions
+
+
+def _apply_or_hint_toc_structural_role(paragraph: ParagraphUnit, *, structural_role: str, signal_only: bool) -> None:
+    if signal_only:
+        paragraph.heuristic_structural_role_hint = structural_role
+        return
+    paragraph.role = "body"
+    paragraph.structural_role = structural_role
+    paragraph.heading_level = None
+    paragraph.heading_source = None
+
+
+def _effective_structural_role(paragraph: ParagraphUnit) -> str:
+    return paragraph.heuristic_structural_role_hint or paragraph.structural_role
 
 
 def _collect_toc_title_variants(paragraphs: Sequence[ParagraphUnit], *, start: int, end: int) -> dict[str, str]:
@@ -311,6 +352,7 @@ def _split_compound_toc_aligned_paragraphs(
     *,
     toc_title_variants: Mapping[str, str],
     decisions: list[StructureRepairDecision],
+    signal_only: bool,
 ) -> tuple[list[ParagraphUnit], int, int]:
     if not toc_title_variants:
         return list(paragraphs), 0, 0
@@ -319,17 +361,25 @@ def _split_compound_toc_aligned_paragraphs(
     split_heading_candidates = 0
     repaired: list[ParagraphUnit] = []
     for paragraph in paragraphs:
-        split_result = _split_toc_aligned_compound_paragraph(paragraph, toc_title_variants=toc_title_variants)
+        split_result = _split_toc_aligned_compound_paragraph(
+            paragraph,
+            toc_title_variants=toc_title_variants,
+            signal_only=signal_only,
+        )
         if split_result is None:
             repaired.append(paragraph)
             continue
         split_paragraphs, boundary_repairs, heading_candidates = split_result
-        repaired.extend(split_paragraphs)
+        if signal_only:
+            paragraph.heuristic_embedded_structure_hints = _build_embedded_structure_hints(split_paragraphs)
+            repaired.append(paragraph)
+        else:
+            repaired.extend(split_paragraphs)
         split_boundary_repairs += boundary_repairs
         split_heading_candidates += heading_candidates
         decisions.append(
             StructureRepairDecision(
-                action="split_compound_toc_aligned_paragraph",
+                action="hint_compound_toc_aligned_paragraph" if signal_only else "split_compound_toc_aligned_paragraph",
                 paragraph_indexes=(paragraph.source_index,),
                 reason="toc_or_heading_fragment_embedded_inside_single_paragraph",
                 details={"split_texts": [item.text[:120] for item in split_paragraphs]},
@@ -338,12 +388,28 @@ def _split_compound_toc_aligned_paragraphs(
     return repaired, split_boundary_repairs, split_heading_candidates
 
 
+def _build_embedded_structure_hints(split_paragraphs: Sequence[ParagraphUnit]) -> list[EmbeddedStructureHint]:
+    hints: list[EmbeddedStructureHint] = []
+    for paragraph in split_paragraphs:
+        hints.append(
+            EmbeddedStructureHint(
+                text=paragraph.text,
+                role=paragraph.heuristic_role_hint or paragraph.role,
+                structural_role=paragraph.heuristic_structural_role_hint or paragraph.structural_role,
+                heading_level=paragraph.heuristic_heading_level_hint or paragraph.heading_level,
+                list_kind=paragraph.heuristic_list_kind_hint or paragraph.list_kind,
+            )
+        )
+    return hints
+
+
 def _split_toc_aligned_compound_paragraph(
     paragraph: ParagraphUnit,
     *,
     toc_title_variants: Mapping[str, str],
+    signal_only: bool,
 ) -> tuple[list[ParagraphUnit], int, int] | None:
-    if paragraph.structural_role in {"toc_header", "toc_entry", "image", "table", "caption"}:
+    if _effective_structural_role(paragraph) in {"toc_header", "toc_entry", "image", "table", "caption"}:
         return None
     if paragraph.role == "list":
         return None
@@ -360,7 +426,7 @@ def _split_toc_aligned_compound_paragraph(
         toc_text = compound_match.group("toc").strip()
         rest_text = compound_match.group("rest").strip()
         if _is_toc_candidate_text(toc_text) and rest_text:
-            toc_paragraph = _clone_as_toc_entry(paragraph, toc_text)
+            toc_paragraph = _clone_as_toc_entry(paragraph, toc_text, signal_only=signal_only)
             pieces.append(toc_paragraph)
             text = rest_text
             boundary_repairs += 1
@@ -374,12 +440,26 @@ def _split_toc_aligned_compound_paragraph(
             return None
         text = anchored_text
         if before_title:
-            pieces.append(_clone_with_role(paragraph, before_title, structural_role=_infer_structural_role_for_prefix(before_title)))
+            pieces.append(
+                _clone_with_role(
+                    paragraph,
+                    before_title,
+                    structural_role=_infer_structural_role_for_prefix(before_title),
+                    signal_only=signal_only,
+                )
+            )
 
     title_match = _match_toc_title_at_start(text, toc_title_variants)
     if title_match is None:
         if pieces:
-            pieces.append(_clone_with_role(paragraph, text, structural_role=_infer_structural_role_for_prefix(text)))
+            pieces.append(
+                _clone_with_role(
+                    paragraph,
+                    text,
+                    structural_role=_infer_structural_role_for_prefix(text),
+                    signal_only=signal_only,
+                )
+            )
             return pieces, boundary_repairs, heading_candidates
         return None
 
@@ -387,20 +467,27 @@ def _split_toc_aligned_compound_paragraph(
     if not remainder:
         return None if not pieces else (pieces, boundary_repairs, heading_candidates)
 
-    pieces.append(_clone_as_heading(paragraph, title_text))
+    pieces.append(_clone_as_heading(paragraph, title_text, signal_only=signal_only))
     heading_candidates += 1
     remainder = remainder.strip()
     remainder = re.sub(r"^[\s:;?!,]+", "", remainder).strip()
     if not remainder:
         return pieces, boundary_repairs, heading_candidates
     if _ISOLATED_NUMERIC_MARKER_PATTERN.fullmatch(remainder):
-        pieces.append(_clone_with_role(paragraph, remainder, structural_role="body"))
+        pieces.append(_clone_with_role(paragraph, remainder, structural_role="body", signal_only=signal_only))
         return pieces, boundary_repairs, heading_candidates
     explicit_kind = detect_explicit_list_kind(remainder)
     if explicit_kind is not None:
-        pieces.append(_clone_as_list(paragraph, remainder, list_kind=explicit_kind))
+        pieces.append(_clone_as_list(paragraph, remainder, list_kind=explicit_kind, signal_only=signal_only))
         return pieces, boundary_repairs, heading_candidates
-    pieces.append(_clone_with_role(paragraph, remainder, structural_role=_infer_structural_role_for_prefix(remainder)))
+    pieces.append(
+        _clone_with_role(
+            paragraph,
+            remainder,
+            structural_role=_infer_structural_role_for_prefix(remainder),
+            signal_only=signal_only,
+        )
+    )
     return pieces, boundary_repairs, heading_candidates
 
 
@@ -448,48 +535,71 @@ def _match_normalized_toc_title_prefix(text: str, toc_title_variants: Mapping[st
     return None
 
 
-def _clone_with_role(paragraph: ParagraphUnit, text: str, *, structural_role: str) -> ParagraphUnit:
+def _clone_with_role(paragraph: ParagraphUnit, text: str, *, structural_role: str, signal_only: bool) -> ParagraphUnit:
     clone = deepcopy(paragraph)
     clone.text = text.strip()
     clone.role = "body"
-    clone.structural_role = structural_role
+    clone.structural_role = "body" if signal_only else structural_role
+    clone.heuristic_structural_role_hint = structural_role if signal_only and structural_role != "body" else None
     clone.heading_level = None
     clone.heading_source = None
     clone.list_kind = None
     return clone
 
 
-def _clone_as_toc_entry(paragraph: ParagraphUnit, text: str) -> ParagraphUnit:
+def _clone_as_toc_entry(paragraph: ParagraphUnit, text: str, *, signal_only: bool) -> ParagraphUnit:
     clone = deepcopy(paragraph)
     clone.text = text.strip()
-    clone.role = "body"
-    clone.structural_role = "toc_entry"
-    clone.heading_level = None
-    clone.heading_source = None
+    _apply_or_hint_toc_structural_role(clone, structural_role="toc_entry", signal_only=signal_only)
     clone.list_kind = None
     return clone
 
 
-def _clone_as_heading(paragraph: ParagraphUnit, text: str) -> ParagraphUnit:
+def _clone_as_heading(paragraph: ParagraphUnit, text: str, *, signal_only: bool) -> ParagraphUnit:
     clone = deepcopy(paragraph)
     clone.text = text.strip()
-    clone.role = "heading"
-    clone.structural_role = "heading"
-    clone.heading_source = "heuristic"
-    clone.heading_level = clone.heading_level or 2
+    _apply_or_hint_heading_candidate(clone, signal_only=signal_only)
     clone.list_kind = None
     return clone
 
 
-def _clone_as_list(paragraph: ParagraphUnit, text: str, *, list_kind: str) -> ParagraphUnit:
+def _apply_or_hint_heading_candidate(paragraph: ParagraphUnit, *, signal_only: bool) -> None:
+    if signal_only:
+        paragraph.heuristic_role_hint = "heading"
+        paragraph.heuristic_heading_level_hint = paragraph.heading_level or 2
+        paragraph.role = "body"
+        paragraph.structural_role = "body"
+        paragraph.heading_source = None
+        paragraph.heading_level = None
+        return
+    paragraph.role = "heading"
+    paragraph.structural_role = "heading"
+    paragraph.heading_source = "heuristic"
+    paragraph.heading_level = paragraph.heading_level or 2
+
+
+def _clone_as_list(paragraph: ParagraphUnit, text: str, *, list_kind: str, signal_only: bool) -> ParagraphUnit:
     clone = deepcopy(paragraph)
     clone.text = text.strip()
-    clone.role = "list"
-    clone.structural_role = "list"
-    clone.list_kind = list_kind
-    clone.heading_level = None
-    clone.heading_source = None
+    _apply_or_hint_list_candidate(clone, list_kind=list_kind, signal_only=signal_only)
     return clone
+
+
+def _apply_or_hint_list_candidate(paragraph: ParagraphUnit, *, list_kind: str, signal_only: bool) -> None:
+    if signal_only:
+        paragraph.heuristic_role_hint = "list"
+        paragraph.heuristic_list_kind_hint = list_kind
+        paragraph.role = "body"
+        paragraph.structural_role = "body"
+        paragraph.list_kind = None
+        paragraph.heading_level = None
+        paragraph.heading_source = None
+        return
+    paragraph.role = "list"
+    paragraph.structural_role = "list"
+    paragraph.list_kind = list_kind
+    paragraph.heading_level = None
+    paragraph.heading_source = None
 
 
 def _infer_structural_role_for_prefix(text: str) -> str:

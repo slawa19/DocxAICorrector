@@ -37,6 +37,30 @@ def test_removes_standalone_page_numbers_and_keeps_guardrails():
     assert {decision.reason for decision in report.decisions if decision.action == "remove"} == {"page_number_pattern"}
 
 
+def test_ai_first_signal_mode_flags_page_numbers_without_removing_paragraphs():
+    paragraphs = [
+        _paragraph("1", source_index=0),
+        _paragraph("Page 4", source_index=1),
+        _paragraph("Chapter 12", source_index=2),
+    ]
+
+    cleaned, report = clean_paragraph_layout_artifacts(
+        paragraphs,
+        structure_recovery_enabled=True,
+        structure_recovery_mode="ai_first",
+    )
+
+    assert [paragraph.text for paragraph in cleaned] == ["1", "Page 4", "Chapter 12"]
+    assert report.cleanup_mode == "flag"
+    assert report.cleaned_paragraph_count == 3
+    assert report.removed_paragraph_count == 0
+    assert report.flagged_page_number_count == 2
+    assert cleaned[0].is_likely_page_number is True
+    assert cleaned[1].is_likely_page_number is True
+    assert cleaned[2].is_likely_page_number is False
+    assert {decision.action for decision in report.decisions[:2]} == {"flag"}
+
+
 def test_removes_repeated_safe_artifacts_but_keeps_prose_and_low_repeat():
     paragraphs = [
         _paragraph("Are We In the End Times?", role="heading", structural_role="heading", source_index=0),
@@ -71,6 +95,33 @@ def test_removes_repeated_safe_artifacts_but_keeps_prose_and_low_repeat():
         "repeated_boilerplate_token",
         "repeated_title_header",
     }
+
+
+def test_ai_first_signal_mode_flags_repeated_artifacts_without_removal():
+    paragraphs = [
+        _paragraph("Are We In the End Times?", role="heading", structural_role="heading", source_index=0),
+        _paragraph("www.example.com", source_index=1),
+        _paragraph("www.example.com", source_index=2),
+        _paragraph("www.example.com", source_index=3),
+    ]
+
+    cleaned, report = clean_paragraph_layout_artifacts(
+        paragraphs,
+        structure_recovery_enabled=True,
+        structure_recovery_mode="ai_first",
+    )
+
+    assert [paragraph.text for paragraph in cleaned] == [
+        "Are We In the End Times?",
+        "www.example.com",
+        "www.example.com",
+        "www.example.com",
+    ]
+    assert report.cleanup_mode == "flag"
+    assert report.flagged_repeated_artifact_count == 3
+    assert report.removed_repeated_artifact_count == 0
+    assert [paragraph.is_repeated_across_pages for paragraph in cleaned] == [False, True, True, True]
+    assert {decision.action for decision in report.decisions[1:]} == {"flag"}
 
 
 def test_disabled_mode_returns_original_list_and_report():

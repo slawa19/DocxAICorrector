@@ -152,6 +152,10 @@ class LayoutArtifactCleanupReport:
     cleanup_applied: bool = False
     skipped_reason: str | None = None
     error_code: str | None = None
+    cleanup_mode: str = "remove"
+    flagged_page_number_count: int = 0
+    flagged_repeated_artifact_count: int = 0
+    flagged_empty_or_whitespace_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -194,6 +198,7 @@ class ParagraphUnit:
     list_abstract_num_xml: str | None = None
     paragraph_id: str = ""
     source_index: int = -1
+    logical_index: int = -1
     structural_role: str = "body"
     role_confidence: str = "heuristic"
     style_name: str = ""
@@ -209,6 +214,13 @@ class ParagraphUnit:
     segment_id: str | None = None
     segment_level: int | None = None
     segment_boundary_before: bool = False
+    heuristic_role_hint: str | None = None
+    heuristic_structural_role_hint: str | None = None
+    heuristic_list_kind_hint: str | None = None
+    heuristic_heading_level_hint: int | None = None
+    heuristic_embedded_structure_hints: list["EmbeddedStructureHint"] = field(default_factory=list)
+    is_repeated_across_pages: bool = False
+    is_likely_page_number: bool = False
 
     @property
     def rendered_text(self) -> str:
@@ -247,9 +259,12 @@ class ParagraphDescriptor:
     isolated_marker: bool = False
     toc_candidate: bool = False
     scripture_reference_candidate: bool = False
+    anchor_role: str | None = None
+    anchor_heading_level: int | None = None
+    anchor_confidence: str | None = None
 
     def to_prompt_dict(self) -> dict[str, object]:
-        return {
+        payload = {
             "i": self.index,
             "t": self.text_preview,
             "len": self.text_length,
@@ -266,6 +281,20 @@ class ParagraphDescriptor:
             "toc": self.toc_candidate,
             "scr": self.scripture_reference_candidate,
         }
+        if self.anchor_role is not None or self.anchor_heading_level is not None or self.anchor_confidence is not None:
+            payload["anchor_r"] = self.anchor_role
+            payload["anchor_l"] = self.anchor_heading_level
+            payload["anchor_c"] = self.anchor_confidence
+        return payload
+
+
+@dataclass(frozen=True)
+class EmbeddedStructureHint:
+    text: str
+    role: str = "body"
+    structural_role: str = "body"
+    heading_level: int | None = None
+    list_kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -346,6 +375,64 @@ class StructureMap:
     @property
     def heading_count(self) -> int:
         return sum(1 for classification in self.classifications.values() if classification.role == "heading")
+
+
+@dataclass(frozen=True)
+class DocumentMapOutlineEntry:
+    title: str
+    level: int
+    logical_index: int
+    confidence: str
+    evidence: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class DocumentMapTocEntry:
+    title: str
+    target_level: int
+    candidate_body_logical_index: int | None
+    confidence: str
+
+
+@dataclass(frozen=True)
+class DocumentMapTocRegion:
+    start_logical_index: int
+    end_logical_index: int
+    header_logical_index: int | None
+    entries: tuple["DocumentMapTocEntry", ...] = ()
+    confidence: str = "low"
+
+
+@dataclass(frozen=True)
+class DocumentMapReviewZone:
+    start_logical_index: int
+    end_logical_index: int
+    reason: str
+    severity: str
+
+
+@dataclass(frozen=True)
+class DocumentMapAnchor:
+    role: str
+    heading_level: int | None
+    confidence: str
+
+
+@dataclass
+class DocumentMap:
+    body_start_logical_index: int
+    toc_region: "DocumentMapTocRegion | None"
+    outline: tuple["DocumentMapOutlineEntry", ...] = ()
+    paragraph_anchors: dict[int, "DocumentMapAnchor"] = field(default_factory=dict)
+    review_zones: tuple["DocumentMapReviewZone", ...] = ()
+    model_used: str = ""
+    total_tokens_used: int = 0
+    processing_time_seconds: float = 0.0
+    sampled: bool = False
+    sampled_logical_indexes: tuple[int, ...] = ()
+
+    def get_anchor(self, logical_index: int) -> "DocumentMapAnchor | None":
+        return self.paragraph_anchors.get(logical_index)
 
 
 @dataclass

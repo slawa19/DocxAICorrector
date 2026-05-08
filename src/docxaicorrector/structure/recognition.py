@@ -15,7 +15,7 @@ from typing import Any, Callable, Protocol, cast
 from docxaicorrector.core.constants import PROMPTS_DIR
 from docxaicorrector.generation._generation import normalize_model_output
 from docxaicorrector.image.shared import call_responses_create_with_retry
-from docxaicorrector.core.models import ParagraphClassification, ParagraphDescriptor, ParagraphUnit, StructureMap
+from docxaicorrector.core.models import DocumentMap, ParagraphClassification, ParagraphDescriptor, ParagraphUnit, StructureMap
 from docxaicorrector.generation.openai_response_utils import collect_response_text_traversal
 
 
@@ -25,6 +25,8 @@ _PIPELINE_BODY_STRUCTURAL_ROLES = {"epigraph", "attribution", "toc_entry", "toc_
 _VALID_AI_ROLES = {"heading", "body", "caption", "epigraph", "attribution", "toc_entry", "toc_header", "dedication", "list"}
 _VALID_AI_CONFIDENCES = {"high", "medium", "low"}
 _DESCRIPTOR_PREVIEW_CHARS = 600
+STRUCTURE_RECOGNITION_PROMPT_VERSION = 1
+STRUCTURE_RECOGNITION_DESCRIPTOR_SCHEMA_VERSION = 1
 _TIMEOUT_ERROR_NAMES = {"APITimeoutError", "TimeoutError"}
 _SCRIPTURE_REFERENCE_PATTERN = re.compile(
     r"\b(?:[1-3]\s*)?(?:Genesis|Exodus|Leviticus|Numbers|Deuteronomy|Joshua|Judges|Ruth|"
@@ -47,11 +49,12 @@ _SCRIPTURE_REFERENCE_PATTERN = re.compile(
 )
 
 
-def _descriptor_preview_text(text: str) -> str:
+def _descriptor_preview_text(text: str, *, preview_chars: int = _DESCRIPTOR_PREVIEW_CHARS) -> str:
     stripped = text.strip()
-    if len(stripped) <= _DESCRIPTOR_PREVIEW_CHARS:
+    preview_limit = max(1, int(preview_chars or _DESCRIPTOR_PREVIEW_CHARS))
+    if len(stripped) <= preview_limit:
         return stripped
-    return stripped[:_DESCRIPTOR_PREVIEW_CHARS].rstrip()
+    return stripped[:preview_limit].rstrip()
 
 
 def _is_isolated_marker_text(text: str) -> bool:
@@ -140,21 +143,28 @@ def _load_system_prompt() -> str:
     return SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
 
 
-def build_paragraph_descriptors(paragraphs: list[ParagraphUnit]) -> list[ParagraphDescriptor]:
+def build_paragraph_descriptors(
+    paragraphs: list[ParagraphUnit],
+    *,
+    document_map: DocumentMap | None = None,
+    preview_chars: int = _DESCRIPTOR_PREVIEW_CHARS,
+) -> list[ParagraphDescriptor]:
     descriptors: list[ParagraphDescriptor] = []
     nonempty_paragraphs = [paragraph for paragraph in paragraphs if str(paragraph.text or "").strip()]
     for index, paragraph in enumerate(nonempty_paragraphs):
         text = str(paragraph.text or "").strip()
         if not text:
             continue
-        preview = _descriptor_preview_text(text)
+        logical_index = int(getattr(paragraph, "logical_index", paragraph.source_index))
+        anchor = document_map.get_anchor(logical_index) if document_map is not None else None
+        preview = _descriptor_preview_text(text, preview_chars=preview_chars)
         alpha_chars = [char for char in preview if char.isalpha()]
         context_before = ""
         context_after = ""
         if index > 0:
-            context_before = _descriptor_preview_text(str(nonempty_paragraphs[index - 1].text or ""))
+            context_before = _descriptor_preview_text(str(nonempty_paragraphs[index - 1].text or ""), preview_chars=preview_chars)
         if index + 1 < len(nonempty_paragraphs):
-            context_after = _descriptor_preview_text(str(nonempty_paragraphs[index + 1].text or ""))
+            context_after = _descriptor_preview_text(str(nonempty_paragraphs[index + 1].text or ""), preview_chars=preview_chars)
         descriptors.append(
             ParagraphDescriptor(
                 index=paragraph.source_index,
@@ -172,12 +182,70 @@ def build_paragraph_descriptors(paragraphs: list[ParagraphUnit]) -> list[Paragra
                 isolated_marker=_is_isolated_marker_text(text),
                 toc_candidate=_is_toc_candidate_text(text),
                 scripture_reference_candidate=_is_scripture_reference_text(text),
+                anchor_role=None if anchor is None else anchor.role,
+                anchor_heading_level=None if anchor is None else anchor.heading_level,
+                anchor_confidence=None if anchor is None else anchor.confidence,
             )
         )
     return descriptors
 
 
-def apply_structure_map(paragraphs: list[ParagraphUnit], structure_map: StructureMap, *, min_confidence: str = "medium") -> dict[str, int]:
+def _is_anchor_consistent(
+    classification: ParagraphClassification,
+    *,
+    anchor_role: str,
+    anchor_heading_level: int | None,
+) -> bool:
+    if classification.role != anchor_role:
+        return False
+    if anchor_role != "heading":
+        return True
+    return classification.heading_level == anchor_heading_level
+
+
+def _is_allowed_by_document_map_anchor(
+    paragraph: ParagraphUnit,
+    classification: ParagraphClassification,
+    *,
+    document_map: DocumentMap | None,
+) -> bool:
+    if document_map is None:
+        return True
+
+    logical_index = int(getattr(paragraph, "logical_index", paragraph.source_index))
+    anchor = document_map.get_anchor(logical_index)
+    if anchor is None:
+        return True
+
+    if _is_anchor_consistent(
+        classification,
+        anchor_role=anchor.role,
+        anchor_heading_level=anchor.heading_level,
+    ):
+        return True
+
+    if anchor.confidence == "high":
+        return False
+
+    if anchor.confidence != "medium":
+        return True
+
+    if classification.confidence != "high":
+        return False
+
+    if anchor.role == "body" and classification.role == "heading":
+        return False
+
+    return True
+
+
+def apply_structure_map(
+    paragraphs: list[ParagraphUnit],
+    structure_map: StructureMap,
+    *,
+    min_confidence: str = "medium",
+    document_map: DocumentMap | None = None,
+) -> dict[str, int]:
     allowed_confidences = {"high"} if min_confidence == "high" else {"high", "medium"}
     applied_heading_count = 0
     applied_classified_count = 0
@@ -187,6 +255,12 @@ def apply_structure_map(paragraphs: list[ParagraphUnit], structure_map: Structur
 
         classification = structure_map.get(paragraph.source_index)
         if classification is None or classification.confidence not in allowed_confidences:
+            continue
+        if not _is_allowed_by_document_map_anchor(
+            paragraph,
+            classification,
+            document_map=document_map,
+        ):
             continue
 
         mapped_role = _map_ai_role_to_pipeline_role(classification.role)
@@ -215,10 +289,13 @@ def build_structure_map(
     max_window_paragraphs: int = 1800,
     overlap_paragraphs: int = 50,
     timeout: float = 60.0,
+    document_map: DocumentMap | None = None,
+    preview_chars: int = _DESCRIPTOR_PREVIEW_CHARS,
+    target_input_tokens: int | None = None,
     progress_callback: StructureProgressCallback | None = None,
 ) -> StructureMap:
     started_at = time.perf_counter()
-    descriptors = build_paragraph_descriptors(paragraphs)
+    descriptors = build_paragraph_descriptors(paragraphs, document_map=document_map, preview_chars=preview_chars)
     if not descriptors:
         return StructureMap({}, model, 0, 0.0, 0)
 
@@ -227,6 +304,7 @@ def build_structure_map(
             descriptors,
             max_window_paragraphs=max_window_paragraphs,
             overlap_paragraphs=overlap_paragraphs,
+            target_input_tokens=target_input_tokens,
         )
     )
     total_windows = len(windows)
@@ -493,11 +571,13 @@ def _normalize_heading_level(raw_level: object, *, role: str) -> int | None:
 def _build_user_prompt(descriptor_payload: Sequence[dict[str, object]]) -> str:
     return (
         "Classify each paragraph. Metadata format:\n"
-        '{"i": index, "t": "text preview (up to 600 chars)", "len": full_length, '
+        '{"i": index, "t": "text preview", "len": full_length, '
         '"s": "DOCX style", "b": bold, "ctr": centered, "caps": all_caps, '
         '"pt": font_size, "num": has_numbering, "hl": explicit_heading_level_or_null, '
         '"prev": "previous paragraph preview", "next": "next paragraph preview", '
-        '"iso": isolated_marker, "toc": toc_candidate, "scr": scripture_reference_candidate}\n\n'
+        '"iso": isolated_marker, "toc": toc_candidate, "scr": scripture_reference_candidate, '
+        '"anchor_r": optional_document_map_role, "anchor_l": optional_document_map_heading_level, '
+        '"anchor_c": optional_document_map_confidence}\n\n'
         "Paragraphs:\n"
         f"{json.dumps(list(descriptor_payload), ensure_ascii=False)}"
     )
@@ -508,6 +588,7 @@ def _iter_descriptor_windows(
     *,
     max_window_paragraphs: int,
     overlap_paragraphs: int,
+    target_input_tokens: int | None = None,
 ) -> Iterable[list[ParagraphDescriptor]]:
     if max_window_paragraphs <= 0:
         raise ValueError("max_window_paragraphs must be positive")
@@ -519,12 +600,45 @@ def _iter_descriptor_windows(
     start = 0
     step = max_window_paragraphs - overlap_paragraphs
     descriptor_list = list(descriptors)
+    budget_limit = None if target_input_tokens is None else max(1, int(target_input_tokens or 0))
     while start < len(descriptor_list):
         end = min(len(descriptor_list), start + max_window_paragraphs)
+        if budget_limit is not None:
+            end = _shrink_window_to_token_budget(
+                descriptor_list,
+                start=start,
+                end=end,
+                budget_limit=budget_limit,
+            )
         yield descriptor_list[start:end]
         if end >= len(descriptor_list):
             break
-        start += step
+        next_start = end - overlap_paragraphs
+        start = next_start if next_start > start else start + 1
+
+
+def _shrink_window_to_token_budget(
+    descriptors: Sequence[ParagraphDescriptor],
+    *,
+    start: int,
+    end: int,
+    budget_limit: int,
+) -> int:
+    candidate_end = max(start + 1, end)
+    while candidate_end > start + 1:
+        estimated_tokens = _estimate_descriptor_window_tokens(descriptors[start:candidate_end])
+        if estimated_tokens <= budget_limit:
+            return candidate_end
+        candidate_end -= 1
+    return min(start + 1, len(descriptors))
+
+
+def _estimate_descriptor_window_tokens(descriptors: Sequence[ParagraphDescriptor]) -> int:
+    if not descriptors:
+        return 0
+    prompt_payload = [descriptor.to_prompt_dict() for descriptor in descriptors]
+    encoded = json.dumps(prompt_payload, ensure_ascii=False)
+    return max(1, len(encoded) // 4 + 64)
 
 
 def _merge_window_classifications(
