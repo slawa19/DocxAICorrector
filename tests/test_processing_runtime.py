@@ -2,6 +2,7 @@ import hashlib
 import queue
 import sys
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
@@ -65,6 +66,11 @@ class UploadedFileStub:
             raise ValueError("Unsupported whence")
         self._position = min(self._position, len(self._content))
         return self._position
+
+
+def _clear_materialized_upload_cache() -> None:
+    processing_runtime._shared_materialized_upload_cache.clear()
+    processing_runtime._shared_materialized_upload_inflight.clear()
 
 
 def test_build_uploaded_file_token_uses_name_size_and_content_hash():
@@ -1228,3 +1234,327 @@ def test_resolve_upload_contract_separates_source_identity_from_normalized_paylo
     assert payload.content_bytes == b"converted-docx"
     assert payload.file_token == contract.file_token
     assert payload.file_token.endswith(f":{contract.source_identity.token_hash}")
+
+
+def test_freeze_uploaded_file_lightweight_for_pdf_defers_conversion(monkeypatch):
+    """PDF freeze on the main thread MUST NOT call LibreOffice; it stays cheap."""
+
+    converter_calls: list[dict[str, object]] = []
+
+    def fail_convert(**kwargs):  # pragma: no cover - guard
+        converter_calls.append(kwargs)
+        raise AssertionError("PDF conversion must happen in the worker, not on freeze")
+
+    monkeypatch.setattr(processing_runtime, "_convert_pdf_to_docx", fail_convert)
+    pdf_bytes = b"%PDF-1.4\n%fakepdf\n"
+    uploaded_file = processing_runtime.build_in_memory_uploaded_file(
+        source_name="book.pdf",
+        source_bytes=pdf_bytes,
+    )
+
+    payload = processing_runtime.freeze_uploaded_file_lightweight(uploaded_file)
+
+    assert payload.source_format == "pdf"
+    assert payload.conversion_backend is None
+    assert payload.content_bytes == pdf_bytes
+    assert payload.filename == "book.pdf"
+    assert payload.file_token.startswith("book.docx:")
+    assert converter_calls == []
+
+
+def test_freeze_uploaded_file_lightweight_passthrough_for_docx():
+    docx_bytes = b"PK\x03\x04docx-bytes"
+    uploaded_file = processing_runtime.build_in_memory_uploaded_file(
+        source_name="report.docx",
+        source_bytes=docx_bytes,
+    )
+
+    payload = processing_runtime.freeze_uploaded_file_lightweight(uploaded_file)
+
+    assert payload.source_format == "docx"
+    assert payload.content_bytes == docx_bytes
+    assert payload.filename == "report.docx"
+
+
+def test_materialize_uploaded_payload_runs_pdf_conversion_with_progress(monkeypatch):
+    _clear_materialized_upload_cache()
+    pdf_bytes = b"%PDF-1.4\n%fakepdf\n"
+    uploaded_file = processing_runtime.build_in_memory_uploaded_file(
+        source_name="book.pdf",
+        source_bytes=pdf_bytes,
+    )
+    payload = processing_runtime.freeze_uploaded_file_lightweight(uploaded_file)
+
+    monkeypatch.setattr(
+        processing_runtime,
+        "_convert_pdf_to_docx",
+        lambda **kwargs: (b"converted-docx-bytes", "libreoffice"),
+    )
+
+    events: list[dict[str, object]] = []
+
+    def progress_cb(**kwargs):
+        events.append(kwargs)
+
+    materialized = processing_runtime.materialize_uploaded_payload(
+        payload, progress_callback=progress_cb
+    )
+
+    assert materialized.source_format == "pdf"
+    assert materialized.conversion_backend == "libreoffice"
+    assert materialized.content_bytes == b"converted-docx-bytes"
+    assert materialized.filename == "book.docx"
+    # token MUST be preserved so prepared_source_key cache stays stable
+    assert materialized.file_token == payload.file_token
+    stages = [e["stage"] for e in events]
+    assert "Импорт PDF" in stages
+    assert "DOCX готов" in stages
+
+
+def test_materialize_uploaded_payload_reuses_cached_pdf_conversion(monkeypatch):
+    _clear_materialized_upload_cache()
+    pdf_bytes = b"%PDF-1.4\n%reuse-cache\n"
+    uploaded_file = processing_runtime.build_in_memory_uploaded_file(
+        source_name="book-reuse.pdf",
+        source_bytes=pdf_bytes,
+    )
+    payload = processing_runtime.freeze_uploaded_file_lightweight(uploaded_file)
+
+    convert_calls: list[dict[str, object]] = []
+
+    def convert_pdf(**kwargs):
+        convert_calls.append(kwargs)
+        return b"converted-docx-reuse", "libreoffice"
+
+    monkeypatch.setattr(processing_runtime, "_convert_pdf_to_docx", convert_pdf)
+
+    first_events: list[dict[str, object]] = []
+    second_events: list[dict[str, object]] = []
+
+    first = processing_runtime.materialize_uploaded_payload(payload, progress_callback=lambda **kwargs: first_events.append(kwargs))
+    second = processing_runtime.materialize_uploaded_payload(payload, progress_callback=lambda **kwargs: second_events.append(kwargs))
+
+    assert len(convert_calls) == 1
+    assert first.content_bytes == b"converted-docx-reuse"
+    assert second.content_bytes == b"converted-docx-reuse"
+    assert second.conversion_backend == "libreoffice"
+    assert any(e["stage"] == "DOCX готов" for e in second_events)
+    assert any("Использую уже сконвертированную копию DOCX" in str(e["detail"]) for e in second_events)
+    assert any(bool(e["metrics"].get("conversion_reused")) for e in second_events)
+
+
+def test_materialize_uploaded_payload_passthrough_for_docx():
+    docx_bytes = b"PK\x03\x04docx-bytes"
+    uploaded_file = processing_runtime.build_in_memory_uploaded_file(
+        source_name="report.docx",
+        source_bytes=docx_bytes,
+    )
+    payload = processing_runtime.freeze_uploaded_file_lightweight(uploaded_file)
+
+    materialized = processing_runtime.materialize_uploaded_payload(payload, progress_callback=None)
+
+    assert materialized is payload  # no allocations, no work
+
+
+def test_heartbeat_beacon_emits_progress_during_blocking_call():
+    import time as _time
+
+    events: list[dict[str, object]] = []
+
+    def progress_cb(**kwargs):
+        events.append(kwargs)
+
+    with processing_runtime.HeartbeatBeacon(
+        progress_cb,
+        stage="Long phase",
+        detail_template="working… ({elapsed} сек)",
+        progress=0.5,
+        metrics={"k": 1},
+        interval_seconds=0.1,
+    ):
+        _time.sleep(0.35)
+
+    assert len(events) >= 2
+    for event in events:
+        assert event["stage"] == "Long phase"
+        assert "working…" in str(event["detail"])
+        assert event["progress"] == 0.5
+        assert event["metrics"] == {"k": 1}
+
+
+def test_heartbeat_beacon_is_noop_when_callback_is_none():
+    import time as _time
+
+    with processing_runtime.HeartbeatBeacon(
+        None,
+        stage="Stage",
+        detail_template="x",
+        progress=0.0,
+        interval_seconds=0.05,
+    ):
+        _time.sleep(0.15)
+    # nothing to assert beyond not raising
+
+
+def test_heartbeat_beacon_logs_warning_once_when_callback_fails(monkeypatch):
+    import time as _time
+
+    log_calls: list[dict[str, object]] = []
+
+    def failing_progress_cb(**kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        processing_runtime,
+        "log_event",
+        lambda level, event, message, **context: log_calls.append(
+            {
+                "level": level,
+                "event": event,
+                "message": message,
+                "context": context,
+            }
+        ),
+    )
+
+    with processing_runtime.HeartbeatBeacon(
+        failing_progress_cb,
+        stage="Long phase",
+        detail_template="working… ({elapsed} сек)",
+        progress=0.5,
+        metrics={"k": 1},
+        interval_seconds=0.05,
+    ):
+        _time.sleep(0.2)
+
+    assert len(log_calls) == 1
+    assert log_calls[0]["event"] == "heartbeat_callback_failed"
+    assert log_calls[0]["context"]["stage"] == "Long phase"
+
+
+def test_start_background_preparation_materializes_pdf_inside_worker(monkeypatch):
+    _clear_materialized_upload_cache()
+    session_state = SessionState()
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    statuses: list[dict[str, object]] = []
+    activities: list[str] = []
+
+    pdf_bytes = b"%PDF-1.4\n%fakepdf\n"
+    uploaded_file = processing_runtime.build_in_memory_uploaded_file(
+        source_name="book.pdf",
+        source_bytes=pdf_bytes,
+    )
+    payload = processing_runtime.freeze_uploaded_file_lightweight(uploaded_file)
+    assert payload.conversion_backend is None  # precondition: cheap freeze
+
+    monkeypatch.setattr(
+        processing_runtime,
+        "_convert_pdf_to_docx",
+        lambda **kwargs: (b"converted-docx", "libreoffice"),
+    )
+
+    received_payload: dict[str, object] = {}
+
+    def worker_target(**kwargs):
+        received_payload["payload"] = kwargs["uploaded_payload"]
+        kwargs["progress_callback"](
+            stage="Документ подготовлен",
+            detail="",
+            progress=1.0,
+            metrics={"cached": False},
+        )
+
+    processing_runtime.start_background_preparation(
+        worker_target=worker_target,
+        reset_run_state=lambda **kwargs: None,
+        push_activity=lambda message: activities.append(message),
+        set_processing_status=lambda **kw: statuses.append(kw),
+        uploaded_payload=payload,
+        upload_marker=payload.file_token,
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=True,
+    )
+
+    session_state.preparation_worker.join(timeout=5)
+    processing_runtime.drain_preparation_events(
+        reset_run_state=lambda **kwargs: None,
+        set_processing_status=lambda **kw: statuses.append(kw),
+        finalize_processing_status=lambda *args, **kw: None,
+        push_activity=lambda message: activities.append(message),
+    )
+
+    materialized = received_payload["payload"]
+    assert isinstance(materialized, processing_runtime.FrozenUploadPayload)
+    assert materialized.conversion_backend == "libreoffice"
+    assert materialized.content_bytes == b"converted-docx"
+    # progress events from materialization must reach the UI
+    stages_seen = [str(s.get("stage")) for s in statuses]
+    assert "Импорт PDF" in stages_seen
+    assert "DOCX готов" in stages_seen
+
+
+def test_start_background_preparation_initial_status_for_lightweight_pdf(monkeypatch):
+    _clear_materialized_upload_cache()
+    """Bootstrap status contract: when the UI hands a lightweight PDF payload to
+    `start_background_preparation`, the very first `set_processing_status` call
+    must already advertise `source_format="pdf"` so the live-status panel shows
+    a PDF-aware stage immediately, before LibreOffice runs in the worker.
+    The lightweight payload must NOT carry a conversion_backend yet.
+    """
+    session_state = SessionState()
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    statuses: list[dict[str, object]] = []
+    activities: list[str] = []
+
+    pdf_bytes = b"%PDF-1.4\n%lightweight\n"
+    uploaded_file = processing_runtime.build_in_memory_uploaded_file(
+        source_name="book.pdf",
+        source_bytes=pdf_bytes,
+    )
+    payload = processing_runtime.freeze_uploaded_file_lightweight(uploaded_file)
+    assert payload.source_format == "pdf"
+    assert payload.conversion_backend is None
+    assert payload.file_token.startswith("book.docx:")
+
+    # Block the worker from progressing past start so we capture the initial status.
+    started = threading.Event()
+    release = threading.Event()
+
+    def worker_target(**kwargs):
+        started.set()
+        release.wait(timeout=5)
+
+    monkeypatch.setattr(
+        processing_runtime,
+        "_convert_pdf_to_docx",
+        lambda **kwargs: (b"converted-docx", "libreoffice"),
+    )
+
+    processing_runtime.start_background_preparation(
+        worker_target=worker_target,
+        reset_run_state=lambda **kwargs: None,
+        push_activity=lambda message: activities.append(message),
+        set_processing_status=lambda **kw: statuses.append(kw),
+        uploaded_payload=payload,
+        upload_marker=payload.file_token,
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=True,
+    )
+
+    try:
+        # First status is emitted synchronously by start_background_preparation.
+        assert statuses, "start_background_preparation must emit an initial status"
+        first = statuses[0]
+        assert first["phase"] == "preparing"
+        assert first["stage"] == "Файл получен"
+        assert first["source_format"] == "pdf"
+        # Lightweight payload: backend not known yet — worker will materialize.
+        assert first.get("conversion_backend") is None
+        assert activities and activities[0].startswith("Файл получен")
+    finally:
+        release.set()
+        if session_state.preparation_worker is not None:
+            session_state.preparation_worker.join(timeout=5)
+

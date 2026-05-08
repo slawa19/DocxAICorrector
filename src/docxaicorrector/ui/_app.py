@@ -42,6 +42,7 @@ from docxaicorrector.core.logger import fail_critical, log_event, present_error
 from docxaicorrector.generation.message_formatting import get_preparation_state_unavailable_message, get_restartable_outcome_notice
 from docxaicorrector.processing.processing_runtime import (
     freeze_uploaded_file,
+    freeze_uploaded_file_lightweight,
     get_current_result_bundle,
     resolve_uploaded_filename,
 )
@@ -853,7 +854,7 @@ def main() -> None:
     uploaded_widget_payload = None
     if uploaded_widget_file is not None:
         try:
-            uploaded_widget_payload = freeze_uploaded_file(uploaded_widget_file)
+            uploaded_widget_payload = freeze_uploaded_file_lightweight(uploaded_widget_file)
         except Exception as exc:
             user_message = present_error(
                 "document_read_failed",

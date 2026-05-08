@@ -148,6 +148,37 @@ default_run_profile = "ui-parity-translate-benchmark-advisory"
 tags = ["pdf", "translation", "benchmark-only", "lietaer"]
 provenance = "Benchmark-only first-20-pages PDF slice for translation model evaluation."
 
+[[documents]]
+id = "lietaer-pdf-full-benchmark"
+source_path = "tests/sources/Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne.pdf"
+artifact_prefix = "lietaer_pdf_full_benchmark"
+output_basename = "Rethinking_money_full_benchmark"
+structural_mode = "strict"
+min_paragraphs = 250
+has_headings = true
+min_headings = 6
+has_numbered_lists = false
+min_numbered_items = 0
+has_images = false
+min_images = 0
+has_tables = false
+min_tables = 0
+max_formatting_diagnostics = 12
+max_unmapped_source_paragraphs = 12
+max_unmapped_target_paragraphs = 6
+max_heading_level_drift = 2
+min_text_similarity = 0.94
+require_numbered_lists_preserved = false
+require_nonempty_output = true
+forbid_heading_only_collapse = true
+require_toc_detected = true
+require_pdf_conversion = true
+require_no_bullet_headings = true
+require_no_toc_body_concat = true
+default_run_profile = "ui-parity-translate-benchmark-advisory"
+tags = ["pdf", "translation", "benchmark-only", "lietaer", "full-document"]
+provenance = "Benchmark-only full-document PDF profile for structure model comparison on the full Lietaer source."
+
 [[run_profiles]]
 id = "ui-parity-default"
 tier = "full"

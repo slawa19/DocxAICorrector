@@ -328,8 +328,11 @@ def test_main_normalizes_legacy_doc_before_starting_background_preparation(monke
 
     assert len(start_calls) == 1
     assert isinstance(start_calls[0]["uploaded_payload"], processing_runtime.FrozenUploadPayload)
-    assert start_calls[0]["uploaded_payload"].filename == "legacy.docx"
-    assert start_calls[0]["uploaded_payload"].content_bytes == b"converted-docx"
+    # Lightweight freeze: legacy DOC keeps original filename/bytes; conversion is
+    # deferred to the preparation worker (architectural contract).
+    assert start_calls[0]["uploaded_payload"].filename == "legacy.doc"
+    assert start_calls[0]["uploaded_payload"].source_format == "doc"
+    assert start_calls[0]["uploaded_payload"].conversion_backend is None
     assert start_calls[0]["uploaded_payload"].file_token.startswith("legacy.docx:")
     assert start_calls[0]["upload_marker"].startswith("legacy.docx:")
 
@@ -446,7 +449,7 @@ def test_main_reports_pdf_freeze_failure_without_uncaught_streamlit_error(monkey
     monkeypatch.setattr(app.st, "fragment", lambda **kw: (lambda fn: fn))
     monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "_finalize_app_frame", lambda **kwargs: finalized.append(kwargs))
-    monkeypatch.setattr(app, "freeze_uploaded_file", lambda uploaded_file: (_ for _ in ()).throw(RuntimeError("pdf converter missing")))
+    monkeypatch.setattr(app, "freeze_uploaded_file_lightweight", lambda uploaded_file: (_ for _ in ()).throw(RuntimeError("pdf read failed")))
     monkeypatch.setattr(
         app,
         "present_error",
@@ -458,12 +461,12 @@ def test_main_reports_pdf_freeze_failure_without_uncaught_streamlit_error(monkey
     assert present_error_calls == [
         (
             "document_read_failed",
-            "pdf converter missing",
+            "pdf read failed",
             "Ошибка чтения документа",
             {"filename": "source.pdf"},
         )
     ]
-    assert error_calls == ["Ошибка чтения документа: pdf converter missing"]
+    assert error_calls == ["Ошибка чтения документа: pdf read failed"]
     assert finalized == [{}]
 
 
@@ -5501,3 +5504,78 @@ def test_render_analysis_review_panel_shows_terminology_review_for_glossary_term
     assert any("Domain: theology" == caption for caption in caption_calls)
     assert "- Great Tribulation -> Великая скорбь" in write_calls
     assert "- Antichrist -> Антихрист" in write_calls
+
+
+def test_main_uses_lightweight_freeze_for_pdf_upload(monkeypatch):
+    """UI wiring contract: PDF upload on main thread MUST go through
+    `freeze_uploaded_file_lightweight` (no LibreOffice on main thread).
+    The eager `freeze_uploaded_file` must NOT be called from `app.main()`.
+    """
+    session_state = SessionState(
+        app_start_logged=True,
+        processing_status={},
+        activity_feed=[],
+    )
+    uploaded_file = UploadedFileStub("source.pdf", b"%PDF-1.7\nfake")
+    start_calls = []
+    eager_calls = []
+    lightweight_calls = []
+
+    class RerunRequested(Exception):
+        pass
+
+    monkeypatch.setattr(app.st, "session_state", session_state)
+    monkeypatch.setattr(app, "init_session_state", lambda: None)
+    monkeypatch.setattr(app, "inject_ui_styles", lambda: None)
+    monkeypatch.setattr(app, "_cached_load_app_config", lambda: {})
+    monkeypatch.setattr(app, "render_sidebar", lambda config: ("gpt-5.4", 6000, 3, "safe", False))
+    monkeypatch.setattr(app, "_drain_processing_events", lambda: None)
+    monkeypatch.setattr(app, "_drain_preparation_events", lambda: None)
+    monkeypatch.setattr(app, "_processing_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "_preparation_worker_is_active", lambda: False)
+    monkeypatch.setattr(app, "get_current_result_bundle", lambda: None)
+    monkeypatch.setattr(app.st, "title", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "write", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "error", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app.st, "file_uploader", lambda *args, **kwargs: uploaded_file)
+    monkeypatch.setattr(app.st, "fragment", lambda **kw: (lambda fn: fn))
+    monkeypatch.setattr(app, "render_live_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_run_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_image_validation_summary", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "render_partial_result", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "_finalize_app_frame", lambda **kwargs: None)
+    monkeypatch.setattr(app, "_start_background_preparation", lambda **kwargs: start_calls.append(kwargs))
+    monkeypatch.setattr(app.st, "rerun", lambda: (_ for _ in ()).throw(RerunRequested()))
+
+    real_lightweight = processing_runtime.freeze_uploaded_file_lightweight
+
+    def _spy_lightweight(uploaded):
+        lightweight_calls.append(uploaded)
+        return real_lightweight(uploaded)
+
+    def _eager_guard(uploaded):
+        eager_calls.append(uploaded)
+        raise AssertionError(
+            "freeze_uploaded_file (eager) must not be called from main thread for PDF uploads"
+        )
+
+    monkeypatch.setattr(app, "freeze_uploaded_file_lightweight", _spy_lightweight)
+    monkeypatch.setattr(app, "freeze_uploaded_file", _eager_guard)
+    monkeypatch.setattr(processing_runtime, "freeze_uploaded_file", _eager_guard)
+
+    try:
+        app.main()
+    except RerunRequested:
+        pass
+
+    assert eager_calls == []
+    assert len(lightweight_calls) == 1
+    assert len(start_calls) == 1
+    payload = start_calls[0]["uploaded_payload"]
+    assert isinstance(payload, processing_runtime.FrozenUploadPayload)
+    # Lightweight payload preserves original PDF bytes; conversion is deferred to worker.
+    assert payload.source_format == "pdf"
+    assert payload.conversion_backend is None
+    assert payload.content_bytes == b"%PDF-1.7\nfake"

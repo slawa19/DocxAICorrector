@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -62,6 +64,7 @@ _LEGACY_DOC_MAGIC = bytes.fromhex("D0CF11E0A1B11AE1")
 _PDF_MAGIC = b"%PDF-"
 _DEFAULT_UPLOADED_FILENAME = "document.docx"
 _DOC_CONVERSION_TIMEOUT_SECONDS = 120
+_MATERIALIZED_UPLOAD_CACHE_LIMIT = 4
 _ALLOWED_SET_STATE_EVENT_KEYS = {
     "image_assets",
     "last_background_error",
@@ -74,6 +77,10 @@ _ALLOWED_SET_STATE_EVENT_KEYS = {
     "processed_block_markdowns",
     "processed_paragraph_registry",
 }
+
+_shared_materialized_upload_cache: OrderedDict[str, "FrozenUploadPayload"] = OrderedDict()
+_shared_materialized_upload_cache_lock = threading.Lock()
+_shared_materialized_upload_inflight: dict[str, threading.Event] = {}
 
 __all__ = [
     "BackgroundRuntime",
@@ -90,6 +97,9 @@ __all__ = [
     "resolve_upload_contract",
     "freeze_resolved_upload",
     "freeze_uploaded_file",
+    "freeze_uploaded_file_lightweight",
+    "materialize_uploaded_payload",
+    "HeartbeatBeacon",
     "build_uploaded_file_token",
     "build_in_memory_uploaded_file",
     "build_uploaded_file_selection_marker",
@@ -582,6 +592,335 @@ def freeze_uploaded_file(uploaded_file: UploadedFileLike | BytesIO) -> FrozenUpl
     return freeze_resolved_upload(resolve_upload_contract(filename=filename, source_bytes=source_bytes))
 
 
+def freeze_uploaded_file_lightweight(uploaded_file: UploadedFileLike | BytesIO) -> FrozenUploadPayload:
+    """Cheap, main-thread-safe payload freeze that defers heavy format conversions.
+
+    For PDF/DOC sources this returns a payload whose ``content_bytes`` are still
+    raw input bytes and ``conversion_backend`` is ``None``. The actual conversion
+    must run inside the preparation worker via :func:`materialize_uploaded_payload`.
+    For DOCX sources behavior is identical to :func:`freeze_uploaded_file` — no
+    conversion is needed and ``content_bytes`` already point at the DOCX bytes.
+
+    The ``file_token`` is computed from raw input bytes for PDF/DOC, matching
+    :func:`_build_uploaded_file_token_components`, so a lightweight payload and
+    its later materialized counterpart share the same token.
+    """
+
+    source_bytes = read_uploaded_file_bytes(uploaded_file)
+    filename = getattr(uploaded_file, "name", "") or _DEFAULT_UPLOADED_FILENAME
+    source_format = _detect_uploaded_document_format(filename=filename, source_bytes=source_bytes)
+    raw = bytes(source_bytes)
+    identity_hash = hashlib.sha256(raw).hexdigest()[:16]
+    if source_format == "docx":
+        normalized_filename = _build_normalized_docx_filename(filename)
+        token = f"{normalized_filename}:{len(raw)}:{identity_hash}"
+        return FrozenUploadPayload(
+            filename=normalized_filename,
+            content_bytes=raw,
+            file_size=len(raw),
+            content_hash=identity_hash,
+            file_token=token,
+            source_format="docx",
+            conversion_backend=None,
+        )
+    if source_format in {"pdf", "doc"}:
+        normalized_filename = _build_normalized_docx_filename(filename)
+        token = f"{normalized_filename}:{len(raw)}:{identity_hash}"
+        return FrozenUploadPayload(
+            filename=filename,  # keep original filename until materialization
+            content_bytes=raw,
+            file_size=len(raw),
+            content_hash=identity_hash,
+            file_token=token,
+            source_format=source_format,
+            conversion_backend=None,
+        )
+    # Unknown formats fall back to the eager path so we still get a consistent error.
+    return freeze_resolved_upload(resolve_upload_contract(filename=filename, source_bytes=raw))
+
+
+class HeartbeatBeacon:
+    """Periodically re-emits a progress event during a long blocking call.
+
+    Designed to wrap subprocess calls (LibreOffice) and synchronous network
+    calls (OpenAI) where we cannot inject native progress hooks. The beacon
+    runs a daemon thread that ticks every ``interval_seconds`` and invokes
+    ``progress_callback`` with the current elapsed seconds substituted into
+    ``detail_template`` (``{elapsed}`` placeholder). The beacon is a no-op
+    when ``progress_callback`` is ``None``.
+
+    The beacon is reentrant via the context manager and never raises out of
+    the worker: any exception in ``progress_callback`` stops the beacon.
+    """
+
+    def __init__(
+        self,
+        progress_callback,
+        *,
+        stage: str,
+        detail_template: str,
+        progress: float,
+        metrics: dict | None = None,
+        interval_seconds: float = 2.0,
+    ) -> None:
+        self._progress_callback = progress_callback
+        self._stage = stage
+        self._detail_template = detail_template
+        self._progress = progress
+        self._metrics = dict(metrics or {})
+        self._interval = max(0.05, float(interval_seconds))
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._started_at = 0.0
+        self._callback_failure_logged = False
+
+    def __enter__(self) -> "HeartbeatBeacon":
+        if self._progress_callback is None:
+            return self
+        self._started_at = time.monotonic()
+        self._thread = threading.Thread(
+            target=self._run,
+            daemon=True,
+            name="docxai-heartbeat",
+        )
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        self._stop_event.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=self._interval + 0.5)
+        return False
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(self._interval):
+            elapsed = max(0, int(time.monotonic() - self._started_at))
+            try:
+                detail = self._detail_template.format(elapsed=elapsed)
+            except (KeyError, IndexError, ValueError):
+                detail = self._detail_template
+            try:
+                self._progress_callback(
+                    stage=self._stage,
+                    detail=detail,
+                    progress=self._progress,
+                    metrics=dict(self._metrics),
+                )
+            except Exception:
+                if not self._callback_failure_logged:
+                    self._callback_failure_logged = True
+                    log_event(
+                        logging.WARNING,
+                        "heartbeat_callback_failed",
+                        "Heartbeat progress callback failed; periodic heartbeat updates were disabled for this operation.",
+                        stage=self._stage,
+                        detail_template=self._detail_template,
+                        interval_seconds=self._interval,
+                    )
+                # Heartbeat must never abort the worker.
+                return
+
+
+def _touch_materialized_upload_cache_entry(
+    cache: OrderedDict[str, FrozenUploadPayload],
+    file_token: str,
+    payload: FrozenUploadPayload,
+) -> None:
+    cache.pop(file_token, None)
+    cache[file_token] = payload
+
+
+def _trim_materialized_upload_cache(cache: OrderedDict[str, FrozenUploadPayload]) -> None:
+    while len(cache) > _MATERIALIZED_UPLOAD_CACHE_LIMIT:
+        cache.popitem(last=False)
+
+
+def _read_or_reserve_materialized_upload(file_token: str) -> tuple[FrozenUploadPayload | None, threading.Event | None]:
+    while True:
+        with _shared_materialized_upload_cache_lock:
+            cached = _shared_materialized_upload_cache.get(file_token)
+            if cached is not None:
+                _touch_materialized_upload_cache_entry(_shared_materialized_upload_cache, file_token, cached)
+                return cached, None
+
+            in_flight = _shared_materialized_upload_inflight.get(file_token)
+            if in_flight is None:
+                in_flight = threading.Event()
+                _shared_materialized_upload_inflight[file_token] = in_flight
+                return None, in_flight
+
+        in_flight.wait()
+
+
+def _store_materialized_upload(payload: FrozenUploadPayload) -> None:
+    with _shared_materialized_upload_cache_lock:
+        _touch_materialized_upload_cache_entry(_shared_materialized_upload_cache, payload.file_token, payload)
+        _trim_materialized_upload_cache(_shared_materialized_upload_cache)
+
+
+def _release_materialized_upload_reservation(file_token: str) -> None:
+    with _shared_materialized_upload_cache_lock:
+        in_flight = _shared_materialized_upload_inflight.pop(file_token, None)
+    if in_flight is not None:
+        in_flight.set()
+
+
+def materialize_uploaded_payload(
+    payload: FrozenUploadPayload,
+    *,
+    progress_callback=None,
+) -> FrozenUploadPayload:
+    """Run any deferred format conversion (PDF/DOC -> DOCX) and return a payload
+    whose ``content_bytes`` are DOCX bytes ready for downstream extraction.
+
+    Already-materialized payloads (``conversion_backend`` set, or DOCX source)
+    are returned unchanged. Long-running conversions emit periodic heartbeat
+    progress events through ``progress_callback`` so the UI never stalls.
+    The returned payload preserves ``file_token`` from the input so cache
+    keys stay stable.
+    """
+
+    if payload.conversion_backend or (payload.source_format or "").lower() == "docx":
+        return payload
+
+    fmt = (payload.source_format or "").lower()
+    if fmt in {"pdf", "doc"}:
+        cached_payload, reservation = _read_or_reserve_materialized_upload(payload.file_token)
+        if cached_payload is not None:
+            if progress_callback is not None:
+                progress_callback(
+                    stage="DOCX готов",
+                    detail="Использую уже сконвертированную копию DOCX. Повторная конвертация не нужна.",
+                    progress=0.18,
+                    metrics={
+                        "source_format": fmt,
+                        "conversion_backend": cached_payload.conversion_backend,
+                        "file_size_bytes": cached_payload.file_size,
+                        "conversion_reused": True,
+                    },
+                )
+            log_event(
+                logging.INFO,
+                "materialized_upload_cache_hit",
+                "Использована уже сконвертированная DOCX-копия исходного файла.",
+                source_format=fmt,
+                file_token=payload.file_token,
+                conversion_backend=cached_payload.conversion_backend,
+            )
+            return cached_payload
+    else:
+        reservation = None
+
+    if fmt == "pdf":
+        try:
+            if progress_callback is not None:
+                progress_callback(
+                    stage="Импорт PDF",
+                    detail="Запускаю конвертацию PDF в DOCX через LibreOffice…",
+                    progress=0.05,
+                    metrics={
+                        "source_format": "pdf",
+                        "file_size_bytes": payload.file_size,
+                        "conversion_reused": False,
+                    },
+                )
+            with HeartbeatBeacon(
+                progress_callback,
+                stage="Импорт PDF",
+                detail_template="LibreOffice конвертирует PDF в DOCX… ({elapsed} сек). Для крупных книг это может занять 30–120 сек.",
+                progress=0.10,
+                metrics={"source_format": "pdf", "file_size_bytes": payload.file_size, "conversion_reused": False},
+                interval_seconds=2.0,
+            ):
+                converted_bytes, conversion_backend = _convert_pdf_to_docx(
+                    filename=payload.filename,
+                    source_bytes=payload.content_bytes,
+                )
+            if progress_callback is not None:
+                progress_callback(
+                    stage="DOCX готов",
+                    detail="PDF сконвертирован, начинаю разбор содержимого.",
+                    progress=0.18,
+                    metrics={
+                        "source_format": "pdf",
+                        "conversion_backend": conversion_backend,
+                        "file_size_bytes": len(converted_bytes),
+                        "conversion_reused": False,
+                    },
+                )
+            normalized_filename = _build_normalized_docx_filename(payload.filename)
+            materialized_payload = FrozenUploadPayload(
+                filename=normalized_filename,
+                content_bytes=converted_bytes,
+                file_size=len(converted_bytes),
+                content_hash=hashlib.sha256(converted_bytes).hexdigest()[:16],
+                file_token=payload.file_token,
+                source_format="pdf",
+                conversion_backend=conversion_backend,
+            )
+            _store_materialized_upload(materialized_payload)
+            return materialized_payload
+        finally:
+            if reservation is not None:
+                _release_materialized_upload_reservation(payload.file_token)
+
+    if fmt == "doc":
+        try:
+            if progress_callback is not None:
+                progress_callback(
+                    stage="Импорт DOC",
+                    detail="Запускаю конвертацию legacy DOC в DOCX…",
+                    progress=0.05,
+                    metrics={
+                        "source_format": "doc",
+                        "file_size_bytes": payload.file_size,
+                        "conversion_reused": False,
+                    },
+                )
+            with HeartbeatBeacon(
+                progress_callback,
+                stage="Импорт DOC",
+                detail_template="Конвертирую legacy DOC в DOCX… ({elapsed} сек).",
+                progress=0.10,
+                metrics={"source_format": "doc", "file_size_bytes": payload.file_size, "conversion_reused": False},
+                interval_seconds=2.0,
+            ):
+                converted_bytes, conversion_backend = _convert_legacy_doc_to_docx(
+                    filename=payload.filename,
+                    source_bytes=payload.content_bytes,
+                )
+            if progress_callback is not None:
+                progress_callback(
+                    stage="DOCX готов",
+                    detail="DOC сконвертирован, начинаю разбор содержимого.",
+                    progress=0.18,
+                    metrics={
+                        "source_format": "doc",
+                        "conversion_backend": conversion_backend,
+                        "file_size_bytes": len(converted_bytes),
+                        "conversion_reused": False,
+                    },
+                )
+            normalized_filename = _build_normalized_docx_filename(payload.filename)
+            materialized_payload = FrozenUploadPayload(
+                filename=normalized_filename,
+                content_bytes=converted_bytes,
+                file_size=len(converted_bytes),
+                content_hash=hashlib.sha256(converted_bytes).hexdigest()[:16],
+                file_token=payload.file_token,
+                source_format="doc",
+                conversion_backend=conversion_backend,
+            )
+            _store_materialized_upload(materialized_payload)
+            return materialized_payload
+        finally:
+            if reservation is not None:
+                _release_materialized_upload_reservation(payload.file_token)
+
+    return payload
+
+
 def build_uploaded_file_token(uploaded_file: UploadedFileLike | BytesIO | None = None, *, source_name: str | None = None, source_bytes: bytes | None = None) -> str:
     if isinstance(uploaded_file, FrozenUploadPayload):
         return uploaded_file.file_token
@@ -1062,9 +1401,11 @@ def start_background_preparation(
         phase="preparing",
         source_format=str(getattr(uploaded_payload, "source_format", "docx") or "docx"),
         conversion_backend=getattr(uploaded_payload, "conversion_backend", None),
+        conversion_reused=False,
     )
 
     last_reported_stage = {"value": ""}
+    last_activity = {"key": "", "at": 0.0}
 
     def report_progress(*, stage: str, detail: str, progress: float, metrics: dict[str, object]) -> None:
         runtime.emit(
@@ -1081,19 +1422,55 @@ def start_background_preparation(
                     "image_count": _coerce_metric_to_int(metrics, "image_count"),
                     "source_chars": _coerce_metric_to_int(metrics, "source_chars"),
                     "cached": bool(metrics.get("cached", False)),
+                    "conversion_reused": bool(metrics.get("conversion_reused", False)),
                     "source_format": str(metrics.get("source_format") or "docx"),
                     "conversion_backend": str(metrics.get("conversion_backend") or "") or None,
                 }
             )
         )
+        # Activity feed: emit on stage change, and additionally throttle per-detail
+        # heartbeats so users see live progress instead of stage-only entries.
+        now = time.monotonic()
         if stage and stage != last_reported_stage["value"]:
             runtime.emit(PushActivityEvent(message=f"[Анализ] {stage}: {detail}"))
             last_reported_stage["value"] = stage
+            last_activity["key"] = f"{stage}|{detail}"
+            last_activity["at"] = now
+            return
+        activity_key = f"{stage}|{detail}"
+        if (
+            stage
+            and detail
+            and activity_key != last_activity["key"]
+            and (now - float(last_activity["at"] or 0.0)) >= 3.0
+        ):
+            runtime.emit(PushActivityEvent(message=f"[Анализ] {detail}"))
+            last_activity["key"] = activity_key
+            last_activity["at"] = now
 
     def run_preparation() -> None:
         try:
+            materialized_payload = materialize_uploaded_payload(
+                uploaded_payload,
+                progress_callback=report_progress,
+            )
+        except Exception as exc:
+            error_details = normalize_background_error(
+                stage="preparation",
+                exc=exc,
+                user_message=str(exc),
+            )
+            runtime.emit(
+                PreparationFailedEvent(
+                    upload_marker=upload_marker,
+                    error_message=str(error_details["user_message"]),
+                    error_details=error_details,
+                )
+            )
+            return
+        try:
             prepared_run_context = worker_target(
-                uploaded_payload=uploaded_payload,
+                uploaded_payload=materialized_payload,
                 chunk_size=chunk_size,
                 image_mode=image_mode,
                 keep_all_image_variants=keep_all_image_variants,

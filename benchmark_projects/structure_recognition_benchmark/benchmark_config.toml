@@ -1,0 +1,72 @@
+[benchmark]
+judge_model = "openai/gpt-5.5"
+openrouter_base_url = "https://openrouter.ai/api/v1"
+openrouter_referer = "DocxAICorrectorStructureBenchmark"
+openrouter_title = "DocxAICorrector Structure Benchmark"
+judge_prompt_file = "benchmark_projects/structure_recognition_benchmark/prompts/structure_judge_rubric.txt"
+profiles = ["end-times-pdf-core", "lietaer-pdf-first-20-benchmark", "mazzucato-audiobook-core"]
+max_profiles = 3
+max_paragraphs_per_profile = 450
+review_max_windows_per_profile = 4
+review_max_window_paragraphs = 180
+review_overlap_paragraphs = 20
+request_timeout_seconds = 90
+max_retries = 3
+judge_temperature = 0.1
+min_confidence = "medium"
+chunk_size = 6000
+run_deterministic_repair = true
+run_deterministic_validation = true
+run_segment_detection = true
+run_judge = true
+candidate_execution_mode = "production_pipeline"
+candidate_inference_parameters = "inherit_production_defaults"
+production_windowing_mode = "inherit_production_defaults"
+
+[[candidates]]
+id = "claude-haiku-4-5"
+label = "Claude Haiku 4.5"
+provider = "openrouter"
+model = "anthropic/claude-haiku-4.5"
+
+[[candidates]]
+id = "gemini-3-flash"
+label = "Gemini 3 Flash"
+provider = "openrouter"
+model = "google/gemini-3-flash-preview"
+
+[[candidates]]
+id = "gemini-3-1-flash-lite"
+label = "Gemini 3.1 Flash Lite"
+provider = "openrouter"
+model = "google/gemini-3.1-flash-lite-preview"
+
+[[candidates]]
+id = "deepseek-v4-pro"
+label = "DeepSeek V4 Pro"
+provider = "openrouter"
+model = "deepseek/deepseek-v4-pro"
+
+[[candidates]]
+id = "grok-4-3"
+label = "Grok 4.3"
+provider = "openrouter"
+model = "x-ai/grok-4.3"
+
+[[candidates]]
+id = "qwen3-next-80b-a3b-instruct"
+label = "Qwen3 Next 80B A3B Instruct"
+provider = "openrouter"
+model = "qwen/qwen3-next-80b-a3b-instruct"
+
+[[candidates]]
+id = "llama-3-3-70b-instruct"
+label = "Llama 3.3 70B Instruct"
+provider = "openrouter"
+model = "meta-llama/llama-3.3-70b-instruct"
+
+[[candidates]]
+id = "gpt-5-4-mini"
+label = "GPT-5.4 Mini"
+provider = "openrouter"
+model = "openai/gpt-5.4-mini"

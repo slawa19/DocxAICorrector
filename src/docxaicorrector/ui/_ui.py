@@ -349,6 +349,7 @@ def render_live_status(target=None) -> None:
             image_count = int(status.get("image_count") or 0)
             source_chars = int(status.get("source_chars") or 0)
             cached = bool(status.get("cached", False))
+            conversion_reused = bool(status.get("conversion_reused", False))
             source_label = _format_source_label(
                 source_format=str(status.get("source_format") or "docx"),
                 cached=cached,
@@ -365,6 +366,8 @@ def render_live_status(target=None) -> None:
                     f"Изображения: {image_count} | Символы: {source_chars} | Блоки: {block_count}"
                 ),
             ]
+            if conversion_reused:
+                meta_lines.append("Конвертация: использую уже сконвертированную DOCX-копию, повторный импорт не выполняется.")
             if normalization_caption:
                 meta_lines.append(normalization_caption)
             title, severity = derive_live_status_title_and_severity(status)

@@ -63,7 +63,7 @@ reconstruction_background_color_distance_threshold = 48.0
 reconstruction_background_uniformity_threshold = 10.0
 
 [models.text]
-default = "gpt-5.4-mini"
+default = "openrouter:google/gemini-3.1-flash-lite-preview"
 options = [
   "gpt-5.4",
   "gpt-5.4-mini",
@@ -78,7 +78,7 @@ options = [
 # default = "gpt-5.4"
 
 [models.structure_recognition]
-default = "gpt-5-mini"
+default = "openrouter:google/gemini-3-flash-preview"
 
 [models.image_analysis]
 default = "gpt-5.4-mini"
@@ -103,7 +103,7 @@ enabled = true
 api_key_env = "OPENAI_API_KEY"
 
 [providers.openrouter]
-enabled = false
+enabled = true
 api_key_env = "OPENROUTER_API_KEY"
 base_url = "https://openrouter.ai/api/v1"
 referer = "DocxAICorrector"

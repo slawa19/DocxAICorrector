@@ -28,7 +28,7 @@ from docxaicorrector.core.models import StructureRecognitionSummary
 from docxaicorrector.core.models import StructureRepairReport
 from docxaicorrector.core.models import clone_prepared_image_asset
 from docxaicorrector.core.models import StructureMap
-from docxaicorrector.processing.processing_runtime import FrozenUploadPayload, build_in_memory_uploaded_file
+from docxaicorrector.processing.processing_runtime import FrozenUploadPayload, HeartbeatBeacon, build_in_memory_uploaded_file
 from docxaicorrector.runtime.artifact_retention import (
     STRUCTURE_MAPS_MAX_AGE_SECONDS,
     STRUCTURE_MAPS_MAX_COUNT,
@@ -480,6 +480,38 @@ def _run_structure_recognition(
             },
         )
 
+        # Heartbeat: while a single window is in flight (synchronous OpenAI call),
+        # keep the UI alive by re-emitting the same stage with growing elapsed.
+        nonlocal _ai_window_heartbeat
+        if event.event == "window_started":
+            if _ai_window_heartbeat is not None:
+                _ai_window_heartbeat.__exit__(None, None, None)
+            beacon = HeartbeatBeacon(
+                progress_callback,
+                stage="Распознавание структуры…",
+                detail_template=(
+                    f"Окно {event.current_window or 1}/{max(event.total_windows, 1)}: "
+                    "жду ответ модели… ({elapsed} сек). Большие окна обычно занимают 30–90 сек."
+                ),
+                progress=progress,
+                metrics={
+                    **base_metrics,
+                    "source_format": source_format,
+                    "conversion_backend": conversion_backend,
+                    "structure_ai_processed_windows": event.processed_windows,
+                    "structure_ai_total_windows": event.total_windows,
+                },
+                interval_seconds=3.0,
+            )
+            beacon.__enter__()
+            _ai_window_heartbeat = beacon
+        elif event.event in {"window_completed", "window_failed", "window_split", "completed"}:
+            if _ai_window_heartbeat is not None:
+                _ai_window_heartbeat.__exit__(None, None, None)
+                _ai_window_heartbeat = None
+
+    _ai_window_heartbeat: HeartbeatBeacon | None = None
+
     try:
         baseline = _capture_structure_baseline(paragraphs)
         cache_key = _build_structure_map_cache_key(paragraphs=paragraphs, app_config=app_config)
@@ -487,15 +519,22 @@ def _run_structure_recognition(
         if bool(app_config.get("structure_recognition_cache_enabled", True)):
             structure_map = _read_cached_structure_map(cache_key)
         if structure_map is None:
-            structure_map = build_structure_map(
-                paragraphs,
-                client=get_client(),
-                model=get_model_role_value(app_config, "structure_recognition"),
-                max_window_paragraphs=int(app_config.get("structure_recognition_max_window_paragraphs", 1800) or 1800),
-                overlap_paragraphs=int(app_config.get("structure_recognition_overlap_paragraphs", 50) or 50),
-                timeout=float(app_config.get("structure_recognition_timeout_seconds", 60) or 60),
-                progress_callback=_emit_structure_ai_progress,
-            )
+            try:
+                structure_map = build_structure_map(
+                    paragraphs,
+                    client=get_client(),
+                    model=get_model_role_value(app_config, "structure_recognition"),
+                    max_window_paragraphs=int(app_config.get("structure_recognition_max_window_paragraphs", 1800) or 1800),
+                    overlap_paragraphs=int(app_config.get("structure_recognition_overlap_paragraphs", 50) or 50),
+                    timeout=float(app_config.get("structure_recognition_timeout_seconds", 60) or 60),
+                    progress_callback=_emit_structure_ai_progress,
+                )
+            finally:
+                if _ai_window_heartbeat is not None:
+                    try:
+                        _ai_window_heartbeat.__exit__(None, None, None)
+                    finally:
+                        _ai_window_heartbeat = None
             if bool(app_config.get("structure_recognition_cache_enabled", True)):
                 _store_cached_structure_map(cache_key, structure_map)
         else:
@@ -593,13 +632,13 @@ def _build_source_import_progress(*, source_format: str) -> tuple[str, str]:
     normalized = str(source_format or "docx").strip().lower()
     if normalized == "pdf":
         return (
-            "Импорт PDF",
-            "Конвертирую PDF в DOCX и извлекаю абзацы, встроенные изображения и структуру.",
+            "Разбор DOCX (из PDF)",
+            "Извлекаю абзацы, встроенные изображения и структуру из сконвертированного DOCX.",
         )
     if normalized == "doc":
         return (
-            "Импорт DOC",
-            "Конвертирую DOC в DOCX и извлекаю абзацы, встроенные изображения и структуру.",
+            "Разбор DOCX (из DOC)",
+            "Извлекаю абзацы, встроенные изображения и структуру из сконвертированного DOCX.",
         )
     return ("Разбор DOCX", "Извлекаю абзацы и встроенные изображения.")
 
@@ -928,7 +967,18 @@ def _prepare_document_for_processing(
         },
     )
     uploaded_file = build_in_memory_uploaded_file(source_name=source_name, source_bytes=source_bytes)
-    extraction_result = _extract_document_content_with_optional_app_config(uploaded_file=uploaded_file, app_config=app_config)
+    with HeartbeatBeacon(
+        progress_callback,
+        stage=initial_stage,
+        detail_template=(
+            initial_detail
+            + " ({elapsed} сек идёт чтение DOCX-архива и извлечение абзацев/изображений.)"
+        ),
+        progress=0.22,
+        metrics={"source_format": source_format, "conversion_backend": conversion_backend},
+        interval_seconds=2.0,
+    ):
+        extraction_result = _extract_document_content_with_optional_app_config(uploaded_file=uploaded_file, app_config=app_config)
     paragraphs, image_assets, normalization_report, relations, relation_report, cleanup_report = extraction_result[:6]
     structure_repair_report = extraction_result[6] if len(extraction_result) > 6 else None
     emit_preparation_progress(

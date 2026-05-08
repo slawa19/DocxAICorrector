@@ -60,8 +60,8 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     assert app_config["paragraph_boundary_normalization_save_debug_artifacts"] is True
     assert app_config["structure_recognition_mode"] == "off"
     assert app_config["structure_recognition_enabled"] is False
-    assert app_config["structure_recognition_model"] == TEST_STRUCTURE_RECOGNITION_MODEL
-    assert models.structure_recognition == TEST_STRUCTURE_RECOGNITION_MODEL
+    assert app_config["structure_recognition_model"] == "gpt-5-mini"
+    assert models.structure_recognition == "gpt-5-mini"
     assert app_config["structure_recognition_max_window_paragraphs"] == 1800
     assert app_config["structure_recognition_overlap_paragraphs"] == 50
     assert app_config["structure_recognition_timeout_seconds"] == 60
@@ -239,7 +239,7 @@ def test_load_app_config_exposes_provider_registry_defaults(monkeypatch):
 
     assert providers.openai.enabled is True
     assert providers.openai.api_key_env == "OPENAI_API_KEY"
-    assert providers.openrouter.enabled is False
+    assert providers.openrouter.enabled is True
     assert providers.openrouter.api_key_env == "OPENROUTER_API_KEY"
     assert providers.openrouter.base_url == "https://openrouter.ai/api/v1"
 
@@ -1310,7 +1310,7 @@ def _provider_contract_test_args(*, paragraph_boundary_enabled: bool, structure_
         "model_registry_settings": {
             "models": config.ModelRegistry(
                 text=config.TextModelConfig(default="gpt-5.4-mini", options=("gpt-5.4-mini",)),
-                structure_recognition=TEST_STRUCTURE_RECOGNITION_MODEL,
+                structure_recognition="gpt-5-mini",
                 image_analysis=TEST_IMAGE_ANALYSIS_MODEL,
                 image_validation=TEST_IMAGE_VALIDATION_MODEL,
                 image_reconstruction=TEST_IMAGE_RECONSTRUCTION_MODEL,
@@ -1336,7 +1336,6 @@ def _provider_contract_test_args(*, paragraph_boundary_enabled: bool, structure_
     ("role_name", "paragraph_boundary_enabled", "structure_recognition_enabled"),
     [
         ("paragraph_boundary_ai_review", True, False),
-        ("structure_recognition", False, True),
     ],
 )
 def test_validate_provider_model_contracts_requires_openai_for_enabled_service_roles_when_provider_disabled(
@@ -1365,7 +1364,6 @@ def test_validate_provider_model_contracts_requires_openai_for_enabled_service_r
     ("role_name", "paragraph_boundary_enabled", "structure_recognition_enabled"),
     [
         ("paragraph_boundary_ai_review", True, False),
-        ("structure_recognition", False, True),
     ],
 )
 def test_validate_provider_model_contracts_requires_openai_key_for_enabled_service_roles(
@@ -1405,7 +1403,7 @@ def test_validate_provider_model_contracts_allows_openrouter_main_text_when_open
                     default="openrouter:google/gemini-3.1-flash-lite-preview",
                     options=("openrouter:google/gemini-3.1-flash-lite-preview",),
                 ),
-                structure_recognition=TEST_STRUCTURE_RECOGNITION_MODEL,
+                structure_recognition="gpt-5-mini",
                 image_analysis=TEST_IMAGE_ANALYSIS_MODEL,
                 image_validation=TEST_IMAGE_VALIDATION_MODEL,
                 image_reconstruction=TEST_IMAGE_RECONSTRUCTION_MODEL,
@@ -1417,4 +1415,37 @@ def test_validate_provider_model_contracts_allows_openrouter_main_text_when_open
         text_runtime_defaults={"translation_second_pass_model": "", "audiobook_model": "gpt-5.4-mini"},
         paragraph_boundary_settings={"paragraph_boundary_ai_review_enabled": True},
         structure_recognition_settings={"structure_recognition_enabled": False},
+    )
+
+
+def test_validate_provider_model_contracts_allows_openrouter_structure_recognition_when_paragraph_ai_review_off(monkeypatch):
+    provider_registry = config.ProviderRegistry(
+        openai=config.ProviderConfig(name="openai", enabled=True, api_key_env="OPENAI_API_KEY"),
+        openrouter=config.ProviderConfig(name="openrouter", enabled=True, api_key_env="OPENROUTER_API_KEY"),
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+
+    config._validate_provider_model_contracts(
+        provider_registry=provider_registry,
+        model_registry_settings={
+            "models": config.ModelRegistry(
+                text=config.TextModelConfig(
+                    default="openrouter:google/gemini-3.1-flash-lite-preview",
+                    options=("openrouter:google/gemini-3.1-flash-lite-preview",),
+                ),
+                structure_recognition="openrouter:google/gemini-3-flash-preview",
+                image_analysis=TEST_IMAGE_ANALYSIS_MODEL,
+                image_validation=TEST_IMAGE_VALIDATION_MODEL,
+                image_reconstruction=TEST_IMAGE_RECONSTRUCTION_MODEL,
+                image_generation=TEST_IMAGE_GENERATION_MODEL,
+                image_edit=TEST_IMAGE_EDIT_MODEL,
+                image_generation_vision=TEST_IMAGE_GENERATION_VISION_MODEL,
+            ),
+        },
+        text_runtime_defaults={
+            "translation_second_pass_model": "",
+            "audiobook_model": "openrouter:google/gemini-3.1-flash-lite-preview",
+        },
+        paragraph_boundary_settings={"paragraph_boundary_ai_review_enabled": False},
+        structure_recognition_settings={"structure_recognition_enabled": True},
     )

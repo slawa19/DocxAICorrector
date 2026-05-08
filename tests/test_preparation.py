@@ -1468,8 +1468,8 @@ def test_prepare_document_for_processing_reports_pdf_import_stage(monkeypatch):
         progress_callback=lambda **payload: events.append(payload),
     )
 
-    assert events[0]["stage"] == "Импорт PDF"
-    assert events[0]["detail"] == "Конвертирую PDF в DOCX и извлекаю абзацы, встроенные изображения и структуру."
+    assert events[0]["stage"] == "Разбор DOCX (из PDF)"
+    assert events[0]["detail"] == "Извлекаю абзацы, встроенные изображения и структуру из сконвертированного DOCX."
     assert events[0]["metrics"]["source_format"] == "pdf"
 
 
@@ -2170,3 +2170,45 @@ def test_prepare_document_for_processing_reports_cache_hit_normalization_metrics
     assert events[0]["metrics"]["logical_paragraph_count"] == 2
     assert events[0]["metrics"]["merged_group_count"] == 1
     assert events[0]["metrics"]["merged_raw_paragraph_count"] == 2
+
+
+def test_prepare_document_for_processing_emits_heartbeat_during_extraction(monkeypatch):
+    """Live-progress contract: while the blocking DOCX extraction call runs,
+    `HeartbeatBeacon` must continue to emit progress events so the UI activity
+    feed and progress bar do not freeze.
+    """
+    import time as _time
+
+    import docxaicorrector.processing.processing_runtime as _processing_runtime
+
+    events: list[dict] = []
+    session_state = {"preparation_cache": {}}
+
+    class _FastBeacon(_processing_runtime.HeartbeatBeacon):
+        def __init__(self, *args, **kwargs):
+            kwargs["interval_seconds"] = 0.05
+            super().__init__(*args, **kwargs)
+
+    def _slow_extract(uploaded_file, *, app_config=None):
+        _time.sleep(0.3)
+        return _build_extract_result(["p1"], [], _build_report(raw=1, logical=1))
+
+    monkeypatch.setattr(preparation, "HeartbeatBeacon", _FastBeacon)
+    monkeypatch.setattr(preparation, "extract_document_content_with_normalization_reports", _slow_extract)
+    monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "text-value")
+    monkeypatch.setattr(preparation, "build_semantic_blocks", lambda paragraphs, max_chars, relations=None: ["block-a"])
+    monkeypatch.setattr(preparation, "build_editing_jobs", lambda blocks, max_chars: [{"target_text": "a", "target_chars": 1, "context_chars": 0}])
+
+    preparation.prepare_document_for_processing(
+        uploaded_payload=_build_uploaded_payload("report.docx", b"docx-bytes", "report.docx:10:hash"),
+        chunk_size=6000,
+        session_state=session_state,
+        progress_callback=lambda **payload: events.append(payload),
+    )
+
+    initial_stage = "Разбор DOCX"
+    heartbeat_events = [e for e in events if e.get("stage") == initial_stage and "сек идёт чтение" in (e.get("detail") or "")]
+    # Extraction takes ~0.3s with 0.05s heartbeat interval — expect at least 2 ticks.
+    assert len(heartbeat_events) >= 2, [e.get("detail") for e in events]
+    # Progress value during heartbeat should match the wired-in 0.22 anchor.
+    assert all(abs(float(e["progress"]) - 0.22) < 1e-6 for e in heartbeat_events)

@@ -1110,9 +1110,6 @@ def _validate_provider_model_contracts(
                 f"OpenAI service role '{role_name}' включён, но provider openai недоступен."
             )
 
-    if structure_recognition_settings["structure_recognition_enabled"]:
-        ensure_openai_service_role_available("structure_recognition")
-
     if paragraph_boundary_settings["paragraph_boundary_ai_review_enabled"]:
         ensure_openai_service_role_available("paragraph_boundary_ai_review")
 
@@ -1144,7 +1141,6 @@ def _validate_provider_model_contracts(
     )
 
     openai_only_roles = {
-        "models.structure_recognition.default": (models.structure_recognition, "responses_text"),
         "models.image_analysis.default": (models.image_analysis, "responses_vision"),
         "models.image_validation.default": (models.image_validation, "responses_vision"),
         "models.image_reconstruction.default": (models.image_reconstruction, "responses_vision"),
@@ -1163,6 +1159,13 @@ def _validate_provider_model_contracts(
             raise RuntimeError(
                 f"Provider '{resolved_selector.provider}' не поддерживает role '{role_name}' / capability '{required_capability}'."
             )
+
+    resolve_model_selector(
+        models.structure_recognition,
+        required_capability="responses_text",
+        config_like=provider_registry,
+        source_name="models.structure_recognition.default",
+    )
 
     if paragraph_boundary_settings["paragraph_boundary_ai_review_enabled"]:
         resolved_selector = resolve_model_selector(

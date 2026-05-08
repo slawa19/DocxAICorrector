@@ -41,6 +41,8 @@ tests/artifacts/real_document_pipeline/**
 # Generated benchmark artifacts
 benchmark_projects/pdf_candidate_benchmark/artifacts/**
 !benchmark_projects/pdf_candidate_benchmark/artifacts/
+benchmark_projects/structure_recognition_benchmark/artifacts/**
+!benchmark_projects/structure_recognition_benchmark/artifacts/
 benchmark_projects/translation_quality_benchmark/artifacts/**
 !benchmark_projects/translation_quality_benchmark/artifacts/
 

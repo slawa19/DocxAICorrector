@@ -954,6 +954,7 @@ def set_processing_status(
     medium_accepted_merge_count: int | None = None,
     medium_rejected_candidate_count: int | None = None,
     cached: bool | None = None,
+    conversion_reused: bool | None = None,
     segment_status_by_id: dict[str, str] | None = None,
     segment_progress_by_id: dict[str, float] | None = None,
     active_segment_id: str | None = None,
@@ -1009,6 +1010,8 @@ def set_processing_status(
         status["medium_rejected_candidate_count"] = medium_rejected_candidate_count
     if cached is not None:
         status["cached"] = cached
+    if conversion_reused is not None:
+        status["conversion_reused"] = conversion_reused
     if segment_status_by_id is not None:
         status["segment_status_by_id"] = {
             str(segment_id): str(segment_status)

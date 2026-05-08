@@ -860,6 +860,46 @@ def test_render_live_status_shows_cache_source_for_preparation(monkeypatch):
     assert progress_calls == [0.9]
 
 
+def test_render_live_status_shows_conversion_reuse_for_preparation(monkeypatch):
+    session_state = SessionState(
+        processing_status={
+            "is_running": True,
+            "phase": "preparing",
+            "stage": "DOCX готов",
+            "detail": "Использую уже сконвертированную копию DOCX. Повторная конвертация не нужна.",
+            "file_size_bytes": 1048576,
+            "paragraph_count": 12,
+            "image_count": 0,
+            "source_chars": 5000,
+            "block_count": 0,
+            "cached": False,
+            "conversion_reused": True,
+            "source_format": "pdf",
+            "progress": 0.18,
+            "started_at": None,
+        },
+        activity_feed=[{"time": "10:00:00", "message": "[Анализ] DOCX готов: Использую уже сконвертированную копию DOCX."}],
+    )
+    info_calls = []
+    writes = []
+    captions = []
+    progress_calls = []
+
+    monkeypatch.setattr(ui.st, "session_state", session_state)
+    monkeypatch.setattr(ui.st, "info", lambda text: info_calls.append(text))
+    monkeypatch.setattr(ui.st, "write", lambda text: writes.append(text))
+    monkeypatch.setattr(ui.st, "progress", lambda value: progress_calls.append(value))
+    monkeypatch.setattr(ui.st, "caption", lambda text: captions.append(text))
+
+    ui.render_live_status(FakeTarget())
+
+    assert info_calls == ["Идет анализ файла"]
+    assert writes == ["Использую уже сконвертированную копию DOCX. Повторная конвертация не нужна."]
+    assert any("Источник: PDF" in text for text in captions)
+    assert any("Конвертация: использую уже сконвертированную DOCX-копию, повторный импорт не выполняется." in text for text in captions)
+    assert progress_calls == [0.18]
+
+
 def test_render_preparation_summary_uses_stage_and_detail(monkeypatch):
     session_state = SessionState()
     info_calls = []
