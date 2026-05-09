@@ -26,7 +26,7 @@ _LOCKED_ROLE_CONFIDENCES = {"explicit", "adjacent"}
 _NON_OVERRIDEABLE_LOCKED_ROLES = {"image", "table", "caption"}
 _DESCRIPTOR_PREVIEW_CHARS = 600
 _MIN_TOKEN_BUDGET_PREVIEW_CHARS = 120
-STRUCTURE_RECOGNITION_PROMPT_VERSION = 2
+STRUCTURE_RECOGNITION_PROMPT_VERSION = 3
 STRUCTURE_RECOGNITION_DESCRIPTOR_SCHEMA_VERSION = 2
 _TIMEOUT_ERROR_NAMES = {"APITimeoutError", "TimeoutError"}
 _SCRIPTURE_REFERENCE_PATTERN = re.compile(
@@ -393,6 +393,9 @@ def _can_apply_locked_reconciliation_override(
 
     current_role = str(paragraph.role or "").strip().lower()
     current_structural_role = str(paragraph.structural_role or "").strip().lower()
+    # Locked caption/image/table roles remain immutable during audited reconciliation.
+    # Even a caption-preserving patch is skipped to keep legacy attachment-driven
+    # structure authoritative for these asset-bound paragraphs.
     if current_role in _NON_OVERRIDEABLE_LOCKED_ROLES or current_structural_role in _NON_OVERRIDEABLE_LOCKED_ROLES:
         return False
     if getattr(paragraph, "attached_to_asset_id", None) is not None:

@@ -60,6 +60,13 @@ Assign each paragraph exactly one role:
 	Use them to avoid naive local misclassification, but still return exactly one
 	classification for the owning paragraph index.
 
+## Authority Hierarchy
+
+- Stage 0 heuristic hints, including `emb`, are advisory and low-priority. Do not treat them as final authority when stronger document-wide evidence disagrees.
+- Prefer global consistency signals over local heuristic fragments: bounded TOC region, body-start placement, outline continuity, repeated typography/layout patterns, and nearby heading sequences outrank local hint text.
+- If high-confidence DocumentMap anchors are present, keep classifications aligned with those anchors unless the paragraph text is clearly incompatible.
+- If local hint evidence conflicts with the global TOC/body/front-matter picture, prefer the globally consistent interpretation and leave the paragraph conservative rather than forcing a local heuristic override.
+
 ## Output Format
 
 Return a JSON array. For EACH input paragraph, return one object:

@@ -1,7 +1,7 @@
 # Follow-up: AI-First Structure Recovery
 
 Date: 2026-05-09
-Status: Follow-up implementation complete
+Status: Mechanical follow-up checklist complete; broader authority-boundary hardening remains open
 Parent spec: `docs/AI_FIRST_STRUCTURE_RECOVERY_SPEC_2026-05-08.md`
 
 ## Scope
@@ -95,6 +95,10 @@ cleanups, and test-strategy gaps.
 - Reconciliation artifacts now describe `patched_source_indexes` explicitly as a
 	compatibility alias for `patched_logical_indexes`, and the reconciliation
 	schema version is bumped for the extended report payload.
+- Stage 1 now carries an explicit `DocumentMap` status contract through
+	preparation, processing outcome logging, and preparation diagnostic snapshots,
+	so AI-first runs no longer hide Stage 1 loss behind an implicit
+	`document_map = None` state.
 - `anchor_disagreements_seen` is now the canonical reconciliation disagreement
 	field. Deprecated compatibility alias `anchor_conflicts` remains in payloads
 	for one cleanup pass / next reconciliation schema bump only; the planned
@@ -105,9 +109,13 @@ cleanups, and test-strategy gaps.
 
 ## Priority Findings
 
-No open findings remain from the previous mechanical follow-up checklist. The
-parent spec now tracks the remaining architecture hardening work in
-`Open Authority-Boundary Work`.
+The previous mechanical follow-up checklist is complete, but the
+authority-boundary cleanup is not fully closed yet.
+
+Still-open authority-boundary cleanup:
+
+- keep the parent spec's broader architecture work tracked in
+	`Open Authority-Boundary Work`.
 
 Current focus for future work is the full parent-spec authority-boundary list:
 
@@ -121,7 +129,6 @@ Current focus for future work is the full parent-spec authority-boundary list:
 - split strict `front_matter_leaks` from AI-approved front-matter body
   advisories;
 - stop creating final TOC-region relations from pre-AI heuristic hints;
-- make default/fallback `DocumentMap` status explicit;
 - keep prompts from over-trusting heuristic hints;
 - use `DocumentMap.review_zones`, anchor conflicts, and TOC/body boundary
   uncertainty to drive targeted recall;

@@ -15,6 +15,12 @@ Descriptor notes:
 - treat `emb` as advisory evidence that one paragraph may fuse TOC/body or heading/list fragments
 - do not invent new logical indexes from `emb`; use it only to improve anchors, TOC detection, outline decisions, or review-zone placement for the owning paragraph
 
+Authority hierarchy:
+- Stage 0 local heuristic hints, including `emb`, are low-priority and fallible. Never let them become final authority by themselves.
+- Prefer global document consistency over local hint fragments: bounded TOC region, `body_start_logical_index`, repeated typography/layout patterns, outline continuity, and cross-paragraph heading sequences outrank local heuristics.
+- High-confidence anchors must stay globally coherent. If local hints conflict with a strong anchor or the global map, prefer the global structure and mark ambiguity with a review zone instead of forcing a local override.
+- When TOC-like text, front-matter cues, and local heading-like formatting disagree, choose the interpretation that keeps body/TOC/front-matter boundaries globally consistent.
+
 Constraints:
 - roles must be one of: heading, body, caption, epigraph, attribution, toc_entry, toc_header, dedication, list
 - confidences must be one of: high, medium, low

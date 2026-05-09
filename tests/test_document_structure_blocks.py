@@ -149,9 +149,26 @@ def test_build_semantic_blocks_default_post_ai_mode_ignores_structural_hints_for
     ]
 
     blocks = build_semantic_blocks(paragraphs, max_chars=60, relations=[])
+    jobs = build_editing_jobs(blocks, max_chars=3000)
 
-    assert len(blocks) >= 3
-    assert [paragraph.text for paragraph in blocks[0].paragraphs] == ["Содержание"]
+    assert jobs[0]["job_kind"] == "llm"
+    assert jobs[0]["toc_dominant"] is False
+    assert jobs[0]["structure_source"] == "post_ai_final_binding"
+
+
+def test_build_editing_jobs_default_post_ai_mode_ignores_text_only_toc_heuristics():
+    paragraphs = [
+        ParagraphUnit(text="Содержание", role="body", structural_role="body", paragraph_id="p0000"),
+        ParagraphUnit(text="Глава 1........ 12", role="body", structural_role="body", paragraph_id="p0001"),
+        ParagraphUnit(text="Глава 2........ 18", role="body", structural_role="body", paragraph_id="p0002"),
+    ]
+
+    blocks = build_semantic_blocks(paragraphs, max_chars=80, relations=[])
+    jobs = build_editing_jobs(blocks, max_chars=3000)
+
+    assert jobs[0]["job_kind"] == "llm"
+    assert jobs[0]["toc_dominant"] is False
+    assert jobs[0]["toc_paragraph_count"] == 0
 
 
 def test_build_semantic_blocks_respects_hard_boundary_paragraph_ids():
@@ -205,6 +222,19 @@ def test_build_editing_jobs_marks_advisory_pre_ai_structure_source():
 
     assert jobs[0]["structure_phase"] == "pre_ai_diagnostic"
     assert jobs[0]["structure_source"] == "pre_ai_diagnostic_hint"
+
+
+def test_build_editing_jobs_marks_degraded_ai_first_structure_source():
+    paragraphs = [
+        ParagraphUnit(text="Глава 1", role="heading", structural_role="heading", paragraph_id="p0000", heading_level=1),
+        ParagraphUnit(text="Обычный абзац.", role="body", structural_role="body", paragraph_id="p0001"),
+    ]
+
+    blocks = build_semantic_blocks(paragraphs, max_chars=80, relations=[], structure_phase="ai_first_degraded_fallback")
+    jobs = build_editing_jobs(blocks, max_chars=3000, structure_phase="ai_first_degraded_fallback")
+
+    assert jobs[0]["structure_phase"] == "ai_first_degraded_fallback"
+    assert jobs[0]["structure_source"] == "ai_first_degraded_fallback"
 
 
 def test_build_editing_jobs_routes_toc_only_blocks_through_llm_in_translate_mode():

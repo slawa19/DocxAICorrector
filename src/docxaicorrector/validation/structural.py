@@ -530,7 +530,7 @@ def _build_preparation_diagnostic_defaults(event_log: Sequence[Mapping[str, obje
     outline_coverage_ratio = _extract_event_context_float(event_log, "structure_processing_outcome", "outline_coverage_ratio")
     if outline_coverage_ratio is None:
         outline_coverage_ratio = _extract_event_context_float(event_log, "reconciliation_report_saved", "outline_coverage_ratio")
-    return {
+    snapshot = {
         "paragraph_count": 0,
         "heading_count": 0,
         "toc_header_count": 0,
@@ -563,6 +563,13 @@ def _build_preparation_diagnostic_defaults(event_log: Sequence[Mapping[str, obje
         "first_block_has_body_start": False,
         "first_block_has_isolated_marker": False,
     }
+    document_map_status = _extract_event_context_value(event_log, "structure_processing_outcome", "document_map_status")
+    document_map_status_reason = _extract_event_context_value(event_log, "structure_processing_outcome", "document_map_status_reason")
+    if str(document_map_status or "").strip():
+        snapshot["document_map_status"] = str(document_map_status).strip()
+    if str(document_map_status_reason or "").strip():
+        snapshot["document_map_status_reason"] = str(document_map_status_reason).strip()
+    return snapshot
 
 
 def _apply_prepared_snapshot_fields(snapshot: dict[str, object], prepared: object) -> None:
@@ -582,6 +589,14 @@ def _apply_prepared_snapshot_fields(snapshot: dict[str, object], prepared: objec
         snapshot["ai_classified_count"] = int(getattr(prepared, "ai_classified_count", 0) or 0)
     if _as_int(snapshot, "ai_heading_count") == 0:
         snapshot["ai_heading_count"] = int(getattr(prepared, "ai_heading_count", 0) or 0)
+    if not str(snapshot.get("document_map_status") or ""):
+        document_map_status = str(getattr(prepared, "document_map_status", "") or "").strip()
+        if document_map_status:
+            snapshot["document_map_status"] = document_map_status
+    if not str(snapshot.get("document_map_status_reason") or ""):
+        document_map_status_reason = str(getattr(prepared, "document_map_status_reason", "") or "").strip()
+        if document_map_status_reason:
+            snapshot["document_map_status_reason"] = document_map_status_reason
     _apply_quality_gate_readiness_fallback(snapshot)
     _normalize_snapshot_or_metric_statuses(snapshot)
 

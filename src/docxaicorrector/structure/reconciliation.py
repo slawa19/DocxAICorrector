@@ -76,6 +76,16 @@ class ReconciliationReport:
         # before deterministic reconciliation applies high-confidence anchors.
         return self.anchor_disagreements_seen
 
+    @property
+    def actionable_divergence_count(self) -> int:
+        return (
+            self.missing_outline_entry_count
+            + self.unexpected_heading_count
+            + self.toc_entry_without_body_match_count
+            + self.front_matter_leak_count
+            + self.anchor_conflict_count
+        )
+
 
 @dataclass(frozen=True)
 class _ParagraphIndexes:

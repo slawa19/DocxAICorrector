@@ -384,6 +384,8 @@ def _is_quote_structural_role(paragraph: ParagraphUnit, *, structure_phase: str)
 def _is_toc_structural_role(paragraph: ParagraphUnit, *, structure_phase: str) -> bool:
     if _paragraph_structural_kind(paragraph, structure_phase=structure_phase) in {"toc_header", "toc_entry"}:
         return True
+    if not phase_uses_advisory_hints(structure_phase):
+        return False
     return _SEMANTIC_BLOCK_TOC_ENTRY_PATTERN.match(str(getattr(paragraph, "text", "")).strip()) is not None
 
 
@@ -475,6 +477,8 @@ def _is_bibliography_like_region(blocks: list[DocumentBlock]) -> bool:
 
 
 def _semantic_block_structure_source(structure_phase: str) -> str:
+    if str(structure_phase or "").strip().lower() == "ai_first_degraded_fallback":
+        return "ai_first_degraded_fallback"
     return "pre_ai_diagnostic_hint" if phase_uses_advisory_hints(structure_phase) else "post_ai_final_binding"
 
 

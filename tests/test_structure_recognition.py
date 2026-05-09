@@ -546,6 +546,51 @@ def test_apply_structure_map_skips_locked_reconciliation_override_for_adjacent_c
     assert metrics["reconciliation_locked_overrides_skipped"] == 1
 
 
+def test_apply_structure_map_intentionally_skips_caption_preserving_reconciliation_patch():
+    adjacent_caption = _paragraph(source_index=0, text="Рисунок 1", role="caption", structural_role="caption", role_confidence="adjacent")
+    adjacent_caption.logical_index = 10
+    structure_map = StructureMap(
+        classifications={
+            10: ParagraphClassification(
+                index=10,
+                role="caption",
+                heading_level=None,
+                confidence="high",
+                rationale="document_map_reconciliation",
+            ),
+        },
+        model_used="gpt-4o-mini",
+        total_tokens_used=10,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(),
+        paragraph_anchors={10: DocumentMapAnchor(role="caption", heading_level=None, confidence="high")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+
+    metrics = structure_recognition.apply_structure_map(
+        [adjacent_caption],
+        structure_map,
+        document_map=document_map,
+    )
+
+    assert adjacent_caption.role == "caption"
+    assert adjacent_caption.structural_role == "caption"
+    assert adjacent_caption.role_confidence == "adjacent"
+    assert metrics["reconciliation_patches_applied"] == 0
+    assert metrics["reconciliation_locked_overrides_applied"] == 0
+    assert metrics["reconciliation_locked_overrides_skipped"] == 1
+
+
 def test_apply_structure_map_preserves_conflicting_high_confidence_anchor():
     paragraph = _paragraph(source_index=0, text="ГЛАВА 1")
     paragraph.logical_index = 10

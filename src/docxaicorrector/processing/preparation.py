@@ -22,6 +22,7 @@ from docxaicorrector.document._document import (
     extract_document_content_with_normalization_reports,
     summarize_boundary_normalization_metrics,
 )
+from docxaicorrector.document.relations import build_paragraph_relations
 from docxaicorrector.core.logger import log_event
 from docxaicorrector.core.models import DocumentMap, LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport, ParagraphRelation, RelationNormalizationReport
 from docxaicorrector.core.models import StructureRecognitionSummary
@@ -128,6 +129,75 @@ def _is_structure_provider_runtime_error(exc: RuntimeError) -> bool:
     )
 
 
+def _is_document_map_provider_runtime_error(exc: RuntimeError) -> bool:
+    message = str(exc or "").strip().lower()
+    if message == "unsupported document-map client":
+        return True
+    return any(
+        marker in message
+        for marker in (
+            "api_key",
+            "api key",
+            "selector",
+            "provider",
+            "disabled",
+            "отключ",
+            "не найден",
+            "missing api key",
+            "generation failed without a terminal result",
+            "terminal result",
+        )
+    )
+
+
+def _resolve_downstream_structure_phase(*, structure_ai_attempted: bool, structure_summary: StructureRecognitionSummary) -> str:
+    if not structure_ai_attempted:
+        return "pre_ai_diagnostic"
+    if structure_summary.ai_first_degraded:
+        return "ai_first_degraded_fallback"
+    return "post_ai_final"
+
+
+def _build_paragraph_relations_with_optional_phase(*, paragraphs, enabled_relation_kinds, structure_phase: str):
+    try:
+        return build_paragraph_relations(
+            paragraphs,
+            enabled_relation_kinds=enabled_relation_kinds,
+            structure_phase=structure_phase,
+        )
+    except TypeError as exc:
+        if "structure_phase" not in str(exc):
+            raise
+        return build_paragraph_relations(
+            paragraphs,
+            enabled_relation_kinds=enabled_relation_kinds,
+        )
+
+
+def _record_document_map_state(
+    state: dict[str, object] | None,
+    *,
+    status: str,
+    reason: str = "",
+    document_map_present: bool,
+) -> None:
+    if state is None:
+        return
+    state["document_map_status"] = str(status or "").strip().lower() or "not_requested"
+    state["document_map_status_reason"] = str(reason or "").strip()
+    state["document_map_present"] = document_map_present
+
+
+def _relation_report_phase_and_source(report: RelationNormalizationReport | None) -> tuple[str, str]:
+    if report is None or not report.decisions:
+        return "", ""
+    first_decision = report.decisions[0]
+    return (
+        str(getattr(first_decision, "structure_phase", "") or "").strip(),
+        str(getattr(first_decision, "structure_source", "") or "").strip(),
+    )
+
+
 def _build_ai_first_degraded_summary(*, fallback_stage: str, reason: str, document_map_present: bool) -> StructureRecognitionSummary:
     return StructureRecognitionSummary(
         ai_first_degraded=True,
@@ -172,6 +242,8 @@ class PreparedDocumentData:
     cleanup_report: LayoutArtifactCleanupReport | None = None
     structure_repair_report: StructureRepairReport | None = None
     document_map: DocumentMap | None = None
+    document_map_status: str = "not_requested"
+    document_map_status_reason: str = ""
     structure_map: StructureMap | None = None
     structure_recognition_summary: StructureRecognitionSummary = field(default_factory=StructureRecognitionSummary)
     structure_validation_report: StructureValidationReport | None = None
@@ -948,7 +1020,7 @@ def _run_structure_recognition(
             targeted_threshold = int(app_config.get("structure_recovery_reconciliation_targeted_threshold", 3) or 3)
             if (
                 bool(app_config.get("structure_recovery_reconciliation_targeted_enabled", False))
-                and reconciliation_report.missing_outline_entry_count + reconciliation_report.unexpected_heading_count > targeted_threshold
+                and reconciliation_report.actionable_divergence_count > targeted_threshold
             ):
                 try:
                     structure_map = targeted_reclassify_with_reconciliation_context(
@@ -1117,8 +1189,20 @@ def _run_document_map_stage(
     if get_client_fn is None:
         get_client_fn = get_client
     if not bool(app_config.get("structure_recovery_enabled", False)):
+        _record_document_map_state(
+            fallback_state,
+            status="disabled",
+            reason="structure_recovery_disabled",
+            document_map_present=False,
+        )
         return None
     if not bool(app_config.get("structure_recovery_document_map_enabled", False)):
+        _record_document_map_state(
+            fallback_state,
+            status="disabled",
+            reason="document_map_disabled",
+            document_map_present=False,
+        )
         return None
 
     base_metrics = _build_preparation_stage_metrics(
@@ -1168,6 +1252,12 @@ def _run_document_map_stage(
             document_map = _read_cached_document_map(cache_key)
     except Exception as exc:
         reason = _format_ai_first_fallback_reason(exc)
+        _record_document_map_state(
+            fallback_state,
+            status="cache_failed",
+            reason=reason,
+            document_map_present=False,
+        )
         _record_ai_first_fallback(
             fallback_state,
             fallback_stage="stage1_document_map_cache",
@@ -1206,7 +1296,17 @@ def _run_document_map_stage(
             )
             if bool(app_config.get("structure_recovery_document_map_cache_enabled", True)):
                 _store_cached_document_map(cache_key, document_map)
+            _record_document_map_state(
+                fallback_state,
+                status="ai",
+                document_map_present=True,
+            )
         else:
+            _record_document_map_state(
+                fallback_state,
+                status="cache",
+                document_map_present=True,
+            )
             emit_preparation_progress(
                 progress_callback,
                 stage="Карта документа…",
@@ -1222,6 +1322,12 @@ def _run_document_map_stage(
             )
     except DocumentMapSchemaError as exc:
         reason = _format_ai_first_fallback_reason(exc)
+        _record_document_map_state(
+            fallback_state,
+            status="schema_failed",
+            reason=reason,
+            document_map_present=False,
+        )
         _record_ai_first_fallback(
             fallback_state,
             fallback_stage="stage1_document_map_schema",
@@ -1245,8 +1351,47 @@ def _run_document_map_stage(
             metrics={**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend},
         )
         return None
-    except (DocumentMapRequestTimeout, RuntimeError, Exception) as exc:
+    except DocumentMapRequestTimeout as exc:
         reason = _format_ai_first_fallback_reason(exc)
+        _record_document_map_state(
+            fallback_state,
+            status="provider_failed",
+            reason=reason,
+            document_map_present=False,
+        )
+        _record_ai_first_fallback(
+            fallback_state,
+            fallback_stage="stage1_document_map_provider",
+            reason=reason,
+            document_map_present=False,
+        )
+        log_event(
+            logging.WARNING,
+            "document_map_fallback",
+            "Построение глобальной карты документа завершилось fallback-путём.",
+            ai_first_degraded=True,
+            fallback_stage="stage1_document_map_provider",
+            document_map_present=False,
+            error_message=reason,
+        )
+        emit_preparation_progress(
+            progress_callback,
+            stage="Карта документа: fallback",
+            detail="Глобальная карта документа недоступна. Продолжаю без неё.",
+            progress=0.4,
+            metrics={**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend},
+        )
+        return None
+    except RuntimeError as exc:
+        if not _is_document_map_provider_runtime_error(exc):
+            raise
+        reason = _format_ai_first_fallback_reason(exc)
+        _record_document_map_state(
+            fallback_state,
+            status="provider_failed",
+            reason=reason,
+            document_map_present=False,
+        )
         _record_ai_first_fallback(
             fallback_state,
             fallback_stage="stage1_document_map_provider",
@@ -1578,23 +1723,29 @@ def _attach_prepared_job_ids(jobs: Sequence[Mapping[str, Any]]) -> list[dict[str
     return prepared_jobs
 
 
-def _build_editing_jobs_with_optional_operation(*, blocks, max_chars: int, processing_operation: str):
+def _build_editing_jobs_with_optional_operation(*, blocks, max_chars: int, processing_operation: str, structure_phase: str):
     signature = inspect.signature(build_editing_jobs)
-    if "processing_operation" not in signature.parameters:
+    accepts_processing_operation = "processing_operation" in signature.parameters
+    accepts_structure_phase = "structure_phase" in signature.parameters
+    if not accepts_processing_operation and not accepts_structure_phase:
         if str(getattr(build_editing_jobs, "__module__", "")) not in {"document", "document_semantic_blocks"}:
             return build_editing_jobs(blocks, max_chars=max_chars)
-        raise RuntimeError("build_editing_jobs must accept processing_operation")
+        raise RuntimeError("build_editing_jobs must accept processing_operation or structure_phase")
     try:
-        return build_editing_jobs(blocks, max_chars=max_chars, processing_operation=processing_operation)
+        kwargs = {"max_chars": max_chars}
+        if accepts_processing_operation:
+            kwargs["processing_operation"] = processing_operation
+        if accepts_structure_phase:
+            kwargs["structure_phase"] = structure_phase
+        return build_editing_jobs(blocks, **kwargs)
     except TypeError:
         return build_editing_jobs(blocks, max_chars=max_chars)
 
 
-def _build_semantic_blocks_with_optional_boundaries(*, paragraphs, max_chars: int, relations, hard_boundary_paragraph_ids: set[str]):
+def _build_semantic_blocks_with_optional_boundaries(*, paragraphs, max_chars: int, relations, hard_boundary_paragraph_ids: set[str], structure_phase: str):
     signature = inspect.signature(build_semantic_blocks)
     accepts_hard_boundaries = "hard_boundary_paragraph_ids" in signature.parameters
     accepts_structure_phase = "structure_phase" in signature.parameters
-    structure_phase = "post_ai_final" if relations is None else "pre_ai_diagnostic"
     if accepts_hard_boundaries:
         try:
             kwargs = {
@@ -1832,7 +1983,11 @@ def _prepare_document_for_processing(
                         "conversion_backend": conversion_backend,
                     },
                 )
-    ai_first_fallback_state: dict[str, object] = {}
+    ai_first_fallback_state: dict[str, object] = {
+        "document_map_status": "not_requested",
+        "document_map_status_reason": "",
+        "document_map_present": False,
+    }
     document_map = (
         _run_document_map_stage(
             paragraphs=paragraphs,
@@ -1958,12 +2113,49 @@ def _prepare_document_for_processing(
             "conversion_backend": conversion_backend,
         },
     )
+    downstream_structure_phase = _resolve_downstream_structure_phase(
+        structure_ai_attempted=structure_ai_attempted,
+        structure_summary=structure_summary,
+    )
+    downstream_relations = relations
+    if structure_ai_attempted:
+        relation_normalization_enabled = bool(app_config.get("relation_normalization_enabled", True))
+        enabled_relation_kinds = tuple(
+            str(kind or "").strip()
+            for kind in app_config.get(
+                "relation_normalization_enabled_relation_kinds",
+                ("epigraph_attribution", "image_caption", "table_caption", "toc_region"),
+            )
+            if str(kind or "").strip()
+        ) if relation_normalization_enabled else ()
+        try:
+            relations, relation_report = _build_paragraph_relations_with_optional_phase(
+                paragraphs=paragraphs,
+                enabled_relation_kinds=enabled_relation_kinds,
+                structure_phase=downstream_structure_phase,
+            )
+            downstream_relations = relations
+        except Exception as exc:
+            preserved_relation_phase, preserved_relation_source = _relation_report_phase_and_source(relation_report)
+            downstream_relations = []
+            log_event(
+                logging.WARNING,
+                "relation_rebuild_after_structure_failed",
+                "Не удалось перестроить relation-решения после AI-обработки структуры; downstream relation grouping отключён, diagnostic-версия сохранена отдельно.",
+                structure_phase=downstream_structure_phase,
+                enabled_relation_kinds=list(enabled_relation_kinds),
+                error_message=_format_ai_first_fallback_reason(exc),
+                downstream_relations_disabled=True,
+                preserved_relation_phase=preserved_relation_phase,
+                preserved_relation_source=preserved_relation_source,
+            )
     hard_boundary_paragraph_ids = resolve_segment_hard_boundary_paragraph_ids(segments)
     blocks = _build_semantic_blocks_with_optional_boundaries(
         paragraphs=paragraphs,
         max_chars=chunk_size,
-        relations=None if structure_ai_attempted else relations,
+        relations=downstream_relations,
         hard_boundary_paragraph_ids=hard_boundary_paragraph_ids,
+        structure_phase=downstream_structure_phase,
     )
     quality_gate_status, quality_gate_reasons = _apply_first_block_composition_quality_gate(
         blocks=blocks,
@@ -1981,6 +2173,8 @@ def _prepare_document_for_processing(
                 "structure_map": structure_map,
                 "structure_recognition_summary": structure_summary,
                 "structure_ai_attempted": structure_ai_attempted,
+                "document_map_status": str(ai_first_fallback_state.get("document_map_status", "") or ""),
+                "document_map_status_reason": str(ai_first_fallback_state.get("document_map_status_reason", "") or ""),
             },
         )()
     )
@@ -1995,7 +2189,9 @@ def _prepare_document_for_processing(
         escalation_reasons=list(getattr(structure_validation_report, "escalation_reasons", ())),
         readiness_status=str(getattr(structure_validation_report, "readiness_status", "") or ""),
         readiness_reasons=list(getattr(structure_validation_report, "readiness_reasons", ())),
-        document_map_present=bool(getattr(structure_validation_report, "document_map_present", False)),
+        document_map_present=bool(document_map is not None or getattr(structure_validation_report, "document_map_present", False)),
+        document_map_status=str(ai_first_fallback_state.get("document_map_status", "") or ""),
+        document_map_status_reason=str(ai_first_fallback_state.get("document_map_status_reason", "") or ""),
         outline_coverage_ratio=getattr(structure_validation_report, "outline_coverage_ratio", None),
         ai_first_degraded=structure_summary.ai_first_degraded,
         fallback_stage=structure_summary.fallback_stage,
@@ -2050,6 +2246,7 @@ def _prepare_document_for_processing(
         blocks=blocks,
         max_chars=chunk_size,
         processing_operation=processing_operation,
+        structure_phase=downstream_structure_phase,
     )
     jobs = _attach_prepared_job_ids(jobs)
     if _supports_segment_detection(paragraphs):
@@ -2108,6 +2305,8 @@ def _prepare_document_for_processing(
         cleanup_report=cleanup_report,
         structure_repair_report=structure_repair_report,
         document_map=document_map,
+        document_map_status=str(ai_first_fallback_state.get("document_map_status", "not_requested") or "not_requested"),
+        document_map_status_reason=str(ai_first_fallback_state.get("document_map_status_reason", "") or ""),
         structure_map=structure_map,
         structure_recognition_summary=structure_summary,
         structure_validation_report=structure_validation_report,
@@ -2169,6 +2368,8 @@ def _clone_prepared_document(data: PreparedDocumentData, prepared_source_key: st
         cleanup_report=deepcopy(data.cleanup_report),
         structure_repair_report=deepcopy(data.structure_repair_report),
         document_map=deepcopy(data.document_map),
+        document_map_status=data.document_map_status,
+        document_map_status_reason=data.document_map_status_reason,
         structure_map=deepcopy(data.structure_map),
         structure_recognition_summary=data.structure_recognition_summary,
         structure_validation_report=deepcopy(data.structure_validation_report),

@@ -15,6 +15,7 @@ from docxaicorrector.core.models import (
 
 
 TOC_ENTRY_PATTERN = re.compile(r"^.{1,120}(?:\.{2,}|\s{2,})\d+\s*$")
+RELATION_NORMALIZATION_REPORT_VERSION = 2
 
 
 def resolve_effective_relation_kinds() -> tuple[str, ...]:
@@ -256,7 +257,7 @@ def write_relation_normalization_report_artifact(
         safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", source_name or "document.docx").strip("_") or "document.docx"
         artifact_path = target_dir / f"{safe_name}_{source_hash}.json"
         payload = {
-            "version": 1,
+            "version": RELATION_NORMALIZATION_REPORT_VERSION,
             "source_file": source_name,
             "source_hash": source_hash,
             "profile": profile,
@@ -271,6 +272,8 @@ def write_relation_normalization_report_artifact(
                     "member_paragraph_ids": list(decision.member_paragraph_ids),
                     "anchor_asset_id": decision.anchor_asset_id,
                     "reasons": list(decision.reasons),
+                    "structure_phase": decision.structure_phase,
+                    "structure_source": decision.structure_source,
                 }
                 for decision in report.decisions
             ],
@@ -361,6 +364,8 @@ def _is_likely_toc_entry_text(text: str) -> bool:
 
 
 def _relation_structure_source(structure_phase: str) -> str:
+    if str(structure_phase or "").strip().lower() == "ai_first_degraded_fallback":
+        return "ai_first_degraded_fallback"
     return "pre_ai_diagnostic_hint" if phase_uses_advisory_hints(structure_phase) else "post_ai_final_binding"
 
 

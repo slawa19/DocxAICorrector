@@ -1,6 +1,7 @@
 from io import BytesIO
 import base64
 import json
+from pathlib import Path
 
 import docxaicorrector.core.config as config
 import docxaicorrector.document._document as document_module
@@ -327,7 +328,7 @@ def test_relation_debug_artifact_writes_expected_payload(monkeypatch, tmp_path):
 
     payload = json.loads(artifact_files[0].read_text(encoding="utf-8"))
     assert payload == {
-        "version": 1,
+        "version": 2,
         "source_file": "debug sample.docx",
         "source_hash": payload["source_hash"],
         "profile": "phase2_default",
@@ -342,10 +343,72 @@ def test_relation_debug_artifact_writes_expected_payload(monkeypatch, tmp_path):
                 "member_paragraph_ids": ["p0000", "p0001", "p0002"],
                 "anchor_asset_id": None,
                 "reasons": ["toc_header_with_entries"],
+                "structure_phase": "post_ai_final",
+                "structure_source": "post_ai_final_binding",
             }
         ],
     }
     assert len(payload["source_hash"]) == 8
+
+
+def test_relation_normalization_artifact_persists_decision_provenance_variants(monkeypatch, tmp_path):
+    relation_reports_dir = tmp_path / "relation-normalization-reports"
+    monkeypatch.setattr(document_module, "RELATION_NORMALIZATION_REPORTS_DIR", relation_reports_dir)
+    report = RelationNormalizationReport(
+        total_relations=1,
+        relation_counts={"toc_region": 1},
+        rejected_candidate_count=2,
+        decisions=[
+            ParagraphRelationDecision(
+                relation_kind="toc_region",
+                decision="accept",
+                member_paragraph_ids=("p0000", "p0001"),
+                reasons=("toc_header_with_entries",),
+                structure_phase="pre_ai_diagnostic",
+                structure_source="pre_ai_diagnostic_hint",
+            ),
+            ParagraphRelationDecision(
+                relation_kind="toc_region",
+                decision="reject",
+                member_paragraph_ids=("p0002",),
+                reasons=("isolated_toc_entry",),
+                structure_phase="post_ai_final",
+                structure_source="post_ai_final_binding",
+            ),
+            ParagraphRelationDecision(
+                relation_kind="toc_region",
+                decision="reject",
+                member_paragraph_ids=("p0003",),
+                reasons=("toc_header_without_entries",),
+                structure_phase="ai_first_degraded_fallback",
+                structure_source="ai_first_degraded_fallback",
+            ),
+        ],
+    )
+
+    artifact_path = document_module._write_relation_normalization_report_artifact(
+        source_name="debug sample.docx",
+        source_bytes=b"debug-source-bytes",
+        profile="phase2_default",
+        enabled_relation_kinds=("toc_region",),
+        report=report,
+    )
+
+    assert artifact_path is not None
+    payload = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
+
+    assert payload["version"] == 2
+    assert [decision["decision"] for decision in payload["decisions"]] == ["accept", "reject", "reject"]
+    assert [decision["structure_source"] for decision in payload["decisions"]] == [
+        "pre_ai_diagnostic_hint",
+        "post_ai_final_binding",
+        "ai_first_degraded_fallback",
+    ]
+    assert [decision["structure_phase"] for decision in payload["decisions"]] == [
+        "pre_ai_diagnostic",
+        "post_ai_final",
+        "ai_first_degraded_fallback",
+    ]
 
 
 def test_debug_artifact_report_is_not_written_when_saving_disabled(monkeypatch, tmp_path):
