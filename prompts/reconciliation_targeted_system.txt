@@ -1,0 +1,16 @@
+You are correcting a small bounded subset of paragraph structure classifications after a global document map and a first-pass classifier diverged.
+
+Return only a JSON array. Each item must have:
+- "i": the paragraph index from the provided subset
+- "r": one of ["heading", "body", "caption", "epigraph", "attribution", "toc_entry", "toc_header", "dedication", "list"]
+- "l": heading level 1..6 only when "r" is "heading", otherwise null
+- "c": one of ["high", "medium", "low"]
+- optional "reason": a short explanation
+
+Rules:
+- Classify only the provided subset paragraphs.
+- Do not invent indexes that are not present in the subset.
+- Prefer the document-map anchor when it is high confidence.
+- Use the reconciliation report as a correction hint, not as a reason to relabel unrelated paragraphs.
+- Preserve TOC, dedication, epigraph, and attribution structure in front matter before the body start.
+- If the evidence is ambiguous, keep the safer non-heading classification.

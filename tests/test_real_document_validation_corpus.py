@@ -60,6 +60,16 @@ def test_end_times_pdf_structural_run_profile_is_generic_structural_recovery() -
     assert document_profile.structural_optional_failed_checks == ()
 
 
+def test_lietaer_first20_structural_run_profile_is_ai_first_default() -> None:
+    document_profile = REGISTRY.get_document_profile("lietaer-pdf-first-20-structure-core")
+    run_profile = _resolve_structural_run_profile(document_profile)
+
+    assert run_profile.id == "structural-ai-first-default"
+    assert document_profile.structural_expected_result == "pass"
+    assert document_profile.structural_expected_failed_checks == ()
+    assert document_profile.structural_optional_failed_checks == ()
+
+
 def test_end_times_pdf_structural_diagnostic_artifact_matches_current_contract() -> None:
     artifact_path = Path("tests/artifacts/structural_diagnostics/end-times-pdf-core/structural_diagnostic.json")
     payload = json.loads(artifact_path.read_text(encoding="utf-8"))
@@ -78,8 +88,33 @@ def test_end_times_pdf_structural_diagnostic_artifact_matches_current_contract()
     assert snapshot["quality_gate_status"] == "pass"
     assert snapshot["quality_gate_reasons"] == []
     assert snapshot["structure_ai_attempted"] is False
-    assert snapshot["ai_classified_count"] == 0
-    assert snapshot["ai_heading_count"] == 0
+
+
+def test_build_validation_processing_service_uses_real_client_factories(monkeypatch) -> None:
+    captured = {}
+
+    monkeypatch.setattr(
+        real_document_validation_structural,
+        "clone_processing_service",
+        lambda **kwargs: captured.setdefault("kwargs", kwargs),
+    )
+
+    sentinel_get_client = object()
+    sentinel_get_provider_client = object()
+    sentinel_get_client_for_model_selector = object()
+    sentinel_resolve_model_selector = object()
+
+    monkeypatch.setattr(real_document_validation_structural, "get_client", sentinel_get_client)
+    monkeypatch.setattr(real_document_validation_structural, "get_provider_client", sentinel_get_provider_client)
+    monkeypatch.setattr(real_document_validation_structural, "get_client_for_model_selector", sentinel_get_client_for_model_selector)
+    monkeypatch.setattr(real_document_validation_structural, "resolve_model_selector", sentinel_resolve_model_selector)
+
+    real_document_validation_structural._build_validation_processing_service([])
+
+    assert captured["kwargs"]["get_client_fn"] is sentinel_get_client
+    assert captured["kwargs"]["get_provider_client_fn"] is sentinel_get_provider_client
+    assert captured["kwargs"]["get_client_for_model_selector_fn"] is sentinel_get_client_for_model_selector
+    assert captured["kwargs"]["resolve_model_selector_fn"] is sentinel_resolve_model_selector
 
 
 def test_evaluate_structural_preparation_diagnostic_returns_snapshot_summary(monkeypatch) -> None:
@@ -111,6 +146,65 @@ def test_evaluate_structural_preparation_diagnostic_returns_snapshot_summary(mon
         "preparation_error": "blocked by quality gate",
         "preparation_diagnostic_snapshot": {"readiness_status": "blocked_unsafe_best_effort_only"},
     }
+
+
+def test_build_preparation_diagnostic_defaults_includes_spec_acceptance_fields() -> None:
+    snapshot = real_document_validation_structural._build_preparation_diagnostic_defaults(
+        [
+            {
+                "event_id": "structure_processing_outcome",
+                "context": {
+                    "readiness_status": "ready_with_warnings",
+                    "readiness_reasons": ["x"],
+                    "quality_gate_status": "pass",
+                    "quality_gate_reasons": [],
+                    "structure_ai_attempted": True,
+                    "ai_classified_count": 8,
+                    "ai_heading_count": 2,
+                    "document_map_present": True,
+                    "outline_coverage_ratio": 0.75,
+                },
+            },
+            {
+                "event_id": "reconciliation_report_saved",
+                "context": {
+                    "front_matter_leaks": [1, 3],
+                    "outline_coverage_ratio": 0.75,
+                    "targeted_recall_invoked": True,
+                },
+            },
+        ]
+    )
+
+    assert snapshot["document_map_present"] is True
+    assert snapshot["outline_coverage_ratio"] == 0.75
+    assert snapshot["front_matter_leaks"] == [1, 3]
+    assert snapshot["targeted_recall_invoked"] is True
+
+
+def test_build_structural_metrics_uses_flagged_layout_cleanup_counts_for_signal_mode() -> None:
+    metrics = real_document_validation_structural._build_structural_metrics(
+        paragraphs=[ParagraphUnit(text="Body", role="body", structural_role="body")],
+        image_assets=[],
+        cleanup_report=LayoutArtifactCleanupReport(
+            original_paragraph_count=3,
+            cleaned_paragraph_count=3,
+            removed_paragraph_count=0,
+            removed_page_number_count=0,
+            removed_repeated_artifact_count=0,
+            removed_empty_or_whitespace_count=0,
+            cleanup_applied=True,
+            cleanup_mode="flag",
+            flagged_page_number_count=2,
+            flagged_repeated_artifact_count=1,
+            flagged_empty_or_whitespace_count=0,
+        ),
+    )
+
+    assert metrics["layout_cleanup_removed_count"] == 3
+    assert metrics["layout_cleanup_page_number_count"] == 2
+    assert metrics["layout_cleanup_repeated_artifact_count"] == 1
+    assert metrics["layout_cleanup_empty_or_whitespace_count"] == 0
 
 
 def test_runtime_resolution_accepts_provider_qualified_model_override() -> None:
@@ -301,6 +395,49 @@ def test_corpus_structural_passthrough(document_profile) -> None:
         )
     else:
         assert result["passed"] is True, json.dumps(result, ensure_ascii=False, indent=2)
+
+
+def test_structural_cli_uses_lietaer_first20_default_run_profile_and_prints_acceptance_snapshot(capsys, monkeypatch) -> None:
+    captured = {}
+
+    def _fake_evaluate(document_profile, run_profile):
+        captured["document_profile_id"] = document_profile.id
+        captured["run_profile_id"] = run_profile.id
+        return {
+            "document_profile_id": document_profile.id,
+            "run_profile_id": run_profile.id,
+            "validation_tier": "structural",
+            "validation_execution_mode": "passthrough",
+            "passed": True,
+            "failed_checks": [],
+            "preparation_error": None,
+            "preparation_diagnostic_snapshot": {
+                "document_map_present": True,
+                "outline_coverage_ratio": 1.0,
+                "front_matter_leaks": [],
+                "targeted_recall_invoked": False,
+                "quality_gate_status": "pass",
+            },
+        }
+
+    monkeypatch.setattr(real_document_validation_structural, "evaluate_structural_preparation_diagnostic", _fake_evaluate)
+
+    exit_code = real_document_validation_structural.main(["lietaer-pdf-first-20-structure-core"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert captured == {
+        "document_profile_id": "lietaer-pdf-first-20-structure-core",
+        "run_profile_id": "structural-ai-first-default",
+    }
+    assert payload["run_profile_id"] == "structural-ai-first-default"
+    assert payload["preparation_diagnostic_snapshot"] == {
+        "document_map_present": True,
+        "outline_coverage_ratio": 1.0,
+        "front_matter_leaks": [],
+        "targeted_recall_invoked": False,
+        "quality_gate_status": "pass",
+    }
 
 
 def test_structural_passthrough_uses_original_legacy_doc_bytes_for_prepared_facade(tmp_path, monkeypatch) -> None:
@@ -1251,7 +1388,12 @@ def test_structural_passthrough_success_uses_prepared_context_when_event_log_lac
         uploaded_file_bytes = b"PK\x03\x04prepared"
         quality_gate_status = "pass"
         quality_gate_reasons = []
-        structure_validation_report = SimpleNamespace(readiness_status="ready", readiness_reasons=[])
+        structure_validation_report = SimpleNamespace(
+            readiness_status="ready",
+            readiness_reasons=[],
+            document_map_present=True,
+            outline_coverage_ratio=0.75,
+        )
         structure_ai_attempted = True
         ai_classified_count = 12
         ai_heading_count = 4
@@ -1292,6 +1434,8 @@ def test_structural_passthrough_success_uses_prepared_context_when_event_log_lac
     assert result["preparation_diagnostic_snapshot"]["structure_ai_attempted"] is True
     assert result["preparation_diagnostic_snapshot"]["ai_classified_count"] == 12
     assert result["preparation_diagnostic_snapshot"]["ai_heading_count"] == 4
+    assert result["preparation_diagnostic_snapshot"]["document_map_present"] is True
+    assert result["preparation_diagnostic_snapshot"]["outline_coverage_ratio"] == 0.75
 
 
 def test_apply_prepared_metric_fields_uses_explicit_unknown_when_statuses_missing() -> None:

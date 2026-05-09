@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from queue import Queue
 import re
-from statistics import median
+from statistics import median, quantiles
 from threading import Thread
 import time
 from typing import Any, Callable, Protocol, cast
@@ -28,13 +28,18 @@ _TOC_HEADER_VALUES = {"contents", "table of contents", "содержание"}
 _TOC_SUFFIX_PATTERN = re.compile(r"\.{2,}\s*\d+\s*$")
 _ISOLATED_MARKER_PATTERN = re.compile(r"^(?:\s*[•●\-*]\s*|\s*\d+[\.)]\s*)$")
 _SCRIPTURE_REFERENCE_PATTERN = re.compile(r"\b(?:[A-Za-zА-Яа-яЁё]+)\s+\d+:\d+(?:-\d+)?\b")
+_SPACING_BEFORE_PATTERN = re.compile(r"<(?:\w+:)?spacing\b[^>]*\b(?:\w+:)?before=\"(?P<before>\d+)\"")
+_SPACING_BEFORE_AUTOSPACING_PATTERN = re.compile(
+    r"<(?:\w+:)?spacing\b[^>]*\b(?:\w+:)?beforeAutospacing=\"(?P<flag>[^\"]+)\""
+)
 _VALID_DOCUMENT_MAP_ROLES = frozenset({"heading", "body", "caption", "epigraph", "attribution", "toc_entry", "toc_header", "dedication", "list"})
 _VALID_DOCUMENT_MAP_CONFIDENCES = frozenset({"high", "medium", "low"})
 _VALID_REVIEW_ZONE_SEVERITIES = frozenset({"info", "warning", "critical"})
 _TIMEOUT_ERROR_NAMES = {"APITimeoutError", "TimeoutError"}
 DOCUMENT_MAP_SYSTEM_PROMPT_PATH = PROMPTS_DIR / "document_map_system.txt"
-DOCUMENT_MAP_PROMPT_VERSION = 1
-DOCUMENT_MAP_DESCRIPTOR_SCHEMA_VERSION = 1
+DOCUMENT_MAP_PROMPT_VERSION = 2
+DOCUMENT_MAP_DESCRIPTOR_SCHEMA_VERSION = 2
+DOCUMENT_MAP_POSTPROCESS_VERSION = 1
 _DOCUMENT_MAP_MALFORMED_DIR = RUN_DIR / "document_maps"
 _LOGGER = logging.getLogger(__name__)
 
@@ -58,9 +63,10 @@ class DocumentMapParagraphDescriptor:
     toc_pattern_hint: bool
     scripture_reference_hint: bool
     explicit_heading_level: int | None
+    embedded_structure_hints: tuple[dict[str, object], ...] = ()
 
     def to_prompt_dict(self) -> dict[str, object]:
-        return {
+        payload = {
             "i": self.logical_index,
             "t": self.text_preview,
             "len": self.text_length,
@@ -79,6 +85,9 @@ class DocumentMapParagraphDescriptor:
             "scr": self.scripture_reference_hint,
             "hl": self.explicit_heading_level,
         }
+        if self.embedded_structure_hints:
+            payload["emb"] = [dict(hint) for hint in self.embedded_structure_hints]
+        return payload
 
 
 @dataclass(frozen=True)
@@ -156,8 +165,8 @@ def build_document_map(
                 timeout=timeout,
             )
         except Exception as exc:
-            _LOGGER.warning("Document map AI generation fell back to deterministic map: %s", exc)
-            document_map = default_document_map
+            _LOGGER.warning("Document map AI generation failed: %s", exc)
+            raise
     document_map.model_used = str(model or document_map.model_used or "")
     if document_map is default_document_map:
         document_map.processing_time_seconds = max(0.0, time.perf_counter() - started_at)
@@ -187,32 +196,68 @@ def build_document_map_paragraph_descriptors(
         text = str(paragraph.text or "").strip()
         preview = text[:preview_limit].rstrip()
         alpha_chars = [char for char in preview if char.isalpha()]
+        embedded_hint_payload = _build_embedded_structure_hint_payload(paragraph, preview_chars=preview_limit)
+        persisted_style_cluster_id = cast(int | None, getattr(paragraph, "style_cluster_id", None))
+        persisted_font_size_z_score = cast(float | None, getattr(paragraph, "font_size_z_score", None))
+        persisted_page_number = cast(int | None, getattr(paragraph, "page_number", None))
+        persisted_position_fraction = cast(float | None, getattr(paragraph, "position_fraction", None))
         descriptors.append(
             DocumentMapParagraphDescriptor(
                 logical_index=int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", position))),
                 text_preview=preview,
                 text_length=len(text),
-                style_cluster_id=style_cluster_ids[position],
+                style_cluster_id=style_cluster_ids[position] if persisted_style_cluster_id is None else persisted_style_cluster_id,
                 is_bold=bool(getattr(paragraph, "is_bold", False)),
                 is_centered=getattr(paragraph, "paragraph_alignment", None) == "center",
                 is_all_caps=bool(alpha_chars) and preview.upper() == preview,
-                font_size_z_score=font_size_z_scores[position],
-                page_number=_extract_page_number_hint(text, paragraph),
-                position_fraction=round(position / last_index, 3),
-                vertical_gap_before_pt=None,
+                font_size_z_score=font_size_z_scores[position] if persisted_font_size_z_score is None else persisted_font_size_z_score,
+                page_number=_extract_page_number_hint(text, paragraph) if persisted_page_number is None else persisted_page_number,
+                position_fraction=round(position / last_index, 3) if persisted_position_fraction is None else persisted_position_fraction,
+                vertical_gap_before_pt=_extract_vertical_gap_before_pt(paragraph),
                 is_repeated_across_pages=bool(getattr(paragraph, "is_repeated_across_pages", False)),
                 is_likely_page_number=bool(getattr(paragraph, "is_likely_page_number", False)),
-                is_isolated_marker=_is_isolated_marker_text(text),
-                toc_pattern_hint=_is_toc_pattern_hint(text, paragraph),
-                scripture_reference_hint=_is_scripture_reference_text(text),
+                is_isolated_marker=bool(getattr(paragraph, "is_isolated_marker", False)) or any(
+                    hint.get("iso", False) for hint in embedded_hint_payload
+                ) or _is_isolated_marker_text(text),
+                toc_pattern_hint=bool(getattr(paragraph, "toc_pattern_hint", False)) or any(
+                    hint.get("sr") in {"toc_header", "toc_entry"} for hint in embedded_hint_payload
+                ) or _is_toc_pattern_hint(text, paragraph),
+                scripture_reference_hint=bool(getattr(paragraph, "scripture_reference_hint", False)) or any(
+                    hint.get("scr", False) for hint in embedded_hint_payload
+                ) or _is_scripture_reference_text(text),
                 explicit_heading_level=(
                     getattr(paragraph, "heading_level", None)
                     if getattr(paragraph, "heading_source", None) == "explicit"
                     else None
                 ),
+                embedded_structure_hints=embedded_hint_payload,
             )
         )
     return descriptors
+
+
+def _build_embedded_structure_hint_payload(
+    paragraph: ParagraphUnit,
+    *,
+    preview_chars: int,
+) -> tuple[dict[str, object], ...]:
+    hints = getattr(paragraph, "heuristic_embedded_structure_hints", None) or ()
+    preview_limit = max(1, int(preview_chars or 120))
+    payload: list[dict[str, object]] = []
+    for hint in hints:
+        text = str(getattr(hint, "text", "") or "").strip()
+        payload.append(
+            {
+                "t": text[:preview_limit].rstrip(),
+                "r": str(getattr(hint, "role", "body") or "body"),
+                "sr": str(getattr(hint, "structural_role", "body") or "body"),
+                "hl": getattr(hint, "heading_level", None),
+                "lk": getattr(hint, "list_kind", None),
+                "iso": _is_isolated_marker_text(text),
+                "scr": _is_scripture_reference_text(text),
+            }
+        )
+    return tuple(payload)
 
 
 def select_document_map_logical_indexes(
@@ -223,6 +268,7 @@ def select_document_map_logical_indexes(
 ) -> tuple[int, ...]:
     limit = max(1, int(max_input_paragraphs or 0))
     all_indexes = [descriptor.logical_index for descriptor in descriptors]
+    vertical_gap_priority_threshold = _resolve_vertical_gap_priority_threshold(descriptors)
     if len(all_indexes) <= limit:
         return _shrink_logical_indexes_to_token_budget(
             descriptors,
@@ -233,7 +279,10 @@ def select_document_map_logical_indexes(
     important_indexes = [
         descriptor.logical_index
         for descriptor in descriptors
-        if _is_structurally_important_descriptor(descriptor)
+        if _is_structurally_important_descriptor(
+            descriptor,
+            vertical_gap_priority_threshold=vertical_gap_priority_threshold,
+        )
     ]
     sampled = sorted(dict.fromkeys(important_indexes))
     if len(sampled) >= limit:
@@ -510,7 +559,7 @@ def _build_document_map_user_prompt(
         )
     return (
         "Return a single JSON object with keys `body_start_logical_index`, `toc_region`, `outline`, `paragraph_anchors`, and `review_zones`. "
-        "For `paragraph_anchors`, prefer an object mapping logical indexes to `{role, heading_level, confidence}`; a list of `{i, r, l, c}` is also accepted."
+        "For `paragraph_anchors`, use an object mapping logical indexes to `{role, heading_level, confidence}`."
         "\n\nDocument summary:\n"
         f"{json.dumps(summary, ensure_ascii=False)}"
         "\n\nSampled paragraph descriptors:\n"
@@ -545,6 +594,8 @@ def _parse_document_map_payload(
     for logical_index in all_logical_indexes:
         paragraph_anchors.setdefault(logical_index, DocumentMapAnchor(role="body", heading_level=None, confidence="low"))
 
+    outline = _sanitize_outline_entries(outline, toc_region=toc_region)
+
     return DocumentMap(
         body_start_logical_index=body_start_logical_index,
         toc_region=toc_region,
@@ -557,6 +608,18 @@ def _parse_document_map_payload(
         sampled=len(sampled_logical_indexes) < len(all_logical_indexes),
         sampled_logical_indexes=tuple(int(index) for index in sampled_logical_indexes),
     )
+
+
+def _sanitize_outline_entries(
+    outline: tuple[DocumentMapOutlineEntry, ...],
+    *,
+    toc_region: DocumentMapTocRegion | None,
+) -> tuple[DocumentMapOutlineEntry, ...]:
+    if toc_region is None:
+        return outline
+    toc_start = int(toc_region.start_logical_index)
+    toc_end = int(toc_region.end_logical_index)
+    return tuple(entry for entry in outline if not (toc_start <= int(entry.logical_index) <= toc_end))
 
 
 def _parse_toc_region(raw_value: object, *, all_logical_indexes: set[int]) -> DocumentMapTocRegion | None:
@@ -610,13 +673,15 @@ def _parse_outline_entries(raw_value: object, *, all_logical_indexes: set[int]) 
             evidence = list(evidence)
         if not isinstance(evidence, list):
             raise DocumentMapSchemaError("outline evidence must be an array")
+        if any(not isinstance(value, str) for value in evidence):
+            raise DocumentMapSchemaError("outline evidence items must be strings")
         parsed_entries.append(
             DocumentMapOutlineEntry(
                 title=str(item.get("title", "") or "").strip(),
                 level=_coerce_heading_level(item.get("level"), field_name="outline.level"),
                 logical_index=_coerce_known_logical_index(item.get("logical_index"), all_logical_indexes=all_logical_indexes, field_name="outline.logical_index"),
                 confidence=_coerce_confidence(item.get("confidence"), field_name="outline.confidence"),
-                evidence=tuple(str(value or "") for value in evidence),
+                evidence=tuple(cast(str, value) for value in evidence),
             )
         )
     return tuple(parsed_entries)
@@ -725,15 +790,25 @@ def _coerce_role(raw_value: object, *, field_name: str) -> str:
     return role
 
 
-def _is_structurally_important_descriptor(descriptor: DocumentMapParagraphDescriptor) -> bool:
+def _is_structurally_important_descriptor(
+    descriptor: DocumentMapParagraphDescriptor,
+    *,
+    vertical_gap_priority_threshold: float | None = None,
+) -> bool:
     return bool(
         descriptor.is_bold
         or descriptor.is_centered
         or descriptor.is_all_caps
         or descriptor.style_cluster_id is not None
+        or (
+            descriptor.vertical_gap_before_pt is not None
+            and vertical_gap_priority_threshold is not None
+            and descriptor.vertical_gap_before_pt >= vertical_gap_priority_threshold
+        )
         or descriptor.toc_pattern_hint
         or descriptor.is_isolated_marker
         or descriptor.scripture_reference_hint
+        or bool(descriptor.embedded_structure_hints)
         or descriptor.text_length < 60
         or descriptor.explicit_heading_level is not None
     )
@@ -755,12 +830,20 @@ def _shrink_logical_indexes_to_token_budget(
     selected = sorted(dict.fromkeys(int(index) for index in logical_indexes if int(index) in descriptors_by_index))
     if not selected:
         return ()
+    vertical_gap_priority_threshold = _resolve_vertical_gap_priority_threshold(descriptors)
 
     def _selected_descriptors(indexes: list[int]) -> list[DocumentMapParagraphDescriptor]:
         return [descriptors_by_index[index] for index in indexes]
 
     while len(selected) > 1 and _estimate_document_map_descriptor_tokens(_selected_descriptors(selected)) > token_limit:
-        important = [index for index in selected if _is_structurally_important_descriptor(descriptors_by_index[index])]
+        important = [
+            index
+            for index in selected
+            if _is_structurally_important_descriptor(
+                descriptors_by_index[index],
+                vertical_gap_priority_threshold=vertical_gap_priority_threshold,
+            )
+        ]
         optional = [index for index in selected if index not in set(important)]
         if optional:
             reduced_optional = _select_uniform_indexes(optional, max(0, len(optional) - 1))
@@ -779,7 +862,48 @@ def _estimate_document_map_descriptor_tokens(descriptors: list[DocumentMapParagr
     return max(1, len(encoded) // 4 + 64)
 
 
+def _extract_vertical_gap_before_pt(paragraph: ParagraphUnit) -> float | None:
+    direct_value = getattr(paragraph, "vertical_gap_before_pt", None)
+    if isinstance(direct_value, int | float):
+        return _round_vertical_gap_before_pt(float(direct_value))
+
+    paragraph_properties_xml = str(getattr(paragraph, "paragraph_properties_xml", "") or "").strip()
+    if not paragraph_properties_xml:
+        return None
+    autospacing_match = _SPACING_BEFORE_AUTOSPACING_PATTERN.search(paragraph_properties_xml)
+    if autospacing_match and str(autospacing_match.group("flag") or "").strip().lower() in {"1", "true", "on"}:
+        return None
+    spacing_match = _SPACING_BEFORE_PATTERN.search(paragraph_properties_xml)
+    if spacing_match is None:
+        return None
+    try:
+        before_twips = int(spacing_match.group("before"))
+    except (TypeError, ValueError):
+        return None
+    return _round_vertical_gap_before_pt(before_twips / 20.0)
+
+
+def _round_vertical_gap_before_pt(value: float) -> float:
+    return round(value * 2.0) / 2.0
+
+
+def _resolve_vertical_gap_priority_threshold(descriptors: list[DocumentMapParagraphDescriptor]) -> float | None:
+    nonzero_gaps = sorted(
+        descriptor.vertical_gap_before_pt
+        for descriptor in descriptors
+        if descriptor.vertical_gap_before_pt is not None and descriptor.vertical_gap_before_pt > 0
+    )
+    if not nonzero_gaps:
+        return None
+    if len(nonzero_gaps) == 1:
+        return nonzero_gaps[0]
+    return float(quantiles(nonzero_gaps, n=10, method="inclusive")[8])
+
+
 def _build_style_cluster_ids(paragraphs: list[ParagraphUnit]) -> list[int | None]:
+    persisted = [getattr(paragraph, "style_cluster_id", None) for paragraph in paragraphs]
+    if any(value is not None for value in persisted):
+        return [cast(int | None, value) for value in persisted]
     normalized_styles = [str(getattr(paragraph, "style_name", "") or "").strip().lower() for paragraph in paragraphs]
     nonempty_styles = [style for style in normalized_styles if style]
     if not nonempty_styles:
@@ -800,6 +924,9 @@ def _build_style_cluster_ids(paragraphs: list[ParagraphUnit]) -> list[int | None
 
 
 def _build_font_size_z_scores(paragraphs: list[ParagraphUnit]) -> list[float | None]:
+    persisted = [getattr(paragraph, "font_size_z_score", None) for paragraph in paragraphs]
+    if any(value is not None for value in persisted):
+        return [cast(float | None, value) for value in persisted]
     sizes = [getattr(paragraph, "font_size_pt", None) for paragraph in paragraphs]
     numeric_sizes = [float(size) for size in sizes if isinstance(size, (int, float))]
     if not numeric_sizes:
@@ -820,6 +947,9 @@ def _build_font_size_z_scores(paragraphs: list[ParagraphUnit]) -> list[float | N
 
 
 def _extract_page_number_hint(text: str, paragraph: ParagraphUnit) -> int | None:
+    direct_value = getattr(paragraph, "page_number", None)
+    if isinstance(direct_value, int):
+        return direct_value
     if not bool(getattr(paragraph, "is_likely_page_number", False)):
         return None
     stripped = text.strip()

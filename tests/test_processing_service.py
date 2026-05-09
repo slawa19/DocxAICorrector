@@ -278,7 +278,8 @@ def test_build_processing_service_builds_runtime_emitters_from_processing_runtim
 
 
 def test_run_prepared_background_document_uses_preparation_and_job_mutator(monkeypatch):
-    service = _build_service(run_document_processing_impl_fn=lambda **kwargs: "succeeded")
+    sentinel_get_client = object()
+    service = _build_service(run_document_processing_impl_fn=lambda **kwargs: "succeeded", get_client_fn=sentinel_get_client)
     prepared = type(
         "PreparedRunContextStub",
         (),
@@ -299,8 +300,24 @@ def test_run_prepared_background_document_uses_preparation_and_job_mutator(monke
     monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: {"frozen": uploaded_file})
     monkeypatch.setattr(
         processing_service.application_flow,
+        "prepare_document_for_processing",
+        lambda **kwargs: captured.setdefault("prepare_document", kwargs) or object(),
+    )
+    monkeypatch.setattr(
+        processing_service.application_flow,
         "prepare_run_context_for_background",
-        lambda **kwargs: (captured.setdefault("prepare", kwargs), prepared)[1],
+        lambda **kwargs: (
+            kwargs["prepare_document_for_processing_fn"](
+                uploaded_payload={"payload": True},
+                chunk_size=kwargs["chunk_size"],
+                app_config=kwargs["app_config"],
+                processing_operation=kwargs["processing_operation"],
+                session_state=None,
+                progress_callback=None,
+            ),
+            captured.setdefault("prepare", kwargs),
+            prepared,
+        )[-1],
     )
 
     result, returned_prepared = service.run_prepared_background_document(
@@ -321,6 +338,9 @@ def test_run_prepared_background_document_uses_preparation_and_job_mutator(monke
     assert captured["prepare"]["chunk_size"] == 123
     assert captured["prepare"]["app_config"] == {"x": 1}
     assert captured["prepare"]["processing_operation"] == "audiobook"
+    assert captured["prepare_document"]["get_client_fn"] is sentinel_get_client
+    assert captured["prepare_document"]["chunk_size"] == 123
+    assert captured["prepare_document"]["processing_operation"] == "audiobook"
     assert result == "succeeded"
     assert returned_prepared is prepared
 

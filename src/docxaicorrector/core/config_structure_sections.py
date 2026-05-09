@@ -347,7 +347,7 @@ def resolve_structure_recovery_settings(
         parent_name="structure_recovery",
     )
 
-    structure_recovery_enabled = parse_config_bool_fn(structure_recovery_config, "enabled", False)
+    structure_recovery_enabled = parse_config_bool_fn(structure_recovery_config, "enabled", True)
     structure_recovery_mode = parse_choice_str_fn(
         structure_recovery_config,
         "mode",
@@ -355,10 +355,10 @@ def resolve_structure_recovery_settings(
         set(structure_recovery_mode_values),
     )
 
-    document_map_enabled = parse_config_bool_fn(document_map_config, "enabled", False)
+    document_map_enabled = parse_config_bool_fn(document_map_config, "enabled", True)
     raw_document_map_model = document_map_config.get("model")
     if raw_document_map_model is None:
-        document_map_model = ""
+        document_map_model = "gpt-5-mini"
     elif not isinstance(raw_document_map_model, str):
         raise RuntimeError("Некорректное поле model в structure_recovery.document_map: ожидается строка")
     else:

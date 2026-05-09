@@ -14,7 +14,7 @@ from docx import Document
 from docx.oxml.ns import qn
 
 import docxaicorrector.processing.processing_runtime as processing_runtime
-from docxaicorrector.core.config import load_app_config
+from docxaicorrector.core.config import get_client, get_client_for_model_selector, get_provider_client, load_app_config, resolve_model_selector
 from docxaicorrector.pipeline.output_validation import (
     collect_false_fragment_heading_samples,
     collect_list_fragment_regression_samples,
@@ -527,6 +527,9 @@ def build_preparation_diagnostic_snapshot(
 
 
 def _build_preparation_diagnostic_defaults(event_log: Sequence[Mapping[str, object]]) -> dict[str, object]:
+    outline_coverage_ratio = _extract_event_context_float(event_log, "structure_processing_outcome", "outline_coverage_ratio")
+    if outline_coverage_ratio is None:
+        outline_coverage_ratio = _extract_event_context_float(event_log, "reconciliation_report_saved", "outline_coverage_ratio")
     return {
         "paragraph_count": 0,
         "heading_count": 0,
@@ -539,6 +542,10 @@ def _build_preparation_diagnostic_defaults(event_log: Sequence[Mapping[str, obje
         "remaining_isolated_marker_count": 0,
         "readiness_status": _extract_event_context_value(event_log, "structure_processing_outcome", "readiness_status"),
         "readiness_reasons": _extract_event_context_list(event_log, "structure_processing_outcome", "readiness_reasons"),
+        "document_map_present": _extract_event_context_bool(event_log, "structure_processing_outcome", "document_map_present"),
+        "outline_coverage_ratio": outline_coverage_ratio,
+        "front_matter_leaks": _extract_event_context_int_list(event_log, "reconciliation_report_saved", "front_matter_leaks"),
+        "targeted_recall_invoked": _extract_event_context_bool(event_log, "reconciliation_report_saved", "targeted_recall_invoked"),
         "quality_gate_status": _extract_event_context_value(event_log, "structure_processing_outcome", "quality_gate_status"),
         "quality_gate_reasons": _extract_event_context_list(event_log, "structure_processing_outcome", "quality_gate_reasons"),
         "structure_ai_attempted": _extract_event_context_bool(event_log, "structure_processing_outcome", "structure_ai_attempted"),
@@ -583,6 +590,12 @@ def _apply_structure_validation_snapshot_fields(snapshot: dict[str, object], str
             for reason in tuple(getattr(structure_validation_report, "readiness_reasons", ()) or ())
             if str(reason).strip()
         ]
+    if not bool(snapshot.get("document_map_present")):
+        snapshot["document_map_present"] = bool(getattr(structure_validation_report, "document_map_present", False))
+    if snapshot.get("outline_coverage_ratio") is None:
+        outline_coverage_ratio = getattr(structure_validation_report, "outline_coverage_ratio", None)
+        if outline_coverage_ratio is not None:
+            snapshot["outline_coverage_ratio"] = float(outline_coverage_ratio)
 
 
 def _apply_quality_gate_readiness_fallback(snapshot: dict[str, object]) -> None:
@@ -733,19 +746,11 @@ def _build_validation_processing_service(event_log: list[dict[str, object]]):
 
         return cast(str, run_document_processing(**kwargs))
 
-    def _noop_client(*args: Any, **kwargs: Any) -> object:
-        return object()
-
-    def _noop_resolve_model_selector(selector: Any, required_capability: Any = None, **kwargs: Any) -> Any:
-        from types import SimpleNamespace
-        s = str(selector or "passthrough")
-        return SimpleNamespace(raw_selector=s, canonical_selector=s, provider="passthrough", model_id=s)
-
     return clone_processing_service(
-        get_client_fn=lambda: object(),
-        get_provider_client_fn=_noop_client,
-        get_client_for_model_selector_fn=_noop_client,
-        resolve_model_selector_fn=_noop_resolve_model_selector,
+        get_client_fn=get_client,
+        get_provider_client_fn=get_provider_client,
+        get_client_for_model_selector_fn=get_client_for_model_selector,
+        resolve_model_selector_fn=resolve_model_selector,
         load_system_prompt_fn=lambda: "",
         ensure_pandoc_available_fn=ensure_pandoc_available,
         generate_markdown_block_fn=lambda **kwargs: cast(str, kwargs.get("target_text") or ""),
@@ -784,6 +789,27 @@ def _build_structural_metrics(
     cleanup_report=None,
 ) -> dict[str, object]:
     paragraph_units = list(paragraphs)
+    cleanup_mode = "remove" if cleanup_report is None else str(getattr(cleanup_report, "cleanup_mode", "remove") or "remove").strip().lower()
+    if cleanup_mode == "flag":
+        effective_cleanup_removed_count = int(getattr(cleanup_report, "flagged_page_number_count", 0) or 0) + int(
+            getattr(cleanup_report, "flagged_repeated_artifact_count", 0) or 0
+        ) + int(getattr(cleanup_report, "flagged_empty_or_whitespace_count", 0) or 0)
+        effective_cleanup_page_number_count = int(getattr(cleanup_report, "flagged_page_number_count", 0) or 0)
+        effective_cleanup_repeated_artifact_count = int(
+            getattr(cleanup_report, "flagged_repeated_artifact_count", 0) or 0
+        )
+        effective_cleanup_empty_or_whitespace_count = int(
+            getattr(cleanup_report, "flagged_empty_or_whitespace_count", 0) or 0
+        )
+    else:
+        effective_cleanup_removed_count = 0 if cleanup_report is None else int(getattr(cleanup_report, "removed_paragraph_count", 0) or 0)
+        effective_cleanup_page_number_count = 0 if cleanup_report is None else int(getattr(cleanup_report, "removed_page_number_count", 0) or 0)
+        effective_cleanup_repeated_artifact_count = 0 if cleanup_report is None else int(
+            getattr(cleanup_report, "removed_repeated_artifact_count", 0) or 0
+        )
+        effective_cleanup_empty_or_whitespace_count = 0 if cleanup_report is None else int(
+            getattr(cleanup_report, "removed_empty_or_whitespace_count", 0) or 0
+        )
     return {
         "paragraph_count": len(paragraph_units),
         "heading_count": sum(1 for paragraph in paragraph_units if getattr(paragraph, "role", None) == "heading"),
@@ -802,10 +828,10 @@ def _build_structural_metrics(
         "relation_count": 0 if relation_report is None else relation_report.total_relations,
         "rejected_relation_candidate_count": 0 if relation_report is None else relation_report.rejected_candidate_count,
         "relation_counts": {} if relation_report is None else dict(relation_report.relation_counts),
-        "layout_cleanup_removed_count": 0 if cleanup_report is None else cleanup_report.removed_paragraph_count,
-        "layout_cleanup_page_number_count": 0 if cleanup_report is None else cleanup_report.removed_page_number_count,
-        "layout_cleanup_repeated_artifact_count": 0 if cleanup_report is None else cleanup_report.removed_repeated_artifact_count,
-        "layout_cleanup_empty_or_whitespace_count": 0 if cleanup_report is None else cleanup_report.removed_empty_or_whitespace_count,
+        "layout_cleanup_removed_count": effective_cleanup_removed_count,
+        "layout_cleanup_page_number_count": effective_cleanup_page_number_count,
+        "layout_cleanup_repeated_artifact_count": effective_cleanup_repeated_artifact_count,
+        "layout_cleanup_empty_or_whitespace_count": effective_cleanup_empty_or_whitespace_count,
     }
 
 
@@ -1167,6 +1193,15 @@ def _extract_event_context_int(event_log: Sequence[Mapping[str, object]], event_
         return int(cast(Any, value))
     except (TypeError, ValueError):
         return 0
+
+
+def _extract_event_context_float(event_log: Sequence[Mapping[str, object]], event_id: str, key: str) -> float | None:
+    context = _extract_event_context(event_log, event_id)
+    value = context.get(key)
+    try:
+        return float(cast(Any, value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _extract_event_context_bool(event_log: Sequence[Mapping[str, object]], event_id: str, key: str) -> bool:

@@ -427,6 +427,33 @@
 				"close": false
 			},
 			"group": "test"
+		},
+		{
+			"label": "Run Structure Recovery Diagnostic (First 20 Pages)",
+			"type": "shell",
+			"command": "bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-first-20-structure-core",
+			"options": {
+				"shell": {
+					"executable": "wsl.exe",
+					"args": [
+						"-d",
+						"Debian",
+						"--cd",
+						"${workspaceFolder}",
+						"--"
+					]
+				}
+			},
+			"problemMatcher": [],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated",
+				"focus": true,
+				"clear": true,
+				"showReuseMessage": false,
+				"close": false
+			},
+			"group": "test"
 		}
 	],
 	"inputs": [

@@ -224,6 +224,8 @@ def promote_short_standalone_headings(
             continue
         if not _has_body_context_signal(previous_paragraph.text) or not _has_body_context_signal(next_paragraph.text):
             continue
+        if _is_short_centered_epigraph_attribution_candidate(paragraph, previous_paragraph=previous_paragraph):
+            continue
 
         if _is_very_short_standalone_heading_text(paragraph.text):
             _apply_or_hint_short_heading(
@@ -284,6 +286,8 @@ def normalize_front_matter_display_title(
         if paragraph.role != "heading":
             continue
         if not _is_front_matter_metadata_heading_candidate(paragraph, candidate_font_size):
+            continue
+        if ai_first_mode:
             continue
 
         paragraph.role = "body"
@@ -420,6 +424,25 @@ def _paragraph_is_effectively_bold(paragraph) -> bool:
 
 def _paragraph_unit_has_strong_heading_format(paragraph: ParagraphUnit) -> bool:
     return paragraph.paragraph_alignment == "center" or paragraph.is_bold
+
+
+def _is_short_centered_epigraph_attribution_candidate(
+    paragraph: ParagraphUnit,
+    *,
+    previous_paragraph: ParagraphUnit,
+) -> bool:
+    if paragraph.paragraph_alignment != "center":
+        return False
+    normalized = _normalize_text_for_heading_heuristics(paragraph.text)
+    if not normalized or len(normalized) > 60:
+        return False
+    words = [token for token in normalized.split() if token]
+    if len(words) > 4:
+        return False
+    letters_only = re.sub(r"[^A-Za-zА-Яа-яЁё]", "", normalized)
+    if not letters_only or letters_only.upper() != letters_only:
+        return False
+    return bool(getattr(previous_paragraph, "is_italic", False) or previous_paragraph.paragraph_alignment == "center")
 
 
 def _is_short_standalone_heading_text(text: str) -> bool:

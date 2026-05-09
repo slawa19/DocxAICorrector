@@ -151,67 +151,35 @@ def _merge_list_fragments(
         following = repaired[index + 1]
         marker_kind = _isolated_marker_kind(current)
         if marker_kind is not None and _can_merge_marker_with_following(current, following):
-            if signal_only:
-                if following.heuristic_role_hint == "list" and following.heuristic_list_kind_hint == marker_kind:
-                    index += 1
-                    continue
-                _apply_or_hint_list_candidate(following, list_kind=marker_kind, signal_only=True)
-                decisions.append(
-                    StructureRepairDecision(
-                        action="hint_isolated_list_marker",
-                        paragraph_indexes=(current.source_index, following.source_index),
-                        reason=f"isolated_{marker_kind}_marker_followed_by_body",
-                        details={"hint_text_preview": following.text[:120]},
-                    )
-                )
+            if following.heuristic_role_hint == "list" and following.heuristic_list_kind_hint == marker_kind:
                 index += 1
                 continue
-            merged = _merge_marker_with_following(current, following, marker_kind=marker_kind)
-            repaired[index : index + 2] = [merged]
+            _apply_or_hint_list_candidate(following, list_kind=marker_kind, signal_only=True)
             decisions.append(
                 StructureRepairDecision(
-                    action="merge_isolated_list_marker",
+                    action="hint_isolated_list_marker",
                     paragraph_indexes=(current.source_index, following.source_index),
                     reason=f"isolated_{marker_kind}_marker_followed_by_body",
-                    details={"merged_text_preview": merged.text[:120]},
+                    details={"hint_text_preview": following.text[:120]},
                 )
             )
-            if marker_kind == "unordered":
-                repaired_bullet_items += 1
-            else:
-                repaired_numbered_items += 1
+            index += 1
             continue
 
         fragment_kind = _split_list_lead_fragment_kind(current)
         if fragment_kind is None or not _can_merge_marker_with_following(current, following):
             index += 1
             continue
-        if signal_only:
-            _apply_or_hint_list_candidate(current, list_kind=fragment_kind, signal_only=True)
-            decisions.append(
-                StructureRepairDecision(
-                    action="hint_split_list_lead_fragment",
-                    paragraph_indexes=(current.source_index, following.source_index),
-                    reason=f"split_{fragment_kind}_item_lead_followed_by_body",
-                    details={"hint_text_preview": current.text[:120]},
-                )
-            )
-            index += 1
-            continue
-        merged = _merge_split_list_lead_with_following(current, following, marker_kind=fragment_kind)
-        repaired[index : index + 2] = [merged]
+        _apply_or_hint_list_candidate(current, list_kind=fragment_kind, signal_only=True)
         decisions.append(
             StructureRepairDecision(
-                action="merge_split_list_lead_fragment",
+                action="hint_split_list_lead_fragment",
                 paragraph_indexes=(current.source_index, following.source_index),
                 reason=f"split_{fragment_kind}_item_lead_followed_by_body",
-                details={"merged_text_preview": merged.text[:120]},
+                details={"hint_text_preview": current.text[:120]},
             )
         )
-        if fragment_kind == "unordered":
-            repaired_bullet_items += 1
-        else:
-            repaired_numbered_items += 1
+        index += 1
     return repaired, repaired_bullet_items, repaired_numbered_items
 
 
@@ -246,42 +214,6 @@ def _can_merge_marker_with_following(current: ParagraphUnit, following: Paragrap
     return True
 
 
-def _merge_marker_with_following(current: ParagraphUnit, following: ParagraphUnit, *, marker_kind: str) -> ParagraphUnit:
-    merged = deepcopy(following)
-    text = str(following.text or "").strip()
-    if marker_kind == "unordered":
-        merged.role = "list"
-        merged.structural_role = "list"
-        merged.list_kind = "unordered"
-        merged.text = f"- {text}" if not text.startswith("- ") else text
-    else:
-        merged.role = "list"
-        merged.structural_role = "list"
-        merged.list_kind = "ordered"
-        marker_text = str(current.text or "").strip()
-        merged.text = f"{marker_text} {text}"
-    merged.origin_raw_indexes = list(dict.fromkeys([*current.origin_raw_indexes, *following.origin_raw_indexes]))
-    merged.origin_raw_texts = [*current.origin_raw_texts, *following.origin_raw_texts]
-    merged.source_index = current.source_index
-    merged.paragraph_id = current.paragraph_id or following.paragraph_id
-    merged.heading_level = None
-    merged.heading_source = None
-    return merged
-
-
-def _merge_split_list_lead_with_following(current: ParagraphUnit, following: ParagraphUnit, *, marker_kind: str) -> ParagraphUnit:
-    merged = deepcopy(current)
-    merged.role = "list"
-    merged.structural_role = "list"
-    merged.list_kind = marker_kind
-    merged.text = f"{str(current.text or '').strip()} {str(following.text or '').strip()}".strip()
-    merged.origin_raw_indexes = list(dict.fromkeys([*current.origin_raw_indexes, *following.origin_raw_indexes]))
-    merged.origin_raw_texts = [*current.origin_raw_texts, *following.origin_raw_texts]
-    merged.heading_level = None
-    merged.heading_source = None
-    return merged
-
-
 def _find_bounded_toc_regions(paragraphs: Sequence[ParagraphUnit], *, signal_only: bool) -> list[tuple[int, int]]:
     regions: list[tuple[int, int]] = []
     index = 0
@@ -308,11 +240,8 @@ def _find_bounded_toc_regions(paragraphs: Sequence[ParagraphUnit], *, signal_onl
 
 
 def _apply_or_hint_toc_structural_role(paragraph: ParagraphUnit, *, structural_role: str, signal_only: bool) -> None:
-    if signal_only:
-        paragraph.heuristic_structural_role_hint = structural_role
-        return
+    paragraph.heuristic_structural_role_hint = structural_role
     paragraph.role = "body"
-    paragraph.structural_role = structural_role
     paragraph.heading_level = None
     paragraph.heading_source = None
 
@@ -370,16 +299,13 @@ def _split_compound_toc_aligned_paragraphs(
             repaired.append(paragraph)
             continue
         split_paragraphs, boundary_repairs, heading_candidates = split_result
-        if signal_only:
-            paragraph.heuristic_embedded_structure_hints = _build_embedded_structure_hints(split_paragraphs)
-            repaired.append(paragraph)
-        else:
-            repaired.extend(split_paragraphs)
+        paragraph.heuristic_embedded_structure_hints = _build_embedded_structure_hints(split_paragraphs)
+        repaired.append(paragraph)
         split_boundary_repairs += boundary_repairs
         split_heading_candidates += heading_candidates
         decisions.append(
             StructureRepairDecision(
-                action="hint_compound_toc_aligned_paragraph" if signal_only else "split_compound_toc_aligned_paragraph",
+                action="hint_compound_toc_aligned_paragraph",
                 paragraph_indexes=(paragraph.source_index,),
                 reason="toc_or_heading_fragment_embedded_inside_single_paragraph",
                 details={"split_texts": [item.text[:120] for item in split_paragraphs]},
@@ -564,18 +490,12 @@ def _clone_as_heading(paragraph: ParagraphUnit, text: str, *, signal_only: bool)
 
 
 def _apply_or_hint_heading_candidate(paragraph: ParagraphUnit, *, signal_only: bool) -> None:
-    if signal_only:
-        paragraph.heuristic_role_hint = "heading"
-        paragraph.heuristic_heading_level_hint = paragraph.heading_level or 2
-        paragraph.role = "body"
-        paragraph.structural_role = "body"
-        paragraph.heading_source = None
-        paragraph.heading_level = None
-        return
-    paragraph.role = "heading"
-    paragraph.structural_role = "heading"
-    paragraph.heading_source = "heuristic"
-    paragraph.heading_level = paragraph.heading_level or 2
+    paragraph.heuristic_role_hint = "heading"
+    paragraph.heuristic_heading_level_hint = paragraph.heading_level or 2
+    paragraph.role = "body"
+    paragraph.structural_role = "body"
+    paragraph.heading_source = None
+    paragraph.heading_level = None
 
 
 def _clone_as_list(paragraph: ParagraphUnit, text: str, *, list_kind: str, signal_only: bool) -> ParagraphUnit:
@@ -586,18 +506,11 @@ def _clone_as_list(paragraph: ParagraphUnit, text: str, *, list_kind: str, signa
 
 
 def _apply_or_hint_list_candidate(paragraph: ParagraphUnit, *, list_kind: str, signal_only: bool) -> None:
-    if signal_only:
-        paragraph.heuristic_role_hint = "list"
-        paragraph.heuristic_list_kind_hint = list_kind
-        paragraph.role = "body"
-        paragraph.structural_role = "body"
-        paragraph.list_kind = None
-        paragraph.heading_level = None
-        paragraph.heading_source = None
-        return
-    paragraph.role = "list"
-    paragraph.structural_role = "list"
-    paragraph.list_kind = list_kind
+    paragraph.heuristic_role_hint = "list"
+    paragraph.heuristic_list_kind_hint = list_kind
+    paragraph.role = "body"
+    paragraph.structural_role = "body"
+    paragraph.list_kind = None
     paragraph.heading_level = None
     paragraph.heading_source = None
 

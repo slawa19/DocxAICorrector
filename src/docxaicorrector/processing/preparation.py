@@ -48,6 +48,7 @@ from docxaicorrector.document.segments import (
 )
 from docxaicorrector.structure.document_map import (
     DOCUMENT_MAP_DESCRIPTOR_SCHEMA_VERSION,
+    DOCUMENT_MAP_POSTPROCESS_VERSION,
     DOCUMENT_MAP_PROMPT_VERSION,
     build_document_map,
 )
@@ -57,7 +58,14 @@ from docxaicorrector.structure.recognition import (
     apply_structure_map,
     build_structure_map,
 )
-from docxaicorrector.structure.reconciliation import STRUCTURE_RECONCILIATION_SCHEMA_VERSION, reconcile_with_document_map
+from docxaicorrector.structure.reconciliation import (
+    RECONCILIATION_TARGETED_DESCRIPTOR_SCHEMA_VERSION,
+    RECONCILIATION_TARGETED_PROMPT_VERSION,
+    ReconciliationReport,
+    STRUCTURE_RECONCILIATION_SCHEMA_VERSION,
+    reconcile_with_document_map,
+    targeted_reclassify_with_reconciliation_context,
+)
 from docxaicorrector.structure.validation import StructureValidationReport, validate_structure_quality, write_structure_validation_debug_artifact
 from docxaicorrector.text.translation_domains import build_terminology_plan, build_translation_domain_instructions
 
@@ -183,6 +191,20 @@ def _build_normalization_metrics(
 def flatten_layout_cleanup_metrics(cleanup_report) -> dict[str, int]:
     if cleanup_report is None:
         return {}
+    cleanup_mode = str(getattr(cleanup_report, "cleanup_mode", "remove") or "remove").strip().lower()
+    if cleanup_mode == "flag":
+        return {
+            "layout_cleanup_removed_count": int(getattr(cleanup_report, "flagged_page_number_count", 0) or 0)
+            + int(getattr(cleanup_report, "flagged_repeated_artifact_count", 0) or 0)
+            + int(getattr(cleanup_report, "flagged_empty_or_whitespace_count", 0) or 0),
+            "layout_cleanup_page_number_count": int(getattr(cleanup_report, "flagged_page_number_count", 0) or 0),
+            "layout_cleanup_repeated_artifact_count": int(
+                getattr(cleanup_report, "flagged_repeated_artifact_count", 0) or 0
+            ),
+            "layout_cleanup_empty_or_whitespace_count": int(
+                getattr(cleanup_report, "flagged_empty_or_whitespace_count", 0) or 0
+            ),
+        }
     return {
         "layout_cleanup_removed_count": int(getattr(cleanup_report, "removed_paragraph_count", 0) or 0),
         "layout_cleanup_page_number_count": int(getattr(cleanup_report, "removed_page_number_count", 0) or 0),
@@ -241,7 +263,7 @@ def _build_preparation_stage_metrics(
 
 def _capture_structure_baseline(paragraphs: list) -> dict[int, tuple[str, str]]:
     return {
-        paragraph.source_index: (paragraph.role, paragraph.structural_role)
+        int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", -1))): (paragraph.role, paragraph.structural_role)
         for paragraph in paragraphs
     }
 
@@ -256,7 +278,8 @@ def _build_structure_divergence_metrics(*, baseline: dict[int, tuple[str, str]],
     for paragraph in paragraphs:
         if paragraph.role_confidence != "ai":
             continue
-        previous = baseline.get(paragraph.source_index)
+        logical_index = int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", -1)))
+        previous = baseline.get(logical_index)
         if previous is None:
             continue
         previous_role, previous_structural_role = previous
@@ -275,6 +298,7 @@ _STRUCTURE_MAP_CACHE_LIMIT = 8
 _structure_map_cache: OrderedDict[str, StructureMap] = OrderedDict()
 _structure_map_cache_lock = Lock()
 _STRUCTURE_MAP_DEBUG_DIR = RUN_DIR / "structure_maps"
+_RECONCILIATION_REPORT_DEBUG_DIR = RUN_DIR / "reconciliation_reports"
 _DOCUMENT_MAP_CACHE_LIMIT = 8
 _document_map_cache: OrderedDict[str, DocumentMap] = OrderedDict()
 _document_map_cache_lock = Lock()
@@ -376,6 +400,24 @@ def _build_structure_map_cache_key(*, paragraphs: list, app_config: Mapping[str,
         "prompt_version": STRUCTURE_RECOGNITION_PROMPT_VERSION,
         "descriptor_schema_version": STRUCTURE_RECOGNITION_DESCRIPTOR_SCHEMA_VERSION,
         "reconciliation_schema_version": STRUCTURE_RECONCILIATION_SCHEMA_VERSION,
+        "reconciliation_targeted_enabled": bool(app_config.get("structure_recovery_reconciliation_targeted_enabled", False)),
+        "reconciliation_targeted_prompt_version": RECONCILIATION_TARGETED_PROMPT_VERSION,
+        "reconciliation_targeted_descriptor_schema_version": RECONCILIATION_TARGETED_DESCRIPTOR_SCHEMA_VERSION,
+        "reconciliation_targeted_threshold": (
+            int(app_config.get("structure_recovery_reconciliation_targeted_threshold", 3) or 3)
+            if bool(app_config.get("structure_recovery_reconciliation_targeted_enabled", False))
+            else None
+        ),
+        "reconciliation_targeted_timeout_seconds": (
+            float(app_config.get("structure_recovery_reconciliation_targeted_timeout_seconds", 45) or 45)
+            if bool(app_config.get("structure_recovery_reconciliation_targeted_enabled", False))
+            else None
+        ),
+        "reconciliation_targeted_max_paragraphs": (
+            int(app_config.get("structure_recovery_reconciliation_targeted_max_paragraphs", 60) or 60)
+            if bool(app_config.get("structure_recovery_reconciliation_targeted_enabled", False))
+            else None
+        ),
         "max_window_paragraphs": max_window_paragraphs,
         "overlap_paragraphs": overlap_paragraphs,
         "preview_chars": preview_chars,
@@ -445,6 +487,9 @@ def _build_document_map_cache_key(*, paragraphs: list, app_config: Mapping[str, 
         "max_input_paragraphs": int(app_config.get("structure_recovery_document_map_max_input_paragraphs", 6000) or 6000),
         "max_input_tokens": int(app_config.get("structure_recovery_document_map_max_input_tokens", 180000) or 180000),
         "preview_chars": preview_chars,
+        "prompt_version": DOCUMENT_MAP_PROMPT_VERSION,
+        "descriptor_schema_version": DOCUMENT_MAP_DESCRIPTOR_SCHEMA_VERSION,
+        "postprocess_version": DOCUMENT_MAP_POSTPROCESS_VERSION,
         "structure_recovery_enabled": structure_recovery_enabled,
         "structure_recovery_mode": structure_recovery_mode,
         "coordinate_schema_version": coordinate_schema_version,
@@ -575,6 +620,7 @@ def _write_document_map_debug_artifact(*, cache_key: str, document_map: Document
                 "model": str(app_config.get("structure_recovery_document_map_model", "") or ""),
                 "prompt_version": DOCUMENT_MAP_PROMPT_VERSION,
                 "descriptor_schema_version": DOCUMENT_MAP_DESCRIPTOR_SCHEMA_VERSION,
+                "postprocess_version": DOCUMENT_MAP_POSTPROCESS_VERSION,
                 "coordinate_schema_version": coordinate_schema_version,
                 "sampled": bool(document_map.sampled),
                 "sampled_logical_indexes": list(document_map.sampled_logical_indexes),
@@ -595,11 +641,58 @@ def _write_document_map_debug_artifact(*, cache_key: str, document_map: Document
     return str(artifact_path)
 
 
+def _write_reconciliation_report_artifact(
+    *,
+    cache_key: str,
+    report: ReconciliationReport,
+    app_config: Mapping[str, Any],
+) -> str:
+    _RECONCILIATION_REPORT_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    artifact_path = _RECONCILIATION_REPORT_DEBUG_DIR / f"{cache_key}.json"
+    coordinate_schema_version = int(
+        app_config.get("structure_recovery_coordinate_schema_version", STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION)
+        or STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION
+    )
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "cache_key": cache_key,
+                "stage": "reconciliation_v1",
+                "reconciliation_schema_version": STRUCTURE_RECONCILIATION_SCHEMA_VERSION,
+                "targeted_prompt_version": RECONCILIATION_TARGETED_PROMPT_VERSION,
+                "targeted_descriptor_schema_version": RECONCILIATION_TARGETED_DESCRIPTOR_SCHEMA_VERSION,
+                "coordinate_schema_version": coordinate_schema_version,
+                "report": {
+                    "missing_outline_entries": list(report.missing_outline_entries),
+                    "unexpected_headings": list(report.unexpected_headings),
+                    "toc_entries_without_body_match": list(report.toc_entries_without_body_match),
+                    "front_matter_leaks": list(report.front_matter_leaks),
+                    "targeted_recall_invoked": report.targeted_recall_invoked,
+                    "targeted_recall_count": report.targeted_recall_count,
+                    "outline_coverage_ratio": report.outline_coverage_ratio,
+                    "patched_logical_indexes": list(report.patched_logical_indexes),
+                    "patched_source_indexes": list(report.patched_source_indexes),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    prune_artifact_dir(
+        target_dir=_RECONCILIATION_REPORT_DEBUG_DIR,
+        max_age_seconds=STRUCTURE_MAPS_MAX_AGE_SECONDS,
+        max_count=STRUCTURE_MAPS_MAX_COUNT,
+    )
+    return str(artifact_path)
+
+
 def _run_structure_recognition(
     *,
     paragraphs: list,
     image_assets: list,
     app_config: Mapping[str, Any],
+    get_client_fn,
     progress_callback,
     normalization_report,
     relation_report,
@@ -705,7 +798,7 @@ def _run_structure_recognition(
             try:
                 structure_map = build_structure_map(
                     paragraphs,
-                    client=get_client(),
+                    client=get_client_fn(),
                     model=get_model_role_value(app_config, "structure_recognition"),
                     max_window_paragraphs=max_window_paragraphs,
                     overlap_paragraphs=overlap_paragraphs,
@@ -738,10 +831,54 @@ def _run_structure_recognition(
                 },
             )
         if document_map is not None and structure_map is not None:
-            structure_map, _reconciliation_report = reconcile_with_document_map(
+            structure_map, reconciliation_report = reconcile_with_document_map(
                 paragraphs,
                 document_map,
                 structure_map,
+            )
+            targeted_threshold = int(app_config.get("structure_recovery_reconciliation_targeted_threshold", 3) or 3)
+            if (
+                bool(app_config.get("structure_recovery_reconciliation_targeted_enabled", False))
+                and reconciliation_report.missing_outline_entry_count + reconciliation_report.unexpected_heading_count > targeted_threshold
+            ):
+                structure_map = targeted_reclassify_with_reconciliation_context(
+                    paragraphs,
+                    document_map,
+                    structure_map,
+                    reconciliation_report,
+                    client=get_client_fn(),
+                    model=get_model_role_value(app_config, "structure_recognition"),
+                    timeout=float(app_config.get("structure_recovery_reconciliation_targeted_timeout_seconds", 60) or 60),
+                    max_paragraphs=int(app_config.get("structure_recovery_reconciliation_targeted_max_paragraphs", 60) or 60),
+                )
+                structure_map, reconciliation_report = reconcile_with_document_map(
+                    paragraphs,
+                    document_map,
+                    structure_map,
+                )
+                reconciliation_report = ReconciliationReport(
+                    missing_outline_entries=reconciliation_report.missing_outline_entries,
+                    unexpected_headings=reconciliation_report.unexpected_headings,
+                    toc_entries_without_body_match=reconciliation_report.toc_entries_without_body_match,
+                    front_matter_leaks=reconciliation_report.front_matter_leaks,
+                    targeted_recall_invoked=True,
+                    targeted_recall_count=1,
+                    outline_coverage_ratio=reconciliation_report.outline_coverage_ratio,
+                    patched_logical_indexes=reconciliation_report.patched_logical_indexes,
+                )
+            artifact_path = _write_reconciliation_report_artifact(
+                cache_key=cache_key,
+                report=reconciliation_report,
+                app_config=app_config,
+            )
+            log_event(
+                logging.INFO,
+                "reconciliation_report_saved",
+                "Сохранён reconciliation report структуры.",
+                artifact_path=artifact_path,
+                outline_coverage_ratio=reconciliation_report.outline_coverage_ratio,
+                front_matter_leaks=list(reconciliation_report.front_matter_leaks),
+                targeted_recall_invoked=reconciliation_report.targeted_recall_invoked,
             )
         if bool(app_config.get("structure_recognition_save_debug_artifacts", True)):
             artifact_path = _write_structure_map_debug_artifact(cache_key=cache_key, structure_map=structure_map, app_config=app_config)
@@ -821,6 +958,7 @@ def _run_document_map_stage(
     paragraphs: list,
     image_assets: list,
     app_config: Mapping[str, Any],
+    get_client_fn,
     progress_callback,
     normalization_report,
     relation_report,
@@ -882,9 +1020,9 @@ def _run_document_map_stage(
         if document_map is None:
             document_map = build_document_map(
                 paragraphs,
-                client=get_client(),
+                client=get_client_fn(),
                 model=str(app_config.get("structure_recovery_document_map_model", "") or ""),
-                timeout=float(app_config.get("structure_recovery_document_map_timeout_seconds", 60) or 60),
+                timeout=float(app_config.get("structure_recovery_document_map_timeout_seconds", 120) or 120),
                 max_input_paragraphs=int(app_config.get("structure_recovery_document_map_max_input_paragraphs", 6000) or 6000),
                 max_input_tokens=int(app_config.get("structure_recovery_document_map_max_input_tokens", 180000) or 180000),
                 preview_chars=int(app_config.get("structure_recovery_document_map_preview_chars", 120) or 120),
@@ -1024,6 +1162,9 @@ def _run_structure_validation(
     relation_report,
     cleanup_report=None,
     structure_repair_report: StructureRepairReport | None = None,
+    document_map: DocumentMap | None = None,
+    outline_coverage_ratio: float | None = None,
+    phase: str = "pre_ai",
     source_format: str = "docx",
     conversion_backend: str | None = None,
 ) -> StructureValidationReport:
@@ -1035,17 +1176,26 @@ def _run_structure_validation(
         cleanup_report=cleanup_report,
         structure_repair_report=structure_repair_report,
     )
+    stage = "Структура: валидация" if phase == "pre_ai" else "Структура: финальная валидация"
+    detail = (
+        "Оцениваю структурный риск документа детерминированно."
+        if phase == "pre_ai"
+        else "Проверяю итоговую структуру после AI и reconciliation."
+    )
+    progress = 0.30 if phase == "pre_ai" else 0.56
     emit_preparation_progress(
         progress_callback,
-        stage="Структура: валидация",
-        detail="Оцениваю структурный риск документа детерминированно.",
-        progress=0.30,
+        stage=stage,
+        detail=detail,
+        progress=progress,
         metrics={**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend},
     )
     report = validate_structure_quality(
         paragraphs=paragraphs,
         app_config=app_config,
         structure_repair_report=structure_repair_report,
+        document_map_present=document_map is not None,
+        outline_coverage_ratio=outline_coverage_ratio,
     )
     if bool(app_config.get("structure_validation_save_debug_artifacts", True)):
         artifact_path = write_structure_validation_debug_artifact(report=report, app_config=app_config)
@@ -1054,20 +1204,47 @@ def _run_structure_validation(
             "structure_validation_debug_artifact_saved",
             "Сохранён debug artifact структурной валидации.",
             artifact_path=artifact_path,
+            validation_phase=phase,
             escalation_recommended=report.escalation_recommended,
         )
     return report
 
 
+def _compute_outline_coverage_ratio(*, paragraphs: Sequence[Any], document_map: DocumentMap | None) -> float | None:
+    if document_map is None:
+        return None
+    outline = tuple(getattr(document_map, "outline", ()) or ())
+    if not outline:
+        return 1.0
+
+    paragraphs_by_logical_index = {
+        int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", -1))): paragraph
+        for paragraph in paragraphs
+    }
+    matched = 0
+    for entry in outline:
+        paragraph = paragraphs_by_logical_index.get(int(getattr(entry, "logical_index", -1)))
+        if paragraph is None:
+            continue
+        role = str(getattr(paragraph, "role", "") or "").strip().lower()
+        heading_level = getattr(paragraph, "heading_level", None)
+        if role == "heading" and heading_level == getattr(entry, "level", None):
+            matched += 1
+    return matched / len(outline)
+
+
 def _resolve_pre_translation_quality_gate(
     *,
     structure_validation_report: StructureValidationReport | None,
+    diagnostic_structure_validation_report: StructureValidationReport | None = None,
     structure_ai_attempted: bool,
     structure_summary: StructureRecognitionSummary,
     app_config: Mapping[str, Any],
 ) -> tuple[str, tuple[str, ...]]:
     if structure_validation_report is None:
         return "pass", ()
+
+    diagnostic_report = diagnostic_structure_validation_report or structure_validation_report
 
     reasons: list[str] = []
     readiness_status = str(getattr(structure_validation_report, "readiness_status", "") or "")
@@ -1076,7 +1253,7 @@ def _resolve_pre_translation_quality_gate(
 
     if (
         bool(app_config.get("structure_validation_block_on_high_risk_noop", True))
-        and bool(getattr(structure_validation_report, "escalation_recommended", False))
+        and bool(getattr(diagnostic_report, "escalation_recommended", False))
         and structure_ai_attempted
         and structure_summary.ai_classified_count == 0
     ):
@@ -1303,6 +1480,7 @@ def _prepare_document_for_processing(
     conversion_backend: str | None = None,
     app_config: Mapping[str, Any],
     processing_operation: str = "edit",
+    get_client_fn,
     progress_callback=None,
 ):
     initial_stage, initial_detail = _build_source_import_progress(source_format=source_format)
@@ -1345,11 +1523,12 @@ def _prepare_document_for_processing(
         },
     )
     structure_validation_report = None
+    diagnostic_structure_validation_report = None
     structure_mode = _resolve_structure_recognition_mode(app_config)
     should_run_ai = False
     structure_ai_attempted = False
     if structure_mode in {"auto", "always"}:
-        structure_validation_report = _run_structure_validation(
+        diagnostic_structure_validation_report = _run_structure_validation(
             paragraphs=paragraphs,
             image_assets=image_assets,
             app_config=app_config,
@@ -1361,6 +1540,7 @@ def _prepare_document_for_processing(
             source_format=source_format,
             conversion_backend=conversion_backend,
         )
+        structure_validation_report = diagnostic_structure_validation_report
         if not bool(app_config.get("structure_validation_enabled", True)):
             emit_preparation_progress(
                 progress_callback,
@@ -1382,7 +1562,7 @@ def _prepare_document_for_processing(
             )
             should_run_ai = structure_mode == "always"
         else:
-            should_run_ai = True if structure_mode == "always" else structure_validation_report.escalation_recommended
+            should_run_ai = True if structure_mode == "always" else diagnostic_structure_validation_report.escalation_recommended
             if not should_run_ai:
                 emit_preparation_progress(
                     progress_callback,
@@ -1402,17 +1582,22 @@ def _prepare_document_for_processing(
                         "conversion_backend": conversion_backend,
                     },
                 )
-    document_map = _run_document_map_stage(
-        paragraphs=paragraphs,
-        image_assets=image_assets,
-        app_config=app_config,
-        progress_callback=progress_callback,
-        normalization_report=normalization_report,
-        relation_report=relation_report,
-        cleanup_report=cleanup_report,
-        structure_repair_report=structure_repair_report,
-        source_format=source_format,
-        conversion_backend=conversion_backend,
+    document_map = (
+        _run_document_map_stage(
+            paragraphs=paragraphs,
+            image_assets=image_assets,
+            app_config=app_config,
+            get_client_fn=get_client_fn,
+            progress_callback=progress_callback,
+            normalization_report=normalization_report,
+            relation_report=relation_report,
+            cleanup_report=cleanup_report,
+            structure_repair_report=structure_repair_report,
+            source_format=source_format,
+            conversion_backend=conversion_backend,
+        )
+        if should_run_ai
+        else None
     )
     structure_ai_attempted = should_run_ai
     structure_map, structure_summary = (
@@ -1420,6 +1605,7 @@ def _prepare_document_for_processing(
             paragraphs=paragraphs,
             image_assets=image_assets,
             app_config=app_config,
+            get_client_fn=get_client_fn,
             progress_callback=progress_callback,
             normalization_report=normalization_report,
             relation_report=relation_report,
@@ -1431,8 +1617,25 @@ def _prepare_document_for_processing(
         if should_run_ai
         else (None, StructureRecognitionSummary())
     )
+    if should_run_ai and bool(app_config.get("structure_validation_enabled", True)):
+        structure_validation_report = _run_structure_validation(
+            paragraphs=paragraphs,
+            image_assets=image_assets,
+            app_config=app_config,
+            progress_callback=progress_callback,
+            normalization_report=normalization_report,
+            relation_report=relation_report,
+            cleanup_report=cleanup_report,
+            structure_repair_report=structure_repair_report,
+            document_map=document_map,
+            outline_coverage_ratio=_compute_outline_coverage_ratio(paragraphs=paragraphs, document_map=document_map),
+            phase="post_ai",
+            source_format=source_format,
+            conversion_backend=conversion_backend,
+        )
     quality_gate_status, quality_gate_reasons = _resolve_pre_translation_quality_gate(
         structure_validation_report=structure_validation_report,
+        diagnostic_structure_validation_report=diagnostic_structure_validation_report,
         structure_ai_attempted=structure_ai_attempted,
         structure_summary=structure_summary,
         app_config=app_config,
@@ -1532,6 +1735,8 @@ def _prepare_document_for_processing(
         escalation_reasons=list(getattr(structure_validation_report, "escalation_reasons", ())),
         readiness_status=str(getattr(structure_validation_report, "readiness_status", "") or ""),
         readiness_reasons=list(getattr(structure_validation_report, "readiness_reasons", ())),
+        document_map_present=bool(getattr(structure_validation_report, "document_map_present", False)),
+        outline_coverage_ratio=getattr(structure_validation_report, "outline_coverage_ratio", None),
         quality_gate_status=quality_gate_status,
         quality_gate_reasons=list(quality_gate_reasons),
         ai_classified_count=structure_summary.ai_classified_count,
@@ -1781,9 +1986,11 @@ def prepare_document_for_processing(
     app_config: dict[str, Any] | None = None,
     processing_operation: str | None = None,
     session_state=None,
+    get_client_fn=None,
     progress_callback=None,
 ) -> PreparedDocumentData:
     resolved_config = load_app_config() if app_config is None else app_config
+    resolved_get_client_fn = get_client if get_client_fn is None else get_client_fn
     resolved_processing_operation = str(
         processing_operation if processing_operation is not None else resolved_config.get("processing_operation", "edit")
     ).strip().lower() or "edit"
@@ -1885,6 +2092,7 @@ def prepare_document_for_processing(
             conversion_backend=getattr(uploaded_payload, "conversion_backend", None),
             app_config=resolved_config,
             processing_operation=resolved_processing_operation,
+            get_client_fn=resolved_get_client_fn,
             progress_callback=progress_callback,
         )
         _store_cached_prepared_document(

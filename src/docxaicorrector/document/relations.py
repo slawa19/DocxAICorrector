@@ -335,7 +335,12 @@ def _is_toc_entry_paragraph(paragraph: ParagraphUnit) -> bool:
 
 
 def _paragraph_structural_kind(paragraph: ParagraphUnit) -> str:
-    return str(getattr(paragraph, "structural_role", None) or getattr(paragraph, "role", None) or "").strip().lower()
+    return str(
+        getattr(paragraph, "heuristic_structural_role_hint", None)
+        or getattr(paragraph, "structural_role", None)
+        or getattr(paragraph, "role", None)
+        or ""
+    ).strip().lower()
 
 
 def _is_likely_attribution_text(text: str) -> bool:

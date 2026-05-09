@@ -25,7 +25,7 @@ import docxaicorrector.core.config as config
 
 TEST_TEXT_MODEL_DEFAULT = "openrouter:google/gemini-3.1-flash-lite-preview"
 TEST_TEXT_MODEL_OPTIONS = ("gpt-5.4", "gpt-5.4-mini")
-TEST_STRUCTURE_RECOGNITION_MODEL = "openrouter:google/gemini-3-flash-preview"
+TEST_STRUCTURE_RECOGNITION_MODEL = "gpt-5-mini"
 TEST_IMAGE_ANALYSIS_MODEL = "gpt-5.4-mini"
 TEST_IMAGE_VALIDATION_MODEL = "gpt-5.4-mini"
 TEST_IMAGE_RECONSTRUCTION_MODEL = "gpt-5.4-mini"

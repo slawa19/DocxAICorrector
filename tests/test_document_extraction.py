@@ -142,13 +142,16 @@ def test_extraction_cleanup_removes_textbox_artifacts_and_reassigns_identity(tmp
         paragraphs, _, _, _, _, cleanup_report, _ = extract_document_content_with_normalization_reports(source_file)
 
     texts = [paragraph.text for paragraph in paragraphs]
-    assert "www.example.com" not in texts
-    assert not any(text in {"1", "2", "3", "4"} for text in texts)
+    assert texts.count("www.example.com") == 4
+    assert sum(1 for text in texts if text in {"1", "2", "3", "4"}) == 4
     assert "Synthetic Title" in texts
     assert "Body content 1." in texts
-    assert cleanup_report.removed_page_number_count == 4
-    assert cleanup_report.removed_repeated_artifact_count == 4
-    assert [paragraph.source_index for paragraph in paragraphs] == list(range(len(paragraphs)))
+    assert cleanup_report.cleanup_mode == "flag"
+    assert cleanup_report.flagged_page_number_count == 4
+    assert cleanup_report.flagged_repeated_artifact_count == 4
+    assert cleanup_report.removed_page_number_count == 0
+    assert cleanup_report.removed_repeated_artifact_count == 0
+    assert [paragraph.logical_index for paragraph in paragraphs] == list(range(len(paragraphs)))
     assert [paragraph.paragraph_id for paragraph in paragraphs] == [f"p{index:04d}" for index in range(len(paragraphs))]
 
 
@@ -313,6 +316,7 @@ def test_extract_document_content_from_docx_merges_false_body_boundary_in_public
     assert len(paragraphs) == 1
     assert paragraphs[0].text == "архетипами: повторяющимися моделями поведения во времени, наблюдаемыми в разных системах."
     assert paragraphs[0].origin_raw_indexes == [0, 1]
+    assert paragraphs[0].boundary_normalization_applied is True
     assert build_marker_wrapped_block_text(paragraphs) == (
         f"[[DOCX_PARA_{paragraphs[0].paragraph_id}]]\n"
         "архетипами: повторяющимися моделями поведения во времени, наблюдаемыми в разных системах."
@@ -414,6 +418,47 @@ def test_extract_document_content_from_docx_splits_toc_like_inline_break_cluster
     ]
 
 
+def test_extract_document_content_from_docx_preserves_source_index_as_provenance_when_inline_break_cluster_splits():
+    doc = Document()
+    doc.add_paragraph("Contents")
+    paragraph = doc.add_paragraph()
+    paragraph.add_run("Common Critiques of Value Extraction")
+    paragraph.add_run().add_break()
+    paragraph.add_run("What is Value?")
+    paragraph.add_run().add_break()
+    paragraph.add_run("Meet the Production Boundary")
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    paragraphs, _ = extract_document_content_from_docx(buffer)
+
+    assert [paragraph.source_index for paragraph in paragraphs] == [0, 1, 1, 1]
+    assert [paragraph.logical_index for paragraph in paragraphs] == [0, 1, 2, 3]
+    assert [paragraph.paragraph_id for paragraph in paragraphs] == ["p0000", "p0001", "p0002", "p0003"]
+    assert [paragraph.toc_pattern_hint for paragraph in paragraphs] == [True, True, True, True]
+
+
+def test_extract_document_content_with_normalization_reports_populates_page_number_stage0_signals(tmp_path, monkeypatch):
+    monkeypatch.setattr(document_extraction, "_resolve_paragraph_boundary_normalization_settings", lambda: ("off", False))
+    document_obj = Document()
+    document_obj.add_paragraph("Body content")
+    document_obj.add_paragraph("12")
+
+    source_path = tmp_path / "page-number-signals.docx"
+    document_obj.save(source_path)
+
+    with source_path.open("rb") as source_file:
+        paragraphs, _, _, _, _, cleanup_report, _ = extract_document_content_with_normalization_reports(source_file)
+
+    page_number_paragraph = next(paragraph for paragraph in paragraphs if paragraph.text == "12")
+
+    assert cleanup_report.flagged_page_number_count == 1
+    assert page_number_paragraph.is_likely_page_number is True
+    assert page_number_paragraph.page_number == 12
+    assert page_number_paragraph.position_fraction == 1.0
+
+
 def test_extract_document_content_from_docx_splits_compact_toc_run_clusters_without_explicit_breaks():
     doc = Document()
     doc.add_paragraph("Contents")
@@ -504,7 +549,7 @@ def test_extract_document_content_from_docx_inserts_image_placeholders(tmp_path)
     assert image_assets[0].height_emu is not None
     assert paragraphs[1].asset_id == "img_001"
     assert [paragraph.paragraph_id for paragraph in paragraphs] == ["p0000", "p0001", "p0002"]
-    assert [paragraph.source_index for paragraph in paragraphs] == [0, 1, 2]
+    assert [paragraph.logical_index for paragraph in paragraphs] == [0, 1, 2]
     assert [paragraph.structural_role for paragraph in paragraphs] == ["body", "image", "body"]
     assert inspect_placeholder_integrity("\n\n".join(paragraph.text for paragraph in paragraphs), image_assets) == {
         "img_001": "ok"
@@ -1229,6 +1274,27 @@ def test_normalize_front_matter_display_title_ai_first_sets_hint_without_mutatin
     assert paragraphs[1].heuristic_heading_level_hint == 1
 
 
+def test_normalize_front_matter_display_title_ai_first_does_not_demote_existing_heading_siblings():
+    paragraphs = [
+        ParagraphUnit(text="Mariana Mazzucato", role="heading", structural_role="heading", heading_level=2, heading_source="heuristic", font_size_pt=28, is_bold=True),
+        ParagraphUnit(text="T H E VALUE O F E V E RY T H I NG", role="body", structural_role="body", font_size_pt=28, is_bold=True),
+        ParagraphUnit(text="Making and Taking in the Global Economy", role="body", structural_role="body", font_size_pt=18, is_italic=True),
+    ]
+
+    document_extraction.normalize_front_matter_display_title(
+        paragraphs,
+        structure_recovery_enabled=True,
+        structure_recovery_mode="ai_first",
+    )
+
+    assert paragraphs[0].role == "heading"
+    assert paragraphs[0].structural_role == "heading"
+    assert paragraphs[0].heading_level == 2
+    assert paragraphs[0].heading_source == "heuristic"
+    assert paragraphs[1].heuristic_role_hint == "heading"
+    assert paragraphs[1].heuristic_heading_level_hint == 1
+
+
 def test_extract_document_content_from_docx_keeps_true_structural_h1_when_no_cover_title_exists():
     doc = Document()
     heading = doc.add_paragraph("Chapter 1 Value", style="Heading 1")
@@ -1485,6 +1551,68 @@ def test_promote_short_standalone_headings_does_not_override_ai_structural_attri
     assert paragraphs[1].structural_role == "attribution"
     assert paragraphs[1].role_confidence == "ai"
     assert paragraphs[1].heading_source is None
+
+
+def test_promote_short_standalone_headings_does_not_promote_centered_all_caps_attribution_after_italic_quote():
+    paragraphs = [
+        ParagraphUnit(
+            text="Богатство заключается не в том, чтобы иметь много имущества, а в том, чтобы иметь мало желаний.",
+            role="body",
+            source_index=0,
+            is_italic=True,
+            font_size_pt=11.0,
+        ),
+        ParagraphUnit(
+            text="ЭПИКТЕТ",
+            role="body",
+            source_index=1,
+            paragraph_alignment="center",
+            font_size_pt=16.0,
+        ),
+        ParagraphUnit(
+            text="Следующий абзац продолжает обычный текст и задаёт body-контекст для эвристики.",
+            role="body",
+            source_index=2,
+            font_size_pt=11.0,
+        ),
+    ]
+
+    document._promote_short_standalone_headings(paragraphs)
+
+    assert paragraphs[1].role == "body"
+    assert paragraphs[1].structural_role == "body"
+    assert paragraphs[1].heading_source is None
+
+
+def test_promote_short_standalone_headings_still_promotes_legitimate_centered_heading_after_italic_context():
+    paragraphs = [
+        ParagraphUnit(
+            text="Богатство заключается не только в накоплении средств, но и в умении выстраивать устойчивые связи и долгосрочные цели.",
+            role="body",
+            source_index=0,
+            is_italic=True,
+            font_size_pt=11.0,
+        ),
+        ParagraphUnit(
+            text="Переосмысление богатства",
+            role="body",
+            source_index=1,
+            paragraph_alignment="center",
+            font_size_pt=16.0,
+        ),
+        ParagraphUnit(
+            text="Следующий абзац продолжает обычный основной текст и даёт достаточный body-контекст для эвристического промоушена.",
+            role="body",
+            source_index=2,
+            font_size_pt=11.0,
+        ),
+    ]
+
+    document._promote_short_standalone_headings(paragraphs)
+
+    assert paragraphs[1].role == "heading"
+    assert paragraphs[1].heading_source == "heuristic"
+    assert paragraphs[1].heading_level == 2
 
 
 def test_extract_document_content_from_docx_keeps_inherited_centered_caption_after_table():

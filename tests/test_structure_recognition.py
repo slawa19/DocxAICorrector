@@ -5,7 +5,7 @@ import threading
 import pytest
 
 import docxaicorrector.structure.recognition as structure_recognition
-from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, ParagraphClassification, ParagraphUnit, StructureMap
+from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, EmbeddedStructureHint, ParagraphClassification, ParagraphUnit, StructureMap
 from docxaicorrector.structure.recognition import StructureRecognitionProgress
 
 
@@ -35,6 +35,7 @@ def _paragraph(
         font_size_pt=font_size_pt,
         list_kind=list_kind,
         source_index=source_index,
+        logical_index=source_index,
         heading_level=heading_level,
         heading_source=heading_source,
     )
@@ -104,12 +105,59 @@ def test_build_paragraph_descriptors_include_document_map_anchors_when_provided(
     assert descriptors[1].anchor_role is None
 
 
+def test_build_paragraph_descriptors_use_logical_index_for_duplicate_source_indexes():
+    paragraphs = [
+        _paragraph(source_index=7, text="ГЛАВА 1", heading_level=1, heading_source="explicit"),
+        _paragraph(source_index=7, text="Основной текст"),
+    ]
+    paragraphs[0].logical_index = 10
+    paragraphs[1].logical_index = 11
+
+    descriptors = structure_recognition.build_paragraph_descriptors(paragraphs)
+
+    assert [descriptor.index for descriptor in descriptors] == [10, 11]
+
+
 def test_build_paragraph_descriptors_honors_custom_preview_chars():
     paragraphs = [_paragraph(source_index=0, text="Очень длинный абзац " + ("текста " * 50))]
 
     descriptors = structure_recognition.build_paragraph_descriptors(paragraphs, preview_chars=40)
 
     assert len(descriptors[0].text_preview) == 40
+
+
+def test_build_paragraph_descriptors_prefers_persisted_stage0_signals_when_present():
+    paragraph = _paragraph(source_index=0, text="Ordinary body line")
+    paragraph.is_isolated_marker = True
+    paragraph.toc_pattern_hint = True
+    paragraph.scripture_reference_hint = True
+
+    descriptors = structure_recognition.build_paragraph_descriptors([paragraph])
+
+    assert descriptors[0].isolated_marker is True
+    assert descriptors[0].toc_candidate is True
+    assert descriptors[0].scripture_reference_candidate is True
+
+
+def test_build_paragraph_descriptors_include_embedded_structure_hints_in_prompt_payload():
+    paragraphs = [_paragraph(source_index=0, text="Compound paragraph with fused fragments.")]
+    paragraphs[0].heuristic_embedded_structure_hints = [
+        EmbeddedStructureHint(text="Contents", role="body", structural_role="toc_header"),
+        EmbeddedStructureHint(text="1. Prepare your spirit", role="list", structural_role="body", list_kind="ordered"),
+    ]
+
+    descriptors = structure_recognition.build_paragraph_descriptors(paragraphs, preview_chars=20)
+
+    assert descriptors[0].toc_candidate is True
+    assert descriptors[0].has_numbering is True
+    assert descriptors[0].embedded_structure_hints == (
+        {"t": "Contents", "r": "body", "sr": "toc_header", "hl": None, "lk": None, "iso": False, "scr": False},
+        {"t": "1. Prepare your spir", "r": "list", "sr": "body", "hl": None, "lk": "ordered", "iso": False, "scr": False},
+    )
+    assert descriptors[0].to_prompt_dict()["emb"] == [
+        {"t": "Contents", "r": "body", "sr": "toc_header", "hl": None, "lk": None, "iso": False, "scr": False},
+        {"t": "1. Prepare your spir", "r": "list", "sr": "body", "hl": None, "lk": "ordered", "iso": False, "scr": False},
+    ]
 
 
 def test_iter_descriptor_windows_respects_token_budget_for_large_anchored_windows(monkeypatch):
@@ -148,6 +196,108 @@ def test_iter_descriptor_windows_respects_token_budget_for_large_anchored_window
     )
 
     assert [[descriptor.index for descriptor in window] for window in windows] == [[0], [1], [2], [3], [4]]
+
+
+def test_iter_descriptor_windows_reduces_preview_before_window_size(monkeypatch):
+    descriptors = [
+        structure_recognition.ParagraphDescriptor(
+            index=index,
+            text_preview="text " * 80,
+            text_length=400,
+            style_name="Body Text",
+            is_bold=False,
+            is_centered=False,
+            is_all_caps=False,
+            font_size_pt=12.0,
+            has_numbering=False,
+            explicit_heading_level=None,
+            context_before_preview="before " * 50,
+            context_after_preview="after " * 50,
+            anchor_role="body",
+            anchor_heading_level=None,
+            anchor_confidence="low",
+        )
+        for index in range(2)
+    ]
+
+    def _fake_estimate_descriptor_window_tokens(descriptors):
+        if len(descriptors) == 2 and max(len(descriptor.text_preview) for descriptor in descriptors) > 120:
+            return 200
+        if len(descriptors) == 2:
+            return 80
+        return 50
+
+    monkeypatch.setattr(
+        structure_recognition,
+        "_estimate_descriptor_window_tokens",
+        _fake_estimate_descriptor_window_tokens,
+    )
+
+    windows = list(
+        structure_recognition._iter_descriptor_windows(
+            descriptors,
+            max_window_paragraphs=2,
+            overlap_paragraphs=0,
+            target_input_tokens=100,
+        )
+    )
+
+    assert [[descriptor.index for descriptor in window] for window in windows] == [[0, 1]]
+    assert max(len(descriptor.text_preview) for descriptor in windows[0]) <= 120
+    assert max(len(descriptor.context_before_preview) for descriptor in windows[0]) <= 120
+    assert max(len(descriptor.context_after_preview) for descriptor in windows[0]) <= 120
+
+
+def test_shrink_window_to_token_budget_does_not_rerun_preview_shrink_for_smaller_prefixes(monkeypatch):
+    descriptors = [
+        structure_recognition.ParagraphDescriptor(
+            index=index,
+            text_preview="text " * 80,
+            text_length=400,
+            style_name="Body Text",
+            is_bold=False,
+            is_centered=False,
+            is_all_caps=False,
+            font_size_pt=12.0,
+            has_numbering=False,
+            explicit_heading_level=None,
+            context_before_preview="before " * 50,
+            context_after_preview="after " * 50,
+            anchor_role="body",
+            anchor_heading_level=None,
+            anchor_confidence="low",
+        )
+        for index in range(4)
+    ]
+    calls = []
+
+    def _fake_shrink_preview_to_token_budget(window, *, budget_limit):
+        calls.append(len(window))
+        if len(window) != 4:
+            raise AssertionError("preview shrink should run only once for the full candidate window")
+        return None
+
+    monkeypatch.setattr(
+        structure_recognition,
+        "_shrink_preview_to_token_budget",
+        _fake_shrink_preview_to_token_budget,
+    )
+    monkeypatch.setattr(
+        structure_recognition,
+        "_estimate_descriptor_window_tokens",
+        lambda window: 200 if len(window) > 2 else 80,
+    )
+
+    fitted = structure_recognition._shrink_window_to_token_budget(
+        descriptors,
+        start=0,
+        end=4,
+        budget_limit=100,
+    )
+
+    assert calls == [4]
+    assert [descriptor.index for descriptor in fitted] == [0, 1]
+    assert max(len(descriptor.text_preview) for descriptor in fitted) <= 120
 
 
 def test_build_structure_map_forwards_document_map_anchors_into_descriptors(monkeypatch):
@@ -262,7 +412,7 @@ def test_apply_structure_map_preserves_conflicting_high_confidence_anchor():
     paragraph.logical_index = 10
     structure_map = StructureMap(
         classifications={
-            0: ParagraphClassification(index=0, role="body", heading_level=None, confidence="high"),
+            10: ParagraphClassification(index=10, role="body", heading_level=None, confidence="high"),
         },
         model_used="gpt-4o-mini",
         total_tokens_used=10,
@@ -292,12 +442,94 @@ def test_apply_structure_map_preserves_conflicting_high_confidence_anchor():
     assert paragraph.role_confidence == "heuristic"
 
 
+def test_apply_structure_map_allows_medium_confidence_demotion_when_high_heading_anchor_is_clearly_prose():
+    paragraph = _paragraph(
+        source_index=0,
+        text="Это длинный абзац обычной прозы с достаточным количеством слов, чтобы он был явно несовместим с ролью заголовка.",
+    )
+    paragraph.logical_index = 10
+    structure_map = StructureMap(
+        classifications={
+            10: ParagraphClassification(index=10, role="body", heading_level=None, confidence="medium"),
+        },
+        model_used="gpt-4o-mini",
+        total_tokens_used=10,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+
+    structure_recognition.apply_structure_map(
+        [paragraph],
+        structure_map,
+        document_map=document_map,
+    )
+
+    assert paragraph.role == "body"
+    assert paragraph.role_confidence == "ai"
+    assert paragraph.heading_level is None
+    assert paragraph.heading_source is None
+
+
+def test_apply_structure_map_allows_medium_confidence_promotion_when_high_body_anchor_is_clearly_heading_like():
+    paragraph = _paragraph(
+        source_index=0,
+        text="ГЛАВА 1",
+        is_bold=True,
+        paragraph_alignment="center",
+    )
+    paragraph.logical_index = 10
+    structure_map = StructureMap(
+        classifications={
+            10: ParagraphClassification(index=10, role="heading", heading_level=1, confidence="medium"),
+        },
+        model_used="gpt-4o-mini",
+        total_tokens_used=10,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(),
+        paragraph_anchors={10: DocumentMapAnchor(role="body", heading_level=None, confidence="high")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+
+    structure_recognition.apply_structure_map(
+        [paragraph],
+        structure_map,
+        document_map=document_map,
+    )
+
+    assert paragraph.role == "heading"
+    assert paragraph.role_confidence == "ai"
+    assert paragraph.heading_level == 1
+    assert paragraph.heading_source == "ai"
+
+
 def test_apply_structure_map_blocks_medium_anchor_body_to_heading_promotion():
     paragraph = _paragraph(source_index=0, text="Введение")
     paragraph.logical_index = 10
     structure_map = StructureMap(
         classifications={
-            0: ParagraphClassification(index=0, role="heading", heading_level=2, confidence="high"),
+            10: ParagraphClassification(index=10, role="heading", heading_level=2, confidence="high"),
         },
         model_used="gpt-4o-mini",
         total_tokens_used=10,
@@ -332,7 +564,7 @@ def test_apply_structure_map_allows_high_confidence_medium_anchor_refinement():
     paragraph.logical_index = 10
     structure_map = StructureMap(
         classifications={
-            0: ParagraphClassification(index=0, role="epigraph", heading_level=None, confidence="high"),
+            10: ParagraphClassification(index=10, role="epigraph", heading_level=None, confidence="high"),
         },
         model_used="gpt-4o-mini",
         total_tokens_used=10,
@@ -362,6 +594,30 @@ def test_apply_structure_map_allows_high_confidence_medium_anchor_refinement():
     assert paragraph.role == "body"
     assert paragraph.structural_role == "epigraph"
     assert paragraph.role_confidence == "ai"
+
+
+def test_apply_structure_map_uses_logical_index_for_duplicate_source_indexes():
+    first = _paragraph(source_index=7, text="ГЛАВА 1")
+    second = _paragraph(source_index=7, text="Основной текст")
+    first.logical_index = 10
+    second.logical_index = 11
+    structure_map = StructureMap(
+        classifications={
+            10: ParagraphClassification(index=10, role="heading", heading_level=1, confidence="high"),
+            11: ParagraphClassification(index=11, role="body", heading_level=None, confidence="high"),
+        },
+        model_used="gpt-4o-mini",
+        total_tokens_used=10,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+
+    structure_recognition.apply_structure_map([first, second], structure_map)
+
+    assert first.role == "heading"
+    assert first.heading_level == 1
+    assert second.role == "body"
+    assert second.role_confidence == "ai"
 
 
 def test_iter_descriptor_windows_uses_overlap_for_large_inputs():
@@ -480,7 +736,7 @@ def test_build_structure_map_splits_timeout_windows_and_merges_subwindow_results
     assert structure_map.get(3) == ParagraphClassification(index=3, role="body", heading_level=None, confidence="high")
 
 
-def test_build_structure_map_does_not_split_on_local_request_timeout(monkeypatch):
+def test_build_structure_map_splits_local_request_timeout_windows_and_merges_subwindow_results(monkeypatch):
     paragraphs = [
         _paragraph(source_index=0, text="Heading A"),
         _paragraph(source_index=1, text="Body A"),
@@ -492,7 +748,22 @@ def test_build_structure_map_does_not_split_on_local_request_timeout(monkeypatch
     def _classify(**kwargs):
         descriptors = list(kwargs["descriptors"])
         calls.append([descriptor.index for descriptor in descriptors])
-        raise structure_recognition.StructureRecognitionRequestTimeout("Structure recognition request timed out after 0.010s.")
+        if len(descriptors) > 2:
+            raise structure_recognition.StructureRecognitionRequestTimeout(
+                "Structure recognition request timed out after 0.010s."
+            )
+        return (
+            [
+                ParagraphClassification(
+                    index=descriptor.index,
+                    role="heading" if descriptor.index % 2 == 0 else "body",
+                    heading_level=1 if descriptor.index % 2 == 0 else None,
+                    confidence="high",
+                )
+                for descriptor in descriptors
+            ],
+            len(descriptors) * 7,
+        )
 
     monkeypatch.setattr(structure_recognition, "_classify_descriptor_window", _classify)
 
@@ -504,10 +775,13 @@ def test_build_structure_map_does_not_split_on_local_request_timeout(monkeypatch
         overlap_paragraphs=1,
     )
 
-    assert calls == [[0, 1, 2, 3]]
-    assert structure_map.window_count == 1
-    assert structure_map.total_tokens_used == 0
-    assert structure_map.classifications == {}
+    assert calls == [[0, 1, 2, 3], [0, 1], [2, 3]]
+    assert structure_map.window_count == 2
+    assert structure_map.total_tokens_used == 28
+    assert structure_map.get(0) == ParagraphClassification(index=0, role="heading", heading_level=1, confidence="high")
+    assert structure_map.get(1) == ParagraphClassification(index=1, role="body", heading_level=None, confidence="high")
+    assert structure_map.get(2) == ParagraphClassification(index=2, role="heading", heading_level=1, confidence="high")
+    assert structure_map.get(3) == ParagraphClassification(index=3, role="body", heading_level=None, confidence="high")
 
 
 def test_build_structure_map_emits_progress_for_top_level_windows(monkeypatch):

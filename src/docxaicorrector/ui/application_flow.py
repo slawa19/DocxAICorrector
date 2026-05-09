@@ -160,6 +160,20 @@ def flatten_relation_metrics(relation_report) -> dict[str, int]:
 def flatten_layout_cleanup_metrics(cleanup_report) -> dict[str, int]:
     if cleanup_report is None:
         return {}
+    cleanup_mode = str(getattr(cleanup_report, "cleanup_mode", "remove") or "remove").strip().lower()
+    if cleanup_mode == "flag":
+        return {
+            "layout_cleanup_removed_count": int(getattr(cleanup_report, "flagged_page_number_count", 0) or 0)
+            + int(getattr(cleanup_report, "flagged_repeated_artifact_count", 0) or 0)
+            + int(getattr(cleanup_report, "flagged_empty_or_whitespace_count", 0) or 0),
+            "layout_cleanup_page_number_count": int(getattr(cleanup_report, "flagged_page_number_count", 0) or 0),
+            "layout_cleanup_repeated_artifact_count": int(
+                getattr(cleanup_report, "flagged_repeated_artifact_count", 0) or 0
+            ),
+            "layout_cleanup_empty_or_whitespace_count": int(
+                getattr(cleanup_report, "flagged_empty_or_whitespace_count", 0) or 0
+            ),
+        }
     return {
         "layout_cleanup_removed_count": int(getattr(cleanup_report, "removed_paragraph_count", 0) or 0),
         "layout_cleanup_page_number_count": int(getattr(cleanup_report, "removed_page_number_count", 0) or 0),

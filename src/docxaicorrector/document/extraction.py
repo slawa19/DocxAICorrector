@@ -1,7 +1,9 @@
 import re
 import zipfile
+from collections import Counter
 from dataclasses import replace
 from io import BytesIO
+from math import isclose
 from pathlib import Path
 from collections.abc import Mapping
 from typing import cast
@@ -156,6 +158,14 @@ _TYPOGRAPHIC_BULLET_CHARS = {"\u2014", "\u2013"}
 _INLINE_BREAK_PATTERN = re.compile(r"<br\s*/?>", re.IGNORECASE)
 _TOC_HEADER_LINE_VALUES = {"contents", "содержание"}
 _TOC_CANDIDATE_WORD_PATTERN = re.compile(r"\w+(?:[-']\w+)*", re.UNICODE)
+_STAGE0_TOC_HEADER_VALUES = {"contents", "table of contents", "содержание"}
+_STAGE0_TOC_SUFFIX_PATTERN = re.compile(r"\.{2,}\s*\d+\s*$")
+_STAGE0_ISOLATED_MARKER_PATTERN = re.compile(r"^(?:\s*[•●\-*]\s*|\s*\d+[\.)]\s*)$")
+_STAGE0_SCRIPTURE_REFERENCE_PATTERN = re.compile(r"\b(?:[A-Za-zА-Яа-яЁё]+)\s+\d+:\d+(?:-\d+)?\b")
+_STAGE0_SPACING_BEFORE_PATTERN = re.compile(r"<(?:\w+:)?spacing\b[^>]*\b(?:\w+:)?before=\"(?P<before>\d+)\"")
+_STAGE0_SPACING_BEFORE_AUTOSPACING_PATTERN = re.compile(
+    r"<(?:\w+:)?spacing\b[^>]*\b(?:\w+:)?beforeAutospacing=\"(?P<flag>[^\"]+)\""
+)
 
 
 def extract_paragraph_units_from_docx(uploaded_file) -> list[ParagraphUnit]:
@@ -254,6 +264,7 @@ def extract_document_content_with_normalization_reports(
         structure_recovery_enabled=structure_recovery_enabled,
         structure_recovery_mode=structure_recovery_mode,
     )
+    _annotate_stage0_structure_signals(paragraphs)
 
     if ai_review_enabled and ai_review_mode != "off":
         _run_paragraph_boundary_ai_review(
@@ -588,10 +599,136 @@ def _copy_paragraph_unit(paragraph: ParagraphUnit, *, text: str) -> ParagraphUni
         paragraph,
         text=text,
         paragraph_id="",
-        source_index=-1,
+        source_index=paragraph.source_index,
+        logical_index=-1,
         origin_raw_indexes=list(paragraph.origin_raw_indexes),
         origin_raw_texts=list(paragraph.origin_raw_texts),
     )
+
+
+def _annotate_stage0_structure_signals(paragraphs: list[ParagraphUnit]) -> None:
+    style_cluster_ids = _build_stage0_style_cluster_ids(paragraphs)
+    font_size_z_scores = _build_stage0_font_size_z_scores(paragraphs)
+    last_index = max(len(paragraphs) - 1, 1)
+
+    for position, paragraph in enumerate(paragraphs):
+        text = str(getattr(paragraph, "text", "") or "").strip()
+        hint_texts = [str(getattr(hint, "text", "") or "").strip() for hint in (paragraph.heuristic_embedded_structure_hints or [])]
+        hint_structural_roles = [
+            str(getattr(hint, "structural_role", "body") or "body")
+            for hint in (paragraph.heuristic_embedded_structure_hints or [])
+        ]
+        paragraph.style_cluster_id = style_cluster_ids[position]
+        paragraph.font_size_z_score = font_size_z_scores[position]
+        paragraph.position_fraction = round(position / last_index, 3)
+        paragraph.page_number = _extract_stage0_page_number_hint(text, paragraph)
+        paragraph.vertical_gap_before_pt = _extract_stage0_vertical_gap_before_pt(paragraph)
+        paragraph.is_isolated_marker = _is_stage0_isolated_marker_text(text) or any(
+            _is_stage0_isolated_marker_text(hint_text) for hint_text in hint_texts
+        )
+        paragraph.toc_pattern_hint = _is_stage0_toc_pattern_hint(text, paragraph) or any(
+            role in {"toc_header", "toc_entry"} for role in hint_structural_roles
+        )
+        paragraph.scripture_reference_hint = _is_stage0_scripture_reference_text(text) or any(
+            _is_stage0_scripture_reference_text(hint_text) for hint_text in hint_texts
+        )
+        paragraph.boundary_normalization_applied = str(getattr(paragraph, "boundary_source", "raw") or "raw") != "raw"
+
+
+def _build_stage0_style_cluster_ids(paragraphs: list[ParagraphUnit]) -> list[int | None]:
+    normalized_styles = [str(getattr(paragraph, "style_name", "") or "").strip().lower() for paragraph in paragraphs]
+    nonempty_styles = [style for style in normalized_styles if style]
+    if not nonempty_styles:
+        return [None for _ in paragraphs]
+    default_style = Counter(nonempty_styles).most_common(1)[0][0]
+    cluster_map: dict[str, int] = {}
+    next_cluster_id = 1
+    cluster_ids: list[int | None] = []
+    for style in normalized_styles:
+        if not style or style == default_style:
+            cluster_ids.append(None)
+            continue
+        if style not in cluster_map:
+            cluster_map[style] = next_cluster_id
+            next_cluster_id += 1
+        cluster_ids.append(cluster_map[style])
+    return cluster_ids
+
+
+def _build_stage0_font_size_z_scores(paragraphs: list[ParagraphUnit]) -> list[float | None]:
+    sizes = [getattr(paragraph, "font_size_pt", None) for paragraph in paragraphs]
+    numeric_sizes = [float(size) for size in sizes if isinstance(size, (int, float))]
+    if not numeric_sizes:
+        return [None for _ in paragraphs]
+    mean = sum(numeric_sizes) / len(numeric_sizes)
+    variance = sum((size - mean) ** 2 for size in numeric_sizes) / len(numeric_sizes)
+    stddev = variance ** 0.5
+    z_scores: list[float | None] = []
+    for size in sizes:
+        if not isinstance(size, (int, float)):
+            z_scores.append(None)
+            continue
+        if isclose(stddev, 0.0):
+            z_scores.append(0.0)
+            continue
+        z_scores.append(round((float(size) - mean) / stddev, 1))
+    return z_scores
+
+
+def _extract_stage0_page_number_hint(text: str, paragraph: ParagraphUnit) -> int | None:
+    if not bool(getattr(paragraph, "is_likely_page_number", False)):
+        return None
+    stripped = text.strip()
+    if stripped.isdigit():
+        return int(stripped)
+    match = re.search(r"\b(\d{1,4})\b", stripped)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _extract_stage0_vertical_gap_before_pt(paragraph: ParagraphUnit) -> float | None:
+    direct_value = getattr(paragraph, "vertical_gap_before_pt", None)
+    if isinstance(direct_value, int | float):
+        return _round_stage0_vertical_gap_before_pt(float(direct_value))
+
+    paragraph_properties_xml = str(getattr(paragraph, "paragraph_properties_xml", "") or "").strip()
+    if not paragraph_properties_xml:
+        return None
+    autospacing_match = _STAGE0_SPACING_BEFORE_AUTOSPACING_PATTERN.search(paragraph_properties_xml)
+    if autospacing_match and str(autospacing_match.group("flag") or "").strip().lower() in {"1", "true", "on"}:
+        return None
+    spacing_match = _STAGE0_SPACING_BEFORE_PATTERN.search(paragraph_properties_xml)
+    if spacing_match is None:
+        return None
+    try:
+        before_twips = int(spacing_match.group("before"))
+    except (TypeError, ValueError):
+        return None
+    return _round_stage0_vertical_gap_before_pt(before_twips / 20.0)
+
+
+def _round_stage0_vertical_gap_before_pt(value: float) -> float:
+    return round(value * 2.0) / 2.0
+
+
+def _is_stage0_isolated_marker_text(text: str) -> bool:
+    return bool(_STAGE0_ISOLATED_MARKER_PATTERN.fullmatch(str(text or "").strip()))
+
+
+def _is_stage0_toc_pattern_hint(text: str, paragraph: ParagraphUnit) -> bool:
+    if getattr(paragraph, "heuristic_structural_role_hint", None) in {"toc_header", "toc_entry"}:
+        return True
+    if getattr(paragraph, "structural_role", None) in {"toc_header", "toc_entry"}:
+        return True
+    normalized = str(text or "").strip().casefold()
+    if normalized in _STAGE0_TOC_HEADER_VALUES:
+        return True
+    return bool(_STAGE0_TOC_SUFFIX_PATTERN.search(str(text or "").strip()))
+
+
+def _is_stage0_scripture_reference_text(text: str) -> bool:
+    return bool(_STAGE0_SCRIPTURE_REFERENCE_PATTERN.search(str(text or "").strip()))
 
 
 def _extract_paragraph_properties_xml(paragraph) -> str | None:
@@ -962,21 +1099,22 @@ def _write_layout_cleanup_report_artifact(
     )
 
 
-def _assign_paragraph_identity(paragraph: ParagraphUnit, source_index: int) -> None:
-    paragraph.source_index = source_index
-    paragraph.logical_index = source_index
-    paragraph.paragraph_id = f"p{source_index:04d}"
+def _assign_paragraph_identity(paragraph: ParagraphUnit, logical_index: int) -> None:
+    if int(getattr(paragraph, "source_index", -1)) < 0:
+        paragraph.source_index = logical_index
+    paragraph.logical_index = logical_index
+    paragraph.paragraph_id = f"p{logical_index:04d}"
     if not paragraph.structural_role or paragraph.structural_role == "body":
         paragraph.structural_role = paragraph.role
     if not paragraph.origin_raw_indexes:
-        paragraph.origin_raw_indexes = [source_index]
+        paragraph.origin_raw_indexes = [int(getattr(paragraph, "source_index", logical_index))]
     if not paragraph.origin_raw_texts:
         paragraph.origin_raw_texts = [paragraph.text]
 
 
 def _reassign_paragraph_identities(paragraphs: list[ParagraphUnit]) -> None:
-    for source_index, paragraph in enumerate(paragraphs):
-        _assign_paragraph_identity(paragraph, source_index)
+    for logical_index, paragraph in enumerate(paragraphs):
+        _assign_paragraph_identity(paragraph, logical_index)
 
 
 def _iter_document_block_items(document):

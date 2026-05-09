@@ -63,7 +63,7 @@ def clean_paragraph_layout_artifacts(
         return paragraphs, report
 
     try:
-        signal_only = structure_recovery_enabled and structure_recovery_mode == "ai_first"
+        signal_only = True
         return _clean_paragraph_layout_artifacts(
             paragraphs,
             min_repeat_count=max(2, int(min_repeat_count or DEFAULT_MIN_REPEAT_COUNT)),

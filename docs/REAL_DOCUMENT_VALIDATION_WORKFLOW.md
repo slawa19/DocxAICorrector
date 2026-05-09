@@ -1,6 +1,6 @@
 # Real Document Validation Workflow
 
-Canonical real-document regression target: `tests/sources/Лиетар глава1.docx`.
+Canonical full-tier real-document regression target: `tests/sources/Лиетар глава1.docx`.
 
 Canonical registry for universal real-document validation: `corpus_registry.toml`.
 
@@ -17,12 +17,40 @@ Current corpus notes:
 - `lietaer-core` is now back on strict deterministic structural thresholds.
 - `religion-wealth-core` now points at the original legacy `.doc` source and exercises the project-level auto-conversion path during corpus validation; it currently remains deterministic-structural `tolerant` because one page-separator artifact still produces a bounded restore diagnostic.
 
+## AI-First Structure Recovery Workflow
+
+When the active work is specifically AI-first structure recovery, do not use the
+general full-validator path as the default debug loop.
+
+Use this structure-scoped order instead:
+
+1. focused local tests for the directly touched structure module or preparation slice;
+2. `bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-first-20-structure-core`
+	as the default real-document PDF snapshot path;
+3. a full-tier validator only as a late checkpoint, and only when the defect is
+	already proven to live in final markdown/DOCX artifacts rather than in
+	preparation/structure artifacts.
+
+Corpus policy for this workflow:
+
+1. `lietaer-pdf-first-20-structure-core` (`tests/sources/Rethinking-money-first-20-pages.pdf`) is the canonical fast PDF slice for routine structure iteration.
+2. This single PDF slice is sufficient for the ordinary structure-recovery loop because it already contains front matter, TOC, and body headings.
+3. `lietaer-core` is not the routine structure-recovery proof document for this workflow.
+4. `ui-parity-pdf-structural-recovery` is still a `full` tier translate profile with `structure_recognition_mode = "off"`; despite its name, it is not the default proof path for AI-first structure recognition.
+5. `tests/sources/The Value of Everything. Making and Taking in the Global Economy by Mariana Mazzucato (z-lib.org).pdf` exists in the repository, but it should not be treated as canonical structure evidence until a dedicated corpus entry with explicit structure expectations is registered.
+
 ## Canonical Entry Points
 
 Visible VS Code path:
 
 ```text
+Tasks: Run Task -> Run Structure Recovery Diagnostic (First 20 Pages)
+
+General full-tier path:
+
+```text
 Tasks: Run Task -> Run Lietaer Real Validation
+```
 ```
 
 Exceptional automated quality-gate path:

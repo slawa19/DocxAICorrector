@@ -13,7 +13,7 @@ def _paragraph(index: int, text: str, *, role: str = "body", structural_role: st
     )
 
 
-def test_repair_pdf_derived_structure_merges_isolated_bullet_with_following_text():
+def test_repair_pdf_derived_structure_hints_isolated_bullet_without_merging():
     paragraphs = [
         _paragraph(0, "●"),
         _paragraph(1, "Text of item"),
@@ -21,11 +21,15 @@ def test_repair_pdf_derived_structure_merges_isolated_bullet_with_following_text
 
     repaired, report = repair_pdf_derived_structure(paragraphs)
 
-    assert [paragraph.text for paragraph in repaired] == ["- Text of item"]
-    assert repaired[0].role == "list"
-    assert repaired[0].list_kind == "unordered"
-    assert report.repaired_bullet_items == 1
-    assert report.remaining_isolated_marker_count == 0
+    assert [paragraph.text for paragraph in repaired] == ["●", "Text of item"]
+    assert repaired[0].role == "body"
+    assert repaired[0].structural_role == "body"
+    assert repaired[1].role == "body"
+    assert repaired[1].heuristic_role_hint == "list"
+    assert repaired[1].heuristic_list_kind_hint == "unordered"
+    assert repaired[1].list_kind is None
+    assert report.repaired_bullet_items == 0
+    assert report.remaining_isolated_marker_count == 1
 
 
 def test_repair_pdf_derived_structure_ai_first_hints_isolated_bullet_without_merging():
@@ -63,11 +67,17 @@ def test_repair_pdf_derived_structure_builds_bounded_toc_and_keeps_body_boundary
 
     repaired, report = repair_pdf_derived_structure(paragraphs)
 
-    assert repaired[0].structural_role == "toc_header"
-    assert repaired[1].structural_role == "toc_entry"
-    assert repaired[2].structural_role == "toc_entry"
+    assert repaired[0].structural_role == "body"
+    assert repaired[0].heuristic_structural_role_hint == "toc_header"
+    assert repaired[1].structural_role == "body"
+    assert repaired[1].heuristic_structural_role_hint == "toc_entry"
+    assert repaired[2].structural_role == "body"
+    assert repaired[2].heuristic_structural_role_hint == "toc_entry"
     assert repaired[3].structural_role == "body"
-    assert repaired[4].role == "heading"
+    assert repaired[4].role == "body"
+    assert repaired[4].structural_role == "body"
+    assert repaired[4].heuristic_role_hint == "heading"
+    assert repaired[4].heuristic_heading_level_hint == 2
     assert report.bounded_toc_regions == 1
     assert report.toc_body_boundary_repairs == 1
     assert report.heading_candidates_from_toc == 1
@@ -121,15 +131,28 @@ def test_repair_pdf_derived_structure_splits_compound_toc_tail_from_epigraph_and
         "Table of Contents",
         "Introduction........ 4",
         "Conclusion........ 29",
+        "Conclusion........ 29 \"You will be hated by all for my name's sake.\" - Mark 13:13 Introduction My grandfather was convinced",
+    ]
+    assert repaired[3].structural_role == "body"
+    assert repaired[3].heuristic_structural_role_hint is None
+    assert [hint.text for hint in repaired[3].heuristic_embedded_structure_hints] == [
         "Conclusion........ 29",
         '"You will be hated by all for my name\'s sake." - Mark 13:13',
         "Introduction",
         "My grandfather was convinced",
     ]
-    assert repaired[3].structural_role == "toc_entry"
-    assert repaired[4].structural_role == "epigraph"
-    assert repaired[5].role == "heading"
-    assert repaired[6].role == "body"
+    assert [hint.structural_role for hint in repaired[3].heuristic_embedded_structure_hints] == [
+        "toc_entry",
+        "epigraph",
+        "body",
+        "body",
+    ]
+    assert [hint.role for hint in repaired[3].heuristic_embedded_structure_hints] == [
+        "body",
+        "body",
+        "heading",
+        "body",
+    ]
     assert report.toc_body_boundary_repairs >= 1
     assert report.heading_candidates_from_toc >= 1
 
@@ -181,7 +204,7 @@ def test_repair_pdf_derived_structure_ai_first_hints_compound_toc_split_entry_wi
     assert report.heading_candidates_from_toc >= 1
 
 
-def test_repair_pdf_derived_structure_merges_split_numbered_list_lead_with_following_body():
+def test_repair_pdf_derived_structure_hints_split_numbered_list_lead_without_merging():
     paragraphs = [
         _paragraph(0, "4. Daniel 9:27,"),
         _paragraph(1, "11:31 and Matthew 24:15 describe the abomination of desolation."),
@@ -190,11 +213,16 @@ def test_repair_pdf_derived_structure_merges_split_numbered_list_lead_with_follo
     repaired, report = repair_pdf_derived_structure(paragraphs)
 
     assert [paragraph.text for paragraph in repaired] == [
-        "4. Daniel 9:27, 11:31 and Matthew 24:15 describe the abomination of desolation.",
+        "4. Daniel 9:27,",
+        "11:31 and Matthew 24:15 describe the abomination of desolation.",
     ]
-    assert repaired[0].role == "list"
-    assert repaired[0].list_kind == "ordered"
-    assert report.repaired_numbered_items == 1
+    assert repaired[0].role == "body"
+    assert repaired[0].structural_role == "body"
+    assert repaired[0].heuristic_role_hint == "list"
+    assert repaired[0].heuristic_list_kind_hint == "ordered"
+    assert repaired[0].list_kind is None
+    assert repaired[1].role == "body"
+    assert report.repaired_numbered_items == 0
 
 
 def test_repair_pdf_derived_structure_ai_first_hints_split_numbered_list_lead_without_merging():
@@ -236,12 +264,17 @@ def test_repair_pdf_derived_structure_splits_heading_prefix_from_numbered_list_s
         "Contents",
         "Action Steps for Individuals........ 27",
         "Action Steps for Nations........ 28",
+        "Action Steps for Individuals 1. Prepare your spirit for faithful endurance.",
+    ]
+    assert repaired[3].role == "body"
+    assert repaired[3].structural_role == "body"
+    assert [hint.text for hint in repaired[3].heuristic_embedded_structure_hints] == [
         "Action Steps for Individuals",
         "1. Prepare your spirit for faithful endurance.",
     ]
-    assert repaired[3].role == "heading"
-    assert repaired[4].role == "list"
-    assert repaired[4].list_kind == "ordered"
+    assert [hint.role for hint in repaired[3].heuristic_embedded_structure_hints] == ["heading", "list"]
+    assert [hint.heading_level for hint in repaired[3].heuristic_embedded_structure_hints] == [2, None]
+    assert [hint.list_kind for hint in repaired[3].heuristic_embedded_structure_hints] == [None, "ordered"]
     assert report.heading_candidates_from_toc >= 1
 
 
@@ -291,11 +324,16 @@ def test_repair_pdf_derived_structure_splits_heading_prefix_with_punctuation_var
         "Contents",
         "The Rapture........ 7",
         "Great Tribulation........ 9",
+        "The Rapture: why this matters for endurance.",
+    ]
+    assert repaired[3].role == "body"
+    assert repaired[3].structural_role == "body"
+    assert [hint.text for hint in repaired[3].heuristic_embedded_structure_hints] == [
         "The Rapture",
         "why this matters for endurance.",
     ]
-    assert repaired[3].role == "heading"
-    assert repaired[4].role == "body"
+    assert [hint.role for hint in repaired[3].heuristic_embedded_structure_hints] == ["heading", "body"]
+    assert [hint.heading_level for hint in repaired[3].heuristic_embedded_structure_hints] == [2, None]
     assert report.heading_candidates_from_toc >= 1
 
 
@@ -331,6 +369,13 @@ def test_repair_pdf_derived_structure_accepts_plain_toc_entries_inside_bounded_r
     repaired, report = repair_pdf_derived_structure(paragraphs)
 
     assert [paragraph.structural_role for paragraph in repaired[:5]] == [
+        "body",
+        "body",
+        "body",
+        "body",
+        "body",
+    ]
+    assert [paragraph.heuristic_structural_role_hint for paragraph in repaired[:5]] == [
         "toc_header",
         "toc_entry",
         "toc_entry",

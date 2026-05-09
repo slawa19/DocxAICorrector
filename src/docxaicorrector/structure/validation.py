@@ -45,6 +45,8 @@ class StructureValidationReport:
     structure_quality_risk_level: str = "low"
     readiness_status: str = "ready"
     readiness_reasons: tuple[str, ...] = ()
+    document_map_present: bool = False
+    outline_coverage_ratio: float | None = None
     structure_repair_report: StructureRepairReport | None = None
 
 
@@ -73,6 +75,19 @@ def _is_explicit_heading(paragraph: ParagraphLike) -> bool:
 
 def _is_heuristic_heading(paragraph: ParagraphLike) -> bool:
     return _paragraph_value(paragraph, "role") == "heading" and _paragraph_value(paragraph, "heading_source") != "explicit"
+
+
+def _effective_structural_role(paragraph: ParagraphLike) -> str:
+    hint = str(_paragraph_value(paragraph, "heuristic_structural_role_hint", "") or "")
+    if hint:
+        return hint
+    return str(_paragraph_value(paragraph, "structural_role", "body") or "body")
+
+
+def _has_heading_signal(paragraph: ParagraphLike) -> bool:
+    if _paragraph_value(paragraph, "role") == "heading" and _paragraph_value(paragraph, "heading_source") is not None:
+        return True
+    return _paragraph_value(paragraph, "heuristic_role_hint") == "heading"
 
 
 def _is_body_like(paragraph: ParagraphLike) -> bool:
@@ -155,12 +170,12 @@ def _count_bounded_toc_regions(paragraphs: Sequence[ParagraphLike]) -> int:
     count = 0
     index = 0
     while index < len(paragraphs):
-        structural_role = str(_paragraph_value(paragraphs[index], "structural_role", "") or "")
+        structural_role = _effective_structural_role(paragraphs[index])
         if structural_role != "toc_header":
             index += 1
             continue
         look_ahead = index + 1
-        while look_ahead < len(paragraphs) and str(_paragraph_value(paragraphs[look_ahead], "structural_role", "") or "") == "toc_entry":
+        while look_ahead < len(paragraphs) and _effective_structural_role(paragraphs[look_ahead]) == "toc_entry":
             look_ahead += 1
         if look_ahead - index >= 3:
             count += 1
@@ -172,17 +187,17 @@ def _count_bounded_toc_regions(paragraphs: Sequence[ParagraphLike]) -> int:
 
 
 def _count_toc_entries(paragraphs: Sequence[ParagraphLike]) -> int:
-    return sum(1 for paragraph in paragraphs if str(_paragraph_value(paragraph, "structural_role", "") or "") == "toc_entry")
+    return sum(1 for paragraph in paragraphs if _effective_structural_role(paragraph) == "toc_entry")
 
 
 def _looks_like_front_matter_paragraph(paragraph: ParagraphLike) -> bool:
-    structural_role = str(_paragraph_value(paragraph, "structural_role", "") or "")
+    structural_role = _effective_structural_role(paragraph)
     text = _normalized_text(paragraph)
     if structural_role in {"toc_header", "toc_entry", "epigraph", "attribution", "dedication"}:
         return True
     if not text:
         return False
-    if _paragraph_value(paragraph, "role") == "heading" and _paragraph_value(paragraph, "heading_source") is not None:
+    if _has_heading_signal(paragraph):
         return True
     return bool(re.search(r"\.{2,}\s*\d+\s*$", text) or text.lower() in {"contents", "table of contents", "содержание"})
 
@@ -257,6 +272,8 @@ def validate_structure_quality(
     paragraphs: Sequence[ParagraphLike],
     app_config: Mapping[str, Any],
     structure_repair_report: StructureRepairReport | None = None,
+    document_map_present: bool = False,
+    outline_coverage_ratio: float | None = None,
 ) -> StructureValidationReport:
     paragraph_count = len(paragraphs)
     nonempty_paragraphs = [paragraph for paragraph in paragraphs if _normalized_text(paragraph)]
@@ -358,6 +375,8 @@ def validate_structure_quality(
         structure_quality_risk_level=structure_quality_risk_level,
         readiness_status=readiness_status,
         readiness_reasons=readiness_reasons,
+        document_map_present=bool(document_map_present),
+        outline_coverage_ratio=None if outline_coverage_ratio is None else float(outline_coverage_ratio),
         structure_repair_report=structure_repair_report,
     )
 

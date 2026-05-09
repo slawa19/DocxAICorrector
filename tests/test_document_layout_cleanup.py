@@ -31,10 +31,21 @@ def test_removes_standalone_page_numbers_and_keeps_guardrails():
 
     cleaned, report = clean_paragraph_layout_artifacts(paragraphs)
 
-    assert [paragraph.text for paragraph in cleaned] == ["Chapter 12", "1. Real item", "Introduction........4"]
-    assert report.removed_page_number_count == 5
-    assert report.removed_paragraph_count == 5
-    assert {decision.reason for decision in report.decisions if decision.action == "remove"} == {"page_number_pattern"}
+    assert [paragraph.text for paragraph in cleaned] == [
+        "1",
+        "- 12 -",
+        "Page 4",
+        "стр. 5",
+        "12 / 40",
+        "Chapter 12",
+        "1. Real item",
+        "Introduction........4",
+    ]
+    assert report.cleanup_mode == "flag"
+    assert report.flagged_page_number_count == 5
+    assert report.removed_page_number_count == 0
+    assert report.removed_paragraph_count == 0
+    assert {decision.reason for decision in report.decisions if decision.action == "flag"} == {"page_number_pattern"}
 
 
 def test_ai_first_signal_mode_flags_page_numbers_without_removing_paragraphs():
@@ -84,13 +95,15 @@ def test_removes_repeated_safe_artifacts_but_keeps_prose_and_low_repeat():
     cleaned, report = clean_paragraph_layout_artifacts(paragraphs)
 
     cleaned_texts = [paragraph.text for paragraph in cleaned]
-    assert cleaned_texts.count("www.example.com") == 0
-    assert cleaned_texts.count("Confidential") == 0
-    assert cleaned_texts.count("Are We In the End Times?") == 1
+    assert cleaned_texts.count("www.example.com") == 3
+    assert cleaned_texts.count("Confidential") == 3
+    assert cleaned_texts.count("Are We In the End Times?") == 4
     assert cleaned_texts.count("To be or not to be.") == 3
     assert cleaned_texts.count("Introduction") == 2
-    assert report.removed_repeated_artifact_count == 9
-    assert {decision.reason for decision in report.decisions if decision.action == "remove"} == {
+    assert report.cleanup_mode == "flag"
+    assert report.flagged_repeated_artifact_count == 9
+    assert report.removed_repeated_artifact_count == 0
+    assert {decision.reason for decision in report.decisions if decision.action == "flag"} == {
         "repeated_url_footer",
         "repeated_boilerplate_token",
         "repeated_title_header",
@@ -173,8 +186,14 @@ def test_repeated_cleanup_does_not_remove_non_candidate_terminal_paragraphs():
 
     cleaned, report = clean_paragraph_layout_artifacts(paragraphs)
 
-    assert [paragraph.text for paragraph in cleaned] == ["www.example.com."]
-    assert report.removed_repeated_artifact_count == 3
+    assert [paragraph.text for paragraph in cleaned] == [
+        "www.example.com",
+        "www.example.com",
+        "www.example.com",
+        "www.example.com.",
+    ]
+    assert report.flagged_repeated_artifact_count == 3
+    assert report.removed_repeated_artifact_count == 0
     assert report.decisions[3].action == "keep"
     assert report.decisions[3].reason == "keep"
 
@@ -202,9 +221,10 @@ def test_protected_structural_whitespace_is_preserved():
 
     cleaned, report = clean_paragraph_layout_artifacts(paragraphs)
 
-    assert [paragraph.structural_role for paragraph in cleaned] == ["epigraph"]
+    assert [paragraph.structural_role for paragraph in cleaned] == ["epigraph", "body"]
     assert cleaned[0].text == "   "
-    assert report.removed_paragraph_count == 1
+    assert report.flagged_page_number_count == 1
+    assert report.removed_paragraph_count == 0
     assert report.removed_empty_or_whitespace_count == 0
 
 
@@ -220,8 +240,16 @@ def test_language_neutral_cleanup_keeps_unsupported_short_repetition():
 
     cleaned, report = clean_paragraph_layout_artifacts(paragraphs)
 
-    assert [paragraph.text for paragraph in cleaned] == ["未知标题", "未知标题", "未知标题"]
-    assert report.removed_repeated_artifact_count == 3
+    assert [paragraph.text for paragraph in cleaned] == [
+        "www.example.com",
+        "www.example.com",
+        "www.example.com",
+        "未知标题",
+        "未知标题",
+        "未知标题",
+    ]
+    assert report.flagged_repeated_artifact_count == 3
+    assert report.removed_repeated_artifact_count == 0
 
 
 def test_normalization_and_large_input_are_linear_style():
@@ -233,6 +261,7 @@ def test_normalization_and_large_input_are_linear_style():
     cleaned, report = clean_paragraph_layout_artifacts(paragraphs)
     elapsed = time.perf_counter() - started
 
-    assert len(cleaned) == 10_000
-    assert report.removed_repeated_artifact_count == 5
+    assert len(cleaned) == 10_005
+    assert report.flagged_repeated_artifact_count == 5
+    assert report.removed_repeated_artifact_count == 0
     assert elapsed < 2.0

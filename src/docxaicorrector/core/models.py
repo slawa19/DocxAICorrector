@@ -219,8 +219,17 @@ class ParagraphUnit:
     heuristic_list_kind_hint: str | None = None
     heuristic_heading_level_hint: int | None = None
     heuristic_embedded_structure_hints: list["EmbeddedStructureHint"] = field(default_factory=list)
+    font_size_z_score: float | None = None
+    style_cluster_id: int | None = None
+    position_fraction: float | None = None
+    page_number: int | None = None
+    vertical_gap_before_pt: float | None = None
     is_repeated_across_pages: bool = False
     is_likely_page_number: bool = False
+    is_isolated_marker: bool = False
+    toc_pattern_hint: bool = False
+    scripture_reference_hint: bool = False
+    boundary_normalization_applied: bool = False
 
     @property
     def rendered_text(self) -> str:
@@ -259,6 +268,7 @@ class ParagraphDescriptor:
     isolated_marker: bool = False
     toc_candidate: bool = False
     scripture_reference_candidate: bool = False
+    embedded_structure_hints: tuple[dict[str, object], ...] = ()
     anchor_role: str | None = None
     anchor_heading_level: int | None = None
     anchor_confidence: str | None = None
@@ -281,6 +291,8 @@ class ParagraphDescriptor:
             "toc": self.toc_candidate,
             "scr": self.scripture_reference_candidate,
         }
+        if self.embedded_structure_hints:
+            payload["emb"] = [dict(hint) for hint in self.embedded_structure_hints]
         if self.anchor_role is not None or self.anchor_heading_level is not None or self.anchor_confidence is not None:
             payload["anchor_r"] = self.anchor_role
             payload["anchor_l"] = self.anchor_heading_level

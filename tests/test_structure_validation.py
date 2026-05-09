@@ -122,6 +122,29 @@ def test_validate_structure_quality_marks_large_front_matter_block_risk():
     assert "large_front_matter_block_risk" not in report.readiness_reasons
 
 
+def test_validate_structure_quality_counts_hinted_toc_region_and_hinted_heading_for_front_matter():
+    paragraphs = [
+        _paragraph(0, "Содержание", structural_role="body"),
+        _paragraph(1, "Глава 1........ 10", structural_role="body"),
+        _paragraph(2, "Глава 2........ 20", structural_role="body"),
+        _paragraph(3, "Марк 13:13", structural_role="epigraph"),
+        _paragraph(4, "Введение", structural_role="body"),
+    ]
+    paragraphs[0].heuristic_structural_role_hint = "toc_header"
+    paragraphs[1].heuristic_structural_role_hint = "toc_entry"
+    paragraphs[2].heuristic_structural_role_hint = "toc_entry"
+    paragraphs[4].heuristic_role_hint = "heading"
+    paragraphs[4].heuristic_heading_level_hint = 2
+
+    report = validate_structure_quality(paragraphs=paragraphs, app_config=_config())
+
+    assert report.large_front_matter_block_risk is True
+    assert report.toc_region_bounded_count == 1
+    assert report.expected_heading_candidates_from_toc == 2
+    assert report.readiness_status == "ready"
+    assert "large_front_matter_block_risk" not in report.readiness_reasons
+
+
 def test_validate_structure_quality_blocks_large_front_matter_without_bounded_toc():
     paragraphs = [
         _paragraph(0, "Содержание", structural_role="toc_header"),
@@ -196,6 +219,8 @@ def test_write_structure_validation_debug_artifact_writes_json_payload(tmp_path,
         structure_quality_risk_level="high",
         readiness_status="blocked_unsafe_best_effort_only",
         readiness_reasons=("toc_like_sequence_without_bounded_region",),
+        document_map_present=True,
+        outline_coverage_ratio=0.75,
     )
 
     artifact_path = structure_validation.write_structure_validation_debug_artifact(
@@ -238,5 +263,24 @@ def test_write_structure_validation_debug_artifact_writes_json_payload(tmp_path,
         "structure_quality_risk_level": "high",
         "readiness_status": "blocked_unsafe_best_effort_only",
         "readiness_reasons": ["toc_like_sequence_without_bounded_region"],
+        "document_map_present": True,
+        "outline_coverage_ratio": 0.75,
         "structure_repair_report": None,
     }
+
+
+def test_validate_structure_quality_preserves_advisory_post_ai_fields():
+    paragraphs = [
+        _paragraph(0, "Chapter 1", role="heading", heading_source="ai"),
+        _paragraph(1, "Regular paragraph with enough words to avoid short-body risk escalation."),
+    ]
+
+    report = validate_structure_quality(
+        paragraphs=paragraphs,
+        app_config=_config(),
+        document_map_present=True,
+        outline_coverage_ratio=0.5,
+    )
+
+    assert report.document_map_present is True
+    assert report.outline_coverage_ratio == 0.5

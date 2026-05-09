@@ -55,6 +55,10 @@ Assign each paragraph exactly one role:
 	body citations, not headings, unless surrounding context clearly indicates a title.
 - For ambiguous PDF-derived fragments, rely on the full preview text, not only the
 	first words.
+- If a paragraph contains `emb`, those embedded sub-fragment hints are advisory
+	evidence from Stage 0 that the paragraph may fuse TOC/body or heading/list pieces.
+	Use them to avoid naive local misclassification, but still return exactly one
+	classification for the owning paragraph index.
 
 ## Output Format
 

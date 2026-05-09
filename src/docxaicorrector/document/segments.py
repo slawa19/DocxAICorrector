@@ -929,7 +929,9 @@ def _is_all_caps_text(text: str) -> bool:
 
 
 def _is_toc_structural_role(paragraph: ParagraphUnit) -> bool:
-    return str(getattr(paragraph, "structural_role", "") or "").strip().lower() in {"toc_header", "toc_entry"}
+    return str(
+        getattr(paragraph, "heuristic_structural_role_hint", "") or getattr(paragraph, "structural_role", "") or ""
+    ).strip().lower() in {"toc_header", "toc_entry"}
 
 
 def _resolve_paragraph_id(paragraph: ParagraphUnit, *, fallback_index: int) -> str:

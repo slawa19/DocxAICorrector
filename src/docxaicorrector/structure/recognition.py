@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from collections.abc import Iterable, Sequence
 import logging
@@ -25,8 +25,9 @@ _PIPELINE_BODY_STRUCTURAL_ROLES = {"epigraph", "attribution", "toc_entry", "toc_
 _VALID_AI_ROLES = {"heading", "body", "caption", "epigraph", "attribution", "toc_entry", "toc_header", "dedication", "list"}
 _VALID_AI_CONFIDENCES = {"high", "medium", "low"}
 _DESCRIPTOR_PREVIEW_CHARS = 600
-STRUCTURE_RECOGNITION_PROMPT_VERSION = 1
-STRUCTURE_RECOGNITION_DESCRIPTOR_SCHEMA_VERSION = 1
+_MIN_TOKEN_BUDGET_PREVIEW_CHARS = 120
+STRUCTURE_RECOGNITION_PROMPT_VERSION = 2
+STRUCTURE_RECOGNITION_DESCRIPTOR_SCHEMA_VERSION = 2
 _TIMEOUT_ERROR_NAMES = {"APITimeoutError", "TimeoutError"}
 _SCRIPTURE_REFERENCE_PATTERN = re.compile(
     r"\b(?:[1-3]\s*)?(?:Genesis|Exodus|Leviticus|Numbers|Deuteronomy|Joshua|Judges|Ruth|"
@@ -159,6 +160,7 @@ def build_paragraph_descriptors(
         anchor = document_map.get_anchor(logical_index) if document_map is not None else None
         preview = _descriptor_preview_text(text, preview_chars=preview_chars)
         alpha_chars = [char for char in preview if char.isalpha()]
+        embedded_hint_payload = _build_embedded_structure_hint_payload(paragraph, preview_chars=preview_chars)
         context_before = ""
         context_after = ""
         if index > 0:
@@ -167,7 +169,7 @@ def build_paragraph_descriptors(
             context_after = _descriptor_preview_text(str(nonempty_paragraphs[index + 1].text or ""), preview_chars=preview_chars)
         descriptors.append(
             ParagraphDescriptor(
-                index=paragraph.source_index,
+                index=logical_index,
                 text_preview=preview,
                 text_length=len(text),
                 style_name=paragraph.style_name,
@@ -175,19 +177,50 @@ def build_paragraph_descriptors(
                 is_centered=paragraph.paragraph_alignment == "center",
                 is_all_caps=bool(alpha_chars) and preview.upper() == preview,
                 font_size_pt=paragraph.font_size_pt,
-                has_numbering=paragraph.list_kind is not None,
+                has_numbering=paragraph.list_kind is not None or any(hint.get("lk") is not None for hint in embedded_hint_payload),
                 explicit_heading_level=(paragraph.heading_level if paragraph.heading_source == "explicit" else None),
                 context_before_preview=context_before,
                 context_after_preview=context_after,
-                isolated_marker=_is_isolated_marker_text(text),
-                toc_candidate=_is_toc_candidate_text(text),
-                scripture_reference_candidate=_is_scripture_reference_text(text),
+                isolated_marker=bool(getattr(paragraph, "is_isolated_marker", False)) or any(
+                    hint.get("iso", False) for hint in embedded_hint_payload
+                ) or _is_isolated_marker_text(text),
+                toc_candidate=bool(getattr(paragraph, "toc_pattern_hint", False)) or any(
+                    hint.get("sr") in {"toc_header", "toc_entry"} for hint in embedded_hint_payload
+                ) or _is_toc_candidate_text(text),
+                scripture_reference_candidate=bool(getattr(paragraph, "scripture_reference_hint", False)) or any(
+                    hint.get("scr", False) for hint in embedded_hint_payload
+                ) or _is_scripture_reference_text(text),
+                embedded_structure_hints=embedded_hint_payload,
                 anchor_role=None if anchor is None else anchor.role,
                 anchor_heading_level=None if anchor is None else anchor.heading_level,
                 anchor_confidence=None if anchor is None else anchor.confidence,
             )
         )
     return descriptors
+
+
+def _build_embedded_structure_hint_payload(
+    paragraph: ParagraphUnit,
+    *,
+    preview_chars: int,
+) -> tuple[dict[str, object], ...]:
+    hints = getattr(paragraph, "heuristic_embedded_structure_hints", None) or ()
+    preview_limit = max(1, int(preview_chars or _DESCRIPTOR_PREVIEW_CHARS))
+    payload: list[dict[str, object]] = []
+    for hint in hints:
+        text = str(getattr(hint, "text", "") or "").strip()
+        payload.append(
+            {
+                "t": _descriptor_preview_text(text, preview_chars=preview_limit),
+                "r": str(getattr(hint, "role", "body") or "body"),
+                "sr": str(getattr(hint, "structural_role", "body") or "body"),
+                "hl": getattr(hint, "heading_level", None),
+                "lk": getattr(hint, "list_kind", None),
+                "iso": _is_isolated_marker_text(text),
+                "scr": _is_scripture_reference_text(text),
+            }
+        )
+    return tuple(payload)
 
 
 def _is_anchor_consistent(
@@ -201,6 +234,53 @@ def _is_anchor_consistent(
     if anchor_role != "heading":
         return True
     return classification.heading_level == anchor_heading_level
+
+
+def _looks_clearly_prose_like(paragraph: ParagraphUnit) -> bool:
+    text = str(getattr(paragraph, "text", "") or "").strip()
+    if not text:
+        return False
+    words = [part for part in text.split() if part]
+    if len(words) >= 12:
+        return True
+    return len(text) >= 80 or text.endswith((".", "!", "?", "…"))
+
+
+def _looks_clearly_heading_like(paragraph: ParagraphUnit) -> bool:
+    text = str(getattr(paragraph, "text", "") or "").strip()
+    if not text:
+        return False
+    words = [part for part in text.split() if part]
+    alpha_chars = [char for char in text if char.isalpha()]
+    is_all_caps = bool(alpha_chars) and "".join(alpha_chars).upper() == "".join(alpha_chars)
+    return bool(
+        len(words) <= 10
+        and len(text) <= 80
+        and (
+            bool(getattr(paragraph, "is_bold", False))
+            or getattr(paragraph, "paragraph_alignment", None) == "center"
+            or is_all_caps
+            or getattr(paragraph, "heading_source", None) == "explicit"
+            or getattr(paragraph, "heading_level", None) is not None
+        )
+    )
+
+
+def _is_clearly_inconsistent_with_high_confidence_anchor(
+    paragraph: ParagraphUnit,
+    classification: ParagraphClassification,
+    *,
+    anchor_role: str,
+) -> bool:
+    if classification.role == anchor_role:
+        return False
+    if classification.confidence == "high":
+        return False
+    if anchor_role == "heading" and classification.role == "body":
+        return _looks_clearly_prose_like(paragraph)
+    if anchor_role == "body" and classification.role == "heading":
+        return _looks_clearly_heading_like(paragraph) and classification.heading_level is not None
+    return False
 
 
 def _is_allowed_by_document_map_anchor(
@@ -225,7 +305,11 @@ def _is_allowed_by_document_map_anchor(
         return True
 
     if anchor.confidence == "high":
-        return False
+        return _is_clearly_inconsistent_with_high_confidence_anchor(
+            paragraph,
+            classification,
+            anchor_role=anchor.role,
+        )
 
     if anchor.confidence != "medium":
         return True
@@ -253,7 +337,8 @@ def apply_structure_map(
         if paragraph.role_confidence in {"explicit", "adjacent"}:
             continue
 
-        classification = structure_map.get(paragraph.source_index)
+        logical_index = int(getattr(paragraph, "logical_index", paragraph.source_index))
+        classification = structure_map.get(logical_index)
         if classification is None or classification.confidence not in allowed_confidences:
             continue
         if not _is_allowed_by_document_map_anchor(
@@ -457,8 +542,6 @@ def _classify_descriptor_window_with_fallback(
 def _should_split_descriptor_window(*, exc: Exception, descriptor_count: int) -> bool:
     if descriptor_count <= 1:
         return False
-    if isinstance(exc, StructureRecognitionRequestTimeout):
-        return False
     error_name = type(exc).__name__
     if error_name in _TIMEOUT_ERROR_NAMES:
         return True
@@ -603,14 +686,16 @@ def _iter_descriptor_windows(
     budget_limit = None if target_input_tokens is None else max(1, int(target_input_tokens or 0))
     while start < len(descriptor_list):
         end = min(len(descriptor_list), start + max_window_paragraphs)
+        window = descriptor_list[start:end]
         if budget_limit is not None:
-            end = _shrink_window_to_token_budget(
+            window = _shrink_window_to_token_budget(
                 descriptor_list,
                 start=start,
                 end=end,
                 budget_limit=budget_limit,
             )
-        yield descriptor_list[start:end]
+        yield window
+        end = start + len(window)
         if end >= len(descriptor_list):
             break
         next_start = end - overlap_paragraphs
@@ -623,14 +708,64 @@ def _shrink_window_to_token_budget(
     start: int,
     end: int,
     budget_limit: int,
-) -> int:
-    candidate_end = max(start + 1, end)
-    while candidate_end > start + 1:
-        estimated_tokens = _estimate_descriptor_window_tokens(descriptors[start:candidate_end])
-        if estimated_tokens <= budget_limit:
-            return candidate_end
-        candidate_end -= 1
-    return min(start + 1, len(descriptors))
+) -> list[ParagraphDescriptor]:
+    candidate_window = list(descriptors[start : max(start + 1, end)])
+    preview_fitted = _shrink_preview_to_token_budget(candidate_window, budget_limit=budget_limit)
+    if preview_fitted is not None:
+        return preview_fitted
+
+    minimized_window = [
+        _truncate_descriptor_previews(descriptor, preview_chars=_MIN_TOKEN_BUDGET_PREVIEW_CHARS)
+        for descriptor in candidate_window
+    ]
+    low = 1
+    high = len(minimized_window)
+    best_fit: list[ParagraphDescriptor] | None = None
+    while low <= high:
+        mid = (low + high) // 2
+        candidate_prefix = minimized_window[:mid]
+        if _estimate_descriptor_window_tokens(candidate_prefix) <= budget_limit:
+            best_fit = candidate_prefix
+            low = mid + 1
+        else:
+            high = mid - 1
+
+    if best_fit is not None:
+        return best_fit
+    return minimized_window[:1] or list(descriptors[start : min(start + 1, len(descriptors))])
+
+
+def _shrink_preview_to_token_budget(
+    descriptors: list[ParagraphDescriptor],
+    *,
+    budget_limit: int,
+) -> list[ParagraphDescriptor] | None:
+    if _estimate_descriptor_window_tokens(descriptors) <= budget_limit:
+        return descriptors
+
+    max_preview_chars = max(
+        max(len(descriptor.text_preview), len(descriptor.context_before_preview), len(descriptor.context_after_preview))
+        for descriptor in descriptors
+    )
+    if max_preview_chars <= _MIN_TOKEN_BUDGET_PREVIEW_CHARS:
+        return None
+
+    preview_chars = max_preview_chars
+    while preview_chars > _MIN_TOKEN_BUDGET_PREVIEW_CHARS:
+        preview_chars = max(_MIN_TOKEN_BUDGET_PREVIEW_CHARS, preview_chars // 2)
+        shrunk = [_truncate_descriptor_previews(descriptor, preview_chars=preview_chars) for descriptor in descriptors]
+        if _estimate_descriptor_window_tokens(shrunk) <= budget_limit:
+            return shrunk
+    return None
+
+
+def _truncate_descriptor_previews(descriptor: ParagraphDescriptor, *, preview_chars: int) -> ParagraphDescriptor:
+    return replace(
+        descriptor,
+        text_preview=_descriptor_preview_text(descriptor.text_preview, preview_chars=preview_chars),
+        context_before_preview=_descriptor_preview_text(descriptor.context_before_preview, preview_chars=preview_chars),
+        context_after_preview=_descriptor_preview_text(descriptor.context_after_preview, preview_chars=preview_chars),
+    )
 
 
 def _estimate_descriptor_window_tokens(descriptors: Sequence[ParagraphDescriptor]) -> int:

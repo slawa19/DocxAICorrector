@@ -149,6 +149,38 @@ tags = ["pdf", "translation", "benchmark-only", "lietaer"]
 provenance = "Benchmark-only first-20-pages PDF slice for translation model evaluation."
 
 [[documents]]
+id = "lietaer-pdf-first-20-structure-core"
+source_path = "tests/sources/Rethinking-money-first-20-pages.pdf"
+artifact_prefix = "lietaer_pdf_first20_structure"
+output_basename = "Rethinking_money_first20_structure"
+structural_mode = "strict"
+min_paragraphs = 80
+has_headings = true
+min_headings = 2
+has_numbered_lists = false
+min_numbered_items = 0
+has_images = false
+min_images = 0
+has_tables = false
+min_tables = 0
+max_formatting_diagnostics = 5
+max_unmapped_source_paragraphs = 6
+max_unmapped_target_paragraphs = 3
+max_heading_level_drift = 1
+min_text_similarity = 0.96
+require_numbered_lists_preserved = false
+require_nonempty_output = true
+forbid_heading_only_collapse = true
+require_pdf_conversion = true
+structural_run_profile = "structural-ai-first-default"
+structural_expected_result = "pass"
+structural_expected_failed_checks = []
+structural_optional_failed_checks = []
+default_run_profile = "ui-parity-translate-benchmark-advisory"
+tags = ["pdf", "structure-recovery", "canonical-structural-diagnostic", "lietaer"]
+provenance = "Canonical first-20-pages PDF slice for AI-first structure-recovery diagnostics."
+
+[[documents]]
 id = "lietaer-pdf-full-benchmark"
 source_path = "tests/sources/Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne.pdf"
 artifact_prefix = "lietaer_pdf_full_benchmark"
@@ -201,6 +233,15 @@ mode = "regression"
 image_mode = "safe"
 enable_paragraph_markers = false
 structure_recognition_mode = "off"
+repeat_count = 1
+
+[[run_profiles]]
+id = "structural-ai-first-default"
+tier = "structural"
+mode = "regression"
+image_mode = "safe"
+enable_paragraph_markers = false
+structure_recognition_mode = "always"
 repeat_count = 1
 
 [[run_profiles]]

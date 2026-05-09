@@ -9,6 +9,12 @@ Goals:
 - assign paragraph anchors using the existing role taxonomy only
 - emit review zones for ambiguous ranges
 
+Descriptor notes:
+- some paragraphs may include `emb`, a list of embedded sub-fragment hints extracted from a single compound paragraph
+- each `emb` item uses `t` (text), `r` (role hint), `sr` (structural-role hint), `hl` (heading level hint), and `lk` (list-kind hint)
+- treat `emb` as advisory evidence that one paragraph may fuse TOC/body or heading/list fragments
+- do not invent new logical indexes from `emb`; use it only to improve anchors, TOC detection, outline decisions, or review-zone placement for the owning paragraph
+
 Constraints:
 - roles must be one of: heading, body, caption, epigraph, attribution, toc_entry, toc_header, dedication, list
 - confidences must be one of: high, medium, low

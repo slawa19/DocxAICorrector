@@ -133,10 +133,14 @@ def test_store_preparation_summary_uses_preparation_context_not_processing_statu
             "merged_raw_paragraph_count": 2,
         })(),
         "cleanup_report": type("CleanupReportStub", (), {
-            "removed_paragraph_count": 3,
-            "removed_page_number_count": 2,
-            "removed_repeated_artifact_count": 1,
+            "removed_paragraph_count": 0,
+            "removed_page_number_count": 0,
+            "removed_repeated_artifact_count": 0,
             "removed_empty_or_whitespace_count": 0,
+            "cleanup_mode": "flag",
+            "flagged_page_number_count": 2,
+            "flagged_repeated_artifact_count": 1,
+            "flagged_empty_or_whitespace_count": 0,
         })(),
         "structure_repair_report": StructureRepairReport(
             applied=True,
@@ -176,7 +180,7 @@ def test_store_preparation_summary_uses_preparation_context_not_processing_statu
         "status_notes": [
             "Структура: AI выключен, использованы текущие правила.",
             "Восстановление структуры: списки 2, TOC-регионов 1, подсказок заголовков 3.",
-            "Очистка: удалено 3 служебных элементов (2 номеров страниц, 1 повторяющихся колонтитулов, 0 пустых абзацев).",
+            "Очистка: помечено 3 служебных элементов (2 номеров страниц, 1 повторяющихся колонтитулов, 0 пустых абзацев).",
         ],
         "raw_paragraph_count": 3,
         "logical_paragraph_count": 2,

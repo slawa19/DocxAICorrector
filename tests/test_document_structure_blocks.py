@@ -1,6 +1,6 @@
 import docxaicorrector.core.config as config
 
-from docxaicorrector.core.models import DocumentBlock, ParagraphUnit
+from docxaicorrector.core.models import DocumentBlock, EmbeddedStructureHint, ParagraphUnit
 from docxaicorrector.document._document import (
     build_editing_jobs,
     build_marker_wrapped_block_text,
@@ -107,6 +107,24 @@ def test_build_semantic_blocks_uses_structural_roles_for_toc_grouping_without_re
         ParagraphUnit(text="Содержание", role="body", structural_role="toc_header", paragraph_id="p0000"),
         ParagraphUnit(text="Глава 1........ 12", role="body", structural_role="toc_entry", paragraph_id="p0001"),
         ParagraphUnit(text="Глава 2........ 18", role="body", structural_role="toc_entry", paragraph_id="p0002"),
+        ParagraphUnit(text="Первый обычный абзац после содержания.", role="body", paragraph_id="p0003"),
+    ]
+
+    blocks = build_semantic_blocks(paragraphs, max_chars=60, relations=[])
+
+    assert len(blocks) == 2
+    assert [paragraph.text for paragraph in blocks[0].paragraphs] == [
+        "Содержание",
+        "Глава 1........ 12",
+        "Глава 2........ 18",
+    ]
+
+
+def test_build_semantic_blocks_uses_structural_hints_for_toc_grouping_without_relations():
+    paragraphs = [
+        ParagraphUnit(text="Содержание", role="body", structural_role="body", paragraph_id="p0000", heuristic_structural_role_hint="toc_header"),
+        ParagraphUnit(text="Глава 1........ 12", role="body", structural_role="body", paragraph_id="p0001", heuristic_structural_role_hint="toc_entry"),
+        ParagraphUnit(text="Глава 2........ 18", role="body", structural_role="body", paragraph_id="p0002", heuristic_structural_role_hint="toc_entry"),
         ParagraphUnit(text="Первый обычный абзац после содержания.", role="body", paragraph_id="p0003"),
     ]
 
@@ -288,6 +306,21 @@ def test_build_editing_jobs_uses_explicit_seventy_percent_toc_dominance_threshol
     assert non_dominant_jobs[0]["toc_dominant"] is False
 
 
+def test_build_editing_jobs_does_not_treat_mixed_embedded_toc_paragraph_as_toc_only():
+    compound = ParagraphUnit(text="Conclusion........ 29 Introduction Body start", role="body", paragraph_id="p0000")
+    compound.heuristic_embedded_structure_hints = [
+        EmbeddedStructureHint(text="Conclusion........ 29", role="body", structural_role="toc_entry"),
+        EmbeddedStructureHint(text="Introduction", role="heading", structural_role="body", heading_level=2),
+        EmbeddedStructureHint(text="Body start", role="body", structural_role="body"),
+    ]
+
+    jobs = build_editing_jobs([DocumentBlock(paragraphs=[compound])], max_chars=3000)
+
+    assert jobs[0]["job_kind"] == "llm"
+    assert jobs[0]["toc_dominant"] is False
+    assert jobs[0]["toc_paragraph_count"] == 0
+
+
 def test_build_paragraph_relations_detects_caption_epigraph_and_toc_groups():
     paragraphs = [
         ParagraphUnit(text="[[DOCX_IMAGE_img_001]]", role="image", structural_role="image", paragraph_id="p0000", asset_id="img_001"),
@@ -423,6 +456,19 @@ def test_build_paragraph_relations_detects_table_caption_and_headerless_toc_run(
     assert report.relation_counts == {"table_caption": 1, "toc_region": 1}
 
 
+def test_build_paragraph_relations_detects_toc_region_from_structural_hints():
+    paragraphs = [
+        ParagraphUnit(text="Содержание", role="body", structural_role="body", paragraph_id="p0000", heuristic_structural_role_hint="toc_header"),
+        ParagraphUnit(text="Глава 1........ 12", role="body", structural_role="body", paragraph_id="p0001", heuristic_structural_role_hint="toc_entry"),
+        ParagraphUnit(text="Глава 2........ 18", role="body", structural_role="body", paragraph_id="p0002", heuristic_structural_role_hint="toc_entry"),
+    ]
+
+    relations, report = build_paragraph_relations(paragraphs)
+
+    assert [relation.relation_kind for relation in relations] == ["toc_region"]
+    assert report.relation_counts == {"toc_region": 1}
+
+
 def test_build_paragraph_relations_records_rejected_caption_candidate():
     paragraphs = [
         ParagraphUnit(text="Рис. 3. Одинокая подпись", role="caption", structural_role="caption", paragraph_id="p0000"),
@@ -484,3 +530,34 @@ def test_build_semantic_blocks_splits_front_matter_megablock_between_toc_epigrap
     assert [paragraph.text for paragraph in blocks[1].paragraphs] == ["Содержание", "Введение........ 1", "Заключение........ 29"]
     assert [paragraph.text for paragraph in blocks[2].paragraphs] == ["Вас будут ненавидеть всеми за имя Мое", "— Марка 13:13"]
     assert [paragraph.text for paragraph in blocks[3].paragraphs] == ["Введение", "Первый абзац главы."]
+
+
+def test_build_semantic_blocks_isolates_mixed_compound_paragraph_with_embedded_boundaries():
+    compound = ParagraphUnit(
+        text="Conclusion........ 29 \"You will be hated by all\" Introduction My grandfather was convinced",
+        role="body",
+        paragraph_id="p0003",
+    )
+    compound.heuristic_embedded_structure_hints = [
+        EmbeddedStructureHint(text="Conclusion........ 29", role="body", structural_role="toc_entry"),
+        EmbeddedStructureHint(text='"You will be hated by all"', role="body", structural_role="epigraph"),
+        EmbeddedStructureHint(text="Introduction", role="heading", structural_role="body", heading_level=2),
+        EmbeddedStructureHint(text="My grandfather was convinced", role="body", structural_role="body"),
+    ]
+    paragraphs = [
+        ParagraphUnit(text="Title", role="heading", paragraph_id="p0000", heading_level=1),
+        ParagraphUnit(text="Contents", role="body", structural_role="toc_header", paragraph_id="p0001"),
+        ParagraphUnit(text="Conclusion........ 29", role="body", structural_role="toc_entry", paragraph_id="p0002"),
+        compound,
+        ParagraphUnit(text="First ordinary body paragraph.", role="body", paragraph_id="p0004"),
+    ]
+
+    blocks = build_semantic_blocks(paragraphs, max_chars=4000, relations=[])
+
+    assert len(blocks) == 4
+    assert [paragraph.text for paragraph in blocks[0].paragraphs] == ["Title"]
+    assert [paragraph.text for paragraph in blocks[1].paragraphs] == ["Contents", "Conclusion........ 29"]
+    assert [paragraph.text for paragraph in blocks[2].paragraphs] == [
+        'Conclusion........ 29 "You will be hated by all" Introduction My grandfather was convinced'
+    ]
+    assert [paragraph.text for paragraph in blocks[3].paragraphs] == ["First ordinary body paragraph."]

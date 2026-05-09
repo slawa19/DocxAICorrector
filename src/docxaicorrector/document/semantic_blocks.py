@@ -209,10 +209,10 @@ def build_editing_jobs(
         context_after = build_context_excerpt(blocks, index, context_after_chars, reverse=False)
         structural_roles = [_paragraph_structural_kind(paragraph) for paragraph in block.paragraphs]
         paragraph_count = len(block.paragraphs)
-        toc_paragraph_count = sum(1 for role in structural_roles if role in {"toc_header", "toc_entry"})
+        toc_only_paragraph_count = sum(1 for paragraph in block.paragraphs if _is_toc_only_paragraph(paragraph))
         toc_dominant = bool(paragraph_count) and (
-            toc_paragraph_count == paragraph_count
-            or (toc_paragraph_count / paragraph_count) >= TOC_DOMINANCE_THRESHOLD
+            toc_only_paragraph_count == paragraph_count
+            or (toc_only_paragraph_count / paragraph_count) >= TOC_DOMINANCE_THRESHOLD
         )
         normalized_operation = str(processing_operation or "edit").strip().lower() or "edit"
         narration_include = _resolve_narration_include(
@@ -226,7 +226,7 @@ def build_editing_jobs(
             and (
                 all(paragraph.role == "image" for paragraph in block.paragraphs)
                 or (normalized_operation == "audiobook" and not narration_include)
-                or (normalized_operation != "translate" and all(_is_toc_structural_role(paragraph) for paragraph in block.paragraphs))
+                or (normalized_operation != "translate" and all(_is_toc_only_paragraph(paragraph) for paragraph in block.paragraphs))
             )
             else "llm"
         )
@@ -243,7 +243,7 @@ def build_editing_jobs(
                 "structural_roles": structural_roles,
                 "narration_include": narration_include,
                 "toc_dominant": toc_dominant,
-                "toc_paragraph_count": toc_paragraph_count,
+                "toc_paragraph_count": toc_only_paragraph_count,
                 "paragraph_count": paragraph_count,
                 "context_before": context_before,
                 "context_after": context_after,
@@ -327,7 +327,9 @@ def _resolve_marker_paragraph_id(paragraph: ParagraphUnit, fallback_index: int) 
 
 
 def _paragraph_structural_kind(paragraph: ParagraphUnit) -> str:
-    return str(paragraph.structural_role or paragraph.role or "").strip().lower()
+    return str(
+        paragraph.heuristic_structural_role_hint or paragraph.structural_role or paragraph.role or ""
+    ).strip().lower()
 
 
 def _paragraph_boundary_key(paragraph: ParagraphUnit) -> str:
@@ -361,6 +363,36 @@ def _is_quote_structural_role(paragraph: ParagraphUnit) -> bool:
 
 def _is_toc_structural_role(paragraph: ParagraphUnit) -> bool:
     return _paragraph_structural_kind(paragraph) in {"toc_header", "toc_entry"}
+
+
+def _is_toc_only_paragraph(paragraph: ParagraphUnit) -> bool:
+    embedded_kinds = _embedded_hint_boundary_kinds(paragraph)
+    if embedded_kinds:
+        return all(kind in {"toc_header", "toc_entry"} for kind in embedded_kinds)
+    return _is_toc_structural_role(paragraph)
+
+
+def _embedded_hint_boundary_kinds(paragraph: ParagraphUnit) -> tuple[str, ...]:
+    hints = getattr(paragraph, "heuristic_embedded_structure_hints", None) or ()
+    kinds: list[str] = []
+    for hint in hints:
+        structural_role = str(getattr(hint, "structural_role", "") or "").strip().lower()
+        role = str(getattr(hint, "role", "") or "").strip().lower()
+        if structural_role and structural_role != "body":
+            kinds.append(structural_role)
+            continue
+        if role and role != "body":
+            kinds.append(role)
+            continue
+        kinds.append("body")
+    return tuple(kinds)
+
+
+def _paragraph_has_embedded_boundary_signal(paragraph: ParagraphUnit) -> bool:
+    kinds = _embedded_hint_boundary_kinds(paragraph)
+    if len(kinds) < 2:
+        return False
+    return any(right != left for left, right in zip(kinds, kinds[1:]))
 
 
 def _strip_internal_placeholders(text: str) -> str:
@@ -474,6 +506,10 @@ def _split_single_unsafe_block(block: DocumentBlock, *, max_chars: int) -> list[
         current = paragraphs[index]
         previous_kind = _paragraph_structural_kind(previous)
         current_kind = _paragraph_structural_kind(current)
+
+        if _paragraph_has_embedded_boundary_signal(previous):
+            boundary_indexes.add(index)
+            continue
 
         if previous_kind in {"toc_header", "toc_entry"} and current_kind not in {"toc_header", "toc_entry"}:
             boundary_indexes.add(index)

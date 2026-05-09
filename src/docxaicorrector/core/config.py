@@ -1135,6 +1135,7 @@ def _validate_provider_model_contracts(
     text_runtime_defaults: Mapping[str, Any],
     paragraph_boundary_settings: Mapping[str, Any],
     structure_recognition_settings: Mapping[str, Any],
+    structure_recovery_settings: Mapping[str, Any],
 ) -> None:
     models = model_registry_settings["models"]
     text_model_config = models.text
@@ -1209,6 +1210,15 @@ def _validate_provider_model_contracts(
         config_like=provider_registry,
         source_name="models.structure_recognition.default",
     )
+
+    document_map_model = str(structure_recovery_settings.get("structure_recovery_document_map_model", "") or "").strip()
+    if document_map_model or bool(structure_recovery_settings.get("structure_recovery_document_map_enabled", False)):
+        resolve_model_selector(
+            document_map_model,
+            required_capability="responses_text",
+            config_like=provider_registry,
+            source_name="structure_recovery.document_map.model",
+        )
 
     if paragraph_boundary_settings["paragraph_boundary_ai_review_enabled"]:
         resolved_selector = resolve_model_selector(
@@ -1292,6 +1302,7 @@ def load_app_config() -> AppConfig:
         text_runtime_defaults=resolved_sections.text_runtime_defaults,
         paragraph_boundary_settings=resolved_sections.paragraph_boundary_settings,
         structure_recognition_settings=resolved_sections.structure_recognition_settings,
+        structure_recovery_settings=resolved_sections.structure_recovery_settings,
     )
 
     return _build_app_config(

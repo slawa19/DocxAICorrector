@@ -68,11 +68,11 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     assert app_config["structure_recognition_min_confidence"] == "medium"
     assert app_config["structure_recognition_cache_enabled"] is True
     assert app_config["structure_recognition_save_debug_artifacts"] is True
-    assert app_config["structure_recovery_enabled"] is False
+    assert app_config["structure_recovery_enabled"] is True
     assert app_config["structure_recovery_mode"] == "ai_first"
     assert app_config["structure_recovery_coordinate_schema_version"] == 1
-    assert app_config["structure_recovery_document_map_enabled"] is False
-    assert app_config["structure_recovery_document_map_model"] == ""
+    assert app_config["structure_recovery_document_map_enabled"] is True
+    assert app_config["structure_recovery_document_map_model"] == "gpt-5-mini"
     assert app_config["structure_recovery_document_map_timeout_seconds"] == 120
     assert app_config["structure_recovery_document_map_max_input_paragraphs"] == 6000
     assert app_config["structure_recovery_document_map_max_input_tokens"] == 180000
@@ -137,7 +137,6 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5-mini",
-        "openrouter:google/gemini-3-flash-preview",
         "openrouter:google/gemini-3.1-flash-lite-preview",
     )
     assert models.structure_recognition == TEST_STRUCTURE_RECOGNITION_MODEL
@@ -147,7 +146,7 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["structure_recognition_min_confidence"] == "medium"
     assert app_config["structure_recognition_cache_enabled"] is True
     assert app_config["structure_recognition_save_debug_artifacts"] is True
-    assert app_config["structure_recovery_enabled"] is False
+    assert app_config["structure_recovery_enabled"] is True
     assert app_config["structure_recovery_mode"] == "ai_first"
     assert app_config["structure_recovery_coordinate_schema_version"] == 1
     assert app_config["structure_validation_block_on_high_risk_noop"] is True
@@ -1395,6 +1394,10 @@ def _provider_contract_test_args(*, paragraph_boundary_enabled: bool, structure_
         "structure_recognition_settings": {
             "structure_recognition_enabled": structure_recognition_enabled,
         },
+        "structure_recovery_settings": {
+            "structure_recovery_document_map_enabled": True,
+            "structure_recovery_document_map_model": "gpt-5-mini",
+        },
     }
 
 
@@ -1481,6 +1484,10 @@ def test_validate_provider_model_contracts_allows_openrouter_main_text_when_open
         text_runtime_defaults={"translation_second_pass_model": "", "audiobook_model": "gpt-5.4-mini"},
         paragraph_boundary_settings={"paragraph_boundary_ai_review_enabled": True},
         structure_recognition_settings={"structure_recognition_enabled": False},
+        structure_recovery_settings={
+            "structure_recovery_document_map_enabled": True,
+            "structure_recovery_document_map_model": "openrouter:google/gemini-3.1-flash-lite-preview",
+        },
     )
 
 
@@ -1499,7 +1506,7 @@ def test_validate_provider_model_contracts_allows_openrouter_structure_recogniti
                     default="openrouter:google/gemini-3.1-flash-lite-preview",
                     options=("openrouter:google/gemini-3.1-flash-lite-preview",),
                 ),
-                structure_recognition="openrouter:google/gemini-3-flash-preview",
+                structure_recognition="gpt-5-mini",
                 image_analysis=TEST_IMAGE_ANALYSIS_MODEL,
                 image_validation=TEST_IMAGE_VALIDATION_MODEL,
                 image_reconstruction=TEST_IMAGE_RECONSTRUCTION_MODEL,
@@ -1514,4 +1521,46 @@ def test_validate_provider_model_contracts_allows_openrouter_structure_recogniti
         },
         paragraph_boundary_settings={"paragraph_boundary_ai_review_enabled": False},
         structure_recognition_settings={"structure_recognition_enabled": True},
+        structure_recovery_settings={
+            "structure_recovery_document_map_enabled": True,
+            "structure_recovery_document_map_model": "openrouter:google/gemini-3.1-flash-lite-preview",
+        },
     )
+
+
+def test_validate_provider_model_contracts_allows_explicit_openrouter_document_map_model(monkeypatch):
+    provider_registry = config.ProviderRegistry(
+        openai=config.ProviderConfig(name="openai", enabled=True, api_key_env="OPENAI_API_KEY"),
+        openrouter=config.ProviderConfig(name="openrouter", enabled=True, api_key_env="OPENROUTER_API_KEY"),
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+
+    config._validate_provider_model_contracts(
+        provider_registry=provider_registry,
+        **_provider_contract_test_args(
+            paragraph_boundary_enabled=False,
+            structure_recognition_enabled=True,
+        ),
+    )
+
+
+def test_validate_provider_model_contracts_rejects_invalid_structure_recovery_document_map_selector(monkeypatch):
+    provider_registry = config.ProviderRegistry(
+        openai=config.ProviderConfig(name="openai", enabled=True, api_key_env="OPENAI_API_KEY"),
+        openrouter=config.ProviderConfig(name="openrouter", enabled=True, api_key_env="OPENROUTER_API_KEY"),
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    args = _provider_contract_test_args(
+        paragraph_boundary_enabled=False,
+        structure_recognition_enabled=True,
+    )
+    args["structure_recovery_settings"] = {
+        "structure_recovery_document_map_enabled": True,
+        "structure_recovery_document_map_model": "anthropic:claude-3.7-sonnet",
+    }
+
+    with pytest.raises(RuntimeError, match=r"structure_recovery\.document_map\.model"):
+        config._validate_provider_model_contracts(
+            provider_registry=provider_registry,
+            **args,
+        )

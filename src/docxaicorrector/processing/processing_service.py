@@ -360,6 +360,7 @@ class ProcessingService:
         processing_progress_callback=None,
         runtime=None,
     ) -> tuple[str, application_flow.PreparedRunContext]:
+        deps = self.dependencies
         resolved_prepare_progress_callback = prepare_progress_callback or progress_callback
         resolved_processing_progress_callback = processing_progress_callback or progress_callback or (lambda **kwargs: None)
         uploaded_payload = freeze_uploaded_file(uploaded_file)
@@ -371,10 +372,14 @@ class ProcessingService:
                 keep_all_image_variants=keep_all_image_variants,
                 processing_operation=processing_operation,
                 app_config=app_config,
+                prepare_document_for_processing_fn=lambda **kwargs: application_flow.prepare_document_for_processing(
+                    get_client_fn=deps.get_client_fn,
+                    **kwargs,
+                ),
                 progress_callback=resolved_prepare_progress_callback,
             )
         except Exception as exc:
-            error_message = self.dependencies.present_error_fn(
+            error_message = deps.present_error_fn(
                 "preparation_worker_crashed",
                 exc,
                 "Ошибка подготовки документа",
