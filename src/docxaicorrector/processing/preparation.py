@@ -27,6 +27,7 @@ from docxaicorrector.core.models import DocumentMap, LayoutArtifactCleanupReport
 from docxaicorrector.core.models import StructureRecognitionSummary
 from docxaicorrector.core.models import StructureRepairReport
 from docxaicorrector.core.models import clone_prepared_image_asset
+from docxaicorrector.core.models import normalize_heuristic_list_kind_hint, normalize_heuristic_role_hint, normalize_heuristic_structural_role_hint
 from docxaicorrector.core.models import StructureMap
 from docxaicorrector.processing.processing_runtime import FrozenUploadPayload, HeartbeatBeacon, build_in_memory_uploaded_file
 from docxaicorrector.runtime.artifact_retention import (
@@ -50,11 +51,14 @@ from docxaicorrector.structure.document_map import (
     DOCUMENT_MAP_DESCRIPTOR_SCHEMA_VERSION,
     DOCUMENT_MAP_POSTPROCESS_VERSION,
     DOCUMENT_MAP_PROMPT_VERSION,
+    DocumentMapRequestTimeout,
+    DocumentMapSchemaError,
     build_document_map,
 )
 from docxaicorrector.structure.recognition import (
     STRUCTURE_RECOGNITION_DESCRIPTOR_SCHEMA_VERSION,
     STRUCTURE_RECOGNITION_PROMPT_VERSION,
+    StructureRecognitionRequestTimeout,
     apply_structure_map,
     build_structure_map,
 )
@@ -96,6 +100,56 @@ def humanize_quality_gate_reason(reason: str) -> str:
 
 def humanize_quality_gate_reasons(reasons) -> list[str]:
     return [humanize_quality_gate_reason(str(reason).strip()) for reason in reasons or () if str(reason).strip()]
+
+
+def _format_ai_first_fallback_reason(exc: BaseException) -> str:
+    message = str(exc).strip()
+    if message:
+        return f"{type(exc).__name__}: {message}"
+    return type(exc).__name__
+
+
+def _is_structure_provider_runtime_error(exc: RuntimeError) -> bool:
+    message = str(exc or "").strip().lower()
+    if message == "unsupported structure recognition client":
+        return True
+    return any(
+        marker in message
+        for marker in (
+            "api_key",
+            "api key",
+            "selector",
+            "provider",
+            "disabled",
+            "отключ",
+            "не найден",
+            "missing api key",
+        )
+    )
+
+
+def _build_ai_first_degraded_summary(*, fallback_stage: str, reason: str, document_map_present: bool) -> StructureRecognitionSummary:
+    return StructureRecognitionSummary(
+        ai_first_degraded=True,
+        fallback_stage=fallback_stage,
+        fallback_reason=reason,
+        document_map_present=document_map_present,
+    )
+
+
+def _record_ai_first_fallback(
+    fallback_state: dict[str, object] | None,
+    *,
+    fallback_stage: str,
+    reason: str,
+    document_map_present: bool,
+) -> None:
+    if fallback_state is None:
+        return
+    fallback_state["ai_first_degraded"] = True
+    fallback_state["fallback_stage"] = fallback_stage
+    fallback_state["fallback_reason"] = reason
+    fallback_state["document_map_present"] = document_map_present
 
 
 @dataclass
@@ -261,14 +315,34 @@ def _build_preparation_stage_metrics(
     return metrics
 
 
-def _capture_structure_baseline(paragraphs: list) -> dict[int, tuple[str, str]]:
+def _capture_structure_baseline(paragraphs: list) -> dict[int, tuple[str, str, str | None, int | None, str | None]]:
     return {
-        int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", -1))): (paragraph.role, paragraph.structural_role)
+        int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", -1))): (
+            paragraph.role,
+            paragraph.structural_role,
+            paragraph.heading_source,
+            paragraph.heading_level,
+            paragraph.role_confidence,
+        )
         for paragraph in paragraphs
     }
 
 
-def _build_structure_divergence_metrics(*, baseline: dict[int, tuple[str, str]], paragraphs: list) -> dict[str, int]:
+def _restore_structure_baseline(*, baseline: dict[int, tuple[str, str, str | None, int | None, str | None]], paragraphs: list) -> None:
+    for paragraph in paragraphs:
+        logical_index = int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", -1)))
+        previous = baseline.get(logical_index)
+        if previous is None:
+            continue
+        previous_role, previous_structural_role, previous_heading_source, previous_heading_level, previous_role_confidence = previous
+        paragraph.role = previous_role
+        paragraph.structural_role = previous_structural_role
+        paragraph.heading_source = previous_heading_source
+        paragraph.heading_level = previous_heading_level
+        paragraph.role_confidence = previous_role_confidence
+
+
+def _build_structure_divergence_metrics(*, baseline: dict[int, tuple[str, str, str | None, int | None, str | None]], paragraphs: list) -> dict[str, int]:
     metrics = {
         "ai_role_changes": 0,
         "ai_heading_promotions": 0,
@@ -282,7 +356,7 @@ def _build_structure_divergence_metrics(*, baseline: dict[int, tuple[str, str]],
         previous = baseline.get(logical_index)
         if previous is None:
             continue
-        previous_role, previous_structural_role = previous
+        previous_role, previous_structural_role, _previous_heading_source, _previous_heading_level, _previous_role_confidence = previous
         if previous_role != paragraph.role:
             metrics["ai_role_changes"] += 1
         if previous_role != "heading" and paragraph.role == "heading":
@@ -314,6 +388,9 @@ def _build_structure_recognition_summary(*, applied_metrics: dict[str, int], div
         ai_heading_promotion_count=int(divergence_metrics.get("ai_heading_promotions", 0) or 0),
         ai_heading_demotion_count=int(divergence_metrics.get("ai_heading_demotions", 0) or 0),
         ai_structural_role_change_count=int(divergence_metrics.get("ai_structural_role_changes", 0) or 0),
+        reconciliation_patch_count=int(applied_metrics.get("reconciliation_patches_applied", 0) or 0),
+        reconciliation_locked_override_count=int(applied_metrics.get("reconciliation_locked_overrides_applied", 0) or 0),
+        reconciliation_locked_override_skip_count=int(applied_metrics.get("reconciliation_locked_overrides_skipped", 0) or 0),
     )
 
 
@@ -347,6 +424,15 @@ def build_structure_processing_status_note(source: object | None) -> str:
     ai_attempted = bool(getattr(source, "structure_ai_attempted", False))
     escalation_reasons = _format_structure_escalation_reasons(validation_report)
     readiness_status = str(getattr(validation_report, "readiness_status", "") or "")
+    if structure_summary.ai_first_degraded:
+        stage = structure_summary.fallback_stage or "unknown"
+        reason = structure_summary.fallback_reason or "unspecified"
+        if structure_map is not None and structure_summary.ai_classified_count > 0:
+            return (
+                f"Структура: AI-first degraded ({stage}); продолжен ограниченный fallback-путь, "
+                f"классифицировано {structure_summary.ai_classified_count} абзацев. Причина: {reason}."
+            )
+        return f"Структура: AI-first degraded ({stage}); использованы текущие правила. Причина: {reason}."
 
     if mode == "off":
         return "Структура: AI выключен, использованы текущие правила."
@@ -383,7 +469,13 @@ def build_structure_processing_status_note(source: object | None) -> str:
     return ""
 
 
-def _build_structure_map_cache_key(*, paragraphs: list, app_config: Mapping[str, Any], document_map: DocumentMap | None = None) -> str:
+def _build_structure_map_cache_key(
+    *,
+    paragraphs: list,
+    app_config: Mapping[str, Any],
+    document_map: DocumentMap | None = None,
+    resolved_model: str | None = None,
+) -> str:
     structure_recovery_mode = str(app_config.get("structure_recovery_mode", "ai_first") or "ai_first").strip().lower()
     structure_recovery_enabled = bool(app_config.get("structure_recovery_enabled", False))
     coordinate_schema_version = int(
@@ -396,7 +488,7 @@ def _build_structure_map_cache_key(*, paragraphs: list, app_config: Mapping[str,
     )
     payload = {
         "stage": "structure_recognition_v1",
-        "model": get_model_role_value(app_config, "structure_recognition"),
+        "model": resolved_model or get_model_role_value(app_config, "structure_recognition"),
         "prompt_version": STRUCTURE_RECOGNITION_PROMPT_VERSION,
         "descriptor_schema_version": STRUCTURE_RECOGNITION_DESCRIPTOR_SCHEMA_VERSION,
         "reconciliation_schema_version": STRUCTURE_RECONCILIATION_SCHEMA_VERSION,
@@ -457,7 +549,7 @@ def _resolve_structure_recognition_window_settings(
     *,
     app_config: Mapping[str, Any],
     document_map: DocumentMap | None,
-) -> tuple[int, int, int, int]:
+) -> tuple[int, int, int, int | None]:
     if document_map is not None:
         return (
             int(app_config.get("structure_recovery_anchored_classification_max_window_paragraphs", 3000) or 3000),
@@ -469,7 +561,7 @@ def _resolve_structure_recognition_window_settings(
         int(app_config.get("structure_recognition_max_window_paragraphs", 1800) or 1800),
         int(app_config.get("structure_recognition_overlap_paragraphs", 50) or 50),
         600,
-        int(app_config.get("structure_recovery_anchored_classification_target_input_tokens", 180000) or 180000),
+        None,
     )
 
 
@@ -504,19 +596,22 @@ def _build_document_map_cache_key(*, paragraphs: list, app_config: Mapping[str, 
                 "explicit_heading_level": getattr(paragraph, "heading_level", None)
                 if getattr(paragraph, "heading_source", None) == "explicit"
                 else None,
-                "heuristic_role_hint": getattr(paragraph, "heuristic_role_hint", None),
-                "heuristic_structural_role_hint": getattr(paragraph, "heuristic_structural_role_hint", None),
-                "heuristic_list_kind_hint": getattr(paragraph, "heuristic_list_kind_hint", None),
+                "heuristic_role_hint": normalize_heuristic_role_hint(getattr(paragraph, "heuristic_role_hint", None)),
+                "heuristic_structural_role_hint": normalize_heuristic_structural_role_hint(
+                    getattr(paragraph, "heuristic_structural_role_hint", None)
+                ),
+                "heuristic_list_kind_hint": normalize_heuristic_list_kind_hint(getattr(paragraph, "heuristic_list_kind_hint", None)),
                 "heuristic_heading_level_hint": getattr(paragraph, "heuristic_heading_level_hint", None),
                 "is_repeated_across_pages": bool(getattr(paragraph, "is_repeated_across_pages", False)),
                 "is_likely_page_number": bool(getattr(paragraph, "is_likely_page_number", False)),
                 "embedded_structure_hints": [
                     {
                         "text": str(getattr(hint, "text", "") or "")[:preview_chars],
-                        "role": getattr(hint, "role", "body"),
-                        "structural_role": getattr(hint, "structural_role", "body"),
+                        "role": normalize_heuristic_role_hint(getattr(hint, "role", "body")) or "body",
+                        "structural_role": normalize_heuristic_structural_role_hint(getattr(hint, "structural_role", "body"))
+                        or "body",
                         "heading_level": getattr(hint, "heading_level", None),
-                        "list_kind": getattr(hint, "list_kind", None),
+                        "list_kind": normalize_heuristic_list_kind_hint(getattr(hint, "list_kind", None)),
                     }
                     for hint in getattr(paragraph, "heuristic_embedded_structure_hints", ()) or ()
                 ],
@@ -667,10 +762,12 @@ def _write_reconciliation_report_artifact(
                     "unexpected_headings": list(report.unexpected_headings),
                     "toc_entries_without_body_match": list(report.toc_entries_without_body_match),
                     "front_matter_leaks": list(report.front_matter_leaks),
+                    "front_matter_body_advisories": list(report.front_matter_body_advisories),
                     "targeted_recall_invoked": report.targeted_recall_invoked,
                     "targeted_recall_count": report.targeted_recall_count,
                     "outline_coverage_ratio": report.outline_coverage_ratio,
                     "patched_logical_indexes": list(report.patched_logical_indexes),
+                    # Compatibility alias for older consumers that still speak in source indexes.
                     "patched_source_indexes": list(report.patched_source_indexes),
                 },
             },
@@ -716,7 +813,7 @@ def _run_structure_recognition(
         metrics={**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend},
     )
 
-    def _emit_structure_ai_progress(event) -> None:
+    def _emit_structure_progress(event) -> None:
         if event.event == "prepared":
             detail = f"Подготовлено {event.descriptor_count or 0} абзацев, запускаю AI-классификацию."
         elif event.event == "window_started":
@@ -728,129 +825,149 @@ def _run_structure_recognition(
         elif event.event == "window_split":
             detail = "AI-анализ большого окна, уточняю разбиением..."
         elif event.event == "completed":
-            detail = "AI-классификация структуры завершена."
+            detail = "AI-анализ завершён. Применяю структуру к документу."
         else:
             detail = "Анализирую роли абзацев с помощью AI."
-
-        if event.event == "prepared":
-            progress = 0.35
-        elif event.event in {"window_started", "window_split", "window_failed", "window_completed", "completed"}:
-            progress = min(0.35 + 0.17 * (event.processed_windows / max(event.total_windows, 1)), 0.52)
-        else:
-            progress = 0.35
         emit_preparation_progress(
             progress_callback,
             stage="Распознавание структуры…",
             detail=detail,
-            progress=progress,
-            metrics={
-                **base_metrics,
-                "source_format": source_format,
-                "conversion_backend": conversion_backend,
-                "structure_ai_processed_windows": event.processed_windows,
-                "structure_ai_total_windows": event.total_windows,
-            },
+            progress=0.41,
+            metrics={**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend},
         )
 
-        # Heartbeat: while a single window is in flight (synchronous OpenAI call),
-        # keep the UI alive by re-emitting the same stage with growing elapsed.
-        nonlocal _ai_window_heartbeat
-        if event.event == "window_started":
-            if _ai_window_heartbeat is not None:
-                _ai_window_heartbeat.__exit__(None, None, None)
-            beacon = HeartbeatBeacon(
-                progress_callback,
-                stage="Распознавание структуры…",
-                detail_template=(
-                    f"Окно {event.current_window or 1}/{max(event.total_windows, 1)}: "
-                    "жду ответ модели… ({elapsed} сек). Большие окна обычно занимают 30–90 сек."
-                ),
-                progress=progress,
-                metrics={
-                    **base_metrics,
-                    "source_format": source_format,
-                    "conversion_backend": conversion_backend,
-                    "structure_ai_processed_windows": event.processed_windows,
-                    "structure_ai_total_windows": event.total_windows,
-                },
-                interval_seconds=3.0,
+    baseline = _capture_structure_baseline(paragraphs)
+
+    def _degrade_ai_first(*, fallback_stage: str, reason: str, detail: str) -> tuple[None, StructureRecognitionSummary]:
+        log_event(
+            logging.WARNING,
+            "structure_recognition_fallback",
+            "AI-распознавание структуры завершилось fallback-путём.",
+            ai_first_degraded=True,
+            fallback_stage=fallback_stage,
+            document_map_present=document_map is not None,
+            error_message=reason,
+        )
+        emit_preparation_progress(
+            progress_callback,
+            stage="Структура: деградация",
+            detail=detail,
+            progress=0.55,
+            metrics={**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend},
+        )
+        return None, _build_ai_first_degraded_summary(
+            fallback_stage=fallback_stage,
+            reason=reason,
+            document_map_present=document_map is not None,
+        )
+
+    structure_map = None
+    resolved_model: str | None = None
+    cache_key: str | None = None
+    if bool(app_config.get("structure_recognition_cache_enabled", True)):
+        try:
+            resolved_model = get_model_role_value(app_config, "structure_recognition")
+            cache_key = _build_structure_map_cache_key(
+                paragraphs=paragraphs,
+                app_config=app_config,
+                document_map=document_map,
+                resolved_model=resolved_model,
             )
-            beacon.__enter__()
-            _ai_window_heartbeat = beacon
-        elif event.event in {"window_completed", "window_failed", "window_split", "completed"}:
-            if _ai_window_heartbeat is not None:
-                _ai_window_heartbeat.__exit__(None, None, None)
-                _ai_window_heartbeat = None
-
-    _ai_window_heartbeat: HeartbeatBeacon | None = None
-
-    try:
-        baseline = _capture_structure_baseline(paragraphs)
-        max_window_paragraphs, overlap_paragraphs, preview_chars, _target_input_tokens = _resolve_structure_recognition_window_settings(
-            app_config=app_config,
-            document_map=document_map,
-        )
-        cache_key = _build_structure_map_cache_key(paragraphs=paragraphs, app_config=app_config, document_map=document_map)
-        structure_map = None
-        if bool(app_config.get("structure_recognition_cache_enabled", True)):
             structure_map = _read_cached_structure_map(cache_key)
-        if structure_map is None:
-            try:
-                structure_map = build_structure_map(
-                    paragraphs,
-                    client=get_client_fn(),
-                    model=get_model_role_value(app_config, "structure_recognition"),
-                    max_window_paragraphs=max_window_paragraphs,
-                    overlap_paragraphs=overlap_paragraphs,
-                    timeout=float(app_config.get("structure_recognition_timeout_seconds", 60) or 60),
+        except Exception as exc:
+            reason = _format_ai_first_fallback_reason(exc)
+            return _degrade_ai_first(
+                fallback_stage="stage2_structure_recognition_cache",
+                reason=reason,
+                detail="AI-first cache path недоступен. Используются текущие правила.",
+            )
+    if structure_map is None:
+        try:
+            max_window_paragraphs, overlap_paragraphs, preview_chars, target_input_tokens = _resolve_structure_recognition_window_settings(
+                app_config=app_config,
+                document_map=document_map,
+            )
+            client = get_client_fn()
+            if resolved_model is None:
+                resolved_model = get_model_role_value(app_config, "structure_recognition")
+            if cache_key is None:
+                cache_key = _build_structure_map_cache_key(
+                    paragraphs=paragraphs,
+                    app_config=app_config,
                     document_map=document_map,
-                    preview_chars=preview_chars,
-                    target_input_tokens=None if document_map is None else _target_input_tokens,
-                    progress_callback=_emit_structure_ai_progress,
+                    resolved_model=resolved_model,
                 )
-            finally:
-                if _ai_window_heartbeat is not None:
-                    try:
-                        _ai_window_heartbeat.__exit__(None, None, None)
-                    finally:
-                        _ai_window_heartbeat = None
+            structure_map = build_structure_map(
+                paragraphs,
+                client=client,
+                model=resolved_model,
+                max_window_paragraphs=max_window_paragraphs,
+                overlap_paragraphs=overlap_paragraphs,
+                timeout=float(app_config.get("structure_recognition_timeout_seconds", 60) or 60),
+                document_map=document_map,
+                preview_chars=preview_chars,
+                target_input_tokens=target_input_tokens,
+                progress_callback=_emit_structure_progress,
+            )
             if bool(app_config.get("structure_recognition_cache_enabled", True)):
                 _store_cached_structure_map(cache_key, structure_map)
-        else:
-            emit_preparation_progress(
-                progress_callback,
-                stage="Распознавание структуры…",
-                detail="Использую сохранённую карту структуры.",
-                progress=0.52,
-                metrics={
-                    **base_metrics,
-                    "source_format": source_format,
-                    "conversion_backend": conversion_backend,
-                    "structure_ai_processed_windows": 1,
-                    "structure_ai_total_windows": 1,
-                },
+        except ValueError as exc:
+            reason = _format_ai_first_fallback_reason(exc)
+            return _degrade_ai_first(
+                fallback_stage="stage2_structure_recognition_window",
+                reason=reason,
+                detail="AI-first window settings invalid. Используются текущие правила.",
             )
-        if document_map is not None and structure_map is not None:
+        except StructureRecognitionRequestTimeout as exc:
+            reason = _format_ai_first_fallback_reason(exc)
+            return _degrade_ai_first(
+                fallback_stage="stage2_structure_recognition_provider",
+                reason=reason,
+                detail="AI-first provider path недоступен. Используются текущие правила.",
+            )
+        except RuntimeError as exc:
+            if not _is_structure_provider_runtime_error(exc):
+                raise
+            reason = _format_ai_first_fallback_reason(exc)
+            return _degrade_ai_first(
+                fallback_stage="stage2_structure_recognition_provider",
+                reason=reason,
+                detail="AI-first provider path недоступен. Используются текущие правила.",
+            )
+
+    if document_map is not None:
+        reconciliation_report = ReconciliationReport(outline_coverage_ratio=1.0)
+        try:
+            initial_reconciliation_report = reconciliation_report
             structure_map, reconciliation_report = reconcile_with_document_map(
                 paragraphs,
                 document_map,
                 structure_map,
             )
+            initial_reconciliation_report = reconciliation_report
             targeted_threshold = int(app_config.get("structure_recovery_reconciliation_targeted_threshold", 3) or 3)
             if (
                 bool(app_config.get("structure_recovery_reconciliation_targeted_enabled", False))
                 and reconciliation_report.missing_outline_entry_count + reconciliation_report.unexpected_heading_count > targeted_threshold
             ):
-                structure_map = targeted_reclassify_with_reconciliation_context(
-                    paragraphs,
-                    document_map,
-                    structure_map,
-                    reconciliation_report,
-                    client=get_client_fn(),
-                    model=get_model_role_value(app_config, "structure_recognition"),
-                    timeout=float(app_config.get("structure_recovery_reconciliation_targeted_timeout_seconds", 60) or 60),
-                    max_paragraphs=int(app_config.get("structure_recovery_reconciliation_targeted_max_paragraphs", 60) or 60),
-                )
+                try:
+                    structure_map = targeted_reclassify_with_reconciliation_context(
+                        paragraphs,
+                        document_map,
+                        structure_map,
+                        reconciliation_report,
+                        client=get_client_fn(),
+                        model=get_model_role_value(app_config, "structure_recognition"),
+                        timeout=float(app_config.get("structure_recovery_reconciliation_targeted_timeout_seconds", 60) or 60),
+                        max_paragraphs=int(app_config.get("structure_recovery_reconciliation_targeted_max_paragraphs", 60) or 60),
+                    )
+                except (StructureRecognitionRequestTimeout, TimeoutError, RuntimeError) as exc:
+                    reason = _format_ai_first_fallback_reason(exc)
+                    return _degrade_ai_first(
+                        fallback_stage="stage3_reconciliation_provider",
+                        reason=reason,
+                        detail="AI-first reconciliation provider path недоступен. Используются текущие правила.",
+                    )
                 structure_map, reconciliation_report = reconcile_with_document_map(
                     paragraphs,
                     document_map,
@@ -861,11 +978,26 @@ def _run_structure_recognition(
                     unexpected_headings=reconciliation_report.unexpected_headings,
                     toc_entries_without_body_match=reconciliation_report.toc_entries_without_body_match,
                     front_matter_leaks=reconciliation_report.front_matter_leaks,
+                    front_matter_body_advisories=reconciliation_report.front_matter_body_advisories,
+                    anchor_disagreements_seen=reconciliation_report.anchor_disagreements_seen,
                     targeted_recall_invoked=True,
                     targeted_recall_count=1,
                     outline_coverage_ratio=reconciliation_report.outline_coverage_ratio,
-                    patched_logical_indexes=reconciliation_report.patched_logical_indexes,
+                    patched_logical_indexes=tuple(
+                        sorted(
+                            dict.fromkeys(
+                                [
+                                    *initial_reconciliation_report.patched_logical_indexes,
+                                    *reconciliation_report.patched_logical_indexes,
+                                ]
+                            )
+                        )
+                    ),
                 )
+        except Exception:
+            raise
+
+        try:
             artifact_path = _write_reconciliation_report_artifact(
                 cache_key=cache_key,
                 report=reconciliation_report,
@@ -878,9 +1010,22 @@ def _run_structure_recognition(
                 artifact_path=artifact_path,
                 outline_coverage_ratio=reconciliation_report.outline_coverage_ratio,
                 front_matter_leaks=list(reconciliation_report.front_matter_leaks),
+                front_matter_body_advisories=list(reconciliation_report.front_matter_body_advisories),
+                anchor_disagreements_seen=list(reconciliation_report.anchor_disagreements_seen),
+                anchor_conflicts=list(reconciliation_report.anchor_conflicts),
                 targeted_recall_invoked=reconciliation_report.targeted_recall_invoked,
             )
-        if bool(app_config.get("structure_recognition_save_debug_artifacts", True)):
+        except Exception as exc:
+            log_event(
+                logging.WARNING,
+                "reconciliation_report_save_failed",
+                "Не удалось сохранить reconciliation report структуры.",
+                error_message=_format_ai_first_fallback_reason(exc),
+                outline_coverage_ratio=reconciliation_report.outline_coverage_ratio,
+                targeted_recall_invoked=reconciliation_report.targeted_recall_invoked,
+            )
+    if bool(app_config.get("structure_recognition_save_debug_artifacts", True)):
+        try:
             artifact_path = _write_structure_map_debug_artifact(cache_key=cache_key, structure_map=structure_map, app_config=app_config)
             log_event(
                 logging.INFO,
@@ -888,13 +1033,21 @@ def _run_structure_recognition(
                 "Сохранён debug artifact распознанной структуры.",
                 artifact_path=artifact_path,
             )
-        emit_preparation_progress(
-            progress_callback,
-            stage="Применение структуры…",
-            detail="Применяю результаты AI-классификации к абзацам.",
-            progress=0.53,
-            metrics={**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend},
-        )
+        except Exception as exc:
+            log_event(
+                logging.WARNING,
+                "structure_recognition_debug_artifact_save_failed",
+                "Не удалось сохранить debug artifact распознанной структуры.",
+                error_message=_format_ai_first_fallback_reason(exc),
+            )
+    emit_preparation_progress(
+        progress_callback,
+        stage="Применение структуры…",
+        detail="Применяю результаты AI-классификации к абзацам.",
+        progress=0.53,
+        metrics={**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend},
+    )
+    try:
         applied_metrics = apply_structure_map(
             paragraphs,
             structure_map,
@@ -908,22 +1061,15 @@ def _run_structure_recognition(
             ),
             document_map=document_map,
         )
-        divergence_metrics = _build_structure_divergence_metrics(baseline=baseline, paragraphs=paragraphs)
     except Exception as exc:
-        log_event(
-            logging.WARNING,
-            "structure_recognition_fallback",
-            "AI-распознавание структуры завершилось fallback-путём.",
-            error_message=str(exc),
+        _restore_structure_baseline(baseline=baseline, paragraphs=paragraphs)
+        reason = _format_ai_first_fallback_reason(exc)
+        return _degrade_ai_first(
+            fallback_stage="stage3_apply",
+            reason=reason,
+            detail="AI-first apply path недоступен. Используются текущие правила.",
         )
-        emit_preparation_progress(
-            progress_callback,
-            stage="Структура: эвристика",
-            detail="AI-распознавание недоступно. Используются текущие правила.",
-            progress=0.55,
-            metrics={**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend},
-        )
-        return None, StructureRecognitionSummary()
+    divergence_metrics = _build_structure_divergence_metrics(baseline=baseline, paragraphs=paragraphs)
 
     structure_summary = _build_structure_recognition_summary(
         applied_metrics=applied_metrics,
@@ -958,7 +1104,7 @@ def _run_document_map_stage(
     paragraphs: list,
     image_assets: list,
     app_config: Mapping[str, Any],
-    get_client_fn,
+    get_client_fn=None,
     progress_callback,
     normalization_report,
     relation_report,
@@ -966,7 +1112,10 @@ def _run_document_map_stage(
     structure_repair_report=None,
     source_format: str = "docx",
     conversion_backend: str | None = None,
+    fallback_state: dict[str, object] | None = None,
 ) -> DocumentMap | None:
+    if get_client_fn is None:
+        get_client_fn = get_client
     if not bool(app_config.get("structure_recovery_enabled", False)):
         return None
     if not bool(app_config.get("structure_recovery_document_map_enabled", False)):
@@ -1017,6 +1166,33 @@ def _run_document_map_stage(
         document_map = None
         if bool(app_config.get("structure_recovery_document_map_cache_enabled", True)):
             document_map = _read_cached_document_map(cache_key)
+    except Exception as exc:
+        reason = _format_ai_first_fallback_reason(exc)
+        _record_ai_first_fallback(
+            fallback_state,
+            fallback_stage="stage1_document_map_cache",
+            reason=reason,
+            document_map_present=False,
+        )
+        log_event(
+            logging.WARNING,
+            "document_map_fallback",
+            "Построение глобальной карты документа завершилось fallback-путём.",
+            ai_first_degraded=True,
+            fallback_stage="stage1_document_map_cache",
+            document_map_present=False,
+            error_message=reason,
+        )
+        emit_preparation_progress(
+            progress_callback,
+            stage="Карта документа: fallback",
+            detail="Глобальная карта документа недоступна из-за cache failure. Продолжаю без неё.",
+            progress=0.4,
+            metrics={**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend},
+        )
+        return None
+
+    try:
         if document_map is None:
             document_map = build_document_map(
                 paragraphs,
@@ -1044,25 +1220,47 @@ def _run_document_map_stage(
                     "document_map_sampled_count": len(document_map.sampled_logical_indexes),
                 },
             )
-        if bool(app_config.get("structure_recovery_document_map_save_debug_artifacts", True)):
-            artifact_path = _write_document_map_debug_artifact(
-                cache_key=cache_key,
-                document_map=document_map,
-                app_config=app_config,
-            )
-            log_event(
-                logging.INFO,
-                "document_map_debug_artifact_saved",
-                "Сохранён debug artifact глобальной карты документа.",
-                artifact_path=artifact_path,
-            )
-        return document_map
-    except Exception as exc:
+    except DocumentMapSchemaError as exc:
+        reason = _format_ai_first_fallback_reason(exc)
+        _record_ai_first_fallback(
+            fallback_state,
+            fallback_stage="stage1_document_map_schema",
+            reason=reason,
+            document_map_present=False,
+        )
         log_event(
             logging.WARNING,
             "document_map_fallback",
             "Построение глобальной карты документа завершилось fallback-путём.",
-            error_message=str(exc),
+            ai_first_degraded=True,
+            fallback_stage="stage1_document_map_schema",
+            document_map_present=False,
+            error_message=reason,
+        )
+        emit_preparation_progress(
+            progress_callback,
+            stage="Карта документа: fallback",
+            detail="Глобальная карта документа недоступна из-за schema failure. Продолжаю без неё.",
+            progress=0.4,
+            metrics={**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend},
+        )
+        return None
+    except (DocumentMapRequestTimeout, RuntimeError, Exception) as exc:
+        reason = _format_ai_first_fallback_reason(exc)
+        _record_ai_first_fallback(
+            fallback_state,
+            fallback_stage="stage1_document_map_provider",
+            reason=reason,
+            document_map_present=False,
+        )
+        log_event(
+            logging.WARNING,
+            "document_map_fallback",
+            "Построение глобальной карты документа завершилось fallback-путём.",
+            ai_first_degraded=True,
+            fallback_stage="stage1_document_map_provider",
+            document_map_present=False,
+            error_message=reason,
         )
         emit_preparation_progress(
             progress_callback,
@@ -1072,6 +1270,20 @@ def _run_document_map_stage(
             metrics={**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend},
         )
         return None
+
+    if bool(app_config.get("structure_recovery_document_map_save_debug_artifacts", True)):
+        artifact_path = _write_document_map_debug_artifact(
+            cache_key=cache_key,
+            document_map=document_map,
+            app_config=app_config,
+        )
+        log_event(
+            logging.INFO,
+            "document_map_debug_artifact_saved",
+            "Сохранён debug artifact глобальной карты документа.",
+            artifact_path=artifact_path,
+        )
+    return document_map
 
 
 PREPARATION_CACHE_LIMIT = 2
@@ -1164,7 +1376,7 @@ def _run_structure_validation(
     structure_repair_report: StructureRepairReport | None = None,
     document_map: DocumentMap | None = None,
     outline_coverage_ratio: float | None = None,
-    phase: str = "pre_ai",
+    phase: str = "pre_ai_diagnostic",
     source_format: str = "docx",
     conversion_backend: str | None = None,
 ) -> StructureValidationReport:
@@ -1176,13 +1388,14 @@ def _run_structure_validation(
         cleanup_report=cleanup_report,
         structure_repair_report=structure_repair_report,
     )
-    stage = "Структура: валидация" if phase == "pre_ai" else "Структура: финальная валидация"
+    is_pre_ai = phase == "pre_ai_diagnostic"
+    stage = "Структура: валидация" if is_pre_ai else "Структура: финальная валидация"
     detail = (
         "Оцениваю структурный риск документа детерминированно."
-        if phase == "pre_ai"
+        if is_pre_ai
         else "Проверяю итоговую структуру после AI и reconciliation."
     )
-    progress = 0.30 if phase == "pre_ai" else 0.56
+    progress = 0.30 if is_pre_ai else 0.56
     emit_preparation_progress(
         progress_callback,
         stage=stage,
@@ -1190,13 +1403,25 @@ def _run_structure_validation(
         progress=progress,
         metrics={**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend},
     )
-    report = validate_structure_quality(
-        paragraphs=paragraphs,
-        app_config=app_config,
-        structure_repair_report=structure_repair_report,
-        document_map_present=document_map is not None,
-        outline_coverage_ratio=outline_coverage_ratio,
-    )
+    try:
+        report = validate_structure_quality(
+            paragraphs=paragraphs,
+            app_config=app_config,
+            structure_repair_report=structure_repair_report,
+            document_map_present=document_map is not None,
+            outline_coverage_ratio=outline_coverage_ratio,
+            phase=phase,
+        )
+    except TypeError as exc:
+        if "phase" not in str(exc):
+            raise
+        report = validate_structure_quality(
+            paragraphs=paragraphs,
+            app_config=app_config,
+            structure_repair_report=structure_repair_report,
+            document_map_present=document_map is not None,
+            outline_coverage_ratio=outline_coverage_ratio,
+        )
     if bool(app_config.get("structure_validation_save_debug_artifacts", True)):
         artifact_path = write_structure_validation_debug_artifact(report=report, app_config=app_config)
         log_event(
@@ -1368,17 +1593,42 @@ def _build_editing_jobs_with_optional_operation(*, blocks, max_chars: int, proce
 def _build_semantic_blocks_with_optional_boundaries(*, paragraphs, max_chars: int, relations, hard_boundary_paragraph_ids: set[str]):
     signature = inspect.signature(build_semantic_blocks)
     accepts_hard_boundaries = "hard_boundary_paragraph_ids" in signature.parameters
+    accepts_structure_phase = "structure_phase" in signature.parameters
+    structure_phase = "post_ai_final" if relations is None else "pre_ai_diagnostic"
     if accepts_hard_boundaries:
         try:
-            return build_semantic_blocks(
+            kwargs = {
+                "max_chars": max_chars,
+                "relations": relations,
+                "hard_boundary_paragraph_ids": hard_boundary_paragraph_ids,
+            }
+            if accepts_structure_phase:
+                kwargs["structure_phase"] = structure_phase
+            return build_semantic_blocks(paragraphs, **kwargs)
+        except TypeError:
+            pass
+    if accepts_structure_phase:
+        return build_semantic_blocks(paragraphs, max_chars=max_chars, relations=relations, structure_phase=structure_phase)
+    return build_semantic_blocks(paragraphs, max_chars=max_chars, relations=relations)
+
+
+def _detect_document_segments_with_optional_phase(*, paragraphs, source_content_hash16: str, chunk_size: int):
+    signature = inspect.signature(detect_document_segments)
+    if "structure_phase" in signature.parameters:
+        try:
+            return detect_document_segments(
                 paragraphs,
-                max_chars=max_chars,
-                relations=relations,
-                hard_boundary_paragraph_ids=hard_boundary_paragraph_ids,
+                source_content_hash16=source_content_hash16,
+                chunk_size=chunk_size,
+                structure_phase="post_ai_final",
             )
         except TypeError:
             pass
-    return build_semantic_blocks(paragraphs, max_chars=max_chars, relations=relations)
+    return detect_document_segments(
+        paragraphs,
+        source_content_hash16=source_content_hash16,
+        chunk_size=chunk_size,
+    )
 
 
 def _build_document_context_glossary_terms(*, translation_domain: str, source_text: str) -> tuple[GlossaryTerm, ...]:
@@ -1582,6 +1832,7 @@ def _prepare_document_for_processing(
                         "conversion_backend": conversion_backend,
                     },
                 )
+    ai_first_fallback_state: dict[str, object] = {}
     document_map = (
         _run_document_map_stage(
             paragraphs=paragraphs,
@@ -1595,6 +1846,7 @@ def _prepare_document_for_processing(
             structure_repair_report=structure_repair_report,
             source_format=source_format,
             conversion_backend=conversion_backend,
+            fallback_state=ai_first_fallback_state,
         )
         if should_run_ai
         else None
@@ -1617,6 +1869,14 @@ def _prepare_document_for_processing(
         if should_run_ai
         else (None, StructureRecognitionSummary())
     )
+    if should_run_ai and not structure_summary.ai_first_degraded and bool(ai_first_fallback_state.get("ai_first_degraded", False)):
+        structure_summary = replace(
+            structure_summary,
+            ai_first_degraded=True,
+            fallback_stage=str(ai_first_fallback_state.get("fallback_stage", "") or ""),
+            fallback_reason=str(ai_first_fallback_state.get("fallback_reason", "") or ""),
+            document_map_present=bool(ai_first_fallback_state.get("document_map_present", False)),
+        )
     if should_run_ai and bool(app_config.get("structure_validation_enabled", True)):
         structure_validation_report = _run_structure_validation(
             paragraphs=paragraphs,
@@ -1629,7 +1889,7 @@ def _prepare_document_for_processing(
             structure_repair_report=structure_repair_report,
             document_map=document_map,
             outline_coverage_ratio=_compute_outline_coverage_ratio(paragraphs=paragraphs, document_map=document_map),
-            phase="post_ai",
+            phase="post_ai_readiness",
             source_format=source_format,
             conversion_backend=conversion_backend,
         )
@@ -1642,8 +1902,8 @@ def _prepare_document_for_processing(
     )
     if _supports_segment_detection(paragraphs):
         source_content_hash16 = hashlib.sha256(source_bytes).hexdigest()[:16]
-        segments, segment_diagnostics, structure_fingerprint = detect_document_segments(
-            paragraphs,
+        segments, segment_diagnostics, structure_fingerprint = _detect_document_segments_with_optional_phase(
+            paragraphs=paragraphs,
             source_content_hash16=source_content_hash16,
             chunk_size=chunk_size,
         )
@@ -1702,7 +1962,7 @@ def _prepare_document_for_processing(
     blocks = _build_semantic_blocks_with_optional_boundaries(
         paragraphs=paragraphs,
         max_chars=chunk_size,
-        relations=relations,
+        relations=None if structure_ai_attempted else relations,
         hard_boundary_paragraph_ids=hard_boundary_paragraph_ids,
     )
     quality_gate_status, quality_gate_reasons = _apply_first_block_composition_quality_gate(
@@ -1737,6 +1997,9 @@ def _prepare_document_for_processing(
         readiness_reasons=list(getattr(structure_validation_report, "readiness_reasons", ())),
         document_map_present=bool(getattr(structure_validation_report, "document_map_present", False)),
         outline_coverage_ratio=getattr(structure_validation_report, "outline_coverage_ratio", None),
+        ai_first_degraded=structure_summary.ai_first_degraded,
+        fallback_stage=structure_summary.fallback_stage,
+        fallback_reason=structure_summary.fallback_reason,
         quality_gate_status=quality_gate_status,
         quality_gate_reasons=list(quality_gate_reasons),
         ai_classified_count=structure_summary.ai_classified_count,

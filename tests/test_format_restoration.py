@@ -15,7 +15,7 @@ from docx.oxml.ns import qn
 from docx.shared import Inches
 from docx.shared import Pt
 
-from docxaicorrector.core.models import ParagraphUnit
+from docxaicorrector.core.models import ParagraphUnit, RelationNormalizationReport
 from docxaicorrector.document._document import build_document_text, extract_document_content_from_docx
 from docxaicorrector.generation.formatting_transfer import (
     _build_output_formatting_diagnostics,
@@ -339,6 +339,32 @@ def test_mapping_accepts_split_heading_target_for_merged_source_paragraph():
     assert accepted_target["heading_level"] == 3
     assert accepted_target["target_text_preview"] == "Миф (и потенциал) индивидуального богатства"
     assert accepted_target["source_text_preview"].startswith("Миф (и потенциал) индивидуального богатства")
+
+
+def test_map_source_target_paragraphs_passes_post_ai_final_phase_to_relation_inference(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_build_paragraph_relations(paragraphs, *, enabled_relation_kinds=None, structure_phase="post_ai_final"):
+        captured["structure_phase"] = structure_phase
+        return [], RelationNormalizationReport(
+            total_relations=0,
+            relation_counts={},
+            rejected_candidate_count=0,
+            decisions=[],
+        )
+
+    monkeypatch.setattr(formatting_transfer, "build_paragraph_relations", fake_build_paragraph_relations)
+    monkeypatch.setattr(formatting_transfer, "resolve_effective_relation_kinds", lambda: ())
+
+    source_paragraphs = [
+        ParagraphUnit(text="Contents", role="body", structural_role="body", paragraph_id="p0000")
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("Contents")
+
+    _map_source_target_paragraphs(source_paragraphs, target_doc.paragraphs)
+
+    assert captured == {"structure_phase": "post_ai_final"}
 
 
 def test_build_output_formatting_diagnostics_uses_real_mapping_instead_of_tail_count_mismatch():
@@ -1039,6 +1065,9 @@ def test_formatting_diagnostics_use_effective_relation_config(monkeypatch):
         for decision in cast(list[dict[str, object]], diagnostics.get("relation_decisions", []))
         if decision.get("decision") == "reject"
     ]
+    decision_entries = cast(list[dict[str, object]], diagnostics.get("relation_decisions", []))
+    assert decision_entries[0]["structure_phase"] == "post_ai_final"
+    assert decision_entries[0]["structure_source"] == "post_ai_final_binding"
     assert rejected_kinds == []
 
 

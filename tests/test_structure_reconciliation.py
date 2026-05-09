@@ -1,5 +1,7 @@
+import logging
 from types import SimpleNamespace
 
+import docxaicorrector.structure.reconciliation as structure_reconciliation
 from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, DocumentMapOutlineEntry, DocumentMapTocEntry, DocumentMapTocRegion, ParagraphClassification, ParagraphUnit, StructureMap
 from docxaicorrector.structure.reconciliation import ReconciliationReport, reconcile_with_document_map, targeted_reclassify_with_reconciliation_context
 
@@ -36,6 +38,8 @@ def test_reconcile_with_document_map_projects_high_confidence_heading_anchor():
     assert reconciled_map.classifications[10].role == "heading"
     assert reconciled_map.classifications[10].heading_level == 1
     assert report.patched_anchor_count == 1
+    assert report.anchor_disagreements_seen == (10,)
+    assert report.anchor_conflicts == (10,)
     assert report.missing_outline_entry_count == 0
     assert report.outline_coverage_ratio == 1.0
     assert report.patched_logical_indexes == (10,)
@@ -67,6 +71,8 @@ def test_reconcile_with_document_map_does_not_project_medium_confidence_anchor()
 
     assert reconciled_map.classifications[10].role == "body"
     assert report.patched_anchor_count == 0
+    assert report.anchor_disagreements_seen == (10,)
+    assert report.anchor_conflicts == (10,)
     assert report.missing_outline_entry_count == 1
     assert report.missing_outline_entries == (10,)
 
@@ -181,6 +187,103 @@ def test_reconcile_with_document_map_reports_front_matter_leak():
     assert report.front_matter_leaks == (1,)
 
 
+def test_reconcile_with_document_map_treats_anchored_front_matter_body_as_advisory():
+    paragraphs = [
+        _paragraph(source_index=0, logical_index=1, text="Вступление"),
+        _paragraph(source_index=1, logical_index=10, text="ГЛАВА 1"),
+    ]
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(DocumentMapOutlineEntry(title="ГЛАВА 1", level=1, logical_index=10, confidence="high", evidence=("bold",)),),
+        paragraph_anchors={
+            1: DocumentMapAnchor(role="body", heading_level=None, confidence="medium"),
+            10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high"),
+        },
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(1, 10),
+    )
+    structure_map = StructureMap(
+        classifications={
+            1: ParagraphClassification(index=1, role="body", heading_level=None, confidence="high"),
+            10: ParagraphClassification(index=10, role="heading", heading_level=1, confidence="high"),
+        },
+        model_used="gpt-4o-mini",
+        total_tokens_used=12,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+
+    _, report = reconcile_with_document_map(paragraphs, document_map, structure_map)
+
+    assert report.front_matter_leaks == ()
+    assert report.front_matter_body_advisories == (1,)
+
+
+def test_reconcile_with_document_map_reports_anchor_conflicts_for_targeted_recall_scope():
+    paragraphs = [_paragraph(source_index=0, logical_index=10, text="ГЛАВА 1")]
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(DocumentMapOutlineEntry(title="ГЛАВА 1", level=1, logical_index=10, confidence="high", evidence=("bold",)),),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+    structure_map = StructureMap(
+        classifications={10: ParagraphClassification(index=10, role="body", heading_level=None, confidence="medium")},
+        model_used="gpt-4o-mini",
+        total_tokens_used=12,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+
+    _, report = reconcile_with_document_map(paragraphs, document_map, structure_map)
+
+    assert report.anchor_disagreements_seen == (10,)
+    assert report.anchor_conflicts == (10,)
+
+
+def test_report_payload_includes_front_matter_body_advisories_as_context_only():
+    report = ReconciliationReport(
+        missing_outline_entries=(10,),
+        front_matter_body_advisories=(2,),
+        outline_coverage_ratio=0.5,
+    )
+
+    payload = structure_reconciliation._report_payload(report)
+
+    assert payload["front_matter_body_advisories"] == [2]
+    assert payload["anchor_disagreements_seen"] == []
+    assert payload["anchor_conflicts_deprecated"] is True
+    assert payload["anchor_conflicts_alias_of"] == "anchor_disagreements_seen"
+    assert payload["front_matter_leaks"] == []
+
+
+def test_select_targeted_paragraphs_does_not_select_advisories_only():
+    paragraphs = [
+        _paragraph(source_index=0, logical_index=1, text="Вступление"),
+        _paragraph(source_index=1, logical_index=10, text="ГЛАВА 1"),
+    ]
+    report = ReconciliationReport(front_matter_body_advisories=(1,))
+
+    selected = structure_reconciliation._select_targeted_paragraphs(
+        paragraphs,
+        report=report,
+        max_paragraphs=5,
+    )
+
+    assert selected == []
+
+
 def test_targeted_reclassify_with_reconciliation_context_updates_only_flagged_subset():
     paragraphs = [
         _paragraph(source_index=0, logical_index=8, text="Вступление"),
@@ -243,6 +346,64 @@ def test_targeted_reclassify_with_reconciliation_context_updates_only_flagged_su
     assert updated.classifications[10].heading_level == 1
     assert updated.classifications[8].role == "body"
     assert requested_payloads
+
+
+def test_targeted_reclassify_with_reconciliation_context_drops_out_of_scope_indexes(caplog):
+    paragraphs = [
+        _paragraph(source_index=0, logical_index=8, text="Вступление"),
+        _paragraph(source_index=1, logical_index=9, text="Перед главой"),
+        _paragraph(source_index=2, logical_index=10, text="ГЛАВА 1"),
+    ]
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(DocumentMapOutlineEntry(title="ГЛАВА 1", level=1, logical_index=10, confidence="high", evidence=("bold",)),),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(8, 9, 10),
+    )
+    structure_map = StructureMap(
+        classifications={
+            8: ParagraphClassification(index=8, role="body", heading_level=None, confidence="high"),
+            9: ParagraphClassification(index=9, role="body", heading_level=None, confidence="high"),
+            10: ParagraphClassification(index=10, role="body", heading_level=None, confidence="high"),
+        },
+        model_used="gpt-4o-mini",
+        total_tokens_used=12,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+    report = ReconciliationReport(missing_outline_entries=(10,), outline_coverage_ratio=0.0)
+
+    class _FakeResponses:
+        def create(self, *, model, input, timeout):
+            return SimpleNamespace(
+                output_text='[{"i": 10, "r": "heading", "l": 1, "c": "high", "reason": "matched outline"}, {"i": 999, "r": "heading", "l": 1, "c": "high", "reason": "hallucinated"}]',
+                usage=SimpleNamespace(total_tokens=55),
+            )
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    with caplog.at_level(logging.WARNING):
+        updated = targeted_reclassify_with_reconciliation_context(
+            paragraphs,
+            document_map,
+            structure_map,
+            report,
+            client=_FakeClient(),
+            model="gpt-4o-mini",
+            timeout=30.0,
+            max_paragraphs=3,
+        )
+
+    assert updated.classifications[10].role == "heading"
+    assert 999 not in updated.classifications
+    assert "out-of-scope targeted reconciliation classification" in caplog.text
 
 
 def test_reconcile_with_document_map_uses_logical_indexes_for_duplicate_source_indexes():

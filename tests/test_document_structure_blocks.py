@@ -59,6 +59,8 @@ def test_build_editing_jobs_uses_neighbor_blocks_for_context():
     assert jobs[1]["target_text"] == "Второй блок."
     assert jobs[1]["context_before"] == "Первый блок."
     assert jobs[1]["context_after"] == "Третий блок."
+    assert jobs[1]["structure_phase"] == "post_ai_final"
+    assert jobs[1]["structure_source"] == "post_ai_final_binding"
     assert all(str(job["target_text"]).strip() for job in jobs)
 
 
@@ -128,7 +130,7 @@ def test_build_semantic_blocks_uses_structural_hints_for_toc_grouping_without_re
         ParagraphUnit(text="Первый обычный абзац после содержания.", role="body", paragraph_id="p0003"),
     ]
 
-    blocks = build_semantic_blocks(paragraphs, max_chars=60, relations=[])
+    blocks = build_semantic_blocks(paragraphs, max_chars=60, relations=[], structure_phase="pre_ai_diagnostic")
 
     assert len(blocks) == 2
     assert [paragraph.text for paragraph in blocks[0].paragraphs] == [
@@ -136,6 +138,20 @@ def test_build_semantic_blocks_uses_structural_hints_for_toc_grouping_without_re
         "Глава 1........ 12",
         "Глава 2........ 18",
     ]
+
+
+def test_build_semantic_blocks_default_post_ai_mode_ignores_structural_hints_for_toc_grouping():
+    paragraphs = [
+        ParagraphUnit(text="Содержание", role="body", structural_role="body", paragraph_id="p0000", heuristic_structural_role_hint="toc_header"),
+        ParagraphUnit(text="Глава 1........ 12", role="body", structural_role="body", paragraph_id="p0001", heuristic_structural_role_hint="toc_entry"),
+        ParagraphUnit(text="Глава 2........ 18", role="body", structural_role="body", paragraph_id="p0002", heuristic_structural_role_hint="toc_entry"),
+        ParagraphUnit(text="Первый обычный абзац после содержания.", role="body", paragraph_id="p0003"),
+    ]
+
+    blocks = build_semantic_blocks(paragraphs, max_chars=60, relations=[])
+
+    assert len(blocks) >= 3
+    assert [paragraph.text for paragraph in blocks[0].paragraphs] == ["Содержание"]
 
 
 def test_build_semantic_blocks_respects_hard_boundary_paragraph_ids():
@@ -175,6 +191,20 @@ def test_build_editing_jobs_marks_toc_only_blocks_as_passthrough():
     assert jobs[0]["toc_paragraph_count"] == 3
     assert jobs[0]["structural_roles"] == ["toc_header", "toc_entry", "toc_entry"]
     assert jobs[0]["narration_include"] is False
+
+
+def test_build_editing_jobs_marks_advisory_pre_ai_structure_source():
+    paragraphs = [
+        ParagraphUnit(text="Contents", role="body", structural_role="body", paragraph_id="p0000", heuristic_structural_role_hint="toc_header"),
+        ParagraphUnit(text="Chapter 1........12", role="body", structural_role="body", paragraph_id="p0001", heuristic_structural_role_hint="toc_entry"),
+        ParagraphUnit(text="Chapter 2........18", role="body", structural_role="body", paragraph_id="p0002", heuristic_structural_role_hint="toc_entry"),
+    ]
+
+    blocks = build_semantic_blocks(paragraphs, max_chars=80, relations=[], structure_phase="pre_ai_diagnostic")
+    jobs = build_editing_jobs(blocks, max_chars=3000, structure_phase="pre_ai_diagnostic")
+
+    assert jobs[0]["structure_phase"] == "pre_ai_diagnostic"
+    assert jobs[0]["structure_source"] == "pre_ai_diagnostic_hint"
 
 
 def test_build_editing_jobs_routes_toc_only_blocks_through_llm_in_translate_mode():
@@ -463,10 +493,49 @@ def test_build_paragraph_relations_detects_toc_region_from_structural_hints():
         ParagraphUnit(text="Глава 2........ 18", role="body", structural_role="body", paragraph_id="p0002", heuristic_structural_role_hint="toc_entry"),
     ]
 
-    relations, report = build_paragraph_relations(paragraphs)
+    relations, report = build_paragraph_relations(paragraphs, structure_phase="pre_ai_diagnostic")
 
     assert [relation.relation_kind for relation in relations] == ["toc_region"]
     assert report.relation_counts == {"toc_region": 1}
+
+
+def test_build_paragraph_relations_detects_text_only_toc_region_in_pre_ai_diagnostic():
+    paragraphs = [
+        ParagraphUnit(text="Contents", role="body", structural_role="body", paragraph_id="p0000"),
+        ParagraphUnit(text="Chapter 1........12", role="body", structural_role="body", paragraph_id="p0001"),
+        ParagraphUnit(text="Chapter 2........18", role="body", structural_role="body", paragraph_id="p0002"),
+    ]
+
+    relations, report = build_paragraph_relations(paragraphs, structure_phase="pre_ai_diagnostic")
+
+    assert [relation.relation_kind for relation in relations] == ["toc_region"]
+    assert report.relation_counts == {"toc_region": 1}
+
+
+def test_build_paragraph_relations_default_post_ai_mode_ignores_structural_hints():
+    paragraphs = [
+        ParagraphUnit(text="Содержание", role="body", structural_role="body", paragraph_id="p0000", heuristic_structural_role_hint="toc_header"),
+        ParagraphUnit(text="Глава 1........ 12", role="body", structural_role="body", paragraph_id="p0001", heuristic_structural_role_hint="toc_entry"),
+        ParagraphUnit(text="Глава 2........ 18", role="body", structural_role="body", paragraph_id="p0002", heuristic_structural_role_hint="toc_entry"),
+    ]
+
+    relations, report = build_paragraph_relations(paragraphs)
+
+    assert relations == []
+    assert report.relation_counts == {}
+
+
+def test_build_paragraph_relations_default_post_ai_mode_ignores_text_only_toc_heuristics():
+    paragraphs = [
+        ParagraphUnit(text="Contents", role="body", structural_role="body", paragraph_id="p0000"),
+        ParagraphUnit(text="Chapter 1........12", role="body", structural_role="body", paragraph_id="p0001"),
+        ParagraphUnit(text="Chapter 2........18", role="body", structural_role="body", paragraph_id="p0002"),
+    ]
+
+    relations, report = build_paragraph_relations(paragraphs)
+
+    assert relations == []
+    assert report.relation_counts == {}
 
 
 def test_build_paragraph_relations_records_rejected_caption_candidate():

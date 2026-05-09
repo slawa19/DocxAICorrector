@@ -402,7 +402,10 @@ def test_extract_document_content_from_docx_splits_toc_like_inline_break_cluster
     doc.save(buffer)
     buffer.seek(0)
 
-    paragraphs, _ = extract_document_content_from_docx(buffer)
+    paragraphs, _, _, _, _, _, _ = document.extract_document_content_with_normalization_reports(
+        buffer,
+        app_config={"structure_recovery_enabled": True, "structure_recovery_mode": "ai_first"},
+    )
 
     assert [paragraph.text for paragraph in paragraphs] == [
         "Contents",
@@ -411,6 +414,12 @@ def test_extract_document_content_from_docx_splits_toc_like_inline_break_cluster
         "Meet the Production Boundary",
     ]
     assert [paragraph.structural_role for paragraph in paragraphs] == [
+        "body",
+        "body",
+        "body",
+        "body",
+    ]
+    assert [paragraph.heuristic_structural_role_hint for paragraph in paragraphs] == [
         "toc_header",
         "toc_entry",
         "toc_entry",
@@ -470,7 +479,10 @@ def test_extract_document_content_from_docx_splits_compact_toc_run_clusters_with
     doc.save(buffer)
     buffer.seek(0)
 
-    paragraphs, _ = extract_document_content_from_docx(buffer)
+    paragraphs, _, _, _, _, _, _ = document.extract_document_content_with_normalization_reports(
+        buffer,
+        app_config={"structure_recovery_enabled": True, "structure_recovery_mode": "ai_first"},
+    )
 
     assert [paragraph.text for paragraph in paragraphs] == [
         "Contents",
@@ -478,6 +490,11 @@ def test_extract_document_content_from_docx_splits_compact_toc_run_clusters_with
         "The Banking Problem",
     ]
     assert [paragraph.structural_role for paragraph in paragraphs] == [
+        "body",
+        "body",
+        "body",
+    ]
+    assert [paragraph.heuristic_structural_role_hint for paragraph in paragraphs] == [
         "toc_header",
         "toc_entry",
         "toc_entry",
@@ -495,7 +512,10 @@ def test_extract_document_content_from_docx_splits_long_two_entry_compact_toc_ru
     doc.save(buffer)
     buffer.seek(0)
 
-    paragraphs, _ = extract_document_content_from_docx(buffer)
+    paragraphs, _, _, _, _, _, _ = document.extract_document_content_with_normalization_reports(
+        buffer,
+        app_config={"structure_recovery_enabled": True, "structure_recovery_mode": "ai_first"},
+    )
 
     assert [paragraph.text for paragraph in paragraphs] == [
         "Contents",
@@ -503,7 +523,39 @@ def test_extract_document_content_from_docx_splits_long_two_entry_compact_toc_ru
         "Patching Up the National Accounts isn't Enough",
     ]
     assert [paragraph.structural_role for paragraph in paragraphs] == [
+        "body",
+        "body",
+        "body",
+    ]
+    assert [paragraph.heuristic_structural_role_hint for paragraph in paragraphs] == [
         "toc_header",
+        "toc_entry",
+        "toc_entry",
+    ]
+
+
+def test_extract_document_content_with_normalization_reports_legacy_projects_toc_roles_from_inline_break_cluster(tmp_path):
+    doc = Document()
+    doc.add_paragraph("Contents")
+    paragraph = doc.add_paragraph()
+    paragraph.add_run("Common Critiques of Value Extraction")
+    paragraph.add_run().add_break()
+    paragraph.add_run("What is Value?")
+    paragraph.add_run().add_break()
+    paragraph.add_run("Meet the Production Boundary")
+
+    source_path = tmp_path / "legacy-inline-break-toc.docx"
+    doc.save(source_path)
+
+    with source_path.open("rb") as source_file:
+        paragraphs, _, _, _, _, _, _ = extract_document_content_with_normalization_reports(
+            source_file,
+            app_config={"structure_recovery_enabled": True, "structure_recovery_mode": "legacy"},
+        )
+
+    assert [paragraph.structural_role for paragraph in paragraphs] == [
+        "toc_header",
+        "toc_entry",
         "toc_entry",
         "toc_entry",
     ]

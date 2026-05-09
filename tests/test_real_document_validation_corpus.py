@@ -170,6 +170,7 @@ def test_build_preparation_diagnostic_defaults_includes_spec_acceptance_fields()
                 "context": {
                     "front_matter_leaks": [1, 3],
                     "outline_coverage_ratio": 0.75,
+                        "front_matter_body_advisories": [2],
                     "targeted_recall_invoked": True,
                 },
             },
@@ -179,6 +180,7 @@ def test_build_preparation_diagnostic_defaults_includes_spec_acceptance_fields()
     assert snapshot["document_map_present"] is True
     assert snapshot["outline_coverage_ratio"] == 0.75
     assert snapshot["front_matter_leaks"] == [1, 3]
+    assert snapshot["front_matter_body_advisories"] == [2]
     assert snapshot["targeted_recall_invoked"] is True
 
 

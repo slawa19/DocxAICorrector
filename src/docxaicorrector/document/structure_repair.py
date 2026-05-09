@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 
 from docxaicorrector.document.roles import detect_explicit_list_kind, has_heading_text_signal
 from docxaicorrector.core.models import EmbeddedStructureHint, ParagraphUnit, StructureRepairDecision, StructureRepairReport
+from docxaicorrector.core.models import normalize_heuristic_list_kind_hint, normalize_heuristic_role_hint, normalize_heuristic_structural_role_hint
 
 
 _TOC_HEADER_VALUES = {"contents", "table of contents", "содержание"}
@@ -151,10 +152,10 @@ def _merge_list_fragments(
         following = repaired[index + 1]
         marker_kind = _isolated_marker_kind(current)
         if marker_kind is not None and _can_merge_marker_with_following(current, following):
-            if following.heuristic_role_hint == "list" and following.heuristic_list_kind_hint == marker_kind:
+            if normalize_heuristic_role_hint(following.heuristic_role_hint) == "list" and normalize_heuristic_list_kind_hint(following.heuristic_list_kind_hint) == marker_kind:
                 index += 1
                 continue
-            _apply_or_hint_list_candidate(following, list_kind=marker_kind, signal_only=True)
+            _apply_or_hint_list_candidate(following, list_kind=marker_kind, signal_only=signal_only)
             decisions.append(
                 StructureRepairDecision(
                     action="hint_isolated_list_marker",
@@ -170,7 +171,7 @@ def _merge_list_fragments(
         if fragment_kind is None or not _can_merge_marker_with_following(current, following):
             index += 1
             continue
-        _apply_or_hint_list_candidate(current, list_kind=fragment_kind, signal_only=True)
+        _apply_or_hint_list_candidate(current, list_kind=fragment_kind, signal_only=signal_only)
         decisions.append(
             StructureRepairDecision(
                 action="hint_split_list_lead_fragment",
@@ -186,7 +187,7 @@ def _merge_list_fragments(
 def _split_list_lead_fragment_kind(paragraph: ParagraphUnit) -> str | None:
     if paragraph.role == "heading":
         return None
-    if paragraph.heuristic_role_hint == "list" or paragraph.heuristic_list_kind_hint is not None:
+    if normalize_heuristic_role_hint(paragraph.heuristic_role_hint) == "list" or normalize_heuristic_list_kind_hint(paragraph.heuristic_list_kind_hint) is not None:
         return None
     text = str(paragraph.text or "").strip()
     explicit_kind = detect_explicit_list_kind(text)
@@ -240,14 +241,16 @@ def _find_bounded_toc_regions(paragraphs: Sequence[ParagraphUnit], *, signal_onl
 
 
 def _apply_or_hint_toc_structural_role(paragraph: ParagraphUnit, *, structural_role: str, signal_only: bool) -> None:
-    paragraph.heuristic_structural_role_hint = structural_role
+    paragraph.heuristic_structural_role_hint = normalize_heuristic_structural_role_hint(structural_role)
+    if signal_only:
+        return
     paragraph.role = "body"
     paragraph.heading_level = None
     paragraph.heading_source = None
 
 
 def _effective_structural_role(paragraph: ParagraphUnit) -> str:
-    return paragraph.heuristic_structural_role_hint or paragraph.structural_role
+    return normalize_heuristic_structural_role_hint(paragraph.heuristic_structural_role_hint) or paragraph.structural_role
 
 
 def _collect_toc_title_variants(paragraphs: Sequence[ParagraphUnit], *, start: int, end: int) -> dict[str, str]:
@@ -320,10 +323,10 @@ def _build_embedded_structure_hints(split_paragraphs: Sequence[ParagraphUnit]) -
         hints.append(
             EmbeddedStructureHint(
                 text=paragraph.text,
-                role=paragraph.heuristic_role_hint or paragraph.role,
-                structural_role=paragraph.heuristic_structural_role_hint or paragraph.structural_role,
+                role=normalize_heuristic_role_hint(paragraph.heuristic_role_hint) or paragraph.role,
+                structural_role=normalize_heuristic_structural_role_hint(paragraph.heuristic_structural_role_hint) or paragraph.structural_role,
                 heading_level=paragraph.heuristic_heading_level_hint or paragraph.heading_level,
-                list_kind=paragraph.heuristic_list_kind_hint or paragraph.list_kind,
+                list_kind=normalize_heuristic_list_kind_hint(paragraph.heuristic_list_kind_hint) or paragraph.list_kind,
             )
         )
     return hints
@@ -466,7 +469,9 @@ def _clone_with_role(paragraph: ParagraphUnit, text: str, *, structural_role: st
     clone.text = text.strip()
     clone.role = "body"
     clone.structural_role = "body" if signal_only else structural_role
-    clone.heuristic_structural_role_hint = structural_role if signal_only and structural_role != "body" else None
+    clone.heuristic_structural_role_hint = (
+        normalize_heuristic_structural_role_hint(structural_role) if signal_only and structural_role != "body" else None
+    )
     clone.heading_level = None
     clone.heading_source = None
     clone.list_kind = None
@@ -490,8 +495,10 @@ def _clone_as_heading(paragraph: ParagraphUnit, text: str, *, signal_only: bool)
 
 
 def _apply_or_hint_heading_candidate(paragraph: ParagraphUnit, *, signal_only: bool) -> None:
-    paragraph.heuristic_role_hint = "heading"
+    paragraph.heuristic_role_hint = normalize_heuristic_role_hint("heading")
     paragraph.heuristic_heading_level_hint = paragraph.heading_level or 2
+    if signal_only:
+        return
     paragraph.role = "body"
     paragraph.structural_role = "body"
     paragraph.heading_source = None
@@ -506,8 +513,10 @@ def _clone_as_list(paragraph: ParagraphUnit, text: str, *, list_kind: str, signa
 
 
 def _apply_or_hint_list_candidate(paragraph: ParagraphUnit, *, list_kind: str, signal_only: bool) -> None:
-    paragraph.heuristic_role_hint = "list"
-    paragraph.heuristic_list_kind_hint = list_kind
+    paragraph.heuristic_role_hint = normalize_heuristic_role_hint("list")
+    paragraph.heuristic_list_kind_hint = normalize_heuristic_list_kind_hint(list_kind)
+    if signal_only:
+        return
     paragraph.role = "body"
     paragraph.structural_role = "body"
     paragraph.list_kind = None

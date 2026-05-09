@@ -688,6 +688,7 @@ def _map_source_target_paragraphs(
     accepted_relations, relation_report = build_paragraph_relations(
         source_paragraphs,
         enabled_relation_kinds=resolve_effective_relation_kinds(),
+        structure_phase="post_ai_final",
     )
     relation_ids_by_paragraph: dict[str, list[str]] = {}
     for relation in accepted_relations:
@@ -800,6 +801,8 @@ def _map_source_target_paragraphs(
                 "member_paragraph_ids": list(decision.member_paragraph_ids),
                 "anchor_asset_id": decision.anchor_asset_id,
                 "reasons": list(decision.reasons),
+                "structure_phase": decision.structure_phase,
+                "structure_source": decision.structure_source,
             }
             for decision in relation_report.decisions
         ],

@@ -1,6 +1,6 @@
 import re
 
-from docxaicorrector.core.models import ParagraphUnit
+from docxaicorrector.core.models import ParagraphUnit, normalize_heuristic_role_hint
 
 
 CAPTION_PREFIX_PATTERN = re.compile(r"^(?:рис\.?|рисунок|figure|fig\.?|табл\.?|таблица|table)\b", re.IGNORECASE)
@@ -301,7 +301,7 @@ def _apply_or_hint_short_heading(paragraph: ParagraphUnit, *, heading_level: int
     if ai_first_mode:
         if paragraph.role == "heading" and (paragraph.heading_source == "explicit" or paragraph.role_confidence == "explicit"):
             return
-        paragraph.heuristic_role_hint = "heading"
+        paragraph.heuristic_role_hint = normalize_heuristic_role_hint("heading")
         paragraph.heuristic_heading_level_hint = heading_level
         return
     paragraph.role = "heading"
@@ -330,7 +330,7 @@ def reclassify_adjacent_captions(
             if paragraph.role == "heading" and paragraph.heading_source != "heuristic":
                 continue
             if ai_first_mode:
-                paragraph.heuristic_role_hint = "caption"
+                paragraph.heuristic_role_hint = normalize_heuristic_role_hint("caption")
                 paragraph.heuristic_heading_level_hint = None
                 continue
             paragraph.role = "caption"

@@ -7,6 +7,7 @@ import re
 from collections.abc import Mapping, Sequence
 
 from docxaicorrector.core.models import ParagraphUnit
+from docxaicorrector.document.structure_authority import get_effective_structural_role
 from docxaicorrector.document.roles import has_heading_text_signal, infer_heuristic_heading_level
 from docxaicorrector.document.structure_repair import _collect_toc_title_variants, _match_normalized_toc_title_prefix, _normalize_outline_text
 
@@ -215,12 +216,13 @@ def detect_document_segments(
     source_content_hash16: str,
     chunk_size: int,
     detector_version: str = CHAPTER_SEGMENTS_DETECTOR_VERSION,
+    structure_phase: str = "post_ai_final",
 ) -> tuple[list[DocumentSegment], SegmentDetectionReport, str]:
     paragraph_list = list(paragraphs)
     if not paragraph_list:
         return [], SegmentDetectionReport(), _build_structure_fingerprint(())
 
-    toc_regions = _collect_toc_regions(paragraph_list)
+    toc_regions = _collect_toc_regions(paragraph_list, structure_phase=structure_phase)
     toc_title_variants: dict[str, str] = {}
     for start_index, end_index in toc_regions:
         toc_title_variants.update(_collect_toc_title_variants(paragraph_list, start=start_index, end=end_index))
@@ -308,7 +310,7 @@ def detect_document_segments(
         medium_confidence_count=sum(1 for segment in segments_with_parents if segment.confidence == "medium"),
         low_confidence_count=sum(1 for segment in segments_with_parents if segment.confidence == "low"),
         fallback_segment_count=sum(1 for segment in segments_with_parents if _is_fallback_segment(segment)),
-        toc_entry_count=sum(1 for paragraph in paragraph_list if _is_toc_structural_role(paragraph)),
+        toc_entry_count=sum(1 for paragraph in paragraph_list if _is_toc_structural_role(paragraph, structure_phase=structure_phase)),
         toc_matched_count=sum(1 for candidate in heading_candidates if candidate.toc_matched),
         warnings=warnings,
     )
@@ -427,15 +429,15 @@ def validate_segment_coverage(
     return tuple(warnings)
 
 
-def _collect_toc_regions(paragraphs: Sequence[ParagraphUnit]) -> list[tuple[int, int]]:
+def _collect_toc_regions(paragraphs: Sequence[ParagraphUnit], *, structure_phase: str) -> list[tuple[int, int]]:
     regions: list[tuple[int, int]] = []
     index = 0
     while index < len(paragraphs):
-        if not _is_toc_structural_role(paragraphs[index]):
+        if not _is_toc_structural_role(paragraphs[index], structure_phase=structure_phase):
             index += 1
             continue
         region_start = index
-        while index + 1 < len(paragraphs) and _is_toc_structural_role(paragraphs[index + 1]):
+        while index + 1 < len(paragraphs) and _is_toc_structural_role(paragraphs[index + 1], structure_phase=structure_phase):
             index += 1
         regions.append((region_start, index))
         index += 1
@@ -878,7 +880,7 @@ def _resolve_range_structural_role(
     default_role: str,
 ) -> str:
     selected = list(paragraphs[start_index : end_index + 1])
-    if selected and all(_is_toc_structural_role(paragraph) for paragraph in selected):
+    if selected and all(_is_toc_structural_role(paragraph, structure_phase="post_ai_final") for paragraph in selected):
         return "toc"
     if selected and all(
         str(getattr(paragraph, "structural_role", "") or "").strip().lower() in {"epigraph", "attribution", "dedication", "body"}
@@ -928,10 +930,8 @@ def _is_all_caps_text(text: str) -> bool:
     return "".join(alpha_chars).upper() == "".join(alpha_chars)
 
 
-def _is_toc_structural_role(paragraph: ParagraphUnit) -> bool:
-    return str(
-        getattr(paragraph, "heuristic_structural_role_hint", "") or getattr(paragraph, "structural_role", "") or ""
-    ).strip().lower() in {"toc_header", "toc_entry"}
+def _is_toc_structural_role(paragraph: ParagraphUnit, *, structure_phase: str) -> bool:
+    return get_effective_structural_role(paragraph, phase=structure_phase) in {"toc_header", "toc_entry"}
 
 
 def _resolve_paragraph_id(paragraph: ParagraphUnit, *, fallback_index: int) -> str:

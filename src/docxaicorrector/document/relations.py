@@ -3,6 +3,7 @@ import json
 import re
 from pathlib import Path
 
+from docxaicorrector.document.structure_authority import get_effective_structural_role, phase_uses_advisory_hints
 from docxaicorrector.runtime.artifact_retention import prune_artifact_dir
 from docxaicorrector.core.models import (
     RELATION_NORMALIZATION_KIND_VALUES,
@@ -27,6 +28,7 @@ def build_paragraph_relations(
     paragraphs: list[ParagraphUnit],
     *,
     enabled_relation_kinds: tuple[str, ...] | list[str] | set[str] | None = None,
+    structure_phase: str = "post_ai_final",
 ) -> tuple[list[ParagraphRelation], RelationNormalizationReport]:
     relations: list[ParagraphRelation] = []
     decisions: list[ParagraphRelationDecision] = []
@@ -34,6 +36,7 @@ def build_paragraph_relations(
     rejected_candidate_count = 0
     next_relation_id = 1
     enabled_kinds = set(enabled_relation_kinds or RELATION_NORMALIZATION_KIND_VALUES)
+    decision_structure_source = _relation_structure_source(structure_phase)
 
     def append_relation(
         *,
@@ -63,6 +66,8 @@ def build_paragraph_relations(
                 member_paragraph_ids=member_paragraph_ids,
                 anchor_asset_id=anchor_asset_id,
                 reasons=rationale,
+                structure_phase=structure_phase,
+                structure_source=decision_structure_source,
             )
         )
 
@@ -82,6 +87,8 @@ def build_paragraph_relations(
                 member_paragraph_ids=member_paragraph_ids,
                 anchor_asset_id=anchor_asset_id,
                 reasons=reasons,
+                structure_phase=structure_phase,
+                structure_source=decision_structure_source,
             )
         )
 
@@ -142,8 +149,8 @@ def build_paragraph_relations(
             right_paragraph_id = getattr(right, "paragraph_id", None)
             if not left_paragraph_id or not right_paragraph_id:
                 continue
-            if not _is_epigraph_relation_candidate(left, right):
-                rejection_reasons = _epigraph_relation_rejection_reasons(left, right)
+            if not _is_epigraph_relation_candidate(left, right, structure_phase=structure_phase):
+                rejection_reasons = _epigraph_relation_rejection_reasons(left, right, structure_phase=structure_phase)
                 if rejection_reasons:
                     append_rejection(
                         relation_kind="epigraph_attribution",
@@ -160,10 +167,10 @@ def build_paragraph_relations(
     index = 0
     while index < len(paragraphs):
         paragraph = paragraphs[index]
-        if _is_toc_header_paragraph(paragraph):
+        if _is_toc_header_paragraph(paragraph, structure_phase=structure_phase):
             member_indexes = [index]
             look_ahead = index + 1
-            while look_ahead < len(paragraphs) and _is_toc_entry_paragraph(paragraphs[look_ahead]):
+            while look_ahead < len(paragraphs) and _is_toc_entry_paragraph(paragraphs[look_ahead], structure_phase=structure_phase):
                 member_indexes.append(look_ahead)
                 look_ahead += 1
             if len(member_indexes) >= 2:
@@ -183,10 +190,10 @@ def build_paragraph_relations(
                 reasons=("toc_header_without_entries",),
             )
 
-        if _is_toc_entry_paragraph(paragraph):
+        if _is_toc_entry_paragraph(paragraph, structure_phase=structure_phase):
             member_indexes = [index]
             look_ahead = index + 1
-            while look_ahead < len(paragraphs) and _is_toc_entry_paragraph(paragraphs[look_ahead]):
+            while look_ahead < len(paragraphs) and _is_toc_entry_paragraph(paragraphs[look_ahead], structure_phase=structure_phase):
                 member_indexes.append(look_ahead)
                 look_ahead += 1
             if len(member_indexes) >= 2:
@@ -285,13 +292,13 @@ def _is_likely_caption_candidate_for_relation(paragraph: ParagraphUnit) -> bool:
     return _is_likely_caption_text(paragraph.text)
 
 
-def _is_epigraph_relation_candidate(left: ParagraphUnit, right: ParagraphUnit) -> bool:
+def _is_epigraph_relation_candidate(left: ParagraphUnit, right: ParagraphUnit, *, structure_phase: str) -> bool:
     left_role = getattr(left, "role", None)
     right_role = getattr(right, "role", None)
     if left_role in {"image", "table", "caption", "list"} or right_role in {"image", "table", "caption", "list"}:
         return False
-    left_structural = _paragraph_structural_kind(left)
-    right_structural = _paragraph_structural_kind(right)
+    left_structural = _paragraph_structural_kind(left, structure_phase=structure_phase)
+    right_structural = _paragraph_structural_kind(right, structure_phase=structure_phase)
     if left_structural == "epigraph" and right_structural == "attribution":
         return True
     if left_structural == "epigraph" and _is_likely_attribution_text(str(getattr(right, "text", ""))):
@@ -301,11 +308,11 @@ def _is_epigraph_relation_candidate(left: ParagraphUnit, right: ParagraphUnit) -
     return False
 
 
-def _epigraph_relation_rejection_reasons(left: ParagraphUnit, right: ParagraphUnit) -> tuple[str, ...]:
+def _epigraph_relation_rejection_reasons(left: ParagraphUnit, right: ParagraphUnit, *, structure_phase: str) -> tuple[str, ...]:
     left_role = getattr(left, "role", None)
     right_role = getattr(right, "role", None)
-    left_structural = _paragraph_structural_kind(left)
-    right_structural = _paragraph_structural_kind(right)
+    left_structural = _paragraph_structural_kind(left, structure_phase=structure_phase)
+    right_structural = _paragraph_structural_kind(right, structure_phase=structure_phase)
     right_text = str(getattr(right, "text", ""))
     reasons: list[str] = []
 
@@ -321,26 +328,27 @@ def _epigraph_relation_rejection_reasons(left: ParagraphUnit, right: ParagraphUn
     return tuple(reasons)
 
 
-def _is_toc_header_paragraph(paragraph: ParagraphUnit) -> bool:
-    return _paragraph_structural_kind(paragraph) == "toc_header" or str(getattr(paragraph, "text", "")).strip().lower() in {
+def _is_toc_header_paragraph(paragraph: ParagraphUnit, *, structure_phase: str) -> bool:
+    if _paragraph_structural_kind(paragraph, structure_phase=structure_phase) == "toc_header":
+        return True
+    if not phase_uses_advisory_hints(structure_phase):
+        return False
+    return str(getattr(paragraph, "text", "")).strip().lower() in {
         "содержание",
         "contents",
     }
 
 
-def _is_toc_entry_paragraph(paragraph: ParagraphUnit) -> bool:
-    if _paragraph_structural_kind(paragraph) == "toc_entry":
+def _is_toc_entry_paragraph(paragraph: ParagraphUnit, *, structure_phase: str) -> bool:
+    if _paragraph_structural_kind(paragraph, structure_phase=structure_phase) == "toc_entry":
         return True
+    if not phase_uses_advisory_hints(structure_phase):
+        return False
     return _is_likely_toc_entry_text(str(getattr(paragraph, "text", "")))
 
 
-def _paragraph_structural_kind(paragraph: ParagraphUnit) -> str:
-    return str(
-        getattr(paragraph, "heuristic_structural_role_hint", None)
-        or getattr(paragraph, "structural_role", None)
-        or getattr(paragraph, "role", None)
-        or ""
-    ).strip().lower()
+def _paragraph_structural_kind(paragraph: ParagraphUnit, *, structure_phase: str) -> str:
+    return get_effective_structural_role(paragraph, phase=structure_phase)
 
 
 def _is_likely_attribution_text(text: str) -> bool:
@@ -350,6 +358,10 @@ def _is_likely_attribution_text(text: str) -> bool:
 
 def _is_likely_toc_entry_text(text: str) -> bool:
     return TOC_ENTRY_PATTERN.match(text.strip()) is not None
+
+
+def _relation_structure_source(structure_phase: str) -> str:
+    return "pre_ai_diagnostic_hint" if phase_uses_advisory_hints(structure_phase) else "post_ai_final_binding"
 
 
 def _is_likely_caption_text(text: str) -> bool:

@@ -43,6 +43,39 @@ def _build_cleanup_report(*, original=0, cleaned=0, removed=0, page_numbers=0, r
     )
 
 
+def _build_default_prepared_source_key(file_token: str, chunk_size: int = 6000) -> str:
+    app_config = preparation.load_app_config()
+    configured_relation_kinds = app_config.get("relation_normalization_enabled_relation_kinds", ())
+    if not isinstance(configured_relation_kinds, (list, tuple, set)):
+        configured_relation_kinds = ()
+    relation_key = (
+        f"{str(app_config.get('relation_normalization_profile', 'phase2_default') or 'phase2_default')}:"
+        f"{','.join(sorted(str(kind) for kind in configured_relation_kinds))}"
+    )
+    return preparation.build_prepared_source_key(
+        file_token,
+        chunk_size,
+        paragraph_boundary_normalization_mode=str(
+            app_config.get("paragraph_boundary_normalization_mode", "high_only") or "high_only"
+        ),
+        paragraph_boundary_ai_review_mode=str(app_config.get("paragraph_boundary_ai_review_mode", "off") or "off"),
+        relation_normalization_key=relation_key,
+        layout_artifact_cleanup_key=preparation._resolve_layout_cleanup_cache_key(app_config),
+        structure_recognition_enabled=bool(app_config.get("structure_recognition_enabled", False)),
+        structure_recognition_mode=str(app_config.get("structure_recognition_mode", "") or ""),
+        structure_recovery_enabled=bool(app_config.get("structure_recovery_enabled", False)),
+        structure_recovery_mode=str(app_config.get("structure_recovery_mode", "ai_first") or "ai_first"),
+        structure_recovery_coordinate_schema_version=int(
+            app_config.get(
+                "structure_recovery_coordinate_schema_version",
+                preparation.STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION,
+            )
+            or preparation.STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION
+        ),
+        structure_validation_enabled=bool(app_config.get("structure_validation_enabled", True)),
+    )
+
+
 def test_build_layout_cleanup_status_note_includes_empty_paragraphs():
     note = preparation.build_layout_cleanup_status_note(
         LayoutArtifactCleanupReport(
@@ -579,6 +612,40 @@ def test_build_document_map_cache_key_includes_embedded_structure_hints():
     key_b = preparation._build_document_map_cache_key(paragraphs=[paragraph_b], app_config=app_config)
 
     assert key_a != key_b
+
+
+def test_build_document_map_cache_key_ignores_invalid_hint_values_that_normalize_away():
+    paragraph_a = _build_paragraph(source_index=2, text="Compound paragraph")
+    paragraph_b = _build_paragraph(source_index=2, text="Compound paragraph")
+    paragraph_a.logical_index = 2
+    paragraph_b.logical_index = 2
+    paragraph_a.heuristic_role_hint = "not-a-role"
+    paragraph_a.heuristic_structural_role_hint = "not-a-structural-role"
+    paragraph_a.heuristic_list_kind_hint = "not-a-list-kind"
+    paragraph_a.heuristic_embedded_structure_hints = [
+        EmbeddedStructureHint(
+            text="Introduction",
+            role="not-a-role",
+            structural_role="not-a-structural-role",
+            list_kind="not-a-list-kind",
+        )
+    ]
+    paragraph_b.heuristic_embedded_structure_hints = [EmbeddedStructureHint(text="Introduction")]
+
+    app_config = {
+        "structure_recovery_enabled": True,
+        "structure_recovery_mode": "ai_first",
+        "structure_recovery_coordinate_schema_version": 1,
+        "structure_recovery_document_map_model": "openrouter:test/document-map",
+        "structure_recovery_document_map_max_input_paragraphs": 6000,
+        "structure_recovery_document_map_max_input_tokens": 180000,
+        "structure_recovery_document_map_preview_chars": 120,
+    }
+
+    key_a = preparation._build_document_map_cache_key(paragraphs=[paragraph_a], app_config=app_config)
+    key_b = preparation._build_document_map_cache_key(paragraphs=[paragraph_b], app_config=app_config)
+
+    assert key_a == key_b
 
 
 def test_build_document_map_cache_key_includes_prompt_and_descriptor_versions(monkeypatch):
@@ -1207,10 +1274,29 @@ def test_detect_document_segments_counts_hinted_toc_entries():
         paragraphs,
         source_content_hash16="abcd1234ef567890",
         chunk_size=6000,
+        structure_phase="pre_ai_diagnostic",
     )
 
     assert diagnostics.toc_entry_count == 2
     assert diagnostics.toc_matched_count >= 1
+
+
+def test_detect_document_segments_ignores_advisory_toc_hints_in_post_ai_final_phase():
+    paragraphs = [
+        ParagraphUnit(text="Contents", role="body", structural_role="body", paragraph_id="p0000", source_index=0, heuristic_structural_role_hint="toc_header"),
+        ParagraphUnit(text="1 Chapter 1", role="body", structural_role="body", paragraph_id="p0001", source_index=1, heuristic_structural_role_hint="toc_entry"),
+        ParagraphUnit(text="Chapter 1", role="heading", heading_level=1, heading_source="explicit", paragraph_id="p0002", source_index=2),
+        ParagraphUnit(text="First chapter body", role="body", paragraph_id="p0003", source_index=3),
+    ]
+
+    _segments, diagnostics, _structure_fingerprint = preparation.detect_document_segments(
+        paragraphs,
+        source_content_hash16="abcd1234ef567890",
+        chunk_size=6000,
+        structure_phase="post_ai_final",
+    )
+
+    assert diagnostics.toc_entry_count == 0
 
 
 def test_prepare_document_for_processing_maps_jobs_for_split_oversized_heading_segments(monkeypatch):
@@ -1462,6 +1548,10 @@ def test_prepare_document_for_processing_clones_comparison_variants_independentl
 
 def test_prepare_document_for_processing_limits_session_cache_size(monkeypatch):
     session_state = {"preparation_cache": {}}
+    expected_keys = [
+        _build_default_prepared_source_key("two:3:b"),
+        _build_default_prepared_source_key("three:5:c"),
+    ]
 
     monkeypatch.setattr(preparation, "extract_document_content_with_normalization_reports", lambda uploaded_file: _build_extract_result([], [], None))
     monkeypatch.setattr(preparation, "extract_document_content_with_normalization_reports", lambda uploaded_file: _build_extract_result([], [], None))
@@ -1485,10 +1575,7 @@ def test_prepare_document_for_processing_limits_session_cache_size(monkeypatch):
         session_state=session_state,
     )
 
-    assert list(session_state["preparation_cache"].keys()) == [
-        "two:3:b:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=auto:sv=1:srec=0:ai_first:c1",
-        "three:5:c:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=auto:sv=1:srec=0:ai_first:c1",
-    ]
+    assert list(session_state["preparation_cache"].keys()) == expected_keys
 
 
 def test_prepare_document_for_processing_uses_shared_cache_without_session_state(monkeypatch):
@@ -1614,6 +1701,7 @@ def test_clear_preparation_cache_requires_explicit_shared_clear(monkeypatch):
 
 def test_prepare_document_for_processing_miss_returns_clone_separate_from_cached_entry(monkeypatch):
     session_state = {"preparation_cache": {}}
+    expected_key = _build_default_prepared_source_key("report.docx:10:hash")
 
     monkeypatch.setattr(preparation, "extract_document_content_with_normalization_reports", lambda uploaded_file: _build_extract_result([{"text": "p"}], [{"image": b"x"}], None))
     monkeypatch.setattr(preparation, "build_document_text", lambda paragraphs: "text")
@@ -1627,7 +1715,7 @@ def test_prepare_document_for_processing_miss_returns_clone_separate_from_cached
         session_state=session_state,
     )
 
-    cached_entry = session_state["preparation_cache"]["report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=auto:sv=1:srec=0:ai_first:c1"]
+    cached_entry = session_state["preparation_cache"][expected_key]
 
     assert result is not cached_entry
     assert result.paragraphs is not cached_entry.paragraphs
@@ -2362,6 +2450,7 @@ def test_run_structure_recognition_applies_final_reconciled_map_after_targeted_r
             unexpected_headings=(),
             toc_entries_without_body_match=(),
             front_matter_leaks=(),
+            front_matter_body_advisories=(11,),
             outline_coverage_ratio=1.0,
             patched_logical_indexes=(10, 12),
         )
@@ -2431,9 +2520,153 @@ def test_run_structure_recognition_applies_final_reconciled_map_after_targeted_r
     assert captured["applied_structure_map"] is final_reconciled_map
     assert captured["applied_structure_map"].classifications[12].role == "heading"
     assert captured["report"].patched_logical_indexes == (10, 12)
+    assert captured["report"].front_matter_body_advisories == (11,)
     assert captured["report"].targeted_recall_invoked is True
     assert result is final_reconciled_map
     assert summary.ai_heading_count == 2
+
+
+def test_run_structure_recognition_preserves_first_reconcile_patch_indexes_after_targeted_recall(monkeypatch):
+    paragraphs = [
+        _build_paragraph(source_index=0, text="ГЛАВА 1"),
+        _build_paragraph(source_index=1, text="Текст 1"),
+        _build_paragraph(source_index=2, text="ГЛАВА 2"),
+    ]
+    for logical_index, paragraph in enumerate(paragraphs, start=10):
+        paragraph.logical_index = logical_index
+
+    initial_structure_map = StructureMap(
+        classifications={
+            10: ParagraphClassification(index=10, role="body", heading_level=None, confidence="high"),
+            11: ParagraphClassification(index=11, role="body", heading_level=None, confidence="high"),
+            12: ParagraphClassification(index=12, role="body", heading_level=None, confidence="high"),
+        },
+        model_used="gpt-4o-mini",
+        total_tokens_used=12,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+    targeted_structure_map = StructureMap(
+        classifications={
+            **initial_structure_map.classifications,
+            11: ParagraphClassification(index=11, role="heading", heading_level=2, confidence="high"),
+        },
+        model_used="gpt-4o-mini",
+        total_tokens_used=21,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+    final_reconciled_map = StructureMap(
+        classifications={
+            **targeted_structure_map.classifications,
+            12: ParagraphClassification(index=12, role="heading", heading_level=1, confidence="high"),
+        },
+        model_used="gpt-4o-mini",
+        total_tokens_used=21,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+    captured = {"reconcile_calls": 0}
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(
+            DocumentMapOutlineEntry(title="ГЛАВА 1", level=1, logical_index=10, confidence="high", evidence=("bold",)),
+            DocumentMapOutlineEntry(title="ГЛАВА 2", level=1, logical_index=12, confidence="high", evidence=("bold",)),
+        ),
+        paragraph_anchors={
+            10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high"),
+            12: DocumentMapAnchor(role="heading", heading_level=1, confidence="high"),
+        },
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10, 11, 12),
+    )
+
+    monkeypatch.setattr(
+        preparation,
+        "build_structure_map",
+        lambda *args, **kwargs: initial_structure_map,
+    )
+
+    def _fake_reconcile(paragraphs, document_map, structure_map):
+        captured["reconcile_calls"] += 1
+        if captured["reconcile_calls"] == 1:
+            return initial_structure_map, ReconciliationReport(
+                missing_outline_entries=(12,),
+                outline_coverage_ratio=0.5,
+                patched_logical_indexes=(10,),
+            )
+        return final_reconciled_map, ReconciliationReport(
+            missing_outline_entries=(),
+            unexpected_headings=(),
+            toc_entries_without_body_match=(),
+            front_matter_leaks=(),
+            outline_coverage_ratio=1.0,
+            patched_logical_indexes=(12,),
+        )
+
+    monkeypatch.setattr(preparation, "reconcile_with_document_map", _fake_reconcile)
+    monkeypatch.setattr(preparation, "get_model_role_value", lambda app_config, role: "gpt-4o-mini")
+    monkeypatch.setattr(
+        preparation,
+        "targeted_reclassify_with_reconciliation_context",
+        lambda *args, **kwargs: targeted_structure_map,
+    )
+    monkeypatch.setattr(
+        preparation,
+        "_write_reconciliation_report_artifact",
+        lambda *, cache_key, report, app_config: report,
+    )
+    monkeypatch.setattr(preparation, "apply_structure_map", lambda *args, **kwargs: {"ai_classified": 2, "ai_headings": 2})
+
+    captured_report = {}
+
+    def _capture_artifact(*, cache_key, report, app_config):
+        captured_report["report"] = report
+        return ".run/reconciliation_reports/fake.json"
+
+    monkeypatch.setattr(preparation, "_write_reconciliation_report_artifact", _capture_artifact)
+
+    result, summary = preparation._run_structure_recognition(
+        paragraphs=paragraphs,
+        image_assets=[],
+        app_config={
+            "structure_recognition_model": "gpt-4o-mini",
+            "models": _build_runtime_model_registry(structure_recognition_model="gpt-4o-mini"),
+            "structure_recognition_max_window_paragraphs": 1800,
+            "structure_recognition_overlap_paragraphs": 50,
+            "structure_recognition_timeout_seconds": 60,
+            "structure_recognition_min_confidence": "medium",
+            "structure_recognition_cache_enabled": False,
+            "structure_recognition_save_debug_artifacts": False,
+            "structure_recovery_enabled": True,
+            "structure_recovery_mode": "ai_first",
+            "structure_recovery_anchored_classification_max_window_paragraphs": 3000,
+            "structure_recovery_anchored_classification_overlap_paragraphs": 0,
+            "structure_recovery_anchored_classification_preview_chars": 1500,
+            "structure_recovery_anchored_classification_target_input_tokens": 180000,
+            "structure_recovery_anchored_classification_min_confidence": "high",
+            "structure_recovery_reconciliation_targeted_enabled": True,
+            "structure_recovery_reconciliation_targeted_threshold": -1,
+            "structure_recovery_reconciliation_targeted_max_paragraphs": 10,
+            "structure_recovery_reconciliation_targeted_timeout_seconds": 60,
+        },
+        get_client_fn=lambda: object(),
+        progress_callback=None,
+        normalization_report=_build_report(raw=3, logical=3),
+        relation_report=None,
+        cleanup_report=None,
+        document_map=document_map,
+    )
+
+    assert result is final_reconciled_map
+    assert summary.ai_heading_count == 2
+    assert captured_report["report"].targeted_recall_invoked is True
+    assert captured_report["report"].patched_logical_indexes == (10, 12)
 
 
 def test_run_document_map_stage_uses_120_second_timeout_fallback(monkeypatch):
@@ -2565,6 +2798,389 @@ def test_run_structure_recognition_uses_60_second_targeted_timeout_fallback(monk
     assert result is structure_map
     assert summary.ai_heading_count == 0
     assert captured["timeout"] == 60.0
+
+
+def test_run_structure_recognition_degrades_targeted_recall_provider_failures_as_stage3_reconciliation_provider(monkeypatch):
+    paragraphs = [_build_paragraph(source_index=0, text="ГЛАВА 1")]
+    paragraphs[0].logical_index = 10
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(DocumentMapOutlineEntry(title="ГЛАВА 1", level=1, logical_index=10, confidence="high", evidence=("bold",)),),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+    structure_map = StructureMap(
+        classifications={10: ParagraphClassification(index=10, role="body", heading_level=None, confidence="high")},
+        model_used="gpt-4o-mini",
+        total_tokens_used=12,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+
+    monkeypatch.setattr(preparation, "get_model_role_value", lambda app_config, role: "gpt-4o-mini")
+    monkeypatch.setattr(preparation, "build_structure_map", lambda *args, **kwargs: structure_map)
+    monkeypatch.setattr(
+        preparation,
+        "reconcile_with_document_map",
+        lambda paragraphs, document_map, structure_map: (
+            structure_map,
+            ReconciliationReport(missing_outline_entries=(10, 11), outline_coverage_ratio=0.0),
+        ),
+    )
+    monkeypatch.setattr(
+        preparation,
+        "targeted_reclassify_with_reconciliation_context",
+        lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("targeted recall timed out")),
+    )
+    monkeypatch.setattr(preparation, "apply_structure_map", lambda *args, **kwargs: pytest.fail("apply should not run"))
+
+    result, summary = preparation._run_structure_recognition(
+        paragraphs=paragraphs,
+        image_assets=[],
+        app_config={
+            "models": _build_runtime_model_registry(structure_recognition_model="gpt-4o-mini"),
+            "structure_recognition_cache_enabled": False,
+            "structure_recognition_save_debug_artifacts": False,
+            "structure_recognition_timeout_seconds": 60,
+            "structure_recognition_min_confidence": "medium",
+            "structure_recovery_enabled": True,
+            "structure_recovery_mode": "ai_first",
+            "structure_recovery_anchored_classification_max_window_paragraphs": 3000,
+            "structure_recovery_anchored_classification_overlap_paragraphs": 0,
+            "structure_recovery_anchored_classification_preview_chars": 1500,
+            "structure_recovery_anchored_classification_target_input_tokens": 180000,
+            "structure_recovery_anchored_classification_min_confidence": "high",
+            "structure_recovery_reconciliation_targeted_enabled": True,
+            "structure_recovery_reconciliation_targeted_threshold": 1,
+            "structure_recovery_reconciliation_targeted_max_paragraphs": 10,
+            "structure_recovery_reconciliation_targeted_timeout_seconds": 60,
+        },
+        get_client_fn=lambda: object(),
+        progress_callback=None,
+        normalization_report=_build_report(raw=1, logical=1),
+        relation_report=None,
+        cleanup_report=None,
+        document_map=document_map,
+    )
+
+    assert result is None
+    assert summary.ai_first_degraded is True
+    assert summary.fallback_stage == "stage3_reconciliation_provider"
+
+
+def test_run_structure_recognition_keeps_reconciliation_invariant_failures_fatal(monkeypatch):
+    paragraphs = [_build_paragraph(source_index=0, text="ГЛАВА 1")]
+    paragraphs[0].logical_index = 10
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(DocumentMapOutlineEntry(title="ГЛАВА 1", level=1, logical_index=10, confidence="high", evidence=("bold",)),),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+    structure_map = StructureMap(
+        classifications={10: ParagraphClassification(index=10, role="body", heading_level=None, confidence="high")},
+        model_used="gpt-4o-mini",
+        total_tokens_used=12,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+
+    monkeypatch.setattr(preparation, "build_structure_map", lambda *args, **kwargs: structure_map)
+    monkeypatch.setattr(
+        preparation,
+        "reconcile_with_document_map",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("broken reconciliation")),
+    )
+
+    with pytest.raises(ValueError, match="broken reconciliation"):
+        preparation._run_structure_recognition(
+            paragraphs=paragraphs,
+            image_assets=[],
+            app_config={
+                "models": _build_runtime_model_registry(structure_recognition_model="gpt-4o-mini"),
+                "structure_recognition_cache_enabled": False,
+                "structure_recognition_save_debug_artifacts": False,
+                "structure_recognition_timeout_seconds": 60,
+                "structure_recognition_min_confidence": "medium",
+                "structure_recovery_enabled": True,
+                "structure_recovery_mode": "ai_first",
+                "structure_recovery_anchored_classification_max_window_paragraphs": 3000,
+                "structure_recovery_anchored_classification_overlap_paragraphs": 0,
+                "structure_recovery_anchored_classification_preview_chars": 1500,
+                "structure_recovery_anchored_classification_target_input_tokens": 180000,
+                "structure_recovery_anchored_classification_min_confidence": "high",
+                "structure_recovery_reconciliation_targeted_enabled": False,
+            },
+            get_client_fn=lambda: object(),
+            progress_callback=None,
+            normalization_report=_build_report(raw=1, logical=1),
+            relation_report=None,
+            cleanup_report=None,
+            document_map=document_map,
+        )
+
+
+def test_run_structure_recognition_keeps_stage2_internal_failures_fatal(monkeypatch):
+    paragraphs = [_build_paragraph(source_index=0, text="ГЛАВА 1")]
+    paragraphs[0].logical_index = 10
+
+    monkeypatch.setattr(preparation, "build_structure_map", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("broken internal prep")))
+
+    with pytest.raises(AssertionError, match="broken internal prep"):
+        preparation._run_structure_recognition(
+            paragraphs=paragraphs,
+            image_assets=[],
+            app_config={
+                "models": _build_runtime_model_registry(structure_recognition_model="gpt-4o-mini"),
+                "structure_recognition_cache_enabled": False,
+                "structure_recognition_save_debug_artifacts": False,
+                "structure_recognition_timeout_seconds": 60,
+                "structure_recognition_min_confidence": "medium",
+                "structure_recovery_enabled": True,
+                "structure_recovery_mode": "ai_first",
+                "structure_recovery_anchored_classification_max_window_paragraphs": 3000,
+                "structure_recovery_anchored_classification_overlap_paragraphs": 0,
+                "structure_recovery_anchored_classification_preview_chars": 1500,
+                "structure_recovery_anchored_classification_target_input_tokens": 180000,
+                "structure_recovery_anchored_classification_min_confidence": "high",
+            },
+            get_client_fn=lambda: object(),
+            progress_callback=None,
+            normalization_report=_build_report(raw=1, logical=1),
+            relation_report=None,
+            cleanup_report=None,
+            document_map=None,
+        )
+
+
+def test_run_structure_recognition_degrades_apply_failures_as_stage3_apply(monkeypatch):
+    paragraphs = [_build_paragraph(source_index=0, text="ГЛАВА 1")]
+    paragraphs[0].logical_index = 10
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(DocumentMapOutlineEntry(title="ГЛАВА 1", level=1, logical_index=10, confidence="high", evidence=("bold",)),),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+    structure_map = StructureMap(
+        classifications={10: ParagraphClassification(index=10, role="heading", heading_level=1, confidence="high")},
+        model_used="gpt-4o-mini",
+        total_tokens_used=12,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+
+    monkeypatch.setattr(preparation, "build_structure_map", lambda *args, **kwargs: structure_map)
+    monkeypatch.setattr(
+        preparation,
+        "reconcile_with_document_map",
+        lambda paragraphs, document_map, structure_map: (structure_map, ReconciliationReport(outline_coverage_ratio=1.0)),
+    )
+    monkeypatch.setattr(preparation, "_write_reconciliation_report_artifact", lambda **kwargs: None)
+    monkeypatch.setattr(
+        preparation,
+        "apply_structure_map",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("apply failed")),
+    )
+
+    result, summary = preparation._run_structure_recognition(
+        paragraphs=paragraphs,
+        image_assets=[],
+        app_config={
+            "models": _build_runtime_model_registry(structure_recognition_model="gpt-4o-mini"),
+            "structure_recognition_cache_enabled": False,
+            "structure_recognition_save_debug_artifacts": False,
+            "structure_recognition_timeout_seconds": 60,
+            "structure_recognition_min_confidence": "medium",
+            "structure_recovery_enabled": True,
+            "structure_recovery_mode": "ai_first",
+            "structure_recovery_anchored_classification_max_window_paragraphs": 3000,
+            "structure_recovery_anchored_classification_overlap_paragraphs": 0,
+            "structure_recovery_anchored_classification_preview_chars": 1500,
+            "structure_recovery_anchored_classification_target_input_tokens": 180000,
+            "structure_recovery_anchored_classification_min_confidence": "high",
+            "structure_recovery_reconciliation_targeted_enabled": False,
+        },
+        get_client_fn=lambda: object(),
+        progress_callback=None,
+        normalization_report=_build_report(raw=1, logical=1),
+        relation_report=None,
+        cleanup_report=None,
+        document_map=document_map,
+    )
+
+    assert result is None
+    assert summary.ai_first_degraded is True
+    assert summary.fallback_stage == "stage3_apply"
+
+
+def test_run_structure_recognition_restores_paragraphs_after_partial_apply_failure(monkeypatch):
+    paragraphs = [_build_paragraph(source_index=0, text="ГЛАВА 1")]
+    paragraphs[0].logical_index = 10
+    paragraphs[0].role = "body"
+    paragraphs[0].structural_role = "body"
+    paragraphs[0].role_confidence = "heuristic"
+    paragraphs[0].heading_source = None
+    paragraphs[0].heading_level = None
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(DocumentMapOutlineEntry(title="ГЛАВА 1", level=1, logical_index=10, confidence="high", evidence=("bold",)),),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+    structure_map = StructureMap(
+        classifications={10: ParagraphClassification(index=10, role="heading", heading_level=1, confidence="high")},
+        model_used="gpt-4o-mini",
+        total_tokens_used=12,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+
+    monkeypatch.setattr(preparation, "build_structure_map", lambda *args, **kwargs: structure_map)
+    monkeypatch.setattr(
+        preparation,
+        "reconcile_with_document_map",
+        lambda paragraphs, document_map, structure_map: (structure_map, ReconciliationReport(outline_coverage_ratio=1.0)),
+    )
+    monkeypatch.setattr(preparation, "_write_reconciliation_report_artifact", lambda **kwargs: None)
+
+    def _partial_apply(*args, **kwargs):
+        paragraphs[0].role = "heading"
+        paragraphs[0].structural_role = "heading"
+        paragraphs[0].role_confidence = "ai"
+        paragraphs[0].heading_source = "ai"
+        paragraphs[0].heading_level = 1
+        raise RuntimeError("apply failed after mutation")
+
+    monkeypatch.setattr(preparation, "apply_structure_map", _partial_apply)
+
+    result, summary = preparation._run_structure_recognition(
+        paragraphs=paragraphs,
+        image_assets=[],
+        app_config={
+            "models": _build_runtime_model_registry(structure_recognition_model="gpt-4o-mini"),
+            "structure_recognition_cache_enabled": False,
+            "structure_recognition_save_debug_artifacts": False,
+            "structure_recognition_timeout_seconds": 60,
+            "structure_recognition_min_confidence": "medium",
+            "structure_recovery_enabled": True,
+            "structure_recovery_mode": "ai_first",
+            "structure_recovery_anchored_classification_max_window_paragraphs": 3000,
+            "structure_recovery_anchored_classification_overlap_paragraphs": 0,
+            "structure_recovery_anchored_classification_preview_chars": 1500,
+            "structure_recovery_anchored_classification_target_input_tokens": 180000,
+            "structure_recovery_anchored_classification_min_confidence": "high",
+            "structure_recovery_reconciliation_targeted_enabled": False,
+        },
+        get_client_fn=lambda: object(),
+        progress_callback=None,
+        normalization_report=_build_report(raw=1, logical=1),
+        relation_report=None,
+        cleanup_report=None,
+        document_map=document_map,
+    )
+
+    assert result is None
+    assert summary.fallback_stage == "stage3_apply"
+    assert paragraphs[0].role == "body"
+    assert paragraphs[0].structural_role == "body"
+    assert paragraphs[0].role_confidence == "heuristic"
+    assert paragraphs[0].heading_source is None
+    assert paragraphs[0].heading_level is None
+
+
+def test_run_structure_recognition_keeps_structure_when_reconciliation_report_save_fails(monkeypatch):
+    paragraphs = [_build_paragraph(source_index=0, text="ГЛАВА 1")]
+    paragraphs[0].logical_index = 10
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(DocumentMapOutlineEntry(title="ГЛАВА 1", level=1, logical_index=10, confidence="high", evidence=("bold",)),),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+    structure_map = StructureMap(
+        classifications={10: ParagraphClassification(index=10, role="heading", heading_level=1, confidence="high")},
+        model_used="gpt-4o-mini",
+        total_tokens_used=12,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+    logged_events = []
+
+    monkeypatch.setattr(preparation, "build_structure_map", lambda *args, **kwargs: structure_map)
+    monkeypatch.setattr(
+        preparation,
+        "reconcile_with_document_map",
+        lambda paragraphs, document_map, structure_map: (structure_map, ReconciliationReport(outline_coverage_ratio=1.0)),
+    )
+    monkeypatch.setattr(
+        preparation,
+        "_write_reconciliation_report_artifact",
+        lambda **kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    monkeypatch.setattr(preparation, "apply_structure_map", lambda *args, **kwargs: {"ai_classified": 1, "ai_headings": 1})
+    monkeypatch.setattr(preparation, "log_event", lambda level, event, message, **context: logged_events.append((event, context)))
+
+    result, summary = preparation._run_structure_recognition(
+        paragraphs=paragraphs,
+        image_assets=[],
+        app_config={
+            "models": _build_runtime_model_registry(structure_recognition_model="gpt-4o-mini"),
+            "structure_recognition_cache_enabled": False,
+            "structure_recognition_save_debug_artifacts": False,
+            "structure_recognition_timeout_seconds": 60,
+            "structure_recognition_min_confidence": "medium",
+            "structure_recovery_enabled": True,
+            "structure_recovery_mode": "ai_first",
+            "structure_recovery_anchored_classification_max_window_paragraphs": 3000,
+            "structure_recovery_anchored_classification_overlap_paragraphs": 0,
+            "structure_recovery_anchored_classification_preview_chars": 1500,
+            "structure_recovery_anchored_classification_target_input_tokens": 180000,
+            "structure_recovery_anchored_classification_min_confidence": "high",
+            "structure_recovery_reconciliation_targeted_enabled": False,
+        },
+        get_client_fn=lambda: object(),
+        progress_callback=None,
+        normalization_report=_build_report(raw=1, logical=1),
+        relation_report=None,
+        cleanup_report=None,
+        document_map=document_map,
+    )
+
+    assert result is structure_map
+    assert summary.ai_first_degraded is False
+    assert any(event == "reconciliation_report_save_failed" for event, _context in logged_events)
+    assert all(event != "structure_recognition_fallback" for event, _context in logged_events)
 
 
 def test_prepare_document_for_processing_falls_back_to_legacy_non_anchored_stage2_when_document_map_stage_fails(monkeypatch):
@@ -2873,8 +3489,8 @@ def test_run_document_map_stage_writes_debug_artifact(monkeypatch, tmp_path):
     assert payload["cache_key"] == cache_key
     assert payload["stage"] == "document_map_v1"
     assert payload["model"] == "openrouter:test/document-map"
-    assert payload["prompt_version"] == 1
-    assert payload["descriptor_schema_version"] == 1
+    assert payload["prompt_version"] == preparation.DOCUMENT_MAP_PROMPT_VERSION
+    assert payload["descriptor_schema_version"] == preparation.DOCUMENT_MAP_DESCRIPTOR_SCHEMA_VERSION
     assert payload["coordinate_schema_version"] == 1
     assert payload["sampled"] is False
     assert payload["sampled_logical_indexes"] == [0, 1]
@@ -3037,6 +3653,7 @@ def test_prepare_document_for_processing_falls_back_to_heuristics_when_structure
 def test_prepare_document_for_processing_logs_cache_miss_and_hit(monkeypatch):
     session_state = {"preparation_cache": {}}
     logged_events = []
+    expected_key = _build_default_prepared_source_key("report.docx:10:hash")
 
     monkeypatch.setattr(preparation, "extract_document_content_with_normalization_reports", lambda uploaded_file: _build_extract_result([], [], None))
     monkeypatch.setattr(preparation, "extract_document_content_with_normalization_reports", lambda uploaded_file: _build_extract_result([], [], None))
@@ -3061,12 +3678,12 @@ def test_prepare_document_for_processing_logs_cache_miss_and_hit(monkeypatch):
     assert relevant_events == [
         (
             "preparation_cache_miss",
-            {"prepared_source_key": "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=auto:sv=1:srec=0:ai_first:c1"},
+            {"prepared_source_key": expected_key},
         ),
         (
             "preparation_cache_hit",
             {
-                "prepared_source_key": "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=auto:sv=1:srec=0:ai_first:c1",
+                "prepared_source_key": expected_key,
                 "cache_level": "session",
                 "structure_status_note": "Структура: auto-режим, эскалация в AI не потребовалась; структурный риск не найден.",
                 "structure_recognition_mode": "auto",

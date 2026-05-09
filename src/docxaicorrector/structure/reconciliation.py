@@ -3,20 +3,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 import json
-from queue import Queue
-from threading import Thread
+import logging
+from docxaicorrector.structure._responses_timeout import call_responses_with_hard_timeout
 from typing import Any, Sequence, cast
 
 from docxaicorrector.core.constants import PROMPTS_DIR
 from docxaicorrector.core.models import DocumentMap, ParagraphClassification, ParagraphDescriptor, ParagraphUnit, StructureMap
 from docxaicorrector.generation._generation import normalize_model_output
 from docxaicorrector.generation.openai_response_utils import collect_response_text_traversal
-from docxaicorrector.image.shared import call_responses_create_with_retry
 from docxaicorrector.structure.recognition import _as_responses_create_client, _parse_classification_payload, _with_request_timeout
 from docxaicorrector.structure.recognition import build_paragraph_descriptors
 
 
-STRUCTURE_RECONCILIATION_SCHEMA_VERSION = 3
+_LOGGER = logging.getLogger(__name__)
+STRUCTURE_RECONCILIATION_SCHEMA_VERSION = 5
 RECONCILIATION_TARGETED_PROMPT_VERSION = 1
 RECONCILIATION_TARGETED_DESCRIPTOR_SCHEMA_VERSION = 1
 _FRONT_MATTER_ALLOWED_ROLES = frozenset({"toc_entry", "toc_header", "dedication", "epigraph", "attribution"})
@@ -30,6 +30,8 @@ class ReconciliationReport:
     unexpected_headings: tuple[int, ...] = ()
     toc_entries_without_body_match: tuple[int, ...] = ()
     front_matter_leaks: tuple[int, ...] = ()
+    front_matter_body_advisories: tuple[int, ...] = ()
+    anchor_disagreements_seen: tuple[int, ...] = ()
     targeted_recall_invoked: bool = False
     targeted_recall_count: int = 0
     outline_coverage_ratio: float = 1.0
@@ -41,6 +43,7 @@ class ReconciliationReport:
 
     @property
     def patched_source_indexes(self) -> tuple[int, ...]:
+        # Compatibility alias: reconciliation uses logical indexes end-to-end.
         return self.patched_logical_indexes
 
     @property
@@ -59,6 +62,20 @@ class ReconciliationReport:
     def front_matter_leak_count(self) -> int:
         return len(self.front_matter_leaks)
 
+    @property
+    def front_matter_body_advisory_count(self) -> int:
+        return len(self.front_matter_body_advisories)
+
+    @property
+    def anchor_conflict_count(self) -> int:
+        return len(self.anchor_disagreements_seen)
+
+    @property
+    def anchor_conflicts(self) -> tuple[int, ...]:
+        # Compatibility alias: the semantics are pre-patch disagreements seen
+        # before deterministic reconciliation applies high-confidence anchors.
+        return self.anchor_disagreements_seen
+
 
 @dataclass(frozen=True)
 class _ParagraphIndexes:
@@ -73,8 +90,13 @@ def reconcile_with_document_map(
     paragraph_indexes = _build_paragraph_indexes(paragraphs)
     patched_classifications = dict(structure_map.classifications)
     patched_logical_indexes: set[int] = set()
+    anchor_disagreements_seen = _collect_anchor_conflicts(document_map=document_map, structure_map=structure_map)
 
     for logical_index, anchor in (document_map.paragraph_anchors or {}).items():
+        # Deterministic reconciliation remains intentionally high-confidence only.
+        # Medium anchors are advisory Stage 2 inputs and may still trigger
+        # targeted recall indirectly through report divergence, but they do not
+        # patch the StructureMap by themselves.
         if str(anchor.confidence or "").strip().lower() != "high":
             continue
         paragraph = paragraph_indexes.logical_to_paragraph.get(int(logical_index))
@@ -105,9 +127,26 @@ def reconcile_with_document_map(
         paragraphs=paragraphs,
         document_map=document_map,
         structure_map=reconciled_structure_map,
+        anchor_disagreements_seen=anchor_disagreements_seen,
         patched_logical_indexes=tuple(sorted(patched_logical_indexes)),
     )
     return reconciled_structure_map, report
+
+
+def _collect_anchor_conflicts(*, document_map: DocumentMap, structure_map: StructureMap) -> tuple[int, ...]:
+    conflicts: list[int] = []
+    for logical_index, classification in structure_map.classifications.items():
+        anchor = document_map.get_anchor(int(logical_index))
+        if anchor is None:
+            continue
+        anchor_confidence = str(anchor.confidence or "").strip().lower()
+        if anchor_confidence not in {"high", "medium"}:
+            continue
+        desired_heading_level = anchor.heading_level if anchor.role == "heading" else None
+        if classification.role == anchor.role and classification.heading_level == desired_heading_level:
+            continue
+        conflicts.append(int(logical_index))
+    return tuple(sorted(dict.fromkeys(conflicts)))
 
 
 def targeted_reclassify_with_reconciliation_context(
@@ -144,7 +183,12 @@ def targeted_reclassify_with_reconciliation_context(
     merged_classifications = dict(structure_map.classifications)
     for classification in targeted_classifications:
         if classification.index not in allowed_logical_indexes:
-            raise ValueError(f"Targeted reconciliation returned out-of-scope index: {classification.index}")
+            _LOGGER.warning(
+                "Ignoring out-of-scope targeted reconciliation classification index=%s allowed=%s",
+                classification.index,
+                sorted(allowed_logical_indexes),
+            )
+            continue
         merged_classifications[classification.index] = classification
     return StructureMap(
         classifications=merged_classifications,
@@ -169,6 +213,7 @@ def _build_reconciliation_report(
     paragraphs: Sequence[ParagraphUnit],
     document_map: DocumentMap,
     structure_map: StructureMap,
+    anchor_disagreements_seen: tuple[int, ...] = (),
     patched_logical_indexes: tuple[int, ...] = (),
     targeted_recall_invoked: bool = False,
     targeted_recall_count: int = 0,
@@ -215,6 +260,7 @@ def _build_reconciliation_report(
                 toc_entries_without_body_match.append(candidate)
 
     front_matter_leaks: list[int] = []
+    front_matter_body_advisories: list[int] = []
     body_start_logical_index = int(document_map.body_start_logical_index or 0)
     for paragraph in paragraphs:
         logical_index = int(getattr(paragraph, "logical_index", paragraph.source_index))
@@ -226,6 +272,11 @@ def _build_reconciliation_report(
         resolved_role = str(
             (classification.role if classification is not None else getattr(paragraph, "structural_role", "body")) or "body"
         ).strip().lower() or "body"
+        if resolved_role == "body":
+            anchor = document_map.get_anchor(logical_index)
+            if anchor is not None and anchor.role == "body" and str(anchor.confidence or "").strip().lower() in {"medium", "high"}:
+                front_matter_body_advisories.append(logical_index)
+                continue
         if resolved_role not in _FRONT_MATTER_ALLOWED_ROLES:
             front_matter_leaks.append(logical_index)
 
@@ -236,6 +287,8 @@ def _build_reconciliation_report(
         unexpected_headings=tuple(sorted(dict.fromkeys(unexpected_headings))),
         toc_entries_without_body_match=tuple(sorted(dict.fromkeys(toc_entries_without_body_match))),
         front_matter_leaks=tuple(sorted(dict.fromkeys(front_matter_leaks))),
+        front_matter_body_advisories=tuple(sorted(dict.fromkeys(front_matter_body_advisories))),
+        anchor_disagreements_seen=tuple(sorted(dict.fromkeys(anchor_disagreements_seen))),
         targeted_recall_invoked=targeted_recall_invoked,
         targeted_recall_count=targeted_recall_count,
         outline_coverage_ratio=outline_coverage_ratio,
@@ -280,6 +333,7 @@ def _select_targeted_paragraphs(
                     *report.unexpected_headings,
                     *report.toc_entries_without_body_match,
                     *report.front_matter_leaks,
+                    *report.anchor_disagreements_seen,
                 ]
             )
         )
@@ -344,31 +398,17 @@ def _request_targeted_classifications(
 
 
 def _call_targeted_responses_with_timeout(*, client: object, request_payload: dict[str, object], timeout: float) -> Any:
-    result_queue: Queue[tuple[str, object]] = Queue(maxsize=1)
-
-    def _run_request() -> None:
-        try:
-            response = call_responses_create_with_retry(
-                client,
-                request_payload,
-                max_retries=1,
-                retryable_error_predicate=lambda exc: False,
-            )
-        except Exception as exc:
-            result_queue.put(("error", exc))
-            return
-        result_queue.put(("ok", response))
-
-    worker = Thread(target=_run_request, name="reconciliation-targeted-request", daemon=True)
-    worker.start()
-    worker.join(timeout=max(0.001, timeout))
-    if worker.is_alive():
-        raise TimeoutError(f"Targeted reconciliation request timed out after {timeout:.3f}s.")
-
-    status, payload = result_queue.get_nowait()
-    if status == "error":
-        raise cast(Exception, payload)
-    return payload
+    return call_responses_with_hard_timeout(
+        client=client,
+        request_payload=request_payload,
+        timeout=timeout,
+        thread_name="reconciliation-targeted-request",
+        logger=_LOGGER,
+        request_kind="reconciliation_targeted_request",
+        timeout_error_factory=lambda seconds: TimeoutError(
+            f"Targeted reconciliation request timed out after {seconds:.3f}s."
+        ),
+    )
 
 
 @lru_cache(maxsize=1)
@@ -394,10 +434,19 @@ def _build_targeted_user_prompt(*, descriptors: Sequence[dict[str, object]], rep
 
 
 def _report_payload(report: ReconciliationReport) -> dict[str, object]:
+    # Compatibility policy: keep `anchor_conflicts` for one more cleanup pass
+    # and remove it on the next reconciliation schema bump after downstream
+    # readers/docs/tests have been updated to consume only
+    # `anchor_disagreements_seen`.
     return {
         "missing_outline_entries": list(report.missing_outline_entries),
         "unexpected_headings": list(report.unexpected_headings),
         "toc_entries_without_body_match": list(report.toc_entries_without_body_match),
         "front_matter_leaks": list(report.front_matter_leaks),
+        "front_matter_body_advisories": list(report.front_matter_body_advisories),
+        "anchor_disagreements_seen": list(report.anchor_disagreements_seen),
+        "anchor_conflicts": list(report.anchor_conflicts),
+        "anchor_conflicts_deprecated": True,
+        "anchor_conflicts_alias_of": "anchor_disagreements_seen",
         "outline_coverage_ratio": report.outline_coverage_ratio,
     }

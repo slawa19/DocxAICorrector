@@ -86,6 +86,27 @@ def test_build_document_map_paragraph_descriptors_prefers_persisted_stage0_field
     assert descriptor.scripture_reference_hint is True
 
 
+def test_build_document_map_paragraph_descriptors_sanitizes_invalid_embedded_hints():
+    paragraph = _paragraph(
+        0,
+        "Фрагмент",
+        heuristic_embedded_structure_hints=(
+            EmbeddedStructureHint(
+                text="bad",
+                role="not-a-role",
+                structural_role="not-a-structural-role",
+                list_kind="not-a-list-kind",
+            ),
+        ),
+    )
+
+    descriptor = build_document_map_paragraph_descriptors([paragraph])[0]
+
+    assert descriptor.embedded_structure_hints == (
+        {"t": "bad", "r": "body", "sr": "body", "hl": None, "lk": None, "iso": False, "scr": False},
+    )
+
+
 def test_build_document_map_paragraph_descriptors_extracts_vertical_gap_from_paragraph_properties_xml():
     paragraph = _paragraph(
         2,

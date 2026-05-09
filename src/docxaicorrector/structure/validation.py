@@ -10,6 +10,7 @@ from typing import Any
 
 from docxaicorrector.core.constants import RUN_DIR
 from docxaicorrector.core.models import ParagraphUnit, StructureRepairReport
+from docxaicorrector.document.structure_authority import get_binding_structural_role, get_effective_structural_role, has_heading_signal
 from docxaicorrector.runtime.artifact_retention import (
     STRUCTURE_VALIDATION_MAX_AGE_SECONDS,
     STRUCTURE_VALIDATION_MAX_COUNT,
@@ -77,21 +78,16 @@ def _is_heuristic_heading(paragraph: ParagraphLike) -> bool:
     return _paragraph_value(paragraph, "role") == "heading" and _paragraph_value(paragraph, "heading_source") != "explicit"
 
 
-def _effective_structural_role(paragraph: ParagraphLike) -> str:
-    hint = str(_paragraph_value(paragraph, "heuristic_structural_role_hint", "") or "")
-    if hint:
-        return hint
-    return str(_paragraph_value(paragraph, "structural_role", "body") or "body")
+def _effective_structural_role(paragraph: ParagraphLike, *, phase: str) -> str:
+    return get_effective_structural_role(paragraph, phase=phase)
 
 
-def _has_heading_signal(paragraph: ParagraphLike) -> bool:
-    if _paragraph_value(paragraph, "role") == "heading" and _paragraph_value(paragraph, "heading_source") is not None:
-        return True
-    return _paragraph_value(paragraph, "heuristic_role_hint") == "heading"
+def _has_heading_signal(paragraph: ParagraphLike, *, phase: str) -> bool:
+    return has_heading_signal(paragraph, phase=phase)
 
 
 def _is_body_like(paragraph: ParagraphLike) -> bool:
-    return _paragraph_value(paragraph, "role") == "body" and str(_paragraph_value(paragraph, "structural_role", "body") or "body") in _BODY_STRUCTURAL_ROLES
+    return _paragraph_value(paragraph, "role") == "body" and get_binding_structural_role(paragraph) in _BODY_STRUCTURAL_ROLES
 
 
 def _is_suspicious_short_body(paragraph: ParagraphLike) -> bool:
@@ -166,16 +162,16 @@ def _is_isolated_marker_paragraph(paragraph: ParagraphLike) -> bool:
     return bool(text in {"●", "•", "-", "*"} or __import__("re").match(r"^\d+[\.)]$", text))
 
 
-def _count_bounded_toc_regions(paragraphs: Sequence[ParagraphLike]) -> int:
+def _count_bounded_toc_regions(paragraphs: Sequence[ParagraphLike], *, phase: str) -> int:
     count = 0
     index = 0
     while index < len(paragraphs):
-        structural_role = _effective_structural_role(paragraphs[index])
+        structural_role = _effective_structural_role(paragraphs[index], phase=phase)
         if structural_role != "toc_header":
             index += 1
             continue
         look_ahead = index + 1
-        while look_ahead < len(paragraphs) and _effective_structural_role(paragraphs[look_ahead]) == "toc_entry":
+        while look_ahead < len(paragraphs) and _effective_structural_role(paragraphs[look_ahead], phase=phase) == "toc_entry":
             look_ahead += 1
         if look_ahead - index >= 3:
             count += 1
@@ -186,28 +182,28 @@ def _count_bounded_toc_regions(paragraphs: Sequence[ParagraphLike]) -> int:
     return count
 
 
-def _count_toc_entries(paragraphs: Sequence[ParagraphLike]) -> int:
-    return sum(1 for paragraph in paragraphs if _effective_structural_role(paragraph) == "toc_entry")
+def _count_toc_entries(paragraphs: Sequence[ParagraphLike], *, phase: str) -> int:
+    return sum(1 for paragraph in paragraphs if _effective_structural_role(paragraph, phase=phase) == "toc_entry")
 
 
-def _looks_like_front_matter_paragraph(paragraph: ParagraphLike) -> bool:
-    structural_role = _effective_structural_role(paragraph)
+def _looks_like_front_matter_paragraph(paragraph: ParagraphLike, *, phase: str) -> bool:
+    structural_role = _effective_structural_role(paragraph, phase=phase)
     text = _normalized_text(paragraph)
     if structural_role in {"toc_header", "toc_entry", "epigraph", "attribution", "dedication"}:
         return True
     if not text:
         return False
-    if _has_heading_signal(paragraph):
+    if _has_heading_signal(paragraph, phase=phase):
         return True
     return bool(re.search(r"\.{2,}\s*\d+\s*$", text) or text.lower() in {"contents", "table of contents", "содержание"})
 
 
-def _has_large_front_matter_block_risk(paragraphs: Sequence[ParagraphLike]) -> bool:
+def _has_large_front_matter_block_risk(paragraphs: Sequence[ParagraphLike], *, phase: str) -> bool:
     if len(paragraphs) < 4:
         return False
     front_matter_count = 0
     for paragraph in paragraphs:
-        if _looks_like_front_matter_paragraph(paragraph):
+        if _looks_like_front_matter_paragraph(paragraph, phase=phase):
             front_matter_count += 1
             continue
         break
@@ -274,6 +270,7 @@ def validate_structure_quality(
     structure_repair_report: StructureRepairReport | None = None,
     document_map_present: bool = False,
     outline_coverage_ratio: float | None = None,
+    phase: str = "post_ai_readiness",
 ) -> StructureValidationReport:
     paragraph_count = len(paragraphs)
     nonempty_paragraphs = [paragraph for paragraph in paragraphs if _normalized_text(paragraph)]
@@ -314,9 +311,9 @@ def validate_structure_quality(
     suspicious_short_body_ratio = suspicious_short_body_count / divisor
     all_caps_or_centered_body_ratio = all_caps_or_centered_count / divisor
     isolated_marker_paragraph_count = sum(1 for paragraph in nonempty_paragraphs if _is_isolated_marker_paragraph(paragraph))
-    toc_region_bounded_count = _count_bounded_toc_regions(paragraphs)
-    expected_heading_candidates_from_toc = _count_toc_entries(paragraphs)
-    large_front_matter_block_risk = _has_large_front_matter_block_risk(paragraphs)
+    toc_region_bounded_count = _count_bounded_toc_regions(paragraphs, phase=phase)
+    expected_heading_candidates_from_toc = _count_toc_entries(paragraphs, phase=phase)
+    large_front_matter_block_risk = _has_large_front_matter_block_risk(paragraphs, phase=phase)
 
     escalation_reasons: list[str] = []
     min_paragraphs_for_auto_gate = int(app_config.get("structure_validation_min_paragraphs_for_auto_gate", 40) or 40)
@@ -342,6 +339,9 @@ def validate_structure_quality(
         escalation_reasons.append("isolated_list_marker_fragments")
 
     structure_quality_risk_level = _resolve_structure_quality_risk_level(escalation_reasons=escalation_reasons)
+    # Stage 3 coverage is intentionally advisory-only here: readiness and escalation
+    # preserve the existing gate semantics and the post-AI document-map fields are
+    # surfaced for artifacts and downstream diagnostics rather than gating logic.
     readiness_status, readiness_reasons = _build_readiness_status(
         toc_like_sequence_count=toc_like_sequence_count,
         toc_region_bounded_count=toc_region_bounded_count,

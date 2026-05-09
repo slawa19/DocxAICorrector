@@ -40,6 +40,32 @@ RELATION_NORMALIZATION_KIND_VALUES = (
     "toc_region",
 )
 STRUCTURE_RECOGNITION_MIN_CONFIDENCE_VALUES = ("medium", "high")
+VALID_HEURISTIC_ROLE_HINTS = frozenset({"body", "heading", "caption", "list"})
+VALID_HEURISTIC_STRUCTURAL_ROLE_HINTS = frozenset(
+    {"body", "caption", "epigraph", "attribution", "toc_entry", "toc_header", "dedication"}
+)
+VALID_HEURISTIC_LIST_KIND_HINTS = frozenset({"ordered", "unordered"})
+
+
+def normalize_heuristic_role_hint(value: object) -> str | None:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return None
+    return normalized if normalized in VALID_HEURISTIC_ROLE_HINTS else None
+
+
+def normalize_heuristic_structural_role_hint(value: object) -> str | None:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return None
+    return normalized if normalized in VALID_HEURISTIC_STRUCTURAL_ROLE_HINTS else None
+
+
+def normalize_heuristic_list_kind_hint(value: object) -> str | None:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return None
+    return normalized if normalized in VALID_HEURISTIC_LIST_KIND_HINTS else None
 
 
 @dataclass(frozen=True)
@@ -107,6 +133,8 @@ class ParagraphRelationDecision:
     member_paragraph_ids: tuple[str, ...]
     anchor_asset_id: str | None = None
     reasons: tuple[str, ...] = ()
+    structure_phase: str = "post_ai_final"
+    structure_source: str = "post_ai_final_binding"
 
 
 @dataclass(frozen=True)
@@ -198,6 +226,9 @@ class ParagraphUnit:
     list_abstract_num_xml: str | None = None
     paragraph_id: str = ""
     source_index: int = -1
+    # Final extracted-paragraph coordinate after all pre-AI topology changes.
+    # This is the Stage 1/2/3 coordinate on the current paragraph topology,
+    # not a persistent identity across alternate split/merge histories.
     logical_index: int = -1
     structural_role: str = "body"
     role_confidence: str = "heuristic"
@@ -326,6 +357,13 @@ class StructureRecognitionSummary:
     ai_heading_promotion_count: int = 0
     ai_heading_demotion_count: int = 0
     ai_structural_role_change_count: int = 0
+    reconciliation_patch_count: int = 0
+    reconciliation_locked_override_count: int = 0
+    reconciliation_locked_override_skip_count: int = 0
+    ai_first_degraded: bool = False
+    fallback_stage: str = ""
+    fallback_reason: str = ""
+    document_map_present: bool = False
 
     @classmethod
     def from_source(cls, source: object | None) -> "StructureRecognitionSummary":
@@ -338,6 +376,13 @@ class StructureRecognitionSummary:
             ai_heading_promotion_count=int(getattr(source, "ai_heading_promotion_count", 0) or 0),
             ai_heading_demotion_count=int(getattr(source, "ai_heading_demotion_count", 0) or 0),
             ai_structural_role_change_count=int(getattr(source, "ai_structural_role_change_count", 0) or 0),
+            reconciliation_patch_count=int(getattr(source, "reconciliation_patch_count", 0) or 0),
+            reconciliation_locked_override_count=int(getattr(source, "reconciliation_locked_override_count", 0) or 0),
+            reconciliation_locked_override_skip_count=int(getattr(source, "reconciliation_locked_override_skip_count", 0) or 0),
+            ai_first_degraded=bool(getattr(source, "ai_first_degraded", False)),
+            fallback_stage=str(getattr(source, "fallback_stage", "") or ""),
+            fallback_reason=str(getattr(source, "fallback_reason", "") or ""),
+            document_map_present=bool(getattr(source, "document_map_present", False)),
         )
 
     def as_progress_metrics(self, *, structure_map: "StructureMap | None" = None) -> dict[str, int]:
@@ -356,6 +401,14 @@ class StructureRecognitionSummary:
             metrics["ai_heading_demotions"] = self.ai_heading_demotion_count
         if self.ai_structural_role_change_count:
             metrics["ai_structural_role_changes"] = self.ai_structural_role_change_count
+        if self.reconciliation_patch_count:
+            metrics["reconciliation_patches_applied"] = self.reconciliation_patch_count
+        if self.reconciliation_locked_override_count:
+            metrics["reconciliation_locked_overrides_applied"] = self.reconciliation_locked_override_count
+        if self.reconciliation_locked_override_skip_count:
+            metrics["reconciliation_locked_overrides_skipped"] = self.reconciliation_locked_override_skip_count
+        if self.ai_first_degraded:
+            metrics["ai_first_degraded"] = 1
         return metrics
 
     def as_preparation_summary_metrics(self) -> dict[str, int]:
@@ -366,6 +419,10 @@ class StructureRecognitionSummary:
             "ai_heading_promotions": self.ai_heading_promotion_count,
             "ai_heading_demotions": self.ai_heading_demotion_count,
             "ai_structural_role_changes": self.ai_structural_role_change_count,
+            "reconciliation_patches_applied": self.reconciliation_patch_count,
+            "reconciliation_locked_overrides_applied": self.reconciliation_locked_override_count,
+            "reconciliation_locked_overrides_skipped": self.reconciliation_locked_override_skip_count,
+            "ai_first_degraded": int(self.ai_first_degraded),
         }
 
 

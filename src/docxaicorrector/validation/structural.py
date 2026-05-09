@@ -545,6 +545,11 @@ def _build_preparation_diagnostic_defaults(event_log: Sequence[Mapping[str, obje
         "document_map_present": _extract_event_context_bool(event_log, "structure_processing_outcome", "document_map_present"),
         "outline_coverage_ratio": outline_coverage_ratio,
         "front_matter_leaks": _extract_event_context_int_list(event_log, "reconciliation_report_saved", "front_matter_leaks"),
+        "front_matter_body_advisories": _extract_event_context_int_list(
+            event_log,
+            "reconciliation_report_saved",
+            "front_matter_body_advisories",
+        ),
         "targeted_recall_invoked": _extract_event_context_bool(event_log, "reconciliation_report_saved", "targeted_recall_invoked"),
         "quality_gate_status": _extract_event_context_value(event_log, "structure_processing_outcome", "quality_gate_status"),
         "quality_gate_reasons": _extract_event_context_list(event_log, "structure_processing_outcome", "quality_gate_reasons"),

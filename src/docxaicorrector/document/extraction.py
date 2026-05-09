@@ -86,6 +86,7 @@ from docxaicorrector.core.models import (
     RelationNormalizationReport,
     LayoutArtifactCleanupReport,
     StructureRepairReport,
+    normalize_heuristic_structural_role_hint,
 )
 from docxaicorrector.processing.processing_runtime import read_uploaded_file_bytes, resolve_uploaded_filename
 from docxaicorrector.runtime.artifact_retention import (
@@ -208,7 +209,10 @@ def extract_document_content_with_normalization_reports(
         structure_recovery_enabled=structure_recovery_enabled,
         structure_recovery_mode=structure_recovery_mode,
     )
-    paragraphs = _normalize_inline_break_paragraphs(paragraphs)
+    paragraphs = _normalize_inline_break_paragraphs(
+        paragraphs,
+        signal_only=structure_recovery_enabled and structure_recovery_mode == "ai_first",
+    )
     promote_short_standalone_headings(
         paragraphs,
         structure_recovery_enabled=structure_recovery_enabled,
@@ -254,10 +258,19 @@ def extract_document_content_with_normalization_reports(
         ai_review_max_tokens_per_candidate,
         ai_review_model,
     ) = _resolve_paragraph_boundary_ai_review_settings()
-    relations, relation_report = build_paragraph_relations(
-        paragraphs,
-        enabled_relation_kinds=enabled_relation_kinds if relation_enabled else (),
-    )
+    try:
+        relations, relation_report = build_paragraph_relations(
+            paragraphs,
+            enabled_relation_kinds=enabled_relation_kinds if relation_enabled else (),
+            structure_phase="pre_ai_diagnostic",
+        )
+    except TypeError as exc:
+        if "structure_phase" not in str(exc):
+            raise
+        relations, relation_report = build_paragraph_relations(
+            paragraphs,
+            enabled_relation_kinds=enabled_relation_kinds if relation_enabled else (),
+        )
     apply_relation_side_effects(paragraphs, relations)
     reclassify_adjacent_captions(
         paragraphs,
@@ -560,7 +573,7 @@ def _build_logical_paragraph_units(
     return paragraphs
 
 
-def _normalize_inline_break_paragraphs(paragraphs: list[ParagraphUnit]) -> list[ParagraphUnit]:
+def _normalize_inline_break_paragraphs(paragraphs: list[ParagraphUnit], *, signal_only: bool = False) -> list[ParagraphUnit]:
     normalized: list[ParagraphUnit] = []
     for paragraph in paragraphs:
         if paragraph.role in {"image", "table"} or not _INLINE_BREAK_PATTERN.search(paragraph.text):
@@ -575,12 +588,12 @@ def _normalize_inline_break_paragraphs(paragraphs: list[ParagraphUnit]) -> list[
             continue
 
         if _should_expand_inline_break_paragraph(paragraph, lines):
-            normalized.extend(_expand_inline_break_paragraph(paragraph, lines))
+            normalized.extend(_expand_inline_break_paragraph(paragraph, lines, signal_only=signal_only))
             continue
 
         normalized.append(_copy_paragraph_unit(paragraph, text=_join_inline_break_lines(lines)))
 
-    _annotate_toc_region_candidates(normalized)
+    _annotate_toc_region_candidates(normalized, signal_only=signal_only)
     for index, paragraph in enumerate(normalized):
         _assign_paragraph_identity(paragraph, index)
     return normalized
@@ -717,7 +730,7 @@ def _is_stage0_isolated_marker_text(text: str) -> bool:
 
 
 def _is_stage0_toc_pattern_hint(text: str, paragraph: ParagraphUnit) -> bool:
-    if getattr(paragraph, "heuristic_structural_role_hint", None) in {"toc_header", "toc_entry"}:
+    if normalize_heuristic_structural_role_hint(getattr(paragraph, "heuristic_structural_role_hint", None)) in {"toc_header", "toc_entry"}:
         return True
     if getattr(paragraph, "structural_role", None) in {"toc_header", "toc_entry"}:
         return True
@@ -833,27 +846,20 @@ def _is_toc_candidate_text(text: str) -> bool:
     return True
 
 
-def _expand_inline_break_paragraph(paragraph: ParagraphUnit, lines: list[str]) -> list[ParagraphUnit]:
+def _expand_inline_break_paragraph(paragraph: ParagraphUnit, lines: list[str], *, signal_only: bool) -> list[ParagraphUnit]:
     expanded: list[ParagraphUnit] = []
     header_cluster = _is_toc_header_line(lines[0]) and len(lines) >= 3
     for index, line in enumerate(lines):
         clone = _copy_paragraph_unit(paragraph, text=line)
         if header_cluster and index == 0:
-            clone.role = "body"
-            clone.structural_role = "toc_header"
-            clone.heading_level = None
-            clone.heading_source = None
+            _apply_or_hint_stage0_toc_role(clone, structural_role="toc_header", signal_only=signal_only)
         elif header_cluster or _is_toc_candidate_text(line):
-            if clone.role == "heading" and clone.heading_source != "explicit":
-                clone.role = "body"
-                clone.heading_level = None
-                clone.heading_source = None
-            clone.structural_role = "toc_entry"
+            _apply_or_hint_stage0_toc_role(clone, structural_role="toc_entry", signal_only=signal_only)
         expanded.append(clone)
     return expanded
 
 
-def _annotate_toc_region_candidates(paragraphs: list[ParagraphUnit]) -> None:
+def _annotate_toc_region_candidates(paragraphs: list[ParagraphUnit], *, signal_only: bool) -> None:
     index = 0
     while index < len(paragraphs):
         paragraph = paragraphs[index]
@@ -866,17 +872,10 @@ def _annotate_toc_region_candidates(paragraphs: list[ParagraphUnit]) -> None:
             look_ahead += 1
 
         if look_ahead - index >= 3:
-            paragraph.role = "body"
-            paragraph.structural_role = "toc_header"
-            paragraph.heading_level = None
-            paragraph.heading_source = None
+            _apply_or_hint_stage0_toc_role(paragraph, structural_role="toc_header", signal_only=signal_only)
             for toc_index in range(index + 1, look_ahead):
                 toc_paragraph = paragraphs[toc_index]
-                if toc_paragraph.role == "heading" and toc_paragraph.heading_source != "explicit":
-                    toc_paragraph.role = "body"
-                    toc_paragraph.heading_level = None
-                    toc_paragraph.heading_source = None
-                toc_paragraph.structural_role = "toc_entry"
+                _apply_or_hint_stage0_toc_role(toc_paragraph, structural_role="toc_entry", signal_only=signal_only)
             index = look_ahead
             continue
 
@@ -889,6 +888,17 @@ def _is_toc_candidate_paragraph(paragraph: ParagraphUnit) -> bool:
     if paragraph.attached_to_asset_id is not None:
         return False
     return _is_toc_candidate_text(paragraph.text)
+
+
+def _apply_or_hint_stage0_toc_role(paragraph: ParagraphUnit, *, structural_role: str, signal_only: bool) -> None:
+    paragraph.heuristic_structural_role_hint = normalize_heuristic_structural_role_hint(structural_role)
+    if signal_only:
+        return
+    if paragraph.role == "heading" and paragraph.heading_source != "explicit":
+        paragraph.role = "body"
+        paragraph.heading_level = None
+        paragraph.heading_source = None
+    paragraph.structural_role = normalize_heuristic_structural_role_hint(structural_role) or "body"
 
 
 def _resolve_paragraph_boundary_normalization_settings() -> tuple[str, bool]:
@@ -1102,6 +1112,9 @@ def _write_layout_cleanup_report_artifact(
 def _assign_paragraph_identity(paragraph: ParagraphUnit, logical_index: int) -> None:
     if int(getattr(paragraph, "source_index", -1)) < 0:
         paragraph.source_index = logical_index
+    # logical_index is assigned only after the final extraction topology is known.
+    # It is the dense Stage 1/2/3 coordinate for the current paragraph list, while
+    # source_index and origin_raw_indexes retain provenance across earlier splits.
     paragraph.logical_index = logical_index
     paragraph.paragraph_id = f"p{logical_index:04d}"
     if not paragraph.structural_role or paragraph.structural_role == "body":

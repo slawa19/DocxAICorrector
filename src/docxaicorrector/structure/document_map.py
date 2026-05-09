@@ -8,20 +8,19 @@ from math import isclose
 import json
 import logging
 from pathlib import Path
-from queue import Queue
 import re
 from statistics import median, quantiles
-from threading import Thread
 import time
 from typing import Any, Callable, Protocol, cast
 
 from docxaicorrector.core.constants import PROMPTS_DIR, RUN_DIR
 from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, ParagraphUnit
 from docxaicorrector.core.models import DocumentMapOutlineEntry, DocumentMapReviewZone, DocumentMapTocEntry, DocumentMapTocRegion
+from docxaicorrector.core.models import normalize_heuristic_list_kind_hint, normalize_heuristic_role_hint, normalize_heuristic_structural_role_hint
 from docxaicorrector.generation._generation import normalize_model_output
 from docxaicorrector.generation.openai_response_utils import collect_response_text_traversal
-from docxaicorrector.image.shared import call_responses_create_with_retry
 from docxaicorrector.runtime.artifact_retention import STRUCTURE_MAPS_MAX_AGE_SECONDS, STRUCTURE_MAPS_MAX_COUNT, prune_artifact_dir
+from docxaicorrector.structure._responses_timeout import call_responses_with_hard_timeout
 
 
 _TOC_HEADER_VALUES = {"contents", "table of contents", "содержание"}
@@ -246,13 +245,25 @@ def _build_embedded_structure_hint_payload(
     payload: list[dict[str, object]] = []
     for hint in hints:
         text = str(getattr(hint, "text", "") or "").strip()
+        raw_role = getattr(hint, "role", None)
+        raw_structural_role = getattr(hint, "structural_role", None)
+        raw_list_kind = getattr(hint, "list_kind", None)
+        normalized_role = normalize_heuristic_role_hint(raw_role) or "body"
+        normalized_structural_role = normalize_heuristic_structural_role_hint(raw_structural_role) or "body"
+        normalized_list_kind = normalize_heuristic_list_kind_hint(raw_list_kind)
+        if raw_role and normalized_role == "body" and str(raw_role or "").strip().lower() != "body":
+            _LOGGER.warning("Ignoring invalid embedded structure role hint: %s", raw_role)
+        if raw_structural_role and normalized_structural_role == "body" and str(raw_structural_role or "").strip().lower() != "body":
+            _LOGGER.warning("Ignoring invalid embedded structural role hint: %s", raw_structural_role)
+        if raw_list_kind and normalized_list_kind is None:
+            _LOGGER.warning("Ignoring invalid embedded list kind hint: %s", raw_list_kind)
         payload.append(
             {
                 "t": text[:preview_limit].rstrip(),
-                "r": str(getattr(hint, "role", "body") or "body"),
-                "sr": str(getattr(hint, "structural_role", "body") or "body"),
+                "r": normalized_role,
+                "sr": normalized_structural_role,
                 "hl": getattr(hint, "heading_level", None),
-                "lk": getattr(hint, "list_kind", None),
+                "lk": normalized_list_kind,
                 "iso": _is_isolated_marker_text(text),
                 "scr": _is_scripture_reference_text(text),
             }
@@ -503,31 +514,17 @@ def _request_document_map_payload(
 
 
 def _call_document_map_responses_with_timeout(*, client: _ResponsesCreateClient, request_payload: dict[str, object], timeout: float) -> Any:
-    result_queue: Queue[tuple[str, object]] = Queue(maxsize=1)
-
-    def _run_request() -> None:
-        try:
-            response = call_responses_create_with_retry(
-                client,
-                request_payload,
-                max_retries=1,
-                retryable_error_predicate=lambda exc: False,
-            )
-        except Exception as exc:
-            result_queue.put(("error", exc))
-            return
-        result_queue.put(("ok", response))
-
-    worker = Thread(target=_run_request, name="document-map-request", daemon=True)
-    worker.start()
-    worker.join(timeout=max(0.001, timeout))
-    if worker.is_alive():
-        raise DocumentMapRequestTimeout(f"Document map request timed out after {timeout:.3f}s.")
-
-    status, payload = result_queue.get_nowait()
-    if status == "error":
-        raise cast(Exception, payload)
-    return payload
+    return call_responses_with_hard_timeout(
+        client=client,
+        request_payload=request_payload,
+        timeout=timeout,
+        thread_name="document-map-request",
+        logger=_LOGGER,
+        request_kind="document_map_request",
+        timeout_error_factory=lambda seconds: DocumentMapRequestTimeout(
+            f"Document map request timed out after {seconds:.3f}s."
+        ),
+    )
 
 
 def _build_document_map_user_prompt(
@@ -966,7 +963,7 @@ def _is_isolated_marker_text(text: str) -> bool:
 
 
 def _is_toc_pattern_hint(text: str, paragraph: ParagraphUnit) -> bool:
-    if getattr(paragraph, "heuristic_structural_role_hint", None) in {"toc_header", "toc_entry"}:
+    if normalize_heuristic_structural_role_hint(getattr(paragraph, "heuristic_structural_role_hint", None)) in {"toc_header", "toc_entry"}:
         return True
     if getattr(paragraph, "structural_role", None) in {"toc_header", "toc_entry"}:
         return True

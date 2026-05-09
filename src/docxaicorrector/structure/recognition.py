@@ -6,17 +6,15 @@ from collections.abc import Iterable, Sequence
 import logging
 import json
 from pathlib import Path
-from queue import Queue
 import re
-from threading import Thread
 import time
 from typing import Any, Callable, Protocol, cast
 
 from docxaicorrector.core.constants import PROMPTS_DIR
 from docxaicorrector.generation._generation import normalize_model_output
-from docxaicorrector.image.shared import call_responses_create_with_retry
 from docxaicorrector.core.models import DocumentMap, ParagraphClassification, ParagraphDescriptor, ParagraphUnit, StructureMap
 from docxaicorrector.generation.openai_response_utils import collect_response_text_traversal
+from docxaicorrector.structure._responses_timeout import call_responses_with_hard_timeout
 
 
 SYSTEM_PROMPT_PATH = PROMPTS_DIR / "structure_recognition_system.txt"
@@ -24,6 +22,8 @@ _LOGGER = logging.getLogger(__name__)
 _PIPELINE_BODY_STRUCTURAL_ROLES = {"epigraph", "attribution", "toc_entry", "toc_header", "dedication"}
 _VALID_AI_ROLES = {"heading", "body", "caption", "epigraph", "attribution", "toc_entry", "toc_header", "dedication", "list"}
 _VALID_AI_CONFIDENCES = {"high", "medium", "low"}
+_LOCKED_ROLE_CONFIDENCES = {"explicit", "adjacent"}
+_NON_OVERRIDEABLE_LOCKED_ROLES = {"image", "table", "caption"}
 _DESCRIPTOR_PREVIEW_CHARS = 600
 _MIN_TOKEN_BUDGET_PREVIEW_CHARS = 120
 STRUCTURE_RECOGNITION_PROMPT_VERSION = 2
@@ -305,15 +305,13 @@ def _is_allowed_by_document_map_anchor(
         return True
 
     if anchor.confidence == "high":
-        return _is_clearly_inconsistent_with_high_confidence_anchor(
-            paragraph,
-            classification,
-            anchor_role=anchor.role,
-        )
+        return False
 
     if anchor.confidence != "medium":
         return True
 
+    # Medium anchors stay advisory-only: they constrain weak local drift inside
+    # Stage 2 but do not become deterministic Stage 3 patch sources on their own.
     if classification.confidence != "high":
         return False
 
@@ -333,15 +331,26 @@ def apply_structure_map(
     allowed_confidences = {"high"} if min_confidence == "high" else {"high", "medium"}
     applied_heading_count = 0
     applied_classified_count = 0
+    reconciliation_patches_applied = 0
+    reconciliation_locked_overrides_applied = 0
+    reconciliation_locked_overrides_skipped = 0
     for paragraph in paragraphs:
-        if paragraph.role_confidence in {"explicit", "adjacent"}:
-            continue
-
         logical_index = int(getattr(paragraph, "logical_index", paragraph.source_index))
         classification = structure_map.get(logical_index)
         if classification is None or classification.confidence not in allowed_confidences:
             continue
-        if not _is_allowed_by_document_map_anchor(
+        is_locked = paragraph.role_confidence in _LOCKED_ROLE_CONFIDENCES
+        if is_locked:
+            if not _can_apply_locked_reconciliation_override(
+                paragraph,
+                classification,
+                document_map=document_map,
+            ):
+                if classification.rationale == "document_map_reconciliation":
+                    reconciliation_locked_overrides_skipped += 1
+                continue
+            reconciliation_locked_overrides_applied += 1
+        elif not _is_allowed_by_document_map_anchor(
             paragraph,
             classification,
             document_map=document_map,
@@ -358,12 +367,53 @@ def apply_structure_map(
         elif mapped_role != "heading":
             paragraph.heading_level = None
         applied_classified_count += 1
+        if classification.rationale == "document_map_reconciliation":
+            reconciliation_patches_applied += 1
         if mapped_role == "heading":
             applied_heading_count += 1
     return {
         "ai_classified": applied_classified_count,
         "ai_headings": applied_heading_count,
+        "reconciliation_patches_applied": reconciliation_patches_applied,
+        "reconciliation_locked_overrides_applied": reconciliation_locked_overrides_applied,
+        "reconciliation_locked_overrides_skipped": reconciliation_locked_overrides_skipped,
     }
+
+
+def _can_apply_locked_reconciliation_override(
+    paragraph: ParagraphUnit,
+    classification: ParagraphClassification,
+    *,
+    document_map: DocumentMap | None,
+) -> bool:
+    if document_map is None:
+        return False
+    if classification.rationale != "document_map_reconciliation" or classification.confidence != "high":
+        return False
+
+    current_role = str(paragraph.role or "").strip().lower()
+    current_structural_role = str(paragraph.structural_role or "").strip().lower()
+    if current_role in _NON_OVERRIDEABLE_LOCKED_ROLES or current_structural_role in _NON_OVERRIDEABLE_LOCKED_ROLES:
+        return False
+    if getattr(paragraph, "attached_to_asset_id", None) is not None:
+        return False
+
+    logical_index = int(getattr(paragraph, "logical_index", paragraph.source_index))
+    anchor = document_map.get_anchor(logical_index)
+    if anchor is None or str(anchor.confidence or "").strip().lower() != "high":
+        return False
+
+    desired_role = _map_ai_role_to_pipeline_role(classification.role)
+    desired_heading_level = classification.heading_level if desired_role == "heading" else None
+    anchor_heading_level = anchor.heading_level if anchor.role == "heading" else None
+    if anchor.role != classification.role or anchor_heading_level != desired_heading_level:
+        return False
+
+    if current_role == "heading" and paragraph.heading_source == "explicit" and desired_role != "heading":
+        return False
+    if current_role == "heading" and paragraph.heading_source == "explicit" and desired_role == "heading" and desired_heading_level is None:
+        return False
+    return True
 
 
 def build_structure_map(
@@ -591,31 +641,17 @@ def _classify_descriptor_window(
 def _call_structure_responses_with_timeout(
     *, client: _ResponsesCreateClient, request_payload: dict[str, object], timeout: float
 ) -> Any:
-    result_queue: Queue[tuple[str, object]] = Queue(maxsize=1)
-
-    def _run_request() -> None:
-        try:
-            response = call_responses_create_with_retry(
-                client,
-                request_payload,
-                max_retries=1,
-                retryable_error_predicate=lambda exc: False,
-            )
-        except Exception as exc:
-            result_queue.put(("error", exc))
-            return
-        result_queue.put(("ok", response))
-
-    worker = Thread(target=_run_request, name="structure-recognition-request", daemon=True)
-    worker.start()
-    worker.join(timeout=max(0.001, timeout))
-    if worker.is_alive():
-        raise StructureRecognitionRequestTimeout(f"Structure recognition request timed out after {timeout:.3f}s.")
-
-    status, payload = result_queue.get_nowait()
-    if status == "error":
-        raise cast(Exception, payload)
-    return payload
+    return call_responses_with_hard_timeout(
+        client=client,
+        request_payload=request_payload,
+        timeout=timeout,
+        thread_name="structure-recognition-request",
+        logger=_LOGGER,
+        request_kind="structure_recognition_request",
+        timeout_error_factory=lambda seconds: StructureRecognitionRequestTimeout(
+            f"Structure recognition request timed out after {seconds:.3f}s."
+        ),
+    )
 
 
 def _parse_classification_payload(payload: str | Sequence[object]) -> list[ParagraphClassification]:

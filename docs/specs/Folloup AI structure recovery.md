@@ -56,17 +56,82 @@ cleanups, and test-strategy gaps.
 	`120s` for document-map stage timeout, `60s` for targeted reconciliation
 	timeout, and a narrowed `_run_structure_recognition(...)` regression proves
 	that the final post-targeted reconciled `StructureMap` is the one applied.
+- Stage 0 `signal_only` now holds consistently across structure repair and
+	inline-break TOC annotation: AI-first paths emit advisory hints without
+	mutating `role`, `structural_role`, `heading_level`, or `heading_source`
+	binding fields.
+- Targeted reconciliation now drops hallucinated out-of-scope classifications
+	with a warning instead of failing the whole Stage 3 pass.
+- Post-AI validation now has an explicit locked contract in code/tests that
+	`outline_coverage_ratio` and `document_map_present` remain advisory-only
+	fields for artifacts and diagnostics rather than readiness/escalation inputs.
+- Final reconciliation artifacts now preserve the union of deterministic patch
+	indexes from both reconciliation passes around targeted recall, so the audit
+	trail no longer loses first-pass patches.
+- The parent spec and owning code now define `logical_index` explicitly as the
+	dense final-topology coordinate for the extracted paragraph list used by
+	Stage 1/2/3, while `source_index` and `origin_raw_indexes` remain the
+	provenance contract.
+- Medium-confidence document-map anchors are now locked as advisory-only Stage
+	2 inputs and targeted-recall context, not deterministic Stage 3 patch
+	sources; the existing reconciliation regression coverage now represents an
+	explicit contract rather than an accidental asymmetry.
 - `_shrink_window_to_token_budget(...)` now keeps preview-first semantics but
 	stops re-running preview shrink for every smaller prefix: it attempts preview
 	shrink once for the full candidate window, then binary-searches the largest
 	minimum-preview prefix that fits the token budget.
+- Locked `explicit` / `adjacent` paragraphs now remain protected from ordinary
+	Stage 2 AI classifications, but audited high-confidence
+	`document_map_reconciliation` patches may override non-asset paragraphs when
+	the same high-confidence Stage 1 anchor matches the requested role/level.
+- Front-matter reporting now distinguishes advisory pre-body `body` paragraphs
+	(`front_matter_body_advisories`) from true `front_matter_leaks`.
+- Heuristic hint readers now share centralized whitelist/normalization helpers,
+	and embedded hint payload builders sanitize invalid hint values instead of
+	serializing arbitrary strings.
+- The three OpenAI hard-timeout thread wrappers now use one shared fallback
+	helper, preserving module-specific timeout exceptions while logging
+	`request_abandoned=True` on hard timeout.
+- Reconciliation artifacts now describe `patched_source_indexes` explicitly as a
+	compatibility alias for `patched_logical_indexes`, and the reconciliation
+	schema version is bumped for the extended report payload.
+- `anchor_disagreements_seen` is now the canonical reconciliation disagreement
+	field. Deprecated compatibility alias `anchor_conflicts` remains in payloads
+	for one cleanup pass / next reconciliation schema bump only; the planned
+	cleanup slice is: remove alias, update readers/docs/tests, then bump schema.
 - Focused duplicate-`source_index` regressions already cover Stage 2 and Stage 3,
 	and canonical structural diagnostic acceptance coverage already exists in
 	`tests/test_real_document_validation_corpus.py`.
 
 ## Priority Findings
 
-No open implementation findings remain from this follow-up review.
+No open findings remain from the previous mechanical follow-up checklist. The
+parent spec now tracks the remaining architecture hardening work in
+`Open Authority-Boundary Work`.
+
+Current focus for future work is the full parent-spec authority-boundary list:
+
+- keep Stage 0 heuristic hints out of final post-AI structural authority;
+- move high-anchor conflict arbitration out of local heuristics and into
+  reconciliation/reporting;
+- allow only audited high-confidence Stage 3 reconciliation patches to override
+  locked legacy state;
+- make post-AI validation phase-aware so diagnostic hints do not become final
+  readiness facts;
+- split strict `front_matter_leaks` from AI-approved front-matter body
+  advisories;
+- stop creating final TOC-region relations from pre-AI heuristic hints;
+- make default/fallback `DocumentMap` status explicit;
+- keep prompts from over-trusting heuristic hints;
+- use `DocumentMap.review_zones`, anchor conflicts, and TOC/body boundary
+  uncertainty to drive targeted recall;
+- make AI-first fallback stage-specific and visibly degraded instead of silently
+  returning to current heuristic roles;
+- keep segment detection subordinate to applied AI structure;
+- keep follow-up docs honest about completed checklist vs open authority work.
+
+These are AI-first authority-boundary tasks, not requests to add smarter
+heuristics.
 
 ## Removed As Stale
 

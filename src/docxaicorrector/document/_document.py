@@ -315,12 +315,14 @@ def build_semantic_blocks(
     *,
     relations: list | None = None,
     hard_boundary_paragraph_ids: set[str] | None = None,
+    structure_phase: str = "post_ai_final",
 ):
     return _build_semantic_blocks_impl(
         paragraphs,
         max_chars=max_chars,
         relations=relations,
         hard_boundary_paragraph_ids=hard_boundary_paragraph_ids,
+        structure_phase=structure_phase,
     )
 
 

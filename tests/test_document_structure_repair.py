@@ -1,3 +1,4 @@
+import docxaicorrector.document.structure_repair as structure_repair
 from docxaicorrector.core.models import ParagraphUnit
 from docxaicorrector.document.structure_repair import repair_pdf_derived_structure
 
@@ -248,6 +249,52 @@ def test_repair_pdf_derived_structure_ai_first_hints_split_numbered_list_lead_wi
     assert repaired[0].list_kind is None
     assert repaired[1].role == "body"
     assert report.repaired_numbered_items == 0
+
+
+def test_structure_repair_signal_only_helpers_preserve_existing_binding_fields():
+    toc_paragraph = _paragraph(0, "Contents", role="heading", structural_role="heading")
+    toc_paragraph.heading_level = 1
+    toc_paragraph.heading_source = "explicit"
+
+    structure_repair._apply_or_hint_toc_structural_role(
+        toc_paragraph,
+        structural_role="toc_header",
+        signal_only=True,
+    )
+
+    assert toc_paragraph.role == "heading"
+    assert toc_paragraph.structural_role == "heading"
+    assert toc_paragraph.heading_level == 1
+    assert toc_paragraph.heading_source == "explicit"
+    assert toc_paragraph.heuristic_structural_role_hint == "toc_header"
+
+    heading_candidate = _paragraph(1, "Introduction", role="heading", structural_role="heading")
+    heading_candidate.heading_level = 2
+    heading_candidate.heading_source = "explicit"
+
+    structure_repair._apply_or_hint_heading_candidate(heading_candidate, signal_only=True)
+
+    assert heading_candidate.role == "heading"
+    assert heading_candidate.structural_role == "heading"
+    assert heading_candidate.heading_level == 2
+    assert heading_candidate.heading_source == "explicit"
+    assert heading_candidate.heuristic_role_hint == "heading"
+    assert heading_candidate.heuristic_heading_level_hint == 2
+
+    list_candidate = _paragraph(2, "1. Item", role="heading", structural_role="heading")
+    list_candidate.heading_level = 3
+    list_candidate.heading_source = "explicit"
+    list_candidate.list_kind = "ordered"
+
+    structure_repair._apply_or_hint_list_candidate(list_candidate, list_kind="ordered", signal_only=True)
+
+    assert list_candidate.role == "heading"
+    assert list_candidate.structural_role == "heading"
+    assert list_candidate.heading_level == 3
+    assert list_candidate.heading_source == "explicit"
+    assert list_candidate.list_kind == "ordered"
+    assert list_candidate.heuristic_role_hint == "list"
+    assert list_candidate.heuristic_list_kind_hint == "ordered"
 
 
 def test_repair_pdf_derived_structure_splits_heading_prefix_from_numbered_list_start():

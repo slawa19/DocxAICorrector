@@ -136,13 +136,30 @@ def test_validate_structure_quality_counts_hinted_toc_region_and_hinted_heading_
     paragraphs[4].heuristic_role_hint = "heading"
     paragraphs[4].heuristic_heading_level_hint = 2
 
-    report = validate_structure_quality(paragraphs=paragraphs, app_config=_config())
+    report = validate_structure_quality(paragraphs=paragraphs, app_config=_config(), phase="pre_ai_diagnostic")
 
     assert report.large_front_matter_block_risk is True
     assert report.toc_region_bounded_count == 1
     assert report.expected_heading_candidates_from_toc == 2
     assert report.readiness_status == "ready"
     assert "large_front_matter_block_risk" not in report.readiness_reasons
+
+
+def test_validate_structure_quality_post_ai_readiness_does_not_treat_structural_hints_as_final_toc():
+    paragraphs = [
+        _paragraph(0, "Содержание", structural_role="body"),
+        _paragraph(1, "Глава 1........ 10", structural_role="body"),
+        _paragraph(2, "Глава 2........ 20", structural_role="body"),
+        _paragraph(3, "Первый обычный абзац.", structural_role="body"),
+    ]
+    paragraphs[0].heuristic_structural_role_hint = "toc_header"
+    paragraphs[1].heuristic_structural_role_hint = "toc_entry"
+    paragraphs[2].heuristic_structural_role_hint = "toc_entry"
+
+    report = validate_structure_quality(paragraphs=paragraphs, app_config=_config(), phase="post_ai_readiness")
+
+    assert report.toc_region_bounded_count == 0
+    assert report.expected_heading_candidates_from_toc == 0
 
 
 def test_validate_structure_quality_blocks_large_front_matter_without_bounded_toc():
@@ -284,3 +301,32 @@ def test_validate_structure_quality_preserves_advisory_post_ai_fields():
 
     assert report.document_map_present is True
     assert report.outline_coverage_ratio == 0.5
+
+
+def test_validate_structure_quality_keeps_outline_coverage_ratio_advisory_only_for_gating():
+    paragraphs = [
+        _paragraph(0, "Chapter 1", role="heading", heading_source="ai"),
+        _paragraph(1, "Regular paragraph with enough words to avoid short-body risk escalation."),
+        _paragraph(2, "Another ordinary body paragraph with stable narrative structure and additional detail here."),
+    ]
+
+    baseline = validate_structure_quality(
+        paragraphs=paragraphs,
+        app_config=_config(),
+        document_map_present=False,
+        outline_coverage_ratio=None,
+    )
+    low_coverage = validate_structure_quality(
+        paragraphs=paragraphs,
+        app_config=_config(),
+        document_map_present=True,
+        outline_coverage_ratio=0.0,
+    )
+
+    assert baseline.escalation_recommended is False
+    assert low_coverage.escalation_recommended is False
+    assert baseline.escalation_reasons == low_coverage.escalation_reasons
+    assert baseline.readiness_status == low_coverage.readiness_status == "ready"
+    assert baseline.readiness_reasons == low_coverage.readiness_reasons == ()
+    assert low_coverage.document_map_present is True
+    assert low_coverage.outline_coverage_ratio == 0.0

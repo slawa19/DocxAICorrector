@@ -407,6 +407,145 @@ def test_apply_structure_map_respects_explicit_and_adjacent_priority_rules():
     assert heuristic_heading.heading_source is None
 
 
+def test_apply_structure_map_allows_high_confidence_reconciliation_override_for_locked_bodyish_paragraph():
+    locked_body = _paragraph(source_index=0, text="Содержание", role_confidence="explicit")
+    locked_body.logical_index = 10
+    structure_map = StructureMap(
+        classifications={
+            10: ParagraphClassification(
+                index=10,
+                role="toc_entry",
+                heading_level=None,
+                confidence="high",
+                rationale="document_map_reconciliation",
+            ),
+        },
+        model_used="gpt-4o-mini",
+        total_tokens_used=10,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+    document_map = DocumentMap(
+        body_start_logical_index=20,
+        toc_region=None,
+        outline=(),
+        paragraph_anchors={10: DocumentMapAnchor(role="toc_entry", heading_level=None, confidence="high")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+
+    metrics = structure_recognition.apply_structure_map(
+        [locked_body],
+        structure_map,
+        document_map=document_map,
+    )
+
+    assert locked_body.role == "body"
+    assert locked_body.structural_role == "toc_entry"
+    assert locked_body.role_confidence == "ai"
+    assert metrics["reconciliation_patches_applied"] == 1
+    assert metrics["reconciliation_locked_overrides_applied"] == 1
+    assert metrics["reconciliation_locked_overrides_skipped"] == 0
+
+
+def test_apply_structure_map_skips_locked_reconciliation_override_for_explicit_heading_demotion():
+    explicit_heading = _paragraph(
+        source_index=0,
+        text="ГЛАВА 1",
+        role="heading",
+        structural_role="heading",
+        role_confidence="explicit",
+        heading_level=1,
+        heading_source="explicit",
+    )
+    explicit_heading.logical_index = 10
+    structure_map = StructureMap(
+        classifications={
+            10: ParagraphClassification(
+                index=10,
+                role="body",
+                heading_level=None,
+                confidence="high",
+                rationale="document_map_reconciliation",
+            ),
+        },
+        model_used="gpt-4o-mini",
+        total_tokens_used=10,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(),
+        paragraph_anchors={10: DocumentMapAnchor(role="body", heading_level=None, confidence="high")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+
+    metrics = structure_recognition.apply_structure_map(
+        [explicit_heading],
+        structure_map,
+        document_map=document_map,
+    )
+
+    assert explicit_heading.role == "heading"
+    assert explicit_heading.role_confidence == "explicit"
+    assert metrics["reconciliation_patches_applied"] == 0
+    assert metrics["reconciliation_locked_overrides_applied"] == 0
+    assert metrics["reconciliation_locked_overrides_skipped"] == 1
+
+
+def test_apply_structure_map_skips_locked_reconciliation_override_for_adjacent_caption():
+    adjacent_caption = _paragraph(source_index=0, text="Рисунок 1", role="caption", structural_role="caption", role_confidence="adjacent")
+    adjacent_caption.logical_index = 10
+    structure_map = StructureMap(
+        classifications={
+            10: ParagraphClassification(
+                index=10,
+                role="body",
+                heading_level=None,
+                confidence="high",
+                rationale="document_map_reconciliation",
+            ),
+        },
+        model_used="gpt-4o-mini",
+        total_tokens_used=10,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(),
+        paragraph_anchors={10: DocumentMapAnchor(role="body", heading_level=None, confidence="high")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+
+    metrics = structure_recognition.apply_structure_map(
+        [adjacent_caption],
+        structure_map,
+        document_map=document_map,
+    )
+
+    assert adjacent_caption.role == "caption"
+    assert adjacent_caption.role_confidence == "adjacent"
+    assert metrics["reconciliation_locked_overrides_skipped"] == 1
+
+
 def test_apply_structure_map_preserves_conflicting_high_confidence_anchor():
     paragraph = _paragraph(source_index=0, text="ГЛАВА 1")
     paragraph.logical_index = 10
@@ -442,7 +581,7 @@ def test_apply_structure_map_preserves_conflicting_high_confidence_anchor():
     assert paragraph.role_confidence == "heuristic"
 
 
-def test_apply_structure_map_allows_medium_confidence_demotion_when_high_heading_anchor_is_clearly_prose():
+def test_apply_structure_map_leaves_high_heading_anchor_conflict_for_reconciliation_when_stage2_votes_body():
     paragraph = _paragraph(
         source_index=0,
         text="Это длинный абзац обычной прозы с достаточным количеством слов, чтобы он был явно несовместим с ролью заголовка.",
@@ -477,12 +616,12 @@ def test_apply_structure_map_allows_medium_confidence_demotion_when_high_heading
     )
 
     assert paragraph.role == "body"
-    assert paragraph.role_confidence == "ai"
+    assert paragraph.role_confidence == "heuristic"
     assert paragraph.heading_level is None
     assert paragraph.heading_source is None
 
 
-def test_apply_structure_map_allows_medium_confidence_promotion_when_high_body_anchor_is_clearly_heading_like():
+def test_apply_structure_map_leaves_high_body_anchor_conflict_for_reconciliation_when_stage2_votes_heading():
     paragraph = _paragraph(
         source_index=0,
         text="ГЛАВА 1",
@@ -518,10 +657,10 @@ def test_apply_structure_map_allows_medium_confidence_promotion_when_high_body_a
         document_map=document_map,
     )
 
-    assert paragraph.role == "heading"
-    assert paragraph.role_confidence == "ai"
-    assert paragraph.heading_level == 1
-    assert paragraph.heading_source == "ai"
+    assert paragraph.role == "body"
+    assert paragraph.role_confidence == "heuristic"
+    assert paragraph.heading_level is None
+    assert paragraph.heading_source is None
 
 
 def test_apply_structure_map_blocks_medium_anchor_body_to_heading_promotion():
