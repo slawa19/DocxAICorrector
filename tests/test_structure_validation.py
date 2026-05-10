@@ -118,7 +118,7 @@ def test_validate_structure_quality_marks_large_front_matter_block_risk():
 
     assert report.large_front_matter_block_risk is True
     assert report.toc_region_bounded_count == 1
-    assert report.readiness_status == "ready"
+    assert report.readiness_status == "ready_with_warnings"
     assert "large_front_matter_block_risk" not in report.readiness_reasons
 
 
@@ -160,6 +160,21 @@ def test_validate_structure_quality_post_ai_readiness_does_not_treat_structural_
 
     assert report.toc_region_bounded_count == 0
     assert report.expected_heading_candidates_from_toc == 0
+
+
+def test_validate_structure_quality_post_ai_readiness_does_not_count_heuristic_headings_as_final_authority():
+    paragraphs = [_paragraph(index, f"Paragraph {index} with enough words to count as body text.") for index in range(120)]
+    paragraphs.extend(
+        [
+            _paragraph(1000, "Heading A", role="heading", heading_source="heuristic"),
+            _paragraph(1001, "Heading B", role="heading", heading_source="heuristic"),
+        ]
+    )
+
+    report = validate_structure_quality(paragraphs=paragraphs, app_config=_config(), phase="post_ai_readiness")
+
+    assert report.escalation_recommended is True
+    assert "heading_only_collapse_risk" in report.escalation_reasons
 
 
 def test_validate_structure_quality_blocks_large_front_matter_without_bounded_toc():

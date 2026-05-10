@@ -236,89 +236,28 @@ def _is_anchor_consistent(
     return classification.heading_level == anchor_heading_level
 
 
-def _looks_clearly_prose_like(paragraph: ParagraphUnit) -> bool:
-    text = str(getattr(paragraph, "text", "") or "").strip()
-    if not text:
-        return False
-    words = [part for part in text.split() if part]
-    if len(words) >= 12:
-        return True
-    return len(text) >= 80 or text.endswith((".", "!", "?", "…"))
-
-
-def _looks_clearly_heading_like(paragraph: ParagraphUnit) -> bool:
-    text = str(getattr(paragraph, "text", "") or "").strip()
-    if not text:
-        return False
-    words = [part for part in text.split() if part]
-    alpha_chars = [char for char in text if char.isalpha()]
-    is_all_caps = bool(alpha_chars) and "".join(alpha_chars).upper() == "".join(alpha_chars)
-    return bool(
-        len(words) <= 10
-        and len(text) <= 80
-        and (
-            bool(getattr(paragraph, "is_bold", False))
-            or getattr(paragraph, "paragraph_alignment", None) == "center"
-            or is_all_caps
-            or getattr(paragraph, "heading_source", None) == "explicit"
-            or getattr(paragraph, "heading_level", None) is not None
-        )
-    )
-
-
-def _is_clearly_inconsistent_with_high_confidence_anchor(
-    paragraph: ParagraphUnit,
-    classification: ParagraphClassification,
-    *,
-    anchor_role: str,
-) -> bool:
-    if classification.role == anchor_role:
-        return False
-    if classification.confidence == "high":
-        return False
-    if anchor_role == "heading" and classification.role == "body":
-        return _looks_clearly_prose_like(paragraph)
-    if anchor_role == "body" and classification.role == "heading":
-        return _looks_clearly_heading_like(paragraph) and classification.heading_level is not None
-    return False
-
-
-def _is_allowed_by_document_map_anchor(
+def _has_document_map_anchor_conflict(
     paragraph: ParagraphUnit,
     classification: ParagraphClassification,
     *,
     document_map: DocumentMap | None,
 ) -> bool:
     if document_map is None:
-        return True
+        return False
 
     logical_index = int(getattr(paragraph, "logical_index", paragraph.source_index))
     anchor = document_map.get_anchor(logical_index)
     if anchor is None:
-        return True
+        return False
 
     if _is_anchor_consistent(
         classification,
         anchor_role=anchor.role,
         anchor_heading_level=anchor.heading_level,
     ):
-        return True
-
-    if anchor.confidence == "high":
         return False
 
-    if anchor.confidence != "medium":
-        return True
-
-    # Medium anchors stay advisory-only: they constrain weak local drift inside
-    # Stage 2 but do not become deterministic Stage 3 patch sources on their own.
-    if classification.confidence != "high":
-        return False
-
-    if anchor.role == "body" and classification.role == "heading":
-        return False
-
-    return True
+    return str(anchor.confidence or "").strip().lower() in {"high", "medium"}
 
 
 def apply_structure_map(
@@ -334,6 +273,7 @@ def apply_structure_map(
     reconciliation_patches_applied = 0
     reconciliation_locked_overrides_applied = 0
     reconciliation_locked_overrides_skipped = 0
+    anchor_conflicts_deferred = 0
     for paragraph in paragraphs:
         logical_index = int(getattr(paragraph, "logical_index", paragraph.source_index))
         classification = structure_map.get(logical_index)
@@ -350,11 +290,12 @@ def apply_structure_map(
                     reconciliation_locked_overrides_skipped += 1
                 continue
             reconciliation_locked_overrides_applied += 1
-        elif not _is_allowed_by_document_map_anchor(
+        elif _has_document_map_anchor_conflict(
             paragraph,
             classification,
             document_map=document_map,
         ):
+            anchor_conflicts_deferred += 1
             continue
 
         mapped_role = _map_ai_role_to_pipeline_role(classification.role)
@@ -377,6 +318,7 @@ def apply_structure_map(
         "reconciliation_patches_applied": reconciliation_patches_applied,
         "reconciliation_locked_overrides_applied": reconciliation_locked_overrides_applied,
         "reconciliation_locked_overrides_skipped": reconciliation_locked_overrides_skipped,
+        "anchor_conflicts_deferred": anchor_conflicts_deferred,
     }
 
 

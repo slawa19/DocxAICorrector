@@ -48,6 +48,7 @@ from docxaicorrector.document.segments import (
     resolve_segment_hard_boundary_paragraph_ids,
     validate_segment_coverage,
 )
+from docxaicorrector.document.structure_authority import get_effective_structural_role
 from docxaicorrector.structure.document_map import (
     DOCUMENT_MAP_DESCRIPTOR_SCHEMA_VERSION,
     DOCUMENT_MAP_POSTPROCESS_VERSION,
@@ -68,7 +69,9 @@ from docxaicorrector.structure.reconciliation import (
     RECONCILIATION_TARGETED_PROMPT_VERSION,
     ReconciliationReport,
     STRUCTURE_RECONCILIATION_SCHEMA_VERSION,
+    _build_targeted_selection,
     reconcile_with_document_map,
+    selection_has_authority_uncertainty_context,
     targeted_reclassify_with_reconciliation_context,
 )
 from docxaicorrector.structure.validation import StructureValidationReport, validate_structure_quality, write_structure_validation_debug_artifact
@@ -158,20 +161,30 @@ def _resolve_downstream_structure_phase(*, structure_ai_attempted: bool, structu
     return "post_ai_final"
 
 
-def _build_paragraph_relations_with_optional_phase(*, paragraphs, enabled_relation_kinds, structure_phase: str):
+def _build_paragraph_relations_with_optional_phase(*, paragraphs, enabled_relation_kinds, structure_phase: str, document_map=None):
     try:
         return build_paragraph_relations(
             paragraphs,
             enabled_relation_kinds=enabled_relation_kinds,
             structure_phase=structure_phase,
+            document_map=document_map,
         )
     except TypeError as exc:
-        if "structure_phase" not in str(exc):
+        if "structure_phase" not in str(exc) and "document_map" not in str(exc):
             raise
-        return build_paragraph_relations(
-            paragraphs,
-            enabled_relation_kinds=enabled_relation_kinds,
-        )
+        try:
+            return build_paragraph_relations(
+                paragraphs,
+                enabled_relation_kinds=enabled_relation_kinds,
+                structure_phase=structure_phase,
+            )
+        except TypeError as inner_exc:
+            if "structure_phase" not in str(inner_exc):
+                raise
+            return build_paragraph_relations(
+                paragraphs,
+                enabled_relation_kinds=enabled_relation_kinds,
+            )
 
 
 def _record_document_map_state(
@@ -220,6 +233,51 @@ def _record_ai_first_fallback(
     fallback_state["fallback_stage"] = fallback_stage
     fallback_state["fallback_reason"] = reason
     fallback_state["document_map_present"] = document_map_present
+
+
+def _finalize_ai_first_structure_summary(
+    *,
+    structure_summary: StructureRecognitionSummary,
+    fallback_state: Mapping[str, object] | None,
+    document_map_present: bool,
+) -> StructureRecognitionSummary:
+    normalized_summary = StructureRecognitionSummary.from_source(structure_summary)
+    fallback_state = fallback_state or {}
+    fallback_degraded = bool(fallback_state.get("ai_first_degraded", False))
+    fallback_stage = str(fallback_state.get("fallback_stage", "") or "")
+    fallback_reason = str(fallback_state.get("fallback_reason", "") or "")
+    resolved_document_map_present = (
+        normalized_summary.document_map_present
+        or bool(fallback_state.get("document_map_present", False))
+        or document_map_present
+    )
+
+    if fallback_degraded and not normalized_summary.ai_first_degraded:
+        return replace(
+            normalized_summary,
+            ai_first_degraded=True,
+            fallback_stage=fallback_stage,
+            fallback_reason=fallback_reason,
+            document_map_present=resolved_document_map_present,
+        )
+
+    if not normalized_summary.ai_first_degraded:
+        return normalized_summary
+
+    resolved_fallback_stage = normalized_summary.fallback_stage or fallback_stage
+    resolved_fallback_reason = normalized_summary.fallback_reason or fallback_reason
+    if (
+        resolved_fallback_stage != normalized_summary.fallback_stage
+        or resolved_fallback_reason != normalized_summary.fallback_reason
+        or resolved_document_map_present != normalized_summary.document_map_present
+    ):
+        return replace(
+            normalized_summary,
+            fallback_stage=resolved_fallback_stage,
+            fallback_reason=resolved_fallback_reason,
+            document_map_present=resolved_document_map_present,
+        )
+    return normalized_summary
 
 
 @dataclass
@@ -835,12 +893,19 @@ def _write_reconciliation_report_artifact(
                     "toc_entries_without_body_match": list(report.toc_entries_without_body_match),
                     "front_matter_leaks": list(report.front_matter_leaks),
                     "front_matter_body_advisories": list(report.front_matter_body_advisories),
+                    "anchor_disagreements_seen": list(report.anchor_disagreements_seen),
                     "targeted_recall_invoked": report.targeted_recall_invoked,
                     "targeted_recall_count": report.targeted_recall_count,
+                    "targeted_selected_logical_indexes": list(report.targeted_selected_logical_indexes),
+                    "targeted_selection_reasons": [
+                        {
+                            "logical_index": selection.logical_index,
+                            "reasons": list(selection.reasons),
+                        }
+                        for selection in report.targeted_selection_reasons
+                    ],
                     "outline_coverage_ratio": report.outline_coverage_ratio,
                     "patched_logical_indexes": list(report.patched_logical_indexes),
-                    # Compatibility alias for older consumers that still speak in source indexes.
-                    "patched_source_indexes": list(report.patched_source_indexes),
                 },
             },
             ensure_ascii=False,
@@ -1017,21 +1082,49 @@ def _run_structure_recognition(
                 structure_map,
             )
             initial_reconciliation_report = reconciliation_report
+            targeted_enabled = bool(app_config.get("structure_recovery_reconciliation_targeted_enabled", False))
             targeted_threshold = int(app_config.get("structure_recovery_reconciliation_targeted_threshold", 3) or 3)
-            if (
-                bool(app_config.get("structure_recovery_reconciliation_targeted_enabled", False))
-                and reconciliation_report.actionable_divergence_count > targeted_threshold
-            ):
+            targeted_max_paragraphs = int(app_config.get("structure_recovery_reconciliation_targeted_max_paragraphs", 60) or 60)
+            targeted_selection = None
+            invoke_targeted_recall = False
+            if targeted_enabled:
+                targeted_selection = _build_targeted_selection(
+                    paragraphs,
+                    document_map=document_map,
+                    report=reconciliation_report,
+                    max_paragraphs=targeted_max_paragraphs,
+                )
+                advisory_only_front_matter_context = bool(reconciliation_report.front_matter_body_advisories) and (
+                    reconciliation_report.actionable_divergence_count == 0
+                    and all(
+                        set(selection_reason.reasons).issubset({"body_start_neighborhood"})
+                        for selection_reason in targeted_selection.reasons
+                    )
+                )
+                invoke_targeted_recall = bool(targeted_selection.logical_indexes) and (
+                    reconciliation_report.actionable_divergence_count > targeted_threshold
+                    or (
+                        selection_has_authority_uncertainty_context(targeted_selection)
+                        and not advisory_only_front_matter_context
+                    )
+                )
+            if invoke_targeted_recall:
                 try:
+                    targeted_kwargs = {
+                        "client": get_client_fn(),
+                        "model": get_model_role_value(app_config, "structure_recognition"),
+                        "timeout": float(app_config.get("structure_recovery_reconciliation_targeted_timeout_seconds", 60) or 60),
+                        "max_paragraphs": targeted_max_paragraphs,
+                    }
+                    targeted_signature = inspect.signature(targeted_reclassify_with_reconciliation_context)
+                    if "selection" in targeted_signature.parameters:
+                        targeted_kwargs["selection"] = targeted_selection
                     structure_map = targeted_reclassify_with_reconciliation_context(
                         paragraphs,
                         document_map,
                         structure_map,
                         reconciliation_report,
-                        client=get_client_fn(),
-                        model=get_model_role_value(app_config, "structure_recognition"),
-                        timeout=float(app_config.get("structure_recovery_reconciliation_targeted_timeout_seconds", 60) or 60),
-                        max_paragraphs=int(app_config.get("structure_recovery_reconciliation_targeted_max_paragraphs", 60) or 60),
+                        **targeted_kwargs,
                     )
                 except (StructureRecognitionRequestTimeout, TimeoutError, RuntimeError) as exc:
                     reason = _format_ai_first_fallback_reason(exc)
@@ -1054,6 +1147,9 @@ def _run_structure_recognition(
                     anchor_disagreements_seen=reconciliation_report.anchor_disagreements_seen,
                     targeted_recall_invoked=True,
                     targeted_recall_count=1,
+                    targeted_selection_reasons=()
+                    if targeted_selection is None
+                    else targeted_selection.reasons,
                     outline_coverage_ratio=reconciliation_report.outline_coverage_ratio,
                     patched_logical_indexes=tuple(
                         sorted(
@@ -1084,8 +1180,9 @@ def _run_structure_recognition(
                 front_matter_leaks=list(reconciliation_report.front_matter_leaks),
                 front_matter_body_advisories=list(reconciliation_report.front_matter_body_advisories),
                 anchor_disagreements_seen=list(reconciliation_report.anchor_disagreements_seen),
-                anchor_conflicts=list(reconciliation_report.anchor_conflicts),
+                patched_logical_indexes=list(reconciliation_report.patched_logical_indexes),
                 targeted_recall_invoked=reconciliation_report.targeted_recall_invoked,
+                targeted_selected_logical_indexes=list(reconciliation_report.targeted_selected_logical_indexes),
             )
         except Exception as exc:
             log_event(
@@ -1639,6 +1736,7 @@ def _apply_first_block_composition_quality_gate(
     processing_operation: str,
     quality_gate_status: str,
     quality_gate_reasons: tuple[str, ...],
+    structure_phase: str = "post_ai_final",
 ) -> tuple[str, tuple[str, ...]]:
     if processing_operation != "translate" or not blocks:
         return quality_gate_status, quality_gate_reasons
@@ -1647,10 +1745,10 @@ def _apply_first_block_composition_quality_gate(
         return quality_gate_status, quality_gate_reasons
 
     additional_reasons: list[str] = []
-    if _block_has_toc_roles(first_block_paragraphs):
-        if _block_has_epigraph_roles(first_block_paragraphs):
+    if _block_has_toc_roles(first_block_paragraphs, structure_phase=structure_phase):
+        if _block_has_epigraph_roles(first_block_paragraphs, structure_phase=structure_phase):
             additional_reasons.append("first_block_mixed_toc_and_epigraph")
-        if _block_has_body_start_roles(first_block_paragraphs):
+        if _block_has_body_start_roles(first_block_paragraphs, structure_phase=structure_phase):
             additional_reasons.append("first_block_mixed_toc_and_body_start")
     if not additional_reasons:
         return quality_gate_status, quality_gate_reasons
@@ -1659,21 +1757,21 @@ def _apply_first_block_composition_quality_gate(
     return "warning", merged_reasons
 
 
-def _block_has_toc_roles(paragraphs: list) -> bool:
-    return any(str(getattr(paragraph, "structural_role", "") or "").strip().lower() in {"toc_header", "toc_entry"} for paragraph in paragraphs)
+def _block_has_toc_roles(paragraphs: list, *, structure_phase: str) -> bool:
+    return any(get_effective_structural_role(paragraph, phase=structure_phase) in {"toc_header", "toc_entry"} for paragraph in paragraphs)
 
 
-def _block_has_epigraph_roles(paragraphs: list) -> bool:
+def _block_has_epigraph_roles(paragraphs: list, *, structure_phase: str) -> bool:
     return any(
-        str(getattr(paragraph, "structural_role", "") or "").strip().lower() in {"epigraph", "attribution", "dedication"}
+        get_effective_structural_role(paragraph, phase=structure_phase) in {"epigraph", "attribution", "dedication"}
         for paragraph in paragraphs
     )
 
 
-def _block_has_body_start_roles(paragraphs: list) -> bool:
+def _block_has_body_start_roles(paragraphs: list, *, structure_phase: str) -> bool:
     for paragraph in paragraphs:
         role = str(getattr(paragraph, "role", "") or "").strip().lower()
-        structural_role = str(getattr(paragraph, "structural_role", "body") or "body").strip().lower() or "body"
+        structural_role = get_effective_structural_role(paragraph, phase=structure_phase)
         if role in {"heading", "body", "list"} and structural_role not in {"toc_header", "toc_entry", "epigraph", "attribution", "dedication"}:
             return True
     return False
@@ -1763,7 +1861,7 @@ def _build_semantic_blocks_with_optional_boundaries(*, paragraphs, max_chars: in
     return build_semantic_blocks(paragraphs, max_chars=max_chars, relations=relations)
 
 
-def _detect_document_segments_with_optional_phase(*, paragraphs, source_content_hash16: str, chunk_size: int):
+def _detect_document_segments_with_optional_phase(*, paragraphs, source_content_hash16: str, chunk_size: int, structure_phase: str):
     signature = inspect.signature(detect_document_segments)
     if "structure_phase" in signature.parameters:
         try:
@@ -1771,7 +1869,7 @@ def _detect_document_segments_with_optional_phase(*, paragraphs, source_content_
                 paragraphs,
                 source_content_hash16=source_content_hash16,
                 chunk_size=chunk_size,
-                structure_phase="post_ai_final",
+                structure_phase=structure_phase,
             )
         except TypeError:
             pass
@@ -2024,13 +2122,11 @@ def _prepare_document_for_processing(
         if should_run_ai
         else (None, StructureRecognitionSummary())
     )
-    if should_run_ai and not structure_summary.ai_first_degraded and bool(ai_first_fallback_state.get("ai_first_degraded", False)):
-        structure_summary = replace(
-            structure_summary,
-            ai_first_degraded=True,
-            fallback_stage=str(ai_first_fallback_state.get("fallback_stage", "") or ""),
-            fallback_reason=str(ai_first_fallback_state.get("fallback_reason", "") or ""),
-            document_map_present=bool(ai_first_fallback_state.get("document_map_present", False)),
+    if should_run_ai:
+        structure_summary = _finalize_ai_first_structure_summary(
+            structure_summary=structure_summary,
+            fallback_state=ai_first_fallback_state,
+            document_map_present=document_map is not None,
         )
     if should_run_ai and bool(app_config.get("structure_validation_enabled", True)):
         structure_validation_report = _run_structure_validation(
@@ -2055,12 +2151,17 @@ def _prepare_document_for_processing(
         structure_summary=structure_summary,
         app_config=app_config,
     )
+    downstream_structure_phase = _resolve_downstream_structure_phase(
+        structure_ai_attempted=structure_ai_attempted,
+        structure_summary=structure_summary,
+    )
     if _supports_segment_detection(paragraphs):
         source_content_hash16 = hashlib.sha256(source_bytes).hexdigest()[:16]
         segments, segment_diagnostics, structure_fingerprint = _detect_document_segments_with_optional_phase(
             paragraphs=paragraphs,
             source_content_hash16=source_content_hash16,
             chunk_size=chunk_size,
+            structure_phase=downstream_structure_phase,
         )
         for segment in segments:
             for index in range(segment.start_paragraph_index, segment.end_paragraph_index + 1):
@@ -2113,10 +2214,6 @@ def _prepare_document_for_processing(
             "conversion_backend": conversion_backend,
         },
     )
-    downstream_structure_phase = _resolve_downstream_structure_phase(
-        structure_ai_attempted=structure_ai_attempted,
-        structure_summary=structure_summary,
-    )
     downstream_relations = relations
     if structure_ai_attempted:
         relation_normalization_enabled = bool(app_config.get("relation_normalization_enabled", True))
@@ -2133,6 +2230,7 @@ def _prepare_document_for_processing(
                 paragraphs=paragraphs,
                 enabled_relation_kinds=enabled_relation_kinds,
                 structure_phase=downstream_structure_phase,
+                document_map=document_map,
             )
             downstream_relations = relations
         except Exception as exc:
@@ -2162,6 +2260,7 @@ def _prepare_document_for_processing(
         processing_operation=processing_operation,
         quality_gate_status=quality_gate_status,
         quality_gate_reasons=quality_gate_reasons,
+        structure_phase=downstream_structure_phase,
     )
     structure_status_note = build_structure_processing_status_note(
         type(
@@ -2200,9 +2299,30 @@ def _prepare_document_for_processing(
         quality_gate_reasons=list(quality_gate_reasons),
         ai_classified_count=structure_summary.ai_classified_count,
         ai_heading_count=structure_summary.ai_heading_count,
-        first_block_has_toc=_block_has_toc_roles(list(getattr(blocks[0], "paragraphs", ()) or [])) if blocks else False,
-        first_block_has_epigraph=_block_has_epigraph_roles(list(getattr(blocks[0], "paragraphs", ()) or [])) if blocks else False,
-        first_block_has_body_start=_block_has_body_start_roles(list(getattr(blocks[0], "paragraphs", ()) or [])) if blocks else False,
+        first_block_has_toc=(
+            _block_has_toc_roles(
+                list(getattr(blocks[0], "paragraphs", ()) or []),
+                structure_phase=downstream_structure_phase,
+            )
+            if blocks
+            else False
+        ),
+        first_block_has_epigraph=(
+            _block_has_epigraph_roles(
+                list(getattr(blocks[0], "paragraphs", ()) or []),
+                structure_phase=downstream_structure_phase,
+            )
+            if blocks
+            else False
+        ),
+        first_block_has_body_start=(
+            _block_has_body_start_roles(
+                list(getattr(blocks[0], "paragraphs", ()) or []),
+                structure_phase=downstream_structure_phase,
+            )
+            if blocks
+            else False
+        ),
         structure_status_note=structure_status_note,
         **flatten_layout_cleanup_metrics(cleanup_report),
         **flatten_structure_repair_metrics(structure_repair_report),

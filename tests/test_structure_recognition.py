@@ -616,7 +616,7 @@ def test_apply_structure_map_preserves_conflicting_high_confidence_anchor():
         sampled_logical_indexes=(10,),
     )
 
-    structure_recognition.apply_structure_map(
+    metrics = structure_recognition.apply_structure_map(
         [paragraph],
         structure_map,
         document_map=document_map,
@@ -624,6 +624,7 @@ def test_apply_structure_map_preserves_conflicting_high_confidence_anchor():
 
     assert paragraph.role == "body"
     assert paragraph.role_confidence == "heuristic"
+    assert metrics["anchor_conflicts_deferred"] == 1
 
 
 def test_apply_structure_map_leaves_high_heading_anchor_conflict_for_reconciliation_when_stage2_votes_body():
@@ -654,7 +655,7 @@ def test_apply_structure_map_leaves_high_heading_anchor_conflict_for_reconciliat
         sampled_logical_indexes=(10,),
     )
 
-    structure_recognition.apply_structure_map(
+    metrics = structure_recognition.apply_structure_map(
         [paragraph],
         structure_map,
         document_map=document_map,
@@ -664,6 +665,7 @@ def test_apply_structure_map_leaves_high_heading_anchor_conflict_for_reconciliat
     assert paragraph.role_confidence == "heuristic"
     assert paragraph.heading_level is None
     assert paragraph.heading_source is None
+    assert metrics["anchor_conflicts_deferred"] == 1
 
 
 def test_apply_structure_map_leaves_high_body_anchor_conflict_for_reconciliation_when_stage2_votes_heading():
@@ -696,7 +698,7 @@ def test_apply_structure_map_leaves_high_body_anchor_conflict_for_reconciliation
         sampled_logical_indexes=(10,),
     )
 
-    structure_recognition.apply_structure_map(
+    metrics = structure_recognition.apply_structure_map(
         [paragraph],
         structure_map,
         document_map=document_map,
@@ -706,6 +708,7 @@ def test_apply_structure_map_leaves_high_body_anchor_conflict_for_reconciliation
     assert paragraph.role_confidence == "heuristic"
     assert paragraph.heading_level is None
     assert paragraph.heading_source is None
+    assert metrics["anchor_conflicts_deferred"] == 1
 
 
 def test_apply_structure_map_blocks_medium_anchor_body_to_heading_promotion():
@@ -733,7 +736,7 @@ def test_apply_structure_map_blocks_medium_anchor_body_to_heading_promotion():
         sampled_logical_indexes=(10,),
     )
 
-    structure_recognition.apply_structure_map(
+    metrics = structure_recognition.apply_structure_map(
         [paragraph],
         structure_map,
         document_map=document_map,
@@ -741,9 +744,10 @@ def test_apply_structure_map_blocks_medium_anchor_body_to_heading_promotion():
 
     assert paragraph.role == "body"
     assert paragraph.role_confidence == "heuristic"
+    assert metrics["anchor_conflicts_deferred"] == 1
 
 
-def test_apply_structure_map_allows_high_confidence_medium_anchor_refinement():
+def test_apply_structure_map_leaves_high_confidence_medium_anchor_conflict_for_reconciliation():
     paragraph = _paragraph(source_index=0, text="Цитата")
     paragraph.logical_index = 10
     structure_map = StructureMap(
@@ -768,7 +772,7 @@ def test_apply_structure_map_allows_high_confidence_medium_anchor_refinement():
         sampled_logical_indexes=(10,),
     )
 
-    structure_recognition.apply_structure_map(
+    metrics = structure_recognition.apply_structure_map(
         [paragraph],
         structure_map,
         min_confidence="high",
@@ -776,8 +780,47 @@ def test_apply_structure_map_allows_high_confidence_medium_anchor_refinement():
     )
 
     assert paragraph.role == "body"
-    assert paragraph.structural_role == "epigraph"
+    assert paragraph.structural_role == "body"
+    assert paragraph.role_confidence == "heuristic"
+    assert metrics["anchor_conflicts_deferred"] == 1
+
+
+def test_apply_structure_map_applies_consistent_medium_anchor_classification_without_conflict_metric():
+    paragraph = _paragraph(source_index=0, text="Раздел 1")
+    paragraph.logical_index = 10
+    structure_map = StructureMap(
+        classifications={
+            10: ParagraphClassification(index=10, role="heading", heading_level=2, confidence="high"),
+        },
+        model_used="gpt-4o-mini",
+        total_tokens_used=10,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=2, confidence="medium")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+
+    metrics = structure_recognition.apply_structure_map(
+        [paragraph],
+        structure_map,
+        min_confidence="high",
+        document_map=document_map,
+    )
+
+    assert paragraph.role == "heading"
+    assert paragraph.heading_level == 2
     assert paragraph.role_confidence == "ai"
+    assert metrics["anchor_conflicts_deferred"] == 0
 
 
 def test_apply_structure_map_uses_logical_index_for_duplicate_source_indexes():

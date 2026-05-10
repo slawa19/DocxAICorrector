@@ -6,6 +6,8 @@ from pathlib import Path
 from docxaicorrector.document.structure_authority import get_effective_structural_role, phase_uses_advisory_hints
 from docxaicorrector.runtime.artifact_retention import prune_artifact_dir
 from docxaicorrector.core.models import (
+    DocumentMap,
+    DocumentMapTocRegion,
     RELATION_NORMALIZATION_KIND_VALUES,
     ParagraphRelation,
     ParagraphRelationDecision,
@@ -15,7 +17,9 @@ from docxaicorrector.core.models import (
 
 
 TOC_ENTRY_PATTERN = re.compile(r"^.{1,120}(?:\.{2,}|\s{2,})\d+\s*$")
-RELATION_NORMALIZATION_REPORT_VERSION = 2
+RELATION_NORMALIZATION_REPORT_VERSION = 3
+_TOC_REGION_RELATION_KIND = "toc_region"
+_TOC_REGION_CANDIDATE_RELATION_KIND = "toc_region_candidate"
 
 
 def resolve_effective_relation_kinds() -> tuple[str, ...]:
@@ -30,6 +34,7 @@ def build_paragraph_relations(
     *,
     enabled_relation_kinds: tuple[str, ...] | list[str] | set[str] | None = None,
     structure_phase: str = "post_ai_final",
+    document_map: DocumentMap | None = None,
 ) -> tuple[list[ParagraphRelation], RelationNormalizationReport]:
     relations: list[ParagraphRelation] = []
     decisions: list[ParagraphRelationDecision] = []
@@ -45,6 +50,7 @@ def build_paragraph_relations(
         member_paragraph_ids: tuple[str, ...],
         anchor_asset_id: str | None = None,
         rationale: tuple[str, ...] = (),
+        structure_source: str | None = None,
     ) -> None:
         nonlocal next_relation_id
         relation_id = f"rel_{next_relation_id:04d}"
@@ -68,7 +74,7 @@ def build_paragraph_relations(
                 anchor_asset_id=anchor_asset_id,
                 reasons=rationale,
                 structure_phase=structure_phase,
-                structure_source=decision_structure_source,
+                structure_source=structure_source or decision_structure_source,
             )
         )
 
@@ -165,55 +171,66 @@ def build_paragraph_relations(
                 rationale=("adjacent_epigraph_attribution",),
             )
 
-    index = 0
-    while index < len(paragraphs):
-        paragraph = paragraphs[index]
-        if _is_toc_header_paragraph(paragraph, structure_phase=structure_phase):
-            member_indexes = [index]
-            look_ahead = index + 1
-            while look_ahead < len(paragraphs) and _is_toc_entry_paragraph(paragraphs[look_ahead], structure_phase=structure_phase):
-                member_indexes.append(look_ahead)
-                look_ahead += 1
-            if len(member_indexes) >= 2:
-                if "toc_region" in enabled_kinds:
-                    append_relation(
-                        relation_kind="toc_region",
-                        member_paragraph_ids=tuple(
-                            paragraphs[member_index].paragraph_id or f"p{member_index:04d}" for member_index in member_indexes
-                        ),
-                        rationale=("toc_header_with_entries",),
-                    )
-                index = look_ahead
-                continue
-            append_rejection(
-                relation_kind="toc_region",
-                member_paragraph_ids=((paragraph.paragraph_id or f"p{index:04d}"),),
-                reasons=("toc_header_without_entries",),
-            )
+    if _is_document_map_projected_toc_phase(structure_phase, document_map=document_map):
+        _append_document_map_toc_region(
+            paragraphs=paragraphs,
+            document_map=document_map,
+            enabled_kinds=enabled_kinds,
+            append_relation=append_relation,
+            append_rejection=append_rejection,
+        )
+    else:
+        index = 0
+        while index < len(paragraphs):
+            paragraph = paragraphs[index]
+            if _is_toc_header_paragraph(paragraph, structure_phase=structure_phase):
+                member_indexes = [index]
+                look_ahead = index + 1
+                while look_ahead < len(paragraphs) and _is_toc_entry_paragraph(paragraphs[look_ahead], structure_phase=structure_phase):
+                    member_indexes.append(look_ahead)
+                    look_ahead += 1
+                if len(member_indexes) >= 2:
+                    toc_relation_kind = _resolve_toc_relation_kind(structure_phase)
+                    if _toc_relation_kind_enabled(enabled_kinds, structure_phase=structure_phase):
+                        append_relation(
+                            relation_kind=toc_relation_kind,
+                            member_paragraph_ids=tuple(
+                                paragraphs[member_index].paragraph_id or f"p{member_index:04d}" for member_index in member_indexes
+                            ),
+                            rationale=("toc_header_with_entries",),
+                        )
+                    index = look_ahead
+                    continue
+                append_rejection(
+                    relation_kind=_resolve_toc_relation_kind(structure_phase),
+                    member_paragraph_ids=((paragraph.paragraph_id or f"p{index:04d}"),),
+                    reasons=("toc_header_without_entries",),
+                )
 
-        if _is_toc_entry_paragraph(paragraph, structure_phase=structure_phase):
-            member_indexes = [index]
-            look_ahead = index + 1
-            while look_ahead < len(paragraphs) and _is_toc_entry_paragraph(paragraphs[look_ahead], structure_phase=structure_phase):
-                member_indexes.append(look_ahead)
-                look_ahead += 1
-            if len(member_indexes) >= 2:
-                if "toc_region" in enabled_kinds:
-                    append_relation(
-                        relation_kind="toc_region",
-                        member_paragraph_ids=tuple(
-                            paragraphs[member_index].paragraph_id or f"p{member_index:04d}" for member_index in member_indexes
-                        ),
-                        rationale=("contiguous_toc_entries",),
-                    )
-                index = look_ahead
-                continue
-            append_rejection(
-                relation_kind="toc_region",
-                member_paragraph_ids=((paragraph.paragraph_id or f"p{index:04d}"),),
-                reasons=("isolated_toc_entry",),
-            )
-        index += 1
+            if _is_toc_entry_paragraph(paragraph, structure_phase=structure_phase):
+                member_indexes = [index]
+                look_ahead = index + 1
+                while look_ahead < len(paragraphs) and _is_toc_entry_paragraph(paragraphs[look_ahead], structure_phase=structure_phase):
+                    member_indexes.append(look_ahead)
+                    look_ahead += 1
+                if len(member_indexes) >= 2:
+                    toc_relation_kind = _resolve_toc_relation_kind(structure_phase)
+                    if _toc_relation_kind_enabled(enabled_kinds, structure_phase=structure_phase):
+                        append_relation(
+                            relation_kind=toc_relation_kind,
+                            member_paragraph_ids=tuple(
+                                paragraphs[member_index].paragraph_id or f"p{member_index:04d}" for member_index in member_indexes
+                            ),
+                            rationale=("contiguous_toc_entries",),
+                        )
+                    index = look_ahead
+                    continue
+                append_rejection(
+                    relation_kind=_resolve_toc_relation_kind(structure_phase),
+                    member_paragraph_ids=((paragraph.paragraph_id or f"p{index:04d}"),),
+                    reasons=("isolated_toc_entry",),
+                )
+            index += 1
 
     report = RelationNormalizationReport(
         total_relations=len(relations),
@@ -361,6 +378,74 @@ def _is_likely_attribution_text(text: str) -> bool:
 
 def _is_likely_toc_entry_text(text: str) -> bool:
     return TOC_ENTRY_PATTERN.match(text.strip()) is not None
+
+
+def _resolve_toc_relation_kind(structure_phase: str) -> str:
+    return _TOC_REGION_CANDIDATE_RELATION_KIND if phase_uses_advisory_hints(structure_phase) else _TOC_REGION_RELATION_KIND
+
+
+def _is_document_map_projected_toc_phase(structure_phase: str, *, document_map: DocumentMap | None) -> bool:
+    return not phase_uses_advisory_hints(structure_phase) and str(structure_phase or "").strip().lower() == "post_ai_final" and document_map is not None
+
+
+def _append_document_map_toc_region(
+    *,
+    paragraphs: list[ParagraphUnit],
+    document_map: DocumentMap | None,
+    enabled_kinds: set[str],
+    append_relation,
+    append_rejection,
+) -> None:
+    toc_region = getattr(document_map, "toc_region", None) if document_map is not None else None
+    if not _TOC_REGION_RELATION_KIND in enabled_kinds:
+        return
+    if toc_region is None:
+        return
+    member_paragraph_ids = _resolve_document_map_toc_member_ids(paragraphs, toc_region=toc_region)
+    if len(member_paragraph_ids) >= 2:
+        append_relation(
+            relation_kind=_TOC_REGION_RELATION_KIND,
+            member_paragraph_ids=member_paragraph_ids,
+            rationale=("document_map_toc_region",),
+            structure_source="post_ai_final_document_map",
+        )
+        return
+    append_rejection(
+        relation_kind=_TOC_REGION_RELATION_KIND,
+        member_paragraph_ids=member_paragraph_ids,
+        reasons=("document_map_toc_region_unresolved",),
+    )
+
+
+def _resolve_document_map_toc_member_ids(
+    paragraphs: list[ParagraphUnit],
+    *,
+    toc_region: DocumentMapTocRegion,
+) -> tuple[str, ...]:
+    paragraph_ids_by_logical_index = {
+        int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", -1))): (paragraph.paragraph_id or f"p{index:04d}")
+        for index, paragraph in enumerate(paragraphs)
+    }
+    logical_indexes = list(range(int(toc_region.start_logical_index), int(toc_region.end_logical_index) + 1))
+    header_logical_index = getattr(toc_region, "header_logical_index", None)
+    if header_logical_index is not None:
+        logical_indexes.insert(0, int(header_logical_index))
+    member_paragraph_ids: list[str] = []
+    seen_ids: set[str] = set()
+    for logical_index in logical_indexes:
+        paragraph_id = paragraph_ids_by_logical_index.get(logical_index)
+        if not paragraph_id or paragraph_id in seen_ids:
+            continue
+        seen_ids.add(paragraph_id)
+        member_paragraph_ids.append(paragraph_id)
+    return tuple(member_paragraph_ids)
+
+
+def _toc_relation_kind_enabled(enabled_kinds: set[str], *, structure_phase: str) -> bool:
+    toc_relation_kind = _resolve_toc_relation_kind(structure_phase)
+    if toc_relation_kind in enabled_kinds:
+        return True
+    return toc_relation_kind == _TOC_REGION_CANDIDATE_RELATION_KIND and _TOC_REGION_RELATION_KIND in enabled_kinds
 
 
 def _relation_structure_source(structure_phase: str) -> str:

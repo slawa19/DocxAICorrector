@@ -1,6 +1,10 @@
 import re
 
-from docxaicorrector.document.structure_authority import get_effective_structural_role, phase_uses_advisory_hints
+from docxaicorrector.document.structure_authority import (
+    get_effective_structural_role,
+    normalize_structure_phase,
+    phase_uses_advisory_hints,
+)
 from docxaicorrector.document.relations import build_paragraph_relations, resolve_effective_relation_kinds
 from docxaicorrector.core.models import DocumentBlock, ParagraphRelation, ParagraphUnit
 
@@ -310,6 +314,8 @@ def _build_semantic_block_units(
             parent[right_root] = left_root
 
     for relation in relations:
+        if not _relation_supports_semantic_grouping(relation, structure_phase=structure_phase):
+            continue
         member_indexes = [index_by_paragraph_id[paragraph_id] for paragraph_id in relation.member_paragraph_ids if paragraph_id in index_by_paragraph_id]
         if len(member_indexes) < 2:
             continue
@@ -360,6 +366,13 @@ def _paragraph_boundary_key(paragraph: ParagraphUnit) -> str:
     return ""
 
 
+def _relation_supports_semantic_grouping(relation: ParagraphRelation, *, structure_phase: str) -> bool:
+    allowed_relation_kinds = {"image_caption", "table_caption", "epigraph_attribution", "toc_region"}
+    if phase_uses_advisory_hints(structure_phase):
+        allowed_relation_kinds.add("toc_region_candidate")
+    return str(getattr(relation, "relation_kind", "") or "").strip() in allowed_relation_kinds
+
+
 def _indexes_cross_hard_boundary(
     paragraphs: list[ParagraphUnit],
     left_index: int,
@@ -391,9 +404,14 @@ def _is_toc_structural_role(paragraph: ParagraphUnit, *, structure_phase: str) -
 
 def _is_toc_only_paragraph(paragraph: ParagraphUnit, *, structure_phase: str = "post_ai_final") -> bool:
     embedded_kinds = _embedded_hint_boundary_kinds(paragraph)
-    if embedded_kinds:
+    if embedded_kinds and _phase_uses_embedded_toc_only_fallback(structure_phase):
         return all(kind in {"toc_header", "toc_entry"} for kind in embedded_kinds)
     return _is_toc_structural_role(paragraph, structure_phase=structure_phase)
+
+
+def _phase_uses_embedded_toc_only_fallback(structure_phase: str) -> bool:
+    normalized_phase = normalize_structure_phase(structure_phase)
+    return phase_uses_advisory_hints(normalized_phase) or normalized_phase == "ai_first_degraded_fallback"
 
 
 def _embedded_hint_boundary_kinds(paragraph: ParagraphUnit) -> tuple[str, ...]:

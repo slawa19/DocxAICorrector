@@ -1,6 +1,7 @@
 import docxaicorrector.core.config as config
+import docxaicorrector.document.semantic_blocks as semantic_blocks
 
-from docxaicorrector.core.models import DocumentBlock, EmbeddedStructureHint, ParagraphUnit
+from docxaicorrector.core.models import DocumentBlock, DocumentMap, DocumentMapTocRegion, EmbeddedStructureHint, ParagraphRelation, ParagraphUnit
 from docxaicorrector.document._document import (
     build_editing_jobs,
     build_marker_wrapped_block_text,
@@ -381,6 +382,65 @@ def test_build_editing_jobs_does_not_treat_mixed_embedded_toc_paragraph_as_toc_o
     assert jobs[0]["toc_paragraph_count"] == 0
 
 
+def test_build_editing_jobs_post_ai_final_ignores_toc_only_embedded_hints_for_final_authority():
+    compound = ParagraphUnit(text="Contents Chapter 1........ 12", role="body", structural_role="body", paragraph_id="p0000")
+    compound.heuristic_embedded_structure_hints = [
+        EmbeddedStructureHint(text="Contents", role="body", structural_role="toc_header"),
+        EmbeddedStructureHint(text="Chapter 1........ 12", role="body", structural_role="toc_entry"),
+    ]
+
+    edit_jobs = build_editing_jobs([DocumentBlock(paragraphs=[compound])], max_chars=3000)
+    audiobook_jobs = build_editing_jobs(
+        [DocumentBlock(paragraphs=[compound])],
+        max_chars=3000,
+        processing_operation="audiobook",
+    )
+
+    assert edit_jobs[0]["job_kind"] == "llm"
+    assert edit_jobs[0]["toc_dominant"] is False
+    assert edit_jobs[0]["toc_paragraph_count"] == 0
+    assert edit_jobs[0]["structure_source"] == "post_ai_final_binding"
+    assert audiobook_jobs[0]["narration_include"] is True
+
+
+def test_build_editing_jobs_pre_ai_diagnostic_uses_toc_only_embedded_hints_for_diagnostic_grouping():
+    compound = ParagraphUnit(text="Contents Chapter 1........ 12", role="body", structural_role="body", paragraph_id="p0000")
+    compound.heuristic_embedded_structure_hints = [
+        EmbeddedStructureHint(text="Contents", role="body", structural_role="toc_header"),
+        EmbeddedStructureHint(text="Chapter 1........ 12", role="body", structural_role="toc_entry"),
+    ]
+
+    jobs = build_editing_jobs(
+        [DocumentBlock(paragraphs=[compound])],
+        max_chars=3000,
+        structure_phase="pre_ai_diagnostic",
+    )
+
+    assert jobs[0]["job_kind"] == "passthrough"
+    assert jobs[0]["toc_dominant"] is True
+    assert jobs[0]["toc_paragraph_count"] == 1
+    assert jobs[0]["structure_source"] == "pre_ai_diagnostic_hint"
+
+
+def test_build_editing_jobs_degraded_fallback_keeps_toc_only_embedded_hints_as_explicit_fallback():
+    compound = ParagraphUnit(text="Contents Chapter 1........ 12", role="body", structural_role="body", paragraph_id="p0000")
+    compound.heuristic_embedded_structure_hints = [
+        EmbeddedStructureHint(text="Contents", role="body", structural_role="toc_header"),
+        EmbeddedStructureHint(text="Chapter 1........ 12", role="body", structural_role="toc_entry"),
+    ]
+
+    jobs = build_editing_jobs(
+        [DocumentBlock(paragraphs=[compound])],
+        max_chars=3000,
+        structure_phase="ai_first_degraded_fallback",
+    )
+
+    assert jobs[0]["job_kind"] == "passthrough"
+    assert jobs[0]["toc_dominant"] is True
+    assert jobs[0]["toc_paragraph_count"] == 1
+    assert jobs[0]["structure_source"] == "ai_first_degraded_fallback"
+
+
 def test_build_paragraph_relations_detects_caption_epigraph_and_toc_groups():
     paragraphs = [
         ParagraphUnit(text="[[DOCX_IMAGE_img_001]]", role="image", structural_role="image", paragraph_id="p0000", asset_id="img_001"),
@@ -525,8 +585,10 @@ def test_build_paragraph_relations_detects_toc_region_from_structural_hints():
 
     relations, report = build_paragraph_relations(paragraphs, structure_phase="pre_ai_diagnostic")
 
-    assert [relation.relation_kind for relation in relations] == ["toc_region"]
-    assert report.relation_counts == {"toc_region": 1}
+    assert [relation.relation_kind for relation in relations] == ["toc_region_candidate"]
+    assert report.relation_counts == {"toc_region_candidate": 1}
+    assert report.decisions[0].relation_kind == "toc_region_candidate"
+    assert report.decisions[0].structure_source == "pre_ai_diagnostic_hint"
 
 
 def test_build_paragraph_relations_detects_text_only_toc_region_in_pre_ai_diagnostic():
@@ -538,8 +600,78 @@ def test_build_paragraph_relations_detects_text_only_toc_region_in_pre_ai_diagno
 
     relations, report = build_paragraph_relations(paragraphs, structure_phase="pre_ai_diagnostic")
 
+    assert [relation.relation_kind for relation in relations] == ["toc_region_candidate"]
+    assert report.relation_counts == {"toc_region_candidate": 1}
+
+
+def test_build_paragraph_relations_projects_final_toc_region_from_document_map_authority():
+    paragraphs = [
+        ParagraphUnit(text="Contents", role="body", structural_role="body", paragraph_id="p0000", logical_index=0, source_index=0),
+        ParagraphUnit(text="Chapter 1........12", role="body", structural_role="body", paragraph_id="p0001", logical_index=1, source_index=1),
+        ParagraphUnit(text="Chapter 2........18", role="body", structural_role="body", paragraph_id="p0002", logical_index=2, source_index=2),
+    ]
+    document_map = DocumentMap(
+        body_start_logical_index=3,
+        toc_region=DocumentMapTocRegion(
+            start_logical_index=1,
+            end_logical_index=2,
+            header_logical_index=0,
+            entries=(),
+            confidence="high",
+        ),
+        outline=(),
+        paragraph_anchors={},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(0, 1, 2),
+    )
+
+    relations, report = build_paragraph_relations(
+        paragraphs,
+        structure_phase="post_ai_final",
+        document_map=document_map,
+    )
+
     assert [relation.relation_kind for relation in relations] == ["toc_region"]
+    assert relations[0].member_paragraph_ids == ("p0000", "p0001", "p0002")
+    assert relations[0].rationale == ("document_map_toc_region",)
     assert report.relation_counts == {"toc_region": 1}
+    assert report.decisions[0].structure_source == "post_ai_final_document_map"
+    assert report.decisions[0].relation_kind == "toc_region"
+
+
+def test_semantic_block_units_allow_toc_region_candidate_grouping_only_in_pre_ai_diagnostic():
+    paragraphs = [
+        ParagraphUnit(text="Contents", role="body", structural_role="body", paragraph_id="p0000"),
+        ParagraphUnit(text="Chapter 1........12", role="body", structural_role="body", paragraph_id="p0001"),
+        ParagraphUnit(text="Chapter 2........18", role="body", structural_role="body", paragraph_id="p0002"),
+    ]
+    candidate_relation = ParagraphRelation(
+        relation_id="rel-candidate",
+        relation_kind="toc_region_candidate",
+        member_paragraph_ids=("p0000", "p0001", "p0002"),
+    )
+
+    diagnostic_units = semantic_blocks._build_semantic_block_units(
+        paragraphs,
+        [candidate_relation],
+        structure_phase="pre_ai_diagnostic",
+    )
+    final_units = semantic_blocks._build_semantic_block_units(
+        paragraphs,
+        [candidate_relation],
+        structure_phase="post_ai_final",
+    )
+
+    assert [tuple(paragraph.paragraph_id for paragraph in unit) for unit in diagnostic_units] == [("p0000", "p0001", "p0002")]
+    assert [tuple(paragraph.paragraph_id for paragraph in unit) for unit in final_units] == [
+        ("p0000",),
+        ("p0001",),
+        ("p0002",),
+    ]
 
 
 def test_build_paragraph_relations_default_post_ai_mode_ignores_structural_hints():

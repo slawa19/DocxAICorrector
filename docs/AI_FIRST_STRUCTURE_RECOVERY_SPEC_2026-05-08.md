@@ -123,8 +123,8 @@ Additional verified constraints that affect implementation:
   medium/high `body` anchors become `front_matter_body_advisories`, while
   `front_matter_leaks` remains reserved for true pre-body structural conflicts.
 - Reconciliation artifacts should be consumed via `patched_logical_indexes`.
-  `patched_source_indexes` remains only as a compatibility alias for older
-  readers that still use the stale name.
+  `patched_source_indexes` is no longer part of the supported report/payload
+  contract.
 - `_split_compound_toc_aligned_paragraphs(...)` and
   `_split_toc_aligned_compound_paragraph(...)` in
   `document/structure_repair.py` can create multiple `ParagraphUnit` objects
@@ -1444,11 +1444,10 @@ Current risk:
 Required direction:
 
 1. Extend reconciliation reporting with anchor disagreement context for
-  targeted recall. The current transitional payload may still expose
-  deprecated compatibility alias `anchor_conflicts`, but canonical readers
-  should move to `anchor_disagreements_seen`; remove the alias on the next
-  reconciliation schema bump / cleanup pass after downstream readers, docs,
-  tests, and artifact expectations are updated.
+  targeted recall. Canonical readers should use
+  `anchor_disagreements_seen`; the deprecated compatibility alias
+  `anchor_conflicts` has been removed on the reconciliation schema bump after
+  downstream readers, docs, tests, and artifact expectations were updated.
   If needed, also add `review_zone_targeted_indexes`.
 2. Include high-severity `DocumentMap.review_zones`, `body_start_logical_index`
    neighbourhood, and TOC boundary neighbourhoods in targeted recall candidate

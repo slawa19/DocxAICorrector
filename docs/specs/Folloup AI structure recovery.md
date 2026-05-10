@@ -1,7 +1,7 @@
 # Follow-up: AI-First Structure Recovery
 
 Date: 2026-05-09
-Status: Mechanical follow-up checklist complete; broader authority-boundary hardening remains open
+Status: Mechanical follow-up checklist complete; relation-kind separation, final TOC relation authority, Stage 2/apply anchor-conflict arbitration cleanup, and the downstream semantic-block / first-block authority leak-proofing slices are closed, but broader authority-boundary hardening remains open
 Parent spec: `docs/AI_FIRST_STRUCTURE_RECOVERY_SPEC_2026-05-08.md`
 
 ## Scope
@@ -92,53 +92,83 @@ cleanups, and test-strategy gaps.
 - The three OpenAI hard-timeout thread wrappers now use one shared fallback
 	helper, preserving module-specific timeout exceptions while logging
 	`request_abandoned=True` on hard timeout.
-- Reconciliation artifacts now describe `patched_source_indexes` explicitly as a
-	compatibility alias for `patched_logical_indexes`, and the reconciliation
-	schema version is bumped for the extended report payload.
+- Reconciliation cleanup is now complete: reconciliation artifacts and
+	preparation-side logging expose only canonical
+	`patched_logical_indexes` / `anchor_disagreements_seen`, and the
+	reconciliation schema version is bumped for the alias-removal payload.
 - Stage 1 now carries an explicit `DocumentMap` status contract through
 	preparation, processing outcome logging, and preparation diagnostic snapshots,
 	so AI-first runs no longer hide Stage 1 loss behind an implicit
 	`document_map = None` state.
-- `anchor_disagreements_seen` is now the canonical reconciliation disagreement
-	field. Deprecated compatibility alias `anchor_conflicts` remains in payloads
-	for one cleanup pass / next reconciliation schema bump only; the planned
-	cleanup slice is: remove alias, update readers/docs/tests, then bump schema.
+- Targeted recall now uses bounded `DocumentMap.review_zones`, body-start and
+	TOC-boundary neighbourhoods, persists per-index selection reasons in the
+	reconciliation report/artifact payload for auditability, and preparation now
+	invokes the Stage 3 targeted pass from that bounded Stage 1 uncertainty
+	context instead of only through the classic divergence-count threshold.
+- Segment detection now prefers applied AI/explicit structure in final
+	post-AI mode, keeps typography fallback only for pre-AI diagnostic or
+	explicitly degraded runs, and records the boundary source accordingly.
+- Post-AI validation now treats heuristic-only heading/body facts as diagnostic
+	evidence rather than final readiness authority when running in
+	`post_ai_readiness` mode.
+- TOC relation authority is now split explicitly: pre-AI relation
+	normalization emits diagnostic `toc_region_candidate` relations, while the
+	AI-first post-AI rebuild projects final `toc_region` from
+	`DocumentMap.toc_region` when that authority exists; semantic-block grouping
+	ignores candidate relations in final post-AI mode even if they are
+	accidentally forwarded downstream.
+- Relation-kind separation is therefore no longer the main open item in this
+	follow-up.
+- Downstream post-AI leak-proofing is now explicit for semantic blocks and the
+	translate first-block composition gate: final TOC-only / mixed-structure
+	decisions read binding or applied structure, while advisory heuristic and
+	embedded hints remain diagnostic-only except for explicitly degraded fallback
+	paths that preserve current fallback behaviour.
+- Reconciliation targeting now accepts one canonical computed targeted
+	selection for chosen paragraphs, prompt payload, and persisted
+	`targeted_selection_reasons`, avoiding duplicate selection recomputation.
+- Medium- and high-confidence `DocumentMap` anchor conflicts are now treated as
+	Stage 2 proposals rather than hidden local arbitration inside
+	`apply_structure_map(...)`: conflicting classifications are deferred for
+	Stage 3/reconciliation, while the existing audited
+	`document_map_reconciliation` locked-override path remains intact.
+- `anchor_disagreements_seen` is now the only supported reconciliation
+	disagreement field; the deprecated `anchor_conflicts` alias and the stale
+	`patched_source_indexes` alias have been removed from report payloads,
+	artifact payloads, preparation logging, tests, and docs on the reconciliation
+	schema bump.
 - Focused duplicate-`source_index` regressions already cover Stage 2 and Stage 3,
 	and canonical structural diagnostic acceptance coverage already exists in
 	`tests/test_real_document_validation_corpus.py`.
 
 ## Priority Findings
 
-The previous mechanical follow-up checklist is complete, but the
-authority-boundary cleanup is not fully closed yet.
+The previous mechanical follow-up checklist is complete, and the substantive
+authority-boundary work is mostly closed. The remaining follow-up is now mainly
+about stabilization, maintenance, and optional diagnostic review rather than a
+large unresolved architecture gap.
 
-Still-open authority-boundary cleanup:
+Still-open follow-up framing:
 
 - keep the parent spec's broader architecture work tracked in
 	`Open Authority-Boundary Work`.
 
-Current focus for future work is the full parent-spec authority-boundary list:
+Current focus for future work is now narrower than the full parent-spec list:
 
-- keep Stage 0 heuristic hints out of final post-AI structural authority;
-- move high-anchor conflict arbitration out of local heuristics and into
-  reconciliation/reporting;
-- allow only audited high-confidence Stage 3 reconciliation patches to override
-  locked legacy state;
-- make post-AI validation phase-aware so diagnostic hints do not become final
-  readiness facts;
-- split strict `front_matter_leaks` from AI-approved front-matter body
-  advisories;
-- stop creating final TOC-region relations from pre-AI heuristic hints;
-- keep prompts from over-trusting heuristic hints;
-- use `DocumentMap.review_zones`, anchor conflicts, and TOC/body boundary
-  uncertainty to drive targeted recall;
-- make AI-first fallback stage-specific and visibly degraded instead of silently
-  returning to current heuristic roles;
-- keep segment detection subordinate to applied AI structure;
-- keep follow-up docs honest about completed checklist vs open authority work.
 
-These are AI-first authority-boundary tasks, not requests to add smarter
-heuristics.
+- keep optional downstream audits narrow if any new post-AI consumer is added
+	beyond the already hardened validation, segment-detection, semantic-block,
+	first-block-gate, relation-authority, reconciliation, and degraded-status
+	surfaces;
+- keep preparation-visible AI-first fallback status explicit if future test or
+	diagnostic work touches `structure_processing_outcome` or structural
+	snapshot plumbing;
+- continue small preparation-test maintenance work instead of broad test-architecture rewrites;
+- keep follow-up docs honest about completed slices versus the still-open
+	parent-spec authority-boundary backlog.
+
+These are stabilization and audit tasks, not requests to add smarter
+heuristics or reopen Stage 1/2/3 semantics.
 
 ## Removed As Stale
 
@@ -149,16 +179,16 @@ heuristics.
 
 ## Testing Strategy Review
 
-Current tests cover several important units: Stage 1 sampling/schema/retry paths, Stage 3 reconciliation basics, validation advisory fields, anchored classification wiring, cache-key anchor fingerprinting, and structure-validation artifact plumbing. The strategy is useful but does not yet fully protect the spec's highest-risk behaviours.
+Current tests cover several important units: Stage 1 sampling/schema/retry paths, Stage 3 reconciliation basics, validation advisory fields, anchored classification wiring, cache-key anchor fingerprinting, structure-validation artifact plumbing, and the main authority-boundary cleanup contracts. At this point the remaining work is test/doc stabilization, not a core architecture-hardening blocker.
 
-Required test additions:
+Optional review / milestone checks:
 
 - Review whether additional real-document structural diagnostic assertions are needed beyond the existing canonical `lietaer-pdf-first-20-structure-core` acceptance coverage in `tests/test_real_document_validation_corpus.py`.
 
 Simplicity improvements:
 
-- Replace repeated large `app_config` dictionaries in preparation tests with a small `_make_ai_first_config(**overrides)` helper or fixture.
-- Split over-mocked preparation tests into focused wiring tests: one for Stage 1 to Stage 3 orchestration, one for final application/validation, and one for downstream document building.
+- Keep repeated preparation `app_config` boilerplate behind a small local helper such as `_make_ai_first_config(**overrides)` instead of introducing deep fixture layers.
+- Continue opportunistic simplification of over-mocked preparation tests when a tiny helper can reduce wiring noise without hiding assertions.
 - Prefer narrow unit tests for coordinate and cache-key contracts before real-document diagnostics; reserve full real-document validation for milestone checks.
 
 ## Acceptance Criteria For Closing This Follow-up

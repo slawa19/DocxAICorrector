@@ -7,7 +7,7 @@ import re
 from collections.abc import Mapping, Sequence
 
 from docxaicorrector.core.models import ParagraphUnit
-from docxaicorrector.document.structure_authority import get_effective_structural_role
+from docxaicorrector.document.structure_authority import get_binding_structural_role, get_effective_structural_role, has_heading_signal, normalize_structure_phase, phase_uses_advisory_hints
 from docxaicorrector.document.roles import has_heading_text_signal, infer_heuristic_heading_level
 from docxaicorrector.document.structure_repair import _collect_toc_title_variants, _match_normalized_toc_title_prefix, _normalize_outline_text
 
@@ -227,7 +227,11 @@ def detect_document_segments(
     for start_index, end_index in toc_regions:
         toc_title_variants.update(_collect_toc_title_variants(paragraph_list, start=start_index, end=end_index))
 
-    heading_candidates = _collect_heading_candidates(paragraph_list, toc_title_variants=toc_title_variants)
+    heading_candidates = _collect_heading_candidates(
+        paragraph_list,
+        toc_title_variants=toc_title_variants,
+        structure_phase=structure_phase,
+    )
     fallback_max_chars = max(int(chunk_size or 0) * 4, _FALLBACK_SEGMENT_MIN_CHARS)
     segments: list[DocumentSegment] = []
 
@@ -448,13 +452,15 @@ def _collect_heading_candidates(
     paragraphs: Sequence[ParagraphUnit],
     *,
     toc_title_variants: dict[str, str],
+    structure_phase: str,
 ) -> list[_SegmentStartCandidate]:
+    normalized_phase = normalize_structure_phase(structure_phase)
     candidates: list[_SegmentStartCandidate] = []
     for index, paragraph in enumerate(paragraphs):
         text = str(getattr(paragraph, "text", "") or "").strip()
         if not text:
             continue
-        if str(getattr(paragraph, "structural_role", "") or "").strip().lower() in {
+        if _paragraph_structural_role(paragraph, structure_phase=normalized_phase) in {
             "toc_header",
             "toc_entry",
             "caption",
@@ -465,17 +471,18 @@ def _collect_heading_candidates(
         evidence: list[SegmentBoundaryEvidence] = []
         normalized_title = _normalize_segment_title(text)
         toc_match = _resolve_toc_match(text, normalized_title=normalized_title, toc_title_variants=toc_title_variants)
-        if getattr(paragraph, "role", "") == "heading":
-            evidence.extend(_build_heading_evidence(paragraph))
+        if _is_heading_candidate_from_applied_structure(paragraph, structure_phase=normalized_phase):
+            evidence.extend(_build_heading_evidence(paragraph, structure_phase=normalized_phase))
         if toc_match is not None:
             evidence.append(
                 SegmentBoundaryEvidence(
-                    source="toc_match",
-                    confidence="high" if getattr(paragraph, "role", "") == "heading" else "medium",
+                    source="document_map",
+                    confidence="high" if _is_heading_candidate_from_applied_structure(paragraph, structure_phase=normalized_phase) else "medium",
                     details={"matched_title": toc_match},
                 )
             )
-        if has_heading_text_signal(text):
+        allow_typography_fallback = _allows_typography_fallback(structure_phase=normalized_phase)
+        if allow_typography_fallback and has_heading_text_signal(text):
             evidence.append(
                 SegmentBoundaryEvidence(
                     source="numbering_pattern",
@@ -483,12 +490,12 @@ def _collect_heading_candidates(
                     details={"text_preview": text[:80]},
                 )
             )
-        if _has_typography_heading_signal(paragraph, text):
+        if allow_typography_fallback and _has_typography_heading_signal(paragraph, text):
             is_all_caps = _is_all_caps_text(text)
             evidence.append(
                 SegmentBoundaryEvidence(
-                    source="typography",
-                    confidence="medium" if getattr(paragraph, "role", "") == "heading" else "low",
+                    source="typography_fallback",
+                    confidence="medium" if _is_heading_candidate_from_applied_structure(paragraph, structure_phase=normalized_phase) else "low",
                     details={
                         "is_bold": bool(getattr(paragraph, "is_bold", False)),
                         "is_all_caps": is_all_caps,
@@ -499,7 +506,13 @@ def _collect_heading_candidates(
             )
         if not evidence:
             continue
-        if not _should_be_segment_candidate(paragraph, index=index, toc_match=toc_match, text=text):
+        if not _should_be_segment_candidate(
+            paragraph,
+            index=index,
+            toc_match=toc_match,
+            text=text,
+            structure_phase=normalized_phase,
+        ):
             continue
         level = _resolve_segment_level(paragraph, text)
         confidence = _resolve_confidence(evidence)
@@ -518,7 +531,7 @@ def _collect_heading_candidates(
     return candidates
 
 
-def _build_heading_evidence(paragraph: ParagraphUnit) -> list[SegmentBoundaryEvidence]:
+def _build_heading_evidence(paragraph: ParagraphUnit, *, structure_phase: str) -> list[SegmentBoundaryEvidence]:
     source = str(getattr(paragraph, "heading_source", "") or "").strip().lower()
     confidence = str(getattr(paragraph, "role_confidence", "") or "").strip().lower()
     if source == "explicit" or confidence == "explicit":
@@ -535,14 +548,16 @@ def _build_heading_evidence(paragraph: ParagraphUnit) -> list[SegmentBoundaryEvi
     if source == "ai" or confidence == "ai":
         return [
             SegmentBoundaryEvidence(
-                source="ai_structure",
+                source="ai_role",
                 confidence="high",
                 details={"heading_level": getattr(paragraph, "heading_level", None)},
             )
         ]
+    if not phase_uses_advisory_hints(structure_phase):
+        return []
     return [
         SegmentBoundaryEvidence(
-            source="fallback" if source == "" else source,
+            source="typography_fallback" if source == "" else source,
             confidence="medium",
             details={"heading_level": getattr(paragraph, "heading_level", None)},
         )
@@ -558,9 +573,16 @@ def _resolve_toc_match(text: str, *, normalized_title: str, toc_title_variants: 
     return matched_prefix[0]
 
 
-def _should_be_segment_candidate(paragraph: ParagraphUnit, *, index: int, toc_match: str | None, text: str) -> bool:
-    role = str(getattr(paragraph, "role", "") or "").strip().lower()
-    structural_role = str(getattr(paragraph, "structural_role", "") or "").strip().lower()
+def _should_be_segment_candidate(
+    paragraph: ParagraphUnit,
+    *,
+    index: int,
+    toc_match: str | None,
+    text: str,
+    structure_phase: str,
+) -> bool:
+    role = _paragraph_role_for_phase(paragraph, structure_phase=structure_phase)
+    structural_role = _paragraph_structural_role(paragraph, structure_phase=structure_phase)
     if structural_role in {"epigraph", "attribution", "dedication"} and role != "heading":
         return False
     if role == "heading":
@@ -570,6 +592,8 @@ def _should_be_segment_candidate(paragraph: ParagraphUnit, *, index: int, toc_ma
         return True
     if toc_match is not None:
         return True
+    if not _allows_typography_fallback(structure_phase=structure_phase):
+        return False
     return _has_typography_heading_signal(paragraph, text) and has_heading_text_signal(text)
 
 
@@ -869,7 +893,7 @@ def _build_report_warnings(
 
 
 def _is_fallback_segment(segment: DocumentSegment) -> bool:
-    return any(evidence.source == "fallback" for evidence in segment.boundary_evidence)
+    return any(evidence.source in {"fallback", "typography_fallback"} for evidence in segment.boundary_evidence)
 
 
 def _resolve_range_structural_role(
@@ -883,11 +907,45 @@ def _resolve_range_structural_role(
     if selected and all(_is_toc_structural_role(paragraph, structure_phase="post_ai_final") for paragraph in selected):
         return "toc"
     if selected and all(
-        str(getattr(paragraph, "structural_role", "") or "").strip().lower() in {"epigraph", "attribution", "dedication", "body"}
+        get_binding_structural_role(paragraph) in {"epigraph", "attribution", "dedication", "body"}
         for paragraph in selected
     ) and start_index == 0:
         return "front_matter"
     return default_role
+
+
+def _allows_typography_fallback(*, structure_phase: str) -> bool:
+    normalized_phase = normalize_structure_phase(structure_phase)
+    if phase_uses_advisory_hints(normalized_phase):
+        return True
+    return normalized_phase == "ai_first_degraded_fallback"
+
+
+def _paragraph_role_for_phase(paragraph: ParagraphUnit, *, structure_phase: str) -> str:
+    normalized_phase = normalize_structure_phase(structure_phase)
+    role = str(getattr(paragraph, "role", "") or "").strip().lower()
+    if role != "heading":
+        if phase_uses_advisory_hints(normalized_phase) and has_heading_signal(paragraph, phase=normalized_phase):
+            return "heading"
+        return role
+    if _allows_typography_fallback(structure_phase=normalized_phase):
+        return role
+    source = str(getattr(paragraph, "heading_source", "") or "").strip().lower()
+    confidence = str(getattr(paragraph, "role_confidence", "") or "").strip().lower()
+    if source in {"explicit", "ai"} or confidence in {"explicit", "adjacent", "ai"}:
+        return role
+    return "body"
+
+
+def _paragraph_structural_role(paragraph: ParagraphUnit, *, structure_phase: str) -> str:
+    normalized_phase = normalize_structure_phase(structure_phase)
+    if _allows_typography_fallback(structure_phase=normalized_phase):
+        return get_effective_structural_role(paragraph, phase=normalized_phase)
+    return get_binding_structural_role(paragraph)
+
+
+def _is_heading_candidate_from_applied_structure(paragraph: ParagraphUnit, *, structure_phase: str) -> bool:
+    return _paragraph_role_for_phase(paragraph, structure_phase=structure_phase) == "heading"
 
 
 def _range_char_count(paragraphs: Sequence[ParagraphUnit], start_index: int, end_index: int) -> int:

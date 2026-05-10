@@ -16,12 +16,39 @@ from docxaicorrector.structure.recognition import build_paragraph_descriptors
 
 
 _LOGGER = logging.getLogger(__name__)
-STRUCTURE_RECONCILIATION_SCHEMA_VERSION = 5
-RECONCILIATION_TARGETED_PROMPT_VERSION = 1
+STRUCTURE_RECONCILIATION_SCHEMA_VERSION = 7
+RECONCILIATION_TARGETED_PROMPT_VERSION = 2
 RECONCILIATION_TARGETED_DESCRIPTOR_SCHEMA_VERSION = 1
 _FRONT_MATTER_ALLOWED_ROLES = frozenset({"toc_entry", "toc_header", "dedication", "epigraph", "attribution"})
 _RECONCILIATION_TARGETED_SYSTEM_PROMPT_PATH = PROMPTS_DIR / "reconciliation_targeted_system.txt"
 _OUTLINE_HEADING_MATCH_DISTANCE = 1
+_TARGETED_SELECTION_REASONS = frozenset(
+    {
+        "missing_outline_entry",
+        "unexpected_heading",
+        "toc_entry_without_body_match",
+        "front_matter_leak",
+        "anchor_disagreement",
+        "review_zone",
+        "body_start_neighborhood",
+        "toc_boundary_neighborhood",
+    }
+)
+_TARGETED_INVOCATION_REASONS = frozenset({"review_zone", "body_start_neighborhood", "toc_boundary_neighborhood"})
+_HIGH_SEVERITY_REVIEW_ZONE_LEVELS = frozenset({"warning", "critical"})
+_TARGETED_NEIGHBORHOOD_RADIUS = 2
+
+
+@dataclass(frozen=True)
+class TargetedSelectionReason:
+    logical_index: int
+    reasons: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class TargetedSelection:
+    logical_indexes: tuple[int, ...] = ()
+    reasons: tuple[TargetedSelectionReason, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -34,6 +61,7 @@ class ReconciliationReport:
     anchor_disagreements_seen: tuple[int, ...] = ()
     targeted_recall_invoked: bool = False
     targeted_recall_count: int = 0
+    targeted_selection_reasons: tuple[TargetedSelectionReason, ...] = ()
     outline_coverage_ratio: float = 1.0
     patched_logical_indexes: tuple[int, ...] = ()
 
@@ -42,9 +70,12 @@ class ReconciliationReport:
         return len(self.patched_logical_indexes)
 
     @property
-    def patched_source_indexes(self) -> tuple[int, ...]:
-        # Compatibility alias: reconciliation uses logical indexes end-to-end.
-        return self.patched_logical_indexes
+    def targeted_selected_logical_indexes(self) -> tuple[int, ...]:
+        return tuple(selection.logical_index for selection in self.targeted_selection_reasons)
+
+    @property
+    def targeted_selection_count(self) -> int:
+        return len(self.targeted_selection_reasons)
 
     @property
     def missing_outline_entry_count(self) -> int:
@@ -67,14 +98,8 @@ class ReconciliationReport:
         return len(self.front_matter_body_advisories)
 
     @property
-    def anchor_conflict_count(self) -> int:
+    def anchor_disagreement_count(self) -> int:
         return len(self.anchor_disagreements_seen)
-
-    @property
-    def anchor_conflicts(self) -> tuple[int, ...]:
-        # Compatibility alias: the semantics are pre-patch disagreements seen
-        # before deterministic reconciliation applies high-confidence anchors.
-        return self.anchor_disagreements_seen
 
     @property
     def actionable_divergence_count(self) -> int:
@@ -83,7 +108,7 @@ class ReconciliationReport:
             + self.unexpected_heading_count
             + self.toc_entry_without_body_match_count
             + self.front_matter_leak_count
-            + self.anchor_conflict_count
+            + self.anchor_disagreement_count
         )
 
 
@@ -169,11 +194,20 @@ def targeted_reclassify_with_reconciliation_context(
     model: str,
     timeout: float,
     max_paragraphs: int = 60,
+    selection: TargetedSelection | None = None,
 ) -> StructureMap:
-    selected_paragraphs = _select_targeted_paragraphs(
+    selection = selection or _build_targeted_selection(
         paragraphs,
+        document_map=document_map,
         report=report,
         max_paragraphs=max_paragraphs,
+    )
+    selected_paragraphs = _select_targeted_paragraphs(
+        paragraphs,
+        document_map=document_map,
+        report=report,
+        max_paragraphs=max_paragraphs,
+        selection=selection,
     )
     if not selected_paragraphs or not str(model or "").strip():
         return structure_map
@@ -185,7 +219,7 @@ def targeted_reclassify_with_reconciliation_context(
     descriptors = build_paragraph_descriptors(selected_paragraphs, document_map=document_map)
     targeted_classifications, total_tokens = _request_targeted_classifications(
         descriptors=descriptors,
-        report=report,
+        report=_with_targeted_selection(report, selection=selection),
         client=client,
         model=model,
         timeout=timeout,
@@ -326,39 +360,144 @@ def _match_outline_heading_logical_index(
 def _select_targeted_paragraphs(
     paragraphs: Sequence[ParagraphUnit],
     *,
+    document_map: DocumentMap,
     report: ReconciliationReport,
     max_paragraphs: int,
+    selection: TargetedSelection | None = None,
 ) -> list[ParagraphUnit]:
+    selection = selection or _build_targeted_selection(
+        paragraphs,
+        document_map=document_map,
+        report=report,
+        max_paragraphs=max_paragraphs,
+    )
     limit = max(1, int(max_paragraphs or 0))
     ordered = sorted(paragraphs, key=lambda paragraph: int(getattr(paragraph, "logical_index", paragraph.source_index)))
     by_logical = {
         int(getattr(paragraph, "logical_index", paragraph.source_index)): paragraph
         for paragraph in ordered
     }
-    flagged_logical_indexes = tuple(
-        sorted(
-            dict.fromkeys(
-                [
-                    *report.missing_outline_entries,
-                    *report.unexpected_headings,
-                    *report.toc_entries_without_body_match,
-                    *report.front_matter_leaks,
-                    *report.anchor_disagreements_seen,
-                ]
-            )
-        )
-    )
-    selected_logical_indexes: list[int] = []
-    for logical_index in flagged_logical_indexes:
-        for candidate in range(logical_index - 2, logical_index + 3):
+    if limit <= 0:
+        return []
+    return [by_logical[index] for index in selection.logical_indexes if index in by_logical]
+
+
+def _build_targeted_selection(
+    paragraphs: Sequence[ParagraphUnit],
+    *,
+    document_map: DocumentMap,
+    report: ReconciliationReport,
+    max_paragraphs: int,
+) -> TargetedSelection:
+    limit = max(1, int(max_paragraphs or 0))
+    ordered = sorted(paragraphs, key=lambda paragraph: int(getattr(paragraph, "logical_index", paragraph.source_index)))
+    by_logical = {
+        int(getattr(paragraph, "logical_index", paragraph.source_index)): paragraph
+        for paragraph in ordered
+    }
+    selected_reason_map: dict[int, list[str]] = {}
+
+    def _add_candidates(candidates: Sequence[int], *, reason: str) -> None:
+        if reason not in _TARGETED_SELECTION_REASONS:
+            raise ValueError(f"Unsupported targeted selection reason: {reason}")
+        for candidate in candidates:
             if candidate not in by_logical:
                 continue
-            if candidate in selected_logical_indexes:
+            reasons = selected_reason_map.get(candidate)
+            if reasons is not None:
+                if reason not in reasons:
+                    reasons.append(reason)
                 continue
-            selected_logical_indexes.append(candidate)
-            if len(selected_logical_indexes) >= limit:
-                return [by_logical[index] for index in sorted(selected_logical_indexes)]
-    return [by_logical[index] for index in sorted(selected_logical_indexes)]
+            if len(selected_reason_map) >= limit:
+                continue
+            selected_reason_map[candidate] = [reason]
+
+    for logical_index in report.missing_outline_entries:
+        _add_candidates(_iter_interleaved_neighborhoods((int(logical_index),), radius=_TARGETED_NEIGHBORHOOD_RADIUS), reason="missing_outline_entry")
+    for logical_index in report.unexpected_headings:
+        _add_candidates(_iter_interleaved_neighborhoods((int(logical_index),), radius=_TARGETED_NEIGHBORHOOD_RADIUS), reason="unexpected_heading")
+    for logical_index in report.toc_entries_without_body_match:
+        _add_candidates(
+            _iter_interleaved_neighborhoods((int(logical_index),), radius=_TARGETED_NEIGHBORHOOD_RADIUS),
+            reason="toc_entry_without_body_match",
+        )
+    for logical_index in report.front_matter_leaks:
+        _add_candidates(_iter_interleaved_neighborhoods((int(logical_index),), radius=_TARGETED_NEIGHBORHOOD_RADIUS), reason="front_matter_leak")
+    for logical_index in report.anchor_disagreements_seen:
+        _add_candidates(_iter_interleaved_neighborhoods((int(logical_index),), radius=_TARGETED_NEIGHBORHOOD_RADIUS), reason="anchor_disagreement")
+
+    for review_zone in document_map.review_zones or ():
+        severity = str(getattr(review_zone, "severity", "") or "").strip().lower()
+        if severity not in _HIGH_SEVERITY_REVIEW_ZONE_LEVELS:
+            continue
+        _add_candidates(
+            _iter_interleaved_neighborhoods(
+                (int(review_zone.start_logical_index), int(review_zone.end_logical_index)),
+                radius=_TARGETED_NEIGHBORHOOD_RADIUS,
+            ),
+            reason="review_zone",
+        )
+
+    _add_candidates(
+        _iter_interleaved_neighborhoods((int(document_map.body_start_logical_index or 0),), radius=_TARGETED_NEIGHBORHOOD_RADIUS),
+        reason="body_start_neighborhood",
+    )
+
+    toc_region = document_map.toc_region
+    if toc_region is not None:
+        _add_candidates(
+            _iter_interleaved_neighborhoods(
+                (int(toc_region.start_logical_index), int(toc_region.end_logical_index)),
+                radius=_TARGETED_NEIGHBORHOOD_RADIUS,
+            ),
+            reason="toc_boundary_neighborhood",
+        )
+
+    logical_indexes = tuple(sorted(selected_reason_map))
+    return TargetedSelection(
+        logical_indexes=logical_indexes,
+        reasons=tuple(
+            TargetedSelectionReason(logical_index=index, reasons=tuple(selected_reason_map[index]))
+            for index in logical_indexes
+        ),
+    )
+
+
+def _iter_interleaved_neighborhoods(centers: Sequence[int], *, radius: int) -> tuple[int, ...]:
+    unique_centers = tuple(dict.fromkeys(int(center) for center in centers))
+    candidates: list[int] = []
+    for offset in range(0, radius + 1):
+        for center in unique_centers:
+            if offset == 0:
+                candidates.append(center)
+                continue
+            candidates.append(center - offset)
+            candidates.append(center + offset)
+    return tuple(candidates)
+
+
+def _with_targeted_selection(report: ReconciliationReport, *, selection: TargetedSelection) -> ReconciliationReport:
+    return ReconciliationReport(
+        missing_outline_entries=report.missing_outline_entries,
+        unexpected_headings=report.unexpected_headings,
+        toc_entries_without_body_match=report.toc_entries_without_body_match,
+        front_matter_leaks=report.front_matter_leaks,
+        front_matter_body_advisories=report.front_matter_body_advisories,
+        anchor_disagreements_seen=report.anchor_disagreements_seen,
+        targeted_recall_invoked=report.targeted_recall_invoked,
+        targeted_recall_count=report.targeted_recall_count,
+        targeted_selection_reasons=selection.reasons,
+        outline_coverage_ratio=report.outline_coverage_ratio,
+        patched_logical_indexes=report.patched_logical_indexes,
+    )
+
+
+def selection_has_authority_uncertainty_context(selection: TargetedSelection) -> bool:
+    return any(
+        reason in _TARGETED_INVOCATION_REASONS
+        for selection_reason in selection.reasons
+        for reason in selection_reason.reasons
+    )
 
 
 def _request_targeted_classifications(
@@ -436,6 +575,7 @@ def _build_targeted_user_prompt(*, descriptors: Sequence[dict[str, object]], rep
         '"iso": isolated_marker, "toc": toc_candidate, "scr": scripture_reference_candidate, '
         '"anchor_r": optional_document_map_role, "anchor_l": optional_document_map_heading_level, '
         '"anchor_c": optional_document_map_confidence}\n\n'
+        "`targeted_selection_reasons` lists why each selected logical index is in scope.\n\n"
         "Reconciliation report:\n"
         f"{json.dumps(_report_payload(report), ensure_ascii=False)}\n\n"
         "Paragraphs:\n"
@@ -444,10 +584,6 @@ def _build_targeted_user_prompt(*, descriptors: Sequence[dict[str, object]], rep
 
 
 def _report_payload(report: ReconciliationReport) -> dict[str, object]:
-    # Compatibility policy: keep `anchor_conflicts` for one more cleanup pass
-    # and remove it on the next reconciliation schema bump after downstream
-    # readers/docs/tests have been updated to consume only
-    # `anchor_disagreements_seen`.
     return {
         "missing_outline_entries": list(report.missing_outline_entries),
         "unexpected_headings": list(report.unexpected_headings),
@@ -455,8 +591,14 @@ def _report_payload(report: ReconciliationReport) -> dict[str, object]:
         "front_matter_leaks": list(report.front_matter_leaks),
         "front_matter_body_advisories": list(report.front_matter_body_advisories),
         "anchor_disagreements_seen": list(report.anchor_disagreements_seen),
-        "anchor_conflicts": list(report.anchor_conflicts),
-        "anchor_conflicts_deprecated": True,
-        "anchor_conflicts_alias_of": "anchor_disagreements_seen",
+        "targeted_selected_logical_indexes": list(report.targeted_selected_logical_indexes),
+        "targeted_selection_reasons": [
+            {
+                "logical_index": selection.logical_index,
+                "reasons": list(selection.reasons),
+            }
+            for selection in report.targeted_selection_reasons
+        ],
         "outline_coverage_ratio": report.outline_coverage_ratio,
+        "patched_logical_indexes": list(report.patched_logical_indexes),
     }

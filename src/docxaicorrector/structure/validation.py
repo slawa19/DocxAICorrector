@@ -10,7 +10,7 @@ from typing import Any
 
 from docxaicorrector.core.constants import RUN_DIR
 from docxaicorrector.core.models import ParagraphUnit, StructureRepairReport
-from docxaicorrector.document.structure_authority import get_binding_structural_role, get_effective_structural_role, has_heading_signal
+from docxaicorrector.document.structure_authority import get_binding_structural_role, get_effective_structural_role, has_heading_signal, normalize_structure_phase, phase_uses_advisory_hints
 from docxaicorrector.runtime.artifact_retention import (
     STRUCTURE_VALIDATION_MAX_AGE_SECONDS,
     STRUCTURE_VALIDATION_MAX_COUNT,
@@ -78,6 +78,29 @@ def _is_heuristic_heading(paragraph: ParagraphLike) -> bool:
     return _paragraph_value(paragraph, "role") == "heading" and _paragraph_value(paragraph, "heading_source") != "explicit"
 
 
+def _is_heading_for_phase(paragraph: ParagraphLike, *, phase: str) -> bool:
+    normalized_phase = normalize_structure_phase(phase, default="post_ai_readiness")
+    if phase_uses_advisory_hints(normalized_phase):
+        return has_heading_signal(paragraph, phase=normalized_phase)
+    role = str(_paragraph_value(paragraph, "role", "") or "").strip().lower()
+    if role != "heading":
+        return False
+    heading_source = str(_paragraph_value(paragraph, "heading_source", "") or "").strip().lower()
+    role_confidence = str(_paragraph_value(paragraph, "role_confidence", "") or "").strip().lower()
+    return heading_source in {"explicit", "ai"} or role_confidence in {"explicit", "adjacent", "ai"}
+
+
+def _heuristic_heading_count_for_phase(paragraphs: Sequence[ParagraphLike], *, phase: str) -> int:
+    normalized_phase = normalize_structure_phase(phase, default="post_ai_readiness")
+    if not phase_uses_advisory_hints(normalized_phase):
+        return 0
+    return sum(
+        1
+        for paragraph in paragraphs
+        if _is_heading_for_phase(paragraph, phase=normalized_phase) and not _is_explicit_heading(paragraph)
+    )
+
+
 def _effective_structural_role(paragraph: ParagraphLike, *, phase: str) -> str:
     return get_effective_structural_role(paragraph, phase=phase)
 
@@ -86,12 +109,19 @@ def _has_heading_signal(paragraph: ParagraphLike, *, phase: str) -> bool:
     return has_heading_signal(paragraph, phase=phase)
 
 
-def _is_body_like(paragraph: ParagraphLike) -> bool:
-    return _paragraph_value(paragraph, "role") == "body" and get_binding_structural_role(paragraph) in _BODY_STRUCTURAL_ROLES
+def _is_body_like(paragraph: ParagraphLike, *, phase: str) -> bool:
+    normalized_phase = normalize_structure_phase(phase, default="post_ai_readiness")
+    if phase_uses_advisory_hints(normalized_phase):
+        return (
+            _paragraph_value(paragraph, "role") == "body"
+            and get_effective_structural_role(paragraph, phase=normalized_phase) in _BODY_STRUCTURAL_ROLES
+            and not _is_heading_for_phase(paragraph, phase=normalized_phase)
+        )
+    return get_binding_structural_role(paragraph) in _BODY_STRUCTURAL_ROLES and not _is_heading_for_phase(paragraph, phase=normalized_phase)
 
 
-def _is_suspicious_short_body(paragraph: ParagraphLike) -> bool:
-    if not _is_body_like(paragraph):
+def _is_suspicious_short_body(paragraph: ParagraphLike, *, phase: str) -> bool:
+    if not _is_body_like(paragraph, phase=phase):
         return False
     if _paragraph_value(paragraph, "list_kind") is not None or _paragraph_value(paragraph, "attached_to_asset_id") is not None:
         return False
@@ -104,8 +134,8 @@ def _is_suspicious_short_body(paragraph: ParagraphLike) -> bool:
     return True
 
 
-def _is_all_caps_body(paragraph: ParagraphLike) -> bool:
-    if not _is_body_like(paragraph):
+def _is_all_caps_body(paragraph: ParagraphLike, *, phase: str) -> bool:
+    if not _is_body_like(paragraph, phase=phase):
         return False
     text = _normalized_text(paragraph)
     letters = [char for char in text if char.isalpha()]
@@ -114,29 +144,30 @@ def _is_all_caps_body(paragraph: ParagraphLike) -> bool:
     return "".join(letters).upper() == "".join(letters)
 
 
-def _is_centered_body(paragraph: ParagraphLike) -> bool:
-    return _is_body_like(paragraph) and _paragraph_value(paragraph, "paragraph_alignment") == "center"
+def _is_centered_body(paragraph: ParagraphLike, *, phase: str) -> bool:
+    return _is_body_like(paragraph, phase=phase) and _paragraph_value(paragraph, "paragraph_alignment") == "center"
 
 
-def _is_toc_candidate(paragraph: ParagraphLike) -> bool:
+def _is_toc_candidate(paragraph: ParagraphLike, *, phase: str) -> bool:
     text = _normalized_text(paragraph)
     if not text:
         return False
-    if _paragraph_value(paragraph, "role") == "heading":
+    if _is_heading_for_phase(paragraph, phase=phase):
         return False
-    if str(_paragraph_value(paragraph, "structural_role", "body") or "body") in {"toc_entry", "toc_header"}:
+    structural_role = get_effective_structural_role(paragraph, phase=phase) if phase_uses_advisory_hints(phase) else get_binding_structural_role(paragraph)
+    if structural_role in {"toc_entry", "toc_header"}:
         return False
     if _paragraph_value(paragraph, "list_kind") is not None or _paragraph_value(paragraph, "attached_to_asset_id") is not None:
         return False
     return _word_count(text) <= 12
 
 
-def _count_toc_like_sequences(paragraphs: Sequence[ParagraphLike], *, min_length: int, ambiguous_indexes: set[int]) -> int:
+def _count_toc_like_sequences(paragraphs: Sequence[ParagraphLike], *, min_length: int, ambiguous_indexes: set[int], phase: str) -> int:
     run_length = 0
     run_indexes: list[int] = []
     sequence_count = 0
     for paragraph in paragraphs:
-        if _is_toc_candidate(paragraph):
+        if _is_toc_candidate(paragraph, phase=phase):
             run_length += 1
             run_indexes.append(_paragraph_index(paragraph))
             continue
@@ -151,11 +182,11 @@ def _count_toc_like_sequences(paragraphs: Sequence[ParagraphLike], *, min_length
     return sequence_count
 
 
-def _is_isolated_marker_paragraph(paragraph: ParagraphLike) -> bool:
+def _is_isolated_marker_paragraph(paragraph: ParagraphLike, *, phase: str) -> bool:
     text = _normalized_text(paragraph)
     if not text:
         return False
-    if _paragraph_value(paragraph, "role") == "heading":
+    if _is_heading_for_phase(paragraph, phase=phase):
         return False
     if _paragraph_value(paragraph, "list_kind") is not None:
         return False
@@ -250,12 +281,12 @@ def _build_readiness_status(
     return "ready", ()
 
 
-def _max_body_run_length(paragraphs: Sequence[ParagraphLike]) -> int:
+def _max_body_run_length(paragraphs: Sequence[ParagraphLike], *, phase: str) -> int:
     current = 0
     maximum = 0
     for paragraph in paragraphs:
         text = _normalized_text(paragraph)
-        if text and _paragraph_value(paragraph, "role") != "heading" and str(_paragraph_value(paragraph, "structural_role", "body") or "body") in _BODY_STRUCTURAL_ROLES:
+        if text and not _is_heading_for_phase(paragraph, phase=phase) and _is_body_like(paragraph, phase=phase):
             current += 1
             maximum = max(maximum, current)
             continue
@@ -272,11 +303,12 @@ def validate_structure_quality(
     outline_coverage_ratio: float | None = None,
     phase: str = "post_ai_readiness",
 ) -> StructureValidationReport:
+    normalized_phase = normalize_structure_phase(phase, default="post_ai_readiness")
     paragraph_count = len(paragraphs)
     nonempty_paragraphs = [paragraph for paragraph in paragraphs if _normalized_text(paragraph)]
     nonempty_paragraph_count = len(nonempty_paragraphs)
     explicit_heading_count = sum(1 for paragraph in nonempty_paragraphs if _is_explicit_heading(paragraph))
-    heuristic_heading_count = sum(1 for paragraph in nonempty_paragraphs if _is_heuristic_heading(paragraph))
+    heuristic_heading_count = _heuristic_heading_count_for_phase(nonempty_paragraphs, phase=normalized_phase)
 
     ambiguous_indexes: set[int] = set()
     suspicious_short_body_count = 0
@@ -284,13 +316,13 @@ def validate_structure_quality(
     centered_body_count = 0
 
     for paragraph in nonempty_paragraphs:
-        if _is_suspicious_short_body(paragraph):
+        if _is_suspicious_short_body(paragraph, phase=normalized_phase):
             suspicious_short_body_count += 1
             ambiguous_indexes.add(_paragraph_index(paragraph))
-        if _is_all_caps_body(paragraph):
+        if _is_all_caps_body(paragraph, phase=normalized_phase):
             all_caps_body_count += 1
             ambiguous_indexes.add(_paragraph_index(paragraph))
-        if _is_centered_body(paragraph):
+        if _is_centered_body(paragraph, phase=normalized_phase):
             centered_body_count += 1
             ambiguous_indexes.add(_paragraph_index(paragraph))
 
@@ -298,22 +330,23 @@ def validate_structure_quality(
         paragraphs,
         min_length=int(app_config.get("structure_validation_toc_like_sequence_min_length", 4) or 4),
         ambiguous_indexes=ambiguous_indexes,
+        phase=normalized_phase,
     )
     all_caps_or_centered_count = len(
         {
             _paragraph_index(paragraph)
             for paragraph in nonempty_paragraphs
-            if _is_all_caps_body(paragraph) or _is_centered_body(paragraph)
+            if _is_all_caps_body(paragraph, phase=normalized_phase) or _is_centered_body(paragraph, phase=normalized_phase)
         }
     )
     divisor = nonempty_paragraph_count or 1
     explicit_heading_density = explicit_heading_count / divisor
     suspicious_short_body_ratio = suspicious_short_body_count / divisor
     all_caps_or_centered_body_ratio = all_caps_or_centered_count / divisor
-    isolated_marker_paragraph_count = sum(1 for paragraph in nonempty_paragraphs if _is_isolated_marker_paragraph(paragraph))
-    toc_region_bounded_count = _count_bounded_toc_regions(paragraphs, phase=phase)
-    expected_heading_candidates_from_toc = _count_toc_entries(paragraphs, phase=phase)
-    large_front_matter_block_risk = _has_large_front_matter_block_risk(paragraphs, phase=phase)
+    isolated_marker_paragraph_count = sum(1 for paragraph in nonempty_paragraphs if _is_isolated_marker_paragraph(paragraph, phase=normalized_phase))
+    toc_region_bounded_count = _count_bounded_toc_regions(paragraphs, phase=normalized_phase)
+    expected_heading_candidates_from_toc = _count_toc_entries(paragraphs, phase=normalized_phase)
+    large_front_matter_block_risk = _has_large_front_matter_block_risk(paragraphs, phase=normalized_phase)
 
     escalation_reasons: list[str] = []
     min_paragraphs_for_auto_gate = int(app_config.get("structure_validation_min_paragraphs_for_auto_gate", 40) or 40)
@@ -333,7 +366,8 @@ def validate_structure_quality(
     if toc_like_sequence_count > 0:
         escalation_reasons.append("toc_like_sequence_detected")
     if bool(app_config.get("structure_validation_forbid_heading_only_collapse", True)):
-        if _max_body_run_length(paragraphs) >= 120 and explicit_heading_count < 3:
+        heading_count_for_phase = explicit_heading_count + heuristic_heading_count
+        if _max_body_run_length(paragraphs, phase=normalized_phase) >= 120 and heading_count_for_phase < 3:
             escalation_reasons.append("heading_only_collapse_risk")
     if isolated_marker_paragraph_count > 0:
         escalation_reasons.append("isolated_list_marker_fragments")

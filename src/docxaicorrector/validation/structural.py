@@ -554,6 +554,9 @@ def _build_preparation_diagnostic_defaults(event_log: Sequence[Mapping[str, obje
         "quality_gate_status": _extract_event_context_value(event_log, "structure_processing_outcome", "quality_gate_status"),
         "quality_gate_reasons": _extract_event_context_list(event_log, "structure_processing_outcome", "quality_gate_reasons"),
         "structure_ai_attempted": _extract_event_context_bool(event_log, "structure_processing_outcome", "structure_ai_attempted"),
+        "ai_first_degraded": _extract_event_context_bool(event_log, "structure_processing_outcome", "ai_first_degraded"),
+        "fallback_stage": _extract_event_context_value(event_log, "structure_processing_outcome", "fallback_stage"),
+        "fallback_reason": _extract_event_context_value(event_log, "structure_processing_outcome", "fallback_reason"),
         "ai_classified_count": _extract_event_context_int(event_log, "structure_processing_outcome", "ai_classified_count"),
         "ai_heading_count": _extract_event_context_int(event_log, "structure_processing_outcome", "ai_heading_count"),
         "semantic_block_count": 0,
@@ -572,9 +575,28 @@ def _build_preparation_diagnostic_defaults(event_log: Sequence[Mapping[str, obje
     return snapshot
 
 
+def _apply_structure_summary_snapshot_fields(snapshot: dict[str, object], structure_summary: object | None) -> None:
+    if structure_summary is None:
+        return
+    if not bool(snapshot.get("ai_first_degraded", False)):
+        snapshot["ai_first_degraded"] = bool(getattr(structure_summary, "ai_first_degraded", False))
+    if not str(snapshot.get("fallback_stage") or ""):
+        fallback_stage = str(getattr(structure_summary, "fallback_stage", "") or "").strip()
+        if fallback_stage:
+            snapshot["fallback_stage"] = fallback_stage
+    if not str(snapshot.get("fallback_reason") or ""):
+        fallback_reason = str(getattr(structure_summary, "fallback_reason", "") or "").strip()
+        if fallback_reason:
+            snapshot["fallback_reason"] = fallback_reason
+    if not bool(snapshot.get("document_map_present", False)):
+        snapshot["document_map_present"] = bool(getattr(structure_summary, "document_map_present", False))
+
+
 def _apply_prepared_snapshot_fields(snapshot: dict[str, object], prepared: object) -> None:
     structure_validation_report = getattr(prepared, "structure_validation_report", None)
+    structure_summary = getattr(prepared, "structure_recognition_summary", None)
     _apply_structure_validation_snapshot_fields(snapshot, structure_validation_report)
+    _apply_structure_summary_snapshot_fields(snapshot, structure_summary)
     if not str(snapshot.get("quality_gate_status") or ""):
         snapshot["quality_gate_status"] = str(getattr(prepared, "quality_gate_status", "") or "")
     if not list(cast(list[str], snapshot.get("quality_gate_reasons") or [])):
@@ -597,6 +619,8 @@ def _apply_prepared_snapshot_fields(snapshot: dict[str, object], prepared: objec
         document_map_status_reason = str(getattr(prepared, "document_map_status_reason", "") or "").strip()
         if document_map_status_reason:
             snapshot["document_map_status_reason"] = document_map_status_reason
+    if not bool(snapshot.get("document_map_present", False)):
+        snapshot["document_map_present"] = bool(getattr(prepared, "document_map", None) is not None)
     _apply_quality_gate_readiness_fallback(snapshot)
     _normalize_snapshot_or_metric_statuses(snapshot)
 
@@ -632,6 +656,7 @@ def _apply_quality_gate_readiness_fallback(snapshot: dict[str, object]) -> None:
 
 def _apply_prepared_metric_fields(metrics: dict[str, object], prepared: object) -> None:
     structure_validation_report = getattr(prepared, "structure_validation_report", None)
+    structure_summary = getattr(prepared, "structure_recognition_summary", None)
     if not str(metrics.get("quality_gate_status") or ""):
         metrics["quality_gate_status"] = str(getattr(prepared, "quality_gate_status", "") or "")
     if not list(cast(list[str], metrics.get("quality_gate_reasons") or [])):
@@ -642,6 +667,7 @@ def _apply_prepared_metric_fields(metrics: dict[str, object], prepared: object) 
         ]
     if not str(metrics.get("readiness_status") or ""):
         metrics["readiness_status"] = str(getattr(structure_validation_report, "readiness_status", "") or "")
+    _apply_structure_summary_snapshot_fields(metrics, structure_summary)
     _normalize_snapshot_or_metric_statuses(metrics)
 
 
