@@ -478,10 +478,11 @@ def _request_document_map_payload(
     schema_error_summary: str | None,
 ) -> tuple[str, int]:
     system_prompt = _load_system_prompt()
+    request_model = model.split(":", 1)[1] if ":" in model else model
     response = _call_document_map_responses_with_timeout(
         client=client,
         request_payload={
-            "model": model,
+            "model": request_model,
             "input": [
                 {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
                 {

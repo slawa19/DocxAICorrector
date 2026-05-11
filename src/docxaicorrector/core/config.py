@@ -82,7 +82,7 @@ _MIGRATION_DEFAULT_TEXT_MODEL_OPTIONS = (
     "gpt-5-mini",
 )
 _MIGRATION_DEFAULT_MODEL_ROLES = {
-    "structure_recognition": "gpt-5-mini",
+    "structure_recognition": _MIGRATION_DEFAULT_TEXT_MODEL,
     "image_analysis": "gpt-5.4-mini",
     "image_validation": "gpt-5.4-mini",
     "image_reconstruction": "gpt-5.4-mini",
@@ -326,7 +326,7 @@ def _parse_image_mode(value: str, *, source_name: str) -> str:
 
 
 def load_project_dotenv() -> None:
-    load_dotenv(dotenv_path=ENV_PATH, override=False)
+    load_dotenv(dotenv_path=ENV_PATH, override=True)
 
 
 def parse_int_env(name: str, default: int) -> int:
@@ -800,6 +800,7 @@ def _resolve_model_role_assignment(
     legacy_config_data: dict[str, object] | None = None,
     legacy_config_label: str | None = None,
     legacy_value_key: str | None = None,
+    fallback_source: str | None = None,
 ) -> tuple[str, str]:
     return _resolve_model_role_assignment_impl(
         role_name=role_name,
@@ -813,6 +814,7 @@ def _resolve_model_role_assignment(
         legacy_config_data=legacy_config_data,
         legacy_config_label=legacy_config_label,
         legacy_value_key=legacy_value_key,
+        fallback_source=fallback_source,
     )
 
 
@@ -918,9 +920,11 @@ def _resolve_structure_recognition_settings(
 def _resolve_structure_recovery_settings(
     *,
     config_data: dict[str, object],
+    model_registry_settings: Mapping[str, Any],
 ) -> dict[str, Any]:
     return _resolve_structure_recovery_settings_impl(
         config_data=config_data,
+        model_registry_settings=model_registry_settings,
         parse_optional_config_section_fn=parse_optional_config_section,
         parse_config_bool_fn=parse_config_bool,
         parse_choice_str_fn=parse_choice_str,

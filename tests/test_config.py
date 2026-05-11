@@ -1,3 +1,4 @@
+import os
 import threading
 from pathlib import Path
 from typing import cast
@@ -60,8 +61,8 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     assert app_config["paragraph_boundary_normalization_save_debug_artifacts"] is True
     assert app_config["structure_recognition_mode"] == "off"
     assert app_config["structure_recognition_enabled"] is False
-    assert app_config["structure_recognition_model"] == "gpt-5-mini"
-    assert models.structure_recognition == "gpt-5-mini"
+    assert app_config["structure_recognition_model"] == app_config["default_model"]
+    assert models.structure_recognition == app_config["default_model"]
     assert app_config["structure_recognition_max_window_paragraphs"] == 1800
     assert app_config["structure_recognition_overlap_paragraphs"] == 50
     assert app_config["structure_recognition_timeout_seconds"] == 60
@@ -72,7 +73,7 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     assert app_config["structure_recovery_mode"] == "ai_first"
     assert app_config["structure_recovery_coordinate_schema_version"] == 1
     assert app_config["structure_recovery_document_map_enabled"] is True
-    assert app_config["structure_recovery_document_map_model"] == "gpt-5-mini"
+    assert app_config["structure_recovery_document_map_model"] == app_config["structure_recognition_model"]
     assert app_config["structure_recovery_document_map_timeout_seconds"] == 120
     assert app_config["structure_recovery_document_map_max_input_paragraphs"] == 6000
     assert app_config["structure_recovery_document_map_max_input_tokens"] == 180000
@@ -131,7 +132,7 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["paragraph_boundary_normalization_save_debug_artifacts"] is True
     assert app_config["structure_recognition_mode"] == "auto"
     assert app_config["structure_recognition_enabled"] is False
-    assert app_config["structure_recognition_model"] == TEST_STRUCTURE_RECOGNITION_MODEL
+    assert app_config["structure_recognition_model"] == TEST_TEXT_MODEL_DEFAULT
     assert models.text.default == TEST_TEXT_MODEL_DEFAULT
     assert models.text.options == (
         "gpt-5.4",
@@ -139,7 +140,7 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
         "gpt-5-mini",
         "openrouter:google/gemini-3.1-flash-lite-preview",
     )
-    assert models.structure_recognition == TEST_STRUCTURE_RECOGNITION_MODEL
+    assert models.structure_recognition == TEST_TEXT_MODEL_DEFAULT
     assert app_config["structure_recognition_max_window_paragraphs"] == 1800
     assert app_config["structure_recognition_overlap_paragraphs"] == 50
     assert app_config["structure_recognition_timeout_seconds"] == 60
@@ -237,6 +238,58 @@ def test_load_app_config_resolves_audiobook_defaults_from_text_model(monkeypatch
 
     assert app_config["audiobook_postprocess_default"] is False
     assert app_config["audiobook_model"] == app_config["default_model"]
+
+
+def test_load_app_config_resolves_structure_defaults_from_text_model(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[models.text]\n'
+        'default = "openrouter:google/gemini-3.1-flash-lite-preview"\n'
+        'options = ["openrouter:google/gemini-3.1-flash-lite-preview", "gpt-5.4-mini"]\n\n'
+        '[providers.openrouter]\n'
+        'enabled = true\n\n'
+        '[structure_recovery]\n'
+        'enabled = true\n\n'
+        '[structure_recovery.document_map]\n'
+        'enabled = true\n'
+        'model = ""\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+
+    app_config = config.load_app_config()
+    models = cast(config.ModelRegistry, app_config["models"])
+
+    assert app_config["default_model"] == "openrouter:google/gemini-3.1-flash-lite-preview"
+    assert app_config["structure_recognition_model"] == app_config["default_model"]
+    assert models.structure_recognition == app_config["default_model"]
+    assert app_config["structure_recovery_document_map_model"] == app_config["structure_recognition_model"]
+
+
+def test_load_app_config_resolves_document_map_default_from_explicit_structure_override(monkeypatch, tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[models.text]\n'
+        'default = "openrouter:google/gemini-3.1-flash-lite-preview"\n'
+        'options = ["openrouter:google/gemini-3.1-flash-lite-preview", "gpt-5.4-mini"]\n\n'
+        '[models.structure_recognition]\n'
+        'default = "gpt-5-mini"\n\n'
+        '[providers.openrouter]\n'
+        'enabled = true\n\n'
+        '[structure_recovery]\n'
+        'enabled = true\n\n'
+        '[structure_recovery.document_map]\n'
+        'enabled = true\n'
+        'model = ""\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", cfg)
+
+    app_config = config.load_app_config()
+
+    assert app_config["default_model"] == "openrouter:google/gemini-3.1-flash-lite-preview"
+    assert app_config["structure_recognition_model"] == "gpt-5-mini"
+    assert app_config["structure_recovery_document_map_model"] == "gpt-5-mini"
 
 
 def test_load_app_config_honors_audiobook_model_override_from_toml(monkeypatch, tmp_path):
@@ -1370,12 +1423,27 @@ def test_get_provider_client_builds_openrouter_client(monkeypatch, tmp_path):
     }
 
 
+def test_load_project_dotenv_overrides_empty_runtime_env_with_repo_value(monkeypatch, tmp_path):
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("OPENROUTER_API_KEY=test-openrouter-key\n", encoding="utf-8")
+
+    monkeypatch.setattr(config, "ENV_PATH", dotenv_path)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+
+    config.load_project_dotenv()
+
+    assert os.getenv("OPENROUTER_API_KEY") == "test-openrouter-key"
+
+
 def _provider_contract_test_args(*, paragraph_boundary_enabled: bool, structure_recognition_enabled: bool):
     return {
         "model_registry_settings": {
             "models": config.ModelRegistry(
-                text=config.TextModelConfig(default="gpt-5.4-mini", options=("gpt-5.4-mini",)),
-                structure_recognition="gpt-5-mini",
+                text=config.TextModelConfig(
+                    default="openrouter:google/gemini-3.1-flash-lite-preview",
+                    options=("openrouter:google/gemini-3.1-flash-lite-preview", "gpt-5.4-mini"),
+                ),
+                structure_recognition="openrouter:google/gemini-3.1-flash-lite-preview",
                 image_analysis=TEST_IMAGE_ANALYSIS_MODEL,
                 image_validation=TEST_IMAGE_VALIDATION_MODEL,
                 image_reconstruction=TEST_IMAGE_RECONSTRUCTION_MODEL,
@@ -1386,7 +1454,7 @@ def _provider_contract_test_args(*, paragraph_boundary_enabled: bool, structure_
         },
         "text_runtime_defaults": {
             "translation_second_pass_model": "",
-            "audiobook_model": "gpt-5.4-mini",
+            "audiobook_model": "openrouter:google/gemini-3.1-flash-lite-preview",
         },
         "paragraph_boundary_settings": {
             "paragraph_boundary_ai_review_enabled": paragraph_boundary_enabled,
@@ -1396,7 +1464,7 @@ def _provider_contract_test_args(*, paragraph_boundary_enabled: bool, structure_
         },
         "structure_recovery_settings": {
             "structure_recovery_document_map_enabled": True,
-            "structure_recovery_document_map_model": "gpt-5-mini",
+            "structure_recovery_document_map_model": "openrouter:google/gemini-3.1-flash-lite-preview",
         },
     }
 
@@ -1481,7 +1549,10 @@ def test_validate_provider_model_contracts_allows_openrouter_main_text_when_open
                 image_generation_vision=TEST_IMAGE_GENERATION_VISION_MODEL,
             ),
         },
-        text_runtime_defaults={"translation_second_pass_model": "", "audiobook_model": "gpt-5.4-mini"},
+        text_runtime_defaults={
+            "translation_second_pass_model": "",
+            "audiobook_model": "openrouter:google/gemini-3.1-flash-lite-preview",
+        },
         paragraph_boundary_settings={"paragraph_boundary_ai_review_enabled": True},
         structure_recognition_settings={"structure_recognition_enabled": False},
         structure_recovery_settings={
@@ -1506,7 +1577,7 @@ def test_validate_provider_model_contracts_allows_openrouter_structure_recogniti
                     default="openrouter:google/gemini-3.1-flash-lite-preview",
                     options=("openrouter:google/gemini-3.1-flash-lite-preview",),
                 ),
-                structure_recognition="gpt-5-mini",
+                structure_recognition="openrouter:google/gemini-3.1-flash-lite-preview",
                 image_analysis=TEST_IMAGE_ANALYSIS_MODEL,
                 image_validation=TEST_IMAGE_VALIDATION_MODEL,
                 image_reconstruction=TEST_IMAGE_RECONSTRUCTION_MODEL,

@@ -530,6 +530,12 @@ def _build_preparation_diagnostic_defaults(event_log: Sequence[Mapping[str, obje
     outline_coverage_ratio = _extract_event_context_float(event_log, "structure_processing_outcome", "outline_coverage_ratio")
     if outline_coverage_ratio is None:
         outline_coverage_ratio = _extract_event_context_float(event_log, "reconciliation_report_saved", "outline_coverage_ratio")
+    document_map_status = str(
+        _extract_event_context_value(event_log, "structure_processing_outcome", "document_map_status") or ""
+    ).strip()
+    document_map_status_reason = str(
+        _extract_event_context_value(event_log, "structure_processing_outcome", "document_map_status_reason") or ""
+    ).strip()
     snapshot = {
         "paragraph_count": 0,
         "heading_count": 0,
@@ -557,6 +563,8 @@ def _build_preparation_diagnostic_defaults(event_log: Sequence[Mapping[str, obje
         "ai_first_degraded": _extract_event_context_bool(event_log, "structure_processing_outcome", "ai_first_degraded"),
         "fallback_stage": _extract_event_context_value(event_log, "structure_processing_outcome", "fallback_stage"),
         "fallback_reason": _extract_event_context_value(event_log, "structure_processing_outcome", "fallback_reason"),
+        "document_map_status": document_map_status or "not_requested",
+        "document_map_status_reason": document_map_status_reason,
         "ai_classified_count": _extract_event_context_int(event_log, "structure_processing_outcome", "ai_classified_count"),
         "ai_heading_count": _extract_event_context_int(event_log, "structure_processing_outcome", "ai_heading_count"),
         "semantic_block_count": 0,
@@ -566,12 +574,6 @@ def _build_preparation_diagnostic_defaults(event_log: Sequence[Mapping[str, obje
         "first_block_has_body_start": False,
         "first_block_has_isolated_marker": False,
     }
-    document_map_status = _extract_event_context_value(event_log, "structure_processing_outcome", "document_map_status")
-    document_map_status_reason = _extract_event_context_value(event_log, "structure_processing_outcome", "document_map_status_reason")
-    if str(document_map_status or "").strip():
-        snapshot["document_map_status"] = str(document_map_status).strip()
-    if str(document_map_status_reason or "").strip():
-        snapshot["document_map_status_reason"] = str(document_map_status_reason).strip()
     return snapshot
 
 
@@ -611,14 +613,16 @@ def _apply_prepared_snapshot_fields(snapshot: dict[str, object], prepared: objec
         snapshot["ai_classified_count"] = int(getattr(prepared, "ai_classified_count", 0) or 0)
     if _as_int(snapshot, "ai_heading_count") == 0:
         snapshot["ai_heading_count"] = int(getattr(prepared, "ai_heading_count", 0) or 0)
-    if not str(snapshot.get("document_map_status") or ""):
-        document_map_status = str(getattr(prepared, "document_map_status", "") or "").strip()
-        if document_map_status:
-            snapshot["document_map_status"] = document_map_status
-    if not str(snapshot.get("document_map_status_reason") or ""):
-        document_map_status_reason = str(getattr(prepared, "document_map_status_reason", "") or "").strip()
-        if document_map_status_reason:
-            snapshot["document_map_status_reason"] = document_map_status_reason
+    current_document_map_status = str(snapshot.get("document_map_status") or "").strip().lower()
+    prepared_document_map_status = str(getattr(prepared, "document_map_status", "") or "").strip()
+    if prepared_document_map_status and current_document_map_status in {"", "not_requested"}:
+        snapshot["document_map_status"] = prepared_document_map_status
+    if "document_map_status_reason" not in snapshot:
+        snapshot["document_map_status_reason"] = ""
+    current_document_map_status_reason = str(snapshot.get("document_map_status_reason") or "")
+    prepared_document_map_status_reason = str(getattr(prepared, "document_map_status_reason", "") or "").strip()
+    if not current_document_map_status_reason and prepared_document_map_status_reason:
+        snapshot["document_map_status_reason"] = prepared_document_map_status_reason
     if not bool(snapshot.get("document_map_present", False)):
         snapshot["document_map_present"] = bool(getattr(prepared, "document_map", None) is not None)
     _apply_quality_gate_readiness_fallback(snapshot)

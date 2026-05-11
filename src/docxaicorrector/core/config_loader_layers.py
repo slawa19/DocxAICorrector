@@ -344,6 +344,7 @@ def resolve_app_config_sections(
         ),
         structure_recovery_settings=resolve_structure_recovery_settings_fn(
             config_data=config_data,
+            model_registry_settings=model_registry_settings,
         ),
         structure_validation_settings=resolve_structure_validation_settings_fn(
             structure_validation_config=optional_sections.structure_validation_config,

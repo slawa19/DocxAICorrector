@@ -157,7 +157,7 @@ role, heading level, confidence (`high|medium|low`).
 
 From `config.toml`:
 
-- `[models.structure_recognition].default = "gpt-5-mini"`
+- `[models.structure_recognition].default` is optional; when omitted it inherits `[models.text].default`
 - `[structure_recognition] mode | max_window_paragraphs | overlap_paragraphs |
   timeout_seconds | min_confidence | cache_enabled | save_debug_artifacts`
 - `[structure_validation] enabled | min_paragraphs_for_auto_gate | …`
@@ -716,7 +716,7 @@ enabled = false              # feature flag for the whole AI-first path
 
 [structure_recovery.document_map]
 enabled = false
-model = ""                   # falls back to [models.structure_recognition].default
+model = ""                   # falls back to the resolved structure-recognition model
 timeout_seconds = 120
 max_input_paragraphs = 6000  # threshold for hierarchical sampling
 max_input_tokens = 180000
@@ -1084,7 +1084,7 @@ Acceptance thresholds for the AI-first path:
 - The segment detection contract in
   `detect_document_segments(...)` is unchanged.
 - All existing artifact directories under `.run/` are preserved.
-- `[models.structure_recognition].default` continues to be the model role
+- The resolved structure-recognition model continues to be the model role
   used for Stages 1–3 unless an explicit override is set.
 - The legacy non-anchored path remains supported as the rollback target.
 
@@ -1556,7 +1556,7 @@ These tasks are the current focus for future work on this spec.
 - [x] Relaxed Stage 2 high-anchor apply guards so they no longer blanket-block every mismatch; only medium-confidence overrides on clearly prose-like or clearly heading-like local text are allowed.
 - [x] Aligned anchored Stage 2 token budgeting with the spec: the implementation now shrinks descriptor preview length before reducing window size when a window exceeds `target_input_tokens`.
 - [x] Refocused the spec's testing strategy onto a single structure-scoped canonical document: `lietaer-pdf-first-20-structure-core` as the default PDF loop, structural diagnostics by default, and full-tier runs only as rare late checkpoints.
-- [x] Replaced the stale invalid default `[models.structure_recognition].default` selector with a confirmed working cheap model (`gpt-5-mini`) so structural diagnostics hit a real Stage 2 request path again.
+- [x] Restored a working default model path for structural diagnostics; the current canonical contract is that unresolved structural stages inherit the repository text default unless explicitly overridden.
 - [x] Fixed Stage 2 timeout recovery so local `StructureRecognitionRequestTimeout` failures split oversized windows instead of being swallowed into empty `StructureMap` no-ops; the canonical first-20-pages structural diagnostic now completes with non-zero AI classifications.
 - [x] Started Slice 5 heuristic deprecation by removing physical list-fragment topology merging from `document/structure_repair.py`; isolated markers and split list leads now stay as original paragraphs with advisory list hints instead of being rewritten before AI structure classification.
 - [x] Continued Slice 5 in `document/structure_repair.py` by converting remaining heading/list role mutations to advisory hints while preserving TOC-region binding and compound-split topology; TOC-aligned heading/list candidates no longer bind `role`/`heading_source` directly before AI classification.

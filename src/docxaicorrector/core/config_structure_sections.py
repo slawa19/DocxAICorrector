@@ -1,5 +1,5 @@
 import os
-from typing import Any
+from typing import Any, Mapping
 
 
 def resolve_paragraph_boundary_settings(
@@ -317,6 +317,7 @@ def resolve_structure_recognition_settings(
 def resolve_structure_recovery_settings(
     *,
     config_data: dict[str, object],
+    model_registry_settings: Mapping[str, Any],
     parse_optional_config_section_fn: Any,
     parse_config_bool_fn: Any,
     parse_choice_str_fn: Any,
@@ -354,11 +355,16 @@ def resolve_structure_recovery_settings(
         "ai_first",
         set(structure_recovery_mode_values),
     )
+    resolved_structure_model = str(
+        getattr(model_registry_settings.get("models"), "structure_recognition", "") or ""
+    ).strip()
+    if not resolved_structure_model:
+        raise RuntimeError("Resolved structure recognition model is required for structure recovery defaults.")
 
     document_map_enabled = parse_config_bool_fn(document_map_config, "enabled", True)
     raw_document_map_model = document_map_config.get("model")
     if raw_document_map_model is None:
-        document_map_model = "gpt-5-mini"
+        document_map_model = resolved_structure_model
     elif not isinstance(raw_document_map_model, str):
         raise RuntimeError("Некорректное поле model в structure_recovery.document_map: ожидается строка")
     else:
@@ -409,6 +415,8 @@ def resolve_structure_recovery_settings(
         document_map_enabled,
     )
     document_map_model = parse_optional_str_env_fn("DOCX_AI_STRUCTURE_RECOVERY_DOCUMENT_MAP_MODEL") or document_map_model
+    if not document_map_model:
+        document_map_model = resolved_structure_model
     document_map_timeout_seconds = parse_int_env_fn(
         "DOCX_AI_STRUCTURE_RECOVERY_DOCUMENT_MAP_TIMEOUT_SECONDS",
         document_map_timeout_seconds,

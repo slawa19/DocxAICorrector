@@ -338,11 +338,83 @@ def test_run_prepared_background_document_uses_preparation_and_job_mutator(monke
     assert captured["prepare"]["chunk_size"] == 123
     assert captured["prepare"]["app_config"] == {"x": 1}
     assert captured["prepare"]["processing_operation"] == "audiobook"
-    assert captured["prepare_document"]["get_client_fn"] is sentinel_get_client
+    assert callable(captured["prepare_document"]["get_client_fn"])
+    assert captured["prepare_document"]["get_client_fn"]() is sentinel_get_client
     assert captured["prepare_document"]["chunk_size"] == 123
     assert captured["prepare_document"]["processing_operation"] == "audiobook"
     assert result == "succeeded"
     assert returned_prepared is prepared
+
+
+def test_run_prepared_background_document_uses_model_aware_client_factory_for_preparation(monkeypatch):
+    sentinel_model_client = object()
+    sentinel_default_client = object()
+    captured = {}
+    def _selector_client_factory(selector, required_capability, *, config_like=None):
+        captured["selector_call"] = (selector, required_capability, config_like)
+        return sentinel_model_client
+
+    service = _build_service(
+        run_document_processing_impl_fn=lambda **kwargs: "succeeded",
+        get_client_fn=lambda: sentinel_default_client,
+        get_client_for_model_selector_fn=_selector_client_factory,
+    )
+    prepared = type(
+        "PreparedRunContextStub",
+        (),
+        {
+            "uploaded_filename": "prepared-report.docx",
+            "jobs": [{"target_text": "one"}],
+            "paragraphs": ["p1"],
+            "image_assets": ["img1"],
+            "translation_domain": "general",
+            "translation_domain_instructions": "",
+            "document_context_profile": DocumentContextProfile(),
+        },
+    )()
+
+    monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: {"frozen": uploaded_file})
+    monkeypatch.setattr(
+        processing_service.application_flow,
+        "prepare_document_for_processing",
+        lambda **kwargs: captured.setdefault("prepare_document", kwargs) or object(),
+    )
+    monkeypatch.setattr(
+        processing_service.application_flow,
+        "prepare_run_context_for_background",
+        lambda **kwargs: (
+            kwargs["prepare_document_for_processing_fn"](
+                uploaded_payload={"payload": True},
+                chunk_size=kwargs["chunk_size"],
+                app_config=kwargs["app_config"],
+                processing_operation=kwargs["processing_operation"],
+                session_state=None,
+                progress_callback=None,
+            ),
+            prepared,
+        )[-1],
+    )
+
+    service.run_prepared_background_document(
+        uploaded_file="report.docx",
+        chunk_size=123,
+        image_mode="safe",
+        keep_all_image_variants=False,
+        app_config={"structure_recognition_model": "openrouter:test/structure"},
+        model="gpt-5.4",
+        max_retries=2,
+        processing_operation="edit",
+        progress_callback=None,
+        runtime={"state": {}},
+    )
+
+    assert callable(captured["prepare_document"]["get_client_fn"])
+    assert captured["prepare_document"]["get_client_fn"]() is sentinel_model_client
+    assert captured["selector_call"] == (
+        "openrouter:test/structure",
+        "responses_text",
+        {"structure_recognition_model": "openrouter:test/structure"},
+    )
 
 
 def test_run_prepared_background_document_passes_prepared_payload_into_processing(monkeypatch):

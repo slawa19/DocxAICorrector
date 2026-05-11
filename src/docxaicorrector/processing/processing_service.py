@@ -364,6 +364,14 @@ class ProcessingService:
         resolved_prepare_progress_callback = prepare_progress_callback or progress_callback
         resolved_processing_progress_callback = processing_progress_callback or progress_callback or (lambda **kwargs: None)
         uploaded_payload = freeze_uploaded_file(uploaded_file)
+
+        def _prepare_client_factory() -> object:
+            selector = str(app_config.get("structure_recognition_model", "") or "").strip()
+            if selector and deps.get_client_for_model_selector_fn is not None:
+                return deps.get_client_for_model_selector_fn(selector, "responses_text", config_like=app_config)
+            client_factory = deps.get_client_fn
+            return client_factory() if callable(client_factory) else client_factory
+
         try:
             prepared = application_flow.prepare_run_context_for_background(
                 uploaded_payload=uploaded_payload,
@@ -373,7 +381,7 @@ class ProcessingService:
                 processing_operation=processing_operation,
                 app_config=app_config,
                 prepare_document_for_processing_fn=lambda **kwargs: application_flow.prepare_document_for_processing(
-                    get_client_fn=deps.get_client_fn,
+                    get_client_fn=_prepare_client_factory,
                     **kwargs,
                 ),
                 progress_callback=resolved_prepare_progress_callback,

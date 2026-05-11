@@ -557,11 +557,12 @@ def _classify_descriptor_window(
     responses_client = _as_responses_create_client(timeout_scoped_client)
     if responses_client is None:
         raise RuntimeError("Unsupported structure recognition client")
+    request_model = model.split(":", 1)[1] if ":" in model else model
 
     response = _call_structure_responses_with_timeout(
         client=responses_client,
         request_payload={
-            "model": model,
+            "model": request_model,
             "input": [
                 {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
                 {

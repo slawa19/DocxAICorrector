@@ -247,6 +247,7 @@ def resolve_model_role_assignment(
     legacy_config_data: dict[str, object] | None = None,
     legacy_config_label: str | None = None,
     legacy_value_key: str | None = None,
+    fallback_source: str | None = None,
 ) -> tuple[str, str]:
     new_env_value = os.getenv(new_env_name, "").strip()
     if new_env_value:
@@ -267,7 +268,7 @@ def resolve_model_role_assignment(
                 legacy_config_data.get(legacy_value_key),
                 source_name=f"{config_path}: {source_name}",
             ), f"toml:legacy:{source_name}"
-    return fallback_value, f"default:migration:{role_name}"
+    return fallback_value, fallback_source or f"default:migration:{role_name}"
 
 
 def log_resolved_model_registry(
@@ -410,11 +411,12 @@ def resolve_model_registry_settings(
         config_path_suffix="models.structure_recognition",
         new_env_name="DOCX_AI_MODELS_STRUCTURE_RECOGNITION_DEFAULT",
         new_role_config=models_structure_recognition_config,
-        fallback_value=migration_default_model_roles["structure_recognition"],
+        fallback_value=default_model,
         legacy_env_name="DOCX_AI_STRUCTURE_RECOGNITION_MODEL",
         legacy_config_data=structure_recognition_config,
         legacy_config_label="structure_recognition.model",
         legacy_value_key="model",
+        fallback_source="default:derived:text.default",
     )
     image_analysis_model, image_analysis_model_source = resolve_model_role_assignment_fn(
         role_name="image_analysis",

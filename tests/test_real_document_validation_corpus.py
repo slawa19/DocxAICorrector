@@ -162,6 +162,8 @@ def test_build_preparation_diagnostic_defaults_includes_spec_acceptance_fields()
                     "ai_classified_count": 8,
                     "ai_heading_count": 2,
                     "document_map_present": True,
+                    "document_map_status": "ai",
+                    "document_map_status_reason": "",
                     "outline_coverage_ratio": 0.75,
                 },
             },
@@ -178,6 +180,8 @@ def test_build_preparation_diagnostic_defaults_includes_spec_acceptance_fields()
     )
 
     assert snapshot["document_map_present"] is True
+    assert snapshot["document_map_status"] == "ai"
+    assert snapshot["document_map_status_reason"] == ""
     assert snapshot["outline_coverage_ratio"] == 0.75
     assert snapshot["front_matter_leaks"] == [1, 3]
     assert snapshot["front_matter_body_advisories"] == [2]
@@ -415,6 +419,8 @@ def test_structural_cli_uses_lietaer_first20_default_run_profile_and_prints_acce
             "preparation_error": None,
             "preparation_diagnostic_snapshot": {
                 "document_map_present": True,
+                "document_map_status": "ai",
+                "document_map_status_reason": "",
                 "outline_coverage_ratio": 1.0,
                 "front_matter_leaks": [],
                 "targeted_recall_invoked": False,
@@ -435,6 +441,8 @@ def test_structural_cli_uses_lietaer_first20_default_run_profile_and_prints_acce
     assert payload["run_profile_id"] == "structural-ai-first-default"
     assert payload["preparation_diagnostic_snapshot"] == {
         "document_map_present": True,
+        "document_map_status": "ai",
+        "document_map_status_reason": "",
         "outline_coverage_ratio": 1.0,
         "front_matter_leaks": [],
         "targeted_recall_invoked": False,
@@ -1254,9 +1262,19 @@ def test_structural_passthrough_surfaces_structure_repair_and_event_metrics(tmp_
         "remaining_isolated_marker_count": 0,
         "readiness_status": "ready",
         "readiness_reasons": [],
+        "document_map_present": False,
+        "outline_coverage_ratio": None,
+        "front_matter_leaks": [],
+        "front_matter_body_advisories": [],
+        "targeted_recall_invoked": False,
         "quality_gate_status": "pass",
         "quality_gate_reasons": [],
         "structure_ai_attempted": False,
+        "ai_first_degraded": False,
+        "fallback_stage": "",
+        "fallback_reason": "",
+        "document_map_status": "not_requested",
+        "document_map_status_reason": "",
         "ai_classified_count": 0,
         "ai_heading_count": 0,
         "semantic_block_count": 1,
@@ -1390,6 +1408,8 @@ def test_structural_passthrough_success_uses_prepared_context_when_event_log_lac
         uploaded_file_bytes = b"PK\x03\x04prepared"
         quality_gate_status = "pass"
         quality_gate_reasons = []
+        document_map_status = "ai"
+        document_map_status_reason = ""
         structure_validation_report = SimpleNamespace(
             readiness_status="ready",
             readiness_reasons=[],
@@ -1437,6 +1457,8 @@ def test_structural_passthrough_success_uses_prepared_context_when_event_log_lac
     assert result["preparation_diagnostic_snapshot"]["ai_classified_count"] == 12
     assert result["preparation_diagnostic_snapshot"]["ai_heading_count"] == 4
     assert result["preparation_diagnostic_snapshot"]["document_map_present"] is True
+    assert result["preparation_diagnostic_snapshot"]["document_map_status"] == "ai"
+    assert result["preparation_diagnostic_snapshot"]["document_map_status_reason"] == ""
     assert result["preparation_diagnostic_snapshot"]["outline_coverage_ratio"] == 0.75
 
 
@@ -1584,9 +1606,19 @@ def test_structural_passthrough_failure_includes_preparation_diagnostic_snapshot
         "remaining_isolated_marker_count": 0,
         "readiness_status": "blocked_unsafe_best_effort_only",
         "readiness_reasons": ["heading_count_far_below_toc_expectation"],
+        "document_map_present": False,
+        "outline_coverage_ratio": None,
+        "front_matter_leaks": [],
+        "front_matter_body_advisories": [],
+        "targeted_recall_invoked": False,
         "quality_gate_status": "blocked",
         "quality_gate_reasons": ["structure_readiness_blocked_unsafe_best_effort_only"],
         "structure_ai_attempted": True,
+        "ai_first_degraded": False,
+        "fallback_stage": "",
+        "fallback_reason": "",
+        "document_map_status": "not_requested",
+        "document_map_status_reason": "",
         "ai_classified_count": 0,
         "ai_heading_count": 0,
         "semantic_block_count": 1,

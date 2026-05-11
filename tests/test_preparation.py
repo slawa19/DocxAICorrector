@@ -8,6 +8,8 @@ import pytest
 import docxaicorrector.document.segments as document_segments
 import docxaicorrector.processing.preparation as preparation
 import docxaicorrector.validation.structural as structural_validation
+import docxaicorrector.structure.document_map as document_map_module
+import docxaicorrector.structure.recognition as recognition_module
 from docxaicorrector.core.config import ModelRegistry, TextModelConfig
 from docxaicorrector.core.models import DocumentBlock
 from docxaicorrector.core.models import ImageAsset, ImageVariantCandidate
@@ -2835,6 +2837,65 @@ def test_run_document_map_stage_degrades_provider_runtime_failures(monkeypatch):
     assert fallback_state["document_map_present"] is False
 
 
+def test_run_document_map_stage_uses_model_aware_client_factory_for_default_runtime(monkeypatch):
+    paragraphs = [_build_paragraph(source_index=0, text="ГЛАВА 1")]
+    captured = {}
+
+    monkeypatch.setattr(preparation, "_read_cached_document_map", lambda cache_key: None)
+    monkeypatch.setattr(preparation, "_store_cached_document_map", lambda cache_key, document_map: None)
+    monkeypatch.setattr(
+        preparation,
+        "get_client_for_model_selector",
+        lambda selector, required_capability, *, config_like=None: captured.setdefault(
+            "client_request",
+            (selector, required_capability, config_like),
+        )
+        or object(),
+    )
+
+    def _fake_build_document_map(paragraphs, **kwargs):
+        captured["client"] = kwargs["client"]
+        captured["model"] = kwargs["model"]
+        return DocumentMap(
+            body_start_logical_index=0,
+            toc_region=None,
+            outline=(),
+            paragraph_anchors={0: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+            review_zones=(),
+            model_used=kwargs["model"],
+            total_tokens_used=0,
+            processing_time_seconds=0.0,
+            sampled=False,
+            sampled_logical_indexes=(0,),
+        )
+
+    monkeypatch.setattr(preparation, "build_document_map", _fake_build_document_map)
+
+    app_config = {
+        "structure_recovery_enabled": True,
+        "structure_recovery_document_map_enabled": True,
+        "structure_recovery_document_map_model": "openrouter:test/document-map",
+        "structure_recovery_document_map_cache_enabled": False,
+        "structure_recovery_document_map_save_debug_artifacts": False,
+        "models": _build_runtime_model_registry(structure_recognition_model="gpt-4o-mini"),
+    }
+
+    document_map = preparation._run_document_map_stage(
+        paragraphs=paragraphs,
+        image_assets=[],
+        app_config=app_config,
+        get_client_fn=preparation.get_client,
+        progress_callback=None,
+        normalization_report=_build_report(raw=1, logical=1),
+        relation_report=None,
+        fallback_state={},
+    )
+
+    assert document_map is not None
+    assert captured["client_request"] == ("openrouter:test/document-map", "responses_text", app_config)
+    assert captured["model"] == "openrouter:test/document-map"
+
+
 def test_run_document_map_stage_keeps_internal_failures_fatal(monkeypatch):
     paragraphs = [_build_paragraph(source_index=0, text="ГЛАВА 1")]
 
@@ -4756,11 +4817,10 @@ def test_prepare_document_for_processing_persists_document_map_status_into_prepa
         document_map_status_reason if expected_degraded else ""
     )
     assert snapshot["document_map_status"] == document_map_status
+    assert snapshot["document_map_status_reason"] == document_map_status_reason
     assert snapshot["ai_first_degraded"] is expected_degraded
     assert snapshot["fallback_stage"] == expected_fallback_stage
     assert snapshot["fallback_reason"] == (document_map_status_reason if expected_degraded else "")
-    if document_map_status_reason:
-        assert snapshot["document_map_status_reason"] == document_map_status_reason
     structure_outcome_context = next(context for event, context in events if event == "structure_processing_outcome")
     assert structure_outcome_context["document_map_status"] == document_map_status
     assert structure_outcome_context["document_map_status_reason"] == document_map_status_reason
@@ -4898,6 +4958,184 @@ def test_prepare_document_for_processing_exposes_stage_specific_degraded_ai_firs
     assert structure_outcome_context["structure_status_note"].startswith(
         f"Структура: AI-first degraded ({fallback_stage})"
     )
+
+
+def test_run_structure_recognition_uses_model_aware_client_factory_for_default_runtime(monkeypatch):
+    paragraphs = [_build_paragraph(source_index=0, text="ГЛАВА 1")]
+    paragraphs[0].logical_index = 10
+    captured = {}
+
+    monkeypatch.setattr(
+        preparation,
+        "get_client_for_model_selector",
+        lambda selector, required_capability, *, config_like=None: captured.setdefault(
+            "client_request",
+            (selector, required_capability, config_like),
+        )
+        or object(),
+    )
+    monkeypatch.setattr(
+        preparation,
+        "build_structure_map",
+        lambda paragraphs, *, client, model, **kwargs: (
+            captured.setdefault("client", client),
+            captured.setdefault("model", model),
+            StructureMap(
+                classifications={10: ParagraphClassification(index=10, role="heading", heading_level=1, confidence="high")},
+                model_used=model,
+                total_tokens_used=12,
+                processing_time_seconds=0.1,
+                window_count=1,
+            ),
+        )[-1],
+    )
+    monkeypatch.setattr(preparation, "apply_structure_map", lambda *args, **kwargs: {"ai_classified": 1, "ai_headings": 1})
+    monkeypatch.setattr(preparation, "log_event", lambda *args, **kwargs: None)
+
+    app_config = {
+        "structure_recognition_cache_enabled": False,
+        "structure_recognition_save_debug_artifacts": False,
+        "structure_recognition_timeout_seconds": 60,
+        "structure_recognition_min_confidence": "medium",
+        "structure_recognition_model": "openrouter:test/structure",
+        "models": _build_runtime_model_registry(structure_recognition_model="openrouter:test/structure"),
+    }
+
+    structure_map, summary = preparation._run_structure_recognition(
+        paragraphs=paragraphs,
+        image_assets=[],
+        app_config=app_config,
+        get_client_fn=preparation.get_client,
+        progress_callback=None,
+        normalization_report=_build_report(raw=1, logical=1),
+        relation_report=None,
+        document_map=None,
+    )
+
+    assert structure_map is not None
+    assert summary.ai_classified_count == 1
+    assert captured["client_request"] == ("openrouter:test/structure", "responses_text", app_config)
+    assert captured["model"] == "openrouter:test/structure"
+
+
+def test_build_document_map_strips_provider_prefix_before_openrouter_request(monkeypatch):
+    captured = {}
+
+    class _ResponsesClient:
+        class responses:
+            @staticmethod
+            def create(**kwargs):
+                captured["model"] = kwargs["model"]
+                return type(
+                    "ResponseStub",
+                    (),
+                    {
+                        "output": [
+                            type(
+                                "OutputItem",
+                                (),
+                                {
+                                    "content": [
+                                        type(
+                                            "ContentItem",
+                                            (),
+                                            {
+                                                "type": "output_text",
+                                                "text": json.dumps(
+                                                    {
+                                                        "body_start_logical_index": 0,
+                                                        "toc_region": None,
+                                                        "outline": [],
+                                                        "paragraph_anchors": {
+                                                            "0": {
+                                                                "role": "body",
+                                                                "heading_level": None,
+                                                                "confidence": "low",
+                                                            }
+                                                        },
+                                                        "review_zones": [],
+                                                    },
+                                                    ensure_ascii=False,
+                                                ),
+                                            },
+                                        )()
+                                    ]
+                                },
+                            )()
+                        ],
+                        "output_text": "",
+                        "usage": type("UsageStub", (), {"total_tokens": 0})(),
+                    },
+                )()
+
+    monkeypatch.setattr(document_map_module, "_with_request_timeout", lambda client, timeout: client)
+    monkeypatch.setattr(document_map_module, "_load_system_prompt", lambda: "system")
+
+    document_map = document_map_module.build_document_map(
+        [_build_paragraph(source_index=0, text="Body")],
+        client=_ResponsesClient(),
+        model="openrouter:test/document-map",
+        timeout=10.0,
+        max_input_paragraphs=100,
+        max_input_tokens=1000,
+        preview_chars=120,
+    )
+
+    assert document_map is not None
+    assert captured["model"] == "test/document-map"
+
+
+def test_build_structure_map_strips_provider_prefix_before_openrouter_request(monkeypatch):
+    captured = {}
+
+    class _ResponsesClient:
+        class responses:
+            @staticmethod
+            def create(**kwargs):
+                captured["model"] = kwargs["model"]
+                return type(
+                    "ResponseStub",
+                    (),
+                    {
+                        "output": [
+                            type(
+                                "OutputItem",
+                                (),
+                                {
+                                    "content": [
+                                        type(
+                                            "ContentItem",
+                                            (),
+                                            {
+                                                "type": "output_text",
+                                                "text": json.dumps(
+                                                    [{"i": 0, "r": "body", "l": None, "c": "low"}],
+                                                    ensure_ascii=False,
+                                                ),
+                                            },
+                                        )()
+                                    ]
+                                },
+                            )()
+                        ],
+                        "output_text": "",
+                        "usage": type("UsageStub", (), {"total_tokens": 0})(),
+                    },
+                )()
+
+    monkeypatch.setattr(recognition_module, "_load_system_prompt", lambda: "system")
+
+    structure_map = recognition_module.build_structure_map(
+        [_build_paragraph(source_index=0, text="Body")],
+        client=_ResponsesClient(),
+        model="openrouter:test/structure",
+        max_window_paragraphs=10,
+        overlap_paragraphs=0,
+        timeout=10.0,
+    )
+
+    assert structure_map is not None
+    assert captured["model"] == "test/structure"
 
 
 def test_prepare_document_for_processing_disables_downstream_relation_grouping_when_post_ai_relation_rebuild_fails(monkeypatch):
