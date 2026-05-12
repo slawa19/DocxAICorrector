@@ -12,7 +12,7 @@ from typing import Any, Callable, Protocol, cast
 
 from docxaicorrector.core.constants import PROMPTS_DIR
 from docxaicorrector.generation._generation import normalize_model_output
-from docxaicorrector.core.models import DocumentMap, ParagraphClassification, ParagraphDescriptor, ParagraphUnit, StructureMap
+from docxaicorrector.core.models import DocumentMap, DocumentTopologyProjection, ParagraphClassification, ParagraphDescriptor, ParagraphUnit, StructureMap
 from docxaicorrector.generation.openai_response_utils import collect_response_text_traversal
 from docxaicorrector.structure._responses_timeout import call_responses_with_hard_timeout
 
@@ -148,6 +148,7 @@ def build_paragraph_descriptors(
     paragraphs: list[ParagraphUnit],
     *,
     document_map: DocumentMap | None = None,
+    topology_projection: DocumentTopologyProjection | None = None,
     preview_chars: int = _DESCRIPTOR_PREVIEW_CHARS,
 ) -> list[ParagraphDescriptor]:
     descriptors: list[ParagraphDescriptor] = []
@@ -158,6 +159,7 @@ def build_paragraph_descriptors(
             continue
         logical_index = int(getattr(paragraph, "logical_index", paragraph.source_index))
         anchor = document_map.get_anchor(logical_index) if document_map is not None else None
+        unit = topology_projection.get_unit(logical_index) if topology_projection is not None else None
         preview = _descriptor_preview_text(text, preview_chars=preview_chars)
         alpha_chars = [char for char in preview if char.isalpha()]
         embedded_hint_payload = _build_embedded_structure_hint_payload(paragraph, preview_chars=preview_chars)
@@ -194,6 +196,12 @@ def build_paragraph_descriptors(
                 anchor_role=None if anchor is None else anchor.role,
                 anchor_heading_level=None if anchor is None else anchor.heading_level,
                 anchor_confidence=None if anchor is None else anchor.confidence,
+                unit_id=None if unit is None else unit.unit_id,
+                unit_type=None if unit is None else unit.unit_type,
+                unit_role=None if unit is None else unit.role,
+                unit_heading_level=None if unit is None else unit.heading_level,
+                unit_canonical_text=None if unit is None else unit.canonical_text,
+                unit_member_count=None if unit is None else len(unit.logical_indexes),
             )
         )
     return descriptors
@@ -370,12 +378,18 @@ def build_structure_map(
     overlap_paragraphs: int = 50,
     timeout: float = 60.0,
     document_map: DocumentMap | None = None,
+    topology_projection: DocumentTopologyProjection | None = None,
     preview_chars: int = _DESCRIPTOR_PREVIEW_CHARS,
     target_input_tokens: int | None = None,
     progress_callback: StructureProgressCallback | None = None,
 ) -> StructureMap:
     started_at = time.perf_counter()
-    descriptors = build_paragraph_descriptors(paragraphs, document_map=document_map, preview_chars=preview_chars)
+    descriptors = build_paragraph_descriptors(
+        paragraphs,
+        document_map=document_map,
+        topology_projection=topology_projection,
+        preview_chars=preview_chars,
+    )
     if not descriptors:
         return StructureMap({}, model, 0, 0.0, 0)
 

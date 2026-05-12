@@ -14,7 +14,7 @@ import time
 from typing import Any, Callable, Protocol, Sequence, cast
 
 from docxaicorrector.core.constants import PROMPTS_DIR, RUN_DIR
-from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, ParagraphUnit
+from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, DocumentMapSplitHint, ParagraphUnit
 from docxaicorrector.core.models import DocumentMapOutlineEntry, DocumentMapReviewZone, DocumentMapTocEntry, DocumentMapTocRegion
 from docxaicorrector.core.models import normalize_heuristic_list_kind_hint, normalize_heuristic_role_hint, normalize_heuristic_structural_role_hint
 from docxaicorrector.generation._generation import normalize_model_output
@@ -36,9 +36,10 @@ _VALID_DOCUMENT_MAP_CONFIDENCES = frozenset({"high", "medium", "low"})
 _VALID_REVIEW_ZONE_SEVERITIES = frozenset({"info", "warning", "critical"})
 _TIMEOUT_ERROR_NAMES = {"APITimeoutError", "TimeoutError"}
 DOCUMENT_MAP_SYSTEM_PROMPT_PATH = PROMPTS_DIR / "document_map_system.txt"
-DOCUMENT_MAP_PROMPT_VERSION = 4
+DOCUMENT_MAP_PROMPT_VERSION = 5
 DOCUMENT_MAP_DESCRIPTOR_SCHEMA_VERSION = 2
-DOCUMENT_MAP_POSTPROCESS_VERSION = 4
+DOCUMENT_MAP_POSTPROCESS_VERSION = 5
+DOCUMENT_MAP_SPLIT_HINT_SCHEMA_VERSION = 1
 _DOCUMENT_MAP_MALFORMED_DIR = RUN_DIR / "document_maps"
 _LOGGER = logging.getLogger(__name__)
 _REVIEW_ZONE_SEVERITY_SYNONYMS = {
@@ -46,6 +47,7 @@ _REVIEW_ZONE_SEVERITY_SYNONYMS = {
     "medium": "warning",
     "high": "critical",
 }
+_VALID_DOCUMENT_MAP_SPLIT_KINDS = frozenset({"page_artifact_heading", "compound_toc_entries"})
 
 
 @dataclass(frozen=True)
@@ -562,8 +564,9 @@ def _build_document_map_user_prompt(
             f"\nValidation error summary: {schema_error_summary}"
         )
     return (
-        "Return a single JSON object with keys `body_start_logical_index`, `toc_region`, `outline`, `paragraph_anchors`, and `review_zones`. "
-        "For `paragraph_anchors`, use an object mapping logical indexes to `{role, heading_level, confidence}`."
+        "Return a single JSON object with keys `body_start_logical_index`, `toc_region`, `outline`, `paragraph_anchors`, `review_zones`, and optional `split_hints`. "
+        "For `paragraph_anchors`, use an object mapping logical indexes to `{role, heading_level, confidence}`. "
+        "For `split_hints`, use an array of `{logical_index, split_kind, expected_parts, authority, confidence, evidence}` and return an empty array when there is no explicit split intent."
         "\n\nDocument summary:\n"
         f"{json.dumps(summary, ensure_ascii=False)}"
         "\n\nSampled paragraph descriptors:\n"
@@ -594,6 +597,7 @@ def _parse_document_map_payload(
     outline = _parse_outline_entries(parsed.get("outline"), all_logical_indexes=all_logical_indexes)
     paragraph_anchors = _parse_paragraph_anchors(parsed.get("paragraph_anchors"), all_logical_indexes=all_logical_indexes)
     review_zones = _parse_review_zones(parsed.get("review_zones"), all_logical_indexes=all_logical_indexes)
+    split_hints = _parse_split_hints(parsed.get("split_hints"), all_logical_indexes=all_logical_indexes)
 
     for logical_index in all_logical_indexes:
         paragraph_anchors.setdefault(logical_index, DocumentMapAnchor(role="body", heading_level=None, confidence="low"))
@@ -606,6 +610,7 @@ def _parse_document_map_payload(
         outline=outline,
         paragraph_anchors=paragraph_anchors,
         review_zones=review_zones,
+        split_hints=split_hints,
         model_used=model_used,
         total_tokens_used=int(total_tokens_used or 0),
         processing_time_seconds=float(processing_time_seconds or 0.0),
@@ -646,6 +651,7 @@ def _postprocess_document_map(document_map: DocumentMap, *, paragraphs: Sequence
         outline=outline,
         paragraph_anchors=document_map.paragraph_anchors,
         review_zones=document_map.review_zones,
+        split_hints=document_map.split_hints,
         model_used=document_map.model_used,
         total_tokens_used=document_map.total_tokens_used,
         processing_time_seconds=document_map.processing_time_seconds,
@@ -1190,6 +1196,49 @@ def _parse_review_zones(raw_value: object, *, all_logical_indexes: set[int]) -> 
     return tuple(parsed_zones)
 
 
+def _parse_split_hints(raw_value: object, *, all_logical_indexes: set[int]) -> tuple[DocumentMapSplitHint, ...]:
+    if raw_value is None:
+        return ()
+    if isinstance(raw_value, tuple):
+        raw_value = list(raw_value)
+    if not isinstance(raw_value, list):
+        raise DocumentMapSchemaError("split_hints must be an array")
+
+    parsed_hints: list[DocumentMapSplitHint] = []
+    for item in raw_value:
+        if not isinstance(item, dict):
+            raise DocumentMapSchemaError("split hint must be an object")
+        expected_parts = item.get("expected_parts", ())
+        if isinstance(expected_parts, tuple):
+            expected_parts = list(expected_parts)
+        if not isinstance(expected_parts, list):
+            raise DocumentMapSchemaError("split_hints.expected_parts must be an array")
+        if any(not isinstance(value, str) for value in expected_parts):
+            raise DocumentMapSchemaError("split_hints.expected_parts items must be strings")
+        evidence = item.get("evidence", ())
+        if isinstance(evidence, tuple):
+            evidence = list(evidence)
+        if not isinstance(evidence, list):
+            raise DocumentMapSchemaError("split_hints.evidence must be an array")
+        if any(not isinstance(value, str) for value in evidence):
+            raise DocumentMapSchemaError("split_hints.evidence items must be strings")
+        parsed_hints.append(
+            DocumentMapSplitHint(
+                logical_index=_coerce_known_logical_index(
+                    item.get("logical_index"),
+                    all_logical_indexes=all_logical_indexes,
+                    field_name="split_hints.logical_index",
+                ),
+                split_kind=_coerce_split_kind(item.get("split_kind"), field_name="split_hints.split_kind"),
+                expected_parts=tuple(str(value).strip() for value in expected_parts if str(value).strip()),
+                authority=_coerce_nonempty_string(item.get("authority"), field_name="split_hints.authority"),
+                confidence=_coerce_confidence(item.get("confidence"), field_name="split_hints.confidence"),
+                evidence=tuple(str(value).strip() for value in evidence if str(value).strip()),
+            )
+        )
+    return tuple(parsed_hints)
+
+
 def _coerce_known_logical_index(raw_value: object, *, all_logical_indexes: set[int], field_name: str) -> int:
     try:
         logical_index = int(cast(Any, raw_value))
@@ -1240,6 +1289,20 @@ def _coerce_confidence(raw_value: object, *, field_name: str) -> str:
     if confidence not in _VALID_DOCUMENT_MAP_CONFIDENCES:
         raise DocumentMapSchemaError(f"Unsupported confidence for {field_name}: {confidence}")
     return confidence
+
+
+def _coerce_split_kind(raw_value: object, *, field_name: str) -> str:
+    split_kind = str(raw_value or "").strip().lower()
+    if split_kind not in _VALID_DOCUMENT_MAP_SPLIT_KINDS:
+        raise DocumentMapSchemaError(f"Unsupported split kind for {field_name}: {split_kind}")
+    return split_kind
+
+
+def _coerce_nonempty_string(raw_value: object, *, field_name: str) -> str:
+    value = str(raw_value or "").strip()
+    if not value:
+        raise DocumentMapSchemaError(f"{field_name} must be a non-empty string")
+    return value
 
 
 def _coerce_role(raw_value: object, *, field_name: str) -> str:

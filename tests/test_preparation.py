@@ -1,6 +1,7 @@
 from io import BytesIO
 import json
 from threading import Event, Thread
+from types import SimpleNamespace
 from typing import Any, cast
 
 from docx import Document
@@ -8,14 +9,17 @@ import pytest
 
 import docxaicorrector.document.segments as document_segments
 import docxaicorrector.processing.preparation as preparation
-import docxaicorrector.validation.structural as structural_validation
 import docxaicorrector.structure.document_map as document_map_module
 import docxaicorrector.structure.recognition as recognition_module
+import docxaicorrector.validation.structural as structural_validation
 from docxaicorrector.core.config import ModelRegistry, TextModelConfig
 from docxaicorrector.core.models import DocumentBlock
+from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, DocumentMapOutlineEntry, DocumentMapReviewZone, DocumentMapTocRegion
+from docxaicorrector.core.models import DocumentTopologyProjection, EmbeddedStructureHint, ParagraphClassification
 from docxaicorrector.core.models import ImageAsset, ImageVariantCandidate
 from docxaicorrector.core.models import LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport
-from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, DocumentMapOutlineEntry, DocumentMapReviewZone, DocumentMapTocRegion, EmbeddedStructureHint, ParagraphClassification, ParagraphRelation, ParagraphRelationDecision, ParagraphUnit, RelationNormalizationReport, StructureMap
+from docxaicorrector.core.models import ParagraphRelation, ParagraphRelationDecision, ParagraphUnit, RelationNormalizationReport
+from docxaicorrector.core.models import StructuralUnit, StructureMap
 from docxaicorrector.core.models import StructureRecognitionSummary, StructureRepairReport
 from docxaicorrector.document.segments import CHAPTER_SEGMENTS_DETECTOR_VERSION
 from docxaicorrector.processing.processing_runtime import FrozenUploadPayload, build_in_memory_uploaded_file, build_preparation_request_marker
@@ -368,6 +372,9 @@ def _make_ai_first_config(
         "structure_recovery_anchored_classification_preview_chars": 1500,
         "structure_recovery_anchored_classification_target_input_tokens": 180000,
         "structure_recovery_anchored_classification_min_confidence": "high",
+        "structure_recovery_topology_projection_enabled": False,
+        "structure_recovery_topology_projection_save_debug_artifacts": True,
+        "structure_recovery_topology_projection_binding_splits_enabled": False,
         "models": _build_runtime_model_registry(structure_recognition_model=structure_recognition_model),
     }
     config.update(overrides)
@@ -375,6 +382,119 @@ def _make_ai_first_config(
         resolved_model = str(config.get("structure_recognition_model", structure_recognition_model) or structure_recognition_model)
         config["models"] = _build_runtime_model_registry(structure_recognition_model=resolved_model)
     return config
+
+
+def test_run_document_topology_projection_stage_disabled_does_not_write_artifact(monkeypatch, tmp_path):
+    paragraph = _build_paragraph(source_index=10, text="Chapter Eleven")
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(
+            DocumentMapOutlineEntry(
+                title="Chapter Eleven",
+                level=1,
+                logical_index=10,
+                confidence="high",
+                evidence=("outline_entry",),
+            ),
+        ),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+    artifact_dir = tmp_path / "document_topology"
+    monkeypatch.setattr(preparation, "_DOCUMENT_TOPOLOGY_DEBUG_DIR", artifact_dir)
+
+    projection, status, reason = preparation._run_document_topology_projection_stage(
+        paragraphs=[paragraph],
+        document_map=document_map,
+        app_config=_make_ai_first_config(structure_recovery_topology_projection_enabled=False),
+    )
+
+    assert projection is None
+    assert status == "disabled"
+    assert reason == "topology_projection_disabled"
+    assert not artifact_dir.exists()
+
+
+def test_run_document_topology_projection_stage_writes_empty_projection_artifact_when_enabled(monkeypatch, tmp_path):
+    paragraphs = [
+        _build_paragraph(source_index=10, text="Body paragraph."),
+        _build_paragraph(source_index=11, text="Another body paragraph."),
+    ]
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(),
+        paragraph_anchors={10: DocumentMapAnchor(role="body", heading_level=None, confidence="low")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10, 11),
+    )
+    artifact_dir = tmp_path / "document_topology"
+    monkeypatch.setattr(preparation, "_DOCUMENT_TOPOLOGY_DEBUG_DIR", artifact_dir)
+
+    projection, status, reason = preparation._run_document_topology_projection_stage(
+        paragraphs=paragraphs,
+        document_map=document_map,
+        app_config=_make_ai_first_config(
+            structure_recovery_topology_projection_enabled=True,
+            structure_recovery_topology_projection_save_debug_artifacts=True,
+        ),
+    )
+
+    assert projection is not None
+    assert status == "no_operations"
+    assert reason == ""
+    artifact_path = artifact_dir / f"{projection.cache_key}.json"
+    assert artifact_path.exists()
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert payload["stage"] == "document_topology_projection_v1"
+    assert payload["operations"] == []
+    assert payload["projected_units"] == []
+
+
+def test_apply_prepared_snapshot_fields_exposes_document_topology_projection_from_prepared():
+    projection = DocumentTopologyProjection(
+        cache_key="topology-key",
+        document_map_cache_key="document-map-key",
+        projected_units=(
+            StructuralUnit(
+                unit_type="chapter_heading",
+                logical_indexes=(10, 11),
+                canonical_text="Chapter Eleven Governance and We",
+                role="heading",
+                heading_level=1,
+                confidence="high",
+                authority="document_map_outline",
+                evidence=("outline_entry", "adjacent_short_heading_fragments"),
+            ),
+        ),
+    )
+    prepared = SimpleNamespace(
+        document_map=None,
+        document_map_status="not_requested",
+        document_map_status_reason="",
+        document_topology_projection=projection,
+        document_topology_projection_status="built",
+        document_topology_projection_status_reason="",
+        structure_recognition_summary=StructureRecognitionSummary(),
+    )
+
+    snapshot = structural_validation._build_preparation_diagnostic_defaults([])
+    structural_validation._apply_prepared_snapshot_fields(snapshot, prepared)
+
+    assert snapshot["document_topology_projection_status"] == "built"
+    assert snapshot["document_topology_projection_status_reason"] == ""
+    assert snapshot["document_topology_projection"]["cache_key"] == "topology-key"
+    assert snapshot["document_topology_projection"]["projected_units"][0]["logical_indexes"] == (10, 11)
 
 
 def _stub_single_block_preparation_builders(monkeypatch, *, source_text: str, job_text: str = "block"):
@@ -2419,7 +2539,7 @@ def test_run_structure_recognition_applies_final_reconciled_map_after_targeted_r
         lambda paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, preview_chars, target_input_tokens, progress_callback: initial_structure_map,
     )
 
-    def _fake_reconcile(paragraphs, document_map, structure_map):
+    def _fake_reconcile(paragraphs, document_map, structure_map, topology_projection=None):
         captured["reconcile_calls"] += 1
         if captured["reconcile_calls"] == 1:
             assert structure_map is initial_structure_map
@@ -2583,7 +2703,7 @@ def test_run_structure_recognition_preserves_first_reconcile_patch_indexes_after
         lambda *args, **kwargs: initial_structure_map,
     )
 
-    def _fake_reconcile(paragraphs, document_map, structure_map):
+    def _fake_reconcile(paragraphs, document_map, structure_map, topology_projection=None):
         captured["reconcile_calls"] += 1
         if captured["reconcile_calls"] == 1:
             return initial_structure_map, ReconciliationReport(

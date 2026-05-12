@@ -189,6 +189,7 @@ bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && python3 scripts/_list_lo
 | `.run/paragraph_boundary_ai_review/*.json` | TTL 14 дней, max 200 файлов, pruning при каждой записи | `document._write_paragraph_boundary_ai_review_artifact()` → `prune_artifact_dir()` |
 | `.run/structure_maps/*.json` | TTL 30 дней, max 200 файлов, pruning при каждой записи | `preparation._write_structure_map_debug_artifact()` → `prune_artifact_dir()` |
 | `.run/structure_validation/*.json` | TTL 30 дней, max 200 файлов, pruning при каждой записи | `structure_validation.write_structure_validation_debug_artifact()` → `prune_artifact_dir()` |
+| `.run/document_topology/*.json` | TTL 30 дней, max 200 файлов, pruning при каждой записи | `preparation._write_document_topology_debug_artifact()` → `prune_artifact_dir()` |
 | `.run/ui_results/*` | TTL 7 дней, max 80 result stems, pruning grouped by stem при каждой записи | `runtime_artifacts.write_ui_result_artifacts()` → `prune_ui_result_artifact_groups()` |
 | `.run/restart_*`, `.run/completed_*` | TTL 12 часов, cleanup при старте приложения | `restart_store.cleanup_stale_persisted_sources`, вызов из `app._schedule_stale_persisted_sources_cleanup` |
 | `.run/project.log` | Size-rollover на PowerShell-стороне (`Invoke-ProjectLogRollover`), backupCount=5, порог `256 KiB` | `scripts/_shared.ps1` |

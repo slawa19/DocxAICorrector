@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from difflib import SequenceMatcher
 from io import BytesIO
 import json
@@ -575,6 +575,9 @@ def _build_preparation_diagnostic_defaults(event_log: Sequence[Mapping[str, obje
         "readiness_reasons": _extract_event_context_list(event_log, "structure_processing_outcome", "readiness_reasons"),
         "document_map_present": _extract_event_context_bool(event_log, "structure_processing_outcome", "document_map_present"),
         "outline_coverage_ratio": outline_coverage_ratio,
+        "document_topology_projection_status": "not_requested",
+        "document_topology_projection_status_reason": "",
+        "document_topology_projection": None,
         "front_matter_leaks": _extract_event_context_int_list(event_log, "reconciliation_report_saved", "front_matter_leaks"),
         "front_matter_body_advisories": _extract_event_context_int_list(
             event_log,
@@ -650,6 +653,17 @@ def _apply_prepared_snapshot_fields(snapshot: dict[str, object], prepared: objec
         snapshot["document_map_status_reason"] = prepared_document_map_status_reason
     if not bool(snapshot.get("document_map_present", False)):
         snapshot["document_map_present"] = bool(getattr(prepared, "document_map", None) is not None)
+    current_topology_status = str(snapshot.get("document_topology_projection_status") or "").strip().lower()
+    prepared_topology_status = str(getattr(prepared, "document_topology_projection_status", "") or "").strip()
+    if prepared_topology_status and current_topology_status in {"", "not_requested"}:
+        snapshot["document_topology_projection_status"] = prepared_topology_status
+    current_topology_reason = str(snapshot.get("document_topology_projection_status_reason") or "")
+    prepared_topology_reason = str(getattr(prepared, "document_topology_projection_status_reason", "") or "").strip()
+    if not current_topology_reason and prepared_topology_reason:
+        snapshot["document_topology_projection_status_reason"] = prepared_topology_reason
+    prepared_topology_projection = getattr(prepared, "document_topology_projection", None)
+    if prepared_topology_projection is not None:
+        snapshot["document_topology_projection"] = asdict(prepared_topology_projection)
     _apply_quality_gate_readiness_fallback(snapshot)
     _normalize_snapshot_or_metric_statuses(snapshot)
 

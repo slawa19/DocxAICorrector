@@ -253,6 +253,9 @@ class AppConfig(Mapping[str, Any]):
     structure_recovery_anchored_classification_preview_chars: int
     structure_recovery_anchored_classification_target_input_tokens: int
     structure_recovery_anchored_classification_min_confidence: str
+    structure_recovery_topology_projection_enabled: bool
+    structure_recovery_topology_projection_save_debug_artifacts: bool
+    structure_recovery_topology_projection_binding_splits_enabled: bool
     structure_recovery_reconciliation_targeted_enabled: bool
     structure_recovery_reconciliation_targeted_threshold: int
     structure_recovery_reconciliation_targeted_max_paragraphs: int

@@ -1,8 +1,9 @@
+from dataclasses import asdict
 import json
 
 import pytest
 
-from docxaicorrector.core.models import DocumentMapAnchor, DocumentMapOutlineEntry, DocumentMapTocEntry, DocumentMapTocRegion, EmbeddedStructureHint, ParagraphUnit
+from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, DocumentMapOutlineEntry, DocumentMapSplitHint, DocumentMapTocEntry, DocumentMapTocRegion, EmbeddedStructureHint, ParagraphUnit
 from docxaicorrector.structure.document_map import (
     DocumentMapSchemaError,
     _parse_document_map_payload,
@@ -326,6 +327,144 @@ def test_parse_document_map_payload_drops_heading_level_for_non_heading_anchor()
     assert document_map.get_anchor(0).heading_level is None
     assert document_map.get_anchor(1).role == "toc_entry"
     assert document_map.get_anchor(1).heading_level is None
+
+
+def test_parse_document_map_payload_accepts_missing_split_hints_as_empty_tuple():
+    document_map = _parse_document_map_payload(
+        {
+            "body_start_logical_index": 0,
+            "toc_region": None,
+            "outline": [],
+            "paragraph_anchors": {},
+            "review_zones": [],
+        },
+        all_logical_indexes={0, 1},
+        sampled_logical_indexes=(0, 1),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+    )
+
+    assert document_map.split_hints == ()
+
+
+def test_document_map_round_trips_with_split_hints_from_json_payload():
+    source = DocumentMap(
+        body_start_logical_index=0,
+        toc_region=None,
+        outline=(DocumentMapOutlineEntry(title="Chapter 1", level=1, logical_index=1, confidence="high", evidence=("toc_match",)),),
+        paragraph_anchors={1: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        split_hints=(
+            DocumentMapSplitHint(
+                logical_index=1,
+                split_kind="page_artifact_heading",
+                expected_parts=("artifact", "heading"),
+                authority="document_map_outline",
+                confidence="high",
+                evidence=("outline_entry",),
+            ),
+        ),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=10,
+        processing_time_seconds=0.1,
+        sampled=False,
+        sampled_logical_indexes=(0, 1),
+    )
+
+    parsed = _parse_document_map_payload(
+        json.loads(json.dumps(asdict(source))),
+        all_logical_indexes={0, 1},
+        sampled_logical_indexes=(0, 1),
+        model_used=source.model_used,
+        total_tokens_used=source.total_tokens_used,
+        processing_time_seconds=source.processing_time_seconds,
+    )
+
+    assert parsed.split_hints == source.split_hints
+
+
+def test_document_map_round_trips_without_split_hints_from_json_payload():
+    source = DocumentMap(
+        body_start_logical_index=0,
+        toc_region=None,
+        outline=(),
+        paragraph_anchors={0: DocumentMapAnchor(role="body", heading_level=None, confidence="low")},
+        review_zones=(),
+        split_hints=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(0,),
+    )
+
+    parsed = _parse_document_map_payload(
+        json.loads(json.dumps(asdict(source))),
+        all_logical_indexes={0},
+        sampled_logical_indexes=(0,),
+        model_used=source.model_used,
+        total_tokens_used=source.total_tokens_used,
+        processing_time_seconds=source.processing_time_seconds,
+    )
+
+    assert parsed.split_hints == ()
+
+
+def test_parse_document_map_payload_rejects_unknown_split_kind():
+    with pytest.raises(DocumentMapSchemaError, match="Unsupported split kind"):
+        _parse_document_map_payload(
+            {
+                "body_start_logical_index": 0,
+                "toc_region": None,
+                "outline": [],
+                "paragraph_anchors": {},
+                "review_zones": [],
+                "split_hints": [
+                    {
+                        "logical_index": 0,
+                        "split_kind": "unknown_kind",
+                        "expected_parts": ["a", "b"],
+                        "authority": "document_map_outline",
+                        "confidence": "high",
+                        "evidence": ["outline_entry"],
+                    }
+                ],
+            },
+            all_logical_indexes={0},
+            sampled_logical_indexes=(0,),
+            model_used="openrouter:test/document-map",
+            total_tokens_used=0,
+            processing_time_seconds=0.0,
+        )
+
+
+def test_parse_document_map_payload_rejects_out_of_range_split_hint_logical_index():
+    with pytest.raises(DocumentMapSchemaError, match="split_hints.logical_index references unknown logical index"):
+        _parse_document_map_payload(
+            {
+                "body_start_logical_index": 0,
+                "toc_region": None,
+                "outline": [],
+                "paragraph_anchors": {},
+                "review_zones": [],
+                "split_hints": [
+                    {
+                        "logical_index": 9,
+                        "split_kind": "compound_toc_entries",
+                        "expected_parts": ["a", "b"],
+                        "authority": "document_map_toc",
+                        "confidence": "medium",
+                        "evidence": ["toc_entry"],
+                    }
+                ],
+            },
+            all_logical_indexes={0},
+            sampled_logical_indexes=(0,),
+            model_used="openrouter:test/document-map",
+            total_tokens_used=0,
+            processing_time_seconds=0.0,
+        )
 
 
 def test_parse_document_map_payload_normalizes_review_zone_severity_synonyms():

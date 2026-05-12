@@ -85,6 +85,9 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     assert app_config["structure_recovery_anchored_classification_preview_chars"] == 1500
     assert app_config["structure_recovery_anchored_classification_target_input_tokens"] == 180000
     assert app_config["structure_recovery_anchored_classification_min_confidence"] == "medium"
+    assert app_config["structure_recovery_topology_projection_enabled"] is False
+    assert app_config["structure_recovery_topology_projection_save_debug_artifacts"] is True
+    assert app_config["structure_recovery_topology_projection_binding_splits_enabled"] is False
     assert app_config["structure_recovery_reconciliation_targeted_enabled"] is False
     assert app_config["structure_recovery_reconciliation_targeted_threshold"] == 3
     assert app_config["structure_recovery_reconciliation_targeted_max_paragraphs"] == 60
@@ -150,6 +153,9 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["structure_recovery_enabled"] is True
     assert app_config["structure_recovery_mode"] == "ai_first"
     assert app_config["structure_recovery_coordinate_schema_version"] == 1
+    assert app_config["structure_recovery_topology_projection_enabled"] is False
+    assert app_config["structure_recovery_topology_projection_save_debug_artifacts"] is True
+    assert app_config["structure_recovery_topology_projection_binding_splits_enabled"] is False
     assert app_config["structure_validation_block_on_high_risk_noop"] is True
     assert app_config["relation_normalization_enabled"] is True
     assert app_config["relation_normalization_profile"] == "phase2_default"
@@ -290,6 +296,19 @@ def test_load_app_config_resolves_document_map_default_from_explicit_structure_o
     assert app_config["default_model"] == "openrouter:google/gemini-3.1-flash-lite-preview"
     assert app_config["structure_recognition_model"] == "gpt-5-mini"
     assert app_config["structure_recovery_document_map_model"] == "gpt-5-mini"
+
+
+def test_load_app_config_applies_topology_projection_env_overrides(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_ENABLED", "true")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_SAVE_DEBUG_ARTIFACTS", "false")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_BINDING_SPLITS_ENABLED", "true")
+
+    app_config = config.load_app_config()
+
+    assert app_config["structure_recovery_topology_projection_enabled"] is True
+    assert app_config["structure_recovery_topology_projection_save_debug_artifacts"] is False
+    assert app_config["structure_recovery_topology_projection_binding_splits_enabled"] is True
 
 
 def test_load_app_config_honors_audiobook_model_override_from_toml(monkeypatch, tmp_path):

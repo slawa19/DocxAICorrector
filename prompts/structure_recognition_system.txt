@@ -66,6 +66,8 @@ Assign each paragraph exactly one role:
 - Prefer global consistency signals over local heuristic fragments: bounded TOC region, body-start placement, outline continuity, repeated typography/layout patterns, and nearby heading sequences outrank local hint text.
 - If high-confidence DocumentMap anchors are present, keep classifications aligned with those anchors unless the paragraph text is clearly incompatible.
 - If local hint evidence conflicts with the global TOC/body/front-matter picture, prefer the globally consistent interpretation and leave the paragraph conservative rather than forcing a local heuristic override.
+- If `unit_id` is present, paragraphs sharing that `unit_id` belong to one binding structural unit from Stage 1.5 topology projection.
+- Continuation members of a heading unit must not be promoted into competing standalone headings.
 
 ## Output Format
 

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 import docxaicorrector.structure.reconciliation as structure_reconciliation
-from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, DocumentMapOutlineEntry, DocumentMapReviewZone, DocumentMapTocEntry, DocumentMapTocRegion, ParagraphClassification, ParagraphUnit, StructureMap
+from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, DocumentMapOutlineEntry, DocumentMapReviewZone, DocumentMapTocEntry, DocumentMapTocRegion, DocumentTopologyProjection, ParagraphClassification, ParagraphUnit, StructuralUnit, StructureMap
 from docxaicorrector.structure.reconciliation import ReconciliationReport, reconcile_with_document_map, targeted_reclassify_with_reconciliation_context
 
 
@@ -337,6 +337,84 @@ def test_reconcile_with_document_map_reports_anchor_disagreements_for_targeted_r
     _, report = reconcile_with_document_map(paragraphs, document_map, structure_map)
 
     assert report.anchor_disagreements_seen == (10,)
+
+
+def test_reconcile_with_document_map_considers_projected_heading_unit_as_outline_coverage():
+    paragraphs = [
+        _paragraph(source_index=0, logical_index=10, text="Chapter Eleven"),
+        _paragraph(source_index=1, logical_index=11, text="Governance and We"),
+    ]
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(DocumentMapOutlineEntry(title="Chapter Eleven Governance and We", level=1, logical_index=10, confidence="medium", evidence=("outline_entry",)),),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="medium")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10, 11),
+    )
+    structure_map = StructureMap(
+        classifications={11: ParagraphClassification(index=11, role="heading", heading_level=1, confidence="high")},
+        model_used="gpt-4o-mini",
+        total_tokens_used=12,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+    topology_projection = DocumentTopologyProjection(
+        cache_key="topology-key",
+        document_map_cache_key="document-map-key",
+        projected_units=(
+            StructuralUnit(
+                unit_type="chapter_heading",
+                logical_indexes=(10, 11),
+                canonical_text="Chapter Eleven Governance and We",
+                role="heading",
+                heading_level=1,
+                confidence="high",
+                authority="document_map_outline",
+                evidence=("outline_entry", "adjacent_short_heading_fragments"),
+            ),
+        ),
+    )
+
+    _, report = reconcile_with_document_map(paragraphs, document_map, structure_map, topology_projection=topology_projection)
+
+    assert report.missing_outline_entries == ()
+    assert report.outline_coverage_ratio == 1.0
+
+
+def test_reconcile_with_document_map_legacy_call_still_matches_nearby_heading_without_projection():
+    paragraphs = [
+        _paragraph(source_index=0, logical_index=10, text="Chapter Eleven"),
+        _paragraph(source_index=1, logical_index=11, text="Governance and We"),
+    ]
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(DocumentMapOutlineEntry(title="Chapter Eleven Governance and We", level=1, logical_index=10, confidence="medium", evidence=("outline_entry",)),),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="medium")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10, 11),
+    )
+    structure_map = StructureMap(
+        classifications={11: ParagraphClassification(index=11, role="heading", heading_level=1, confidence="high")},
+        model_used="gpt-4o-mini",
+        total_tokens_used=12,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+
+    _, report = reconcile_with_document_map(paragraphs, document_map, structure_map)
+
+    assert report.missing_outline_entries == ()
+    assert report.outline_coverage_ratio == 1.0
 
 
 def test_report_payload_uses_only_canonical_reconciliation_field_names():

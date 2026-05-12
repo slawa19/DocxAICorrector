@@ -8,7 +8,7 @@ from docxaicorrector.structure._responses_timeout import call_responses_with_har
 from typing import Any, Sequence, cast
 
 from docxaicorrector.core.constants import PROMPTS_DIR
-from docxaicorrector.core.models import DocumentMap, ParagraphClassification, ParagraphDescriptor, ParagraphUnit, StructureMap
+from docxaicorrector.core.models import DocumentMap, DocumentTopologyProjection, ParagraphClassification, ParagraphDescriptor, ParagraphUnit, StructureMap
 from docxaicorrector.generation._generation import normalize_model_output
 from docxaicorrector.generation.openai_response_utils import collect_response_text_traversal
 from docxaicorrector.structure.recognition import _as_responses_create_client, _parse_classification_payload, _with_request_timeout
@@ -121,6 +121,7 @@ def reconcile_with_document_map(
     paragraphs: list[ParagraphUnit],
     document_map: DocumentMap,
     structure_map: StructureMap,
+    topology_projection: DocumentTopologyProjection | None = None,
 ) -> tuple[StructureMap, ReconciliationReport]:
     paragraph_indexes = _build_paragraph_indexes(paragraphs)
     patched_classifications = dict(structure_map.classifications)
@@ -200,6 +201,7 @@ def reconcile_with_document_map(
         paragraphs=paragraphs,
         document_map=document_map,
         structure_map=reconciled_structure_map,
+        topology_projection=topology_projection,
         anchor_disagreements_seen=anchor_disagreements_seen,
         patched_logical_indexes=tuple(sorted(patched_logical_indexes)),
     )
@@ -329,6 +331,7 @@ def _build_reconciliation_report(
     paragraphs: Sequence[ParagraphUnit],
     document_map: DocumentMap,
     structure_map: StructureMap,
+    topology_projection: DocumentTopologyProjection | None = None,
     anchor_disagreements_seen: tuple[int, ...] = (),
     patched_logical_indexes: tuple[int, ...] = (),
     targeted_recall_invoked: bool = False,
@@ -351,6 +354,7 @@ def _build_reconciliation_report(
             level,
             heading_levels_by_logical_index=heading_levels_by_logical_index,
             matched_heading_logical_indexes=matched_heading_logical_indexes,
+            topology_projection=topology_projection,
         )
         if matched_logical_index is not None:
             matched_outline_count += 1
@@ -418,7 +422,20 @@ def _match_outline_heading_logical_index(
     *,
     heading_levels_by_logical_index: dict[int, int | None],
     matched_heading_logical_indexes: set[int],
+    topology_projection: DocumentTopologyProjection | None = None,
 ) -> int | None:
+    if topology_projection is not None:
+        projected_unit = topology_projection.get_unit(logical_index)
+        if (
+            projected_unit is not None
+            and projected_unit.unit_type in {"chapter_heading", "section_heading"}
+            and projected_unit.heading_level == level
+        ):
+            for candidate_logical_index in projected_unit.logical_indexes:
+                if candidate_logical_index in matched_heading_logical_indexes:
+                    continue
+                if heading_levels_by_logical_index.get(candidate_logical_index) == level:
+                    return candidate_logical_index
     for distance in range(_OUTLINE_HEADING_MATCH_DISTANCE + 1):
         candidate_indexes = [logical_index] if distance == 0 else [logical_index - distance, logical_index + distance]
         for candidate_logical_index in candidate_indexes:

@@ -5,7 +5,8 @@ import threading
 import pytest
 
 import docxaicorrector.structure.recognition as structure_recognition
-from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, EmbeddedStructureHint, ParagraphClassification, ParagraphUnit, StructureMap
+from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, DocumentTopologyProjection, EmbeddedStructureHint
+from docxaicorrector.core.models import ParagraphClassification, ParagraphUnit, StructuralUnit, StructureMap
 from docxaicorrector.structure.recognition import StructureRecognitionProgress
 
 
@@ -103,6 +104,40 @@ def test_build_paragraph_descriptors_include_document_map_anchors_when_provided(
     assert descriptors[0].anchor_confidence == "high"
     assert descriptors[0].to_prompt_dict()["anchor_r"] == "heading"
     assert descriptors[1].anchor_role is None
+
+
+def test_build_paragraph_descriptors_include_topology_unit_fields_only_when_projection_present():
+    paragraphs = [
+        _paragraph(source_index=10, text="Chapter Eleven"),
+        _paragraph(source_index=11, text="Governance and We"),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-key",
+        document_map_cache_key="document-map-key",
+        projected_units=(
+            StructuralUnit(
+                unit_type="chapter_heading",
+                logical_indexes=(10, 11),
+                canonical_text="Chapter Eleven Governance and We",
+                role="heading",
+                heading_level=1,
+                confidence="high",
+                authority="document_map_outline",
+                evidence=("outline_entry", "adjacent_short_heading_fragments"),
+            ),
+        ),
+    )
+
+    without_projection = structure_recognition.build_paragraph_descriptors(paragraphs)
+    with_projection = structure_recognition.build_paragraph_descriptors(
+        paragraphs,
+        topology_projection=projection,
+    )
+
+    assert "unit_id" not in without_projection[0].to_prompt_dict()
+    assert with_projection[0].unit_id == projection.projected_units[0].unit_id
+    assert with_projection[0].to_prompt_dict()["unit_type"] == "chapter_heading"
+    assert with_projection[0].to_prompt_dict()["unit_member_count"] == 2
 
 
 def test_build_paragraph_descriptors_use_logical_index_for_duplicate_source_indexes():
@@ -338,6 +373,47 @@ def test_build_structure_map_forwards_document_map_anchors_into_descriptors(monk
     assert captured["descriptors"][0].anchor_role == "heading"
     assert captured["descriptors"][0].anchor_heading_level == 1
     assert captured["descriptors"][0].anchor_confidence == "high"
+
+
+def test_build_structure_map_forwards_topology_projection_into_descriptors(monkeypatch):
+    paragraphs = [_paragraph(source_index=10, text="Chapter Eleven"), _paragraph(source_index=11, text="Governance and We")]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-key",
+        document_map_cache_key="document-map-key",
+        projected_units=(
+            StructuralUnit(
+                unit_type="chapter_heading",
+                logical_indexes=(10, 11),
+                canonical_text="Chapter Eleven Governance and We",
+                role="heading",
+                heading_level=1,
+                confidence="high",
+                authority="document_map_outline",
+                evidence=("outline_entry", "adjacent_short_heading_fragments"),
+            ),
+        ),
+    )
+    captured = {}
+
+    def _fake_classify_descriptor_window_with_fallback(**kwargs):
+        captured["descriptors"] = list(kwargs["descriptors"])
+        return [(list(kwargs["descriptors"]), [])], 0
+
+    monkeypatch.setattr(
+        structure_recognition,
+        "_classify_descriptor_window_with_fallback",
+        _fake_classify_descriptor_window_with_fallback,
+    )
+
+    structure_recognition.build_structure_map(
+        paragraphs,
+        client=object(),
+        model="gpt-5-mini",
+        topology_projection=projection,
+    )
+
+    assert captured["descriptors"][0].unit_id == projection.projected_units[0].unit_id
+    assert captured["descriptors"][0].unit_heading_level == 1
 
 
 def test_build_structure_map_passes_target_input_tokens_to_window_builder(monkeypatch):

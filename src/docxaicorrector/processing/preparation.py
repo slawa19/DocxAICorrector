@@ -1,4 +1,4 @@
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 import hashlib
@@ -24,7 +24,7 @@ from docxaicorrector.document._document import (
 )
 from docxaicorrector.document.relations import build_paragraph_relations
 from docxaicorrector.core.logger import log_event
-from docxaicorrector.core.models import DocumentMap, LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport, ParagraphRelation, RelationNormalizationReport
+from docxaicorrector.core.models import DocumentMap, DocumentTopologyProjection, LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport, ParagraphRelation, RelationNormalizationReport
 from docxaicorrector.core.models import StructureRecognitionSummary
 from docxaicorrector.core.models import StructureRepairReport
 from docxaicorrector.core.models import clone_prepared_image_asset
@@ -32,6 +32,8 @@ from docxaicorrector.core.models import normalize_heuristic_list_kind_hint, norm
 from docxaicorrector.core.models import StructureMap
 from docxaicorrector.processing.processing_runtime import FrozenUploadPayload, HeartbeatBeacon, build_in_memory_uploaded_file
 from docxaicorrector.runtime.artifact_retention import (
+    DOCUMENT_TOPOLOGY_MAX_AGE_SECONDS,
+    DOCUMENT_TOPOLOGY_MAX_COUNT,
     STRUCTURE_MAPS_MAX_AGE_SECONDS,
     STRUCTURE_MAPS_MAX_COUNT,
     prune_artifact_dir,
@@ -53,6 +55,7 @@ from docxaicorrector.structure.document_map import (
     DOCUMENT_MAP_DESCRIPTOR_SCHEMA_VERSION,
     DOCUMENT_MAP_POSTPROCESS_VERSION,
     DOCUMENT_MAP_PROMPT_VERSION,
+    DOCUMENT_MAP_SPLIT_HINT_SCHEMA_VERSION,
     DocumentMapRequestTimeout,
     DocumentMapSchemaError,
     build_document_map,
@@ -74,6 +77,7 @@ from docxaicorrector.structure.reconciliation import (
     selection_has_authority_uncertainty_context,
     targeted_reclassify_with_reconciliation_context,
 )
+from docxaicorrector.structure.topology import TOPOLOGY_PROJECTION_SCHEMA_VERSION, apply_document_map_topology
 from docxaicorrector.structure.validation import StructureValidationReport, validate_structure_quality, write_structure_validation_debug_artifact
 from docxaicorrector.text.translation_domains import build_terminology_plan, build_translation_domain_instructions
 
@@ -346,8 +350,11 @@ class PreparedDocumentData:
     cleanup_report: LayoutArtifactCleanupReport | None = None
     structure_repair_report: StructureRepairReport | None = None
     document_map: DocumentMap | None = None
+    document_topology_projection: DocumentTopologyProjection | None = None
     document_map_status: str = "not_requested"
     document_map_status_reason: str = ""
+    document_topology_projection_status: str = "not_requested"
+    document_topology_projection_status_reason: str = ""
     structure_map: StructureMap | None = None
     structure_recognition_summary: StructureRecognitionSummary = field(default_factory=StructureRecognitionSummary)
     structure_validation_report: StructureValidationReport | None = None
@@ -549,6 +556,7 @@ _structure_map_cache: OrderedDict[str, StructureMap] = OrderedDict()
 _structure_map_cache_lock = Lock()
 _STRUCTURE_MAP_DEBUG_DIR = RUN_DIR / "structure_maps"
 _RECONCILIATION_REPORT_DEBUG_DIR = RUN_DIR / "reconciliation_reports"
+_DOCUMENT_TOPOLOGY_DEBUG_DIR = RUN_DIR / "document_topology"
 _DOCUMENT_MAP_CACHE_LIMIT = 8
 _document_map_cache: OrderedDict[str, DocumentMap] = OrderedDict()
 _document_map_cache_lock = Lock()
@@ -650,6 +658,7 @@ def _build_structure_map_cache_key(
     paragraphs: list,
     app_config: Mapping[str, Any],
     document_map: DocumentMap | None = None,
+    topology_projection: DocumentTopologyProjection | None = None,
     resolved_model: str | None = None,
 ) -> str:
     structure_recovery_mode = str(app_config.get("structure_recovery_mode", "ai_first") or "ai_first").strip().lower()
@@ -693,6 +702,22 @@ def _build_structure_map_cache_key(
         "structure_recovery_enabled": structure_recovery_enabled,
         "structure_recovery_mode": structure_recovery_mode,
         "coordinate_schema_version": coordinate_schema_version,
+        "topology_projection_schema_version": TOPOLOGY_PROJECTION_SCHEMA_VERSION,
+        "topology_projection_enabled": bool(app_config.get("structure_recovery_topology_projection_enabled", False)),
+        "topology_projection_cache_key": None if topology_projection is None else topology_projection.cache_key,
+        "topology_projection_units": None
+        if topology_projection is None
+        else [
+            {
+                "unit_id": unit.unit_id,
+                "unit_type": unit.unit_type,
+                "logical_indexes": list(unit.logical_indexes),
+                "canonical_text": unit.canonical_text,
+                "heading_level": unit.heading_level,
+                "authority": unit.authority,
+            }
+            for unit in topology_projection.projected_units
+        ],
         "document_map_anchor_fingerprint": [
             {
                 "index": int(index),
@@ -758,6 +783,7 @@ def _build_document_map_cache_key(*, paragraphs: list, app_config: Mapping[str, 
         "prompt_version": DOCUMENT_MAP_PROMPT_VERSION,
         "descriptor_schema_version": DOCUMENT_MAP_DESCRIPTOR_SCHEMA_VERSION,
         "postprocess_version": DOCUMENT_MAP_POSTPROCESS_VERSION,
+        "split_hint_schema_version": DOCUMENT_MAP_SPLIT_HINT_SCHEMA_VERSION,
         "structure_recovery_enabled": structure_recovery_enabled,
         "structure_recovery_mode": structure_recovery_mode,
         "coordinate_schema_version": coordinate_schema_version,
@@ -892,6 +918,7 @@ def _write_document_map_debug_artifact(*, cache_key: str, document_map: Document
                 "prompt_version": DOCUMENT_MAP_PROMPT_VERSION,
                 "descriptor_schema_version": DOCUMENT_MAP_DESCRIPTOR_SCHEMA_VERSION,
                 "postprocess_version": DOCUMENT_MAP_POSTPROCESS_VERSION,
+                "split_hint_schema_version": DOCUMENT_MAP_SPLIT_HINT_SCHEMA_VERSION,
                 "coordinate_schema_version": coordinate_schema_version,
                 "sampled": bool(document_map.sampled),
                 "sampled_logical_indexes": list(document_map.sampled_logical_indexes),
@@ -908,6 +935,18 @@ def _write_document_map_debug_artifact(*, cache_key: str, document_map: Document
         target_dir=_DOCUMENT_MAP_DEBUG_DIR,
         max_age_seconds=STRUCTURE_MAPS_MAX_AGE_SECONDS,
         max_count=STRUCTURE_MAPS_MAX_COUNT,
+    )
+    return str(artifact_path)
+
+
+def _write_document_topology_debug_artifact(*, projection: DocumentTopologyProjection) -> str:
+    _DOCUMENT_TOPOLOGY_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    artifact_path = _DOCUMENT_TOPOLOGY_DEBUG_DIR / f"{projection.cache_key}.json"
+    artifact_path.write_text(json.dumps(asdict(projection), ensure_ascii=False, indent=2), encoding="utf-8")
+    prune_artifact_dir(
+        target_dir=_DOCUMENT_TOPOLOGY_DEBUG_DIR,
+        max_age_seconds=DOCUMENT_TOPOLOGY_MAX_AGE_SECONDS,
+        max_count=DOCUMENT_TOPOLOGY_MAX_COUNT,
     )
     return str(artifact_path)
 
@@ -978,6 +1017,7 @@ def _run_structure_recognition(
     relation_report,
     cleanup_report=None,
     document_map: DocumentMap | None = None,
+    topology_projection: DocumentTopologyProjection | None = None,
     source_format: str = "docx",
     conversion_backend: str | None = None,
 ) -> tuple[StructureMap | None, StructureRecognitionSummary]:
@@ -1054,6 +1094,7 @@ def _run_structure_recognition(
                 paragraphs=paragraphs,
                 app_config=app_config,
                 document_map=document_map,
+                topology_projection=topology_projection,
                 resolved_model=resolved_model,
             )
             structure_map = _read_cached_structure_map(cache_key)
@@ -1082,6 +1123,7 @@ def _run_structure_recognition(
                     paragraphs=paragraphs,
                     app_config=app_config,
                     document_map=document_map,
+                    topology_projection=topology_projection,
                     resolved_model=resolved_model,
                 )
             structure_map = build_structure_map(
@@ -1092,6 +1134,7 @@ def _run_structure_recognition(
                 overlap_paragraphs=overlap_paragraphs,
                 timeout=float(app_config.get("structure_recognition_timeout_seconds", 60) or 60),
                 document_map=document_map,
+                topology_projection=topology_projection,
                 preview_chars=preview_chars,
                 target_input_tokens=target_input_tokens,
                 progress_callback=_emit_structure_progress,
@@ -1130,6 +1173,7 @@ def _run_structure_recognition(
                 paragraphs,
                 document_map,
                 structure_map,
+                topology_projection=topology_projection,
             )
             initial_reconciliation_report = reconciliation_report
             targeted_enabled = bool(app_config.get("structure_recovery_reconciliation_targeted_enabled", False))
@@ -1191,6 +1235,7 @@ def _run_structure_recognition(
                     paragraphs,
                     document_map,
                     structure_map,
+                    topology_projection=topology_projection,
                 )
                 reconciliation_report = ReconciliationReport(
                     missing_outline_entries=reconciliation_report.missing_outline_entries,
@@ -1225,6 +1270,7 @@ def _run_structure_recognition(
                 paragraphs=paragraphs,
                 app_config=app_config,
                 document_map=document_map,
+                topology_projection=topology_projection,
                 resolved_model=resolved_model or get_model_role_value(app_config, "structure_recognition"),
             )
 
@@ -1263,6 +1309,7 @@ def _run_structure_recognition(
                 paragraphs=paragraphs,
                 app_config=app_config,
                 document_map=document_map,
+                topology_projection=topology_projection,
                 resolved_model=resolved_model or get_model_role_value(app_config, "structure_recognition"),
             )
         try:
@@ -1607,6 +1654,92 @@ def _run_document_map_stage(
             artifact_path=artifact_path,
         )
     return document_map
+
+
+def _run_document_topology_projection_stage(
+    *,
+    paragraphs: list,
+    document_map: DocumentMap | None,
+    app_config: Mapping[str, Any],
+) -> tuple[DocumentTopologyProjection | None, str, str]:
+    if not bool(app_config.get("structure_recovery_enabled", False)):
+        log_event(
+            logging.INFO,
+            "document_topology_projection_skipped",
+            "Topology projection отключён вместе с structure recovery.",
+            reason="structure_recovery_disabled",
+        )
+        return None, "disabled", "structure_recovery_disabled"
+    if not bool(app_config.get("structure_recovery_topology_projection_enabled", False)):
+        log_event(
+            logging.INFO,
+            "document_topology_projection_skipped",
+            "Topology projection отключён конфигурацией.",
+            reason="topology_projection_disabled",
+        )
+        return None, "disabled", "topology_projection_disabled"
+    if document_map is None:
+        log_event(
+            logging.INFO,
+            "document_topology_projection_skipped",
+            "Topology projection пропущен, потому что карта документа отсутствует.",
+            reason="document_map_absent",
+        )
+        return None, "skipped", "document_map_absent"
+
+    try:
+        document_map_cache_key = _build_document_map_cache_key(paragraphs=paragraphs, app_config=app_config)
+        projection = apply_document_map_topology(
+            paragraphs,
+            document_map,
+            app_config=app_config,
+            document_map_cache_key=document_map_cache_key,
+        )
+    except Exception as exc:
+        reason = _format_ai_first_fallback_reason(exc)
+        log_event(
+            logging.WARNING,
+            "document_topology_projection_skipped",
+            "Не удалось построить topology projection, продолжаю без него.",
+            reason="projection_failed",
+            error_message=reason,
+        )
+        return None, "failed", reason
+
+    artifact_path = None
+    if bool(app_config.get("structure_recovery_topology_projection_save_debug_artifacts", True)):
+        artifact_path = _write_document_topology_debug_artifact(projection=projection)
+
+    operation_counts = dict(Counter(operation.op for operation in projection.operations))
+    unit_type_counts = dict(Counter(unit.unit_type for unit in projection.projected_units))
+    authority_counts = dict(Counter(unit.authority for unit in projection.projected_units))
+    if projection.operations or projection.projected_units:
+        log_event(
+            logging.INFO,
+            "document_topology_projection_built",
+            "Построен topology projection документа.",
+            cache_key=projection.cache_key,
+            document_map_cache_key=projection.document_map_cache_key,
+            operation_count=len(projection.operations),
+            projected_unit_count=len(projection.projected_units),
+            operation_counts=operation_counts,
+            unit_type_counts=unit_type_counts,
+            authority_counts=authority_counts,
+            artifact_path=artifact_path,
+        )
+        return projection, "built", ""
+
+    log_event(
+        logging.INFO,
+        "document_topology_projection_skipped",
+        "Topology projection не выявил binding operations.",
+        reason="no_operations",
+        cache_key=projection.cache_key,
+        operation_count=0,
+        projected_unit_count=0,
+        artifact_path=artifact_path,
+    )
+    return projection, "no_operations", ""
 
 
 PREPARATION_CACHE_LIMIT = 2
@@ -2193,6 +2326,15 @@ def _prepare_document_for_processing(
         if should_run_ai
         else None
     )
+    document_topology_projection, document_topology_projection_status, document_topology_projection_status_reason = (
+        _run_document_topology_projection_stage(
+            paragraphs=paragraphs,
+            document_map=document_map,
+            app_config=app_config,
+        )
+        if should_run_ai
+        else (None, "not_requested", "")
+    )
     structure_ai_attempted = should_run_ai
     structure_map, structure_summary = (
         _run_structure_recognition(
@@ -2205,6 +2347,7 @@ def _prepare_document_for_processing(
             relation_report=relation_report,
             cleanup_report=cleanup_report,
             document_map=document_map,
+            topology_projection=document_topology_projection,
             source_format=source_format,
             conversion_backend=conversion_backend,
         )
@@ -2380,6 +2523,9 @@ def _prepare_document_for_processing(
         document_map_present=bool(document_map is not None or getattr(structure_validation_report, "document_map_present", False)),
         document_map_status=str(ai_first_fallback_state.get("document_map_status", "") or ""),
         document_map_status_reason=str(ai_first_fallback_state.get("document_map_status_reason", "") or ""),
+        document_topology_projection_present=bool(document_topology_projection is not None),
+        document_topology_projection_status=document_topology_projection_status,
+        document_topology_projection_status_reason=document_topology_projection_status_reason,
         outline_coverage_ratio=getattr(structure_validation_report, "outline_coverage_ratio", None),
         ai_first_degraded=structure_summary.ai_first_degraded,
         fallback_stage=structure_summary.fallback_stage,
@@ -2514,8 +2660,11 @@ def _prepare_document_for_processing(
         cleanup_report=cleanup_report,
         structure_repair_report=structure_repair_report,
         document_map=document_map,
+        document_topology_projection=document_topology_projection,
         document_map_status=str(ai_first_fallback_state.get("document_map_status", "not_requested") or "not_requested"),
         document_map_status_reason=str(ai_first_fallback_state.get("document_map_status_reason", "") or ""),
+        document_topology_projection_status=document_topology_projection_status,
+        document_topology_projection_status_reason=document_topology_projection_status_reason,
         structure_map=structure_map,
         structure_recognition_summary=structure_summary,
         structure_validation_report=structure_validation_report,

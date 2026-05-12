@@ -163,6 +163,15 @@ def build_app_config_payload(
         "structure_recovery_anchored_classification_min_confidence": structure_recovery_settings[
             "structure_recovery_anchored_classification_min_confidence"
         ],
+        "structure_recovery_topology_projection_enabled": structure_recovery_settings[
+            "structure_recovery_topology_projection_enabled"
+        ],
+        "structure_recovery_topology_projection_save_debug_artifacts": structure_recovery_settings[
+            "structure_recovery_topology_projection_save_debug_artifacts"
+        ],
+        "structure_recovery_topology_projection_binding_splits_enabled": structure_recovery_settings[
+            "structure_recovery_topology_projection_binding_splits_enabled"
+        ],
         "structure_recovery_reconciliation_targeted_enabled": structure_recovery_settings[
             "structure_recovery_reconciliation_targeted_enabled"
         ],

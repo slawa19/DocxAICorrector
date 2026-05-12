@@ -1,4 +1,6 @@
 import builtins
+import hashlib
+import json
 import re
 from enum import StrEnum
 from dataclasses import asdict, dataclass, field
@@ -45,6 +47,16 @@ VALID_HEURISTIC_STRUCTURAL_ROLE_HINTS = frozenset(
     {"body", "caption", "epigraph", "attribution", "toc_entry", "toc_header", "dedication"}
 )
 VALID_HEURISTIC_LIST_KIND_HINTS = frozenset({"ordered", "unordered"})
+
+
+def _build_structural_unit_id(*, unit_type: str, logical_indexes: tuple[int, ...], canonical_text: str) -> str:
+    payload = {
+        "unit_type": str(unit_type or "").strip(),
+        "logical_indexes": [int(index) for index in logical_indexes],
+        "canonical_text": str(canonical_text or "").strip(),
+    }
+    digest = hashlib.sha1(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    return f"u_{digest[:12]}"
 
 
 def normalize_heuristic_role_hint(value: object) -> str | None:
@@ -303,6 +315,12 @@ class ParagraphDescriptor:
     anchor_role: str | None = None
     anchor_heading_level: int | None = None
     anchor_confidence: str | None = None
+    unit_id: str | None = None
+    unit_type: str | None = None
+    unit_role: str | None = None
+    unit_heading_level: int | None = None
+    unit_canonical_text: str | None = None
+    unit_member_count: int | None = None
 
     def to_prompt_dict(self) -> dict[str, object]:
         payload = {
@@ -328,6 +346,13 @@ class ParagraphDescriptor:
             payload["anchor_r"] = self.anchor_role
             payload["anchor_l"] = self.anchor_heading_level
             payload["anchor_c"] = self.anchor_confidence
+        if self.unit_id is not None:
+            payload["unit_id"] = self.unit_id
+            payload["unit_type"] = self.unit_type
+            payload["unit_role"] = self.unit_role
+            payload["unit_heading_level"] = self.unit_heading_level
+            payload["unit_canonical_text"] = self.unit_canonical_text
+            payload["unit_member_count"] = self.unit_member_count
         return payload
 
 
@@ -487,6 +512,16 @@ class DocumentMapAnchor:
     confidence: str
 
 
+@dataclass(frozen=True)
+class DocumentMapSplitHint:
+    logical_index: int
+    split_kind: str
+    expected_parts: tuple[str, ...]
+    authority: str
+    confidence: str
+    evidence: tuple[str, ...] = ()
+
+
 @dataclass
 class DocumentMap:
     body_start_logical_index: int
@@ -494,6 +529,7 @@ class DocumentMap:
     outline: tuple["DocumentMapOutlineEntry", ...] = ()
     paragraph_anchors: dict[int, "DocumentMapAnchor"] = field(default_factory=dict)
     review_zones: tuple["DocumentMapReviewZone", ...] = ()
+    split_hints: tuple["DocumentMapSplitHint", ...] = ()
     model_used: str = ""
     total_tokens_used: int = 0
     processing_time_seconds: float = 0.0
@@ -502,6 +538,62 @@ class DocumentMap:
 
     def get_anchor(self, logical_index: int) -> "DocumentMapAnchor | None":
         return self.paragraph_anchors.get(logical_index)
+
+
+@dataclass(frozen=True)
+class StructuralUnit:
+    unit_type: str
+    logical_indexes: tuple[int, ...]
+    canonical_text: str
+    role: str
+    heading_level: int | None
+    confidence: str
+    authority: str
+    evidence: tuple[str, ...] = ()
+    unit_id: str = ""
+
+    def __post_init__(self) -> None:
+        normalized_indexes = tuple(int(index) for index in self.logical_indexes)
+        object.__setattr__(self, "logical_indexes", normalized_indexes)
+        if not self.unit_id:
+            object.__setattr__(
+                self,
+                "unit_id",
+                _build_structural_unit_id(
+                    unit_type=self.unit_type,
+                    logical_indexes=normalized_indexes,
+                    canonical_text=self.canonical_text,
+                ),
+            )
+
+
+@dataclass(frozen=True)
+class DocumentTopologyOperation:
+    op: str
+    logical_indexes: tuple[int, ...]
+    canonical_text: str
+    authority: str
+    confidence: str
+    evidence: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class DocumentTopologyProjection:
+    stage: str = "document_topology_projection_v1"
+    schema_version: int = 1
+    cache_key: str = ""
+    document_map_cache_key: str | None = None
+    topology_projection_schema_version: int = 1
+    topology_hint_schema_version: int = 1
+    operations: tuple["DocumentTopologyOperation", ...] = ()
+    projected_units: tuple["StructuralUnit", ...] = ()
+
+    def get_unit(self, logical_index: int) -> "StructuralUnit | None":
+        resolved_logical_index = int(logical_index)
+        for unit in self.projected_units:
+            if resolved_logical_index in unit.logical_indexes:
+                return unit
+        return None
 
 
 @dataclass

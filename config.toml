@@ -166,6 +166,11 @@ preview_chars = 1500
 target_input_tokens = 180000
 min_confidence = "medium"
 
+[structure_recovery.topology_projection]
+enabled = false
+save_debug_artifacts = true
+binding_splits_enabled = false
+
 [structure_recovery.reconciliation]
 targeted_enabled = false
 targeted_threshold = 3

@@ -342,6 +342,11 @@ def resolve_structure_recovery_settings(
         "anchored_classification",
         parent_name="structure_recovery",
     )
+    topology_projection_config = parse_optional_config_section_fn(
+        structure_recovery_config,
+        "topology_projection",
+        parent_name="structure_recovery",
+    )
     reconciliation_config = parse_optional_config_section_fn(
         structure_recovery_config,
         "reconciliation",
@@ -393,6 +398,17 @@ def resolve_structure_recovery_settings(
         "min_confidence",
         "medium",
         set(structure_recognition_min_confidence_values),
+    )
+    topology_projection_enabled = parse_config_bool_fn(topology_projection_config, "enabled", False)
+    topology_projection_save_debug_artifacts = parse_config_bool_fn(
+        topology_projection_config,
+        "save_debug_artifacts",
+        True,
+    )
+    topology_projection_binding_splits_enabled = parse_config_bool_fn(
+        topology_projection_config,
+        "binding_splits_enabled",
+        False,
     )
 
     reconciliation_targeted_enabled = parse_config_bool_fn(reconciliation_config, "targeted_enabled", False)
@@ -463,6 +479,18 @@ def resolve_structure_recovery_settings(
         default=anchored_min_confidence,
         allowed_values=set(structure_recognition_min_confidence_values),
     )
+    topology_projection_enabled = parse_bool_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_ENABLED",
+        topology_projection_enabled,
+    )
+    topology_projection_save_debug_artifacts = parse_bool_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_SAVE_DEBUG_ARTIFACTS",
+        topology_projection_save_debug_artifacts,
+    )
+    topology_projection_binding_splits_enabled = parse_bool_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_BINDING_SPLITS_ENABLED",
+        topology_projection_binding_splits_enabled,
+    )
 
     reconciliation_targeted_enabled = parse_bool_env_fn(
         "DOCX_AI_STRUCTURE_RECOVERY_RECONCILIATION_TARGETED_ENABLED",
@@ -522,6 +550,9 @@ def resolve_structure_recovery_settings(
             maximum=400000,
         ),
         "structure_recovery_anchored_classification_min_confidence": anchored_min_confidence,
+        "structure_recovery_topology_projection_enabled": topology_projection_enabled,
+        "structure_recovery_topology_projection_save_debug_artifacts": topology_projection_save_debug_artifacts,
+        "structure_recovery_topology_projection_binding_splits_enabled": topology_projection_binding_splits_enabled,
         "structure_recovery_reconciliation_targeted_enabled": reconciliation_targeted_enabled,
         "structure_recovery_reconciliation_targeted_threshold": clamp_int_fn(
             reconciliation_targeted_threshold,
