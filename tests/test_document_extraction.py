@@ -661,6 +661,53 @@ def test_extract_document_content_from_docx_captures_source_rect_forensics(tmp_p
     assert "<wp:inline" in str(image_assets[0].source_forensics["drawing_container_xml"])
 
 
+def test_extract_document_content_from_docx_tolerates_malformed_drawing_extent_metadata(tmp_path):
+    image_path = tmp_path / "bad-extent-image.png"
+    image_path.write_bytes(PNG_BYTES)
+
+    doc = Document()
+    run = doc.add_paragraph().add_run()
+    run.add_picture(str(image_path), width=Inches(1.25))
+    extent = run._element.xpath(".//wp:extent")[0]
+    extent.set("cx", "oops")
+    extent.set("cy", "-15")
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    _, image_assets = extract_document_content_from_docx(buffer)
+
+    assert len(image_assets) == 1
+    assert image_assets[0].width_emu is None
+    assert image_assets[0].height_emu is None
+
+
+def test_extract_document_content_from_docx_ignores_non_numeric_source_rect_metadata(tmp_path):
+    image_path = tmp_path / "partial-source-rect-image.png"
+    image_path.write_bytes(PNG_BYTES)
+
+    doc = Document()
+    run = doc.add_paragraph().add_run()
+    run.add_picture(str(image_path), width=Inches(1.25))
+    blip_fill = run._element.xpath(".//pic:blipFill")[0]
+    source_rect = OxmlElement("a:srcRect")
+    source_rect.set("l", "1250")
+    source_rect.set("t", "oops")
+    source_rect.set("r", "")
+    blip = blip_fill.xpath("./a:blip")[0]
+    blip.addnext(source_rect)
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    _, image_assets = extract_document_content_from_docx(buffer)
+
+    assert len(image_assets) == 1
+    assert image_assets[0].source_forensics["source_rect"] == {"l": 1250}
+
+
 def test_inspect_placeholder_integrity_reports_unexpected_placeholders():
     asset = ImageAsset(
         image_id="img_001",

@@ -585,6 +585,8 @@ def test_preparation_marker_helpers_track_request_state(monkeypatch):
         preparation_cached=False,
         preparation_elapsed_seconds=0.1,
         structure_recognition_summary=StructureRecognitionSummary(),
+        document_map_status="not_requested",
+        document_map_status_reason="",
     )
     session_state = SessionState(
         preparation_input_marker="report.docx:3:token:6000",

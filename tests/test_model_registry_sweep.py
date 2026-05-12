@@ -3,12 +3,20 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-RUNTIME_MODULES = (
-    PROJECT_ROOT / "src" / "docxaicorrector" / "image" / "generation.py",
-    PROJECT_ROOT / "src" / "docxaicorrector" / "image" / "analysis.py",
-    PROJECT_ROOT / "src" / "docxaicorrector" / "image" / "validation.py",
-    PROJECT_ROOT / "src" / "docxaicorrector" / "image" / "reconstruction.py",
-    PROJECT_ROOT / "src" / "docxaicorrector" / "image" / "pipeline.py",
+RUNTIME_SURFACES = (
+    PROJECT_ROOT / "src" / "docxaicorrector" / "image",
+    PROJECT_ROOT / "src" / "docxaicorrector" / "processing",
+    PROJECT_ROOT / "src" / "docxaicorrector" / "pipeline",
+    PROJECT_ROOT / "src" / "docxaicorrector" / "validation",
+    PROJECT_ROOT / "src" / "docxaicorrector" / "ui",
+    PROJECT_ROOT / "tests" / "artifacts" / "real_document_pipeline" / "run_lietaer_validation.py",
+)
+# Explicitly allowed locations for canonical model literals that should not be
+# treated as runtime drift: config defaults, docs/examples, and test fixtures.
+MODEL_LITERAL_ALLOWLIST = (
+    PROJECT_ROOT / "config.toml",
+    PROJECT_ROOT / "docs",
+    PROJECT_ROOT / "tests",
 )
 FORBIDDEN_MODEL_LITERALS = {
     "gpt-5.4",
@@ -19,6 +27,28 @@ FORBIDDEN_MODEL_LITERALS = {
     "gpt-4o-mini",
     "gpt-image-1",
 }
+
+
+def _is_allowlisted_model_literal_path(path: Path) -> bool:
+    return any(path == allowed_path or allowed_path in path.parents for allowed_path in MODEL_LITERAL_ALLOWLIST)
+
+
+def _iter_runtime_modules() -> list[Path]:
+    modules: list[Path] = []
+    for surface in RUNTIME_SURFACES:
+        if surface.is_dir():
+            modules.extend(
+                sorted(
+                    path
+                    for path in surface.rglob("*.py")
+                    if path.name != "__init__.py"
+                    and not _is_allowlisted_model_literal_path(path)
+                )
+            )
+            continue
+        if not _is_allowlisted_model_literal_path(surface):
+            modules.append(surface)
+    return modules
 
 
 def _collect_forbidden_string_literals(path: Path) -> list[tuple[int, str]]:
@@ -44,7 +74,7 @@ def _annotate_parents(tree: ast.AST) -> ast.AST:
 def test_runtime_modules_do_not_define_canonical_model_literals() -> None:
     findings = {
         str(path.relative_to(PROJECT_ROOT)): _collect_forbidden_string_literals(path)
-        for path in RUNTIME_MODULES
+        for path in _iter_runtime_modules()
     }
     findings = {path: matches for path, matches in findings.items() if matches}
 

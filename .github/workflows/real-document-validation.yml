@@ -1,0 +1,59 @@
+name: Real Document Validation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  system-deps-real-document:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DOCXAI_REQUIRE_REAL_DOCUMENT_CAPABILITIES: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          grep -vE '^\s*(#|$)' system-requirements.apt | xargs -r sudo apt-get install -y
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install -r requirements.txt
+
+      - name: Validate legacy DOC extraction without skip fallback
+        run: |
+          bash scripts/test.sh 'tests/test_real_document_validation_corpus.py::test_corpus_extraction[religion-wealth-core]' -vv
+
+      - name: Validate PDF extraction without skip fallback
+        run: |
+          bash scripts/test.sh 'tests/test_real_document_validation_corpus.py::test_corpus_extraction[end-times-pdf-core]' -vv
+
+      - name: Validate structural passthrough without skip fallback
+        run: |
+          bash scripts/test.sh 'tests/test_real_document_validation_corpus.py::test_corpus_structural_passthrough[lietaer-pdf-first-20-structure-core]' -vv
+
+      - name: Run structural preparation diagnostic
+        run: |
+          bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-first-20-structure-core
+
+      - name: Upload real-document artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-document-validation-artifacts
+          if-no-files-found: ignore
+          path: |
+            .run/**
+            tests/artifacts/real_document_pipeline/**
+            tests/artifacts/structural_diagnostics/**

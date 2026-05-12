@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 import docxaicorrector.processing.restart_store as restart_store
+from docxaicorrector.runtime.artifacts import write_ui_result_artifacts
 
 
 def test_store_and_load_restart_source_roundtrip(tmp_path, monkeypatch):
@@ -125,6 +126,37 @@ def test_store_completed_source_uses_distinct_prefix(tmp_path, monkeypatch):
 
     assert Path(metadata["storage_path"]).name.startswith("completed_")
     assert restart_store.load_restart_source_bytes(metadata) == b"docx-bytes"
+
+
+def test_completed_source_cache_is_separate_from_ui_result_artifacts(tmp_path, monkeypatch):
+    monkeypatch.setattr(restart_store, "RUN_DIR", tmp_path)
+
+    completed_source = restart_store.store_completed_source(
+        session_id="session-a",
+        source_name="report.docx",
+        source_token="report.docx:3:abc",
+        source_bytes=b"source-bytes",
+    )
+    artifact_paths = write_ui_result_artifacts(
+        source_name="report.docx",
+        markdown_text="body",
+        docx_bytes=b"result-docx",
+        output_dir=tmp_path / "ui_results",
+        created_at=1_766_636_465.0,
+    )
+
+    completed_path = Path(completed_source["storage_path"])
+    markdown_path = Path(artifact_paths["markdown_path"])
+    docx_path = Path(artifact_paths["docx_path"])
+
+    assert completed_source["storage_kind"] == "completed"
+    assert completed_path.parent == tmp_path
+    assert completed_path.name.startswith("completed_")
+    assert markdown_path.parent == tmp_path / "ui_results"
+    assert docx_path.parent == tmp_path / "ui_results"
+    assert completed_path != markdown_path
+    assert completed_path != docx_path
+    assert ".result." not in completed_path.name
 
 
 def test_cleanup_stale_persisted_sources_removes_old_restart_and_completed_files(tmp_path, monkeypatch):

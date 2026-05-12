@@ -5,6 +5,7 @@
 
 ## Verification
 
+- [ ] `bash scripts/test.sh tests/test_script_contract_static.py -q` when workflow/task/docs/script contracts changed
 - [ ] `bash scripts/test.sh tests/test_script_workflow_smoke.py -q`
 - [ ] `bash scripts/test.sh tests/test_startup_performance_contract.py -q` when startup-sensitive files changed
 - [ ] `bash scripts/test.sh tests/ -q`

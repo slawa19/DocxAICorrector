@@ -3831,6 +3831,74 @@ def test_run_document_processing_emits_segment_statuses_during_segmented_run_bef
     assert segment_status_events[1]["segment_status_by_id"] == {"seg_0001": "completed", "seg_0002": "pending"}
 
 
+def test_run_document_processing_stops_after_image_phase_before_placeholder_validation(monkeypatch):
+    runtime = _build_runtime_capture()
+    stop_checks = {"count": 0}
+    calls = {
+        "image": 0,
+        "image_integrity": 0,
+        "late_validate": 0,
+        "docx": 0,
+        "artifacts": 0,
+    }
+
+    monkeypatch.setattr(
+        document_pipeline,
+        "_validate_placeholder_integrity_phase",
+        lambda **kwargs: calls.__setitem__("late_validate", calls["late_validate"] + 1) or True,
+    )
+
+    def should_stop(_runtime):
+        stop_checks["count"] += 1
+        return stop_checks["count"] >= 2
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[
+            {"target_text": "block-1", "context_before": "", "context_after": "", "target_chars": 7, "context_chars": 0},
+        ],
+        source_paragraphs=[],
+        image_assets=[AssetStub("img_001")],
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=should_stop,
+        generate_markdown_block=lambda **kwargs: "ok",
+        process_document_images=lambda **kwargs: calls.__setitem__("image", calls["image"] + 1) or kwargs["image_assets"],
+        inspect_placeholder_integrity=lambda markdown_text, image_assets: calls.__setitem__("image_integrity", calls["image_integrity"] + 1) or {},
+        convert_markdown_to_docx_bytes=lambda markdown_text: calls.__setitem__("docx", calls["docx"] + 1) or b"docx-bytes",
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+        write_ui_result_artifacts=lambda **kwargs: calls.__setitem__("artifacts", calls["artifacts"] + 1) or {"markdown_path": "/tmp/final.result.md", "docx_path": "/tmp/final.result.docx"},
+    )
+
+    assert result == "stopped"
+    assert calls == {
+        "image": 1,
+        "image_integrity": 1,
+        "late_validate": 0,
+        "docx": 0,
+        "artifacts": 0,
+    }
+    assert runtime["finalize"][-1][0] == "Остановлено пользователем"
+    assert runtime["finalize"][-1][3] == "stopped"
+    assert runtime["log"][-1]["status"] == "STOP"
+
+
 def test_run_document_processing_emits_active_segment_before_failed_terminal_result():
     runtime = _build_runtime_capture()
 

@@ -36,11 +36,16 @@ _VALID_DOCUMENT_MAP_CONFIDENCES = frozenset({"high", "medium", "low"})
 _VALID_REVIEW_ZONE_SEVERITIES = frozenset({"info", "warning", "critical"})
 _TIMEOUT_ERROR_NAMES = {"APITimeoutError", "TimeoutError"}
 DOCUMENT_MAP_SYSTEM_PROMPT_PATH = PROMPTS_DIR / "document_map_system.txt"
-DOCUMENT_MAP_PROMPT_VERSION = 3
+DOCUMENT_MAP_PROMPT_VERSION = 4
 DOCUMENT_MAP_DESCRIPTOR_SCHEMA_VERSION = 2
-DOCUMENT_MAP_POSTPROCESS_VERSION = 1
+DOCUMENT_MAP_POSTPROCESS_VERSION = 2
 _DOCUMENT_MAP_MALFORMED_DIR = RUN_DIR / "document_maps"
 _LOGGER = logging.getLogger(__name__)
+_REVIEW_ZONE_SEVERITY_SYNONYMS = {
+    "low": "info",
+    "medium": "warning",
+    "high": "critical",
+}
 
 
 @dataclass(frozen=True)
@@ -726,9 +731,7 @@ def _parse_review_zones(raw_value: object, *, all_logical_indexes: set[int]) -> 
         end_logical_index = _coerce_known_logical_index(item.get("end_logical_index"), all_logical_indexes=all_logical_indexes, field_name="review_zones.end_logical_index")
         if end_logical_index < start_logical_index:
             raise DocumentMapSchemaError("review zone end_logical_index must be >= start_logical_index")
-        severity = str(item.get("severity", "") or "").strip().lower()
-        if severity not in _VALID_REVIEW_ZONE_SEVERITIES:
-            raise DocumentMapSchemaError(f"Unsupported review zone severity: {severity}")
+        severity = _coerce_review_zone_severity(item.get("severity"))
         parsed_zones.append(
             DocumentMapReviewZone(
                 start_logical_index=start_logical_index,
@@ -770,8 +773,19 @@ def _coerce_optional_heading_level(raw_value: object, *, role: str, field_name: 
     if raw_value is None:
         return None
     if role != "heading":
-        raise DocumentMapSchemaError(f"{field_name} must be null when role is not heading")
+        _LOGGER.warning("Dropping document-map heading_level for non-heading role: role=%s heading_level=%s", role, raw_value)
+        return None
     return _coerce_heading_level(raw_value, field_name=field_name)
+
+
+def _coerce_review_zone_severity(raw_value: object) -> str:
+    severity = str(raw_value or "").strip().lower()
+    normalized = _REVIEW_ZONE_SEVERITY_SYNONYMS.get(severity, severity)
+    if normalized != severity:
+        _LOGGER.warning("Normalizing document-map review zone severity: %s -> %s", severity, normalized)
+    if normalized not in _VALID_REVIEW_ZONE_SEVERITIES:
+        raise DocumentMapSchemaError(f"Unsupported review zone severity: {severity}")
+    return normalized
 
 
 def _coerce_confidence(raw_value: object, *, field_name: str) -> str:

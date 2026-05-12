@@ -51,6 +51,8 @@ def _run_validation(project_root: Path, *, run_profile_id: str) -> dict:
 
 
 @pytest.mark.integration
+@pytest.mark.manual_ai_heavy
+@pytest.mark.audiobook_sanity
 @pytest.mark.skipif(
     os.environ.get("DOCXAI_RUN_REAL_DOCUMENT_AUDIOBOOK_SANITY") != "1",
     reason="real-document audiobook sanity runs only on explicit request",

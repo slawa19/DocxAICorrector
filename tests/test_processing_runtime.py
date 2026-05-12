@@ -4,6 +4,7 @@ import sys
 import subprocess
 import threading
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -266,6 +267,78 @@ def test_build_runtime_event_emitters_emits_typed_events_for_background_runtime(
     ]
 
 
+def test_background_runtime_tags_processing_events_with_source_token():
+    event_queue = queue.Queue()
+    runtime = processing_runtime.BackgroundRuntime(
+        event_queue,
+        threading.Event(),
+        source_token="report.docx:3:abc",
+    )
+
+    runtime.emit(SetStateEvent(values={"last_error": "boom"}))
+    runtime.emit(WorkerCompleteEvent(outcome="succeeded"))
+
+    assert event_queue.get_nowait() == SetStateEvent(
+        values={"last_error": "boom"},
+        source_token="report.docx:3:abc",
+    )
+    assert event_queue.get_nowait() == WorkerCompleteEvent(
+        outcome="succeeded",
+        source_token="report.docx:3:abc",
+    )
+
+
+def test_drain_processing_events_ignores_stale_source_token_events(monkeypatch):
+    session_state = SessionState(
+        processing_event_queue=queue.Queue(),
+        image_assets=["current-image"],
+        latest_docx_bytes=b"current-docx",
+        latest_markdown="current-md",
+        processing_worker=object(),
+        processing_stop_event=object(),
+        processing_stop_requested=True,
+    )
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    monkeypatch.setattr(processing_runtime, "get_latest_source_token", lambda: "new.docx:3:new")
+
+    finalize_calls = []
+
+    session_state.processing_event_queue.put(
+        SetStateEvent(
+            values={"latest_docx_bytes": b"old-docx", "latest_markdown": "old-md", "last_error": "old-error"},
+            source_token="old.docx:3:old",
+        )
+    )
+    session_state.processing_event_queue.put(ResetImageStateEvent(source_token="old.docx:3:old"))
+    session_state.processing_event_queue.put(
+        FinalizeProcessingStatusEvent(
+            stage="done",
+            detail="stale",
+            progress=1.0,
+            terminal_kind="completed",
+            source_token="old.docx:3:old",
+        )
+    )
+    session_state.processing_event_queue.put(WorkerCompleteEvent(outcome="succeeded", source_token="old.docx:3:old"))
+
+    processing_runtime.drain_processing_events(
+        set_processing_status=lambda **payload: None,
+        finalize_processing_status=lambda stage, detail, progress, terminal_kind=None: finalize_calls.append((stage, detail, progress, terminal_kind)),
+        push_activity=lambda message: None,
+        append_log=lambda **payload: None,
+        append_image_log=lambda **payload: None,
+    )
+
+    assert session_state.image_assets == ["current-image"]
+    assert session_state.latest_docx_bytes == b"current-docx"
+    assert session_state.latest_markdown == "current-md"
+    assert session_state.processing_worker is not None
+    assert session_state.processing_event_queue is not None
+    assert session_state.processing_stop_event is not None
+    assert session_state.processing_stop_requested is True
+    assert finalize_calls == []
+
+
 def test_drain_preparation_events_stores_prepared_context(monkeypatch):
     prepared_run_context = type("PreparedRunContextStub", (), {
         "uploaded_file_token": "report.docx:3:abc",
@@ -341,6 +414,101 @@ def test_drain_preparation_events_marks_failure(monkeypatch):
     assert session_state.preparation_event_queue is None
     assert finalized == [("Ошибка подготовки", "boom", 1.0, "error")]
     assert activities == ["Не удалось прочитать и проанализировать документ."]
+
+
+def test_drain_preparation_events_ignores_stale_completion_marker(monkeypatch):
+    current_queue = queue.Queue()
+    current_worker = object()
+    active_prepared_context = object()
+    session_state = SessionState(
+        preparation_input_marker="new.docx:3:def:6000",
+        preparation_failed_marker="",
+        preparation_event_queue=current_queue,
+        preparation_worker=current_worker,
+        selected_source_token="new.docx:3:def",
+        prepared_run_context=active_prepared_context,
+        processing_outcome="running",
+    )
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    finalized = []
+
+    current_queue.put(
+        PreparationCompleteEvent(
+            prepared_run_context=type("PreparedRunContextStub", (), {
+                "uploaded_file_token": "old.docx:3:abc",
+                "prepared_source_key": "old.docx:3:abc:6000",
+            })(),
+            upload_marker="old.docx:3:abc:6000",
+        )
+    )
+
+    processing_runtime.drain_preparation_events(
+        reset_run_state=lambda **kwargs: (_ for _ in ()).throw(AssertionError("stale completion must be ignored")),
+        set_processing_status=lambda **payload: (_ for _ in ()).throw(AssertionError("stale completion must be ignored")),
+        finalize_processing_status=lambda stage, detail, progress, terminal_kind=None: finalized.append((stage, detail, progress, terminal_kind)),
+        push_activity=lambda message: (_ for _ in ()).throw(AssertionError("stale completion must be ignored")),
+    )
+
+    assert session_state.preparation_input_marker == "new.docx:3:def:6000"
+    assert session_state.preparation_failed_marker == ""
+    assert session_state.preparation_worker is current_worker
+    assert session_state.preparation_event_queue is current_queue
+    assert session_state.selected_source_token == "new.docx:3:def"
+    assert session_state.prepared_run_context is active_prepared_context
+    assert session_state.processing_outcome == "running"
+    assert finalized == []
+
+
+def test_drain_preparation_events_ignores_stale_failure_marker(monkeypatch):
+    current_queue = queue.Queue()
+    current_worker = object()
+    active_prepared_context = object()
+    session_state = SessionState(
+        preparation_input_marker="new.docx:3:def:6000",
+        preparation_failed_marker="",
+        preparation_event_queue=current_queue,
+        preparation_worker=current_worker,
+        selected_source_token="new.docx:3:def",
+        prepared_run_context=active_prepared_context,
+        last_error="",
+        processing_outcome="running",
+    )
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    finalized = []
+    activities = []
+
+    current_queue.put(
+        PreparationFailedEvent(
+            upload_marker="old.docx:3:abc:6000",
+            error_message="stale boom",
+            error_details={
+                "stage": "preparation",
+                "severity": "error",
+                "user_message": "stale boom",
+                "technical_message": "stale boom",
+                "error_type": "RuntimeError",
+                "recoverable": False,
+            },
+        )
+    )
+
+    processing_runtime.drain_preparation_events(
+        reset_run_state=lambda **kwargs: (_ for _ in ()).throw(AssertionError("stale failure must be ignored")),
+        set_processing_status=lambda **payload: (_ for _ in ()).throw(AssertionError("stale failure must be ignored")),
+        finalize_processing_status=lambda stage, detail, progress, terminal_kind=None: finalized.append((stage, detail, progress, terminal_kind)),
+        push_activity=lambda message: activities.append(message),
+    )
+
+    assert session_state.preparation_input_marker == "new.docx:3:def:6000"
+    assert session_state.preparation_failed_marker == ""
+    assert session_state.preparation_worker is current_worker
+    assert session_state.preparation_event_queue is current_queue
+    assert session_state.selected_source_token == "new.docx:3:def"
+    assert session_state.prepared_run_context is active_prepared_context
+    assert session_state.last_error == ""
+    assert session_state.processing_outcome == "running"
+    assert finalized == []
+    assert activities == []
 
 
 def test_start_background_preparation_creates_worker_and_status(monkeypatch):
@@ -1328,8 +1496,8 @@ def test_materialize_uploaded_payload_reuses_cached_pdf_conversion(monkeypatch):
 
     monkeypatch.setattr(processing_runtime, "_convert_pdf_to_docx", convert_pdf)
 
-    first_events: list[dict[str, object]] = []
-    second_events: list[dict[str, object]] = []
+    first_events: list[dict[str, Any]] = []
+    second_events: list[dict[str, Any]] = []
 
     first = processing_runtime.materialize_uploaded_payload(payload, progress_callback=lambda **kwargs: first_events.append(kwargs))
     second = processing_runtime.materialize_uploaded_payload(payload, progress_callback=lambda **kwargs: second_events.append(kwargs))
@@ -1340,7 +1508,7 @@ def test_materialize_uploaded_payload_reuses_cached_pdf_conversion(monkeypatch):
     assert second.conversion_backend == "libreoffice"
     assert any(e["stage"] == "DOCX готов" for e in second_events)
     assert any("Использую уже сконвертированную копию DOCX" in str(e["detail"]) for e in second_events)
-    assert any(bool(e["metrics"].get("conversion_reused")) for e in second_events)
+    assert any(bool(cast(dict[str, Any], e["metrics"]).get("conversion_reused")) for e in second_events)
 
 
 def test_materialize_uploaded_payload_passthrough_for_docx():
@@ -1399,7 +1567,7 @@ def test_heartbeat_beacon_is_noop_when_callback_is_none():
 def test_heartbeat_beacon_logs_warning_once_when_callback_fails(monkeypatch):
     import time as _time
 
-    log_calls: list[dict[str, object]] = []
+    log_calls: list[dict[str, Any]] = []
 
     def failing_progress_cb(**kwargs):
         raise RuntimeError("boom")
@@ -1429,7 +1597,7 @@ def test_heartbeat_beacon_logs_warning_once_when_callback_fails(monkeypatch):
 
     assert len(log_calls) == 1
     assert log_calls[0]["event"] == "heartbeat_callback_failed"
-    assert log_calls[0]["context"]["stage"] == "Long phase"
+    assert cast(dict[str, Any], log_calls[0]["context"])["stage"] == "Long phase"
 
 
 def test_start_background_preparation_materializes_pdf_inside_worker(monkeypatch):
@@ -1453,7 +1621,7 @@ def test_start_background_preparation_materializes_pdf_inside_worker(monkeypatch
         lambda **kwargs: (b"converted-docx", "libreoffice"),
     )
 
-    received_payload: dict[str, object] = {}
+    received_payload: dict[str, Any] = {}
 
     def worker_target(**kwargs):
         received_payload["payload"] = kwargs["uploaded_payload"]
@@ -1484,7 +1652,7 @@ def test_start_background_preparation_materializes_pdf_inside_worker(monkeypatch
         push_activity=lambda message: activities.append(message),
     )
 
-    materialized = received_payload["payload"]
+    materialized = cast(processing_runtime.FrozenUploadPayload, received_payload["payload"])
     assert isinstance(materialized, processing_runtime.FrozenUploadPayload)
     assert materialized.conversion_backend == "libreoffice"
     assert materialized.content_bytes == b"converted-docx"
@@ -1557,4 +1725,121 @@ def test_start_background_preparation_initial_status_for_lightweight_pdf(monkeyp
         release.set()
         if session_state.preparation_worker is not None:
             session_state.preparation_worker.join(timeout=5)
+
+
+def test_start_background_preparation_reports_materialization_failure_before_worker_target(monkeypatch):
+    _clear_materialized_upload_cache()
+    session_state = SessionState()
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    statuses: list[dict[str, object]] = []
+    activities: list[str] = []
+    finalized = []
+    worker_calls: list[dict[str, object]] = []
+
+    uploaded_file = processing_runtime.build_in_memory_uploaded_file(
+        source_name="book.pdf",
+        source_bytes=b"%PDF-1.4\nsource\n",
+    )
+    payload = processing_runtime.freeze_uploaded_file_lightweight(uploaded_file)
+    assert payload.source_format == "pdf"
+    assert payload.conversion_backend is None
+
+    monkeypatch.setattr(
+        processing_runtime,
+        "materialize_uploaded_payload",
+        lambda uploaded_payload, progress_callback=None: (_ for _ in ()).throw(RuntimeError("pdf converter missing")),
+    )
+
+    processing_runtime.start_background_preparation(
+        worker_target=lambda **kwargs: worker_calls.append(kwargs),
+        reset_run_state=lambda **kwargs: None,
+        push_activity=lambda message: activities.append(message),
+        set_processing_status=lambda **kw: statuses.append(kw),
+        uploaded_payload=payload,
+        upload_marker=payload.file_token,
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=True,
+    )
+
+    session_state.preparation_worker.join(timeout=5)
+    processing_runtime.drain_preparation_events(
+        reset_run_state=lambda **kwargs: None,
+        set_processing_status=lambda **kw: statuses.append(kw),
+        finalize_processing_status=lambda stage, detail, progress, terminal_kind=None: finalized.append((stage, detail, progress, terminal_kind)),
+        push_activity=lambda message: activities.append(message),
+    )
+
+    assert worker_calls == []
+    assert statuses[0]["stage"] == "Файл получен"
+    assert statuses[0]["source_format"] == "pdf"
+    assert session_state.preparation_failed_marker == payload.file_token
+    assert session_state.last_error == "pdf converter missing"
+    assert session_state.last_background_error["stage"] == "preparation"
+    assert finalized == [("Ошибка подготовки", "pdf converter missing", 1.0, "error")]
+    assert activities[-1] == "Не удалось прочитать и проанализировать документ."
+
+
+def test_start_background_preparation_reports_worker_failure_after_materialization(monkeypatch):
+    _clear_materialized_upload_cache()
+    session_state = SessionState()
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    statuses: list[dict[str, object]] = []
+    activities: list[str] = []
+    finalized = []
+    worker_calls: list[dict[str, object]] = []
+
+    uploaded_file = processing_runtime.build_in_memory_uploaded_file(
+        source_name="book.pdf",
+        source_bytes=b"%PDF-1.4\nsource\n",
+    )
+    payload = processing_runtime.freeze_uploaded_file_lightweight(uploaded_file)
+
+    materialized_payload = processing_runtime.FrozenUploadPayload(
+        filename="book.docx",
+        content_bytes=b"PK\x03\x04converted-docx",
+        file_size=len(b"PK\x03\x04converted-docx"),
+        content_hash="mockedhash",
+        file_token="book.docx:18:mockedhash",
+        source_format="pdf",
+        conversion_backend="libreoffice",
+    )
+    monkeypatch.setattr(
+        processing_runtime,
+        "materialize_uploaded_payload",
+        lambda uploaded_payload, progress_callback=None: materialized_payload,
+    )
+
+    def worker_target(**kwargs):
+        worker_calls.append(kwargs)
+        raise RuntimeError("worker boom")
+
+    processing_runtime.start_background_preparation(
+        worker_target=worker_target,
+        reset_run_state=lambda **kwargs: None,
+        push_activity=lambda message: activities.append(message),
+        set_processing_status=lambda **kw: statuses.append(kw),
+        uploaded_payload=payload,
+        upload_marker=payload.file_token,
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=True,
+    )
+
+    session_state.preparation_worker.join(timeout=5)
+    processing_runtime.drain_preparation_events(
+        reset_run_state=lambda **kwargs: None,
+        set_processing_status=lambda **kw: statuses.append(kw),
+        finalize_processing_status=lambda stage, detail, progress, terminal_kind=None: finalized.append((stage, detail, progress, terminal_kind)),
+        push_activity=lambda message: activities.append(message),
+    )
+
+    assert len(worker_calls) == 1
+    assert worker_calls[0]["uploaded_payload"] == materialized_payload
+    assert statuses[0]["source_format"] == "pdf"
+    assert session_state.preparation_failed_marker == payload.file_token
+    assert session_state.last_error == "worker boom"
+    assert session_state.last_background_error["stage"] == "preparation"
+    assert finalized == [("Ошибка подготовки", "worker boom", 1.0, "error")]
+    assert activities[-1] == "Не удалось прочитать и проанализировать документ."
 

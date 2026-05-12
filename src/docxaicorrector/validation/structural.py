@@ -102,6 +102,30 @@ def _build_markdown_quality_metrics(*, latest_markdown: str, translation_domain:
     }
 
 
+def _count_effective_toc_regions_from_source(paragraphs: Sequence[object]) -> int:
+    count = 0
+    index = 0
+    paragraph_units = list(paragraphs)
+    while index < len(paragraph_units):
+        structural_role = _normalized_structural_role(paragraph_units[index])
+        if structural_role != "toc_header":
+            index += 1
+            continue
+        look_ahead = index + 1
+        while look_ahead < len(paragraph_units) and _normalized_structural_role(paragraph_units[look_ahead]) == "toc_entry":
+            look_ahead += 1
+        if look_ahead - index >= 3:
+            count += 1
+            index = look_ahead
+            continue
+        index += 1
+    return count
+
+
+def _normalized_structural_role(paragraph: object) -> str:
+    return str(getattr(paragraph, "structural_role", "") or "").strip().lower()
+
+
 def _normalize_snapshot_or_metric_statuses(payload: dict[str, object]) -> None:
     quality_gate_status = str(payload.get("quality_gate_status") or "").strip()
     readiness_status = str(payload.get("readiness_status") or "").strip()
@@ -322,6 +346,7 @@ def run_structural_passthrough_validation(
             "source_toc_detected": _has_toc_structural_roles(source_paragraphs),
             "output_toc_detected": _has_toc_structural_roles(output_paragraphs),
             "source_toc_region_count": _relation_count(source_relation_report, "toc_region"),
+            "effective_source_toc_region_count": _count_effective_toc_regions_from_source(source_paragraphs),
             "bullet_heading_count": _count_bullet_headings(latest_markdown),
             "toc_body_concat_detected": _has_toc_body_concat_markdown(latest_markdown),
             "require_pdf_conversion_satisfied": source_path.suffix.lower() == ".pdf",
@@ -998,6 +1023,7 @@ def _build_structural_checks(
             or metrics.get("output_toc_detected")
             or _as_int(metrics, "structure_repair_bounded_toc_regions") > 0
             or _as_int(metrics, "source_toc_region_count") > 0
+            or _as_int(metrics, "effective_source_toc_region_count") > 0
         )
         checks.append(
             {
@@ -1007,6 +1033,7 @@ def _build_structural_checks(
                 "output_toc_detected": metrics.get("output_toc_detected"),
                 "structure_repair_bounded_toc_regions": metrics.get("structure_repair_bounded_toc_regions"),
                 "source_toc_region_count": metrics.get("source_toc_region_count"),
+                "effective_source_toc_region_count": metrics.get("effective_source_toc_region_count"),
             }
         )
     if document_profile.require_pdf_conversion:
@@ -1026,13 +1053,17 @@ def _build_structural_checks(
             }
         )
     if document_profile.require_no_toc_body_concat:
-        source_toc_boundary_repaired = _as_int(metrics, "structure_repair_toc_body_boundary_repairs") > 0
+        source_toc_boundary_repaired = (
+            _as_int(metrics, "structure_repair_toc_body_boundary_repairs") > 0
+            or _as_int(metrics, "effective_source_toc_region_count") > 0
+        )
         checks.append(
             {
                 "name": "no_toc_body_concat_required",
                 "passed": not bool(metrics.get("toc_body_concat_detected")) and source_toc_boundary_repaired,
                 "toc_body_concat_detected": metrics.get("toc_body_concat_detected"),
                 "structure_repair_toc_body_boundary_repairs": metrics.get("structure_repair_toc_body_boundary_repairs"),
+                "effective_source_toc_region_count": metrics.get("effective_source_toc_region_count"),
             }
         )
     if document_profile.require_translation_domain:
@@ -1390,7 +1421,7 @@ def _reinsert_inline_images_adapter(docx_bytes: bytes, image_assets: Sequence[ob
 
 
 def _as_int(metrics: Mapping[str, object], key: str) -> int:
-    return int(cast(int, metrics[key]))
+    return int(cast(int, metrics.get(key, 0) or 0))
 
 
 def _as_float(metrics: Mapping[str, object], key: str) -> float:

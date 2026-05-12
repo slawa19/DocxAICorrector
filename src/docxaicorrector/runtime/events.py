@@ -4,16 +4,18 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class SetStateEvent:
     values: dict[str, object]
+    source_token: str = ""
 
 
 @dataclass(frozen=True)
 class ResetImageStateEvent:
-    pass
+    source_token: str = ""
 
 
 @dataclass(frozen=True)
 class SetProcessingStatusEvent:
     payload: dict[str, object]
+    source_token: str = ""
 
 
 @dataclass(frozen=True)
@@ -22,26 +24,31 @@ class FinalizeProcessingStatusEvent:
     detail: str
     progress: float
     terminal_kind: str | None = None
+    source_token: str = ""
 
 
 @dataclass(frozen=True)
 class PushActivityEvent:
     message: str
+    source_token: str = ""
 
 
 @dataclass(frozen=True)
 class AppendLogEvent:
     payload: dict[str, object]
+    source_token: str = ""
 
 
 @dataclass(frozen=True)
 class AppendImageLogEvent:
     payload: dict[str, object]
+    source_token: str = ""
 
 
 @dataclass(frozen=True)
 class WorkerCompleteEvent:
     outcome: str
+    source_token: str = ""
 
 
 @dataclass(frozen=True)

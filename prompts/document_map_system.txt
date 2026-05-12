@@ -24,7 +24,9 @@ Authority hierarchy:
 Constraints:
 - roles must be one of: heading, body, caption, epigraph, attribution, toc_entry, toc_header, dedication, list
 - confidences must be one of: high, medium, low
-- heading levels must be integers 1..6 for headings and null otherwise
+- for every `paragraph_anchors` item: if role is `heading`, `heading_level` must be an integer 1..6
+- for every `paragraph_anchors` item: if role is not `heading`, `heading_level` must be null
+- never copy outline levels, TOC target levels, or `emb.hl` hint values into non-heading anchors
 - do not invent logical indexes outside the document coordinate space shown in the prompt
 - if uncertain, prefer conservative anchors and add a review zone
 

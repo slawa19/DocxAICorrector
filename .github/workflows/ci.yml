@@ -27,6 +27,15 @@ jobs:
           . .venv/bin/activate
           pip install -e ".[dev]"
           python -c "import docxaicorrector"
+
+      - name: Run pyright fail-hard
+        run: |
+          . .venv/bin/activate
+          timeout 180s python -m pyright src/docxaicorrector tests
+
+      - name: Run local pyright regression wrapper
+        run: |
+          . .venv/bin/activate
           bash scripts/test.sh tests/test_typecheck.py -q
 
       - name: Clean working tree before tests
@@ -56,6 +65,9 @@ jobs:
 
       - name: Clean working tree before tests
         run: git clean -fdx
+
+      - name: Run static workflow checks
+        run: bash scripts/test.sh tests/test_script_contract_static.py -q
 
       - name: Run full test suite
         run: bash scripts/test.sh tests/ -q

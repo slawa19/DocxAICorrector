@@ -151,6 +151,44 @@ def reconcile_with_document_map(
         )
         patched_logical_indexes.add(resolved_logical_index)
 
+    toc_region = document_map.toc_region
+    if toc_region is not None and str(toc_region.confidence or "").strip().lower() == "high":
+        toc_header_index = toc_region.header_logical_index
+        if toc_header_index is not None:
+            _patch_document_map_classification(
+                patched_classifications,
+                paragraph_indexes=paragraph_indexes,
+                patched_logical_indexes=patched_logical_indexes,
+                logical_index=int(toc_header_index),
+                role="toc_header",
+                heading_level=None,
+                force=True,
+            )
+        for logical_index in range(int(toc_region.start_logical_index), int(toc_region.end_logical_index) + 1):
+            if logical_index == toc_header_index:
+                continue
+            _patch_document_map_classification(
+                patched_classifications,
+                paragraph_indexes=paragraph_indexes,
+                patched_logical_indexes=patched_logical_indexes,
+                logical_index=logical_index,
+                role="toc_entry",
+                heading_level=None,
+                force=True,
+            )
+
+    for outline_entry in document_map.outline or ():
+        if str(outline_entry.confidence or "").strip().lower() != "high":
+            continue
+        _patch_document_map_classification(
+            patched_classifications,
+            paragraph_indexes=paragraph_indexes,
+            patched_logical_indexes=patched_logical_indexes,
+            logical_index=int(outline_entry.logical_index),
+            role="heading",
+            heading_level=int(outline_entry.level),
+        )
+
     reconciled_structure_map = StructureMap(
         classifications=patched_classifications,
         model_used=structure_map.model_used,
@@ -166,6 +204,40 @@ def reconcile_with_document_map(
         patched_logical_indexes=tuple(sorted(patched_logical_indexes)),
     )
     return reconciled_structure_map, report
+
+
+def _patch_document_map_classification(
+    patched_classifications: dict[int, ParagraphClassification],
+    *,
+    paragraph_indexes: _ParagraphIndexes,
+    patched_logical_indexes: set[int],
+    logical_index: int,
+    role: str,
+    heading_level: int | None,
+    force: bool = False,
+) -> None:
+    paragraph = paragraph_indexes.logical_to_paragraph.get(int(logical_index))
+    if paragraph is None:
+        return
+    resolved_logical_index = int(getattr(paragraph, "logical_index", paragraph.source_index))
+    existing = patched_classifications.get(resolved_logical_index)
+    if existing is not None:
+        if existing.role == role and existing.heading_level == heading_level:
+            return
+        if (
+            not force
+            and existing.rationale != "document_map_reconciliation"
+            and str(existing.confidence or "").strip().lower() == "high"
+        ):
+            return
+    patched_classifications[resolved_logical_index] = ParagraphClassification(
+        index=resolved_logical_index,
+        role=role,
+        heading_level=heading_level,
+        confidence="high",
+        rationale="document_map_reconciliation",
+    )
+    patched_logical_indexes.add(resolved_logical_index)
 
 
 def _collect_anchor_conflicts(*, document_map: DocumentMap, structure_map: StructureMap) -> tuple[int, ...]:
@@ -516,7 +588,7 @@ def _request_targeted_classifications(
     response = _call_targeted_responses_with_timeout(
         client=responses_client,
         request_payload={
-            "model": model,
+            "model": model.split(":", 1)[1] if ":" in model else model,
             "input": [
                 {"role": "system", "content": [{"type": "input_text", "text": _load_targeted_system_prompt()}]},
                 {

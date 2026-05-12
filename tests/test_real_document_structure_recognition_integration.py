@@ -10,7 +10,11 @@ import pytest
 from docxaicorrector.core.config import load_project_dotenv
 
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.manual_ai_heavy,
+    pytest.mark.real_ai_api,
+]
 
 
 AI_RUN_PROFILE_ID = "ui-parity-ai-default"

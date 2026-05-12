@@ -12,6 +12,8 @@ import pytest
 
 T = TypeVar("T")
 
+pytestmark = pytest.mark.compat_legacy
+
 PACKAGE_MODULES = (
     "docxaicorrector.ui._app",
     "docxaicorrector.ui._ui",

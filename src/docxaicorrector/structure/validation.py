@@ -101,6 +101,11 @@ def _heuristic_heading_count_for_phase(paragraphs: Sequence[ParagraphLike], *, p
     )
 
 
+def _heading_count_for_phase(paragraphs: Sequence[ParagraphLike], *, phase: str) -> int:
+    normalized_phase = normalize_structure_phase(phase, default="post_ai_readiness")
+    return sum(1 for paragraph in paragraphs if _is_heading_for_phase(paragraph, phase=normalized_phase))
+
+
 def _effective_structural_role(paragraph: ParagraphLike, *, phase: str) -> str:
     return get_effective_structural_role(paragraph, phase=phase)
 
@@ -187,6 +192,8 @@ def _is_isolated_marker_paragraph(paragraph: ParagraphLike, *, phase: str) -> bo
     if not text:
         return False
     if _is_heading_for_phase(paragraph, phase=phase):
+        return False
+    if _effective_structural_role(paragraph, phase=phase) == "list":
         return False
     if _paragraph_value(paragraph, "list_kind") is not None:
         return False
@@ -309,6 +316,7 @@ def validate_structure_quality(
     nonempty_paragraph_count = len(nonempty_paragraphs)
     explicit_heading_count = sum(1 for paragraph in nonempty_paragraphs if _is_explicit_heading(paragraph))
     heuristic_heading_count = _heuristic_heading_count_for_phase(nonempty_paragraphs, phase=normalized_phase)
+    authoritative_heading_count = _heading_count_for_phase(nonempty_paragraphs, phase=normalized_phase)
 
     ambiguous_indexes: set[int] = set()
     suspicious_short_body_count = 0
@@ -366,8 +374,7 @@ def validate_structure_quality(
     if toc_like_sequence_count > 0:
         escalation_reasons.append("toc_like_sequence_detected")
     if bool(app_config.get("structure_validation_forbid_heading_only_collapse", True)):
-        heading_count_for_phase = explicit_heading_count + heuristic_heading_count
-        if _max_body_run_length(paragraphs, phase=normalized_phase) >= 120 and heading_count_for_phase < 3:
+        if _max_body_run_length(paragraphs, phase=normalized_phase) >= 120 and authoritative_heading_count < 3:
             escalation_reasons.append("heading_only_collapse_risk")
     if isolated_marker_paragraph_count > 0:
         escalation_reasons.append("isolated_list_marker_fragments")
@@ -382,7 +389,7 @@ def validate_structure_quality(
         isolated_marker_paragraph_count=isolated_marker_paragraph_count,
         large_front_matter_block_risk=large_front_matter_block_risk,
         expected_heading_candidates_from_toc=expected_heading_candidates_from_toc,
-        heading_count=explicit_heading_count + heuristic_heading_count,
+        heading_count=authoritative_heading_count,
         structure_quality_risk_level=structure_quality_risk_level,
         structure_repair_report=structure_repair_report,
     )

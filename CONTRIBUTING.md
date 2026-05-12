@@ -222,12 +222,14 @@ pytest tests -q
 
 - `scripts/test.sh`;
 - `.vscode/tasks.json` test tasks;
+- `tests/test_script_contract_static.py`;
 - `tests/test_script_workflow_smoke.py`;
 - `README.md`, `CONTRIBUTING.md`, `docs/WORKFLOW_AND_IMAGE_MODES.md`.
 
 Минимальная обязательная проверка после таких правок:
 
 ```bash
+bash scripts/test.sh tests/test_script_contract_static.py -q
 bash scripts/test.sh tests/test_script_workflow_smoke.py -q
 bash scripts/test.sh tests/ -q
 ```
@@ -335,5 +337,6 @@ heading-стилей даёт корректный результат.
 - Документация обновлена, если менялось поведение или структура проекта.
 - Лишние временные файлы не попали в коммит.
 - Если менялся test workflow contract, синхронно обновлены `scripts/test.sh`, `.vscode/tasks.json`, `tests/test_script_workflow_smoke.py`, `README.md`, `CONTRIBUTING.md`, `docs/WORKFLOW_AND_IMAGE_MODES.md`, а CI остаётся на `bash scripts/test.sh ...`.
+- Если менялся test workflow contract split, синхронно обновлены `tests/test_script_contract_static.py` и `tests/test_script_workflow_smoke.py`, а CI продолжает выполнять static checks даже при `DOCXAI_SKIP_WORKFLOW_SMOKE=1`.
 - Если менялся startup path, сверена `docs/STARTUP_PERFORMANCE_CONTRACT.md`, обновлены startup-related tests и отдельно проверен first useful render после cold start.
 - Для финальной локальной верификации в VS Code использован видимый пользовательский путь запуска тестов, а не hidden terminal capture.

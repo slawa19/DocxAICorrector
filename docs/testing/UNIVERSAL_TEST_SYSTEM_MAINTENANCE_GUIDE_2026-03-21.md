@@ -178,10 +178,9 @@ Required steps:
 
 1. add a new `[[documents]]` entry;
 2. set `id`, `source_path`, `artifact_prefix`, and `provenance`;
-3. declare structural expectations such as paragraphs, headings, images, tables, and numbering;
-4. declare `default_run_profile`;
-5. declare `expected_acceptance_policy` using a currently supported value;
-6. declare tags describing why the document exists in the corpus.
+3. declare `output_basename` and structural expectations such as paragraphs, headings, images, tables, and numbering;
+4. declare `default_run_profile` and, when needed, `structural_run_profile`;
+5. declare tags describing why the document exists in the corpus.
 
 If the profile is tolerant rather than strict:
 

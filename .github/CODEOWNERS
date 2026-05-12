@@ -3,6 +3,7 @@
 /.github/copilot-instructions.md @slawa19
 /.github/pull_request_template.md @slawa19
 /.github/workflows/ci.yml @slawa19
+/.github/workflows/real-document-validation.yml @slawa19
 /.vscode/tasks.json @slawa19
 /scripts/test.sh @slawa19
 /scripts/project-control-wsl.sh @slawa19
@@ -37,6 +38,7 @@
 /docs/AI_AGENT_DEVELOPMENT_RULES.md @slawa19
 /README.md @slawa19
 /CONTRIBUTING.md @slawa19
+/tests/test_script_contract_static.py @slawa19
 /tests/test_script_workflow_smoke.py @slawa19
 /tests/test_startup_performance_contract.py @slawa19
 /tests/test_app.py @slawa19

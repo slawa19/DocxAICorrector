@@ -303,6 +303,54 @@ def test_parse_document_map_payload_fills_missing_anchors_with_default_body_role
     assert document_map.sampled is True
 
 
+def test_parse_document_map_payload_drops_heading_level_for_non_heading_anchor():
+    document_map = _parse_document_map_payload(
+        {
+            "body_start_logical_index": 0,
+            "toc_region": None,
+            "outline": [],
+            "paragraph_anchors": {
+                "0": {"role": "body", "heading_level": 1, "confidence": "medium"},
+                "1": {"role": "toc_entry", "heading_level": 2, "confidence": "high"},
+            },
+            "review_zones": [],
+        },
+        all_logical_indexes={0, 1},
+        sampled_logical_indexes=(0, 1),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+    )
+
+    assert document_map.get_anchor(0).role == "body"
+    assert document_map.get_anchor(0).heading_level is None
+    assert document_map.get_anchor(1).role == "toc_entry"
+    assert document_map.get_anchor(1).heading_level is None
+
+
+def test_parse_document_map_payload_normalizes_review_zone_severity_synonyms():
+    document_map = _parse_document_map_payload(
+        {
+            "body_start_logical_index": 0,
+            "toc_region": None,
+            "outline": [],
+            "paragraph_anchors": {},
+            "review_zones": [
+                {"start_logical_index": 0, "end_logical_index": 0, "reason": "minor", "severity": "low"},
+                {"start_logical_index": 1, "end_logical_index": 1, "reason": "check", "severity": "medium"},
+                {"start_logical_index": 2, "end_logical_index": 2, "reason": "severe", "severity": "high"},
+            ],
+        },
+        all_logical_indexes={0, 1, 2},
+        sampled_logical_indexes=(0, 1, 2),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+    )
+
+    assert [zone.severity for zone in document_map.review_zones] == ["info", "warning", "critical"]
+
+
 def test_parse_document_map_payload_drops_outline_entries_inside_toc_region():
     document_map = _parse_document_map_payload(
         {

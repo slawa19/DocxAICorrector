@@ -742,6 +742,7 @@ def describe_provider_availability(
 ) -> ProviderAvailability:
     resolved_selector = _parse_model_selector(selector, source_name="selector")
     provider_config = get_provider_config(resolved_selector.provider, app_config)
+    load_project_dotenv()
     api_key_value = os.getenv(provider_config.api_key_env, "").strip()
     error_message: str | None = None
     if not provider_config.enabled:

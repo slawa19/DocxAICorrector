@@ -1,6 +1,8 @@
 import logging
 from types import SimpleNamespace
 
+import pytest
+
 import docxaicorrector.structure.reconciliation as structure_reconciliation
 from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, DocumentMapOutlineEntry, DocumentMapReviewZone, DocumentMapTocEntry, DocumentMapTocRegion, ParagraphClassification, ParagraphUnit, StructureMap
 from docxaicorrector.structure.reconciliation import ReconciliationReport, reconcile_with_document_map, targeted_reclassify_with_reconciliation_context
@@ -113,6 +115,94 @@ def test_reconcile_with_document_map_reports_unexpected_headings_and_unmatched_t
 
     assert report.unexpected_heading_count == 1
     assert report.toc_entry_without_body_match_count == 1
+
+
+def test_reconcile_with_document_map_projects_high_confidence_toc_region_and_outline_entries():
+    paragraphs = [
+        _paragraph(source_index=0, logical_index=35, text="Contents"),
+        _paragraph(source_index=1, logical_index=36, text="1 The Failure of Money 1"),
+        _paragraph(source_index=2, logical_index=37, text="2 The Myth of Money 11"),
+        _paragraph(source_index=3, logical_index=103, text="The Failure of Money"),
+        _paragraph(source_index=4, logical_index=174, text="The Myth of Money"),
+    ]
+    document_map = DocumentMap(
+        body_start_logical_index=103,
+        toc_region=DocumentMapTocRegion(
+            start_logical_index=35,
+            end_logical_index=37,
+            header_logical_index=35,
+            entries=(
+                DocumentMapTocEntry(title="The Failure of Money", target_level=1, candidate_body_logical_index=103, confidence="high"),
+                DocumentMapTocEntry(title="The Myth of Money", target_level=1, candidate_body_logical_index=174, confidence="high"),
+            ),
+            confidence="high",
+        ),
+        outline=(
+            DocumentMapOutlineEntry(title="The Failure of Money", level=1, logical_index=103, confidence="high", evidence=("toc_match",)),
+            DocumentMapOutlineEntry(title="The Myth of Money", level=1, logical_index=174, confidence="high", evidence=("toc_match",)),
+        ),
+        paragraph_anchors={},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(35, 36, 37, 103, 174),
+    )
+    structure_map = StructureMap(
+        classifications={
+            35: ParagraphClassification(index=35, role="body", heading_level=None, confidence="medium"),
+            36: ParagraphClassification(index=36, role="body", heading_level=None, confidence="medium"),
+            37: ParagraphClassification(index=37, role="body", heading_level=None, confidence="medium"),
+            103: ParagraphClassification(index=103, role="body", heading_level=None, confidence="medium"),
+            174: ParagraphClassification(index=174, role="body", heading_level=None, confidence="medium"),
+        },
+        model_used="gpt-4o-mini",
+        total_tokens_used=12,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+
+    reconciled_map, report = reconcile_with_document_map(paragraphs, document_map, structure_map)
+
+    assert reconciled_map.classifications[35].role == "toc_header"
+    assert reconciled_map.classifications[36].role == "toc_entry"
+    assert reconciled_map.classifications[37].role == "toc_entry"
+    assert reconciled_map.classifications[103].role == "heading"
+    assert reconciled_map.classifications[103].heading_level == 1
+    assert reconciled_map.classifications[174].role == "heading"
+    assert report.patched_logical_indexes == (35, 36, 37, 103, 174)
+    assert report.missing_outline_entries == ()
+    assert report.outline_coverage_ratio == 1.0
+
+
+def test_reconcile_with_document_map_does_not_override_high_confidence_stage2_with_outline_projection():
+    paragraphs = [_paragraph(source_index=0, logical_index=103, text="The Failure of Money")]
+    document_map = DocumentMap(
+        body_start_logical_index=103,
+        toc_region=None,
+        outline=(DocumentMapOutlineEntry(title="The Failure of Money", level=1, logical_index=103, confidence="high", evidence=("toc_match",)),),
+        paragraph_anchors={},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(103,),
+    )
+    structure_map = StructureMap(
+        classifications={103: ParagraphClassification(index=103, role="body", heading_level=None, confidence="high")},
+        model_used="gpt-4o-mini",
+        total_tokens_used=12,
+        processing_time_seconds=0.1,
+        window_count=1,
+    )
+
+    reconciled_map, report = reconcile_with_document_map(paragraphs, document_map, structure_map)
+
+    assert reconciled_map.classifications[103].role == "body"
+    assert report.patched_logical_indexes == ()
+    assert report.missing_outline_entries == (103,)
 
 
 def test_reconcile_with_document_map_matches_adjacent_heading_to_outline_entry():
@@ -510,6 +600,32 @@ def test_targeted_reclassify_with_reconciliation_context_uses_provided_selection
     assert updated.classifications[10].role == "heading"
 
 
+def test_request_targeted_classifications_strips_provider_prefix(monkeypatch):
+    captured = {}
+
+    class _FakeResponses:
+        def create(self, **kwargs):
+            captured["payload"] = kwargs
+            return SimpleNamespace(output_text='[{"i": 10, "r": "body", "l": null, "c": "high"}]')
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    monkeypatch.setattr(structure_reconciliation, "_with_request_timeout", lambda client, *, timeout: client)
+
+    classifications, total_tokens = structure_reconciliation._request_targeted_classifications(
+        descriptors=[],
+        report=ReconciliationReport(outline_coverage_ratio=0.5),
+        client=_FakeClient(),
+        model="openrouter:test/structure",
+        timeout=60.0,
+    )
+
+    assert captured["payload"]["model"] == "test/structure"
+    assert classifications[0].index == 10
+    assert total_tokens == 0
+
+
 def test_targeted_reclassify_with_reconciliation_context_updates_only_flagged_subset():
     paragraphs = [
         _paragraph(source_index=0, logical_index=8, text="Вступление"),
@@ -615,7 +731,7 @@ def test_targeted_reclassify_with_reconciliation_context_drops_out_of_scope_inde
     class _FakeClient:
         responses = _FakeResponses()
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING, logger="docxaicorrector.structure.reconciliation"):
         updated = targeted_reclassify_with_reconciliation_context(
             paragraphs,
             document_map,

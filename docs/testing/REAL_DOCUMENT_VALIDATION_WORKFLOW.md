@@ -8,10 +8,15 @@ Current default mapping:
 
 - document profile: `lietaer-core`
 - additional document profile: `religion-wealth-core`
+- audiobook sanity document profile: `mazzucato-audiobook-core`
+- canonical structure-recovery document profile: `lietaer-pdf-first-20-structure-core`
 - full run profile: `ui-parity-default`
 - full AI run profile: `ui-parity-ai-default`
 - soak run profile: `ui-parity-soak-3x`
 - structural run profile: `structural-passthrough-default`
+- AI-first structural run profile: `structural-ai-first-default`
+- audiobook postprocess run profile: `ui-parity-translate-audiobook-postprocess`
+- benchmark-only advisory run profile: `ui-parity-translate-benchmark-advisory`
 
 Current structure-recognition mode contract across run profiles:
 
@@ -23,6 +28,9 @@ Current corpus notes:
 
 - `lietaer-core` is now back on strict deterministic structural thresholds.
 - `religion-wealth-core` now points at the original legacy `.doc` source and exercises the project-level auto-conversion path during corpus validation; it currently remains deterministic-structural `tolerant` because one page-separator artifact still produces a bounded restore diagnostic.
+- `mazzucato-audiobook-core` is the canonical real-document sample for translate plus audiobook postprocess sanity and maps to `ui-parity-translate-audiobook-postprocess` by default.
+- `lietaer-pdf-first-20-structure-core` is the canonical AI-first structure-recovery slice and maps to `structural-ai-first-default` for the structural diagnostic path.
+- `lietaer-pdf-first-20-benchmark` and `lietaer-pdf-full-benchmark` are explicitly tagged `benchmark-only` in `corpus_registry.toml`; they use `ui-parity-translate-benchmark-advisory` and are excluded from mandatory full gates by policy.
 
 ## AI-First Structure Recovery Workflow
 
@@ -73,6 +81,12 @@ Exceptional automated quality-gate path:
 Tasks: Run Task -> Run Real Document Quality Gate
 ```
 
+Manual GitHub Actions system-deps path:
+
+```text
+GitHub Actions -> Real Document Validation
+```
+
 Canonical WSL CLI path:
 
 ```bash
@@ -93,6 +107,8 @@ This script does three things for you:
 
 The quality-gate script runs only the exceptional pytest entry point `tests/test_real_document_quality_gate.py` with `-vv -s`, so the terminal shows the live validator stream and pytest automatically fails the gate when the validator exits non-zero or writes an invalid manifest/report.
 
+The manual `Real Document Validation` workflow is the Phase 4 system-deps path. It installs `system-requirements.apt`, forces `DOCXAI_REQUIRE_REAL_DOCUMENT_CAPABILITIES=1`, runs the no-skip legacy DOC and PDF extraction selectors, runs the canonical structural passthrough selector for `lietaer-pdf-first-20-structure-core`, and uploads `.run/`, `tests/artifacts/real_document_pipeline/`, and `tests/artifacts/structural_diagnostics/` artifacts for inspection.
+
 ## Validation Tiers
 
 The repository now distinguishes three reusable real-document validation tiers:
@@ -102,6 +118,12 @@ The repository now distinguishes three reusable real-document validation tiers:
 3. `full` — model-backed UI-parity execution used by the Lietaer validator and the exceptional quality gate.
 
 Ordinary pytest coverage is expected to exercise `extraction` and `structural`. The dedicated task/script path remains the user-visible path for `full` validation.
+
+Benchmark-only policy:
+
+1. Profiles tagged `benchmark-only` are research/evaluation inputs, not mandatory regression gates.
+2. Their default run profile is `ui-parity-translate-benchmark-advisory`, which keeps translation quality gate policy advisory for model-comparison runs.
+3. They may participate in manual or benchmark workflows, but they are excluded from mandatory full gates by repository policy.
 
 ## AI Structure Recognition Smoke
 

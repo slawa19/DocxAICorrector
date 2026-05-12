@@ -1,5 +1,10 @@
+import pytest
+
 import docxaicorrector.ui.compare_panel as compare_panel
 from docxaicorrector.core.models import ImageAsset
+
+
+pytestmark = pytest.mark.compat_legacy
 
 
 def test_render_compare_all_apply_panel_is_noop_for_completed_compare_assets(monkeypatch):

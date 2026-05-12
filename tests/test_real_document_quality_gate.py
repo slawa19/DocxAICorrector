@@ -10,6 +10,8 @@ import pytest
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.manual_ai_heavy,
+    pytest.mark.real_document_quality_gate,
     pytest.mark.skipif(
         os.environ.get("DOCXAI_RUN_REAL_DOCUMENT_QUALITY") != "1",
         reason="real-document quality gate runs only on explicit exceptional request",

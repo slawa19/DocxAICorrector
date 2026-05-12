@@ -1,3 +1,5 @@
+import queue
+import threading
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -6,13 +8,16 @@ from typing import Any, cast
 import pytest
 
 import docxaicorrector.processing.preparation as preparation
+import docxaicorrector.processing.processing_service as processing_service
 import docxaicorrector.processing.processing_runtime as processing_runtime
 import docxaicorrector.processing.restart_store as restart_store
+import docxaicorrector.runtime.artifacts as runtime_artifacts
 import docxaicorrector.runtime.state as state
 import docxaicorrector.ui.application_flow as application_flow
 from conftest import SessionState as SessionState  # noqa: F811
 from docx import Document
 from docxaicorrector.document.segments import DocumentContextProfile, DocumentSegment, SegmentBoundaryEvidence, SegmentDetectionReport, SegmentOutlineEntry
+from docxaicorrector.runtime.events import FinalizeProcessingStatusEvent, PreparationCompleteEvent, PushActivityEvent, SetProcessingStatusEvent, SetStateEvent
 
 
 @pytest.fixture(autouse=True)
@@ -75,6 +80,8 @@ def test_prepare_run_context_updates_selected_token_and_prepared_key(monkeypatch
         jobs=[{"target_text": "block", "target_chars": 5, "context_chars": 0}],
         prepared_source_key="report.docx:hash:6000",
         structure_map={"kind": "structure-map"},
+        document_map_status="ai",
+        document_map_status_reason="",
         ai_classified_count=3,
         ai_heading_count=2,
         ai_role_change_count=1,
@@ -113,6 +120,8 @@ def test_prepare_run_context_updates_selected_token_and_prepared_key(monkeypatch
     assert result.preparation_elapsed_seconds >= 0.0
     assert result.normalization_report is prepared_document.normalization_report
     assert result.structure_map == {"kind": "structure-map"}
+    assert result.document_map_status == "ai"
+    assert result.document_map_status_reason == ""
     assert result.ai_classified_count == 3
     assert result.ai_heading_count == 2
     assert result.ai_role_change_count == 1
@@ -422,12 +431,13 @@ def test_document_facade_build_semantic_blocks_forwards_hard_boundaries(monkeypa
     monkeypatch.setattr(
         document_facade,
         "_build_semantic_blocks_impl",
-        lambda paragraphs, max_chars=6000, *, relations=None, hard_boundary_paragraph_ids=None: captured.update(
+        lambda paragraphs, max_chars=6000, *, relations=None, hard_boundary_paragraph_ids=None, structure_phase="post_ai_final": captured.update(
             {
                 "paragraphs": paragraphs,
                 "max_chars": max_chars,
                 "relations": relations,
                 "hard_boundary_paragraph_ids": hard_boundary_paragraph_ids,
+                "structure_phase": structure_phase,
             }
         ) or ["ok"],
     )
@@ -445,6 +455,7 @@ def test_document_facade_build_semantic_blocks_forwards_hard_boundaries(monkeypa
         "max_chars": 7000,
         "relations": ["rel"],
         "hard_boundary_paragraph_ids": {"p0002"},
+        "structure_phase": "post_ai_final",
     }
 
 
@@ -504,13 +515,18 @@ def test_consume_completed_source_if_used_clears_persisted_file(monkeypatch):
     assert cleared == [{"filename": "report.docx", "token": "report.docx:3:abc", "storage_path": "completed.bin"}]
 
 
-def test_prepare_run_context_validates_archive_before_preparation(monkeypatch):
+def test_prepare_run_context_reports_invalid_archive_via_fail_critical(monkeypatch):
     session_state = SessionState(selected_source_token="", prepared_source_key="")
     validated = []
+    failures = []
 
     monkeypatch.setattr(application_flow, "validate_docx_source_bytes", lambda source_bytes: validated.append(source_bytes) or (_ for _ in ()).throw(RuntimeError("bad archive")))
 
-    try:
+    def fail_critical_stub(event, message, **context):
+        failures.append((event, message, context))
+        raise RuntimeError(message)
+
+    with pytest.raises(RuntimeError, match="bad archive"):
         application_flow.prepare_run_context(
             uploaded_file=UploadedFileStub("report.docx", b"abc"),
             chunk_size=6000,
@@ -518,16 +534,165 @@ def test_prepare_run_context_validates_archive_before_preparation(monkeypatch):
             keep_all_image_variants=True,
             session_state=session_state,
             reset_run_state_fn=lambda **kwargs: None,
-            fail_critical_fn=lambda *args, **kwargs: None,
+            fail_critical_fn=fail_critical_stub,
             log_event_fn=lambda *args, **kwargs: None,
             prepare_document_for_processing_fn=lambda **kwargs: (_ for _ in ()).throw(AssertionError("prepare_document_for_processing must not run")),
         )
-    except RuntimeError as exc:
-        assert str(exc) == "bad archive"
-    else:
-        raise AssertionError("prepare_run_context must fail on invalid archive")
 
     assert validated == [b"abc"]
+    assert failures == [("doc_validation_failed", "bad archive", {"filename": "report.docx"})]
+
+
+def test_prepare_run_context_reports_broken_relationships_via_fail_critical(monkeypatch):
+    session_state = SessionState(selected_source_token="", prepared_source_key="")
+    validated = []
+    failures = []
+
+    monkeypatch.setattr(
+        application_flow,
+        "validate_docx_source_bytes",
+        lambda source_bytes: validated.append(source_bytes)
+        or (_ for _ in ()).throw(RuntimeError("broken relationship target: rId5")),
+    )
+
+    def fail_critical_stub(event, message, **context):
+        failures.append((event, message, context))
+        raise RuntimeError(message)
+
+    with pytest.raises(RuntimeError, match="broken relationship target: rId5"):
+        application_flow.prepare_run_context(
+            uploaded_file=UploadedFileStub("report.docx", b"abc"),
+            chunk_size=6000,
+            image_mode="safe",
+            keep_all_image_variants=True,
+            session_state=session_state,
+            reset_run_state_fn=lambda **kwargs: None,
+            fail_critical_fn=fail_critical_stub,
+            log_event_fn=lambda *args, **kwargs: None,
+            prepare_document_for_processing_fn=lambda **kwargs: (_ for _ in ()).throw(AssertionError("prepare_document_for_processing must not run")),
+        )
+
+    assert validated == [b"abc"]
+    assert failures == [
+        ("doc_validation_failed", "broken relationship target: rId5", {"filename": "report.docx"})
+    ]
+
+
+def test_prepare_run_context_reports_suspicious_uncompressed_archive_via_fail_critical(monkeypatch):
+    session_state = SessionState(selected_source_token="", prepared_source_key="")
+    validated = []
+    failures = []
+
+    monkeypatch.setattr(
+        application_flow,
+        "validate_docx_source_bytes",
+        lambda source_bytes: validated.append(source_bytes)
+        or (_ for _ in ()).throw(RuntimeError("DOCX-архив слишком велик после распаковки и отклонен из соображений безопасности.")),
+    )
+
+    def fail_critical_stub(event, message, **context):
+        failures.append((event, message, context))
+        raise RuntimeError(message)
+
+    with pytest.raises(RuntimeError, match="слишком велик после распаковки"):
+        application_flow.prepare_run_context(
+            uploaded_file=UploadedFileStub("report.docx", b"abc"),
+            chunk_size=6000,
+            image_mode="safe",
+            keep_all_image_variants=True,
+            session_state=session_state,
+            reset_run_state_fn=lambda **kwargs: None,
+            fail_critical_fn=fail_critical_stub,
+            log_event_fn=lambda *args, **kwargs: None,
+            prepare_document_for_processing_fn=lambda **kwargs: (_ for _ in ()).throw(AssertionError("prepare_document_for_processing must not run")),
+        )
+
+    assert validated == [b"abc"]
+    assert failures == [
+        (
+            "doc_validation_failed",
+            "DOCX-архив слишком велик после распаковки и отклонен из соображений безопасности.",
+            {"filename": "report.docx"},
+        )
+    ]
+
+
+def test_prepare_run_context_reports_absolute_archive_paths_via_fail_critical(monkeypatch):
+    session_state = SessionState(selected_source_token="", prepared_source_key="")
+    validated = []
+    failures = []
+
+    monkeypatch.setattr(
+        application_flow,
+        "validate_docx_source_bytes",
+        lambda source_bytes: validated.append(source_bytes)
+        or (_ for _ in ()).throw(RuntimeError("DOCX-архив содержит абсолютные пути и отклонён из соображений безопасности.")),
+    )
+
+    def fail_critical_stub(event, message, **context):
+        failures.append((event, message, context))
+        raise RuntimeError(message)
+
+    with pytest.raises(RuntimeError, match="абсолютные пути"):
+        application_flow.prepare_run_context(
+            uploaded_file=UploadedFileStub("report.docx", b"abc"),
+            chunk_size=6000,
+            image_mode="safe",
+            keep_all_image_variants=True,
+            session_state=session_state,
+            reset_run_state_fn=lambda **kwargs: None,
+            fail_critical_fn=fail_critical_stub,
+            log_event_fn=lambda *args, **kwargs: None,
+            prepare_document_for_processing_fn=lambda **kwargs: (_ for _ in ()).throw(AssertionError("prepare_document_for_processing must not run")),
+        )
+
+    assert validated == [b"abc"]
+    assert failures == [
+        (
+            "doc_validation_failed",
+            "DOCX-архив содержит абсолютные пути и отклонён из соображений безопасности.",
+            {"filename": "report.docx"},
+        )
+    ]
+
+
+def test_prepare_run_context_reports_encrypted_or_protected_input_via_fail_critical(monkeypatch):
+    session_state = SessionState(selected_source_token="", prepared_source_key="")
+    validated = []
+    failures = []
+
+    monkeypatch.setattr(
+        application_flow,
+        "validate_docx_source_bytes",
+        lambda source_bytes: validated.append(source_bytes)
+        or (_ for _ in ()).throw(RuntimeError("Документ защищён паролем или шифрованием и не может быть обработан.")),
+    )
+
+    def fail_critical_stub(event, message, **context):
+        failures.append((event, message, context))
+        raise RuntimeError(message)
+
+    with pytest.raises(RuntimeError, match="защищён паролем"):
+        application_flow.prepare_run_context(
+            uploaded_file=UploadedFileStub("report.docx", b"abc"),
+            chunk_size=6000,
+            image_mode="safe",
+            keep_all_image_variants=True,
+            session_state=session_state,
+            reset_run_state_fn=lambda **kwargs: None,
+            fail_critical_fn=fail_critical_stub,
+            log_event_fn=lambda *args, **kwargs: None,
+            prepare_document_for_processing_fn=lambda **kwargs: (_ for _ in ()).throw(AssertionError("prepare_document_for_processing must not run")),
+        )
+
+    assert validated == [b"abc"]
+    assert failures == [
+        (
+            "doc_validation_failed",
+            "Документ защищён паролем или шифрованием и не может быть обработан.",
+            {"filename": "report.docx"},
+        )
+    ]
 
 
 def test_prepare_run_context_normalizes_legacy_doc_before_validation(monkeypatch):
@@ -952,7 +1117,9 @@ def test_prepare_run_context_for_background_uses_real_cache(monkeypatch):
     )
 
     assert calls["extract"] == 1
-    assert second.prepared_source_key.endswith(":6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=auto:sv=1")
+    assert second.prepared_source_key.endswith(
+        ":6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=auto:sv=1:srec=1:ai_first:c1"
+    )
     assert second.preparation_cached is True
     assert second.preparation_stage == "Документ подготовлен"
     assert progress_events[-1]["stage"] == "Документ подготовлен"
@@ -991,6 +1158,156 @@ def test_prepare_run_context_for_background_processes_real_docx_without_mocks():
     assert any("Глава 1" in str(job.get("target_text", "")) for job in result.jobs)
     assert any(event["stage"] == "Разбор DOCX" for event in progress_events)
     assert progress_events[-1]["stage"] == "Документ подготовлен"
+
+
+def test_background_handoff_persists_result_bundle_and_ui_artifacts(tmp_path, monkeypatch):
+    session_state = SessionState()
+    monkeypatch.setattr(state.st, "session_state", session_state)
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    state.init_session_state()
+    preparation.clear_preparation_cache(clear_shared=True)
+
+    source_doc = Document()
+    source_doc.add_heading("Глава 1", level=1)
+    source_doc.add_paragraph(
+        "Первый абзац документа содержит достаточно длинный связный текст, чтобы подготовка прошла без fallback-поведения."
+    )
+    source_doc.add_paragraph(
+        "Второй абзац нужен, чтобы downstream handoff собрал непустой result bundle и сохранил итоговые артефакты."
+    )
+    source_buffer = BytesIO()
+    source_doc.save(source_buffer)
+
+    uploaded_payload = _freeze_uploaded_file("report.docx", source_buffer.getvalue())
+    prepared = application_flow.prepare_run_context_for_background(
+        uploaded_payload=uploaded_payload,
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=True,
+    )
+
+    preparation_events: queue.Queue[object] = queue.Queue()
+    session_state.preparation_event_queue = preparation_events
+    session_state.preparation_worker = object()
+    preparation_events.put(
+        PreparationCompleteEvent(
+            prepared_run_context=prepared,
+            upload_marker=f"{prepared.uploaded_file_token}:6000",
+        )
+    )
+    preparation_finalizations = []
+
+    processing_runtime.drain_preparation_events(
+        reset_run_state=state.reset_run_state,
+        set_processing_status=state.set_processing_status,
+        finalize_processing_status=lambda stage, detail, progress, terminal_kind=None: preparation_finalizations.append(
+            (stage, detail, progress, terminal_kind)
+        ),
+        push_activity=state.push_activity,
+    )
+
+    assert session_state.prepared_run_context is prepared
+    assert preparation_finalizations[-1] == ("Документ подготовлен", "", 1.0, "completed")
+
+    processing_events: queue.Queue[object] = queue.Queue()
+    stop_event = threading.Event()
+    runtime = processing_runtime.BackgroundRuntime(processing_events, stop_event)
+    state.apply_processing_start(
+        uploaded_filename=prepared.uploaded_filename,
+        uploaded_token=prepared.uploaded_file_token,
+        image_mode="safe",
+        processing_operation="edit",
+        audiobook_postprocess_enabled=False,
+        worker=object(),
+        event_queue=processing_events,
+        stop_event=stop_event,
+    )
+
+    fake_client = object()
+    artifact_paths: dict[str, str] = {}
+    markdown_text = "# Результат\n\nИтоговый markdown собран из background processing handoff."
+    docx_bytes = b"result-docx-bytes"
+
+    def _fake_run_document_processing(**kwargs):
+        nonlocal artifact_paths
+        artifact_paths = runtime_artifacts.write_ui_result_artifacts(
+            source_name=str(kwargs["uploaded_file"]),
+            markdown_text=markdown_text,
+            docx_bytes=docx_bytes,
+            output_dir=tmp_path,
+            created_at=1_766_636_465.0,
+        )
+        emitted_runtime = kwargs["runtime"]
+        emitted_runtime.emit(
+            SetProcessingStatusEvent(
+                payload={"stage": "Сборка результата", "detail": "Сохраняю финальные артефакты", "progress": 0.95}
+            )
+        )
+        emitted_runtime.emit(SetStateEvent(values={"latest_markdown": markdown_text, "latest_docx_bytes": docx_bytes}))
+        emitted_runtime.emit(PushActivityEvent(message="Финальные UI-артефакты сохранены."))
+        emitted_runtime.emit(
+            FinalizeProcessingStatusEvent(stage="Готово", detail="", progress=1.0, terminal_kind="completed")
+        )
+        return "succeeded"
+
+    service = processing_service.clone_processing_service(
+        get_client_fn=lambda: fake_client,
+        run_document_processing_impl_fn=_fake_run_document_processing,
+    )
+    service.run_processing_worker(
+        runtime=runtime,
+        uploaded_filename=prepared.uploaded_filename,
+        source_token=prepared.uploaded_file_token,
+        prepared_source_key=prepared.prepared_source_key,
+        structure_fingerprint=getattr(prepared, "structure_fingerprint", None),
+        jobs=prepared.jobs,
+        selected_segment_ids=getattr(prepared, "selected_segment_ids", None),
+        document_segments=getattr(prepared, "segments", None),
+        output_mode=getattr(prepared, "output_mode", None),
+        include_front_matter=bool(getattr(prepared, "include_front_matter", False)),
+        include_toc=bool(getattr(prepared, "include_toc", False)),
+        source_paragraphs=prepared.paragraphs,
+        image_assets=prepared.image_assets,
+        image_mode="safe",
+        app_config={},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="edit",
+        document_context_prompt="",
+    )
+
+    processing_finalizations = []
+
+    processing_runtime.drain_processing_events(
+        set_processing_status=state.set_processing_status,
+        finalize_processing_status=lambda stage, detail, progress, terminal_kind=None: processing_finalizations.append(
+            (stage, detail, progress, terminal_kind)
+        ),
+        push_activity=state.push_activity,
+        append_log=state.append_log,
+        append_image_log=state.append_image_log,
+    )
+
+    result_bundle = processing_runtime.get_current_result_bundle()
+    markdown_path = Path(artifact_paths["markdown_path"])
+    docx_path = Path(artifact_paths["docx_path"])
+
+    assert result_bundle is not None
+    assert result_bundle["source_name"] == "report.docx"
+    assert result_bundle["source_token"] == prepared.uploaded_file_token
+    assert result_bundle["markdown_text"] == markdown_text
+    assert result_bundle["docx_bytes"] == docx_bytes
+    assert session_state.processing_outcome == "succeeded"
+    assert session_state.processing_worker is None
+    assert session_state.processing_event_queue is None
+    assert session_state.latest_markdown == markdown_text
+    assert session_state.latest_docx_bytes == docx_bytes
+    assert session_state.activity_feed[-1]["message"] == "Финальные UI-артефакты сохранены."
+    assert processing_finalizations[-1] == ("Готово", "", 1.0, "completed")
+    assert markdown_path.exists()
+    assert markdown_path.read_text(encoding="utf-8") == markdown_text
+    assert docx_path.exists()
+    assert docx_path.read_bytes() == docx_bytes
 
 
 def test_prepare_run_context_for_background_skips_renormalization_for_frozen_payload(monkeypatch):

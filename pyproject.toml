@@ -30,4 +30,16 @@ filterwarnings = [
 ]
 markers = [
   "integration: tests that require external tools or broader system setup",
+  "unit_contract: fast unit and contract coverage for core behavior",
+  "integration_local: broader integration coverage without mandatory external API secrets",
+  "compat_legacy: compatibility guards for legacy inputs, aliases, tuple shapes, or rollback behavior",
+  "static_workflow: static workflow, task, script, and documentation contract checks",
+  "typecheck: static typechecking gates and pyright-related checks",
+  "system_deps: tests that require Pandoc, LibreOffice, antiword, or other system tools",
+  "browser_ui: browser-level UI smoke coverage",
+  "manual_ai_heavy: opt-in tests that require real model/API/manual operator validation",
+  "real_ai_api: opt-in tests that require live text-model API access",
+  "live_image_api: opt-in tests that require live image API access",
+  "real_document_quality_gate: exceptional real-document quality gate coverage",
+  "audiobook_sanity: opt-in audiobook-specific real-document validation coverage",
 ]

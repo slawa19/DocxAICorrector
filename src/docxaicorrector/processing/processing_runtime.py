@@ -9,7 +9,7 @@ import tempfile
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
 from collections.abc import Callable
@@ -134,11 +134,15 @@ def _looks_like_runtime_object_repr(value: str) -> bool:
 
 
 class BackgroundRuntime:
-    def __init__(self, event_queue, stop_event):
+    def __init__(self, event_queue, stop_event, source_token: str = ""):
         self._event_queue = event_queue
         self._stop_event = stop_event
+        self._source_token = str(source_token or "")
 
     def emit(self, event: ProcessingEvent) -> None:
+        event_source_token = getattr(event, "source_token", None)
+        if self._source_token and isinstance(event_source_token, str) and not event_source_token:
+            event = replace(event, source_token=self._source_token)
         self._event_queue.put(event)
 
     def should_stop(self) -> bool:
@@ -1151,6 +1155,14 @@ def build_runtime_event_emitters(*, dependencies: RuntimeEventEmitterDependencie
     )
 
 
+def _is_stale_processing_event(event: ProcessingEvent) -> bool:
+    event_source_token = str(getattr(event, "source_token", "") or "")
+    if not event_source_token:
+        return False
+    latest_source_token = str(get_latest_source_token() or "")
+    return event_source_token != latest_source_token
+
+
 def should_stop_processing(runtime: BackgroundRuntime | None) -> bool:
     if runtime is None:
         return False
@@ -1179,6 +1191,9 @@ def drain_processing_events(*, set_processing_status, finalize_processing_status
             event = event_queue.get_nowait()
         except queue.Empty:
             break
+
+        if _is_stale_processing_event(event):
+            continue
 
         if isinstance(event, SetStateEvent):
             allowed_values = _filter_allowed_set_state_values(event.values)
@@ -1217,6 +1232,10 @@ def drain_preparation_events(*, reset_run_state, set_processing_status, finalize
             event = event_queue.get_nowait()
         except queue.Empty:
             break
+
+        active_upload_marker = str(st.session_state.get("preparation_input_marker", "") or "")
+        if isinstance(event, (PreparationCompleteEvent, PreparationFailedEvent)) and active_upload_marker and event.upload_marker != active_upload_marker:
+            continue
 
         if isinstance(event, SetProcessingStatusEvent):
             set_processing_status(**event.payload)
@@ -1318,7 +1337,7 @@ def start_background_processing(
 
     processing_events = queue.Queue()
     stop_event = threading.Event()
-    runtime = BackgroundRuntime(processing_events, stop_event)
+    runtime = BackgroundRuntime(processing_events, stop_event, source_token=uploaded_token)
     run_id = uuid4().hex
 
     push_activity("Запуск обработки документа.")

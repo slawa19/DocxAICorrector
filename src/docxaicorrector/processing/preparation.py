@@ -9,11 +9,11 @@ from io import BytesIO
 from pathlib import Path
 from threading import Event, Lock
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 from docx import Document as DocxDocument
 
-from docxaicorrector.core.config import get_client, get_model_role_value, load_app_config
+from docxaicorrector.core.config import get_client, get_client_for_model_selector, get_model_role_value, load_app_config
 from docxaicorrector.core.constants import RUN_DIR
 from docxaicorrector.document._document import (
     build_document_text,
@@ -199,6 +199,52 @@ def _record_document_map_state(
     state["document_map_status"] = str(status or "").strip().lower() or "not_requested"
     state["document_map_status_reason"] = str(reason or "").strip()
     state["document_map_present"] = document_map_present
+
+
+def _client_factory_accepts_model_selector(get_client_fn) -> bool:
+    try:
+        signature = inspect.signature(get_client_fn)
+    except (TypeError, ValueError):
+        return False
+    parameters = list(signature.parameters.values())
+    if any(parameter.kind == inspect.Parameter.VAR_POSITIONAL for parameter in parameters):
+        return True
+    positional_parameters = [
+        parameter
+        for parameter in parameters
+        if parameter.kind in {inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
+    ]
+    return bool(positional_parameters)
+
+
+def _resolve_responses_client_for_model(*, get_client_fn, model_selector: str, app_config: Mapping[str, Any]) -> object:
+    if get_client_fn is get_client:
+        return get_client_for_model_selector(
+            model_selector,
+            "responses_text",
+            config_like=app_config,
+        )
+    if not _client_factory_accepts_model_selector(get_client_fn):
+        return get_client_fn()
+
+    try:
+        signature = inspect.signature(get_client_fn)
+    except (TypeError, ValueError):
+        return get_client_fn()
+    parameters = list(signature.parameters.values())
+    accepts_varargs = any(parameter.kind == inspect.Parameter.VAR_POSITIONAL for parameter in parameters)
+    accepts_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters)
+    accepts_config_like = accepts_kwargs or "config_like" in signature.parameters
+    positional_parameters = [
+        parameter
+        for parameter in parameters
+        if parameter.kind in {inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
+    ]
+    if accepts_varargs or len(positional_parameters) >= 2:
+        if accepts_config_like:
+            return get_client_fn(model_selector, "responses_text", config_like=app_config)
+        return get_client_fn(model_selector, "responses_text")
+    return get_client_fn(model_selector)
 
 
 def _relation_report_phase_and_source(report: RelationNormalizationReport | None) -> tuple[str, str]:
@@ -1024,9 +1070,13 @@ def _run_structure_recognition(
                 app_config=app_config,
                 document_map=document_map,
             )
-            client = get_client_fn()
             if resolved_model is None:
                 resolved_model = get_model_role_value(app_config, "structure_recognition")
+            client = _resolve_responses_client_for_model(
+                get_client_fn=get_client_fn,
+                model_selector=resolved_model,
+                app_config=app_config,
+            )
             if cache_key is None:
                 cache_key = _build_structure_map_cache_key(
                     paragraphs=paragraphs,
@@ -1111,7 +1161,11 @@ def _run_structure_recognition(
             if invoke_targeted_recall:
                 try:
                     targeted_kwargs = {
-                        "client": get_client_fn(),
+                        "client": _resolve_responses_client_for_model(
+                            get_client_fn=get_client_fn,
+                            model_selector=get_model_role_value(app_config, "structure_recognition"),
+                            app_config=app_config,
+                        ),
                         "model": get_model_role_value(app_config, "structure_recognition"),
                         "timeout": float(app_config.get("structure_recovery_reconciliation_targeted_timeout_seconds", 60) or 60),
                         "max_paragraphs": targeted_max_paragraphs,
@@ -1165,9 +1219,18 @@ def _run_structure_recognition(
         except Exception:
             raise
 
+        effective_cache_key = cache_key
+        if effective_cache_key is None:
+            effective_cache_key = _build_structure_map_cache_key(
+                paragraphs=paragraphs,
+                app_config=app_config,
+                document_map=document_map,
+                resolved_model=resolved_model or get_model_role_value(app_config, "structure_recognition"),
+            )
+
         try:
             artifact_path = _write_reconciliation_report_artifact(
-                cache_key=cache_key,
+                cache_key=effective_cache_key,
                 report=reconciliation_report,
                 app_config=app_config,
             )
@@ -1194,8 +1257,20 @@ def _run_structure_recognition(
                 targeted_recall_invoked=reconciliation_report.targeted_recall_invoked,
             )
     if bool(app_config.get("structure_recognition_save_debug_artifacts", True)):
+        effective_cache_key = cache_key
+        if effective_cache_key is None:
+            effective_cache_key = _build_structure_map_cache_key(
+                paragraphs=paragraphs,
+                app_config=app_config,
+                document_map=document_map,
+                resolved_model=resolved_model or get_model_role_value(app_config, "structure_recognition"),
+            )
         try:
-            artifact_path = _write_structure_map_debug_artifact(cache_key=cache_key, structure_map=structure_map, app_config=app_config)
+            artifact_path = _write_structure_map_debug_artifact(
+                cache_key=effective_cache_key,
+                structure_map=structure_map,
+                app_config=app_config,
+            )
             log_event(
                 logging.INFO,
                 "structure_recognition_debug_artifact_saved",
@@ -1381,10 +1456,16 @@ def _run_document_map_stage(
 
     try:
         if document_map is None:
+            model_selector = str(app_config.get("structure_recovery_document_map_model", "") or "")
+            client = _resolve_responses_client_for_model(
+                get_client_fn=get_client_fn,
+                model_selector=model_selector,
+                app_config=app_config,
+            )
             document_map = build_document_map(
                 paragraphs,
-                client=get_client_fn(),
-                model=str(app_config.get("structure_recovery_document_map_model", "") or ""),
+                client=client,
+                model=model_selector,
                 timeout=float(app_config.get("structure_recovery_document_map_timeout_seconds", 120) or 120),
                 max_input_paragraphs=int(app_config.get("structure_recovery_document_map_max_input_paragraphs", 6000) or 6000),
                 max_input_tokens=int(app_config.get("structure_recovery_document_map_max_input_tokens", 180000) or 180000),
@@ -1680,7 +1761,7 @@ def _run_structure_validation(
 def _compute_outline_coverage_ratio(*, paragraphs: Sequence[Any], document_map: DocumentMap | None) -> float | None:
     if document_map is None:
         return None
-    outline = tuple(getattr(document_map, "outline", ()) or ())
+    outline = tuple(cast(Sequence[Any], getattr(document_map, "outline", ()) or ()))
     if not outline:
         return 1.0
 
@@ -1716,7 +1797,15 @@ def _resolve_pre_translation_quality_gate(
     reasons: list[str] = []
     readiness_status = str(getattr(structure_validation_report, "readiness_status", "") or "")
     if readiness_status in {"blocked_needs_structure_repair", "blocked_unsafe_best_effort_only"}:
-        reasons.extend(str(reason) for reason in getattr(structure_validation_report, "readiness_reasons", ()) or ())
+        for reason in getattr(structure_validation_report, "readiness_reasons", ()) or ():
+            reason_text = str(reason)
+            if (
+                reason_text == "heading_count_far_below_toc_expectation"
+                and bool(getattr(structure_validation_report, "document_map_present", False))
+                and float(getattr(structure_validation_report, "outline_coverage_ratio", 0.0) or 0.0) >= 1.0
+            ):
+                continue
+            reasons.append(reason_text)
 
     if (
         bool(app_config.get("structure_validation_block_on_high_risk_noop", True))
@@ -1830,7 +1919,7 @@ def _build_editing_jobs_with_optional_operation(*, blocks, max_chars: int, proce
             return build_editing_jobs(blocks, max_chars=max_chars)
         raise RuntimeError("build_editing_jobs must accept processing_operation or structure_phase")
     try:
-        kwargs = {"max_chars": max_chars}
+        kwargs: dict[str, Any] = {"max_chars": max_chars}
         if accepts_processing_operation:
             kwargs["processing_operation"] = processing_operation
         if accepts_structure_phase:

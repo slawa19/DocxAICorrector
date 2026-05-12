@@ -29,6 +29,8 @@
 - Для agent-side debug запусков pytest должен выполняться по одному selector за команду; нельзя склеивать несколько прогонов через `&&` или уводить их в hidden/background terminal, если нужен полный и наблюдаемый результат.
 - Официальные PowerShell wrappers: `scripts/start-project.ps1`, `scripts/stop-project.ps1`, `scripts/status-project.ps1`, `scripts/tail-streamlit-log.ps1`.
 - Вся command logic живёт в `scripts/project-control-wsl.sh` и `scripts/test.sh`; lifecycle wrappers и tasks не должны дублировать raw streamlit or pytest command chains.
+- Workflow contract coverage разделена: `tests/test_script_contract_static.py` несёт CI-safe static workflow/task/docs/script checks, а `tests/test_script_workflow_smoke.py` оставлен для env-sensitive subprocess/PowerShell/WSL smoke.
+- `DOCXAI_SKIP_WORKFLOW_SMOKE=1` может отключать только env-sensitive smoke; он не должен выключать `tests/test_script_contract_static.py`.
 
 ## CI Parity Debugging Contract
 

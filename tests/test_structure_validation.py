@@ -177,6 +177,37 @@ def test_validate_structure_quality_post_ai_readiness_does_not_count_heuristic_h
     assert "heading_only_collapse_risk" in report.escalation_reasons
 
 
+def test_validate_structure_quality_post_ai_readiness_counts_ai_headings_for_toc_expectation():
+    paragraphs = [
+        _paragraph(0, "Contents", structural_role="toc_header"),
+        *[_paragraph(index, f"Chapter {index}........ {index * 10}", structural_role="toc_entry") for index in range(1, 7)],
+        *[
+            _paragraph(100 + index, f"Chapter {index}", role="heading", structural_role="heading", heading_source="ai")
+            for index in range(1, 7)
+        ],
+        _paragraph(200, "Regular body paragraph with enough words to avoid short-body risk escalation."),
+    ]
+
+    report = validate_structure_quality(paragraphs=paragraphs, app_config=_config(), phase="post_ai_readiness")
+
+    assert report.expected_heading_candidates_from_toc == 6
+    assert report.toc_region_bounded_count == 1
+    assert "heading_count_far_below_toc_expectation" not in report.readiness_reasons
+    assert "heading_only_collapse_risk" not in report.escalation_reasons
+
+
+def test_validate_structure_quality_post_ai_readiness_ignores_ai_list_marker_classifications():
+    paragraphs = [
+        _paragraph(0, "1.", role="list", structural_role="list", heading_source="ai"),
+        _paragraph(1, "Regular body paragraph with enough words to avoid short-body risk escalation."),
+    ]
+
+    report = validate_structure_quality(paragraphs=paragraphs, app_config=_config(), phase="post_ai_readiness")
+
+    assert report.isolated_marker_paragraph_count == 0
+    assert "isolated_list_markers_remaining" not in report.readiness_reasons
+
+
 def test_validate_structure_quality_blocks_large_front_matter_without_bounded_toc():
     paragraphs = [
         _paragraph(0, "Содержание", structural_role="toc_header"),

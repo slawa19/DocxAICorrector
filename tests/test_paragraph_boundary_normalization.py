@@ -6,6 +6,7 @@ from pathlib import Path
 import docxaicorrector.core.config as config
 import docxaicorrector.document._document as document_module
 import docxaicorrector.document.boundary_review as boundary_review_module
+import docxaicorrector.document.relations as relation_module
 from docx import Document as make_document
 from docxaicorrector.core.models import (
     ParagraphBoundaryDecision,
@@ -328,7 +329,7 @@ def test_relation_debug_artifact_writes_expected_payload(monkeypatch, tmp_path):
 
     payload = json.loads(artifact_files[0].read_text(encoding="utf-8"))
     assert payload == {
-        "version": 2,
+        "version": relation_module.RELATION_NORMALIZATION_REPORT_VERSION,
         "source_file": "debug sample.docx",
         "source_hash": payload["source_hash"],
         "profile": "phase2_default",
@@ -397,7 +398,7 @@ def test_relation_normalization_artifact_persists_decision_provenance_variants(m
     assert artifact_path is not None
     payload = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
 
-    assert payload["version"] == 2
+    assert payload["version"] == relation_module.RELATION_NORMALIZATION_REPORT_VERSION
     assert [decision["decision"] for decision in payload["decisions"]] == ["accept", "reject", "reject"]
     assert [decision["structure_source"] for decision in payload["decisions"]] == [
         "pre_ai_diagnostic_hint",

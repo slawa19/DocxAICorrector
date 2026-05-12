@@ -546,6 +546,37 @@ def test_reinsert_inline_images_reapplies_source_rect_and_doc_properties_for_ori
     assert doc_pr.get("name") == "Исходное имя"
 
 
+def test_reinsert_inline_images_tolerates_malformed_source_forensics_metadata():
+    doc = Document()
+    doc.add_paragraph("[[DOCX_IMAGE_img_001]]")
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    updated_bytes = reinsert_inline_images(
+        buffer.getvalue(),
+        [
+            ImageAsset(
+                image_id="img_001",
+                placeholder="[[DOCX_IMAGE_img_001]]",
+                original_bytes=PNG_BYTES,
+                mime_type="image/png",
+                position_index=0,
+                width_emu=914400,
+                height_emu=914400,
+                final_variant="original",
+                source_forensics={
+                    "source_rect": {"l": "1250", "t": "oops", "r": None, "b": object()},
+                    "doc_properties": ["unexpected-payload"],
+                },
+            )
+        ],
+    )
+    updated_doc = Document(BytesIO(updated_bytes))
+
+    assert _extract_source_rects(updated_doc._element) == [{"l": "1250"}]
+    assert _extract_docpr_descriptions(updated_doc._element) == []
+
+
 def test_reinsert_inline_images_restores_anchor_container_from_source_forensics():
     doc = Document()
     doc.add_paragraph("[[DOCX_IMAGE_img_001]]")

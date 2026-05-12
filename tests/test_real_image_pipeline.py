@@ -281,6 +281,8 @@ class TestRedrawRoutingRealInputs:
             assert captured["edit"]["response_format"] == "b64_json"
         assert elapsed_seconds < 4.0
 
+    @pytest.mark.manual_ai_heavy
+    @pytest.mark.live_image_api
     @pytest.mark.skipif(not LIVE_API_ENABLED, reason="Set DOCX_AI_RUN_LIVE_IMAGE_API_TESTS=1 to run live image API smoke tests.")
     @pytest.mark.parametrize("case", [case for case in REAL_IMAGE_CASES if case["expected_live_mode"] != "safe"], ids=lambda case: case["filename"])
     def test_live_redraw_api_smoke_and_timing(self, case):
@@ -312,6 +314,8 @@ class TestRedrawRoutingRealInputs:
 
 
 class TestLiveFullImagePipelineArtifacts:
+    @pytest.mark.manual_ai_heavy
+    @pytest.mark.live_image_api
     @pytest.mark.skipif(not LIVE_API_ENABLED, reason="Set DOCX_AI_RUN_LIVE_IMAGE_API_TESTS=1 to run live full image pipeline tests.")
     @pytest.mark.parametrize("case", REAL_IMAGE_CASES, ids=lambda case: case["filename"])
     def test_live_full_pipeline_saves_final_image_artifact(self, case):

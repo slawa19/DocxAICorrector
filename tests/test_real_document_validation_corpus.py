@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -8,6 +9,8 @@ import pytest
 import docxaicorrector.processing.processing_runtime as processing_runtime
 import docxaicorrector.validation.profiles as validation_profiles
 import docxaicorrector.validation.structural as real_document_validation_structural
+from docxaicorrector.core import config as core_config
+from docxaicorrector.core.config import describe_provider_availability, load_app_config
 from docxaicorrector.validation.structural import (
     evaluate_extraction_profile,
     evaluate_structural_preparation_diagnostic,
@@ -37,6 +40,10 @@ from docxaicorrector.validation.structural import (
 
 REGISTRY = load_validation_registry()
 STRUCTURAL_RUN_PROFILE = REGISTRY.get_run_profile("structural-passthrough-default")
+TASKS_PATH = Path(".vscode/tasks.json")
+WORKFLOW_DOC_PATH = Path("docs/testing/REAL_DOCUMENT_VALIDATION_WORKFLOW.md")
+MAINTENANCE_GUIDE_PATH = Path("docs/testing/UNIVERSAL_TEST_SYSTEM_MAINTENANCE_GUIDE_2026-03-21.md")
+REQUIRE_REAL_DOCUMENT_CAPABILITIES_ENV = "DOCXAI_REQUIRE_REAL_DOCUMENT_CAPABILITIES"
 
 
 def _resolve_structural_run_profile(document_profile):
@@ -44,10 +51,133 @@ def _resolve_structural_run_profile(document_profile):
     return REGISTRY.get_run_profile(run_profile_id)
 
 
+def _load_vscode_task_labels() -> set[str]:
+    payload = json.loads(TASKS_PATH.read_text(encoding="utf-8"))
+    return {str(task["label"]) for task in payload["tasks"]}
+
+
+def _extract_backtick_values(text: str) -> set[str]:
+    return {match.group(1) for match in re.finditer(r"`([^`]+)`", text)}
+
+
+def _require_or_skip_real_document_capability(message: str) -> None:
+    if str(__import__("os").environ.get(REQUIRE_REAL_DOCUMENT_CAPABILITIES_ENV, "")).strip() == "1":
+        pytest.fail(message)
+    pytest.skip(message)
+
+
 def test_registry_includes_end_times_pdf_regression_profile() -> None:
     profile_ids = {profile.id for profile in REGISTRY.documents}
 
     assert "end-times-pdf-core" in profile_ids
+
+
+def test_registry_documents_declare_required_core_fields_and_allowed_source_locations() -> None:
+    run_profile_ids = {profile.id for profile in REGISTRY.run_profiles}
+
+    for document_profile in REGISTRY.documents:
+        assert document_profile.id
+        assert document_profile.source_path
+        assert document_profile.artifact_prefix
+        assert document_profile.output_basename
+        assert document_profile.default_run_profile in run_profile_ids
+        assert document_profile.tags
+        assert document_profile.provenance
+
+        relative_source_path = Path(document_profile.source_path)
+        assert relative_source_path.parts[:2] == ("tests", "sources")
+        assert document_profile.resolved_source_path().is_relative_to(Path.cwd())
+
+
+def test_registry_structural_profiles_and_tolerance_contracts_are_consistent() -> None:
+    run_profiles_by_id = {profile.id: profile for profile in REGISTRY.run_profiles}
+
+    for document_profile in REGISTRY.documents:
+        if document_profile.structural_run_profile is not None:
+            assert document_profile.structural_run_profile in run_profiles_by_id
+        assert document_profile.structural_expected_result in {"pass", "fail"}
+        if document_profile.structural_mode == "tolerant":
+            assert document_profile.tolerance_reason
+        if "benchmark-only" in document_profile.tags:
+            assert document_profile.default_run_profile == "ui-parity-translate-benchmark-advisory"
+
+
+def test_workflow_doc_describes_benchmark_only_policy_and_current_registered_mappings() -> None:
+    workflow_doc_text = WORKFLOW_DOC_PATH.read_text(encoding="utf-8")
+
+    assert "benchmark-only" in workflow_doc_text
+    assert "ui-parity-translate-benchmark-advisory" in workflow_doc_text
+    assert "lietaer-pdf-first-20-benchmark" in workflow_doc_text
+    assert "lietaer-pdf-full-benchmark" in workflow_doc_text
+    assert "excluded from mandatory full gates" in workflow_doc_text
+    assert "structural-ai-first-default" in workflow_doc_text
+    assert "ui-parity-translate-audiobook-postprocess" in workflow_doc_text
+
+
+def test_workflow_docs_reference_existing_registry_profiles_tasks_and_scripts() -> None:
+    workflow_doc_text = WORKFLOW_DOC_PATH.read_text(encoding="utf-8")
+    task_labels = _load_vscode_task_labels()
+    document_profile_ids = {profile.id for profile in REGISTRY.documents}
+    run_profile_ids = {profile.id for profile in REGISTRY.run_profiles}
+
+    expected_tasks = {
+        "Run Structure Recovery Diagnostic (First 20 Pages)",
+        "Run Lietaer Real Validation",
+        "Run Lietaer Real Validation AI",
+        "Run Real Document Validation Profile",
+        "Run Real Document Quality Gate",
+    }
+    expected_scripts = {
+        "scripts/run-structural-preparation-diagnostic.sh",
+        "scripts/run-real-document-validation.sh",
+        "scripts/run-real-document-quality-gate.sh",
+    }
+    expected_document_profiles = {
+        "lietaer-core",
+        "religion-wealth-core",
+        "lietaer-pdf-first-20-structure-core",
+    }
+    expected_run_profiles = {
+        "ui-parity-default",
+        "ui-parity-ai-default",
+        "ui-parity-soak-3x",
+        "structural-passthrough-default",
+        "ui-parity-pdf-structural-recovery",
+    }
+
+    for task_label in expected_tasks:
+        assert task_label in workflow_doc_text
+        assert task_label in task_labels
+
+    for script_path in expected_scripts:
+        assert script_path in workflow_doc_text
+        assert Path(script_path).exists()
+
+    for profile_id in expected_document_profiles:
+        assert profile_id in workflow_doc_text
+        assert profile_id in document_profile_ids
+
+    for profile_id in expected_run_profiles:
+        assert profile_id in workflow_doc_text
+        assert profile_id in run_profile_ids
+
+
+def test_maintenance_guide_no_longer_requires_removed_expected_acceptance_policy_field() -> None:
+    maintenance_guide_text = MAINTENANCE_GUIDE_PATH.read_text(encoding="utf-8")
+
+    assert "expected_acceptance_policy" not in maintenance_guide_text
+
+
+def test_require_or_skip_real_document_capability_skips_by_default() -> None:
+    with pytest.raises(pytest.skip.Exception, match="capability missing"):
+        _require_or_skip_real_document_capability("capability missing")
+
+
+def test_require_or_skip_real_document_capability_fails_when_capabilities_are_required(monkeypatch) -> None:
+    monkeypatch.setenv(REQUIRE_REAL_DOCUMENT_CAPABILITIES_ENV, "1")
+
+    with pytest.raises(pytest.fail.Exception, match="capability missing"):
+        _require_or_skip_real_document_capability("capability missing")
 
 
 def test_end_times_pdf_structural_run_profile_is_generic_structural_recovery() -> None:
@@ -334,14 +464,86 @@ def _skip_if_legacy_doc_conversion_unavailable(source_path: Path) -> None:
         return
     if processing_runtime.legacy_doc_conversion_available():
         return
-    pytest.skip(f"legacy DOC auto-conversion unavailable in current runtime: {source_path}")
+    _require_or_skip_real_document_capability(
+        f"legacy DOC auto-conversion unavailable in current runtime: {source_path}"
+    )
 
 
-def _skip_if_structural_passthrough_runtime_unavailable() -> None:
+def _iter_structural_passthrough_required_selectors(run_profile) -> tuple[str, ...]:
+    app_config = load_app_config()
+    runtime_resolution = validation_profiles.resolve_runtime_resolution(app_config, run_profile)
+    selectors: list[str] = []
+
+    effective_model = str(runtime_resolution.effective.model or "").strip()
+    if effective_model:
+        selectors.append(effective_model)
+
+    structure_mode = str(runtime_resolution.effective.structure_recognition_mode or "").strip().lower()
+    structure_selector = str(getattr(app_config, "structure_recognition_model", "") or "").strip()
+    if structure_mode != "off" and structure_selector:
+        selectors.append(structure_selector)
+
+    document_map_enabled = bool(getattr(app_config, "structure_recovery_enabled", False)) and bool(
+        getattr(app_config, "structure_recovery_document_map_enabled", False)
+    )
+    if structure_mode != "off" and document_map_enabled:
+        document_map_selector = str(getattr(app_config, "structure_recovery_document_map_model", "") or "").strip()
+        if not document_map_selector:
+            document_map_selector = structure_selector
+        if document_map_selector:
+            selectors.append(document_map_selector)
+
+    return tuple(dict.fromkeys(selectors))
+
+
+def _skip_if_structural_passthrough_runtime_unavailable(run_profile) -> None:
     try:
         ensure_pandoc_available()
     except RuntimeError as exc:
-        pytest.skip(f"structural passthrough runtime unavailable: {exc}")
+        _require_or_skip_real_document_capability(
+            f"structural passthrough runtime unavailable: {exc}"
+        )
+
+    app_config = load_app_config()
+    if str(__import__("os").environ.get(REQUIRE_REAL_DOCUMENT_CAPABILITIES_ENV, "")).strip() == "1":
+        from docxaicorrector.core.config import load_project_dotenv
+        from docxaicorrector.core.constants import ENV_PATH
+
+        core_config.ENV_PATH = ENV_PATH
+        load_project_dotenv()
+    for selector in _iter_structural_passthrough_required_selectors(run_profile):
+        availability = describe_provider_availability(selector, app_config=app_config)
+        if availability.error_message:
+            _require_or_skip_real_document_capability(
+                f"structural passthrough runtime unavailable: {availability.error_message}"
+            )
+
+
+def test_skip_if_legacy_doc_conversion_unavailable_uses_controlled_skip_reason(monkeypatch) -> None:
+    monkeypatch.setattr(processing_runtime, "legacy_doc_conversion_available", lambda: False)
+
+    with pytest.raises(pytest.skip.Exception, match=r"legacy DOC auto-conversion unavailable in current runtime"):
+        _skip_if_legacy_doc_conversion_unavailable(Path("tests/sources/sample.doc"))
+
+
+def test_skip_if_structural_passthrough_runtime_unavailable_uses_controlled_skip_reason(monkeypatch) -> None:
+    monkeypatch.setattr(
+        __import__(__name__),
+        "ensure_pandoc_available",
+        lambda: (_ for _ in ()).throw(RuntimeError("pandoc missing")),
+    )
+
+    with pytest.raises(pytest.skip.Exception, match=r"structural passthrough runtime unavailable: pandoc missing"):
+        _skip_if_structural_passthrough_runtime_unavailable(SimpleNamespace(id="structural-passthrough-default"))
+
+
+def test_skip_if_structural_passthrough_runtime_unavailable_skips_when_provider_key_missing(monkeypatch) -> None:
+    run_profile = REGISTRY.get_run_profile("structural-ai-first-default")
+
+    monkeypatch.setattr(__import__(__name__), "ensure_pandoc_available", lambda: None)
+
+    with pytest.raises(pytest.skip.Exception, match=r"structural passthrough runtime unavailable: .*API_KEY"):
+        _skip_if_structural_passthrough_runtime_unavailable(run_profile)
 
 
 @pytest.mark.parametrize("document_profile", REGISTRY.documents, ids=[profile.id for profile in REGISTRY.documents])
@@ -364,9 +566,8 @@ def test_corpus_structural_passthrough(document_profile) -> None:
     if not source_path.exists():
         pytest.skip(f"missing real-document source: {source_path}")
     _skip_if_legacy_doc_conversion_unavailable(source_path)
-    _skip_if_structural_passthrough_runtime_unavailable()
-
     run_profile = _resolve_structural_run_profile(document_profile)
+    _skip_if_structural_passthrough_runtime_unavailable(run_profile)
 
     result = cast(dict[str, Any], run_structural_passthrough_validation(document_profile, run_profile))
 
@@ -988,6 +1189,7 @@ def test_build_structural_checks_enforces_pdf_translation_quality_specific_const
         "output_toc_detected": False,
         "structure_repair_bounded_toc_regions": 1,
         "source_toc_region_count": 1,
+        "effective_source_toc_region_count": 0,
         "require_pdf_conversion_satisfied": True,
         "bullet_heading_count": 0,
         "false_fragment_heading_count": 0,
@@ -1044,6 +1246,7 @@ def test_build_structural_checks_requires_bounded_toc_and_source_boundary_repair
         "output_toc_detected": False,
         "structure_repair_bounded_toc_regions": 0,
         "source_toc_region_count": 0,
+        "effective_source_toc_region_count": 0,
         "toc_body_concat_detected": False,
         "structure_repair_toc_body_boundary_repairs": 0,
     }
@@ -1059,6 +1262,52 @@ def test_build_structural_checks_requires_bounded_toc_and_source_boundary_repair
     by_name = {check["name"]: check for check in checks}
     assert by_name["toc_detected_required"]["passed"] is False
     assert by_name["no_toc_body_concat_required"]["passed"] is False
+
+
+def test_build_structural_checks_accepts_ai_bounded_toc_region_as_boundary_repair() -> None:
+    document_profile = SimpleNamespace(
+        max_formatting_diagnostics=5,
+        max_unmapped_source_paragraphs=0,
+        max_unmapped_target_paragraphs=3,
+        max_heading_level_drift=1,
+        min_text_similarity=0.95,
+        require_numbered_lists_preserved=False,
+        require_nonempty_output=False,
+        forbid_heading_only_collapse=False,
+        require_toc_detected=True,
+        require_pdf_conversion=False,
+        require_no_bullet_headings=False,
+        require_no_toc_body_concat=True,
+        require_translation_domain=None,
+    )
+    metrics = {
+        "formatting_diagnostics_count": 0,
+        "max_unmapped_source_paragraphs": 0,
+        "max_unmapped_target_paragraphs": 0,
+        "heading_level_drift": 0,
+        "text_similarity": 0.99,
+        "heading_only_output_detected": False,
+        "source_toc_detected": True,
+        "output_toc_detected": False,
+        "structure_repair_bounded_toc_regions": 0,
+        "source_toc_region_count": 0,
+        "effective_source_toc_region_count": 1,
+        "toc_body_concat_detected": False,
+        "structure_repair_toc_body_boundary_repairs": 0,
+    }
+    output_artifacts = {"output_docx_openable": True, "output_visible_text_chars": 100}
+
+    checks = real_document_validation_structural._build_structural_checks(
+        document_profile=cast(Any, document_profile),
+        result="succeeded",
+        metrics=metrics,
+        output_artifacts=output_artifacts,
+    )
+
+    by_name = {check["name"]: check for check in checks}
+    assert by_name["toc_detected_required"]["passed"] is True
+    assert by_name["no_toc_body_concat_required"]["passed"] is True
+    assert by_name["no_toc_body_concat_required"]["effective_source_toc_region_count"] == 1
 
 
 def test_structural_passthrough_surfaces_structure_repair_and_event_metrics(tmp_path, monkeypatch) -> None:
@@ -1460,6 +1709,38 @@ def test_structural_passthrough_success_uses_prepared_context_when_event_log_lac
     assert result["preparation_diagnostic_snapshot"]["document_map_status"] == "ai"
     assert result["preparation_diagnostic_snapshot"]["document_map_status_reason"] == ""
     assert result["preparation_diagnostic_snapshot"]["outline_coverage_ratio"] == 0.75
+
+
+def test_apply_prepared_snapshot_fields_uses_prepared_document_map_status_when_present_only_on_prepared() -> None:
+    snapshot = real_document_validation_structural._build_preparation_diagnostic_defaults([])
+    prepared = SimpleNamespace(
+        document_map_status="ai",
+        document_map_status_reason="",
+        document_map=object(),
+        structure_validation_report=SimpleNamespace(
+            readiness_status="ready",
+            readiness_reasons=[],
+            document_map_present=True,
+            outline_coverage_ratio=1.0,
+        ),
+        structure_recognition_summary=SimpleNamespace(
+            ai_first_degraded=False,
+            fallback_stage="",
+            fallback_reason="",
+            document_map_present=True,
+        ),
+        quality_gate_status="pass",
+        quality_gate_reasons=(),
+        structure_ai_attempted=True,
+        ai_classified_count=3,
+        ai_heading_count=1,
+    )
+
+    real_document_validation_structural._apply_prepared_snapshot_fields(snapshot, prepared)
+
+    assert snapshot["document_map_present"] is True
+    assert snapshot["document_map_status"] == "ai"
+    assert snapshot["document_map_status_reason"] == ""
 
 
 def test_apply_prepared_metric_fields_uses_explicit_unknown_when_statuses_missing() -> None:

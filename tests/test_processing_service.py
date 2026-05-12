@@ -1,13 +1,15 @@
+from io import BytesIO
 from typing import Any, cast
 
 import docxaicorrector.processing.processing_service as processing_service
-from docxaicorrector.core.models import ImageAsset
+from docxaicorrector.core.models import ImageAnalysisResult, ImageAsset, ImageValidationResult
 from docxaicorrector.document.segments import DocumentContextProfile, GlossaryTerm
 from docxaicorrector.pipeline.contracts import SegmentSelection
 from docxaicorrector.processing.processing_service import ProcessingService
 from docxaicorrector.pipeline.contracts import ProcessingContext, ProcessingDependencies
 from docxaicorrector.pipeline.setup import initialize_processing_run
 from docxaicorrector.runtime.events import AppendLogEvent, FinalizeProcessingStatusEvent, SetStateEvent, WorkerCompleteEvent
+from PIL import Image
 
 
 def _build_service(**overrides):
@@ -92,6 +94,90 @@ def test_run_document_processing_fails_on_placeholder_integrity_mismatch():
     assert emitted_runtime["finalize"][-1][0] == "Критическая ошибка"
     assert emitted_runtime["activity"][-1] == "Сборка DOCX остановлена из-за потери или дублирования image placeholder."
     assert emitted_runtime["log"][-1]["status"] == "ERROR"
+
+
+def test_process_document_images_stops_before_next_asset_after_stop_requested_during_first_image(resolved_test_model_registry):
+    def _make_png_bytes(color):
+        image = Image.new("RGB", (2, 2), color)
+        output = BytesIO()
+        image.save(output, format="PNG")
+        return output.getvalue()
+
+    safe_png_bytes = _make_png_bytes((240, 240, 240))
+    candidate_png_bytes = _make_png_bytes((40, 120, 220))
+    runtime = {"state": {}, "finalize": [], "activity": [], "status": []}
+
+    service = _build_service(
+        process_document_images_impl_fn=processing_service.process_document_images_impl,
+        should_stop_processing_fn=lambda current_runtime: bool(current_runtime.get("stop_requested")) if isinstance(current_runtime, dict) else False,
+        image_model_call_budget_cls=processing_service.ImageModelCallBudget,
+        analyze_image_fn=lambda *args, **kwargs: ImageAnalysisResult(
+            image_type="diagram",
+            image_subtype=None,
+            contains_text=True,
+            semantic_redraw_allowed=True,
+            confidence=0.95,
+            structured_parse_confidence=0.9,
+            prompt_key="diagram_semantic_redraw",
+            render_strategy="semantic_redraw_structured",
+            structure_summary="two boxes connected by an arrow",
+            extracted_labels=["Start", "Finish"],
+            text_node_count=2,
+            extracted_text="Start -> Finish",
+            fallback_reason=None,
+        ),
+        generate_image_candidate_fn=lambda *args, **kwargs: (
+            safe_png_bytes
+            if kwargs.get("mode") == "safe"
+            else runtime.__setitem__("stop_requested", True) or candidate_png_bytes
+        ),
+        validate_redraw_result_fn=lambda *args, **kwargs: ImageValidationResult(
+            validation_passed=True,
+            decision="accept",
+            semantic_match_score=0.95,
+            text_match_score=0.95,
+            structure_match_score=0.95,
+            validator_confidence=0.95,
+            missing_labels=[],
+            added_entities_detected=False,
+            suspicious_reasons=[],
+        ),
+        detect_image_mime_type_fn=lambda image_bytes: "image/png",
+    )
+
+    result = service.process_document_images(
+        image_assets=[
+            ImageAsset(
+                image_id="img_001",
+                placeholder="[[DOCX_IMAGE_img_001]]",
+                original_bytes=safe_png_bytes,
+                mime_type="image/png",
+                position_index=0,
+            ),
+            ImageAsset(
+                image_id="img_002",
+                placeholder="[[DOCX_IMAGE_img_002]]",
+                original_bytes=safe_png_bytes,
+                mime_type="image/png",
+                position_index=1,
+            ),
+        ],
+        image_mode="semantic_redraw_direct",
+        config={"models": resolved_test_model_registry, "keep_all_image_variants": True},
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        client=object(),
+    )
+
+    assert [asset.image_id for asset in result] == ["img_001"]
+    assert result[0].final_decision == "accept"
+    assert runtime["finalize"][-1] == (
+        "Остановлено пользователем",
+        "Обработка изображений остановлена пользователем.",
+        0.5,
+        "stopped",
+    )
+    assert runtime["activity"][-1] == "Обработка изображений остановлена пользователем."
 
 
 def test_run_processing_worker_emits_worker_complete_after_unhandled_crash():
@@ -348,15 +434,98 @@ def test_run_prepared_background_document_uses_preparation_and_job_mutator(monke
 
 def test_run_prepared_background_document_uses_model_aware_client_factory_for_preparation(monkeypatch):
     sentinel_model_client = object()
+    sentinel_document_map_client = object()
     sentinel_default_client = object()
+    app_config = {
+        "structure_recognition_model": "openrouter:test/structure",
+        "structure_recovery_document_map_model": "openrouter:test/document-map",
+    }
     captured = {}
+
+    def _selector_client_factory(selector, required_capability, *, config_like=None):
+        captured.setdefault("selector_calls", []).append((selector, required_capability, config_like))
+        if selector == "openrouter:test/document-map":
+            return sentinel_document_map_client
+        return sentinel_model_client
+
+    service = _build_service(
+        run_document_processing_impl_fn=lambda **kwargs: "succeeded",
+        get_client_fn=lambda: sentinel_default_client,
+        get_client_for_model_selector_fn=_selector_client_factory,
+    )
+    prepared = type(
+        "PreparedRunContextStub",
+        (),
+        {
+            "uploaded_filename": "prepared-report.docx",
+            "jobs": [{"target_text": "one"}],
+            "paragraphs": ["p1"],
+            "image_assets": ["img1"],
+            "translation_domain": "general",
+            "translation_domain_instructions": "",
+            "document_context_profile": DocumentContextProfile(),
+        },
+    )()
+
+    monkeypatch.setattr(processing_service, "freeze_uploaded_file", lambda uploaded_file: {"frozen": uploaded_file})
+    monkeypatch.setattr(
+        processing_service.application_flow,
+        "prepare_document_for_processing",
+        lambda **kwargs: captured.setdefault("prepare_document", kwargs) or object(),
+    )
+    monkeypatch.setattr(
+        processing_service.application_flow,
+        "prepare_run_context_for_background",
+        lambda **kwargs: (
+            kwargs["prepare_document_for_processing_fn"](
+                uploaded_payload={"payload": True},
+                chunk_size=kwargs["chunk_size"],
+                app_config=kwargs["app_config"],
+                processing_operation=kwargs["processing_operation"],
+                session_state=None,
+                progress_callback=None,
+            ),
+            prepared,
+        )[-1],
+    )
+
+    service.run_prepared_background_document(
+        uploaded_file="report.docx",
+        chunk_size=123,
+        image_mode="safe",
+        keep_all_image_variants=False,
+        app_config=app_config,
+        model="gpt-5.4",
+        max_retries=2,
+        processing_operation="edit",
+        progress_callback=None,
+        runtime={"state": {}},
+    )
+
+    assert callable(captured["prepare_document"]["get_client_fn"])
+    assert captured["prepare_document"]["get_client_fn"]() is sentinel_model_client
+    assert captured["prepare_document"]["get_client_fn"](
+        "openrouter:test/document-map",
+        "responses_text",
+        config_like=app_config,
+    ) is sentinel_document_map_client
+    assert captured["selector_calls"] == [
+        ("openrouter:test/structure", "responses_text", app_config),
+        ("openrouter:test/document-map", "responses_text", app_config),
+    ]
+
+
+def test_run_prepared_background_document_model_factory_uses_default_when_selector_omitted(monkeypatch):
+    sentinel_model_client = object()
+    captured = {}
+
     def _selector_client_factory(selector, required_capability, *, config_like=None):
         captured["selector_call"] = (selector, required_capability, config_like)
         return sentinel_model_client
 
     service = _build_service(
         run_document_processing_impl_fn=lambda **kwargs: "succeeded",
-        get_client_fn=lambda: sentinel_default_client,
+        get_client_fn=lambda: object(),
         get_client_for_model_selector_fn=_selector_client_factory,
     )
     prepared = type(
@@ -408,7 +577,6 @@ def test_run_prepared_background_document_uses_model_aware_client_factory_for_pr
         runtime={"state": {}},
     )
 
-    assert callable(captured["prepare_document"]["get_client_fn"])
     assert captured["prepare_document"]["get_client_fn"]() is sentinel_model_client
     assert captured["selector_call"] == (
         "openrouter:test/structure",
