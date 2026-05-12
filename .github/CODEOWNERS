@@ -4,6 +4,9 @@
 /.github/pull_request_template.md @slawa19
 /.github/workflows/ci.yml @slawa19
 /.github/workflows/real-document-validation.yml @slawa19
+/.github/workflows/real-document-quality-gate.yml @slawa19
+/.github/workflows/real-document-ai-structure-smoke.yml @slawa19
+/.github/workflows/real-document-audiobook-sanity.yml @slawa19
 /.vscode/tasks.json @slawa19
 /scripts/test.sh @slawa19
 /scripts/project-control-wsl.sh @slawa19

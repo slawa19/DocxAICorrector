@@ -24,6 +24,7 @@ from docxaicorrector.runtime.state import (
     apply_processing_start,
     apply_preparation_complete,
     apply_preparation_failure,
+    apply_preparation_stop,
     apply_processing_completion,
     get_latest_audiobook_postprocess_enabled,
     get_processing_event_queue,
@@ -48,6 +49,7 @@ from docxaicorrector.runtime.events import (
     FinalizeProcessingStatusEvent,
     PreparationCompleteEvent,
     PreparationFailedEvent,
+    PreparationStoppedEvent,
     ProcessingEvent,
     PushActivityEvent,
     ResetImageStateEvent,
@@ -1234,7 +1236,7 @@ def drain_preparation_events(*, reset_run_state, set_processing_status, finalize
             break
 
         active_upload_marker = str(st.session_state.get("preparation_input_marker", "") or "")
-        if isinstance(event, (PreparationCompleteEvent, PreparationFailedEvent)) and active_upload_marker and event.upload_marker != active_upload_marker:
+        if isinstance(event, (PreparationCompleteEvent, PreparationFailedEvent, PreparationStoppedEvent)) and active_upload_marker and event.upload_marker != active_upload_marker:
             continue
 
         if isinstance(event, SetProcessingStatusEvent):
@@ -1268,6 +1270,15 @@ def drain_preparation_events(*, reset_run_state, set_processing_status, finalize
                 "error",
             )
             push_activity("Не удалось прочитать и проанализировать документ.")
+        elif isinstance(event, PreparationStoppedEvent):
+            apply_preparation_stop(upload_marker=event.upload_marker)
+            finalize_processing_status(
+                "Подготовка остановлена",
+                "",
+                1.0,
+                "stopped",
+            )
+            push_activity("Подготовка документа остановлена.")
 
 
 def preparation_worker_is_active() -> bool:
@@ -1409,7 +1420,8 @@ def start_background_preparation(
     mark_preparation_started(upload_marker)
 
     preparation_events = queue.Queue()
-    runtime = BackgroundRuntime(preparation_events, threading.Event())
+    preparation_stop_event = threading.Event()
+    runtime = BackgroundRuntime(preparation_events, preparation_stop_event)
 
     push_activity("Файл получен сервером. Запускаю анализ документа.")
     set_processing_status(
@@ -1487,6 +1499,9 @@ def start_background_preparation(
                 )
             )
             return
+        if runtime.should_stop():
+            runtime.emit(PreparationStoppedEvent(upload_marker=upload_marker))
+            return
         try:
             prepared_run_context = worker_target(
                 uploaded_payload=materialized_payload,
@@ -1514,5 +1529,5 @@ def start_background_preparation(
         runtime.emit(PreparationCompleteEvent(prepared_run_context=prepared_run_context, upload_marker=upload_marker))
 
     worker = threading.Thread(target=run_preparation, daemon=True, name="docx-preparation-worker")
-    set_preparation_runtime(worker=worker, event_queue=preparation_events)
+    set_preparation_runtime(worker=worker, event_queue=preparation_events, stop_event=preparation_stop_event)
     worker.start()

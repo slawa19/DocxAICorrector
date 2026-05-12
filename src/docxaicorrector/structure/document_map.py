@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 from statistics import median, quantiles
 import time
-from typing import Any, Callable, Protocol, cast
+from typing import Any, Callable, Protocol, Sequence, cast
 
 from docxaicorrector.core.constants import PROMPTS_DIR, RUN_DIR
 from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, ParagraphUnit
@@ -38,7 +38,7 @@ _TIMEOUT_ERROR_NAMES = {"APITimeoutError", "TimeoutError"}
 DOCUMENT_MAP_SYSTEM_PROMPT_PATH = PROMPTS_DIR / "document_map_system.txt"
 DOCUMENT_MAP_PROMPT_VERSION = 4
 DOCUMENT_MAP_DESCRIPTOR_SCHEMA_VERSION = 2
-DOCUMENT_MAP_POSTPROCESS_VERSION = 2
+DOCUMENT_MAP_POSTPROCESS_VERSION = 4
 _DOCUMENT_MAP_MALFORMED_DIR = RUN_DIR / "document_maps"
 _LOGGER = logging.getLogger(__name__)
 _REVIEW_ZONE_SEVERITY_SYNONYMS = {
@@ -171,6 +171,7 @@ def build_document_map(
         except Exception as exc:
             _LOGGER.warning("Document map AI generation failed: %s", exc)
             raise
+    document_map = _postprocess_document_map(document_map, paragraphs=paragraphs)
     document_map.model_used = str(model or document_map.model_used or "")
     if document_map is default_document_map:
         document_map.processing_time_seconds = max(0.0, time.perf_counter() - started_at)
@@ -611,6 +612,452 @@ def _parse_document_map_payload(
         sampled=len(sampled_logical_indexes) < len(all_logical_indexes),
         sampled_logical_indexes=tuple(int(index) for index in sampled_logical_indexes),
     )
+
+
+def _postprocess_document_map(document_map: DocumentMap, *, paragraphs: Sequence[ParagraphUnit]) -> DocumentMap:
+    logical_to_paragraph = {
+        int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", 0))): paragraph
+        for paragraph in paragraphs
+    }
+    toc_region = _recover_toc_region_entries(
+        document_map.toc_region,
+        logical_to_paragraph=logical_to_paragraph,
+        paragraph_anchors=document_map.paragraph_anchors,
+        body_start_logical_index=int(document_map.body_start_logical_index or 0),
+    )
+    outline = _recover_outline_entries(
+        document_map.outline,
+        toc_region=toc_region,
+        logical_to_paragraph=logical_to_paragraph,
+        paragraph_anchors=document_map.paragraph_anchors,
+    )
+    toc_region, outline = _recover_missing_chapter_sequence_entries(
+        toc_region=toc_region,
+        outline=outline,
+        logical_to_paragraph=logical_to_paragraph,
+        paragraph_anchors=document_map.paragraph_anchors,
+        body_start_logical_index=int(document_map.body_start_logical_index or 0),
+    )
+    if toc_region == document_map.toc_region and outline == document_map.outline:
+        return document_map
+    return DocumentMap(
+        body_start_logical_index=document_map.body_start_logical_index,
+        toc_region=toc_region,
+        outline=outline,
+        paragraph_anchors=document_map.paragraph_anchors,
+        review_zones=document_map.review_zones,
+        model_used=document_map.model_used,
+        total_tokens_used=document_map.total_tokens_used,
+        processing_time_seconds=document_map.processing_time_seconds,
+        sampled=document_map.sampled,
+        sampled_logical_indexes=document_map.sampled_logical_indexes,
+    )
+
+
+def _recover_toc_region_entries(
+    toc_region: DocumentMapTocRegion | None,
+    *,
+    logical_to_paragraph: dict[int, ParagraphUnit],
+    paragraph_anchors: dict[int, DocumentMapAnchor],
+    body_start_logical_index: int,
+) -> DocumentMapTocRegion | None:
+    if toc_region is None:
+        return toc_region
+    entries_by_candidate_index = {
+        int(entry.candidate_body_logical_index): entry
+        for entry in toc_region.entries
+        if entry.candidate_body_logical_index is not None
+    }
+    title_counts = Counter(
+        _normalize_document_map_title(entry.title)
+        for entry in toc_region.entries
+        if str(entry.title or "").strip()
+    )
+    recovered_entries = list(toc_region.entries)
+    recovered = False
+
+    for position, entry in enumerate(tuple(recovered_entries)):
+        candidate_index = entry.candidate_body_logical_index
+        if candidate_index is None:
+            continue
+        paragraph = logical_to_paragraph.get(int(candidate_index))
+        if paragraph is None:
+            continue
+        candidate_title = _paragraph_title_candidate(paragraph)
+        normalized_candidate_title = _normalize_document_map_title(candidate_title)
+        current_title = _normalize_document_map_title(entry.title)
+        if not normalized_candidate_title:
+            continue
+        if normalized_candidate_title == current_title:
+            continue
+        if normalized_candidate_title in title_counts and title_counts[normalized_candidate_title] > 0:
+            continue
+        if current_title:
+            title_counts[current_title] = max(0, title_counts[current_title] - 1)
+        recovered_entries[position] = DocumentMapTocEntry(
+            title=candidate_title,
+            target_level=int(entry.target_level),
+            candidate_body_logical_index=int(candidate_index),
+            confidence="medium",
+        )
+        title_counts[normalized_candidate_title] += 1
+        recovered = True
+
+    existing_titles = {
+        _normalize_document_map_title(entry.title)
+        for entry in recovered_entries
+        if str(entry.title or "").strip()
+    }
+    for logical_index in range(int(toc_region.start_logical_index), int(toc_region.end_logical_index) + 1):
+        if logical_index == toc_region.header_logical_index:
+            continue
+        paragraph = logical_to_paragraph.get(logical_index)
+        if paragraph is None:
+            continue
+        toc_title = _extract_toc_entry_title(str(getattr(paragraph, "text", "") or ""))
+        normalized_toc_title = _normalize_document_map_title(toc_title)
+        if not normalized_toc_title or normalized_toc_title in existing_titles:
+            continue
+        candidate_body_logical_index = _find_body_heading_logical_index(
+            normalized_toc_title,
+            logical_to_paragraph=logical_to_paragraph,
+            paragraph_anchors=paragraph_anchors,
+            body_start_logical_index=body_start_logical_index,
+            toc_region=toc_region,
+        )
+        if candidate_body_logical_index is None or candidate_body_logical_index in entries_by_candidate_index:
+            continue
+        anchor = paragraph_anchors.get(candidate_body_logical_index)
+        recovered_entries.append(
+            DocumentMapTocEntry(
+                title=toc_title,
+                target_level=max(1, int(getattr(anchor, "heading_level", None) or 1)),
+                candidate_body_logical_index=int(candidate_body_logical_index),
+                confidence="medium",
+            )
+        )
+        entries_by_candidate_index[int(candidate_body_logical_index)] = recovered_entries[-1]
+        existing_titles.add(normalized_toc_title)
+        recovered = True
+    if not recovered:
+        return toc_region
+    return DocumentMapTocRegion(
+        start_logical_index=toc_region.start_logical_index,
+        end_logical_index=toc_region.end_logical_index,
+        header_logical_index=toc_region.header_logical_index,
+        entries=tuple(recovered_entries),
+        confidence=toc_region.confidence,
+    )
+
+
+def _recover_outline_entries(
+    outline: tuple[DocumentMapOutlineEntry, ...],
+    *,
+    toc_region: DocumentMapTocRegion | None,
+    logical_to_paragraph: dict[int, ParagraphUnit],
+    paragraph_anchors: dict[int, DocumentMapAnchor],
+) -> tuple[DocumentMapOutlineEntry, ...]:
+    if toc_region is None or not toc_region.entries:
+        return outline
+    recovered_outline = list(outline)
+    occupied_indexes = {int(entry.logical_index) for entry in outline}
+    existing_titles = {_normalize_document_map_title(entry.title) for entry in outline if entry.title.strip()}
+    recovered = False
+    for toc_entry in toc_region.entries:
+        candidate_index = toc_entry.candidate_body_logical_index
+        if candidate_index is None or int(candidate_index) in occupied_indexes:
+            continue
+        paragraph = logical_to_paragraph.get(int(candidate_index))
+        if paragraph is None:
+            continue
+        anchor = paragraph_anchors.get(int(candidate_index))
+        if anchor is not None and anchor.role != "heading":
+            continue
+        candidate_title = _paragraph_title_candidate(paragraph)
+        normalized_candidate_title = _normalize_document_map_title(candidate_title)
+        if not normalized_candidate_title or normalized_candidate_title in existing_titles:
+            continue
+        recovered_outline.append(
+            DocumentMapOutlineEntry(
+                title=candidate_title,
+                level=int(toc_entry.target_level),
+                logical_index=int(candidate_index),
+                confidence="medium",
+                evidence=("toc_candidate_body_recovery",),
+            )
+        )
+        occupied_indexes.add(int(candidate_index))
+        existing_titles.add(normalized_candidate_title)
+        recovered = True
+    if not recovered:
+        return outline
+    return tuple(sorted(recovered_outline, key=lambda entry: int(entry.logical_index)))
+
+
+def _recover_missing_chapter_sequence_entries(
+    *,
+    toc_region: DocumentMapTocRegion | None,
+    outline: tuple[DocumentMapOutlineEntry, ...],
+    logical_to_paragraph: dict[int, ParagraphUnit],
+    paragraph_anchors: dict[int, DocumentMapAnchor],
+    body_start_logical_index: int,
+) -> tuple[DocumentMapTocRegion | None, tuple[DocumentMapOutlineEntry, ...]]:
+    if toc_region is None or not outline:
+        return toc_region, outline
+
+    recovered_toc_entries = list(toc_region.entries)
+    recovered_outline = list(outline)
+    occupied_indexes = {int(entry.logical_index) for entry in outline}
+    occupied_toc_indexes = {
+        int(entry.candidate_body_logical_index)
+        for entry in toc_region.entries
+        if entry.candidate_body_logical_index is not None
+    }
+    recovered = False
+
+    ordered_chapter_entries = sorted(
+        (
+            (chapter_number, int(entry.logical_index), int(entry.level))
+            for entry in outline
+            if (chapter_number := _extract_chapter_sequence_number(entry.title)) is not None
+        ),
+        key=lambda item: item[1],
+    )
+    for (left_number, left_index, left_level), (right_number, right_index, _right_level) in zip(
+        ordered_chapter_entries,
+        ordered_chapter_entries[1:],
+    ):
+        if right_number <= left_number + 1:
+            continue
+        missing_numbers = range(left_number + 1, right_number)
+        for missing_number in missing_numbers:
+            missing_index = _find_chapter_heading_between(
+                missing_number,
+                start_index=left_index,
+                end_index=right_index,
+                logical_to_paragraph=logical_to_paragraph,
+                paragraph_anchors=paragraph_anchors,
+                body_start_logical_index=body_start_logical_index,
+                toc_region=toc_region,
+            )
+            if missing_index is None or missing_index in occupied_indexes:
+                continue
+
+            title = _paragraph_title_candidate(logical_to_paragraph[missing_index])
+            recovered_outline.append(
+                DocumentMapOutlineEntry(
+                    title=title,
+                    level=left_level,
+                    logical_index=missing_index,
+                    confidence="medium",
+                    evidence=("chapter_sequence_recovery",),
+                )
+            )
+            occupied_indexes.add(missing_index)
+
+            toc_title = _find_nearby_chapter_subtitle(
+                chapter_index=missing_index,
+                next_chapter_index=right_index,
+                logical_to_paragraph=logical_to_paragraph,
+                paragraph_anchors=paragraph_anchors,
+            ) or title
+            if missing_index not in occupied_toc_indexes:
+                recovered_toc_entries.append(
+                    DocumentMapTocEntry(
+                        title=toc_title,
+                        target_level=left_level,
+                        candidate_body_logical_index=missing_index,
+                        confidence="medium",
+                    )
+                )
+                occupied_toc_indexes.add(missing_index)
+            recovered = True
+
+    if not recovered:
+        return toc_region, outline
+    return (
+        DocumentMapTocRegion(
+            start_logical_index=toc_region.start_logical_index,
+            end_logical_index=toc_region.end_logical_index,
+            header_logical_index=toc_region.header_logical_index,
+            entries=tuple(sorted(recovered_toc_entries, key=lambda entry: int(entry.candidate_body_logical_index or -1))),
+            confidence=toc_region.confidence,
+        ),
+        tuple(sorted(recovered_outline, key=lambda entry: int(entry.logical_index))),
+    )
+
+
+def _find_chapter_heading_between(
+    chapter_number: int,
+    *,
+    start_index: int,
+    end_index: int,
+    logical_to_paragraph: dict[int, ParagraphUnit],
+    paragraph_anchors: dict[int, DocumentMapAnchor],
+    body_start_logical_index: int,
+    toc_region: DocumentMapTocRegion,
+) -> int | None:
+    toc_start = int(toc_region.start_logical_index)
+    toc_end = int(toc_region.end_logical_index)
+    for logical_index in sorted(logical_to_paragraph):
+        if logical_index <= start_index or logical_index >= end_index or logical_index < body_start_logical_index:
+            continue
+        if toc_start <= logical_index <= toc_end:
+            continue
+        paragraph = logical_to_paragraph[logical_index]
+        if _extract_chapter_sequence_number(_paragraph_title_candidate(paragraph)) != chapter_number:
+            continue
+        anchor = paragraph_anchors.get(logical_index)
+        if anchor is not None and anchor.role == "heading":
+            return logical_index
+        if str(getattr(paragraph, "role", "") or "").strip().lower() == "heading":
+            return logical_index
+        return logical_index
+    return None
+
+
+def _find_nearby_chapter_subtitle(
+    *,
+    chapter_index: int,
+    next_chapter_index: int,
+    logical_to_paragraph: dict[int, ParagraphUnit],
+    paragraph_anchors: dict[int, DocumentMapAnchor],
+) -> str:
+    for logical_index in sorted(logical_to_paragraph):
+        if logical_index <= chapter_index or logical_index >= next_chapter_index or logical_index - chapter_index > 3:
+            continue
+        paragraph = logical_to_paragraph[logical_index]
+        anchor = paragraph_anchors.get(logical_index)
+        if anchor is not None and anchor.role != "heading":
+            continue
+        role = str(getattr(paragraph, "role", "") or "").strip().lower()
+        if anchor is None and role != "heading" and not _looks_like_chapter_subtitle(_paragraph_title_candidate(paragraph)):
+            continue
+        title = _paragraph_title_candidate(paragraph)
+        if title and _extract_chapter_sequence_number(title) is None:
+            return title
+    return ""
+
+
+def _extract_chapter_sequence_number(text: str) -> int | None:
+    match = re.match(r"^\s*(?:chapter|глава)\s+([a-zа-яё0-9ivxlcdm\-]+)\b", str(text or ""), flags=re.IGNORECASE)
+    if match is None:
+        return None
+    token = match.group(1).casefold().strip(".:-")
+    return _chapter_number_token_to_int(token)
+
+
+def _looks_like_chapter_subtitle(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(text or "").strip())
+    if not normalized or normalized.casefold().startswith("this page intentionally left blank"):
+        return False
+    if normalized.endswith(('.', '!', '?')):
+        return False
+    if len(normalized.split()) > 12:
+        return False
+    return any(char.isalpha() for char in normalized)
+
+
+def _chapter_number_token_to_int(token: str) -> int | None:
+    if token.isdigit():
+        return int(token)
+    words = {
+        "one": 1,
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
+        "six": 6,
+        "seven": 7,
+        "eight": 8,
+        "nine": 9,
+        "ten": 10,
+        "eleven": 11,
+        "twelve": 12,
+        "thirteen": 13,
+        "fourteen": 14,
+        "fifteen": 15,
+        "sixteen": 16,
+        "seventeen": 17,
+        "eighteen": 18,
+        "nineteen": 19,
+        "twenty": 20,
+    }
+    if token in words:
+        return words[token]
+    return _roman_to_int(token)
+
+
+def _roman_to_int(token: str) -> int | None:
+    values = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100, "d": 500, "m": 1000}
+    if not token or any(char not in values for char in token):
+        return None
+    total = 0
+    previous = 0
+    for char in reversed(token):
+        value = values[char]
+        if value < previous:
+            total -= value
+        else:
+            total += value
+            previous = value
+    return total if total > 0 else None
+
+
+def _paragraph_title_candidate(paragraph: ParagraphUnit) -> str:
+    return str(getattr(paragraph, "text", "") or "").strip()
+
+
+def _extract_toc_entry_title(text: str) -> str:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return ""
+    normalized = re.sub(r"\.{2,}\s*\d+\s*$", "", normalized)
+    normalized = re.sub(r"\s+\d{1,4}\s*$", "", normalized)
+    normalized = re.sub(r"^\s*\d+[\.)-]?\s+", "", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _normalize_document_map_title(text: str) -> str:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return ""
+    normalized = re.sub(r"\.{2,}\s*\d+\s*$", "", normalized)
+    normalized = re.sub(r"\s+\d{1,4}\s*$", "", normalized)
+    normalized = re.sub(r"^\s*\d+[\.)-]?\s+", "", normalized)
+    normalized = re.sub(r"^\s*(?:chapter|глава)\s+[a-zа-яё0-9ivxlcdm\-]+\s*[:.\-]*\s*", "", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized.casefold()
+
+
+def _find_body_heading_logical_index(
+    normalized_title: str,
+    *,
+    logical_to_paragraph: dict[int, ParagraphUnit],
+    paragraph_anchors: dict[int, DocumentMapAnchor],
+    body_start_logical_index: int,
+    toc_region: DocumentMapTocRegion,
+) -> int | None:
+    candidates: list[tuple[int, int]] = []
+    toc_start = int(toc_region.start_logical_index)
+    toc_end = int(toc_region.end_logical_index)
+    for logical_index, paragraph in logical_to_paragraph.items():
+        if logical_index < body_start_logical_index or toc_start <= logical_index <= toc_end:
+            continue
+        paragraph_title = _normalize_document_map_title(_paragraph_title_candidate(paragraph))
+        if paragraph_title != normalized_title:
+            continue
+        anchor = paragraph_anchors.get(logical_index)
+        score = 0
+        if anchor is not None and anchor.role == "heading":
+            score += 2
+        if str(getattr(paragraph, "role", "") or "").strip().lower() == "heading":
+            score += 1
+        candidates.append((score, int(logical_index)))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    return candidates[0][1]
 
 
 def _sanitize_outline_entries(

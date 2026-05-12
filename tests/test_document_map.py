@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from docxaicorrector.core.models import DocumentMapAnchor, EmbeddedStructureHint, ParagraphUnit
+from docxaicorrector.core.models import DocumentMapAnchor, DocumentMapOutlineEntry, DocumentMapTocEntry, DocumentMapTocRegion, EmbeddedStructureHint, ParagraphUnit
 from docxaicorrector.structure.document_map import (
     DocumentMapSchemaError,
     _parse_document_map_payload,
@@ -486,6 +486,195 @@ def test_build_document_map_uses_ai_payload_when_available(monkeypatch):
     assert document_map.body_start_logical_index == 1
     assert document_map.toc_region is not None
     assert document_map.get_anchor(1) == DocumentMapAnchor(role="heading", heading_level=1, confidence="high")
+
+
+def test_build_document_map_recovers_missing_toc_and_outline_entry_from_candidate_body_heading(monkeypatch):
+    paragraphs = [
+        _paragraph(35, "Contents", structural_role="toc_header"),
+        _paragraph(36, "8 Strategies for Governments 141", structural_role="toc_entry"),
+        _paragraph(37, "9 Strategies for NGOs 159", structural_role="toc_entry"),
+        _paragraph(38, "10 Truth and Consequences 179", structural_role="toc_entry"),
+        _paragraph(141, "STRATEGIES FOR GOVERNMENTS", role="heading", structural_role="body"),
+        _paragraph(159, "STRATEGIES FOR NGOS", role="heading", structural_role="body"),
+        _paragraph(179, "TRUTH AND CONSEQUENCES", role="heading", structural_role="body"),
+    ]
+
+    monkeypatch.setattr(
+        "docxaicorrector.structure.document_map._generate_document_map_from_ai",
+        lambda **kwargs: _parse_document_map_payload(
+            {
+                "body_start_logical_index": 141,
+                "toc_region": {
+                    "start_logical_index": 35,
+                    "end_logical_index": 38,
+                    "header_logical_index": 35,
+                    "entries": [
+                        {
+                            "title": "Strategies for Governments",
+                            "target_level": 1,
+                            "candidate_body_logical_index": 141,
+                            "confidence": "high",
+                        },
+                        {
+                            "title": "Truth and Consequences",
+                            "target_level": 1,
+                            "candidate_body_logical_index": 159,
+                            "confidence": "high",
+                        },
+                        {
+                            "title": "Truth and Consequences",
+                            "target_level": 1,
+                            "candidate_body_logical_index": 179,
+                            "confidence": "high",
+                        },
+                    ],
+                    "confidence": "high",
+                },
+                "outline": [
+                    {
+                        "title": "Strategies for Governments",
+                        "level": 1,
+                        "logical_index": 141,
+                        "confidence": "high",
+                        "evidence": ["toc_match"],
+                    },
+                    {
+                        "title": "Truth and Consequences",
+                        "level": 1,
+                        "logical_index": 179,
+                        "confidence": "high",
+                        "evidence": ["toc_match"],
+                    },
+                ],
+                "paragraph_anchors": {
+                    "141": {"role": "heading", "heading_level": 1, "confidence": "high"},
+                    "159": {"role": "heading", "heading_level": 1, "confidence": "high"},
+                    "179": {"role": "heading", "heading_level": 1, "confidence": "high"},
+                },
+                "review_zones": [],
+            },
+            all_logical_indexes={35, 36, 37, 38, 141, 159, 179},
+            sampled_logical_indexes=(35, 36, 37, 38, 141, 159, 179),
+            model_used="openrouter:test/document-map",
+            total_tokens_used=17,
+            processing_time_seconds=0.0,
+        ),
+    )
+
+    document_map = build_document_map(
+        paragraphs,
+        client=object(),
+        model="openrouter:test/document-map",
+        timeout=30.0,
+        max_input_paragraphs=20,
+        max_input_tokens=180000,
+    )
+
+    assert document_map.toc_region is not None
+    assert [entry.title for entry in document_map.toc_region.entries] == [
+        "Strategies for Governments",
+        "STRATEGIES FOR NGOS",
+        "Truth and Consequences",
+    ]
+    assert [entry.candidate_body_logical_index for entry in document_map.toc_region.entries] == [141, 159, 179]
+    assert [entry.title for entry in document_map.outline] == [
+        "Strategies for Governments",
+        "STRATEGIES FOR NGOS",
+        "Truth and Consequences",
+    ]
+    assert [entry.logical_index for entry in document_map.outline] == [141, 159, 179]
+
+
+def test_build_document_map_recovers_missing_chapter_sequence_from_heading_gap(monkeypatch):
+    paragraphs = [
+        _paragraph(35, "Contents", structural_role="toc_header"),
+        _paragraph(40, "8 Strategies for Governments 141 9 Strategies for NGOs 159", structural_role="toc_entry"),
+        _paragraph(42, "10 Truth and Consequences: Lessons Learned 175", structural_role="toc_entry"),
+        _paragraph(141, "Chapter Eight", role="heading", structural_role="body"),
+        _paragraph(142, "STRATEGIES FOR GOVERNMENTS", role="heading", structural_role="body"),
+        _paragraph(159, "Chapter Nine", role="heading", structural_role="body"),
+        _paragraph(160, "STRATEGIES FOR NGOS", role="heading", structural_role="body"),
+        _paragraph(175, "Chapter Ten", role="heading", structural_role="body"),
+        _paragraph(176, "TRUTH AND CONSEQUENCES", role="heading", structural_role="body"),
+    ]
+
+    monkeypatch.setattr(
+        "docxaicorrector.structure.document_map._generate_document_map_from_ai",
+        lambda **kwargs: _parse_document_map_payload(
+            {
+                "body_start_logical_index": 141,
+                "toc_region": {
+                    "start_logical_index": 35,
+                    "end_logical_index": 42,
+                    "header_logical_index": 35,
+                    "entries": [
+                        {
+                            "title": "8 Strategies for Governments",
+                            "target_level": 1,
+                            "candidate_body_logical_index": 141,
+                            "confidence": "high",
+                        },
+                        {
+                            "title": "10 Truth and Consequences: Lessons Learned",
+                            "target_level": 1,
+                            "candidate_body_logical_index": 175,
+                            "confidence": "high",
+                        },
+                    ],
+                    "confidence": "high",
+                },
+                "outline": [
+                    {
+                        "title": "Chapter Eight",
+                        "level": 1,
+                        "logical_index": 141,
+                        "confidence": "high",
+                        "evidence": ["toc_match"],
+                    },
+                    {
+                        "title": "Chapter Ten",
+                        "level": 1,
+                        "logical_index": 175,
+                        "confidence": "high",
+                        "evidence": ["toc_match"],
+                    },
+                ],
+                "paragraph_anchors": {
+                    "141": {"role": "heading", "heading_level": 1, "confidence": "high"},
+                    "142": {"role": "heading", "heading_level": 2, "confidence": "high"},
+                    "159": {"role": "heading", "heading_level": 1, "confidence": "high"},
+                    "160": {"role": "heading", "heading_level": 2, "confidence": "high"},
+                    "175": {"role": "heading", "heading_level": 1, "confidence": "high"},
+                    "176": {"role": "heading", "heading_level": 2, "confidence": "high"},
+                },
+                "review_zones": [],
+            },
+            all_logical_indexes={35, 40, 42, 141, 142, 159, 160, 175, 176},
+            sampled_logical_indexes=(35, 40, 42, 141, 142, 159, 160, 175, 176),
+            model_used="openrouter:test/document-map",
+            total_tokens_used=17,
+            processing_time_seconds=0.0,
+        ),
+    )
+
+    document_map = build_document_map(
+        paragraphs,
+        client=object(),
+        model="openrouter:test/document-map",
+        timeout=30.0,
+        max_input_paragraphs=20,
+        max_input_tokens=180000,
+    )
+
+    assert document_map.toc_region is not None
+    assert [entry.candidate_body_logical_index for entry in document_map.toc_region.entries] == [141, 159, 175]
+    assert [entry.title for entry in document_map.toc_region.entries] == [
+        "8 Strategies for Governments",
+        "STRATEGIES FOR NGOS",
+        "10 Truth and Consequences: Lessons Learned",
+    ]
+    assert [entry.title for entry in document_map.outline] == ["Chapter Eight", "Chapter Nine", "Chapter Ten"]
+    assert [entry.logical_index for entry in document_map.outline] == [141, 159, 175]
 
 
 def test_build_document_map_retries_once_after_schema_error(monkeypatch):

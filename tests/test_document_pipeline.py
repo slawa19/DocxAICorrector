@@ -2910,6 +2910,31 @@ def test_run_document_processing_normalizes_list_fragment_regressions_before_qua
     assert payload["list_fragment_regression_count"] == 0
 
 
+def test_run_document_processing_uses_runtime_normalized_markdown_for_docx_build(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    quality_dir = tmp_path / "quality_reports"
+    captured = {}
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+
+    result = _run_processing(
+        runtime,
+        app_config={"translation_output_quality_gate_policy": "strict"},
+        processing_operation="translate",
+        generate_markdown_block=lambda **kwargs: (
+            "Поразительно, но все петли следуют одной и той же схеме: 1.\n\n"
+            "Духовные существа восстают против Бога.\n\n"
+            "2. Бог судит их за грех."
+        ),
+        convert_markdown_to_docx_bytes=lambda markdown_text: captured.setdefault("markdown", markdown_text) or markdown_text.encode("utf-8"),
+    )
+
+    assert result == "succeeded"
+    assert captured["markdown"] == runtime["state"]["latest_markdown"]
+    assert "схеме: 1." not in captured["markdown"]
+    assert "1. Духовные существа восстают против Бога." in captured["markdown"]
+
+
 def test_run_document_processing_normalizes_mixed_script_before_quality_gate(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"

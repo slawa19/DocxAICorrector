@@ -209,6 +209,11 @@ def get_preparation_event_queue() -> queue.Queue[Any] | None:
     return event_queue if isinstance(event_queue, queue.Queue) else None
 
 
+def get_preparation_stop_event() -> threading.Event | None:
+    stop_event = st.session_state.get("preparation_stop_event")
+    return stop_event if isinstance(stop_event, threading.Event) else None
+
+
 def is_app_start_logged() -> bool:
     return bool(st.session_state.get("app_start_logged", False))
 
@@ -248,10 +253,14 @@ def set_restart_source(restart_source: dict[str, object] | None, *, session_stat
     _resolve_session_state(session_state).restart_source = restart_source
 
 
-def set_preparation_runtime(*, worker, event_queue, session_state=None) -> None:
+def set_preparation_runtime(*, worker, event_queue, stop_event=None, session_state=None) -> None:
     resolved_session_state = _resolve_session_state(session_state)
+    previous_stop_event = resolved_session_state.get("preparation_stop_event")
+    if isinstance(previous_stop_event, threading.Event) and previous_stop_event is not stop_event:
+        previous_stop_event.set()
     resolved_session_state.preparation_worker = worker
     resolved_session_state.preparation_event_queue = event_queue
+    resolved_session_state.preparation_stop_event = stop_event
 
 
 def clear_completed_source(*, completed_source: dict[str, object] | None = None, clear_restart_source_fn=clear_restart_source, session_state=None) -> None:
@@ -322,7 +331,7 @@ def apply_preparation_complete(*, prepared_run_context, upload_marker: str, rese
     st.session_state.chapter_selector_search = ""
     st.session_state.chapter_selector_filter = "all"
     set_prepared_source_key(str(getattr(prepared_run_context, "prepared_source_key", "")))
-    set_preparation_runtime(worker=None, event_queue=None)
+    set_preparation_runtime(worker=None, event_queue=None, stop_event=None)
     st.session_state.processing_outcome = ProcessingOutcome.IDLE.value
 
 
@@ -330,10 +339,20 @@ def apply_preparation_failure(*, upload_marker: str, error_message: str, error_d
     st.session_state.prepared_run_context = None
     st.session_state.preparation_input_marker = upload_marker
     st.session_state.preparation_failed_marker = upload_marker
-    set_preparation_runtime(worker=None, event_queue=None)
+    set_preparation_runtime(worker=None, event_queue=None, stop_event=None)
     st.session_state.last_background_error = error_details
     st.session_state.last_error = error_message
     st.session_state.processing_outcome = ProcessingOutcome.FAILED.value
+
+
+def apply_preparation_stop(*, upload_marker: str) -> None:
+    st.session_state.prepared_run_context = None
+    st.session_state.preparation_input_marker = upload_marker
+    st.session_state.preparation_failed_marker = ""
+    set_preparation_runtime(worker=None, event_queue=None, stop_event=None)
+    st.session_state.last_background_error = None
+    st.session_state.last_error = ""
+    st.session_state.processing_outcome = ProcessingOutcome.IDLE.value
 
 
 def apply_processing_completion(
@@ -703,6 +722,7 @@ def init_session_state() -> None:
     st.session_state.setdefault("processing_stop_event", None)
     st.session_state.setdefault("preparation_worker", None)
     st.session_state.setdefault("preparation_event_queue", None)
+    st.session_state.setdefault("preparation_stop_event", None)
     st.session_state.setdefault("prepared_run_context", None)
     st.session_state.setdefault("latest_preparation_summary", None)
     st.session_state.setdefault("preparation_input_marker", "")
@@ -877,6 +897,9 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
     st.session_state.latest_audiobook_postprocess_enabled = False
     st.session_state.last_error = ""
     st.session_state.last_background_error = None
+    previous_preparation_stop_event = st.session_state.get("preparation_stop_event")
+    if isinstance(previous_preparation_stop_event, threading.Event):
+        previous_preparation_stop_event.set()
     reset_image_state()
     st.session_state.processing_status = _default_processing_status()
     st.session_state.processing_stop_requested = False
@@ -885,6 +908,7 @@ def reset_run_state(*, keep_restart_source: bool = True, preserve_preparation: b
     st.session_state.processing_stop_event = None
     st.session_state.preparation_worker = None
     st.session_state.preparation_event_queue = None
+    st.session_state.preparation_stop_event = None
     st.session_state.prepared_run_context = prepared_run_context
     st.session_state.latest_preparation_summary = latest_preparation_summary
     st.session_state.preparation_input_marker = preparation_input_marker

@@ -977,13 +977,14 @@ def run_docx_build_phase(
                 translated_segment_count=sum(1 for value in selected_with_context_result.segment_provenance_by_id.values() if value == "translated"),
                 source_segment_count=sum(1 for value in selected_with_context_result.segment_provenance_by_id.values() if value == "source"),
             )
+    display_markdown = _normalize_final_markdown_for_runtime_display(final_markdown)
     emitters.emit_status(
         context.runtime,
         stage="Сборка DOCX",
         detail="Все блоки готовы. Собираю итоговый DOCX из Markdown.",
         current_block=job_count,
         block_count=job_count,
-        target_chars=len(final_markdown),
+        target_chars=len(display_markdown),
         context_chars=0,
         progress=1.0,
         is_running=True,
@@ -993,7 +994,7 @@ def run_docx_build_phase(
     build_started_at_epoch = time.time()
 
     try:
-        docx_bytes = dependencies.convert_markdown_to_docx_bytes(final_markdown)
+        docx_bytes = dependencies.convert_markdown_to_docx_bytes(display_markdown)
         if context.source_paragraphs:
             docx_bytes = call_docx_restorer_with_optional_registry_fn(
                 dependencies.preserve_source_paragraph_properties,
@@ -1010,7 +1011,7 @@ def run_docx_build_phase(
             exc,
             "Ошибка сборки DOCX",
             filename=context.uploaded_filename,
-            final_markdown_chars=len(final_markdown),
+            final_markdown_chars=len(display_markdown),
         )
         emitters.emit_state(
             context.runtime,
@@ -1027,7 +1028,7 @@ def run_docx_build_phase(
             activity_message="Ошибка на этапе сборки DOCX.",
             block_index=job_count,
             block_count=job_count,
-            target_chars=len(final_markdown),
+            target_chars=len(display_markdown),
             context_chars=0,
             log_details=error_message,
         )
@@ -1093,7 +1094,7 @@ def run_docx_build_phase(
 
     return {
         "docx_bytes": docx_bytes,
-        "final_markdown": final_markdown,
+        "final_markdown": display_markdown,
         "latest_result_notice": latest_result_notice,
         "formatting_diagnostics_artifacts": list(formatting_diagnostics_artifacts),
         "assembly_entries": list(assembly_result.entries),

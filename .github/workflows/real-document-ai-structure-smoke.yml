@@ -1,14 +1,15 @@
-name: Real Document Validation
+name: Real Document AI Structure Smoke
 
 on:
   workflow_dispatch:
 
 jobs:
-  system-deps-real-document:
+  manual-ai-structure-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      DOCXAI_REQUIRE_REAL_DOCUMENT_CAPABILITIES: "1"
+      DOCXAI_RUN_REAL_DOCUMENT_STRUCTURE_RECOGNITION: "1"
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
     steps:
       - name: Checkout repository
@@ -18,6 +19,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Require OpenAI secret
+        run: |
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            echo "OPENAI_API_KEY secret is required for Real Document AI Structure Smoke"
+            exit 1
+          fi
 
       - name: Install system dependencies
         run: |
@@ -31,19 +39,15 @@ jobs:
           . .venv/bin/activate
           pip install -r requirements.txt
 
-      - name: Validate legacy DOC extraction without skip fallback
+      - name: Run real AI structure-recognition smoke
         run: |
-          bash scripts/test.sh 'tests/test_real_document_validation_corpus.py::test_corpus_extraction[religion-wealth-core]' -vv
+          bash scripts/test.sh tests/test_real_document_structure_recognition_integration.py -vv
 
-      - name: Validate PDF extraction without skip fallback
-        run: |
-          bash scripts/test.sh 'tests/test_real_document_validation_corpus.py::test_corpus_extraction[lietaer-pdf-first-20-structure-core]' -vv
-
-      - name: Upload real-document artifacts
+      - name: Upload AI structure smoke artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: real-document-validation-artifacts
+          name: real-document-ai-structure-smoke-artifacts
           if-no-files-found: ignore
           path: |
             .run/**

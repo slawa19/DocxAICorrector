@@ -87,6 +87,14 @@ Manual GitHub Actions system-deps path:
 GitHub Actions -> Real Document Validation
 ```
 
+Manual GitHub Actions AI-heavy paths:
+
+```text
+GitHub Actions -> Real Document Quality Gate
+GitHub Actions -> Real Document AI Structure Smoke
+GitHub Actions -> Real Document Audiobook Sanity
+```
+
 Canonical WSL CLI path:
 
 ```bash
@@ -107,7 +115,13 @@ This script does three things for you:
 
 The quality-gate script runs only the exceptional pytest entry point `tests/test_real_document_quality_gate.py` with `-vv -s`, so the terminal shows the live validator stream and pytest automatically fails the gate when the validator exits non-zero or writes an invalid manifest/report.
 
-The manual `Real Document Validation` workflow is the Phase 4 system-deps path. It installs `system-requirements.apt`, forces `DOCXAI_REQUIRE_REAL_DOCUMENT_CAPABILITIES=1`, runs the no-skip legacy DOC and PDF extraction selectors, runs the canonical structural passthrough selector for `lietaer-pdf-first-20-structure-core`, and uploads `.run/`, `tests/artifacts/real_document_pipeline/`, and `tests/artifacts/structural_diagnostics/` artifacts for inspection.
+The manual `Real Document Validation` workflow is the Phase 4 system-deps path. It installs `system-requirements.apt`, forces `DOCXAI_REQUIRE_REAL_DOCUMENT_CAPABILITIES=1`, runs the no-skip legacy DOC extraction selector plus the no-skip PDF extraction selector for `lietaer-pdf-first-20-structure-core`, and uploads `.run/` plus `tests/artifacts/real_document_pipeline/` for inspection.
+
+The manual `Real Document Quality Gate` workflow is the Phase 8 exceptional AI-heavy gate. It installs the same runtime dependencies, requires the repository `OPENAI_API_KEY` secret, sets `DOCXAI_RUN_REAL_DOCUMENT_QUALITY=1`, runs `bash scripts/run-real-document-quality-gate.sh`, and uploads `.run/`, `tests/artifacts/real_document_pipeline/`, and `tests/artifacts/structural_diagnostics/` for inspection.
+
+The manual `Real Document AI Structure Smoke` workflow is the Phase 8 AI-heavy structure gate. It installs the same runtime dependencies, requires the repository `OPENAI_API_KEY` secret, sets `DOCXAI_RUN_REAL_DOCUMENT_STRUCTURE_RECOGNITION=1`, runs `bash scripts/test.sh tests/test_real_document_structure_recognition_integration.py -vv`, and uploads `.run/` plus `tests/artifacts/real_document_pipeline/` for inspection.
+
+The manual `Real Document Audiobook Sanity` workflow is the Phase 8 AI-heavy narration gate. It requires the repository `OPENAI_API_KEY` secret, sets `DOCXAI_RUN_REAL_DOCUMENT_AUDIOBOOK_SANITY=1`, runs `bash scripts/test.sh tests/test_real_document_audiobook_spec.py -vv`, and uploads `.run/` plus `tests/artifacts/real_document_pipeline/` for inspection.
 
 ## Validation Tiers
 
@@ -150,11 +164,48 @@ Tasks: Run Task -> Run Lietaer Real Validation
 Tasks: Run Task -> Run Lietaer Real Validation AI
 ```
 
+Preferred CI/operator execution path when a persistent artifact trail is needed:
+
+```text
+GitHub Actions -> Real Document AI Structure Smoke
+```
+
 Ad-hoc pytest path when an explicit smoke assertion is needed:
 
 ```bash
 DOCXAI_RUN_REAL_DOCUMENT_STRUCTURE_RECOGNITION=1 \
 bash scripts/test.sh tests/test_real_document_structure_recognition_integration.py -vv
+```
+
+## Audiobook Sanity Smoke
+
+The repository also has a real-document translate-plus-audiobook-postprocess sanity test in
+`tests/test_real_document_audiobook_spec.py`.
+
+This test is intentionally opt-in and excluded from the ordinary `Run Full Pytest`
+path. It only runs when both conditions hold:
+
+1. `OPENAI_API_KEY` is available for the real validation profiles involved in the run.
+2. `DOCXAI_RUN_REAL_DOCUMENT_AUDIOBOOK_SANITY=1` is set explicitly.
+
+Run it when a change touches one of these surfaces:
+
+1. audiobook postprocess prompt or deterministic cleanup behavior;
+2. narration artifact writing or `ui_result_artifacts_saved` / `ui_audiobook_artifact_saved` logging;
+3. translate-plus-audiobook run profile wiring in the real-document validator;
+4. DOCX or TTS artifact parity between baseline translate output and audiobook postprocess output.
+
+Preferred operator execution path:
+
+```text
+GitHub Actions -> Real Document Audiobook Sanity
+```
+
+Ad-hoc pytest path when an explicit smoke assertion is needed:
+
+```bash
+DOCXAI_RUN_REAL_DOCUMENT_AUDIOBOOK_SANITY=1 \
+bash scripts/test.sh tests/test_real_document_audiobook_spec.py -vv
 ```
 
 ## Environment Contract

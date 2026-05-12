@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -45,6 +46,8 @@ WORKFLOW_DOC_PATH = Path("docs/testing/REAL_DOCUMENT_VALIDATION_WORKFLOW.md")
 MAINTENANCE_GUIDE_PATH = Path("docs/testing/UNIVERSAL_TEST_SYSTEM_MAINTENANCE_GUIDE_2026-03-21.md")
 REQUIRE_REAL_DOCUMENT_CAPABILITIES_ENV = "DOCXAI_REQUIRE_REAL_DOCUMENT_CAPABILITIES"
 
+pytestmark = pytest.mark.system_deps
+
 
 def _resolve_structural_run_profile(document_profile):
     run_profile_id = getattr(document_profile, "structural_run_profile", None) or STRUCTURAL_RUN_PROFILE.id
@@ -61,9 +64,15 @@ def _extract_backtick_values(text: str) -> set[str]:
 
 
 def _require_or_skip_real_document_capability(message: str) -> None:
-    if str(__import__("os").environ.get(REQUIRE_REAL_DOCUMENT_CAPABILITIES_ENV, "")).strip() == "1":
+    if str(os.environ.get(REQUIRE_REAL_DOCUMENT_CAPABILITIES_ENV, "")).strip() == "1":
         pytest.fail(message)
     pytest.skip(message)
+
+
+def _skip_if_missing_real_document_source(source_path: Path) -> None:
+    if source_path.exists():
+        return
+    _require_or_skip_real_document_capability(f"missing real-document source: {source_path}")
 
 
 def test_registry_includes_end_times_pdf_regression_profile() -> None:
@@ -178,6 +187,21 @@ def test_require_or_skip_real_document_capability_fails_when_capabilities_are_re
 
     with pytest.raises(pytest.fail.Exception, match="capability missing"):
         _require_or_skip_real_document_capability("capability missing")
+
+
+def test_skip_if_missing_real_document_source_uses_controlled_skip_reason(tmp_path) -> None:
+    missing_source = tmp_path / "missing.pdf"
+
+    with pytest.raises(pytest.skip.Exception, match=r"missing real-document source"):
+        _skip_if_missing_real_document_source(missing_source)
+
+
+def test_skip_if_missing_real_document_source_fails_when_capabilities_are_required(monkeypatch, tmp_path) -> None:
+    missing_source = tmp_path / "missing.pdf"
+    monkeypatch.setenv(REQUIRE_REAL_DOCUMENT_CAPABILITIES_ENV, "1")
+
+    with pytest.raises(pytest.fail.Exception, match=r"missing real-document source"):
+        _skip_if_missing_real_document_source(missing_source)
 
 
 def test_end_times_pdf_structural_run_profile_is_generic_structural_recovery() -> None:
@@ -549,8 +573,7 @@ def test_skip_if_structural_passthrough_runtime_unavailable_skips_when_provider_
 @pytest.mark.parametrize("document_profile", REGISTRY.documents, ids=[profile.id for profile in REGISTRY.documents])
 def test_corpus_extraction(document_profile) -> None:
     source_path = document_profile.resolved_source_path()
-    if not source_path.exists():
-        pytest.skip(f"missing real-document source: {source_path}")
+    _skip_if_missing_real_document_source(source_path)
     _skip_if_legacy_doc_conversion_unavailable(source_path)
 
     result = cast(dict[str, Any], evaluate_extraction_profile(document_profile))
@@ -563,8 +586,7 @@ def test_corpus_extraction(document_profile) -> None:
 @pytest.mark.parametrize("document_profile", REGISTRY.documents, ids=[profile.id for profile in REGISTRY.documents])
 def test_corpus_structural_passthrough(document_profile) -> None:
     source_path = document_profile.resolved_source_path()
-    if not source_path.exists():
-        pytest.skip(f"missing real-document source: {source_path}")
+    _skip_if_missing_real_document_source(source_path)
     _skip_if_legacy_doc_conversion_unavailable(source_path)
     run_profile = _resolve_structural_run_profile(document_profile)
     _skip_if_structural_passthrough_runtime_unavailable(run_profile)
@@ -1741,6 +1763,35 @@ def test_apply_prepared_snapshot_fields_uses_prepared_document_map_status_when_p
     assert snapshot["document_map_present"] is True
     assert snapshot["document_map_status"] == "ai"
     assert snapshot["document_map_status_reason"] == ""
+
+
+def test_apply_structure_validation_snapshot_fields_prefers_bounded_toc_count_from_validation_report() -> None:
+    snapshot = real_document_validation_structural.build_preparation_diagnostic_snapshot(
+        paragraphs=[ParagraphUnit(text="Contents", role="body", structural_role="toc_header", source_index=0, logical_index=0)],
+        relations=[],
+        structure_repair_report=SimpleNamespace(
+            bounded_toc_regions=0,
+            repaired_bullet_items=0,
+            repaired_numbered_items=0,
+            toc_body_boundary_repairs=0,
+            remaining_isolated_marker_count=0,
+        ),
+        chunk_size=1000,
+        event_log=[],
+    )
+
+    real_document_validation_structural._apply_structure_validation_snapshot_fields(
+        snapshot,
+        SimpleNamespace(
+            toc_region_bounded_count=1,
+            readiness_status="ready",
+            readiness_reasons=(),
+            document_map_present=False,
+            outline_coverage_ratio=None,
+        ),
+    )
+
+    assert snapshot["bounded_toc_region_count"] == 1
 
 
 def test_apply_prepared_metric_fields_uses_explicit_unknown_when_statuses_missing() -> None:

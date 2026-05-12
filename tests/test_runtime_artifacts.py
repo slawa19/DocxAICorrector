@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 
+import docxaicorrector.runtime.artifacts as runtime_artifacts
 from docxaicorrector.runtime.artifacts import (
     load_job_result_registry,
     write_job_result_registry,
@@ -193,6 +194,88 @@ def test_write_ui_result_artifacts_no_meta_when_no_mode_or_warning(tmp_path):
 
     assert "metadata_path" not in artifact_paths
     assert not any(p.name.endswith(".result.meta.json") for p in tmp_path.iterdir())
+
+
+def test_write_ui_result_artifacts_prunes_old_result_family_atomically(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_artifacts, "UI_RESULT_ARTIFACTS_MAX_COUNT", 1)
+    monkeypatch.setattr(runtime_artifacts, "UI_RESULT_ARTIFACTS_MAX_AGE_SECONDS", 10_000)
+
+    old_stem = "20260423_101010_old.result"
+    for suffix, content in {
+        ".md": "old markdown",
+        ".docx": b"old docx",
+        ".tts.txt": "old narration",
+        ".meta.json": json.dumps({"version": 1, "assembly_mode": "selected_chapters"}),
+        ".manifest.json": json.dumps({"schema_version": 1, "segments": []}),
+    }.items():
+        path = tmp_path / f"{old_stem}{suffix}"
+        if isinstance(content, bytes):
+            path.write_bytes(content)
+        else:
+            path.write_text(content, encoding="utf-8")
+        os.utime(path, (10.0, 10.0))
+
+    artifact_paths = write_ui_result_artifacts(
+        source_name="report.docx",
+        markdown_text="new body",
+        docx_bytes=b"new docx",
+        narration_text="new narration",
+        quality_warning={"quality_status": "warn", "gate_reasons": ["drift"]},
+        result_manifest={"schema_version": 1, "segments": [{"segment_id": "seg_0001"}]},
+        output_dir=tmp_path,
+        created_at=1_766_636_465.0,
+    )
+
+    new_family_names = sorted(Path(path).name for path in artifact_paths.values())
+    remaining_names = sorted(path.name for path in tmp_path.iterdir() if path.is_file())
+
+    assert not any(name.startswith(old_stem) for name in remaining_names)
+    assert len(new_family_names) == 5
+    assert all(name.endswith(suffix) for name, suffix in zip(new_family_names, [
+        ".result.docx",
+        ".result.manifest.json",
+        ".result.md",
+        ".result.meta.json",
+        ".result.tts.txt",
+    ]))
+    assert remaining_names == new_family_names
+
+
+def test_write_ui_result_artifacts_keeps_unrelated_files_while_pruning_result_families(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime_artifacts, "UI_RESULT_ARTIFACTS_MAX_COUNT", 1)
+    monkeypatch.setattr(runtime_artifacts, "UI_RESULT_ARTIFACTS_MAX_AGE_SECONDS", 10_000)
+
+    old_stem = "20260423_101010_old.result"
+    (tmp_path / f"{old_stem}.md").write_text("old markdown", encoding="utf-8")
+    (tmp_path / f"{old_stem}.docx").write_bytes(b"old docx")
+    os.utime(tmp_path / f"{old_stem}.md", (10.0, 10.0))
+    os.utime(tmp_path / f"{old_stem}.docx", (10.0, 10.0))
+
+    unrelated_paths = [
+        tmp_path / "completed_session_token.docx",
+        tmp_path / "notes.txt",
+    ]
+    unrelated_paths[0].write_bytes(b"completed cache")
+    unrelated_paths[1].write_text("keep me", encoding="utf-8")
+    os.utime(unrelated_paths[0], (5.0, 5.0))
+    os.utime(unrelated_paths[1], (5.0, 5.0))
+
+    artifact_paths = write_ui_result_artifacts(
+        source_name="report.docx",
+        markdown_text="new body",
+        docx_bytes=b"new docx",
+        output_dir=tmp_path,
+        created_at=1_766_636_465.0,
+    )
+
+    new_family_names = sorted(Path(path).name for path in artifact_paths.values())
+    remaining_names = sorted(path.name for path in tmp_path.iterdir() if path.is_file())
+
+    assert "completed_session_token.docx" in remaining_names
+    assert "notes.txt" in remaining_names
+    assert not any(name.startswith(old_stem) for name in remaining_names)
+    assert new_family_names[0] in remaining_names
+    assert new_family_names[1] in remaining_names
 
 
 def test_write_structure_manifest_artifact_persists_segments_json(tmp_path):

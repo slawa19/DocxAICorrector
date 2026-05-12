@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = [pytest.mark.integration, pytest.mark.typecheck]
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # Baseline: known pyright error count measured on a **clean worktree**.
@@ -77,8 +79,6 @@ def _run_pyright() -> dict:
         )
         raise AssertionError("unreachable")
 
-
-@pytest.mark.integration
 def test_pyright_no_regression():
     """Fail if pyright error count exceeds the known baseline."""
     report = _run_pyright()

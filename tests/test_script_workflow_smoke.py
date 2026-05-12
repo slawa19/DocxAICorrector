@@ -130,6 +130,58 @@ def test_test_sh_run_test_node_smoke() -> None:
     assert "1 passed" in result.stdout
 
 
+def test_test_sh_rejects_non_test_file_selector() -> None:
+    result = _run_test_sh("preparation.py", "-q")
+
+    assert result.returncode == 2
+    assert "Test selector must be under tests/: preparation.py" in (result.stdout + result.stderr)
+
+
+def test_test_sh_rejects_empty_node_suffix() -> None:
+    result = _run_test_sh("tests/test_config.py::", "-q")
+
+    assert result.returncode == 2
+    assert "Pytest node suffix must not be empty" in (result.stdout + result.stderr)
+
+
+def test_test_sh_rejects_selector_after_pytest_options() -> None:
+    result = _run_test_sh("-k", "test_load_app_config_exposes_image_validation_defaults", "tests/test_config.py", "-q")
+
+    assert result.returncode == 2
+    assert "Test selector must appear before pytest options: tests/test_config.py" in (result.stdout + result.stderr)
+
+
+def test_test_sh_reports_missing_venv_clearly() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        script_copy = tmp_path / "test.sh"
+        script_copy.write_text((REPO_ROOT / "scripts" / "test.sh").read_text(encoding="utf-8"), encoding="utf-8")
+
+        result = subprocess.run(
+            ["bash", str(script_copy)],
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=tmp_path,
+        )
+
+    assert result.returncode == 2
+    assert "WSL venv activate script not found: .venv/bin/activate" in (result.stdout + result.stderr)
+
+
+def test_dispatcher_rejects_legacy_test_actions() -> None:
+    result = subprocess.run(
+        [str(REPO_ROOT / "scripts" / "project-control-wsl.sh"), "run-test-file", "tests/test_config.py"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=REPO_ROOT,
+    )
+
+    assert result.returncode == 2
+    assert "Unsupported action: run-test-file" in (result.stdout + result.stderr)
+
+
 def test_status_wrapper_smoke_reports_wsl_runtime() -> None:
     result = _run_powershell_script("status-project.ps1", env_overrides={"DOCX_AI_RUNTIME_MODE": "wsl"})
 

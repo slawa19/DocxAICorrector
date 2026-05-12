@@ -655,6 +655,9 @@ def _apply_prepared_snapshot_fields(snapshot: dict[str, object], prepared: objec
 
 
 def _apply_structure_validation_snapshot_fields(snapshot: dict[str, object], structure_validation_report: object) -> None:
+    toc_region_bounded_count = getattr(structure_validation_report, "toc_region_bounded_count", None)
+    if toc_region_bounded_count is not None and int(toc_region_bounded_count or 0) > _as_int(snapshot, "bounded_toc_region_count"):
+        snapshot["bounded_toc_region_count"] = int(toc_region_bounded_count or 0)
     if not str(snapshot.get("readiness_status") or ""):
         snapshot["readiness_status"] = str(getattr(structure_validation_report, "readiness_status", "") or "")
     if not list(cast(list[str], snapshot.get("readiness_reasons") or [])):

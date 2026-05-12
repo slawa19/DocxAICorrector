@@ -208,6 +208,18 @@ def test_validate_structure_quality_post_ai_readiness_ignores_ai_list_marker_cla
     assert "isolated_list_markers_remaining" not in report.readiness_reasons
 
 
+def test_validate_structure_quality_ignores_year_tail_as_isolated_marker():
+    paragraphs = [
+        _paragraph(0, "2011."),
+        _paragraph(1, "Regular body paragraph with enough words to avoid short-body risk escalation."),
+    ]
+
+    report = validate_structure_quality(paragraphs=paragraphs, app_config=_config(), phase="post_ai_readiness")
+
+    assert report.isolated_marker_paragraph_count == 0
+    assert "isolated_list_markers_remaining" not in report.readiness_reasons
+
+
 def test_validate_structure_quality_blocks_large_front_matter_without_bounded_toc():
     paragraphs = [
         _paragraph(0, "Содержание", structural_role="toc_header"),

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -13,16 +12,6 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 pytestmark = pytest.mark.static_workflow
-
-
-def _run_test_sh(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["bash", str(REPO_ROOT / "scripts" / "test.sh"), *args],
-        capture_output=True,
-        text=True,
-        check=False,
-        cwd=REPO_ROOT,
-    )
 
 
 def _load_vscode_tasks() -> list[dict[str, Any]]:
@@ -138,58 +127,6 @@ def test_vscode_test_tasks_normalize_windows_relative_paths() -> None:
     assert real_document_args[2:] == ["_", "${input:realDocumentProfileId}", "${input:realDocumentRunProfileId}"]
 
 
-def test_test_sh_rejects_non_test_file_selector() -> None:
-    result = _run_test_sh("preparation.py", "-q")
-
-    assert result.returncode == 2
-    assert "Test selector must be under tests/: preparation.py" in (result.stdout + result.stderr)
-
-
-def test_test_sh_rejects_empty_node_suffix() -> None:
-    result = _run_test_sh("tests/test_config.py::", "-q")
-
-    assert result.returncode == 2
-    assert "Pytest node suffix must not be empty" in (result.stdout + result.stderr)
-
-
-def test_test_sh_rejects_selector_after_pytest_options() -> None:
-    result = _run_test_sh("-k", "test_load_app_config_exposes_image_validation_defaults", "tests/test_config.py", "-q")
-
-    assert result.returncode == 2
-    assert "Test selector must appear before pytest options: tests/test_config.py" in (result.stdout + result.stderr)
-
-
-def test_test_sh_reports_missing_venv_clearly() -> None:
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_path = Path(tmp_dir)
-        script_copy = tmp_path / "test.sh"
-        script_copy.write_text((REPO_ROOT / "scripts" / "test.sh").read_text(encoding="utf-8"), encoding="utf-8")
-
-        result = subprocess.run(
-            ["bash", str(script_copy)],
-            capture_output=True,
-            text=True,
-            check=False,
-            cwd=tmp_path,
-        )
-
-    assert result.returncode == 2
-    assert "WSL venv activate script not found: .venv/bin/activate" in (result.stdout + result.stderr)
-
-
-def test_dispatcher_rejects_legacy_test_actions() -> None:
-    result = subprocess.run(
-        [str(REPO_ROOT / "scripts" / "project-control-wsl.sh"), "run-test-file", "tests/test_config.py"],
-        capture_output=True,
-        text=True,
-        check=False,
-        cwd=REPO_ROOT,
-    )
-
-    assert result.returncode == 2
-    assert "Unsupported action: run-test-file" in (result.stdout + result.stderr)
-
-
 def test_setup_contract_declares_required_system_packages() -> None:
     apt_requirements = (REPO_ROOT / "system-requirements.apt").read_text(encoding="utf-8")
     setup_script = (REPO_ROOT / "scripts" / "setup-wsl.sh").read_text(encoding="utf-8")
@@ -237,6 +174,7 @@ def test_legacy_powershell_test_wrappers_are_removed() -> None:
 
 def test_ci_exposes_editable_install_and_static_workflow_jobs() -> None:
     ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    tests_job_text = ci_text.split("tests:", 1)[1]
 
     assert "editable-install:" in ci_text
     assert "pip install -e \".[dev]\"" in ci_text
@@ -244,6 +182,7 @@ def test_ci_exposes_editable_install_and_static_workflow_jobs() -> None:
     assert "bash scripts/test.sh tests/test_typecheck.py -q" in ci_text
     assert "tests:" in ci_text
     assert "needs: [editable-install]" in ci_text
+    assert tests_job_text.index("Clean working tree before tests") < tests_job_text.index("Install dependencies")
     assert "Run static workflow checks" in ci_text
     assert "bash scripts/test.sh tests/test_script_contract_static.py -q" in ci_text
 
@@ -258,19 +197,67 @@ def test_manual_real_document_workflow_installs_system_deps_and_uploads_artifact
     assert "DOCXAI_REQUIRE_REAL_DOCUMENT_CAPABILITIES: \"1\"" in workflow_text
     assert "system-requirements.apt" in workflow_text
     assert "tests/test_real_document_validation_corpus.py::test_corpus_extraction[religion-wealth-core]" in workflow_text
-    assert "tests/test_real_document_validation_corpus.py::test_corpus_extraction[end-times-pdf-core]" in workflow_text
-    assert "tests/test_real_document_validation_corpus.py::test_corpus_structural_passthrough[lietaer-pdf-first-20-structure-core]" in workflow_text
-    assert "bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-first-20-structure-core" in workflow_text
+    assert "tests/test_real_document_validation_corpus.py::test_corpus_extraction[lietaer-pdf-first-20-structure-core]" in workflow_text
+    assert "actions/upload-artifact@v4" in workflow_text
+    assert "tests/artifacts/real_document_pipeline/**" in workflow_text
+    assert "GitHub Actions -> Real Document Validation" in workflow_doc
+    assert "Real Document Validation" in testing_readme
+
+
+def test_manual_quality_gate_workflow_is_documented_and_uploads_artifacts() -> None:
+    workflow_text = (REPO_ROOT / ".github" / "workflows" / "real-document-quality-gate.yml").read_text(encoding="utf-8")
+    workflow_doc = (REPO_ROOT / "docs" / "testing" / "REAL_DOCUMENT_VALIDATION_WORKFLOW.md").read_text(encoding="utf-8")
+    testing_readme = (REPO_ROOT / "docs" / "testing" / "README.md").read_text(encoding="utf-8")
+
+    assert "name: Real Document Quality Gate" in workflow_text
+    assert "workflow_dispatch:" in workflow_text
+    assert 'DOCXAI_RUN_REAL_DOCUMENT_QUALITY: "1"' in workflow_text
+    assert "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}" in workflow_text
+    assert "system-requirements.apt" in workflow_text
+    assert "bash scripts/run-real-document-quality-gate.sh" in workflow_text
     assert "actions/upload-artifact@v4" in workflow_text
     assert "tests/artifacts/real_document_pipeline/**" in workflow_text
     assert "tests/artifacts/structural_diagnostics/**" in workflow_text
-    assert "GitHub Actions -> Real Document Validation" in workflow_doc
-    assert "Real Document Validation" in testing_readme
+    assert "GitHub Actions -> Real Document Quality Gate" in workflow_doc
+    assert "Real Document Quality Gate" in testing_readme
+
+
+def test_manual_ai_heavy_workflows_are_documented_and_upload_artifacts() -> None:
+    structure_workflow_text = (REPO_ROOT / ".github" / "workflows" / "real-document-ai-structure-smoke.yml").read_text(encoding="utf-8")
+    audiobook_workflow_text = (REPO_ROOT / ".github" / "workflows" / "real-document-audiobook-sanity.yml").read_text(encoding="utf-8")
+    workflow_doc = (REPO_ROOT / "docs" / "testing" / "REAL_DOCUMENT_VALIDATION_WORKFLOW.md").read_text(encoding="utf-8")
+    testing_readme = (REPO_ROOT / "docs" / "testing" / "README.md").read_text(encoding="utf-8")
+
+    assert "name: Real Document AI Structure Smoke" in structure_workflow_text
+    assert "workflow_dispatch:" in structure_workflow_text
+    assert 'DOCXAI_RUN_REAL_DOCUMENT_STRUCTURE_RECOGNITION: "1"' in structure_workflow_text
+    assert "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}" in structure_workflow_text
+    assert "system-requirements.apt" in structure_workflow_text
+    assert "bash scripts/test.sh tests/test_real_document_structure_recognition_integration.py -vv" in structure_workflow_text
+    assert "actions/upload-artifact@v4" in structure_workflow_text
+    assert "tests/artifacts/real_document_pipeline/**" in structure_workflow_text
+
+    assert "name: Real Document Audiobook Sanity" in audiobook_workflow_text
+    assert "workflow_dispatch:" in audiobook_workflow_text
+    assert 'DOCXAI_RUN_REAL_DOCUMENT_AUDIOBOOK_SANITY: "1"' in audiobook_workflow_text
+    assert "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}" in audiobook_workflow_text
+    assert "system-requirements.apt" in audiobook_workflow_text
+    assert "bash scripts/test.sh tests/test_real_document_audiobook_spec.py -vv" in audiobook_workflow_text
+    assert "actions/upload-artifact@v4" in audiobook_workflow_text
+    assert "tests/artifacts/real_document_pipeline/**" in audiobook_workflow_text
+
+    assert "GitHub Actions -> Real Document AI Structure Smoke" in workflow_doc
+    assert "GitHub Actions -> Real Document Audiobook Sanity" in workflow_doc
+    assert "Real Document AI Structure Smoke" in testing_readme
+    assert "Real Document Audiobook Sanity" in testing_readme
 
 
 def test_codeowners_protects_workflow_and_startup_contract_files() -> None:
     codeowners_text = (REPO_ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
 
+    assert "/.github/workflows/real-document-quality-gate.yml @slawa19" in codeowners_text
+    assert "/.github/workflows/real-document-ai-structure-smoke.yml @slawa19" in codeowners_text
+    assert "/.github/workflows/real-document-audiobook-sanity.yml @slawa19" in codeowners_text
     assert "/scripts/test.sh @slawa19" in codeowners_text
     assert "/.vscode/tasks.json @slawa19" in codeowners_text
     assert "/tests/test_script_contract_static.py @slawa19" in codeowners_text
@@ -286,6 +273,57 @@ def test_ci_uses_canonical_bash_test_contract() -> None:
     assert "python -m venv .venv" in ci_text
     assert ". .venv/bin/activate" in ci_text
     assert "bash scripts/test.sh tests/test_script_contract_static.py -q" in ci_text
+    assert (
+        'bash scripts/test.sh tests/ -q -m "not static_workflow and not typecheck and not system_deps and not manual_ai_heavy and not browser_ui"'
+        in ci_text
+    )
+
+
+def test_inventory_lists_every_top_level_test_file_exactly_once() -> None:
+    inventory_text = (REPO_ROOT / "docs" / "testing" / "TEST_TIER_INVENTORY.md").read_text(encoding="utf-8")
+    tier_headers = {
+        "## Unit-Contract",
+        "## Compat-Legacy",
+        "## Static-Workflow",
+        "## Typecheck",
+        "## Integration-Local",
+        "## System-Deps",
+        "## Manual-AI-Heavy",
+        "## Browser-UI",
+    }
+    current_tier = None
+    inventory_entries: dict[str, str] = {}
+    duplicates: list[str] = []
+
+    for raw_line in inventory_text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("## "):
+            current_tier = line if line in tier_headers else None
+            continue
+        if not line.startswith("- `tests/test_") or current_tier is None:
+            continue
+        test_path = line.split("`", 2)[1]
+        if test_path in inventory_entries:
+            duplicates.append(test_path)
+            continue
+        inventory_entries[test_path] = current_tier
+
+    actual_test_files = {
+        str(path.relative_to(REPO_ROOT)).replace("\\", "/")
+        for path in (REPO_ROOT / "tests").glob("test_*.py")
+    }
+
+    assert not duplicates
+    assert set(inventory_entries) == actual_test_files
+
+
+def test_special_tier_files_have_file_level_markers_for_pytest_selection() -> None:
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    typecheck_text = (REPO_ROOT / "tests" / "test_typecheck.py").read_text(encoding="utf-8")
+    system_deps_text = (REPO_ROOT / "tests" / "test_real_document_validation_corpus.py").read_text(encoding="utf-8")
+
+    assert "pytest.mark.typecheck" in typecheck_text
+    assert "pytest.mark.system_deps" in system_deps_text
     assert "bash scripts/test.sh tests/ -q" in ci_text
     assert "python -m pytest tests -q" not in ci_text
 

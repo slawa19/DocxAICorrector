@@ -17,6 +17,7 @@ from docxaicorrector.runtime.events import (
     FinalizeProcessingStatusEvent,
     PreparationCompleteEvent,
     PreparationFailedEvent,
+    PreparationStoppedEvent,
     PushActivityEvent,
     ResetImageStateEvent,
     SetProcessingStatusEvent,
@@ -506,6 +507,39 @@ def test_drain_preparation_events_ignores_stale_failure_marker(monkeypatch):
     assert session_state.selected_source_token == "new.docx:3:def"
     assert session_state.prepared_run_context is active_prepared_context
     assert session_state.last_error == ""
+    assert session_state.processing_outcome == "running"
+    assert finalized == []
+    assert activities == []
+
+
+def test_drain_preparation_events_ignores_stale_stopped_marker(monkeypatch):
+    current_queue = queue.Queue()
+    current_worker = object()
+    session_state = SessionState(
+        preparation_input_marker="new.docx:3:def:6000",
+        preparation_failed_marker="",
+        preparation_event_queue=current_queue,
+        preparation_worker=current_worker,
+        processing_outcome="running",
+    )
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    finalized = []
+    activities = []
+
+    current_queue.put(
+        PreparationStoppedEvent(upload_marker="old.docx:3:abc:6000")
+    )
+
+    processing_runtime.drain_preparation_events(
+        reset_run_state=lambda **kwargs: (_ for _ in ()).throw(AssertionError("stale stopped marker must be ignored")),
+        set_processing_status=lambda **payload: (_ for _ in ()).throw(AssertionError("stale stopped marker must be ignored")),
+        finalize_processing_status=lambda stage, detail, progress, terminal_kind=None: finalized.append((stage, detail, progress, terminal_kind)),
+        push_activity=lambda message: activities.append(message),
+    )
+
+    assert session_state.preparation_input_marker == "new.docx:3:def:6000"
+    assert session_state.preparation_worker is current_worker
+    assert session_state.preparation_event_queue is current_queue
     assert session_state.processing_outcome == "running"
     assert finalized == []
     assert activities == []
@@ -1842,4 +1876,69 @@ def test_start_background_preparation_reports_worker_failure_after_materializati
     assert session_state.last_background_error["stage"] == "preparation"
     assert finalized == [("Ошибка подготовки", "worker boom", 1.0, "error")]
     assert activities[-1] == "Не удалось прочитать и проанализировать документ."
+
+
+def test_start_background_preparation_stops_after_materialization_before_worker_target(monkeypatch):
+    _clear_materialized_upload_cache()
+    session_state = SessionState()
+    monkeypatch.setattr(processing_runtime.st, "session_state", session_state)
+    statuses: list[dict[str, object]] = []
+    activities: list[str] = []
+    finalized = []
+    worker_calls: list[dict[str, object]] = []
+
+    uploaded_file = processing_runtime.build_in_memory_uploaded_file(
+        source_name="book.pdf",
+        source_bytes=b"%PDF-1.4\nsource\n",
+    )
+    payload = processing_runtime.freeze_uploaded_file_lightweight(uploaded_file)
+
+    materialized_payload = processing_runtime.FrozenUploadPayload(
+        filename="book.docx",
+        content_bytes=b"PK\x03\x04converted-docx",
+        file_size=len(b"PK\x03\x04converted-docx"),
+        content_hash="mockedhash",
+        file_token="book.docx:18:mockedhash",
+        source_format="pdf",
+        conversion_backend="libreoffice",
+    )
+
+    def materialize_and_request_stop(uploaded_payload, progress_callback=None):
+        session_state.preparation_stop_event.set()
+        return materialized_payload
+
+    monkeypatch.setattr(
+        processing_runtime,
+        "materialize_uploaded_payload",
+        materialize_and_request_stop,
+    )
+
+    processing_runtime.start_background_preparation(
+        worker_target=lambda **kwargs: worker_calls.append(kwargs),
+        reset_run_state=lambda **kwargs: None,
+        push_activity=lambda message: activities.append(message),
+        set_processing_status=lambda **kw: statuses.append(kw),
+        uploaded_payload=payload,
+        upload_marker=payload.file_token,
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=True,
+    )
+
+    session_state.preparation_worker.join(timeout=5)
+    processing_runtime.drain_preparation_events(
+        reset_run_state=lambda **kwargs: None,
+        set_processing_status=lambda **kw: statuses.append(kw),
+        finalize_processing_status=lambda stage, detail, progress, terminal_kind=None: finalized.append((stage, detail, progress, terminal_kind)),
+        push_activity=lambda message: activities.append(message),
+    )
+
+    assert worker_calls == []
+    assert session_state.prepared_run_context is None
+    assert session_state.preparation_worker is None
+    assert session_state.preparation_event_queue is None
+    assert session_state.preparation_stop_event is None
+    assert session_state.processing_outcome == "idle"
+    assert finalized == [("Подготовка остановлена", "", 1.0, "stopped")]
+    assert activities[-1] == "Подготовка документа остановлена."
 

@@ -64,6 +64,11 @@ class PreparationFailedEvent:
     error_details: dict[str, object]
 
 
+@dataclass(frozen=True)
+class PreparationStoppedEvent:
+    upload_marker: str
+
+
 ProcessingEvent = (
     SetStateEvent
     | ResetImageStateEvent
@@ -75,4 +80,5 @@ ProcessingEvent = (
     | WorkerCompleteEvent
     | PreparationCompleteEvent
     | PreparationFailedEvent
+    | PreparationStoppedEvent
 )

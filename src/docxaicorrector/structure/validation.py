@@ -191,6 +191,8 @@ def _is_isolated_marker_paragraph(paragraph: ParagraphLike, *, phase: str) -> bo
     text = _normalized_text(paragraph)
     if not text:
         return False
+    if re.fullmatch(r"(?:19|20)\d{2}\.", text):
+        return False
     if _is_heading_for_phase(paragraph, phase=phase):
         return False
     if _effective_structural_role(paragraph, phase=phase) == "list":
