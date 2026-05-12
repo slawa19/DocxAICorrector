@@ -22,6 +22,7 @@ from docxaicorrector.pipeline.output_validation import (
     normalize_false_fragment_headings_markdown,
     normalize_list_fragment_regressions_markdown,
     normalize_mixed_script_markdown,
+    normalize_page_placeholder_heading_concats_markdown,
     normalize_residual_bullet_glyphs_markdown,
 )
 from docxaicorrector.generation.formatting_diagnostics_retention import (
@@ -67,7 +68,8 @@ def _format_translation_quality_gate_failure_message(gate_reasons: Sequence[str]
 
 
 def _normalize_final_markdown_for_quality_gate(text: str) -> str:
-    normalized = normalize_false_fragment_headings_markdown(text)
+    normalized = normalize_page_placeholder_heading_concats_markdown(text)
+    normalized = normalize_false_fragment_headings_markdown(normalized)
     normalized = normalize_residual_bullet_glyphs_markdown(normalized)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
     if "\n" not in normalized and "\n\n" in text:
@@ -76,7 +78,8 @@ def _normalize_final_markdown_for_quality_gate(text: str) -> str:
 
 
 def _normalize_final_markdown_for_runtime_display(text: str) -> str:
-    normalized = normalize_false_fragment_headings_markdown(text)
+    normalized = normalize_page_placeholder_heading_concats_markdown(text)
+    normalized = normalize_false_fragment_headings_markdown(normalized)
     normalized = normalize_residual_bullet_glyphs_markdown(normalized)
     normalized = normalize_list_fragment_regressions_markdown(normalized)
     normalized = normalize_mixed_script_markdown(normalized)

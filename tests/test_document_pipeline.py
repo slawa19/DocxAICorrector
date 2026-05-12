@@ -3006,6 +3006,14 @@ def test_build_translation_quality_report_detects_toc_body_concat_across_leader_
     assert report["toc_body_concat_detected"] is True
 
 
+def test_normalize_final_markdown_for_runtime_display_splits_placeholder_from_chapter_heading():
+    normalized = document_pipeline_late_phases._normalize_final_markdown_for_runtime_display(
+        "This page intentionally left blank Chapter Nine STRATEGIES FOR NGO S"
+    )
+
+    assert normalized == "This page intentionally left blank\n\nChapter Nine STRATEGIES FOR NGO S"
+
+
 def test_build_translation_quality_report_exposes_new_residual_quality_metrics_and_gate_reasons():
     report = document_pipeline_late_phases._build_translation_quality_report(
         context=SimpleNamespace(

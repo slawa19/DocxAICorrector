@@ -74,6 +74,10 @@ _STRUCTURAL_INLINE_LABEL_PATTERN = re.compile(
     r"^(?:\d+\s*/\s*\d+\.\)|год\s+\d+\b|(?:суд|чаша|петля|часть|глава|введение|заключение|содержание)\b)",
     re.IGNORECASE,
 )
+_PAGE_PLACEHOLDER_CHAPTER_CONCAT_PATTERN = re.compile(
+    r"^(?P<indent>\s*)(?:(?P<marker>#{1,6})\s+)?(?P<placeholder>this page intentionally left blank)\s+(?P<heading>(?:chapter|глава)\b.+)$",
+    re.IGNORECASE,
+)
 _INLINE_HEADING_FRAGMENT_MAX_WORDS = 6
 _INLINE_PARAGRAPH_FRAGMENT_MAX_WORDS = 12
 _INLINE_PARAGRAPH_FRAGMENT_MAX_CHARS = 100
@@ -253,7 +257,7 @@ def has_toc_body_concat_signal(*, target_text: str, processed_chunk: str) -> boo
 
 
 def has_toc_body_concat_markdown(text: str) -> bool:
-    paragraphs = _split_markdown_paragraphs(text)
+    paragraphs = _split_markdown_paragraphs(normalize_page_placeholder_heading_concats_markdown(text))
     if not paragraphs:
         return False
     return any(_TOC_BODY_CONCAT_MARKDOWN_PATTERN.search(paragraph) for paragraph in paragraphs)
@@ -551,6 +555,28 @@ def _looks_inline_fragment_line(line: str) -> bool:
 
 def _collapse_markdown_blank_lines(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def normalize_page_placeholder_heading_concats_markdown(text: str) -> str:
+    normalized_lines: list[str] = []
+    for raw_line in text.splitlines():
+        match = _PAGE_PLACEHOLDER_CHAPTER_CONCAT_PATTERN.match(raw_line.rstrip())
+        if match is None:
+            normalized_lines.append(raw_line.rstrip())
+            continue
+
+        indent = match.group("indent") or ""
+        marker = match.group("marker") or ""
+        placeholder = str(match.group("placeholder") or "").strip()
+        heading = str(match.group("heading") or "").strip()
+        normalized_lines.append(f"{indent}{placeholder}")
+        normalized_lines.append("")
+        if marker:
+            normalized_lines.append(f"{indent}{marker} {heading}")
+        else:
+            normalized_lines.append(f"{indent}{heading}")
+
+    return _collapse_markdown_blank_lines("\n".join(normalized_lines))
 
 
 def _normalize_entry_text(entry: FinalAssemblyEntry) -> str:

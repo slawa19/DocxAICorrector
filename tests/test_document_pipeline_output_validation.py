@@ -553,6 +553,14 @@ def test_normalize_inline_fragment_paragraphs_markdown_preserves_structural_phas
     assert "\n\n3/3.) Семь судов чаши\n\nСуд над чашей #1" in normalized
 
 
+def test_normalize_page_placeholder_heading_concats_markdown_splits_placeholder_from_chapter_heading():
+    markdown = "This page intentionally left blank Chapter Nine STRATEGIES FOR NGO S"
+
+    normalized = document_pipeline_output_validation.normalize_page_placeholder_heading_concats_markdown(markdown)
+
+    assert normalized == "This page intentionally left blank\n\nChapter Nine STRATEGIES FOR NGO S"
+
+
 def test_normalize_residual_bullet_glyphs_markdown_rewrites_inline_and_leading_glyphs():
     markdown = (
         "Посттрибулационисты считают, что Иисус придёт в конце ● скорби.\n"
