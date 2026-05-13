@@ -1,4 +1,4 @@
-# Topology-First Structure Recovery Remediation Spec
+﻿# Topology-First Structure Recovery Remediation Spec
 
 Date: 2026-05-12
 Status: Proposed
@@ -52,7 +52,7 @@ normalizers in `src/docxaicorrector/pipeline/late_phases.py`:
 `src/docxaicorrector/pipeline/output_validation.py` also exposes
 `has_toc_body_concat_markdown(...)`, which still judges TOC/body concat through
 markdown text. The latest placeholder-specific normalizer is a narrow regex for
-`this page intentionally left blank` followed by `chapter|глава`.
+`this page intentionally left blank` followed by `chapter|РіР»Р°РІР°`.
 
 This confirms the concern: structure defects are being corrected in final
 markdown and quality paths, after paragraph topology, Stage 1 `DocumentMap`,
@@ -754,7 +754,7 @@ and restore/mapping diagnostics.
   topology projection artifacts. Until then it remains advisory/compatibility
   cleanup only, not structural proof.
 - Prerequisite for Phase 2: register `lietaer-pdf-chapter-region-core` in
-  `corpus_registry.toml` covering Chapter 8–11 and the over-merged TOC region.
+  `corpus_registry.toml` covering Chapter 8-11 and the over-merged TOC region.
   Without it, late-book topology cases can only be verified through full-book
   reruns, which violates the inner-loop rule from the parent spec.
 
@@ -1002,3 +1002,377 @@ The next implementation tasks, in order, should be:
 This ordering is the smallest radical step that changes the architecture instead
 of adding one more output cleanup rule, while keeping each slice independently
 verifiable.
+
+## Phase 4 Prerequisite: Split Fallback Hardening
+
+This section is added 2026-05-13 after diagnosing AI structure-recognition split
+fallback behavior on lietaer-pdf-full-benchmark runs. It is a prerequisite to
+Phase 4, not part of Phase 4.
+
+### Motivation
+
+`_classify_descriptor_window_with_fallback` in
+`src/docxaicorrector/structure/recognition.py` recursively bisects the
+descriptor window on AI timeout (current progress text: "уточняю разбиением"). Current
+implementation has no retry, no overlap, no recursion cap, and no marking of
+classifications produced under fallback. It also does not consult the
+`DocumentTopologyProjection` when accepting Stage 2 results inside descriptor
+windows whose midpoint falls inside a high-confidence topology unit.
+
+Risks observed:
+
+1. Recursion can split through the middle of a single logical unit (heading +
+   first paragraph, compound TOC entry already merged by Stage 1.5), producing
+   two halves classified independently and incoherently.
+2. A single slow OpenAI response can amplify into many smaller, more expensive
+   sub-requests with no upper bound on total cost.
+3. Stage 2 results inside fallback halves can override Stage 1.5 anchored
+   units of higher confidence (`document_map_outline` / `document_map_toc`,
+   `confidence=high`) because no precedence guard is applied in
+   `apply_structure_map`.
+4. Downstream reconciliation cannot distinguish "AI-confident" from
+   "AI-emergency-fallback" results because `ParagraphClassification` carries no
+   provenance bit.
+
+### Slices
+
+The remediation is decomposed into seven independently mergeable slices.
+Slice 1 is a strict prerequisite for continuing Phase 4 interpretation: it is
+an invariant guard, not a Phase 4 feature. Slices 2-7 may be reordered when
+structural diagnostic data shows a better sequence, but behavior-changing
+slices must not be driven by repeated full-book quality-gate loops.
+
+#### Slice 1: Topology Precedence Guard (Prerequisite)
+
+**Status:** Required before Phase 4. Smallest viable change. No flag.
+
+**Integration point (locked):** `apply_structure_map(...)` in
+`src/docxaicorrector/structure/recognition.py`. The function already accepts
+`document_map` and tracks `anchor_conflicts_deferred`; Slice 1 extends the
+same pattern with `topology_projection` and local counters. Do not move this
+logic into `reconciliation.py` for Slice 1.
+
+**Signature change:**
+
+```python
+def apply_structure_map(
+    paragraphs,
+    structure_map,
+    *,
+    min_confidence="medium",
+    document_map=None,
+    topology_projection=None,
+) -> dict[str, int]:
+    ...
+```
+
+**New counters in return dict:**
+
+- `topology_authority_conflicts_deferred`
+- `topology_authority_protected_count`
+
+**Guard activation conditions.** Guard applies to `logical_index` only when ALL
+of the following hold:
+
+- `topology_projection is not None`
+- `unit = topology_projection.get_unit(logical_index)` is not None
+- `unit.confidence == "high"`
+- `unit.authority in {"document_map_outline", "document_map_toc"}`
+- `unit.unit_type in {"toc_entry", "chapter_heading", "section_heading"}`
+
+When the guard is inactive, behavior is unchanged from current
+`apply_structure_map`. `document_map_anchor`, `document_map_split_hint`,
+review-zone, low-confidence, and non-document-map authorities are explicitly
+out of scope for Slice 1.
+
+**Conflict table.** When the guard is active, Stage 2 classification is
+evaluated against `unit.unit_type`:
+
+| `unit.unit_type` | Stage 2 classification | Outcome |
+| --- | --- | --- |
+| `chapter_heading` | `heading` with `heading_level == unit.heading_level` | concord - apply |
+| `chapter_heading` | `heading` with missing or different `heading_level` | conflict - defer |
+| `chapter_heading` | `body` / `toc_entry` / other supported role | conflict - defer |
+| `section_heading` | `heading` with `heading_level == unit.heading_level` | concord - apply |
+| `section_heading` | `heading` with missing or different `heading_level` | conflict - defer |
+| `section_heading` | `body` / `toc_entry` / other supported role | conflict - defer |
+| `toc_entry` | `toc_entry` if Stage 2 supports that role | concord - apply |
+| `toc_entry` | `heading` / `body` / any non-TOC role | conflict - defer |
+
+If Stage 2 does not currently support `toc_entry` as a classification role,
+the concord row for `toc_entry` is a forward-compatible rule; current behavior
+should still treat `heading` and `body` as conflicts for topology TOC units.
+
+**Heading-level precondition.** The conflict table above assumes both the
+topology unit (`TopologyUnit` / `StructuralUnit`) and the Stage 2
+classification carry a comparable `heading_level`. If either side does not yet
+carry this field, Slice 1 must extend the topology-side dataclass (not
+`ParagraphClassification`) with `heading_level: int | None = None`, populate
+it from `DocumentMap` outline level during Stage 1.5 projection, and treat
+`heading_level is None` on the topology unit as "unknown" - in that case
+`heading` of any level is concord, only role mismatch is conflict. This
+adjustment is in scope for Slice 1 only when needed; otherwise it stays out
+of scope.
+
+Concord increments `topology_authority_protected_count` per applied paragraph.
+Conflict increments `topology_authority_conflicts_deferred` and skips applying
+that Stage 2 result. "Defer" means do not mutate the paragraph role,
+`structural_role`, `heading_source`, or `heading_level` from the conflicting
+classification. Existing role state and later reconciliation remain responsible
+for the final output.
+
+**Non-goals for Slice 1:**
+
+- No flag gating. The guard is unconditional once `topology_projection` is
+  provided by the caller.
+- No schema bump on `ParagraphClassification` or `StructureMap`.
+- No changes to fallback/retry/cap/overlap in
+  `_classify_descriptor_window_with_fallback`.
+- No cache fingerprint changes.
+- No full-book quality-gate rerun in Slice 1.
+- No new event names; expose counters through the existing summary/metrics path.
+
+**Caller updates.** Every call site of `apply_structure_map(...)` must pass
+`topology_projection=` when the caller has it. The expected production call site
+is `_run_structure_recognition(...)` in `src/docxaicorrector/processing/preparation.py`,
+which already has `topology_projection`. Tests/callers without topology context
+pass `topology_projection=None` or omit the kwarg for unchanged behavior.
+
+The implementation agent must search call sites with repository search tooling,
+not by assumption, and update each call site explicitly.
+
+**Tests.** Add focused tests in `tests/test_structure_recognition.py`. Cover at
+minimum:
+
+- guard inactive when `topology_projection is None`;
+- guard inactive when unit confidence is not high;
+- guard inactive when authority is not `document_map_outline` /
+  `document_map_toc`;
+- guard inactive when unit type is `body` / `page_artifact` / unknown;
+- concord for `chapter_heading` with matching heading level;
+- conflict for `chapter_heading` with `body`;
+- conflict for `chapter_heading` with wrong heading level;
+- concord for `section_heading` with matching heading level;
+- conflict for `section_heading` with wrong heading level;
+- conflict for `toc_entry` with `heading`;
+- conflict for `toc_entry` with `body`;
+- counters propagate into the return dict;
+- uncovered paragraphs still accept Stage 2 classification as before.
+
+#### Slice 2: Split Fallback Telemetry And Honest Progress
+
+Make split fallback observable before changing its behavior. Add aggregate
+fallback stats without changing the AI response schema:
+
+- `structure_window_split_count`
+- `structure_max_fallback_depth`
+- `structure_split_fallback_descriptor_count`
+- `structure_timeout_retry_count` (initially zero until Slice 3)
+- `structure_timeout_retry_succeeded_count` (initially zero until Slice 3)
+- `structure_timeout_retry_failed_count` (initially zero until Slice 3)
+- `structure_split_fallback_capped_descriptor_count` (initially zero until Slice 4)
+
+Prefer an internal stats object over tuple-return sprawl, for example:
+
+```python
+@dataclass
+class StructureFallbackStats:
+    split_count: int = 0
+    max_fallback_depth: int = 0
+    split_fallback_descriptor_count: int = 0
+    timeout_retry_count: int = 0
+    timeout_retry_succeeded_count: int = 0
+    timeout_retry_failed_count: int = 0
+    capped_fallback_descriptor_count: int = 0
+```
+
+Store stats on `StructureMap` or pass them through the existing summary path;
+do not add fields to `ParagraphClassification` in this slice. Persist aggregate
+fields into `preparation_diagnostic_snapshot` so full-book evidence can be
+correlated with split density.
+
+Replace optimistic progress wording such as "refining by splitting" with a
+neutral timeout message, e.g.:
+
+```text
+AI timeout on a large structure window; retrying with smaller windows.
+```
+
+If the progress event has `current_window`, `total_windows`, `descriptor_count`,
+and `fallback_depth`, include them in metrics and logs. Do not rely on parsing
+human-readable progress text for diagnostics.
+
+#### Slice 3: Bounded Retry Before Split
+
+Before splitting a window on a timeout-like exception, retry the same window at
+most once with a bounded extended timeout. Retry must not silently exceed the
+stage budget.
+
+Required controls:
+
+- `structure_recognition_timeout_retry_multiplier` (proposed default: `1.5`)
+- `structure_recognition_timeout_retry_max_seconds`
+- future-compatible check for remaining stage budget when such a budget exists
+
+Retry should change only timeout unless the provider/runtime already has a
+safe, supported deterministic request parameter. Do not add provider-specific
+fields such as temperature in this slice. Do not lower `max_tokens` for retry;
+that can truncate classification output and convert timeouts into parse errors.
+
+Telemetry from Slice 2 must distinguish:
+
+- retry attempted;
+- retry succeeded and avoided split;
+- retry failed and proceeded to split.
+
+High retry-success rate indicates transient latency and argues against reducing
+root window size. Low retry-success rate with frequent splits indicates root
+windows/token targets are too aggressive.
+
+#### Slice 4: Recursion Cap With Fail-Closed Semantics
+
+Add a hard cap on recursion depth and total fallback expansions per Stage 2 run
+(proposed defaults: max depth `3`, max expansions `8`). Cap values are
+configuration settings, not feature flags.
+
+When the cap is reached, do not synthesize `body/low` classifications for
+uncovered descriptors. "No classification" is preferable: default downstream
+behavior is already body-like, and synthetic low-confidence classifications
+pollute Phase 4 accounting.
+
+Covered descriptors may receive a deterministic capped fallback only when all
+of these hold:
+
+- the descriptor is covered by high-confidence topology authority protected by
+  Slice 1;
+- the fallback preserves that authority rather than inventing a new role;
+- the fallback is marked in side metadata/stats as capped.
+
+Otherwise the window is treated as failed/degraded for those descriptors, and
+the snapshot records the cap. This is fail-closed: it must not create new
+authoritative structure from timeout recovery.
+
+#### Slice 5: Topology-Aware Split Boundary And Optional Overlap
+
+Internal fallback split must not cut through a high-confidence topology unit.
+When choosing the midpoint, snap the split boundary to the nearest safe topology
+unit boundary when possible.
+
+Rules:
+
+- Build candidate protected ranges from high-confidence topology units with
+  `authority in {"document_map_outline", "document_map_toc"}` and more than one
+  logical index.
+- If the midpoint falls inside such a range, choose the nearest boundary outside
+  that unit that leaves both left and right windows non-empty.
+- If no safe non-empty boundary exists, do not recurse blindly. Let Slice 4 cap
+  or the window-failed path handle the case.
+- Guard against pathological cases where snapping returns the same split point
+  repeatedly.
+
+**Boundary-selection invariants (mandatory):**
+
+- progress: for the chosen boundary, `len(left) >= 1` and `len(right) >= 1`
+  and `len(left) + len(right) == len(window)`;
+- non-regression: the chosen split point is strictly different from any
+  ancestor split point on the current recursion path (no fixed-point loop);
+- determinism: boundary selection must be deterministic for a given
+  `(window, topology_projection)` pair - no dependency on hash ordering or
+  iteration nondeterminism;
+- tie-break: when two adjacent protected units are equally close to the
+  midpoint, prefer the boundary that leaves the larger protected unit intact;
+  on full tie, prefer the boundary to the left of the midpoint;
+- coverage: if both left-snap and right-snap produce empty halves, mark the
+  window unsplittable and fall through to Slice 4 cap rather than emitting an
+  empty recursion frame.
+
+Descriptor overlap around the final split point is optional and lower priority
+than boundary snapping. If implemented, it must be bounded (for example 2-20
+descriptors), must not defeat recursion caps, and must rely on existing
+`_merge_window_classifications(...)` edge-distance behavior for duplicate
+classification resolution.
+
+This is lower token/API cost than broad overlap, but it is not "free": tests
+must cover non-empty windows, repeated split prevention, and multi-index units
+near document boundaries.
+
+#### Slice 6: Fallback Provenance Without AI Schema Bump
+
+Do not add `fallback_origin`, `evidence`, or `fallback_depth` to
+`ParagraphClassification` in this remediation sequence. That would change the
+classification schema/cache contract and may invalidate full-book caches.
+
+Instead, keep provenance outside the AI response object:
+
+```python
+@dataclass(frozen=True)
+class StructureFallbackMetadata:
+    fallback_depth: int = 0
+    capped: bool = False
+    source: str = "primary"  # primary | retry | split_fallback | cap_reached
+
+@dataclass
+class StructureMap:
+    ...
+    fallback_metadata_by_index: dict[int, StructureFallbackMetadata] = field(default_factory=dict)
+```
+
+If split fallback classifications are accepted, confidence demotion may mutate
+the existing `confidence` value before insertion into `StructureMap`:
+
+- `high -> medium`
+- `medium -> low`
+- `low -> low`
+
+Do not demote high-confidence `document_map_reconciliation` patches or any
+deterministic topology-preserving fallback from Slice 4. Phase 4 metrics must be
+able to report how many units depended on split fallback metadata.
+
+#### Slice 7: Root Window Tuning From Diagnostics
+
+Tune root window size and token targets only after Slices 2-3 expose retry and
+split telemetry. The main decision signal is not `window_split_count` alone:
+
+- high `structure_timeout_retry_succeeded_count` means provider latency is
+  transient; do not reduce root window size solely because split was attempted;
+- low retry success with frequent splits means root windows or
+  `structure_recovery_anchored_classification_target_input_tokens` are too
+  aggressive for the current provider/timeout;
+- frequent capped fallbacks mean retry/split tuning is still unsafe and should
+  not be hidden by threshold relaxation.
+
+Any root-window tuning is a separate configuration change with focused
+diagnostics. Do not use full-book quality-gate reruns as the ordinary tuning
+loop.
+
+### Slice 1 Verification (Canonical)
+
+Worktree must be free of whitespace errors before any Slice 1 commit:
+
+```bash
+git status --porcelain
+git diff --check
+```
+
+If `git diff --check` reports issues, the agent stops and reports cleanup
+needed. Whitespace cleanup is not mixed with this logic slice. Do not use
+destructive checkout/reset commands to clean unrelated files unless the user
+explicitly requests it.
+
+Then run focused canonical checks:
+
+```bash
+echo START; wsl.exe -d Debian bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && bash scripts/test.sh tests/test_structure_recognition.py -q 2>&1"; echo DONE
+echo START; wsl.exe -d Debian bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && bash scripts/test.sh tests/test_structure_topology.py -q 2>&1"; echo DONE
+echo START; wsl.exe -d Debian bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && bash scripts/test.sh tests/test_structure_reconciliation.py -q 2>&1"; echo DONE
+```
+
+No full-book quality-gate run in Slice 1.
+
+### Decision Rule for Slicing Order
+
+Slice 1 must land first. Slice 2 should normally land next because it gives the
+team structural fallback visibility without changing behavior. Slices 3-7 are
+then ordered by structural diagnostic data. This decision must be made from a
+structural diagnostic snapshot or focused structure-recognition tests, not from
+repeated full quality-gate reruns.

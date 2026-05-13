@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from typing import Any, cast
 
+import docxaicorrector.generation._generation as generation
 import docxaicorrector.pipeline._pipeline as document_pipeline
 import docxaicorrector.pipeline.late_phases as document_pipeline_late_phases
 import docxaicorrector.pipeline.output_validation as document_pipeline_output_validation
@@ -3694,6 +3695,66 @@ def test_run_document_processing_writes_marker_generation_diagnostics_artifact_o
     assert payload["error_code"] == "markers_missing"
     assert payload["paragraph_ids"] == ["p0001"]
     assert "marker diagnostics:" in runtime["log"][-1]["details"]
+
+
+def test_run_document_processing_marker_generation_artifact_includes_found_ids_and_raw_response_preview(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    diagnostics_dir = tmp_path / "formatting_diagnostics"
+    monkeypatch.setattr(document_pipeline, "FORMATTING_DIAGNOSTICS_DIR", diagnostics_dir)
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{
+            "target_text": "Исходный блок",
+            "target_text_with_markers": "[[DOCX_PARA_p0001]]\nИсходный блок",
+            "paragraph_ids": ["p0001"],
+            "context_before": "prev",
+            "context_after": "next",
+            "target_chars": 13,
+            "context_chars": 8,
+        }],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={"enable_paragraph_markers": True},
+        model="gpt-5.4",
+        max_retries=1,
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **_kw: "system",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=lambda **kwargs: (_ for _ in ()).throw(
+            generation.MarkerValidationError(
+                "marker_order_or_identity",
+                raw_markdown="[[DOCX_PARA_p9999]]\nЧужой маркер",
+                expected_paragraph_ids=["p0001"],
+                found_paragraph_ids=["p9999"],
+            )
+        ),
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=_convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=_reinsert_inline_images,
+    )
+
+    assert result == "failed"
+    artifact_path = Path(runtime["state"]["latest_marker_diagnostics_artifact"])
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert payload["error_code"] == "marker_order_or_identity"
+    assert payload["expected_paragraph_ids"] == ["p0001"]
+    assert payload["found_paragraph_ids"] == ["p9999"]
+    assert payload["raw_response_preview"] == "[[DOCX_PARA_p9999]]\nЧужой маркер"
 
 
 def test_run_document_processing_writes_marker_registry_diagnostics_artifact_on_registry_mismatch(tmp_path, monkeypatch):

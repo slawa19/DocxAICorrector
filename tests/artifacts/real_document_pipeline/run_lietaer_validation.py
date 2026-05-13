@@ -139,6 +139,109 @@ def _coerce_int(value: object, default: int = 0) -> int:
     return default
 
 
+def _max_payload_list_length(
+    formatting_diagnostics: Sequence[Mapping[str, object]],
+    key: str,
+) -> int:
+    max_length = 0
+    for payload in formatting_diagnostics:
+        values = payload.get(key)
+        if isinstance(values, Sequence) and not isinstance(values, (str, bytes, bytearray)):
+            max_length = max(max_length, len(values))
+    return max_length
+
+
+def _resolve_acceptance_unmapped_source_count(
+    *,
+    formatting_diagnostics: Sequence[Mapping[str, object]],
+    translation_quality_report: Mapping[str, object],
+) -> int:
+    quality_count = _coerce_int(
+        translation_quality_report.get(
+            "worst_unmapped_source_count",
+            translation_quality_report.get("unmapped_source_count"),
+        )
+    )
+    formatting_count = _max_payload_list_length(formatting_diagnostics, "unmapped_source_ids")
+    return max(quality_count, formatting_count)
+
+
+def _resolve_acceptance_unmapped_target_count(
+    *,
+    formatting_diagnostics: Sequence[Mapping[str, object]],
+    translation_quality_report: Mapping[str, object],
+) -> int:
+    quality_count = _coerce_int(translation_quality_report.get("unmapped_target_count"))
+    formatting_count = _max_payload_list_length(formatting_diagnostics, "unmapped_target_indexes")
+    return max(quality_count, formatting_count)
+
+
+def _build_acceptance_toc_body_concat_check(
+    *,
+    preparation_diagnostic_snapshot: Mapping[str, object],
+    translation_quality_report: Mapping[str, object],
+) -> dict[str, object]:
+    gate_source = (
+        str(
+            preparation_diagnostic_snapshot.get("toc_body_concat_gate_source")
+            or translation_quality_report.get("toc_body_concat_gate_source")
+            or "legacy_markdown"
+        )
+        .strip()
+        .lower()
+        or "legacy_markdown"
+    )
+    structure_toc_boundary_resolved = bool(
+        _coerce_int(preparation_diagnostic_snapshot.get("document_map_toc_region_count")) > 0
+        and (
+            _coerce_int(preparation_diagnostic_snapshot.get("topology_toc_entry_count")) > 0
+            or _coerce_int(preparation_diagnostic_snapshot.get("topology_split_compound_toc_operation_count")) > 0
+            or _coerce_int(preparation_diagnostic_snapshot.get("document_map_compound_toc_split_hint_count")) == 0
+        )
+    )
+    source_toc_boundary_repaired = bool(
+        _coerce_int(preparation_diagnostic_snapshot.get("structure_repair_toc_body_boundary_repairs")) > 0
+        or _coerce_int(preparation_diagnostic_snapshot.get("effective_source_toc_region_count")) > 0
+        or (gate_source == "topology_projection" and structure_toc_boundary_resolved)
+    )
+    gate_detected = bool(
+        preparation_diagnostic_snapshot.get(
+            "toc_body_concat_structure_detected"
+            if gate_source == "topology_projection"
+            else "toc_body_concat_markdown_detected",
+            preparation_diagnostic_snapshot.get(
+                "toc_body_concat_detected",
+                translation_quality_report.get("toc_body_concat_detected"),
+            ),
+        )
+    )
+    return {
+        "name": "no_toc_body_concat_required",
+        "passed": not gate_detected and source_toc_boundary_repaired,
+        "toc_body_concat_detected": preparation_diagnostic_snapshot.get(
+            "toc_body_concat_detected",
+            translation_quality_report.get("toc_body_concat_detected"),
+        ),
+        "toc_body_concat_markdown_detected": preparation_diagnostic_snapshot.get(
+            "toc_body_concat_markdown_detected",
+            translation_quality_report.get("toc_body_concat_detected"),
+        ),
+        "toc_body_concat_structure_detected": preparation_diagnostic_snapshot.get(
+            "toc_body_concat_structure_detected"
+        ),
+        "toc_body_concat_gate_source": gate_source,
+        "structure_repair_toc_body_boundary_repairs": preparation_diagnostic_snapshot.get(
+            "structure_repair_toc_body_boundary_repairs"
+        ),
+        "effective_source_toc_region_count": preparation_diagnostic_snapshot.get("effective_source_toc_region_count"),
+        "document_map_toc_region_count": preparation_diagnostic_snapshot.get("document_map_toc_region_count"),
+        "topology_toc_entry_count": preparation_diagnostic_snapshot.get("topology_toc_entry_count"),
+        "topology_split_compound_toc_operation_count": preparation_diagnostic_snapshot.get(
+            "topology_split_compound_toc_operation_count"
+        ),
+    }
+
+
 def _build_run_id(source_path: Path) -> str:
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     sanitized_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", source_path.stem).strip("_") or "real_doc"
@@ -1564,6 +1667,8 @@ def evaluate_lietaer_acceptance(
     source_docx_bytes: bytes | None = None,
     output_docx_bytes: bytes | None = None,
     mismatch_threshold: int = 0,
+    unmapped_target_threshold: int = 0,
+    require_no_toc_body_concat: bool = False,
 ) -> dict[str, object]:
     checks: list[dict[str, object]] = []
 
@@ -1590,6 +1695,9 @@ def evaluate_lietaer_acceptance(
 
     runtime = cast(Mapping[str, object], report.get("runtime") or {})
     runtime_state = cast(Mapping[str, object], runtime.get("state") or {})
+    preparation_diagnostic_snapshot = cast(
+        Mapping[str, object], report.get("preparation_diagnostic_snapshot") or {}
+    )
     latest_markdown = str(runtime_state.get("latest_markdown") or "")
     processed_block_markdowns = cast(Sequence[object], runtime_state.get("processed_block_markdowns") or [])
     combined_processed_markdown = "\n\n".join(
@@ -1621,6 +1729,14 @@ def evaluate_lietaer_acceptance(
         total_caption_heading_conflicts += len(
             cast(Sequence[object], payload.get("caption_heading_conflicts") or [])
         )
+    explicit_unmapped_source_count = _resolve_acceptance_unmapped_source_count(
+        formatting_diagnostics=formatting_diagnostics,
+        translation_quality_report=translation_quality_report,
+    )
+    explicit_unmapped_target_count = _resolve_acceptance_unmapped_target_count(
+        formatting_diagnostics=formatting_diagnostics,
+        translation_quality_report=translation_quality_report,
+    )
     add_check(
         "formatting_diagnostics_threshold",
         worst_unmapped_source_count <= mismatch_threshold and total_caption_heading_conflicts == 0,
@@ -1628,6 +1744,20 @@ def evaluate_lietaer_acceptance(
         mismatch_threshold=mismatch_threshold,
         caption_heading_conflicts=total_caption_heading_conflicts,
         artifact_count=len(formatting_diagnostics),
+    )
+    add_check(
+        "unmapped_source_threshold",
+        explicit_unmapped_source_count <= mismatch_threshold,
+        actual=explicit_unmapped_source_count,
+        allowed=mismatch_threshold,
+        worst_unmapped_source_count=explicit_unmapped_source_count,
+    )
+    add_check(
+        "unmapped_target_threshold",
+        explicit_unmapped_target_count <= unmapped_target_threshold,
+        actual=explicit_unmapped_target_count,
+        allowed=unmapped_target_threshold,
+        unmapped_target_count=explicit_unmapped_target_count,
     )
 
     if translation_quality_report:
@@ -1670,6 +1800,13 @@ def evaluate_lietaer_acceptance(
         )
         for check_name, passed, details in residual_gate_checks:
             add_check(check_name, passed, **details)
+    if require_no_toc_body_concat:
+        add_check(
+            **_build_acceptance_toc_body_concat_check(
+                preparation_diagnostic_snapshot=preparation_diagnostic_snapshot,
+                translation_quality_report=translation_quality_report,
+            )
+        )
 
     if source_docx_bytes and output_docx_bytes:
         source_paragraphs, _ = extract_document_content_from_docx(BytesIO(source_docx_bytes))
@@ -2322,6 +2459,8 @@ def main() -> None:
         source_docx_bytes=source_docx_bytes,
         output_docx_bytes=bytes(latest_docx_bytes) if isinstance(latest_docx_bytes, (bytes, bytearray)) else None,
         mismatch_threshold=document_profile.max_unmapped_source_paragraphs,
+        unmapped_target_threshold=document_profile.max_unmapped_target_paragraphs,
+        require_no_toc_body_concat=document_profile.require_no_toc_body_concat,
     )
     sanitized_report = sanitize_for_json(report)
     final_status = "completed" if bool(report["acceptance"]["passed"]) and result == "succeeded" else "failed"

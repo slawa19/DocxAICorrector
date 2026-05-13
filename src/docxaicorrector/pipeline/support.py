@@ -100,22 +100,40 @@ def write_marker_diagnostics_artifact(
     paragraph_ids: Sequence[str] | None,
     diagnostics_dir: Path,
     processed_chunk: str | None = None,
+    exc: Exception | None = None,
 ) -> str | None:
+    diagnostics: dict[str, object] = {
+        "uploaded_filename": uploaded_filename,
+        "block_index": block_index,
+        "block_count": block_count,
+        "error_code": error_code,
+        "paragraph_ids": list(paragraph_ids or []),
+        "target_text_preview": target_text[:1000],
+        "context_before_preview": context_before[:600],
+        "context_after_preview": context_after[:600],
+        "processed_chunk_preview": (processed_chunk or "")[:1000],
+    }
+    raw_response_preview = getattr(exc, "raw_markdown_preview", "")
+    if isinstance(raw_response_preview, str) and raw_response_preview:
+        diagnostics["raw_response_preview"] = raw_response_preview[:1000]
+
+    found_paragraph_ids = getattr(exc, "found_paragraph_ids", None)
+    if found_paragraph_ids is not None:
+        diagnostics["found_paragraph_ids"] = list(found_paragraph_ids)
+
+    expected_paragraph_ids = getattr(exc, "expected_paragraph_ids", None)
+    if expected_paragraph_ids is not None:
+        diagnostics["expected_paragraph_ids"] = list(expected_paragraph_ids)
+
+    leading_text_preview = getattr(exc, "leading_text_preview", "")
+    if isinstance(leading_text_preview, str) and leading_text_preview:
+        diagnostics["leading_text_preview"] = leading_text_preview[:400]
+
     return write_formatting_diagnostics_artifact(
         stage=stage,
         filename_prefix=f"marker_block_{stage}_{block_index:03d}",
         diagnostics_dir=diagnostics_dir,
-        diagnostics={
-            "uploaded_filename": uploaded_filename,
-            "block_index": block_index,
-            "block_count": block_count,
-            "error_code": error_code,
-            "paragraph_ids": list(paragraph_ids or []),
-            "target_text_preview": target_text[:1000],
-            "context_before_preview": context_before[:600],
-            "context_after_preview": context_after[:600],
-            "processed_chunk_preview": (processed_chunk or "")[:1000],
-        },
+        diagnostics=diagnostics,
     )
 
 

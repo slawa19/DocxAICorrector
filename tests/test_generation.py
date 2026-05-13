@@ -1266,6 +1266,58 @@ def test_generate_markdown_block_marker_mode_retries_and_recovers_when_markers_a
     assert sleep_calls == [1]
     assert logged_events[-1][0][1] == "markdown_empty_response_recovery_started"
     assert "[TARGET BLOCK WITH MARKERS ONLY]" in attempts[-1]["input"][1]["content"][0]["text"]
+    assert "Required marker sequence:\n[[DOCX_PARA_p0001]]" in attempts[-1]["input"][1]["content"][0]["text"]
+    assert "Previous invalid output preview:\nМаркеры потеряны" in attempts[-1]["input"][1]["content"][0]["text"]
+
+
+def test_generate_markdown_block_marker_mode_falls_back_to_source_after_persistent_marker_validation_failure(monkeypatch):
+    attempts = []
+    sleep_calls = []
+    logged_events = []
+
+    def create_response(**kwargs):
+        attempts.append(dict(kwargs))
+        return SimpleNamespace(output_text="[[DOCX_PARA_p0001]]\n")
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+    monkeypatch.setattr(generation.time, "sleep", sleep_calls.append)
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-marker-source-fallback",
+    )
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="[[DOCX_PARA_p0001]]\nАбзац-источник",
+        context_before="before",
+        context_after="after",
+        max_retries=2,
+        expected_paragraph_ids=["p0001"],
+        marker_mode=True,
+    )
+
+    assert result == "Абзац-источник"
+    assert len(attempts) == 3
+    assert sleep_calls == [1]
+    assert any(args[1] == "markdown_empty_response_recovery_started" for args, _ in logged_events)
+    assert logged_events[-1][0][1] == "markdown_marker_validation_source_fallback"
+
+
+def test_split_marker_preserved_markdown_raises_structured_marker_diagnostics():
+    with pytest.raises(generation.MarkerValidationError) as exc_info:
+        generation._split_marker_preserved_markdown(
+            "[[DOCX_PARA_p9999]]\nНеверный маркер",
+            ["p0001"],
+        )
+
+    exc = exc_info.value
+    assert exc.error_code == "marker_order_or_identity"
+    assert exc.expected_paragraph_ids == ("p0001",)
+    assert exc.found_paragraph_ids == ("p9999",)
+    assert exc.raw_markdown_preview == "[[DOCX_PARA_p9999]]\nНеверный маркер"
 
 
 def test_detect_context_leakage_finds_verbatim_fragment_absent_from_target():

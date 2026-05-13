@@ -194,6 +194,7 @@ def _write_marker_diagnostics_artifact(
     context_after: str,
     paragraph_ids: Sequence[str] | None,
     processed_chunk: str | None = None,
+    exc: Exception | None = None,
 ) -> str | None:
     return _write_marker_diagnostics_artifact_impl(
         stage=stage,
@@ -207,6 +208,7 @@ def _write_marker_diagnostics_artifact(
         paragraph_ids=paragraph_ids,
         diagnostics_dir=FORMATTING_DIAGNOSTICS_DIR,
         processed_chunk=processed_chunk,
+        exc=exc,
     )
 
 

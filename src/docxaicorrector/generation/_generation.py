@@ -52,6 +52,24 @@ class ContextLeakageError(RuntimeError):
     pass
 
 
+class MarkerValidationError(RuntimeError):
+    def __init__(
+        self,
+        error_code: str,
+        *,
+        raw_markdown: str,
+        expected_paragraph_ids: Sequence[str],
+        found_paragraph_ids: Sequence[str] | None = None,
+        leading_text: str | None = None,
+    ) -> None:
+        super().__init__(f"paragraph_marker_validation_failed:{error_code}")
+        self.error_code = error_code
+        self.raw_markdown_preview = raw_markdown[:1000]
+        self.expected_paragraph_ids = tuple(expected_paragraph_ids)
+        self.found_paragraph_ids = tuple(found_paragraph_ids or ())
+        self.leading_text_preview = (leading_text or "")[:400]
+
+
 @lru_cache(maxsize=1)
 def ensure_pandoc_available() -> None:
     try:
@@ -219,14 +237,38 @@ def _build_empty_response_recovery_user_prompt(*, target_text: str) -> str:
         "Return only the final processed block text with no explanation, no Markdown fence, and no empty answer.\n\n"
         f"[TARGET BLOCK ONLY]\n{target_text}"
     )
-def _build_marker_recovery_user_prompt(*, target_text: str) -> str:
+def _build_marker_recovery_user_prompt(
+    *,
+    target_text: str,
+    expected_paragraph_ids: Sequence[str] | None = None,
+    last_error: Exception | None = None,
+) -> str:
+    required_marker_lines = ""
+    if expected_paragraph_ids:
+        rendered_markers = "\n".join(f"[[DOCX_PARA_{paragraph_id}]]" for paragraph_id in expected_paragraph_ids)
+        required_marker_lines = f"Required marker sequence:\n{rendered_markers}\n\n"
+
+    previous_output_lines = ""
+    if isinstance(last_error, MarkerValidationError):
+        previous_output_lines = (
+            f"Previous marker validation error: {last_error.error_code}.\n"
+            f"Expected marker ids: {', '.join(last_error.expected_paragraph_ids) or '[none]'}.\n"
+            f"Found marker ids: {', '.join(last_error.found_paragraph_ids) or '[none]'}.\n"
+        )
+        if last_error.leading_text_preview:
+            previous_output_lines += f"Unexpected prefix preview:\n{last_error.leading_text_preview}\n\n"
+        if last_error.raw_markdown_preview:
+            previous_output_lines += f"Previous invalid output preview:\n{last_error.raw_markdown_preview}\n\n"
+
     return (
         "The previous attempt violated the paragraph marker contract.\n"
         "Repeat the processing strictly according to the rules below.\n"
         "Preserve every marker [[DOCX_PARA_...]] exactly as it appears and in the same order.\n"
         "Do not delete markers, add new ones, or reorder them.\n"
         "Each marker must correspond to exactly one paragraph of text after it.\n"
-        "Return only the final full block together with the markers, with no explanation.\n\n"
+        "The response must begin with the first required marker and contain no explanation.\n\n"
+        f"{required_marker_lines}"
+        f"{previous_output_lines}"
         f"[TARGET BLOCK WITH MARKERS ONLY]\n{target_text}"
     )
 
@@ -234,25 +276,50 @@ def _build_marker_recovery_user_prompt(*, target_text: str) -> str:
 def _split_marker_preserved_markdown(markdown: str, expected_paragraph_ids: Sequence[str]) -> list[str]:
     matches = list(_PARAGRAPH_MARKER_PATTERN.finditer(markdown))
     if not matches:
-        raise RuntimeError("paragraph_marker_validation_failed:markers_missing")
+        raise MarkerValidationError(
+            "markers_missing",
+            raw_markdown=markdown,
+            expected_paragraph_ids=expected_paragraph_ids,
+        )
 
     found_ids = [match.group(1) for match in matches]
     expected_ids = list(expected_paragraph_ids)
     if found_ids != expected_ids:
-        raise RuntimeError("paragraph_marker_validation_failed:marker_order_or_identity")
+        raise MarkerValidationError(
+            "marker_order_or_identity",
+            raw_markdown=markdown,
+            expected_paragraph_ids=expected_paragraph_ids,
+            found_paragraph_ids=found_ids,
+        )
 
     leading_text = markdown[: matches[0].start()].strip()
     if leading_text:
-        raise RuntimeError("paragraph_marker_validation_failed:unexpected_prefix")
+        raise MarkerValidationError(
+            "unexpected_prefix",
+            raw_markdown=markdown,
+            expected_paragraph_ids=expected_paragraph_ids,
+            found_paragraph_ids=found_ids,
+            leading_text=leading_text,
+        )
 
     paragraph_chunks: list[str] = []
     for index, match in enumerate(matches):
         content_end = matches[index + 1].start() if index + 1 < len(matches) else len(markdown)
         chunk = markdown[match.end() : content_end].strip()
         if not chunk:
-            raise RuntimeError("paragraph_marker_validation_failed:empty_marker_chunk")
+            raise MarkerValidationError(
+                "empty_marker_chunk",
+                raw_markdown=markdown,
+                expected_paragraph_ids=expected_paragraph_ids,
+                found_paragraph_ids=found_ids,
+            )
         if "\n\n" in chunk:
-            raise RuntimeError("paragraph_marker_validation_failed:paragraph_split_detected")
+            raise MarkerValidationError(
+                "paragraph_split_detected",
+                raw_markdown=markdown,
+                expected_paragraph_ids=expected_paragraph_ids,
+                found_paragraph_ids=found_ids,
+            )
         paragraph_chunks.append(chunk)
     return paragraph_chunks
 
@@ -679,6 +746,7 @@ def _recover_from_persistent_empty_response(
     expected_paragraph_ids: Sequence[str] | None = None,
     marker_mode: bool = False,
     minimum_output_tokens: int | None = None,
+    last_exception: Exception | None = None,
 ) -> str:
     log_event(
         logging.WARNING,
@@ -691,7 +759,11 @@ def _recover_from_persistent_empty_response(
         model=model,
         system_prompt=system_prompt,
         user_prompt=(
-            _build_marker_recovery_user_prompt(target_text=target_text)
+            _build_marker_recovery_user_prompt(
+                target_text=target_text,
+                expected_paragraph_ids=expected_paragraph_ids,
+                last_error=last_exception,
+            )
             if marker_mode
             else _build_empty_response_recovery_user_prompt(target_text=target_text)
         ),
@@ -716,6 +788,10 @@ def _is_incomplete_response_error(exc: Exception) -> bool:
 
 def _can_fallback_to_source_text_after_incomplete_response(target_text: str) -> bool:
     return bool(target_text.strip())
+
+
+def _can_fallback_to_source_text_after_marker_validation_failure(target_text: str, *, marker_mode: bool) -> bool:
+    return marker_mode and bool(target_text.strip())
 
 
 def _is_retryable_empty_generation_error(exc: Exception) -> bool:
@@ -846,6 +922,7 @@ def generate_markdown_block(
                     if _is_incomplete_response_error(last_exception)
                     else None
                 ),
+                last_exception=last_exception,
             )
         except Exception as recovery_exc:
             if _is_incomplete_response_error(recovery_exc) and _can_fallback_to_source_text_after_incomplete_response(target_text):
@@ -858,6 +935,20 @@ def generate_markdown_block(
                     marker_mode=marker_mode,
                 )
                 return target_text
+            if _is_retryable_marker_validation_error(recovery_exc) and _can_fallback_to_source_text_after_marker_validation_failure(
+                target_text_for_leakage,
+                marker_mode=marker_mode,
+            ):
+                log_event(
+                    logging.WARNING,
+                    "markdown_marker_validation_source_fallback",
+                    "Recovery для блока снова завершился marker validation error; сохраняю исходный текст блока как controlled fallback.",
+                    model=model,
+                    target_chars=len(target_text_for_leakage),
+                    marker_mode=marker_mode,
+                    marker_error=str(recovery_exc),
+                )
+                return target_text_for_leakage
             if _is_retryable_empty_generation_error(recovery_exc) or _is_retryable_marker_validation_error(recovery_exc):
                 raise recovery_exc
             raise recovery_exc
