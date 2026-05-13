@@ -196,6 +196,7 @@ def reconcile_with_document_map(
         total_tokens_used=structure_map.total_tokens_used,
         processing_time_seconds=structure_map.processing_time_seconds,
         window_count=structure_map.window_count,
+        fallback_stats=structure_map.fallback_stats,
     )
     report = _build_reconciliation_report(
         paragraphs=paragraphs,
@@ -314,6 +315,7 @@ def targeted_reclassify_with_reconciliation_context(
         total_tokens_used=structure_map.total_tokens_used + total_tokens,
         processing_time_seconds=structure_map.processing_time_seconds,
         window_count=structure_map.window_count,
+        fallback_stats=structure_map.fallback_stats,
     )
 
 

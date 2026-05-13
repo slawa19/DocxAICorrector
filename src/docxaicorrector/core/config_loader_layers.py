@@ -114,6 +114,18 @@ def build_app_config_payload(
         "structure_recognition_timeout_seconds": structure_recognition_settings[
             "structure_recognition_timeout_seconds"
         ],
+        "structure_recognition_timeout_retry_multiplier": structure_recognition_settings[
+            "structure_recognition_timeout_retry_multiplier"
+        ],
+        "structure_recognition_timeout_retry_max_seconds": structure_recognition_settings[
+            "structure_recognition_timeout_retry_max_seconds"
+        ],
+        "structure_recognition_split_fallback_max_depth": structure_recognition_settings[
+            "structure_recognition_split_fallback_max_depth"
+        ],
+        "structure_recognition_split_fallback_max_expansions": structure_recognition_settings[
+            "structure_recognition_split_fallback_max_expansions"
+        ],
         "structure_recognition_min_confidence": structure_recognition_settings["structure_recognition_min_confidence"],
         "structure_recognition_cache_enabled": structure_recognition_settings["structure_recognition_cache_enabled"],
         "structure_recognition_save_debug_artifacts": structure_recognition_settings[

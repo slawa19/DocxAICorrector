@@ -234,6 +234,10 @@ class AppConfig(Mapping[str, Any]):
     structure_recognition_max_window_paragraphs: int
     structure_recognition_overlap_paragraphs: int
     structure_recognition_timeout_seconds: int
+    structure_recognition_timeout_retry_multiplier: float
+    structure_recognition_timeout_retry_max_seconds: float
+    structure_recognition_split_fallback_max_depth: int
+    structure_recognition_split_fallback_max_expansions: int
     structure_recognition_min_confidence: str
     structure_recognition_cache_enabled: bool
     structure_recognition_save_debug_artifacts: bool
@@ -912,10 +916,13 @@ def _resolve_structure_recognition_settings(
         parse_config_bool_fn=parse_config_bool,
         parse_choice_str_fn=parse_choice_str,
         parse_config_int_fn=parse_config_int,
+        parse_config_float_fn=parse_config_float,
         parse_int_env_fn=parse_int_env,
+        parse_float_env_fn=parse_float_env,
         parse_bool_env_fn=parse_bool_env,
         parse_choice_env_fn=parse_choice_env,
         clamp_int_fn=_clamp_int,
+        clamp_float_fn=_clamp_float,
         structure_recognition_mode_values=STRUCTURE_RECOGNITION_MODE_VALUES,
         structure_recognition_min_confidence_values=STRUCTURE_RECOGNITION_MIN_CONFIDENCE_VALUES,
     )

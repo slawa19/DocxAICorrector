@@ -929,6 +929,8 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
         artifact_prefix="lietaer_validation",
         output_basename="lietaer_output",
         max_unmapped_source_paragraphs=0,
+        max_unmapped_target_paragraphs=0,
+        require_no_toc_body_concat=True,
         resolved_source_path=lambda project_root=None: source_path,
     )
     run_profile = SimpleNamespace(
@@ -1197,6 +1199,8 @@ def test_main_falls_back_to_prepared_snapshot_statuses_when_event_log_lacks_stru
         artifact_prefix="end_times_pdf_validation",
         output_basename="Are_We_In_The_End_Times_validated",
         max_unmapped_source_paragraphs=0,
+        max_unmapped_target_paragraphs=0,
+        require_no_toc_body_concat=True,
         resolved_source_path=lambda project_root=None: source_path,
     )
     run_profile = SimpleNamespace(

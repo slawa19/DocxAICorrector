@@ -196,10 +196,13 @@ def resolve_structure_recognition_settings(
     parse_config_bool_fn: Any,
     parse_choice_str_fn: Any,
     parse_config_int_fn: Any,
+    parse_config_float_fn: Any,
     parse_int_env_fn: Any,
+    parse_float_env_fn: Any,
     parse_bool_env_fn: Any,
     parse_choice_env_fn: Any,
     clamp_int_fn: Any,
+    clamp_float_fn: Any,
     structure_recognition_mode_values: tuple[str, ...],
     structure_recognition_min_confidence_values: tuple[str, ...],
 ) -> dict[str, Any]:
@@ -232,6 +235,26 @@ def resolve_structure_recognition_settings(
         structure_recognition_config,
         "timeout_seconds",
         60,
+    )
+    structure_recognition_timeout_retry_multiplier = parse_config_float_fn(
+        structure_recognition_config,
+        "timeout_retry_multiplier",
+        1.5,
+    )
+    structure_recognition_timeout_retry_max_seconds = parse_config_float_fn(
+        structure_recognition_config,
+        "timeout_retry_max_seconds",
+        120.0,
+    )
+    structure_recognition_split_fallback_max_depth = parse_config_int_fn(
+        structure_recognition_config,
+        "split_fallback_max_depth",
+        3,
+    )
+    structure_recognition_split_fallback_max_expansions = parse_config_int_fn(
+        structure_recognition_config,
+        "split_fallback_max_expansions",
+        8,
     )
     structure_recognition_min_confidence = parse_choice_str_fn(
         structure_recognition_config,
@@ -276,6 +299,22 @@ def resolve_structure_recognition_settings(
         "DOCX_AI_STRUCTURE_RECOGNITION_TIMEOUT_SECONDS",
         structure_recognition_timeout_seconds,
     )
+    structure_recognition_timeout_retry_multiplier = parse_float_env_fn(
+        "DOCX_AI_STRUCTURE_RECOGNITION_TIMEOUT_RETRY_MULTIPLIER",
+        structure_recognition_timeout_retry_multiplier,
+    )
+    structure_recognition_timeout_retry_max_seconds = parse_float_env_fn(
+        "DOCX_AI_STRUCTURE_RECOGNITION_TIMEOUT_RETRY_MAX_SECONDS",
+        structure_recognition_timeout_retry_max_seconds,
+    )
+    structure_recognition_split_fallback_max_depth = parse_int_env_fn(
+        "DOCX_AI_STRUCTURE_RECOGNITION_SPLIT_FALLBACK_MAX_DEPTH",
+        structure_recognition_split_fallback_max_depth,
+    )
+    structure_recognition_split_fallback_max_expansions = parse_int_env_fn(
+        "DOCX_AI_STRUCTURE_RECOGNITION_SPLIT_FALLBACK_MAX_EXPANSIONS",
+        structure_recognition_split_fallback_max_expansions,
+    )
     structure_recognition_min_confidence = parse_choice_env_fn(
         "DOCX_AI_STRUCTURE_RECOGNITION_MIN_CONFIDENCE",
         default=structure_recognition_min_confidence,
@@ -307,6 +346,26 @@ def resolve_structure_recognition_settings(
             structure_recognition_timeout_seconds,
             minimum=1,
             maximum=300,
+        ),
+        "structure_recognition_timeout_retry_multiplier": clamp_float_fn(
+            structure_recognition_timeout_retry_multiplier,
+            minimum=1.0,
+            maximum=10.0,
+        ),
+        "structure_recognition_timeout_retry_max_seconds": clamp_float_fn(
+            structure_recognition_timeout_retry_max_seconds,
+            minimum=1.0,
+            maximum=600.0,
+        ),
+        "structure_recognition_split_fallback_max_depth": clamp_int_fn(
+            structure_recognition_split_fallback_max_depth,
+            minimum=0,
+            maximum=20,
+        ),
+        "structure_recognition_split_fallback_max_expansions": clamp_int_fn(
+            structure_recognition_split_fallback_max_expansions,
+            minimum=0,
+            maximum=100,
         ),
         "structure_recognition_min_confidence": structure_recognition_min_confidence,
         "structure_recognition_cache_enabled": structure_recognition_cache_enabled,

@@ -1341,6 +1341,26 @@ split telemetry. The main decision signal is not `window_split_count` alone:
 - frequent capped fallbacks mean retry/split tuning is still unsafe and should
   not be hidden by threshold relaxation.
 
+**Threshold rule (operational).** A root-window reduction is justified only
+when ALL of the following hold over a representative run (full-book or
+chapter-region with the same provider/profile as the failing scenario):
+
+- `structure_window_split_count >= 3` (splits are not a one-off);
+- `structure_timeout_retry_count >= 3` (retry telemetry is statistically
+  meaningful, not based on a single sample);
+- `structure_timeout_retry_succeeded_count / structure_timeout_retry_count
+  < 0.3` (retry is NOT rescuing most timeouts, so latency is not transient);
+- `structure_split_fallback_capped_descriptor_count == 0` (caps are not
+  masking a deeper problem; if non-zero, fix retry/split first).
+
+When the rule fires, perform exactly one config-only commit that reduces
+`structure_recovery_anchored_classification_target_input_tokens` by 15-25%
+(no other config changes, no logic changes). Then re-measure on the same
+profile. Do not stack reductions; iterate at most once per measurement
+cycle. If after the reduction `structure_window_split_count` is unchanged,
+the bottleneck is not window size and Slice 7 stops there - escalate to
+provider/timeout review instead of further token cuts.
+
 Any root-window tuning is a separate configuration change with focused
 diagnostics. Do not use full-book quality-gate reruns as the ordinary tuning
 loop.

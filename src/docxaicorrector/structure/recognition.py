@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 from collections.abc import Iterable, Sequence
 import logging
+import math
 import json
 from pathlib import Path
 import re
@@ -12,7 +13,7 @@ from typing import Any, Callable, Protocol, cast
 
 from docxaicorrector.core.constants import PROMPTS_DIR
 from docxaicorrector.generation._generation import normalize_model_output
-from docxaicorrector.core.models import DocumentMap, DocumentTopologyProjection, ParagraphClassification, ParagraphDescriptor, ParagraphUnit, StructureMap
+from docxaicorrector.core.models import DocumentMap, DocumentTopologyProjection, ParagraphClassification, ParagraphDescriptor, ParagraphUnit, StructuralUnit, StructureFallbackStats, StructureMap
 from docxaicorrector.generation.openai_response_utils import collect_response_text_traversal
 from docxaicorrector.structure._responses_timeout import call_responses_with_hard_timeout
 
@@ -24,6 +25,8 @@ _VALID_AI_ROLES = {"heading", "body", "caption", "epigraph", "attribution", "toc
 _VALID_AI_CONFIDENCES = {"high", "medium", "low"}
 _LOCKED_ROLE_CONFIDENCES = {"explicit", "adjacent"}
 _NON_OVERRIDEABLE_LOCKED_ROLES = {"image", "table", "caption"}
+_TOPOLOGY_GUARD_AUTHORITIES = {"document_map_outline", "document_map_toc"}
+_TOPOLOGY_GUARD_UNIT_TYPES = {"toc_entry", "chapter_heading", "section_heading"}
 _DESCRIPTOR_PREVIEW_CHARS = 600
 _MIN_TOKEN_BUDGET_PREVIEW_CHARS = 120
 STRUCTURE_RECOGNITION_PROMPT_VERSION = 3
@@ -268,12 +271,58 @@ def _has_document_map_anchor_conflict(
     return str(anchor.confidence or "").strip().lower() in {"high", "medium"}
 
 
+def _get_authoritative_topology_unit(
+    *,
+    topology_projection: DocumentTopologyProjection | None,
+    logical_index: int,
+) -> StructuralUnit | None:
+    if topology_projection is None:
+        return None
+
+    unit = topology_projection.get_unit(logical_index)
+    if unit is None:
+        return None
+
+    if str(unit.confidence or "").strip().lower() != "high":
+        return None
+
+    if str(unit.authority or "").strip().lower() not in _TOPOLOGY_GUARD_AUTHORITIES:
+        return None
+
+    if str(unit.unit_type or "").strip().lower() not in _TOPOLOGY_GUARD_UNIT_TYPES:
+        return None
+
+    return unit
+
+
+def _is_topology_authority_consistent(
+    classification: ParagraphClassification,
+    *,
+    unit: StructuralUnit,
+) -> bool:
+    unit_type = str(unit.unit_type or "").strip().lower()
+    if unit_type == "toc_entry":
+        return classification.role == "toc_entry"
+
+    if unit_type not in {"chapter_heading", "section_heading"}:
+        return True
+
+    if classification.role != "heading":
+        return False
+
+    if unit.heading_level is None:
+        return True
+
+    return classification.heading_level == unit.heading_level
+
+
 def apply_structure_map(
     paragraphs: list[ParagraphUnit],
     structure_map: StructureMap,
     *,
     min_confidence: str = "medium",
     document_map: DocumentMap | None = None,
+    topology_projection: DocumentTopologyProjection | None = None,
 ) -> dict[str, int]:
     allowed_confidences = {"high"} if min_confidence == "high" else {"high", "medium"}
     applied_heading_count = 0
@@ -282,6 +331,8 @@ def apply_structure_map(
     reconciliation_locked_overrides_applied = 0
     reconciliation_locked_overrides_skipped = 0
     anchor_conflicts_deferred = 0
+    topology_authority_conflicts_deferred = 0
+    topology_authority_protected_count = 0
     for paragraph in paragraphs:
         logical_index = int(getattr(paragraph, "logical_index", paragraph.source_index))
         classification = structure_map.get(logical_index)
@@ -306,6 +357,16 @@ def apply_structure_map(
             anchor_conflicts_deferred += 1
             continue
 
+        topology_unit = _get_authoritative_topology_unit(
+            topology_projection=topology_projection,
+            logical_index=logical_index,
+        )
+        if topology_unit is not None:
+            if not _is_topology_authority_consistent(classification, unit=topology_unit):
+                topology_authority_conflicts_deferred += 1
+                continue
+            topology_authority_protected_count += 1
+
         mapped_role = _map_ai_role_to_pipeline_role(classification.role)
         paragraph.role = mapped_role
         paragraph.role_confidence = "ai"
@@ -327,6 +388,8 @@ def apply_structure_map(
         "reconciliation_locked_overrides_applied": reconciliation_locked_overrides_applied,
         "reconciliation_locked_overrides_skipped": reconciliation_locked_overrides_skipped,
         "anchor_conflicts_deferred": anchor_conflicts_deferred,
+        "topology_authority_conflicts_deferred": topology_authority_conflicts_deferred,
+        "topology_authority_protected_count": topology_authority_protected_count,
     }
 
 
@@ -381,9 +444,15 @@ def build_structure_map(
     topology_projection: DocumentTopologyProjection | None = None,
     preview_chars: int = _DESCRIPTOR_PREVIEW_CHARS,
     target_input_tokens: int | None = None,
+    timeout_retry_multiplier: float = 1.5,
+    timeout_retry_max_seconds: float = 120.0,
+    split_fallback_max_depth: int = 3,
+    split_fallback_max_expansions: int = 8,
     progress_callback: StructureProgressCallback | None = None,
 ) -> StructureMap:
     started_at = time.perf_counter()
+    fallback_stats = StructureFallbackStats()
+    fallback_budget = _SplitFallbackBudget()
     descriptors = build_paragraph_descriptors(
         paragraphs,
         document_map=document_map,
@@ -391,7 +460,7 @@ def build_structure_map(
         preview_chars=preview_chars,
     )
     if not descriptors:
-        return StructureMap({}, model, 0, 0.0, 0)
+        return StructureMap({}, model, 0, 0.0, 0, fallback_stats=fallback_stats)
 
     windows = list(
         _iter_descriptor_windows(
@@ -438,6 +507,12 @@ def build_structure_map(
                 processed_windows=processed_windows,
                 total_windows=total_windows,
                 current_window=window_index,
+                fallback_stats=fallback_stats,
+                timeout_retry_multiplier=timeout_retry_multiplier,
+                timeout_retry_max_seconds=timeout_retry_max_seconds,
+                split_fallback_max_depth=split_fallback_max_depth,
+                split_fallback_max_expansions=split_fallback_max_expansions,
+                fallback_budget=fallback_budget,
             )
         except Exception:
             window_count += 1
@@ -482,6 +557,7 @@ def build_structure_map(
         total_tokens_used=total_tokens_used,
         processing_time_seconds=max(0.0, time.perf_counter() - started_at),
         window_count=window_count,
+        fallback_stats=fallback_stats,
     )
 
 
@@ -496,6 +572,12 @@ def _classify_descriptor_window_with_fallback(
     total_windows: int = 0,
     current_window: int | None = None,
     fallback_depth: int = 0,
+    fallback_stats: StructureFallbackStats | None = None,
+    timeout_retry_multiplier: float = 1.5,
+    timeout_retry_max_seconds: float = 120.0,
+    split_fallback_max_depth: int = 3,
+    split_fallback_max_expansions: int = 8,
+    fallback_budget: _SplitFallbackBudget | None = None,
 ) -> tuple[list[tuple[list[ParagraphDescriptor], list[ParagraphClassification]]], int]:
     descriptor_list = list(descriptors)
     try:
@@ -510,6 +592,47 @@ def _classify_descriptor_window_with_fallback(
         if not _should_split_descriptor_window(exc=exc, descriptor_count=len(descriptor_list)):
             raise
 
+    retry_timeout = _resolve_retry_timeout(
+        timeout=timeout,
+        retry_multiplier=timeout_retry_multiplier,
+        retry_max_seconds=timeout_retry_max_seconds,
+    )
+    if fallback_stats is not None:
+        fallback_stats.structure_timeout_retry_count += 1
+    try:
+        classifications, total_tokens = _classify_descriptor_window(
+            client=client,
+            model=model,
+            descriptors=descriptor_list,
+            timeout=retry_timeout,
+        )
+        if fallback_stats is not None:
+            fallback_stats.structure_timeout_retry_succeeded_count += 1
+        return [(descriptor_list, classifications)], total_tokens
+    except Exception as retry_exc:
+        if _is_timeout_like_exception(retry_exc) and fallback_stats is not None:
+            fallback_stats.structure_timeout_retry_failed_count += 1
+        if not _should_split_descriptor_window(exc=retry_exc, descriptor_count=len(descriptor_list)):
+            raise
+
+    next_fallback_depth = fallback_depth + 1
+    expansion_count = 0 if fallback_budget is None else fallback_budget.expansion_count
+    if next_fallback_depth > split_fallback_max_depth or expansion_count >= split_fallback_max_expansions:
+        if fallback_stats is not None:
+            fallback_stats.structure_split_fallback_capped_descriptor_count += len(descriptor_list)
+        return [], 0
+
+    if fallback_budget is not None:
+        fallback_budget.expansion_count += 1
+
+    if fallback_stats is not None:
+        fallback_stats.structure_window_split_count += 1
+        fallback_stats.structure_max_fallback_depth = max(
+            fallback_stats.structure_max_fallback_depth,
+            next_fallback_depth,
+        )
+        fallback_stats.structure_split_fallback_descriptor_count += len(descriptor_list)
+
     _emit_structure_progress(
         progress_callback,
         StructureRecognitionProgress(
@@ -518,7 +641,7 @@ def _classify_descriptor_window_with_fallback(
             total_windows=total_windows,
             current_window=current_window,
             descriptor_count=len(descriptor_list),
-            fallback_depth=fallback_depth + 1,
+            fallback_depth=next_fallback_depth,
         ),
     )
 
@@ -533,6 +656,12 @@ def _classify_descriptor_window_with_fallback(
         total_windows=total_windows,
         current_window=current_window,
         fallback_depth=fallback_depth + 1,
+        fallback_stats=fallback_stats,
+        timeout_retry_multiplier=timeout_retry_multiplier,
+        timeout_retry_max_seconds=timeout_retry_max_seconds,
+        split_fallback_max_depth=split_fallback_max_depth,
+        split_fallback_max_expansions=split_fallback_max_expansions,
+        fallback_budget=fallback_budget,
     )
     right_windows, right_tokens = _classify_descriptor_window_with_fallback(
         client=client,
@@ -544,18 +673,43 @@ def _classify_descriptor_window_with_fallback(
         total_windows=total_windows,
         current_window=current_window,
         fallback_depth=fallback_depth + 1,
+        fallback_stats=fallback_stats,
+        timeout_retry_multiplier=timeout_retry_multiplier,
+        timeout_retry_max_seconds=timeout_retry_max_seconds,
+        split_fallback_max_depth=split_fallback_max_depth,
+        split_fallback_max_expansions=split_fallback_max_expansions,
+        fallback_budget=fallback_budget,
     )
     return left_windows + right_windows, left_tokens + right_tokens
 
 
-def _should_split_descriptor_window(*, exc: Exception, descriptor_count: int) -> bool:
-    if descriptor_count <= 1:
-        return False
+@dataclass
+class _SplitFallbackBudget:
+    expansion_count: int = 0
+
+
+def _resolve_retry_timeout(*, timeout: float, retry_multiplier: float, retry_max_seconds: float) -> float:
+    base_timeout = float(timeout)
+    resolved_multiplier = max(1.0, float(retry_multiplier))
+    resolved_max_seconds = float(retry_max_seconds)
+    if not math.isfinite(resolved_max_seconds):
+        resolved_max_seconds = base_timeout
+    bounded_timeout = min(base_timeout * resolved_multiplier, resolved_max_seconds)
+    return max(base_timeout, bounded_timeout)
+
+
+def _is_timeout_like_exception(exc: Exception) -> bool:
     error_name = type(exc).__name__
     if error_name in _TIMEOUT_ERROR_NAMES:
         return True
     error_text = str(exc).strip().casefold()
     return "timed out" in error_text or "timeout" in error_text
+
+
+def _should_split_descriptor_window(*, exc: Exception, descriptor_count: int) -> bool:
+    if descriptor_count <= 1:
+        return False
+    return _is_timeout_like_exception(exc)
 
 
 def _classify_descriptor_window(

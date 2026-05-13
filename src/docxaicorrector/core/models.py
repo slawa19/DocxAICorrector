@@ -374,6 +374,48 @@ class ParagraphClassification:
     rationale: str | None = None
 
 
+@dataclass
+class StructureFallbackStats:
+    structure_window_split_count: int = 0
+    structure_max_fallback_depth: int = 0
+    structure_split_fallback_descriptor_count: int = 0
+    structure_timeout_retry_count: int = 0
+    structure_timeout_retry_succeeded_count: int = 0
+    structure_timeout_retry_failed_count: int = 0
+    structure_split_fallback_capped_descriptor_count: int = 0
+
+    @classmethod
+    def from_source(cls, source: object | None) -> "StructureFallbackStats":
+        if source is None:
+            return cls()
+        return cls(
+            structure_window_split_count=int(getattr(source, "structure_window_split_count", 0) or 0),
+            structure_max_fallback_depth=int(getattr(source, "structure_max_fallback_depth", 0) or 0),
+            structure_split_fallback_descriptor_count=int(
+                getattr(source, "structure_split_fallback_descriptor_count", 0) or 0
+            ),
+            structure_timeout_retry_count=int(getattr(source, "structure_timeout_retry_count", 0) or 0),
+            structure_timeout_retry_succeeded_count=int(
+                getattr(source, "structure_timeout_retry_succeeded_count", 0) or 0
+            ),
+            structure_timeout_retry_failed_count=int(getattr(source, "structure_timeout_retry_failed_count", 0) or 0),
+            structure_split_fallback_capped_descriptor_count=int(
+                getattr(source, "structure_split_fallback_capped_descriptor_count", 0) or 0
+            ),
+        )
+
+    def as_metrics(self) -> dict[str, int]:
+        return {
+            "structure_window_split_count": self.structure_window_split_count,
+            "structure_max_fallback_depth": self.structure_max_fallback_depth,
+            "structure_split_fallback_descriptor_count": self.structure_split_fallback_descriptor_count,
+            "structure_timeout_retry_count": self.structure_timeout_retry_count,
+            "structure_timeout_retry_succeeded_count": self.structure_timeout_retry_succeeded_count,
+            "structure_timeout_retry_failed_count": self.structure_timeout_retry_failed_count,
+            "structure_split_fallback_capped_descriptor_count": self.structure_split_fallback_capped_descriptor_count,
+        }
+
+
 @dataclass(frozen=True)
 class StructureRecognitionSummary:
     ai_classified_count: int = 0
@@ -389,6 +431,7 @@ class StructureRecognitionSummary:
     fallback_stage: str = ""
     fallback_reason: str = ""
     document_map_present: bool = False
+    fallback_stats: StructureFallbackStats = field(default_factory=StructureFallbackStats)
 
     @classmethod
     def from_source(cls, source: object | None) -> "StructureRecognitionSummary":
@@ -408,12 +451,16 @@ class StructureRecognitionSummary:
             fallback_stage=str(getattr(source, "fallback_stage", "") or ""),
             fallback_reason=str(getattr(source, "fallback_reason", "") or ""),
             document_map_present=bool(getattr(source, "document_map_present", False)),
+            fallback_stats=StructureFallbackStats.from_source(getattr(source, "fallback_stats", source)),
         )
 
     def as_progress_metrics(self, *, structure_map: "StructureMap | None" = None) -> dict[str, int]:
         metrics: dict[str, int] = {}
         if structure_map is not None:
             metrics["structure_window_count"] = structure_map.window_count
+            metrics.update(structure_map.fallback_stats.as_metrics())
+        else:
+            metrics.update(self.fallback_stats.as_metrics())
         if self.ai_classified_count:
             metrics["ai_classified"] = self.ai_classified_count
         if self.ai_heading_count:
@@ -448,6 +495,7 @@ class StructureRecognitionSummary:
             "reconciliation_locked_overrides_applied": self.reconciliation_locked_override_count,
             "reconciliation_locked_overrides_skipped": self.reconciliation_locked_override_skip_count,
             "ai_first_degraded": int(self.ai_first_degraded),
+            **self.fallback_stats.as_metrics(),
         }
 
 
@@ -458,6 +506,7 @@ class StructureMap:
     total_tokens_used: int
     processing_time_seconds: float
     window_count: int
+    fallback_stats: StructureFallbackStats = field(default_factory=StructureFallbackStats)
 
     def get(self, index: int) -> ParagraphClassification | None:
         return self.classifications.get(index)

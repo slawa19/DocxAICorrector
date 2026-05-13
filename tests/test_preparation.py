@@ -20,7 +20,7 @@ from docxaicorrector.core.models import ImageAsset, ImageVariantCandidate
 from docxaicorrector.core.models import LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport
 from docxaicorrector.core.models import ParagraphRelation, ParagraphRelationDecision, ParagraphUnit, RelationNormalizationReport
 from docxaicorrector.core.models import StructuralUnit, StructureMap
-from docxaicorrector.core.models import StructureRecognitionSummary, StructureRepairReport
+from docxaicorrector.core.models import StructureFallbackStats, StructureRecognitionSummary, StructureRepairReport
 from docxaicorrector.document.segments import CHAPTER_SEGMENTS_DETECTOR_VERSION
 from docxaicorrector.processing.processing_runtime import FrozenUploadPayload, build_in_memory_uploaded_file, build_preparation_request_marker
 from docxaicorrector.structure.document_map import DocumentMapRequestTimeout, DocumentMapSchemaError
@@ -352,6 +352,8 @@ def _make_ai_first_config(
         "structure_recognition_max_window_paragraphs": 1800,
         "structure_recognition_overlap_paragraphs": 50,
         "structure_recognition_timeout_seconds": 60,
+        "structure_recognition_split_fallback_max_depth": 3,
+        "structure_recognition_split_fallback_max_expansions": 8,
         "structure_recognition_min_confidence": "medium",
         "structure_recognition_cache_enabled": False,
         "structure_recognition_save_debug_artifacts": False,
@@ -626,6 +628,46 @@ def test_apply_prepared_snapshot_fields_exposes_document_topology_projection_fro
     assert snapshot["document_topology_projection_status_reason"] == ""
     assert snapshot["document_topology_projection"]["cache_key"] == "topology-key"
     assert snapshot["document_topology_projection"]["projected_units"][0]["logical_indexes"] == (10, 11)
+
+
+def test_apply_prepared_snapshot_fields_exposes_structure_fallback_stats_from_prepared_summary():
+    fallback_stats = StructureFallbackStats(
+        structure_window_split_count=2,
+        structure_max_fallback_depth=3,
+        structure_split_fallback_descriptor_count=9,
+        structure_timeout_retry_count=4,
+        structure_timeout_retry_succeeded_count=1,
+        structure_timeout_retry_failed_count=3,
+        structure_split_fallback_capped_descriptor_count=6,
+    )
+    prepared = SimpleNamespace(
+        document_map=None,
+        document_map_status="not_requested",
+        document_map_status_reason="",
+        document_topology_projection=None,
+        document_topology_projection_status="not_requested",
+        document_topology_projection_status_reason="",
+        structure_map=StructureMap(
+            classifications={},
+            model_used="gpt-4o-mini",
+            total_tokens_used=0,
+            processing_time_seconds=0.0,
+            window_count=1,
+            fallback_stats=fallback_stats,
+        ),
+        structure_recognition_summary=StructureRecognitionSummary(fallback_stats=fallback_stats),
+    )
+
+    snapshot = structural_validation._build_preparation_diagnostic_defaults([])
+    structural_validation._apply_prepared_snapshot_fields(snapshot, prepared)
+
+    assert snapshot["structure_window_split_count"] == 2
+    assert snapshot["structure_max_fallback_depth"] == 3
+    assert snapshot["structure_split_fallback_descriptor_count"] == 9
+    assert snapshot["structure_timeout_retry_count"] == 4
+    assert snapshot["structure_timeout_retry_succeeded_count"] == 1
+    assert snapshot["structure_timeout_retry_failed_count"] == 3
+    assert snapshot["structure_split_fallback_capped_descriptor_count"] == 6
 
 
 def test_apply_topology_projection_snapshot_fallback_reconstructs_projection_from_prepared_document_map():
@@ -2343,7 +2385,7 @@ def test_prepare_document_for_processing_passes_document_map_into_structure_reco
         ),
     )
 
-    def _fake_build_structure_map(paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, preview_chars, target_input_tokens, progress_callback):
+    def _fake_build_structure_map(paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, topology_projection=None, preview_chars, target_input_tokens, timeout_retry_multiplier, timeout_retry_max_seconds, split_fallback_max_depth, split_fallback_max_expansions, progress_callback):
         captured["document_map"] = document_map
         captured["preview_chars"] = preview_chars
         captured["target_input_tokens"] = target_input_tokens
@@ -2410,11 +2452,15 @@ def test_prepare_document_for_processing_uses_anchored_window_profile_when_docum
         ),
     )
 
-    def _fake_build_structure_map(paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, preview_chars, target_input_tokens, progress_callback):
+    def _fake_build_structure_map(paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, topology_projection=None, preview_chars, target_input_tokens, timeout_retry_multiplier, timeout_retry_max_seconds, split_fallback_max_depth, split_fallback_max_expansions, progress_callback):
         captured["max_window_paragraphs"] = max_window_paragraphs
         captured["overlap_paragraphs"] = overlap_paragraphs
         captured["preview_chars"] = preview_chars
         captured["target_input_tokens"] = target_input_tokens
+        captured["timeout_retry_multiplier"] = timeout_retry_multiplier
+        captured["timeout_retry_max_seconds"] = timeout_retry_max_seconds
+        captured["split_fallback_max_depth"] = split_fallback_max_depth
+        captured["split_fallback_max_expansions"] = split_fallback_max_expansions
         return StructureMap(
             classifications={0: ParagraphClassification(index=0, role="heading", heading_level=1, confidence="high")},
             model_used=model,
@@ -2425,7 +2471,16 @@ def test_prepare_document_for_processing_uses_anchored_window_profile_when_docum
 
     monkeypatch.setattr(preparation, "build_structure_map", _fake_build_structure_map)
     _stub_single_block_preparation_builders(monkeypatch, source_text="# ГЛАВА 1\n\nОсновной текст")
-    monkeypatch.setattr(preparation, "load_app_config", lambda: _make_ai_first_config())
+    monkeypatch.setattr(
+        preparation,
+        "load_app_config",
+        lambda: _make_ai_first_config(
+            structure_recognition_timeout_retry_multiplier=1.75,
+            structure_recognition_timeout_retry_max_seconds=95.0,
+            structure_recognition_split_fallback_max_depth=4,
+            structure_recognition_split_fallback_max_expansions=9,
+        ),
+    )
 
     preparation.prepare_document_for_processing(
         uploaded_payload=_build_uploaded_payload("report.docx", b"docx-bytes", "report.docx:10:hash"),
@@ -2437,6 +2492,10 @@ def test_prepare_document_for_processing_uses_anchored_window_profile_when_docum
     assert captured["overlap_paragraphs"] == 0
     assert captured["preview_chars"] == 1500
     assert captured["target_input_tokens"] == 180000
+    assert captured["timeout_retry_multiplier"] == 1.75
+    assert captured["timeout_retry_max_seconds"] == 95.0
+    assert captured["split_fallback_max_depth"] == 4
+    assert captured["split_fallback_max_expansions"] == 9
 
 
 def test_prepare_document_for_processing_uses_anchored_min_confidence_when_document_map_present(monkeypatch):
@@ -2474,7 +2533,7 @@ def test_prepare_document_for_processing_uses_anchored_min_confidence_when_docum
     monkeypatch.setattr(
         preparation,
         "build_structure_map",
-        lambda paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, preview_chars, target_input_tokens, progress_callback: StructureMap(
+        lambda paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, topology_projection=None, preview_chars, target_input_tokens, timeout_retry_multiplier, timeout_retry_max_seconds, split_fallback_max_depth, split_fallback_max_expansions, progress_callback: StructureMap(
             classifications={0: ParagraphClassification(index=0, role="heading", heading_level=1, confidence="high")},
             model_used=model,
             total_tokens_used=12,
@@ -2483,7 +2542,7 @@ def test_prepare_document_for_processing_uses_anchored_min_confidence_when_docum
         ),
     )
 
-    def _fake_apply_structure_map(paragraphs, structure_map, *, min_confidence="medium", document_map=None):
+    def _fake_apply_structure_map(paragraphs, structure_map, *, min_confidence="medium", document_map=None, topology_projection=None):
         captured["min_confidence"] = min_confidence
         captured["document_map"] = document_map
         return {"ai_classified": 1, "ai_headings": 1}
@@ -2546,7 +2605,7 @@ def test_prepare_document_for_processing_reconciles_high_confidence_document_map
     monkeypatch.setattr(
         preparation,
         "build_structure_map",
-        lambda paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, preview_chars, target_input_tokens, progress_callback: StructureMap(
+        lambda paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, topology_projection=None, preview_chars, target_input_tokens, timeout_retry_multiplier, timeout_retry_max_seconds, split_fallback_max_depth, split_fallback_max_expansions, progress_callback: StructureMap(
             classifications={10: ParagraphClassification(index=10, role="body", heading_level=None, confidence="high")},
             model_used=model,
             total_tokens_used=12,
@@ -2617,7 +2676,7 @@ def test_prepare_document_for_processing_invokes_targeted_reconciliation_when_ga
     monkeypatch.setattr(
         preparation,
         "build_structure_map",
-        lambda paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, preview_chars, target_input_tokens, progress_callback: StructureMap(
+        lambda paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, topology_projection=None, preview_chars, target_input_tokens, timeout_retry_multiplier, timeout_retry_max_seconds, split_fallback_max_depth, split_fallback_max_expansions, progress_callback: StructureMap(
             classifications={
                 10: ParagraphClassification(index=10, role="body", heading_level=None, confidence="high"),
                 11: ParagraphClassification(index=11, role="body", heading_level=None, confidence="high"),
@@ -2753,7 +2812,7 @@ def test_run_structure_recognition_applies_final_reconciled_map_after_targeted_r
     monkeypatch.setattr(
         preparation,
         "build_structure_map",
-        lambda paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, preview_chars, target_input_tokens, progress_callback: initial_structure_map,
+        lambda paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, topology_projection=None, preview_chars, target_input_tokens, timeout_retry_multiplier, timeout_retry_max_seconds, split_fallback_max_depth, split_fallback_max_expansions, progress_callback: initial_structure_map,
     )
 
     def _fake_reconcile(paragraphs, document_map, structure_map, topology_projection=None):
@@ -2788,7 +2847,7 @@ def test_run_structure_recognition_applies_final_reconciled_map_after_targeted_r
         captured["report"] = report
         return ".run/reconciliation_reports/fake.json"
 
-    def _fake_apply_structure_map(paragraphs, structure_map, *, min_confidence="medium", document_map=None):
+    def _fake_apply_structure_map(paragraphs, structure_map, *, min_confidence="medium", document_map=None, topology_projection=None):
         captured["applied_structure_map"] = structure_map
         return {"ai_classified": 2, "ai_headings": 2}
 
@@ -2852,6 +2911,95 @@ def test_run_structure_recognition_applies_final_reconciled_map_after_targeted_r
     assert "missing_outline_entry" in reason_map[12]
     assert result is final_reconciled_map
     assert summary.ai_heading_count == 2
+
+
+def test_run_structure_recognition_emits_neutral_split_progress_detail_and_metrics(monkeypatch):
+    paragraphs = [_build_paragraph(source_index=index, text=f"Paragraph {index}") for index in range(3)]
+    progress_events: list[dict[str, object]] = []
+
+    def _fake_build_structure_map(
+        paragraphs,
+        *,
+        client,
+        model,
+        max_window_paragraphs,
+        overlap_paragraphs,
+        timeout,
+        document_map,
+        topology_projection,
+        preview_chars,
+        target_input_tokens,
+        timeout_retry_multiplier,
+        timeout_retry_max_seconds,
+        split_fallback_max_depth,
+        split_fallback_max_expansions,
+        progress_callback,
+    ):
+        progress_callback(
+            recognition_module.StructureRecognitionProgress(
+                event="window_split",
+                processed_windows=0,
+                total_windows=1,
+                current_window=1,
+                descriptor_count=3,
+                fallback_depth=1,
+            )
+        )
+        return StructureMap(
+            classifications={
+                0: ParagraphClassification(index=0, role="body", heading_level=None, confidence="high"),
+            },
+            model_used=model,
+            total_tokens_used=1,
+            processing_time_seconds=0.1,
+            window_count=2,
+            fallback_stats=StructureFallbackStats(
+                structure_window_split_count=1,
+                structure_max_fallback_depth=1,
+                structure_split_fallback_descriptor_count=3,
+            ),
+        )
+
+    monkeypatch.setattr(preparation, "build_structure_map", _fake_build_structure_map)
+    monkeypatch.setattr(preparation, "apply_structure_map", lambda *args, **kwargs: {"ai_classified": 1, "ai_headings": 0})
+
+    structure_map, summary = preparation._run_structure_recognition(
+        paragraphs=paragraphs,
+        image_assets=[],
+        app_config={
+            "structure_recognition_model": "gpt-4o-mini",
+            "models": _build_runtime_model_registry(structure_recognition_model="gpt-4o-mini"),
+            "structure_recognition_max_window_paragraphs": 1800,
+            "structure_recognition_overlap_paragraphs": 50,
+            "structure_recognition_timeout_seconds": 60,
+            "structure_recognition_split_fallback_max_depth": 3,
+            "structure_recognition_split_fallback_max_expansions": 8,
+            "structure_recognition_min_confidence": "medium",
+            "structure_recognition_cache_enabled": False,
+            "structure_recognition_save_debug_artifacts": False,
+            "structure_recovery_enabled": False,
+            "structure_recovery_mode": "ai_first",
+        },
+        get_client_fn=lambda: object(),
+        progress_callback=lambda **payload: progress_events.append(payload),
+        normalization_report=_build_report(raw=3, logical=3),
+        relation_report=None,
+        cleanup_report=None,
+        document_map=None,
+    )
+
+    split_payload = next(
+        payload
+        for payload in progress_events
+        if payload["detail"] == "Таймаут AI на большом окне структуры; продолжаю меньшими окнами."
+    )
+
+    assert structure_map is not None
+    assert summary.fallback_stats.structure_window_split_count == 1
+    assert split_payload["metrics"]["structure_descriptor_count"] == 3
+    assert split_payload["metrics"]["structure_fallback_depth"] == 1
+    assert split_payload["metrics"]["structure_current_window"] == 1
+    assert split_payload["metrics"]["structure_total_windows"] == 1
 
 
 def test_run_structure_recognition_preserves_first_reconcile_patch_indexes_after_targeted_recall(monkeypatch):
@@ -3395,7 +3543,7 @@ def test_run_structure_recognition_uses_60_second_targeted_timeout_fallback(monk
     monkeypatch.setattr(
         preparation,
         "reconcile_with_document_map",
-        lambda paragraphs, document_map, structure_map: (
+        lambda paragraphs, document_map, structure_map, topology_projection=None: (
             structure_map,
             ReconciliationReport(missing_outline_entries=(10, 11), outline_coverage_ratio=0.0),
         ),
@@ -3480,7 +3628,7 @@ def test_run_structure_recognition_targeted_recall_uses_selector_aware_injected_
     monkeypatch.setattr(
         preparation,
         "reconcile_with_document_map",
-        lambda paragraphs, document_map, structure_map: (
+        lambda paragraphs, document_map, structure_map, topology_projection=None: (
             structure_map,
             ReconciliationReport(missing_outline_entries=(10, 11), outline_coverage_ratio=0.0),
         ),
@@ -3554,7 +3702,7 @@ def test_run_structure_recognition_degrades_targeted_recall_provider_failures_as
     monkeypatch.setattr(
         preparation,
         "reconcile_with_document_map",
-        lambda paragraphs, document_map, structure_map: (
+        lambda paragraphs, document_map, structure_map, topology_projection=None: (
             structure_map,
             ReconciliationReport(missing_outline_entries=(10, 11), outline_coverage_ratio=0.0),
         ),
@@ -3629,7 +3777,7 @@ def test_run_structure_recognition_triggers_targeted_recall_on_anchor_disagreeme
     monkeypatch.setattr(
         preparation,
         "reconcile_with_document_map",
-        lambda paragraphs, document_map, structure_map: (
+        lambda paragraphs, document_map, structure_map, topology_projection=None: (
             structure_map,
             ReconciliationReport(anchor_disagreements_seen=(10, 11, 12, 13), outline_coverage_ratio=1.0),
         ),
@@ -3712,7 +3860,7 @@ def test_run_structure_recognition_does_not_trigger_targeted_recall_for_front_ma
     monkeypatch.setattr(
         preparation,
         "reconcile_with_document_map",
-        lambda paragraphs, document_map, structure_map: (
+        lambda paragraphs, document_map, structure_map, topology_projection=None: (
             structure_map,
             ReconciliationReport(front_matter_body_advisories=(10,), outline_coverage_ratio=1.0),
         ),
@@ -3794,7 +3942,7 @@ def test_run_structure_recognition_triggers_targeted_recall_from_review_zone_con
     monkeypatch.setattr(
         preparation,
         "reconcile_with_document_map",
-        lambda paragraphs, document_map, structure_map: (
+        lambda paragraphs, document_map, structure_map, topology_projection=None: (
             structure_map,
             ReconciliationReport(missing_outline_entries=(10,), outline_coverage_ratio=0.0),
         ),
@@ -3875,7 +4023,7 @@ def test_run_structure_recognition_triggers_targeted_recall_from_body_start_cont
     monkeypatch.setattr(
         preparation,
         "reconcile_with_document_map",
-        lambda paragraphs, document_map, structure_map: (structure_map, ReconciliationReport(outline_coverage_ratio=1.0)),
+        lambda paragraphs, document_map, structure_map, topology_projection=None: (structure_map, ReconciliationReport(outline_coverage_ratio=1.0)),
     )
 
     def _fake_targeted(paragraphs, document_map, structure_map, report, *, client, model, timeout, max_paragraphs, selection=None):
@@ -3959,7 +4107,7 @@ def test_run_structure_recognition_triggers_targeted_recall_from_toc_boundary_co
     monkeypatch.setattr(
         preparation,
         "reconcile_with_document_map",
-        lambda paragraphs, document_map, structure_map: (structure_map, ReconciliationReport(outline_coverage_ratio=1.0)),
+        lambda paragraphs, document_map, structure_map, topology_projection=None: (structure_map, ReconciliationReport(outline_coverage_ratio=1.0)),
     )
 
     def _fake_targeted(paragraphs, document_map, structure_map, report, *, client, model, timeout, max_paragraphs, selection=None):
@@ -4125,7 +4273,7 @@ def test_run_structure_recognition_degrades_apply_failures_as_stage3_apply(monke
     monkeypatch.setattr(
         preparation,
         "reconcile_with_document_map",
-        lambda paragraphs, document_map, structure_map: (structure_map, ReconciliationReport(outline_coverage_ratio=1.0)),
+        lambda paragraphs, document_map, structure_map, topology_projection=None: (structure_map, ReconciliationReport(outline_coverage_ratio=1.0)),
     )
     monkeypatch.setattr(preparation, "_write_reconciliation_report_artifact", lambda **kwargs: None)
     monkeypatch.setattr(
@@ -4197,7 +4345,7 @@ def test_run_structure_recognition_restores_paragraphs_after_partial_apply_failu
     monkeypatch.setattr(
         preparation,
         "reconcile_with_document_map",
-        lambda paragraphs, document_map, structure_map: (structure_map, ReconciliationReport(outline_coverage_ratio=1.0)),
+        lambda paragraphs, document_map, structure_map, topology_projection=None: (structure_map, ReconciliationReport(outline_coverage_ratio=1.0)),
     )
     monkeypatch.setattr(preparation, "_write_reconciliation_report_artifact", lambda **kwargs: None)
 
@@ -4274,7 +4422,7 @@ def test_run_structure_recognition_keeps_structure_when_reconciliation_report_sa
     monkeypatch.setattr(
         preparation,
         "reconcile_with_document_map",
-        lambda paragraphs, document_map, structure_map: (structure_map, ReconciliationReport(outline_coverage_ratio=1.0)),
+        lambda paragraphs, document_map, structure_map, topology_projection=None: (structure_map, ReconciliationReport(outline_coverage_ratio=1.0)),
     )
     monkeypatch.setattr(
         preparation,
@@ -4359,8 +4507,13 @@ def test_prepare_document_for_processing_falls_back_to_legacy_non_anchored_stage
         overlap_paragraphs,
         timeout,
         document_map,
+        topology_projection=None,
         preview_chars,
         target_input_tokens,
+        timeout_retry_multiplier,
+        timeout_retry_max_seconds,
+        split_fallback_max_depth,
+        split_fallback_max_expansions,
         progress_callback,
     ):
         captured["document_map"] = document_map
@@ -4902,7 +5055,7 @@ def test_prepare_document_for_processing_compact_ai_first_integration_uses_post_
     monkeypatch.setattr(
         preparation,
         "build_structure_map",
-        lambda paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, preview_chars, target_input_tokens, progress_callback: StructureMap(
+        lambda paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, topology_projection=None, preview_chars, target_input_tokens, timeout_retry_multiplier, timeout_retry_max_seconds, split_fallback_max_depth, split_fallback_max_expansions, progress_callback: StructureMap(
             classifications={
                 3: ParagraphClassification(index=3, role="body", heading_level=None, confidence="high"),
                 4: ParagraphClassification(index=4, role="body", heading_level=None, confidence="high"),
@@ -6198,7 +6351,8 @@ def test_prepare_document_for_processing_falls_back_to_heuristics_when_structure
     assert result.ai_heading_demotion_count == 0
     assert result.ai_structural_role_change_count == 0
     assert result.structure_map is None
-    assert logged_events[1][0] == "structure_recognition_fallback"
+    fallback_event = next(context for event, context in logged_events if event == "structure_recognition_fallback")
+    assert fallback_event["fallback_stage"] == "stage2_structure_recognition_provider"
 
 
 def test_prepare_document_for_processing_logs_cache_miss_and_hit(monkeypatch):
@@ -6610,7 +6764,7 @@ def test_prepare_document_for_processing_uses_post_ai_validation_report_for_fina
     monkeypatch.setattr(
         preparation,
         "apply_structure_map",
-        lambda paragraphs, structure_map, *, min_confidence="medium", document_map=None: (
+        lambda paragraphs, structure_map, *, min_confidence="medium", document_map=None, topology_projection=None: (
             setattr(paragraphs[0], "role", "heading"),
             setattr(paragraphs[0], "heading_level", 1),
             {"ai_classified": 1, "ai_headings": 1},

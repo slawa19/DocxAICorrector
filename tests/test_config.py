@@ -454,6 +454,10 @@ def test_describe_provider_availability_reports_missing_key(monkeypatch):
         structure_recognition_max_window_paragraphs=1800,
         structure_recognition_overlap_paragraphs=50,
         structure_recognition_timeout_seconds=60,
+        structure_recognition_timeout_retry_multiplier=1.5,
+        structure_recognition_timeout_retry_max_seconds=120,
+        structure_recognition_split_fallback_max_depth=3,
+        structure_recognition_split_fallback_max_expansions=8,
         structure_recognition_min_confidence="medium",
         structure_recognition_cache_enabled=True,
         structure_recognition_save_debug_artifacts=True,
@@ -591,6 +595,10 @@ def test_describe_provider_availability_loads_project_dotenv(monkeypatch):
         structure_recognition_max_window_paragraphs=1800,
         structure_recognition_overlap_paragraphs=50,
         structure_recognition_timeout_seconds=60,
+        structure_recognition_timeout_retry_multiplier=1.5,
+        structure_recognition_timeout_retry_max_seconds=120,
+        structure_recognition_split_fallback_max_depth=3,
+        structure_recognition_split_fallback_max_expansions=8,
         structure_recognition_min_confidence="medium",
         structure_recognition_cache_enabled=True,
         structure_recognition_save_debug_artifacts=True,
@@ -1153,6 +1161,8 @@ def test_load_app_config_applies_structure_recognition_env_overrides(monkeypatch
     monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_MAX_WINDOW_PARAGRAPHS", "9999")
     monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_OVERLAP_PARAGRAPHS", "999")
     monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_TIMEOUT_SECONDS", "999")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_SPLIT_FALLBACK_MAX_DEPTH", "999")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_SPLIT_FALLBACK_MAX_EXPANSIONS", "999")
     monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_MIN_CONFIDENCE", "high")
     monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_CACHE_ENABLED", "false")
     monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_SAVE_DEBUG_ARTIFACTS", "false")
@@ -1167,9 +1177,24 @@ def test_load_app_config_applies_structure_recognition_env_overrides(monkeypatch
     assert app_config["structure_recognition_max_window_paragraphs"] == 4000
     assert app_config["structure_recognition_overlap_paragraphs"] == 200
     assert app_config["structure_recognition_timeout_seconds"] == 300
+    assert app_config["structure_recognition_split_fallback_max_depth"] == 20
+    assert app_config["structure_recognition_split_fallback_max_expansions"] == 100
     assert app_config["structure_recognition_min_confidence"] == "high"
     assert app_config["structure_recognition_cache_enabled"] is False
     assert app_config["structure_recognition_save_debug_artifacts"] is False
+
+
+def test_load_app_config_allows_zero_structure_recognition_split_fallback_caps(monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_PATH", config.CONFIG_PATH.parent / "__missing_config__.toml")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_ENABLED", "true")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_SPLIT_FALLBACK_MAX_DEPTH", "0")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOGNITION_SPLIT_FALLBACK_MAX_EXPANSIONS", "0")
+
+    app_config = config.load_app_config()
+
+    assert app_config["structure_recognition_split_fallback_max_depth"] == 0
+    assert app_config["structure_recognition_split_fallback_max_expansions"] == 0
 
 
 def test_load_app_config_applies_structure_recovery_env_overrides_and_clamps(monkeypatch):

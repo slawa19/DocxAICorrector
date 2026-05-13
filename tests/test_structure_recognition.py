@@ -6,7 +6,7 @@ import pytest
 
 import docxaicorrector.structure.recognition as structure_recognition
 from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, DocumentTopologyProjection, EmbeddedStructureHint
-from docxaicorrector.core.models import ParagraphClassification, ParagraphUnit, StructuralUnit, StructureMap
+from docxaicorrector.core.models import ParagraphClassification, ParagraphUnit, StructuralUnit, StructureFallbackStats, StructureMap
 from docxaicorrector.structure.recognition import StructureRecognitionProgress
 
 
@@ -39,6 +39,40 @@ def _paragraph(
         logical_index=source_index,
         heading_level=heading_level,
         heading_source=heading_source,
+    )
+
+
+def _topology_unit(
+    *,
+    logical_index: int,
+    unit_type: str,
+    authority: str = "document_map_outline",
+    confidence: str = "high",
+    heading_level: int | None = 1,
+    canonical_text: str = "Canonical heading",
+) -> StructuralUnit:
+    if unit_type in {"chapter_heading", "section_heading"}:
+        role = "heading"
+    elif unit_type == "toc_entry":
+        role = "toc_entry"
+    else:
+        role = "body"
+    return StructuralUnit(
+        unit_type=unit_type,
+        logical_indexes=(logical_index,),
+        canonical_text=canonical_text,
+        role=role,
+        heading_level=heading_level,
+        confidence=confidence,
+        authority=authority,
+        evidence=("test",),
+    )
+
+
+def _topology_projection(*units: StructuralUnit) -> DocumentTopologyProjection:
+    return DocumentTopologyProjection(
+        cache_key="topology-cache-key",
+        projected_units=units,
     )
 
 
@@ -1004,6 +1038,346 @@ def test_apply_structure_map_uses_logical_index_for_duplicate_source_indexes():
     assert second.role_confidence == "ai"
 
 
+class TestTopologyAuthorityGuard:
+    def test_guard_inactive_when_topology_projection_is_none(self):
+        paragraph = _paragraph(source_index=10, text="Глава 1")
+        structure_map = StructureMap(
+            classifications={
+                10: ParagraphClassification(index=10, role="heading", heading_level=1, confidence="high"),
+            },
+            model_used="gpt-4o-mini",
+            total_tokens_used=10,
+            processing_time_seconds=0.1,
+            window_count=1,
+        )
+
+        metrics = structure_recognition.apply_structure_map([paragraph], structure_map, topology_projection=None)
+
+        assert paragraph.role == "heading"
+        assert paragraph.heading_level == 1
+        assert metrics["topology_authority_conflicts_deferred"] == 0
+        assert metrics["topology_authority_protected_count"] == 0
+
+    def test_guard_inactive_when_unit_confidence_is_not_high(self):
+        paragraph = _paragraph(source_index=10, text="Глава 1")
+        structure_map = StructureMap(
+            classifications={
+                10: ParagraphClassification(index=10, role="body", heading_level=None, confidence="high"),
+            },
+            model_used="gpt-4o-mini",
+            total_tokens_used=10,
+            processing_time_seconds=0.1,
+            window_count=1,
+        )
+        projection = _topology_projection(
+            _topology_unit(logical_index=10, unit_type="chapter_heading", confidence="medium", heading_level=1)
+        )
+
+        metrics = structure_recognition.apply_structure_map([paragraph], structure_map, topology_projection=projection)
+
+        assert paragraph.role == "body"
+        assert paragraph.role_confidence == "ai"
+        assert metrics["topology_authority_conflicts_deferred"] == 0
+        assert metrics["topology_authority_protected_count"] == 0
+
+    @pytest.mark.parametrize(
+        "authority",
+        ["document_map_anchor", "document_map_review_zone", "document_map_split_hint"],
+    )
+    def test_guard_inactive_for_non_authoritative_unit_authority(self, authority: str):
+        paragraph = _paragraph(source_index=10, text="Глава 1")
+        structure_map = StructureMap(
+            classifications={
+                10: ParagraphClassification(index=10, role="body", heading_level=None, confidence="high"),
+            },
+            model_used="gpt-4o-mini",
+            total_tokens_used=10,
+            processing_time_seconds=0.1,
+            window_count=1,
+        )
+        projection = _topology_projection(
+            _topology_unit(logical_index=10, unit_type="chapter_heading", authority=authority, heading_level=1)
+        )
+
+        metrics = structure_recognition.apply_structure_map([paragraph], structure_map, topology_projection=projection)
+
+        assert paragraph.role == "body"
+        assert paragraph.role_confidence == "ai"
+        assert metrics["topology_authority_conflicts_deferred"] == 0
+        assert metrics["topology_authority_protected_count"] == 0
+
+    @pytest.mark.parametrize("unit_type", ["body", "page_artifact", "unknown"])
+    def test_guard_inactive_for_non_protected_unit_type(self, unit_type: str):
+        paragraph = _paragraph(source_index=10, text="Глава 1")
+        structure_map = StructureMap(
+            classifications={
+                10: ParagraphClassification(index=10, role="body", heading_level=None, confidence="high"),
+            },
+            model_used="gpt-4o-mini",
+            total_tokens_used=10,
+            processing_time_seconds=0.1,
+            window_count=1,
+        )
+        projection = _topology_projection(
+            _topology_unit(logical_index=10, unit_type=unit_type, heading_level=None)
+        )
+
+        metrics = structure_recognition.apply_structure_map([paragraph], structure_map, topology_projection=projection)
+
+        assert paragraph.role == "body"
+        assert paragraph.role_confidence == "ai"
+        assert metrics["topology_authority_conflicts_deferred"] == 0
+        assert metrics["topology_authority_protected_count"] == 0
+
+    def test_concordant_chapter_heading_with_matching_level_applies(self):
+        paragraph = _paragraph(source_index=10, text="Chapter One")
+        structure_map = StructureMap(
+            classifications={
+                10: ParagraphClassification(index=10, role="heading", heading_level=1, confidence="high"),
+            },
+            model_used="gpt-4o-mini",
+            total_tokens_used=10,
+            processing_time_seconds=0.1,
+            window_count=1,
+        )
+        projection = _topology_projection(
+            _topology_unit(logical_index=10, unit_type="chapter_heading", heading_level=1)
+        )
+
+        metrics = structure_recognition.apply_structure_map([paragraph], structure_map, topology_projection=projection)
+
+        assert paragraph.role == "heading"
+        assert paragraph.heading_level == 1
+        assert metrics["topology_authority_protected_count"] == 1
+        assert metrics["topology_authority_conflicts_deferred"] == 0
+
+    def test_conflicting_chapter_heading_body_vote_is_deferred(self):
+        paragraph = _paragraph(source_index=10, text="Chapter One")
+        structure_map = StructureMap(
+            classifications={
+                10: ParagraphClassification(index=10, role="body", heading_level=None, confidence="high"),
+            },
+            model_used="gpt-4o-mini",
+            total_tokens_used=10,
+            processing_time_seconds=0.1,
+            window_count=1,
+        )
+        projection = _topology_projection(
+            _topology_unit(logical_index=10, unit_type="chapter_heading", heading_level=1)
+        )
+
+        metrics = structure_recognition.apply_structure_map([paragraph], structure_map, topology_projection=projection)
+
+        assert paragraph.role == "body"
+        assert paragraph.role_confidence == "heuristic"
+        assert metrics["topology_authority_conflicts_deferred"] == 1
+        assert metrics["topology_authority_protected_count"] == 0
+
+    @pytest.mark.parametrize("heading_level", [None, 2])
+    def test_conflicting_chapter_heading_wrong_or_missing_level_is_deferred(self, heading_level: int | None):
+        paragraph = _paragraph(source_index=10, text="Chapter One")
+        structure_map = StructureMap(
+            classifications={
+                10: ParagraphClassification(index=10, role="heading", heading_level=heading_level, confidence="high"),
+            },
+            model_used="gpt-4o-mini",
+            total_tokens_used=10,
+            processing_time_seconds=0.1,
+            window_count=1,
+        )
+        projection = _topology_projection(
+            _topology_unit(logical_index=10, unit_type="chapter_heading", heading_level=1)
+        )
+
+        metrics = structure_recognition.apply_structure_map([paragraph], structure_map, topology_projection=projection)
+
+        assert paragraph.role == "body"
+        assert paragraph.heading_level is None
+        assert metrics["topology_authority_conflicts_deferred"] == 1
+        assert metrics["topology_authority_protected_count"] == 0
+
+    def test_concordant_section_heading_with_matching_level_applies(self):
+        paragraph = _paragraph(source_index=10, text="Section One")
+        structure_map = StructureMap(
+            classifications={
+                10: ParagraphClassification(index=10, role="heading", heading_level=2, confidence="high"),
+            },
+            model_used="gpt-4o-mini",
+            total_tokens_used=10,
+            processing_time_seconds=0.1,
+            window_count=1,
+        )
+        projection = _topology_projection(
+            _topology_unit(logical_index=10, unit_type="section_heading", heading_level=2)
+        )
+
+        metrics = structure_recognition.apply_structure_map([paragraph], structure_map, topology_projection=projection)
+
+        assert paragraph.role == "heading"
+        assert paragraph.heading_level == 2
+        assert metrics["topology_authority_protected_count"] == 1
+        assert metrics["topology_authority_conflicts_deferred"] == 0
+
+    @pytest.mark.parametrize("heading_level", [None, 3])
+    def test_conflicting_section_heading_wrong_or_missing_level_is_deferred(self, heading_level: int | None):
+        paragraph = _paragraph(source_index=10, text="Section One")
+        structure_map = StructureMap(
+            classifications={
+                10: ParagraphClassification(index=10, role="heading", heading_level=heading_level, confidence="high"),
+            },
+            model_used="gpt-4o-mini",
+            total_tokens_used=10,
+            processing_time_seconds=0.1,
+            window_count=1,
+        )
+        projection = _topology_projection(
+            _topology_unit(logical_index=10, unit_type="section_heading", heading_level=2)
+        )
+
+        metrics = structure_recognition.apply_structure_map([paragraph], structure_map, topology_projection=projection)
+
+        assert paragraph.role == "body"
+        assert paragraph.heading_level is None
+        assert metrics["topology_authority_conflicts_deferred"] == 1
+        assert metrics["topology_authority_protected_count"] == 0
+
+    def test_conflicting_toc_entry_heading_vote_is_deferred(self):
+        paragraph = _paragraph(source_index=10, text="Chapter One")
+        structure_map = StructureMap(
+            classifications={
+                10: ParagraphClassification(index=10, role="heading", heading_level=1, confidence="high"),
+            },
+            model_used="gpt-4o-mini",
+            total_tokens_used=10,
+            processing_time_seconds=0.1,
+            window_count=1,
+        )
+        projection = _topology_projection(
+            _topology_unit(logical_index=10, unit_type="toc_entry", authority="document_map_toc", heading_level=None)
+        )
+
+        metrics = structure_recognition.apply_structure_map([paragraph], structure_map, topology_projection=projection)
+
+        assert paragraph.role == "body"
+        assert paragraph.heading_level is None
+        assert metrics["topology_authority_conflicts_deferred"] == 1
+        assert metrics["topology_authority_protected_count"] == 0
+
+    def test_conflicting_toc_entry_body_vote_is_deferred(self):
+        paragraph = _paragraph(source_index=10, text="Chapter One")
+        structure_map = StructureMap(
+            classifications={
+                10: ParagraphClassification(index=10, role="body", heading_level=None, confidence="high"),
+            },
+            model_used="gpt-4o-mini",
+            total_tokens_used=10,
+            processing_time_seconds=0.1,
+            window_count=1,
+        )
+        projection = _topology_projection(
+            _topology_unit(logical_index=10, unit_type="toc_entry", authority="document_map_toc", heading_level=None)
+        )
+
+        metrics = structure_recognition.apply_structure_map([paragraph], structure_map, topology_projection=projection)
+
+        assert paragraph.role == "body"
+        assert paragraph.role_confidence == "heuristic"
+        assert metrics["topology_authority_conflicts_deferred"] == 1
+        assert metrics["topology_authority_protected_count"] == 0
+
+    def test_counters_always_appear_as_ints(self):
+        paragraph = _paragraph(source_index=10, text="Body")
+        structure_map = StructureMap(
+            classifications={},
+            model_used="gpt-4o-mini",
+            total_tokens_used=0,
+            processing_time_seconds=0.0,
+            window_count=0,
+        )
+
+        metrics = structure_recognition.apply_structure_map([paragraph], structure_map)
+
+        assert isinstance(metrics["topology_authority_conflicts_deferred"], int)
+        assert isinstance(metrics["topology_authority_protected_count"], int)
+
+    def test_regression_without_topology_projection_preserves_pre_guard_behavior(self):
+        first = _paragraph(source_index=10, text="Chapter One")
+        second = _paragraph(source_index=11, text="Body text", role="heading", structural_role="heading", heading_level=2, heading_source="heuristic")
+        structure_map = StructureMap(
+            classifications={
+                10: ParagraphClassification(index=10, role="heading", heading_level=1, confidence="high"),
+                11: ParagraphClassification(index=11, role="body", heading_level=None, confidence="high"),
+            },
+            model_used="gpt-4o-mini",
+            total_tokens_used=10,
+            processing_time_seconds=0.1,
+            window_count=1,
+        )
+
+        metrics = structure_recognition.apply_structure_map([first, second], structure_map, topology_projection=None)
+
+        assert first.role == "heading"
+        assert first.heading_level == 1
+        assert first.role_confidence == "ai"
+        assert second.role == "body"
+        assert second.structural_role == "body"
+        assert second.heading_level is None
+        assert second.heading_source is None
+        assert metrics == {
+            "ai_classified": 2,
+            "ai_headings": 1,
+            "reconciliation_patches_applied": 0,
+            "reconciliation_locked_overrides_applied": 0,
+            "reconciliation_locked_overrides_skipped": 0,
+            "anchor_conflicts_deferred": 0,
+            "topology_authority_conflicts_deferred": 0,
+            "topology_authority_protected_count": 0,
+        }
+
+    def test_unknown_topology_heading_level_treats_heading_role_as_concord(self):
+        paragraph = _paragraph(source_index=10, text="Chapter One")
+        structure_map = StructureMap(
+            classifications={
+                10: ParagraphClassification(index=10, role="heading", heading_level=None, confidence="high"),
+            },
+            model_used="gpt-4o-mini",
+            total_tokens_used=10,
+            processing_time_seconds=0.1,
+            window_count=1,
+        )
+        projection = _topology_projection(
+            _topology_unit(logical_index=10, unit_type="chapter_heading", heading_level=None)
+        )
+
+        metrics = structure_recognition.apply_structure_map([paragraph], structure_map, topology_projection=projection)
+
+        assert paragraph.role == "heading"
+        assert metrics["topology_authority_protected_count"] == 1
+        assert metrics["topology_authority_conflicts_deferred"] == 0
+
+    def test_unknown_topology_heading_level_still_conflicts_on_role_mismatch(self):
+        paragraph = _paragraph(source_index=10, text="Chapter One")
+        structure_map = StructureMap(
+            classifications={
+                10: ParagraphClassification(index=10, role="body", heading_level=None, confidence="high"),
+            },
+            model_used="gpt-4o-mini",
+            total_tokens_used=10,
+            processing_time_seconds=0.1,
+            window_count=1,
+        )
+        projection = _topology_projection(
+            _topology_unit(logical_index=10, unit_type="chapter_heading", heading_level=None)
+        )
+
+        metrics = structure_recognition.apply_structure_map([paragraph], structure_map, topology_projection=projection)
+
+        assert paragraph.role == "body"
+        assert paragraph.role_confidence == "heuristic"
+        assert metrics["topology_authority_conflicts_deferred"] == 1
+        assert metrics["topology_authority_protected_count"] == 0
+
+
 def test_iter_descriptor_windows_uses_overlap_for_large_inputs():
     descriptors = [
         SimpleNamespace(index=index)
@@ -1079,14 +1453,17 @@ def test_build_structure_map_splits_timeout_windows_and_merges_subwindow_results
         _paragraph(source_index=3, text="Body B"),
     ]
     calls: list[list[int]] = []
+    attempted_windows: dict[tuple[int, ...], int] = {}
 
     class APITimeoutError(Exception):
         pass
 
     def _classify(**kwargs):
         descriptors = list(kwargs["descriptors"])
-        calls.append([descriptor.index for descriptor in descriptors])
-        if len(descriptors) > 2:
+        indexes = tuple(descriptor.index for descriptor in descriptors)
+        calls.append(list(indexes))
+        attempted_windows[indexes] = attempted_windows.get(indexes, 0) + 1
+        if len(descriptors) > 2 and attempted_windows[indexes] <= 2:
             raise APITimeoutError("Request timed out.")
         return (
             [
@@ -1111,13 +1488,241 @@ def test_build_structure_map_splits_timeout_windows_and_merges_subwindow_results
         overlap_paragraphs=1,
     )
 
-    assert calls == [[0, 1, 2, 3], [0, 1], [2, 3]]
+    assert calls == [[0, 1, 2, 3], [0, 1, 2, 3], [0, 1], [2, 3]]
     assert structure_map.window_count == 2
     assert structure_map.total_tokens_used == 40
     assert structure_map.get(0) == ParagraphClassification(index=0, role="heading", heading_level=1, confidence="high")
     assert structure_map.get(1) == ParagraphClassification(index=1, role="body", heading_level=None, confidence="high")
     assert structure_map.get(2) == ParagraphClassification(index=2, role="heading", heading_level=1, confidence="high")
     assert structure_map.get(3) == ParagraphClassification(index=3, role="body", heading_level=None, confidence="high")
+    assert structure_map.fallback_stats.as_metrics() == {
+        "structure_window_split_count": 1,
+        "structure_max_fallback_depth": 1,
+        "structure_split_fallback_descriptor_count": 4,
+        "structure_timeout_retry_count": 1,
+        "structure_timeout_retry_succeeded_count": 0,
+        "structure_timeout_retry_failed_count": 1,
+        "structure_split_fallback_capped_descriptor_count": 0,
+    }
+
+
+def test_build_structure_map_retries_timeout_window_before_split_and_uses_retry_result(monkeypatch):
+    paragraphs = [
+        _paragraph(source_index=0, text="Heading A"),
+        _paragraph(source_index=1, text="Body A"),
+        _paragraph(source_index=2, text="Heading B"),
+        _paragraph(source_index=3, text="Body B"),
+    ]
+    calls: list[dict[str, object]] = []
+
+    def _classify(**kwargs):
+        descriptors = list(kwargs["descriptors"])
+        calls.append(
+            {
+                "indexes": [descriptor.index for descriptor in descriptors],
+                "timeout": kwargs["timeout"],
+            }
+        )
+        if len(calls) == 1:
+            raise TimeoutError("timeout")
+        return (
+            [
+                ParagraphClassification(
+                    index=descriptor.index,
+                    role="heading" if descriptor.index % 2 == 0 else "body",
+                    heading_level=1 if descriptor.index % 2 == 0 else None,
+                    confidence="high",
+                )
+                for descriptor in descriptors
+            ],
+            len(descriptors) * 10,
+        )
+
+    monkeypatch.setattr(structure_recognition, "_classify_descriptor_window", _classify)
+
+    structure_map = structure_recognition.build_structure_map(
+        paragraphs,
+        client=object(),
+        model="gpt-4o-mini",
+        max_window_paragraphs=4,
+        overlap_paragraphs=1,
+        timeout=60.0,
+        timeout_retry_multiplier=1.5,
+        timeout_retry_max_seconds=90.0,
+        split_fallback_max_depth=0,
+        split_fallback_max_expansions=0,
+    )
+
+    assert calls == [
+        {"indexes": [0, 1, 2, 3], "timeout": 60.0},
+        {"indexes": [0, 1, 2, 3], "timeout": 90.0},
+    ]
+    assert structure_map.window_count == 1
+    assert structure_map.total_tokens_used == 40
+    assert structure_map.fallback_stats.as_metrics() == {
+        "structure_window_split_count": 0,
+        "structure_max_fallback_depth": 0,
+        "structure_split_fallback_descriptor_count": 0,
+        "structure_timeout_retry_count": 1,
+        "structure_timeout_retry_succeeded_count": 1,
+        "structure_timeout_retry_failed_count": 0,
+        "structure_split_fallback_capped_descriptor_count": 0,
+    }
+
+
+def test_build_structure_map_caps_nested_split_fallback_by_max_depth(monkeypatch):
+    paragraphs = [_paragraph(source_index=index, text=f"Paragraph {index}") for index in range(4)]
+    attempted_windows: dict[tuple[int, ...], int] = {}
+
+    def _classify(**kwargs):
+        descriptors = list(kwargs["descriptors"])
+        indexes = tuple(descriptor.index for descriptor in descriptors)
+        attempted_windows[indexes] = attempted_windows.get(indexes, 0) + 1
+        if indexes == (0, 1, 2, 3) and attempted_windows[indexes] <= 2:
+            raise TimeoutError("timeout")
+        if indexes == (0, 1) and attempted_windows[indexes] <= 2:
+            raise TimeoutError("timeout")
+        return (
+            [
+                ParagraphClassification(
+                    index=descriptor.index,
+                    role="body",
+                    heading_level=None,
+                    confidence="high",
+                )
+                for descriptor in descriptors
+            ],
+            len(descriptors),
+        )
+
+    monkeypatch.setattr(structure_recognition, "_classify_descriptor_window", _classify)
+
+    structure_map = structure_recognition.build_structure_map(
+        paragraphs,
+        client=object(),
+        model="gpt-5-mini",
+        max_window_paragraphs=10,
+        overlap_paragraphs=0,
+        split_fallback_max_depth=1,
+    )
+
+    assert structure_map.classifications.keys() == {2, 3}
+    assert structure_map.get(0) is None
+    assert structure_map.get(1) is None
+    assert structure_map.fallback_stats.as_metrics() == {
+        "structure_window_split_count": 1,
+        "structure_max_fallback_depth": 1,
+        "structure_split_fallback_descriptor_count": 4,
+        "structure_timeout_retry_count": 2,
+        "structure_timeout_retry_succeeded_count": 0,
+        "structure_timeout_retry_failed_count": 2,
+        "structure_split_fallback_capped_descriptor_count": 2,
+    }
+
+
+def test_build_structure_map_caps_nested_split_fallback_by_max_expansions(monkeypatch):
+    paragraphs = [_paragraph(source_index=index, text=f"Paragraph {index}") for index in range(4)]
+    captured: list[StructureRecognitionProgress] = []
+    attempted_windows: dict[tuple[int, ...], int] = {}
+
+    def _classify(**kwargs):
+        descriptors = list(kwargs["descriptors"])
+        indexes = tuple(descriptor.index for descriptor in descriptors)
+        attempted_windows[indexes] = attempted_windows.get(indexes, 0) + 1
+        if indexes in {(0, 1, 2, 3), (0, 1), (2, 3)} and attempted_windows[indexes] <= 2:
+            raise TimeoutError("timeout")
+        return (
+            [
+                ParagraphClassification(
+                    index=descriptor.index,
+                    role="body",
+                    heading_level=None,
+                    confidence="high",
+                )
+                for descriptor in descriptors
+            ],
+            len(descriptors),
+        )
+
+    monkeypatch.setattr(structure_recognition, "_classify_descriptor_window", _classify)
+
+    structure_map = structure_recognition.build_structure_map(
+        paragraphs,
+        client=object(),
+        model="gpt-5-mini",
+        max_window_paragraphs=10,
+        overlap_paragraphs=0,
+        split_fallback_max_expansions=1,
+        progress_callback=captured.append,
+    )
+
+    assert structure_map.classified_count == 0
+    assert len([event for event in captured if event.event == "window_split"]) == 1
+    assert structure_map.fallback_stats.as_metrics() == {
+        "structure_window_split_count": 1,
+        "structure_max_fallback_depth": 1,
+        "structure_split_fallback_descriptor_count": 4,
+        "structure_timeout_retry_count": 3,
+        "structure_timeout_retry_succeeded_count": 0,
+        "structure_timeout_retry_failed_count": 3,
+        "structure_split_fallback_capped_descriptor_count": 4,
+    }
+
+
+@pytest.mark.parametrize(
+    ("cap_kwargs", "expected_metrics"),
+    [
+        (
+            {"split_fallback_max_depth": 0},
+            {
+                "structure_window_split_count": 0,
+                "structure_max_fallback_depth": 0,
+                "structure_split_fallback_descriptor_count": 0,
+                "structure_timeout_retry_count": 1,
+                "structure_timeout_retry_succeeded_count": 0,
+                "structure_timeout_retry_failed_count": 1,
+                "structure_split_fallback_capped_descriptor_count": 3,
+            },
+        ),
+        (
+            {"split_fallback_max_expansions": 0},
+            {
+                "structure_window_split_count": 0,
+                "structure_max_fallback_depth": 0,
+                "structure_split_fallback_descriptor_count": 0,
+                "structure_timeout_retry_count": 1,
+                "structure_timeout_retry_succeeded_count": 0,
+                "structure_timeout_retry_failed_count": 1,
+                "structure_split_fallback_capped_descriptor_count": 3,
+            },
+        ),
+    ],
+)
+def test_build_structure_map_zero_split_caps_block_fallback_after_retry(monkeypatch, cap_kwargs, expected_metrics):
+    paragraphs = [_paragraph(source_index=index, text=f"Paragraph {index}") for index in range(3)]
+    calls: list[float] = []
+
+    def _classify(**kwargs):
+        calls.append(kwargs["timeout"])
+        raise TimeoutError("timeout")
+
+    monkeypatch.setattr(structure_recognition, "_classify_descriptor_window", _classify)
+
+    structure_map = structure_recognition.build_structure_map(
+        paragraphs,
+        client=object(),
+        model="gpt-5-mini",
+        max_window_paragraphs=10,
+        overlap_paragraphs=0,
+        timeout=60.0,
+        timeout_retry_multiplier=1.5,
+        timeout_retry_max_seconds=90.0,
+        **cap_kwargs,
+    )
+
+    assert calls == [60.0, 90.0]
+    assert structure_map.classified_count == 0
+    assert structure_map.fallback_stats.as_metrics() == expected_metrics
 
 
 def test_build_structure_map_splits_local_request_timeout_windows_and_merges_subwindow_results(monkeypatch):
@@ -1128,11 +1733,14 @@ def test_build_structure_map_splits_local_request_timeout_windows_and_merges_sub
         _paragraph(source_index=3, text="Body B"),
     ]
     calls: list[list[int]] = []
+    attempted_windows: dict[tuple[int, ...], int] = {}
 
     def _classify(**kwargs):
         descriptors = list(kwargs["descriptors"])
-        calls.append([descriptor.index for descriptor in descriptors])
-        if len(descriptors) > 2:
+        indexes = tuple(descriptor.index for descriptor in descriptors)
+        calls.append(list(indexes))
+        attempted_windows[indexes] = attempted_windows.get(indexes, 0) + 1
+        if len(descriptors) > 2 and attempted_windows[indexes] <= 2:
             raise structure_recognition.StructureRecognitionRequestTimeout(
                 "Structure recognition request timed out after 0.010s."
             )
@@ -1159,13 +1767,22 @@ def test_build_structure_map_splits_local_request_timeout_windows_and_merges_sub
         overlap_paragraphs=1,
     )
 
-    assert calls == [[0, 1, 2, 3], [0, 1], [2, 3]]
+    assert calls == [[0, 1, 2, 3], [0, 1, 2, 3], [0, 1], [2, 3]]
     assert structure_map.window_count == 2
     assert structure_map.total_tokens_used == 28
     assert structure_map.get(0) == ParagraphClassification(index=0, role="heading", heading_level=1, confidence="high")
     assert structure_map.get(1) == ParagraphClassification(index=1, role="body", heading_level=None, confidence="high")
     assert structure_map.get(2) == ParagraphClassification(index=2, role="heading", heading_level=1, confidence="high")
     assert structure_map.get(3) == ParagraphClassification(index=3, role="body", heading_level=None, confidence="high")
+    assert structure_map.fallback_stats.as_metrics() == {
+        "structure_window_split_count": 1,
+        "structure_max_fallback_depth": 1,
+        "structure_split_fallback_descriptor_count": 4,
+        "structure_timeout_retry_count": 1,
+        "structure_timeout_retry_succeeded_count": 0,
+        "structure_timeout_retry_failed_count": 1,
+        "structure_split_fallback_capped_descriptor_count": 0,
+    }
 
 
 def test_build_structure_map_emits_progress_for_top_level_windows(monkeypatch):
@@ -1227,7 +1844,7 @@ def test_build_structure_map_emits_split_event_on_fallback(monkeypatch):
 
     def _fake_classify_descriptor_window(*, descriptors, **kwargs):
         call_state["count"] += 1
-        if call_state["count"] == 1:
+        if call_state["count"] <= 2:
             raise TimeoutError("timeout")
         return [
             ParagraphClassification(
@@ -1242,7 +1859,7 @@ def test_build_structure_map_emits_split_event_on_fallback(monkeypatch):
 
     monkeypatch.setattr(structure_recognition, "_classify_descriptor_window", _fake_classify_descriptor_window)
 
-    structure_recognition.build_structure_map(
+    structure_map = structure_recognition.build_structure_map(
         paragraphs,
         client=object(),
         model="gpt-5-mini",
@@ -1256,6 +1873,117 @@ def test_build_structure_map_emits_split_event_on_fallback(monkeypatch):
     assert split_events[0].descriptor_count == 3
     assert split_events[0].total_windows == 1
     assert split_events[0].current_window == 1
+    assert split_events[0].fallback_depth == 1
+    assert structure_map.fallback_stats.as_metrics() == {
+        "structure_window_split_count": 1,
+        "structure_max_fallback_depth": 1,
+        "structure_split_fallback_descriptor_count": 3,
+        "structure_timeout_retry_count": 1,
+        "structure_timeout_retry_succeeded_count": 0,
+        "structure_timeout_retry_failed_count": 1,
+        "structure_split_fallback_capped_descriptor_count": 0,
+    }
+
+
+def test_build_structure_map_aggregates_nested_split_fallback_stats(monkeypatch):
+    paragraphs = [_paragraph(source_index=index, text=f"Paragraph {index}") for index in range(4)]
+    attempted_windows: dict[tuple[int, ...], int] = {}
+
+    def _fake_classify_descriptor_window(*, descriptors, **kwargs):
+        indexes = tuple(descriptor.index for descriptor in descriptors)
+        attempted_windows[indexes] = attempted_windows.get(indexes, 0) + 1
+        if indexes in {(0, 1, 2, 3), (0, 1)} and attempted_windows[indexes] <= 2:
+            raise TimeoutError("timeout")
+        return [
+            ParagraphClassification(
+                index=descriptor.index,
+                role="body",
+                heading_level=None,
+                confidence="high",
+                rationale=None,
+            )
+            for descriptor in descriptors
+        ], 1
+
+    monkeypatch.setattr(structure_recognition, "_classify_descriptor_window", _fake_classify_descriptor_window)
+
+    structure_map = structure_recognition.build_structure_map(
+        paragraphs,
+        client=object(),
+        model="gpt-5-mini",
+        max_window_paragraphs=10,
+        overlap_paragraphs=0,
+    )
+
+    assert structure_map.classified_count == 4
+    assert structure_map.fallback_stats.as_metrics() == {
+        "structure_window_split_count": 2,
+        "structure_max_fallback_depth": 2,
+        "structure_split_fallback_descriptor_count": 6,
+        "structure_timeout_retry_count": 2,
+        "structure_timeout_retry_succeeded_count": 0,
+        "structure_timeout_retry_failed_count": 2,
+        "structure_split_fallback_capped_descriptor_count": 0,
+    }
+
+
+def test_build_structure_map_exposes_zero_fallback_stats_without_split(monkeypatch):
+    paragraphs = [_paragraph(source_index=index, text=f"Paragraph {index}") for index in range(2)]
+
+    monkeypatch.setattr(
+        structure_recognition,
+        "_classify_descriptor_window",
+        lambda *, descriptors, **kwargs: (
+            [
+                ParagraphClassification(
+                    index=descriptor.index,
+                    role="body",
+                    heading_level=None,
+                    confidence="high",
+                    rationale=None,
+                )
+                for descriptor in descriptors
+            ],
+            2,
+        ),
+    )
+
+    structure_map = structure_recognition.build_structure_map(
+        paragraphs,
+        client=object(),
+        model="gpt-5-mini",
+        max_window_paragraphs=10,
+        overlap_paragraphs=0,
+    )
+
+    assert structure_map.fallback_stats.as_metrics() == StructureFallbackStats().as_metrics()
+
+
+def test_build_structure_map_does_not_retry_non_timeout_failures(monkeypatch):
+    paragraphs = [_paragraph(source_index=index, text=f"Paragraph {index}") for index in range(2)]
+    attempts: list[float] = []
+
+    def _classify(**kwargs):
+        attempts.append(kwargs["timeout"])
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(structure_recognition, "_classify_descriptor_window", _classify)
+
+    structure_map = structure_recognition.build_structure_map(
+        paragraphs,
+        client=object(),
+        model="gpt-5-mini",
+        max_window_paragraphs=10,
+        overlap_paragraphs=0,
+        timeout=60.0,
+        timeout_retry_multiplier=2.0,
+        timeout_retry_max_seconds=120.0,
+    )
+
+    assert attempts == [60.0]
+    assert structure_map.window_count == 1
+    assert structure_map.classified_count == 0
+    assert structure_map.fallback_stats.as_metrics() == StructureFallbackStats().as_metrics()
 
 
 def test_build_structure_map_ignores_progress_callback_errors(monkeypatch):
@@ -1416,6 +2144,56 @@ def test_classify_descriptor_window_raises_timeout_when_client_call_hangs():
             )
     finally:
         release.set()
+
+
+def test_classify_descriptor_window_with_fallback_bounds_retry_timeout_and_only_changes_timeout(monkeypatch):
+    paragraphs = [_paragraph(source_index=0, text="Heading A"), _paragraph(source_index=1, text="Body A")]
+    descriptors = structure_recognition.build_paragraph_descriptors(paragraphs)
+    captured_calls: list[dict[str, object]] = []
+    client = object()
+
+    def _classify(*, client, model, descriptors, timeout):
+        captured_calls.append(
+            {
+                "client": client,
+                "model": model,
+                "indexes": tuple(descriptor.index for descriptor in descriptors),
+                "timeout": timeout,
+            }
+        )
+        if len(captured_calls) == 1:
+            raise TimeoutError("timeout")
+        return (
+            [
+                ParagraphClassification(
+                    index=descriptor.index,
+                    role="body",
+                    heading_level=None,
+                    confidence="high",
+                    rationale=None,
+                )
+                for descriptor in descriptors
+            ],
+            7,
+        )
+
+    monkeypatch.setattr(structure_recognition, "_classify_descriptor_window", _classify)
+
+    resolved_windows, total_tokens = structure_recognition._classify_descriptor_window_with_fallback(
+        client=cast(structure_recognition._StructureRecognitionClient, client),
+        model="gpt-5.4",
+        descriptors=descriptors,
+        timeout=60.0,
+        timeout_retry_multiplier=2.0,
+        timeout_retry_max_seconds=75.0,
+    )
+
+    assert [call["timeout"] for call in captured_calls] == [60.0, 75.0]
+    assert all(call["client"] is client for call in captured_calls)
+    assert all(call["model"] == "gpt-5.4" for call in captured_calls)
+    assert [call["indexes"] for call in captured_calls] == [(0, 1), (0, 1)]
+    assert total_tokens == 7
+    assert len(resolved_windows) == 1
 
 
 def test_parse_classification_payload_accepts_compact_json_array():

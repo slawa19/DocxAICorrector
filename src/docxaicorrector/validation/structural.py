@@ -1248,6 +1248,41 @@ def _build_preparation_diagnostic_defaults(event_log: Sequence[Mapping[str, obje
         "document_map_status_reason": document_map_status_reason,
         "ai_classified_count": _extract_event_context_int(event_log, "structure_processing_outcome", "ai_classified_count"),
         "ai_heading_count": _extract_event_context_int(event_log, "structure_processing_outcome", "ai_heading_count"),
+        "structure_window_split_count": _extract_event_context_int(
+            event_log,
+            "structure_processing_outcome",
+            "structure_window_split_count",
+        ),
+        "structure_max_fallback_depth": _extract_event_context_int(
+            event_log,
+            "structure_processing_outcome",
+            "structure_max_fallback_depth",
+        ),
+        "structure_split_fallback_descriptor_count": _extract_event_context_int(
+            event_log,
+            "structure_processing_outcome",
+            "structure_split_fallback_descriptor_count",
+        ),
+        "structure_timeout_retry_count": _extract_event_context_int(
+            event_log,
+            "structure_processing_outcome",
+            "structure_timeout_retry_count",
+        ),
+        "structure_timeout_retry_succeeded_count": _extract_event_context_int(
+            event_log,
+            "structure_processing_outcome",
+            "structure_timeout_retry_succeeded_count",
+        ),
+        "structure_timeout_retry_failed_count": _extract_event_context_int(
+            event_log,
+            "structure_processing_outcome",
+            "structure_timeout_retry_failed_count",
+        ),
+        "structure_split_fallback_capped_descriptor_count": _extract_event_context_int(
+            event_log,
+            "structure_processing_outcome",
+            "structure_split_fallback_capped_descriptor_count",
+        ),
         "semantic_block_count": 0,
         "first_block_target_chars": 0,
         "first_block_has_toc": False,
@@ -1273,6 +1308,27 @@ def _apply_structure_summary_snapshot_fields(snapshot: dict[str, object], struct
             snapshot["fallback_reason"] = fallback_reason
     if not bool(snapshot.get("document_map_present", False)):
         snapshot["document_map_present"] = bool(getattr(structure_summary, "document_map_present", False))
+    fallback_stats = getattr(structure_summary, "fallback_stats", None)
+    fallback_metrics = {
+        "structure_window_split_count": int(getattr(fallback_stats, "structure_window_split_count", 0) or 0),
+        "structure_max_fallback_depth": int(getattr(fallback_stats, "structure_max_fallback_depth", 0) or 0),
+        "structure_split_fallback_descriptor_count": int(
+            getattr(fallback_stats, "structure_split_fallback_descriptor_count", 0) or 0
+        ),
+        "structure_timeout_retry_count": int(getattr(fallback_stats, "structure_timeout_retry_count", 0) or 0),
+        "structure_timeout_retry_succeeded_count": int(
+            getattr(fallback_stats, "structure_timeout_retry_succeeded_count", 0) or 0
+        ),
+        "structure_timeout_retry_failed_count": int(
+            getattr(fallback_stats, "structure_timeout_retry_failed_count", 0) or 0
+        ),
+        "structure_split_fallback_capped_descriptor_count": int(
+            getattr(fallback_stats, "structure_split_fallback_capped_descriptor_count", 0) or 0
+        ),
+    }
+    for key, value in fallback_metrics.items():
+        if _as_int(snapshot, key) == 0:
+            snapshot[key] = value
 
 
 def _apply_prepared_snapshot_fields(snapshot: dict[str, object], prepared: object) -> None:
@@ -1296,6 +1352,19 @@ def _apply_prepared_snapshot_fields(snapshot: dict[str, object], prepared: objec
         snapshot["ai_classified_count"] = int(getattr(prepared, "ai_classified_count", 0) or 0)
     if _as_int(snapshot, "ai_heading_count") == 0:
         snapshot["ai_heading_count"] = int(getattr(prepared, "ai_heading_count", 0) or 0)
+    prepared_structure_map = getattr(prepared, "structure_map", None)
+    prepared_fallback_stats = getattr(prepared_structure_map, "fallback_stats", None)
+    for key in (
+        "structure_window_split_count",
+        "structure_max_fallback_depth",
+        "structure_split_fallback_descriptor_count",
+        "structure_timeout_retry_count",
+        "structure_timeout_retry_succeeded_count",
+        "structure_timeout_retry_failed_count",
+        "structure_split_fallback_capped_descriptor_count",
+    ):
+        if _as_int(snapshot, key) == 0:
+            snapshot[key] = int(getattr(prepared_fallback_stats, key, 0) or 0)
     current_document_map_status = str(snapshot.get("document_map_status") or "").strip().lower()
     prepared_document_map_status = str(getattr(prepared, "document_map_status", "") or "").strip()
     if prepared_document_map_status and current_document_map_status in {"", "not_requested"}:

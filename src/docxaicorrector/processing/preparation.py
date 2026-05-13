@@ -25,7 +25,7 @@ from docxaicorrector.document._document import (
 from docxaicorrector.document.relations import build_paragraph_relations
 from docxaicorrector.core.logger import log_event
 from docxaicorrector.core.models import DocumentMap, DocumentTopologyProjection, LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport, ParagraphRelation, RelationNormalizationReport
-from docxaicorrector.core.models import StructureRecognitionSummary
+from docxaicorrector.core.models import StructureFallbackStats, StructureRecognitionSummary
 from docxaicorrector.core.models import StructureRepairReport
 from docxaicorrector.core.models import clone_prepared_image_asset
 from docxaicorrector.core.models import normalize_heuristic_list_kind_hint, normalize_heuristic_role_hint, normalize_heuristic_structural_role_hint
@@ -564,7 +564,12 @@ _DOCUMENT_MAP_DEBUG_DIR = RUN_DIR / "document_maps"
 STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION = 1
 
 
-def _build_structure_recognition_summary(*, applied_metrics: dict[str, int], divergence_metrics: dict[str, int]) -> StructureRecognitionSummary:
+def _build_structure_recognition_summary(
+    *,
+    applied_metrics: dict[str, int],
+    divergence_metrics: dict[str, int],
+    structure_map: StructureMap | None,
+) -> StructureRecognitionSummary:
     return StructureRecognitionSummary(
         ai_classified_count=int(applied_metrics.get("ai_classified", 0) or 0),
         ai_heading_count=int(applied_metrics.get("ai_headings", 0) or 0),
@@ -575,6 +580,7 @@ def _build_structure_recognition_summary(*, applied_metrics: dict[str, int], div
         reconciliation_patch_count=int(applied_metrics.get("reconciliation_patches_applied", 0) or 0),
         reconciliation_locked_override_count=int(applied_metrics.get("reconciliation_locked_overrides_applied", 0) or 0),
         reconciliation_locked_override_skip_count=int(applied_metrics.get("reconciliation_locked_overrides_skipped", 0) or 0),
+        fallback_stats=StructureFallbackStats.from_source(None if structure_map is None else structure_map.fallback_stats),
     )
 
 
@@ -699,6 +705,8 @@ def _build_structure_map_cache_key(
         "overlap_paragraphs": overlap_paragraphs,
         "preview_chars": preview_chars,
         "target_input_tokens": target_input_tokens,
+        "split_fallback_max_depth": int(app_config.get("structure_recognition_split_fallback_max_depth", 3) or 3),
+        "split_fallback_max_expansions": int(app_config.get("structure_recognition_split_fallback_max_expansions", 8) or 8),
         "structure_recovery_enabled": structure_recovery_enabled,
         "structure_recovery_mode": structure_recovery_mode,
         "coordinate_schema_version": coordinate_schema_version,
@@ -860,6 +868,7 @@ def _write_structure_map_debug_artifact(*, cache_key: str, structure_map: Struct
                 "window_count": structure_map.window_count,
                 "classified_count": structure_map.classified_count,
                 "heading_count": structure_map.heading_count,
+                "fallback_stats": structure_map.fallback_stats.as_metrics(),
                 "total_tokens_used": structure_map.total_tokens_used,
                 "processing_time_seconds": structure_map.processing_time_seconds,
                 "classifications": [
@@ -1037,6 +1046,17 @@ def _run_structure_recognition(
     )
 
     def _emit_structure_progress(event) -> None:
+        event_metrics = {**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend}
+        if event.current_window is not None:
+            event_metrics["structure_current_window"] = event.current_window
+        if event.total_windows:
+            event_metrics["structure_total_windows"] = event.total_windows
+        if event.processed_windows:
+            event_metrics["structure_processed_windows"] = event.processed_windows
+        if event.descriptor_count is not None:
+            event_metrics["structure_descriptor_count"] = event.descriptor_count
+        if event.fallback_depth:
+            event_metrics["structure_fallback_depth"] = event.fallback_depth
         if event.event == "prepared":
             detail = f"Подготовлено {event.descriptor_count or 0} абзацев, запускаю AI-классификацию."
         elif event.event == "window_started":
@@ -1046,7 +1066,7 @@ def _run_structure_recognition(
         elif event.event == "window_completed":
             detail = f"Анализирую роли абзацев с помощью AI (окно {event.processed_windows}/{max(event.total_windows, 1)})."
         elif event.event == "window_split":
-            detail = "AI-анализ большого окна, уточняю разбиением..."
+            detail = "Таймаут AI на большом окне структуры; продолжаю меньшими окнами."
         elif event.event == "completed":
             detail = "AI-анализ завершён. Применяю структуру к документу."
         else:
@@ -1056,7 +1076,7 @@ def _run_structure_recognition(
             stage="Распознавание структуры…",
             detail=detail,
             progress=0.41,
-            metrics={**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend},
+            metrics=event_metrics,
         )
 
     baseline = _capture_structure_baseline(paragraphs)
@@ -1137,6 +1157,10 @@ def _run_structure_recognition(
                 topology_projection=topology_projection,
                 preview_chars=preview_chars,
                 target_input_tokens=target_input_tokens,
+                timeout_retry_multiplier=float(app_config.get("structure_recognition_timeout_retry_multiplier", 1.5) or 1.5),
+                timeout_retry_max_seconds=float(app_config.get("structure_recognition_timeout_retry_max_seconds", 120) or 120),
+                split_fallback_max_depth=int(app_config.get("structure_recognition_split_fallback_max_depth", 3) or 3),
+                split_fallback_max_expansions=int(app_config.get("structure_recognition_split_fallback_max_expansions", 8) or 8),
                 progress_callback=_emit_structure_progress,
             )
             if bool(app_config.get("structure_recognition_cache_enabled", True)):
@@ -1351,6 +1375,7 @@ def _run_structure_recognition(
                 else app_config.get("structure_recognition_min_confidence", "medium")
             ),
             document_map=document_map,
+            topology_projection=topology_projection,
         )
     except Exception as exc:
         _restore_structure_baseline(baseline=baseline, paragraphs=paragraphs)
@@ -1365,6 +1390,7 @@ def _run_structure_recognition(
     structure_summary = _build_structure_recognition_summary(
         applied_metrics=applied_metrics,
         divergence_metrics=divergence_metrics,
+        structure_map=structure_map,
     )
     if structure_summary.ai_classified_count > 0:
         detail = (
@@ -2534,6 +2560,7 @@ def _prepare_document_for_processing(
         quality_gate_reasons=list(quality_gate_reasons),
         ai_classified_count=structure_summary.ai_classified_count,
         ai_heading_count=structure_summary.ai_heading_count,
+        **structure_summary.fallback_stats.as_metrics(),
         first_block_has_toc=(
             _block_has_toc_roles(
                 list(getattr(blocks[0], "paragraphs", ()) or []),
