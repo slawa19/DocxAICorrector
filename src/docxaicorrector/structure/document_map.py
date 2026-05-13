@@ -36,9 +36,9 @@ _VALID_DOCUMENT_MAP_CONFIDENCES = frozenset({"high", "medium", "low"})
 _VALID_REVIEW_ZONE_SEVERITIES = frozenset({"info", "warning", "critical"})
 _TIMEOUT_ERROR_NAMES = {"APITimeoutError", "TimeoutError"}
 DOCUMENT_MAP_SYSTEM_PROMPT_PATH = PROMPTS_DIR / "document_map_system.txt"
-DOCUMENT_MAP_PROMPT_VERSION = 5
+DOCUMENT_MAP_PROMPT_VERSION = 6
 DOCUMENT_MAP_DESCRIPTOR_SCHEMA_VERSION = 2
-DOCUMENT_MAP_POSTPROCESS_VERSION = 5
+DOCUMENT_MAP_POSTPROCESS_VERSION = 6
 DOCUMENT_MAP_SPLIT_HINT_SCHEMA_VERSION = 1
 _DOCUMENT_MAP_MALFORMED_DIR = RUN_DIR / "document_maps"
 _LOGGER = logging.getLogger(__name__)
@@ -568,6 +568,8 @@ def _build_document_map_user_prompt(
         "Return a single JSON object with keys `body_start_logical_index`, `toc_region`, `outline`, `paragraph_anchors`, `review_zones`, and optional `split_hints`. "
         "For `paragraph_anchors`, use an object mapping logical indexes to `{role, heading_level, confidence}`. "
         "For `split_hints`, use an array of `{logical_index, split_kind, expected_parts, authority, confidence, evidence}` and return an empty array when there is no explicit split intent."
+        " If `toc_region` is present, anchor the TOC header as `toc_header` and TOC entry paragraphs as `toc_entry` instead of generic body anchors whenever that interpretation is globally coherent."
+        " If one physical TOC paragraph clearly contains multiple ordered TOC entries, keep one bounded `toc_region`, emit each TOC entry separately in `toc_region.entries`, and add a `compound_toc_entries` split hint for that owning logical index only when the parts are globally supported by the bounded TOC region and body outline/body heading candidates."
         "\n\nDocument summary:\n"
         f"{json.dumps(summary, ensure_ascii=False)}"
         "\n\nSampled paragraph descriptors:\n"
@@ -625,40 +627,101 @@ def _postprocess_document_map(document_map: DocumentMap, *, paragraphs: Sequence
         int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", 0))): paragraph
         for paragraph in paragraphs
     }
+    paragraph_anchors = _recover_toc_region_anchors(
+        document_map.toc_region,
+        paragraph_anchors=document_map.paragraph_anchors,
+        logical_to_paragraph=logical_to_paragraph,
+    )
     toc_region = _recover_toc_region_entries(
         document_map.toc_region,
         logical_to_paragraph=logical_to_paragraph,
-        paragraph_anchors=document_map.paragraph_anchors,
+        paragraph_anchors=paragraph_anchors,
         body_start_logical_index=int(document_map.body_start_logical_index or 0),
     )
     outline = _recover_outline_entries(
         document_map.outline,
         toc_region=toc_region,
         logical_to_paragraph=logical_to_paragraph,
-        paragraph_anchors=document_map.paragraph_anchors,
+        paragraph_anchors=paragraph_anchors,
     )
     toc_region, outline = _recover_missing_chapter_sequence_entries(
         toc_region=toc_region,
         outline=outline,
         logical_to_paragraph=logical_to_paragraph,
-        paragraph_anchors=document_map.paragraph_anchors,
+        paragraph_anchors=paragraph_anchors,
         body_start_logical_index=int(document_map.body_start_logical_index or 0),
     )
-    if toc_region == document_map.toc_region and outline == document_map.outline:
+    toc_region, paragraph_anchors, split_hints = _recover_compound_toc_stage1_authority(
+        toc_region=toc_region,
+        outline=outline,
+        paragraph_anchors=paragraph_anchors,
+        split_hints=document_map.split_hints,
+        logical_to_paragraph=logical_to_paragraph,
+        body_start_logical_index=int(document_map.body_start_logical_index or 0),
+    )
+    if (
+        toc_region == document_map.toc_region
+        and outline == document_map.outline
+        and paragraph_anchors == document_map.paragraph_anchors
+        and split_hints == document_map.split_hints
+    ):
         return document_map
     return DocumentMap(
         body_start_logical_index=document_map.body_start_logical_index,
         toc_region=toc_region,
         outline=outline,
-        paragraph_anchors=document_map.paragraph_anchors,
+        paragraph_anchors=paragraph_anchors,
         review_zones=document_map.review_zones,
-        split_hints=document_map.split_hints,
+        split_hints=split_hints,
         model_used=document_map.model_used,
         total_tokens_used=document_map.total_tokens_used,
         processing_time_seconds=document_map.processing_time_seconds,
         sampled=document_map.sampled,
         sampled_logical_indexes=document_map.sampled_logical_indexes,
     )
+
+
+def _recover_toc_region_anchors(
+    toc_region: DocumentMapTocRegion | None,
+    *,
+    paragraph_anchors: dict[int, DocumentMapAnchor],
+    logical_to_paragraph: dict[int, ParagraphUnit],
+) -> dict[int, DocumentMapAnchor]:
+    if toc_region is None:
+        return paragraph_anchors
+
+    recovered_anchors = dict(paragraph_anchors)
+    recovered = False
+    toc_confidence = "high" if str(toc_region.confidence or "").strip().lower() == "high" else "medium"
+    header_logical_index = toc_region.header_logical_index
+    if header_logical_index is not None:
+        current_anchor = recovered_anchors.get(int(header_logical_index))
+        if current_anchor is None or (current_anchor.role == "body" and str(current_anchor.confidence or "").strip().lower() == "low"):
+            recovered_anchors[int(header_logical_index)] = DocumentMapAnchor(
+                role="toc_header",
+                heading_level=None,
+                confidence=toc_confidence,
+            )
+            recovered = True
+
+    for logical_index in range(int(toc_region.start_logical_index), int(toc_region.end_logical_index) + 1):
+        if logical_index == header_logical_index:
+            continue
+        paragraph = logical_to_paragraph.get(logical_index)
+        if paragraph is None:
+            continue
+        current_anchor = recovered_anchors.get(logical_index)
+        if current_anchor is not None and current_anchor.role != "body":
+            continue
+        if current_anchor is not None and str(current_anchor.confidence or "").strip().lower() not in {"low", ""}:
+            continue
+        title = _extract_toc_entry_title(str(getattr(paragraph, "text", "") or ""))
+        if not title:
+            continue
+        recovered_anchors[logical_index] = DocumentMapAnchor(role="toc_entry", heading_level=None, confidence=toc_confidence)
+        recovered = True
+
+    return recovered_anchors if recovered else paragraph_anchors
 
 
 def _recover_toc_region_entries(
@@ -754,6 +817,110 @@ def _recover_toc_region_entries(
         header_logical_index=toc_region.header_logical_index,
         entries=tuple(recovered_entries),
         confidence=toc_region.confidence,
+    )
+
+
+def _recover_compound_toc_stage1_authority(
+    *,
+    toc_region: DocumentMapTocRegion | None,
+    outline: tuple[DocumentMapOutlineEntry, ...],
+    paragraph_anchors: dict[int, DocumentMapAnchor],
+    split_hints: tuple[DocumentMapSplitHint, ...],
+    logical_to_paragraph: dict[int, ParagraphUnit],
+    body_start_logical_index: int,
+) -> tuple[DocumentMapTocRegion | None, dict[int, DocumentMapAnchor], tuple[DocumentMapSplitHint, ...]]:
+    if toc_region is None or str(toc_region.confidence or "").strip().lower() != "high":
+        return toc_region, paragraph_anchors, split_hints
+
+    toc_start = int(toc_region.start_logical_index)
+    toc_end = int(toc_region.end_logical_index)
+    outline_candidates = tuple(
+        entry
+        for entry in sorted(outline, key=lambda item: int(item.logical_index))
+        if str(entry.confidence or "").strip().lower() == "high"
+        and int(entry.logical_index) >= int(body_start_logical_index)
+        and not (toc_start <= int(entry.logical_index) <= toc_end)
+    )
+    if len(outline_candidates) < 2:
+        return toc_region, paragraph_anchors, split_hints
+
+    recovered_entries = list(toc_region.entries)
+    recovered_anchors = dict(paragraph_anchors)
+    recovered_split_hints = list(split_hints)
+    existing_candidate_indexes = {
+        int(entry.candidate_body_logical_index)
+        for entry in recovered_entries
+        if entry.candidate_body_logical_index is not None
+    }
+    existing_hint_indexes = {
+        int(hint.logical_index)
+        for hint in recovered_split_hints
+        if str(hint.split_kind or "").strip().lower() == "compound_toc_entries"
+    }
+    recovered = False
+
+    for logical_index in range(toc_start, toc_end + 1):
+        if logical_index == toc_region.header_logical_index:
+            continue
+        paragraph = logical_to_paragraph.get(logical_index)
+        if paragraph is None:
+            continue
+        matched_entries = _match_outline_entries_in_toc_paragraph(
+            str(getattr(paragraph, "text", "") or ""),
+            outline_candidates=outline_candidates,
+        )
+        if len(matched_entries) < 2:
+            continue
+
+        for outline_entry in matched_entries:
+            candidate_logical_index = int(outline_entry.logical_index)
+            if candidate_logical_index in existing_candidate_indexes:
+                continue
+            recovered_entries.append(
+                DocumentMapTocEntry(
+                    title=outline_entry.title,
+                    target_level=int(outline_entry.level),
+                    candidate_body_logical_index=candidate_logical_index,
+                    confidence="high",
+                )
+            )
+            existing_candidate_indexes.add(candidate_logical_index)
+            recovered = True
+
+        current_anchor = recovered_anchors.get(logical_index)
+        if current_anchor is None or (
+            current_anchor.role == "body" and str(current_anchor.confidence or "").strip().lower() in {"low", "medium", ""}
+        ):
+            recovered_anchors[logical_index] = DocumentMapAnchor(role="toc_entry", heading_level=None, confidence="high")
+            recovered = True
+
+        if logical_index not in existing_hint_indexes:
+            recovered_split_hints.append(
+                DocumentMapSplitHint(
+                    logical_index=logical_index,
+                    split_kind="compound_toc_entries",
+                    expected_parts=tuple(entry.title for entry in matched_entries),
+                    authority="document_map_toc",
+                    confidence="high",
+                    evidence=("bounded_toc_region", "one_to_one_toc_entry_match", "toc_entry"),
+                )
+            )
+            existing_hint_indexes.add(logical_index)
+            recovered = True
+
+    if not recovered:
+        return toc_region, paragraph_anchors, split_hints
+
+    return (
+        DocumentMapTocRegion(
+            start_logical_index=toc_region.start_logical_index,
+            end_logical_index=toc_region.end_logical_index,
+            header_logical_index=toc_region.header_logical_index,
+            entries=tuple(sorted(recovered_entries, key=lambda entry: int(entry.candidate_body_logical_index or -1))),
+            confidence=toc_region.confidence,
+        ),
+        recovered_anchors,
+        tuple(recovered_split_hints),
     )
 
 
@@ -1025,6 +1192,35 @@ def _extract_toc_entry_title(text: str) -> str:
     return re.sub(r"\s+", " ", normalized).strip()
 
 
+def _normalize_toc_matching_text(text: str) -> str:
+    normalized = _normalize_document_map_title(text)
+    normalized = re.sub(r"[^\w\s]", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _match_outline_entries_in_toc_paragraph(
+    text: str,
+    *,
+    outline_candidates: tuple[DocumentMapOutlineEntry, ...],
+) -> tuple[DocumentMapOutlineEntry, ...]:
+    normalized_paragraph = _normalize_toc_matching_text(text)
+    if not normalized_paragraph:
+        return ()
+
+    cursor = 0
+    matched_entries: list[DocumentMapOutlineEntry] = []
+    for entry in outline_candidates:
+        normalized_title = _normalize_toc_matching_text(entry.title)
+        if not normalized_title:
+            continue
+        position = normalized_paragraph.find(normalized_title, cursor)
+        if position < 0:
+            continue
+        matched_entries.append(entry)
+        cursor = position + len(normalized_title)
+    return tuple(matched_entries) if len(matched_entries) >= 2 else ()
+
+
 def _normalize_document_map_title(text: str) -> str:
     normalized = str(text or "").strip()
     if not normalized:
@@ -1210,6 +1406,8 @@ def _parse_split_hints(raw_value: object, *, all_logical_indexes: set[int]) -> t
         if not isinstance(item, dict):
             raise DocumentMapSchemaError("split hint must be an object")
         expected_parts = item.get("expected_parts", ())
+        if isinstance(expected_parts, str):
+            expected_parts = [expected_parts]
         if isinstance(expected_parts, tuple):
             expected_parts = list(expected_parts)
         if not isinstance(expected_parts, list):

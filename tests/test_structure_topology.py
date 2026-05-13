@@ -2,12 +2,62 @@ from dataclasses import asdict
 
 import pytest
 
-from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, DocumentMapOutlineEntry, DocumentMapSplitHint, ParagraphUnit, StructuralUnit
+from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, DocumentMapOutlineEntry, DocumentMapSplitHint, DocumentMapTocEntry, DocumentMapTocRegion, ParagraphUnit, StructuralUnit
 from docxaicorrector.structure.topology import TOPOLOGY_PROJECTION_SCHEMA_VERSION, apply_document_map_topology
 
 
 def _paragraph(index: int, text: str) -> ParagraphUnit:
     return ParagraphUnit(text=text, role="body", structural_role="body", source_index=index, logical_index=index)
+
+
+def _compound_toc_text() -> str:
+    return "73 6 Strategies for Banking 95 7 Strategies for Business and Entrepreneurs"
+
+
+def _compound_toc_region(*, confidence: str = "high") -> DocumentMapTocRegion:
+    return DocumentMapTocRegion(
+        start_logical_index=35,
+        end_logical_index=42,
+        header_logical_index=35,
+        entries=(
+            DocumentMapTocEntry(
+                title="6 Strategies for Banking",
+                target_level=1,
+                candidate_body_logical_index=141,
+                confidence="high",
+            ),
+            DocumentMapTocEntry(
+                title="7 Strategies for Business and Entrepreneurs",
+                target_level=1,
+                candidate_body_logical_index=159,
+                confidence="high",
+            ),
+        ),
+        confidence=confidence,
+    )
+
+
+def _non_matching_compound_toc_region() -> DocumentMapTocRegion:
+    return DocumentMapTocRegion(
+        start_logical_index=35,
+        end_logical_index=42,
+        header_logical_index=35,
+        entries=(
+            DocumentMapTocEntry(
+                title="6 Strategies for Banking",
+                target_level=1,
+                candidate_body_logical_index=141,
+                confidence="high",
+            ),
+            DocumentMapTocEntry(
+                title="8 Strategies for Governments",
+                target_level=1,
+                candidate_body_logical_index=175,
+                confidence="high",
+            ),
+        ),
+        confidence="high",
+    )
 
 
 def test_structural_unit_id_is_stable_hash_not_sequence_based():
@@ -506,4 +556,320 @@ def test_apply_document_map_topology_binding_page_artifact_split_unit_ids_are_st
 
     assert [(unit.unit_type, unit.unit_id) for unit in first.projected_units] == [
         (unit.unit_type, unit.unit_id) for unit in second.projected_units
+    ]
+
+
+def test_apply_document_map_topology_creates_binding_compound_toc_split_from_high_confidence_hint_when_flag_enabled():
+    paragraphs = [_paragraph(40, _compound_toc_text())]
+    document_map = DocumentMap(
+        body_start_logical_index=141,
+        toc_region=_compound_toc_region(),
+        outline=(),
+        paragraph_anchors={},
+        review_zones=(),
+        split_hints=(
+            DocumentMapSplitHint(
+                logical_index=40,
+                split_kind="compound_toc_entries",
+                expected_parts=("6 Strategies for Banking", "7 Strategies for Business and Entrepreneurs"),
+                authority="document_map_toc",
+                confidence="high",
+                evidence=("split_hint",),
+            ),
+        ),
+        sampled=False,
+        sampled_logical_indexes=(40,),
+    )
+
+    projection = apply_document_map_topology(
+        paragraphs,
+        document_map,
+        app_config={
+            "structure_recovery_document_map_preview_chars": 120,
+            "structure_recovery_topology_projection_binding_splits_enabled": True,
+        },
+        document_map_cache_key="doc-map-key",
+    )
+
+    assert [operation.op for operation in projection.operations] == ["split_compound_toc_entries"]
+    assert projection.operations[0].authority == "document_map_split_hint"
+    assert projection.operations[0].evidence == (
+        "split_hint",
+        "bounded_toc_region",
+        "toc_entry",
+        "one_to_one_toc_entry_match",
+    )
+    assert [unit.canonical_text for unit in projection.get_units(40)] == [
+        "6 Strategies for Banking",
+        "7 Strategies for Business and Entrepreneurs",
+    ]
+    assert [unit.unit_type for unit in projection.get_units(40)] == ["toc_entry", "toc_entry"]
+    assert projection.get_unit(40) is None
+
+
+def test_apply_document_map_topology_does_not_bind_explicit_compound_toc_hint_without_one_to_one_toc_entry_match():
+    paragraphs = [_paragraph(40, _compound_toc_text())]
+    document_map = DocumentMap(
+        body_start_logical_index=141,
+        toc_region=_non_matching_compound_toc_region(),
+        outline=(),
+        paragraph_anchors={},
+        review_zones=(),
+        split_hints=(
+            DocumentMapSplitHint(
+                logical_index=40,
+                split_kind="compound_toc_entries",
+                expected_parts=("6 Strategies for Banking", "7 Strategies for Business and Entrepreneurs"),
+                authority="document_map_toc",
+                confidence="high",
+                evidence=("split_hint",),
+            ),
+        ),
+        sampled=False,
+        sampled_logical_indexes=(40,),
+    )
+
+    projection = apply_document_map_topology(
+        paragraphs,
+        document_map,
+        app_config={
+            "structure_recovery_document_map_preview_chars": 120,
+            "structure_recovery_topology_projection_binding_splits_enabled": True,
+        },
+        document_map_cache_key="doc-map-key",
+    )
+
+    assert projection.projected_units == ()
+    assert projection.operations == ()
+
+
+def test_apply_document_map_topology_does_not_create_binding_compound_toc_split_when_flag_is_disabled():
+    paragraphs = [_paragraph(40, _compound_toc_text())]
+    document_map = DocumentMap(
+        body_start_logical_index=141,
+        toc_region=_compound_toc_region(),
+        outline=(),
+        paragraph_anchors={},
+        review_zones=(),
+        split_hints=(
+            DocumentMapSplitHint(
+                logical_index=40,
+                split_kind="compound_toc_entries",
+                expected_parts=("6 Strategies for Banking", "7 Strategies for Business and Entrepreneurs"),
+                authority="document_map_toc",
+                confidence="high",
+                evidence=("split_hint",),
+            ),
+        ),
+        sampled=False,
+        sampled_logical_indexes=(40,),
+    )
+
+    projection = apply_document_map_topology(
+        paragraphs,
+        document_map,
+        app_config={"structure_recovery_document_map_preview_chars": 120},
+        document_map_cache_key="doc-map-key",
+    )
+
+    assert projection.projected_units == ()
+    assert projection.operations == ()
+
+
+@pytest.mark.parametrize("confidence", ["medium", "low"])
+def test_apply_document_map_topology_ignores_non_high_confidence_compound_toc_split_hints(confidence: str):
+    paragraphs = [_paragraph(40, _compound_toc_text())]
+    document_map = DocumentMap(
+        body_start_logical_index=141,
+        toc_region=_non_matching_compound_toc_region(),
+        outline=(),
+        paragraph_anchors={},
+        review_zones=(),
+        split_hints=(
+            DocumentMapSplitHint(
+                logical_index=40,
+                split_kind="compound_toc_entries",
+                expected_parts=("6 Strategies for Banking", "7 Strategies for Business and Entrepreneurs"),
+                authority="document_map_toc",
+                confidence=confidence,
+                evidence=("split_hint",),
+            ),
+        ),
+        sampled=False,
+        sampled_logical_indexes=(40,),
+    )
+
+    projection = apply_document_map_topology(
+        paragraphs,
+        document_map,
+        app_config={
+            "structure_recovery_document_map_preview_chars": 120,
+            "structure_recovery_topology_projection_binding_splits_enabled": True,
+        },
+        document_map_cache_key="doc-map-key",
+    )
+
+    assert projection.projected_units == ()
+    assert projection.operations == ()
+
+
+def test_apply_document_map_topology_ignores_wrong_split_kind_for_compound_toc_binding_split():
+    paragraphs = [_paragraph(40, _compound_toc_text())]
+    document_map = DocumentMap(
+        body_start_logical_index=141,
+        toc_region=_non_matching_compound_toc_region(),
+        outline=(),
+        paragraph_anchors={},
+        review_zones=(),
+        split_hints=(
+            DocumentMapSplitHint(
+                logical_index=40,
+                split_kind="page_artifact_heading",
+                expected_parts=("6 Strategies for Banking", "7 Strategies for Business and Entrepreneurs"),
+                authority="document_map_toc",
+                confidence="high",
+                evidence=("split_hint",),
+            ),
+        ),
+        sampled=False,
+        sampled_logical_indexes=(40,),
+    )
+
+    projection = apply_document_map_topology(
+        paragraphs,
+        document_map,
+        app_config={
+            "structure_recovery_document_map_preview_chars": 120,
+            "structure_recovery_topology_projection_binding_splits_enabled": True,
+        },
+        document_map_cache_key="doc-map-key",
+    )
+
+    assert projection.projected_units == ()
+    assert projection.operations == ()
+
+
+def test_apply_document_map_topology_allows_implicit_high_confidence_toc_entries_as_compound_split_authority():
+    paragraphs = [_paragraph(40, _compound_toc_text())]
+    document_map = DocumentMap(
+        body_start_logical_index=141,
+        toc_region=_compound_toc_region(),
+        outline=(),
+        paragraph_anchors={},
+        review_zones=(),
+        split_hints=(),
+        sampled=False,
+        sampled_logical_indexes=(40,),
+    )
+
+    projection = apply_document_map_topology(
+        paragraphs,
+        document_map,
+        app_config={
+            "structure_recovery_document_map_preview_chars": 120,
+            "structure_recovery_topology_projection_binding_splits_enabled": True,
+        },
+        document_map_cache_key="doc-map-key",
+    )
+
+    assert [operation.op for operation in projection.operations] == ["split_compound_toc_entries"]
+    assert projection.operations[0].authority == "document_map_toc"
+    assert projection.operations[0].evidence == ("bounded_toc_region", "one_to_one_toc_entry_match", "toc_entry")
+    assert [unit.authority for unit in projection.get_units(40)] == ["document_map_toc", "document_map_toc"]
+
+
+def test_apply_document_map_topology_leaves_compound_toc_projection_conservative_without_one_to_one_match():
+    paragraphs = [_paragraph(40, _compound_toc_text())]
+    document_map = DocumentMap(
+        body_start_logical_index=141,
+        toc_region=_non_matching_compound_toc_region(),
+        outline=(),
+        paragraph_anchors={},
+        review_zones=(),
+        split_hints=(),
+        sampled=False,
+        sampled_logical_indexes=(40,),
+    )
+
+    projection = apply_document_map_topology(
+        paragraphs,
+        document_map,
+        app_config={
+            "structure_recovery_document_map_preview_chars": 120,
+            "structure_recovery_topology_projection_binding_splits_enabled": True,
+        },
+        document_map_cache_key="doc-map-key",
+    )
+
+    assert projection.projected_units == ()
+    assert projection.operations == ()
+
+
+def test_apply_document_map_topology_applies_compound_toc_split_only_inside_bounded_toc_region():
+    paragraphs = [_paragraph(50, _compound_toc_text())]
+    document_map = DocumentMap(
+        body_start_logical_index=141,
+        toc_region=_compound_toc_region(),
+        outline=(),
+        paragraph_anchors={},
+        review_zones=(),
+        split_hints=(
+            DocumentMapSplitHint(
+                logical_index=50,
+                split_kind="compound_toc_entries",
+                expected_parts=("6 Strategies for Banking", "7 Strategies for Business and Entrepreneurs"),
+                authority="document_map_toc",
+                confidence="high",
+                evidence=("split_hint",),
+            ),
+        ),
+        sampled=False,
+        sampled_logical_indexes=(50,),
+    )
+
+    projection = apply_document_map_topology(
+        paragraphs,
+        document_map,
+        app_config={
+            "structure_recovery_document_map_preview_chars": 120,
+            "structure_recovery_topology_projection_binding_splits_enabled": True,
+        },
+        document_map_cache_key="doc-map-key",
+    )
+
+    assert projection.projected_units == ()
+    assert projection.operations == ()
+
+
+def test_apply_document_map_topology_binding_compound_toc_split_unit_ids_are_stable():
+    paragraphs = [_paragraph(40, _compound_toc_text())]
+    document_map = DocumentMap(
+        body_start_logical_index=141,
+        toc_region=_compound_toc_region(),
+        outline=(),
+        paragraph_anchors={},
+        review_zones=(),
+        split_hints=(
+            DocumentMapSplitHint(
+                logical_index=40,
+                split_kind="compound_toc_entries",
+                expected_parts=("6 Strategies for Banking", "7 Strategies for Business and Entrepreneurs"),
+                authority="document_map_toc",
+                confidence="high",
+                evidence=("split_hint",),
+            ),
+        ),
+        sampled=False,
+        sampled_logical_indexes=(40,),
+    )
+    app_config = {
+        "structure_recovery_document_map_preview_chars": 120,
+        "structure_recovery_topology_projection_binding_splits_enabled": True,
+    }
+
+    first = apply_document_map_topology(paragraphs, document_map, app_config=app_config, document_map_cache_key="doc-map-key")
+    second = apply_document_map_topology(paragraphs, document_map, app_config=app_config, document_map_cache_key="doc-map-key")
+
+    assert [(unit.canonical_text, unit.unit_id) for unit in first.get_units(40)] == [
+        (unit.canonical_text, unit.unit_id) for unit in second.get_units(40)
     ]

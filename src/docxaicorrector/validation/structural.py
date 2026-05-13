@@ -127,6 +127,609 @@ def _normalized_structural_role(paragraph: object) -> str:
     return str(getattr(paragraph, "structural_role", "") or "").strip().lower()
 
 
+def _has_high_confidence_bounded_document_map_toc_region(document_map: object | None) -> bool:
+    toc_region = getattr(document_map, "toc_region", None)
+    if toc_region is None:
+        return False
+    if str(getattr(toc_region, "confidence", "") or "").strip().lower() != "high":
+        return False
+    return int(getattr(toc_region, "start_logical_index", 0)) <= int(getattr(toc_region, "end_logical_index", -1))
+
+
+def _count_document_map_anchor_roles(document_map: object | None, *, role: str) -> int:
+    paragraph_anchors = getattr(document_map, "paragraph_anchors", None)
+    if not paragraph_anchors:
+        return 0
+    normalized_role = str(role or "").strip().lower()
+    return sum(
+        1
+        for anchor in dict(paragraph_anchors).values()
+        if str(getattr(anchor, "role", "") or "").strip().lower() == normalized_role
+    )
+
+
+def _count_topology_toc_entry_units(projection: object | None) -> int:
+    projected_units = getattr(projection, "projected_units", None)
+    if not projected_units:
+        return 0
+    return sum(
+        1
+        for unit in tuple(projected_units)
+        if str(getattr(unit, "role", "") or "").strip().lower() == "toc_entry"
+        or str(getattr(unit, "unit_type", "") or "").strip().lower() == "toc_entry"
+    )
+
+
+def _count_topology_operations(projection: object | None, *, op: str) -> int:
+    operations = getattr(projection, "operations", None)
+    if not operations:
+        return 0
+    normalized_op = str(op or "").strip().lower()
+    count = 0
+    for operation in tuple(operations):
+        if str(getattr(operation, "op", "") or "").strip().lower() == normalized_op:
+            count += 1
+    return count
+
+
+def _resolve_bounded_toc_region_range(document_map: object | None) -> tuple[int, int] | None:
+    if not _has_high_confidence_bounded_document_map_toc_region(document_map):
+        return None
+    toc_region = getattr(document_map, "toc_region", None)
+    if toc_region is None:
+        return None
+    return int(getattr(toc_region, "start_logical_index", 0)), int(getattr(toc_region, "end_logical_index", -1))
+
+
+def _count_high_confidence_compound_toc_split_hints(document_map: object | None) -> int:
+    toc_bounds = _resolve_bounded_toc_region_range(document_map)
+    split_hints = getattr(document_map, "split_hints", None)
+    if toc_bounds is None or not split_hints:
+        return 0
+    start_logical_index, end_logical_index = toc_bounds
+    count = 0
+    for split_hint in tuple(split_hints):
+        if str(getattr(split_hint, "split_kind", "") or "").strip().lower() != "compound_toc_entries":
+            continue
+        if str(getattr(split_hint, "confidence", "") or "").strip().lower() != "high":
+            continue
+        logical_index = int(getattr(split_hint, "logical_index", -1) or -1)
+        if logical_index < start_logical_index or logical_index > end_logical_index:
+            continue
+        expected_parts = tuple(
+            str(value or "").strip()
+            for value in tuple(getattr(split_hint, "expected_parts", ()) or ())
+            if str(value or "").strip()
+        )
+        if len(expected_parts) < 2:
+            continue
+        count += 1
+    return count
+
+
+def _projection_has_heading_inside_toc_region(
+    projection: object | None,
+    *,
+    start_logical_index: int,
+    end_logical_index: int,
+) -> bool:
+    projected_units = getattr(projection, "projected_units", None)
+    if not projected_units:
+        return False
+    for unit in tuple(projected_units):
+        role = str(getattr(unit, "role", "") or "").strip().lower()
+        unit_type = str(getattr(unit, "unit_type", "") or "").strip().lower()
+        if role != "heading" and unit_type not in {"chapter_heading", "section_heading"}:
+            continue
+        logical_indexes = tuple(int(index) for index in tuple(getattr(unit, "logical_indexes", ()) or ()))
+        if any(start_logical_index <= logical_index <= end_logical_index for logical_index in logical_indexes):
+            return True
+    return False
+
+
+def _projection_has_toc_entry_outside_toc_region(
+    projection: object | None,
+    *,
+    start_logical_index: int,
+    end_logical_index: int,
+) -> bool:
+    projected_units = getattr(projection, "projected_units", None)
+    if not projected_units:
+        return False
+    for unit in tuple(projected_units):
+        role = str(getattr(unit, "role", "") or "").strip().lower()
+        unit_type = str(getattr(unit, "unit_type", "") or "").strip().lower()
+        if role != "toc_entry" and unit_type != "toc_entry":
+            continue
+        logical_indexes = tuple(int(index) for index in tuple(getattr(unit, "logical_indexes", ()) or ()))
+        if any(logical_index < start_logical_index or logical_index > end_logical_index for logical_index in logical_indexes):
+            return True
+    return False
+
+
+def _document_map_has_high_confidence_outline_inside_toc_region(
+    document_map: object | None,
+    *,
+    start_logical_index: int,
+    end_logical_index: int,
+) -> bool:
+    outline = getattr(document_map, "outline", None)
+    if not outline:
+        return False
+    for entry in tuple(outline):
+        if str(getattr(entry, "confidence", "") or "").strip().lower() != "high":
+            continue
+        logical_index = int(getattr(entry, "logical_index", -1) or -1)
+        if start_logical_index <= logical_index <= end_logical_index:
+            return True
+    return False
+
+
+def _projection_has_units_or_operations(projection: object | None) -> bool:
+    if projection is None:
+        return False
+    return bool(getattr(projection, "operations", None) or getattr(projection, "projected_units", None))
+
+
+def _is_authoritative_topology_signal(*, authority: object, confidence: object) -> bool:
+    normalized_authority = str(authority or "").strip().lower()
+    normalized_confidence = str(confidence or "").strip().lower()
+    return normalized_confidence == "high" and normalized_authority.startswith("document_map")
+
+
+def _count_authoritative_topology_toc_entry_units(projection: object | None) -> int:
+    projected_units = getattr(projection, "projected_units", None)
+    if not projected_units:
+        return 0
+    count = 0
+    for unit in tuple(projected_units):
+        if not _is_authoritative_topology_signal(
+            authority=getattr(unit, "authority", ""),
+            confidence=getattr(unit, "confidence", ""),
+        ):
+            continue
+        role = str(getattr(unit, "role", "") or "").strip().lower()
+        unit_type = str(getattr(unit, "unit_type", "") or "").strip().lower()
+        if role == "toc_entry" or unit_type == "toc_entry":
+            count += 1
+    return count
+
+
+def _count_authoritative_topology_operations(projection: object | None, *, op: str) -> int:
+    operations = getattr(projection, "operations", None)
+    if not operations:
+        return 0
+    normalized_op = str(op or "").strip().lower()
+    count = 0
+    for operation in tuple(operations):
+        if str(getattr(operation, "op", "") or "").strip().lower() != normalized_op:
+            continue
+        if not _is_authoritative_topology_signal(
+            authority=getattr(operation, "authority", ""),
+            confidence=getattr(operation, "confidence", ""),
+        ):
+            continue
+        count += 1
+    return count
+
+
+def has_toc_body_concat_structure(topology_projection: object | None) -> bool:
+    projected_units = getattr(topology_projection, "projected_units", None)
+    if not projected_units:
+        return False
+    roles_by_logical_index: dict[int, set[str]] = {}
+    for unit in tuple(projected_units):
+        if not _is_authoritative_topology_signal(
+            authority=getattr(unit, "authority", ""),
+            confidence=getattr(unit, "confidence", ""),
+        ):
+            continue
+        role = str(getattr(unit, "role", "") or "").strip().lower()
+        unit_type = str(getattr(unit, "unit_type", "") or "").strip().lower()
+        normalized_role = ""
+        if role == "toc_entry" or unit_type == "toc_entry":
+            normalized_role = "toc_entry"
+        elif role == "heading" or unit_type in {"chapter_heading", "section_heading"}:
+            normalized_role = "heading"
+        if not normalized_role:
+            continue
+        for logical_index in tuple(getattr(unit, "logical_indexes", ()) or ()):
+            roles_by_logical_index.setdefault(int(logical_index), set()).add(normalized_role)
+    return any({"toc_entry", "heading"}.issubset(roles) for roles in roles_by_logical_index.values())
+
+
+def _projection_supports_toc_body_concat_gate(
+    *,
+    document_map: object | None,
+    topology_projection: object | None,
+) -> bool:
+    if _resolve_bounded_toc_region_range(document_map) is None:
+        return False
+    if not _projection_has_units_or_operations(topology_projection):
+        return False
+    return bool(
+        _count_authoritative_topology_operations(topology_projection, op="split_compound_toc_entries")
+        or _count_authoritative_topology_toc_entry_units(topology_projection)
+    )
+
+
+def _derive_toc_body_concat_gate_fields(
+    *,
+    document_map: object | None,
+    topology_projection: object | None,
+    markdown_detected: bool,
+) -> dict[str, object]:
+    split_hint_count = _count_high_confidence_compound_toc_split_hints(document_map)
+    split_operation_count = _count_topology_operations(topology_projection, op="split_compound_toc_entries")
+    merge_heading_count = _count_topology_operations(topology_projection, op="merge_heading_continuation")
+    topology_toc_entry_count = _count_topology_toc_entry_units(topology_projection)
+    if not _projection_supports_toc_body_concat_gate(
+        document_map=document_map,
+        topology_projection=topology_projection,
+    ):
+        return {
+            "toc_body_concat_detected": bool(markdown_detected),
+            "toc_body_concat_markdown_detected": bool(markdown_detected),
+            "toc_body_concat_structure_detected": False,
+            "toc_body_concat_gate_source": "legacy_markdown",
+            "topology_split_compound_toc_operation_count": split_operation_count,
+            "topology_merge_heading_operation_count": merge_heading_count,
+            "document_map_compound_toc_split_hint_count": split_hint_count,
+        }
+    structure_detected = has_toc_body_concat_structure(topology_projection)
+    return {
+        "toc_body_concat_detected": structure_detected,
+        "toc_body_concat_markdown_detected": bool(markdown_detected),
+        "toc_body_concat_structure_detected": structure_detected,
+        "toc_body_concat_gate_source": "topology_projection",
+        "topology_split_compound_toc_operation_count": split_operation_count,
+        "topology_merge_heading_operation_count": merge_heading_count,
+        "document_map_compound_toc_split_hint_count": split_hint_count,
+    }
+
+
+def _paragraph_id_for_unit_accounting(paragraph: object, fallback_index: int) -> str:
+    paragraph_id = str(getattr(paragraph, "paragraph_id", "") or "").strip()
+    if paragraph_id:
+        return paragraph_id
+    source_index = int(getattr(paragraph, "source_index", fallback_index) or fallback_index)
+    return f"p{source_index:04d}"
+
+
+def _logical_index_for_unit_accounting(paragraph: object, fallback_index: int) -> int:
+    logical_index = getattr(paragraph, "logical_index", None)
+    if logical_index is not None:
+        return int(logical_index)
+    source_index = getattr(paragraph, "source_index", fallback_index)
+    return int(source_index if source_index is not None else fallback_index)
+
+
+def _projection_units_for_logical_index(projection: object | None, logical_index: int) -> tuple[object, ...]:
+    if projection is None:
+        return ()
+    get_units = getattr(projection, "get_units", None)
+    if callable(get_units):
+        try:
+            resolved = get_units(int(logical_index))
+        except Exception:
+            resolved = ()
+        return tuple(resolved or ())
+    return tuple(
+        unit
+        for unit in tuple(getattr(projection, "projected_units", ()) or ())
+        if int(logical_index) in tuple(int(index) for index in tuple(getattr(unit, "logical_indexes", ()) or ()))
+    )
+
+
+def _build_source_paragraph_unit_membership(
+    source_paragraphs: Sequence[object],
+    topology_projection: object | None,
+) -> tuple[dict[str, frozenset[str]], set[str]]:
+    paragraph_unit_keys: dict[str, frozenset[str]] = {}
+    all_unit_keys: set[str] = set()
+    for fallback_index, paragraph in enumerate(source_paragraphs):
+        paragraph_id = _paragraph_id_for_unit_accounting(paragraph, fallback_index)
+        logical_index = _logical_index_for_unit_accounting(paragraph, fallback_index)
+        unit_keys = {
+            str(getattr(unit, "unit_id", "") or "").strip()
+            for unit in _projection_units_for_logical_index(topology_projection, logical_index)
+            if str(getattr(unit, "unit_id", "") or "").strip()
+        }
+        if not unit_keys:
+            unit_keys = {f"paragraph:{paragraph_id}"}
+        paragraph_unit_keys[paragraph_id] = frozenset(unit_keys)
+        all_unit_keys.update(unit_keys)
+    return paragraph_unit_keys, all_unit_keys
+
+
+def _normalize_registry_text_for_unit_alignment(value: object) -> str:
+    text = str(value or "")
+    normalized_lines: list[str] = []
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        stripped = re.sub(r"^#{1,6}\s+", "", stripped)
+        normalized_lines.append(stripped)
+    return re.sub(r"\s+", " ", " ".join(normalized_lines)).strip().lower()
+
+
+def _registry_entry_unit_keys(
+    entry: Mapping[str, object],
+    paragraph_unit_keys: Mapping[str, frozenset[str]],
+) -> frozenset[str]:
+    paragraph_ids: list[str] = []
+    primary_id = str(entry.get("paragraph_id") or "").strip()
+    if primary_id:
+        paragraph_ids.append(primary_id)
+    merged_ids = entry.get("merged_paragraph_ids")
+    if isinstance(merged_ids, Sequence) and not isinstance(merged_ids, (str, bytes, bytearray)):
+        paragraph_ids.extend(str(value).strip() for value in merged_ids if str(value).strip())
+    unit_keys: set[str] = set()
+    for paragraph_id in paragraph_ids:
+        unit_keys.update(paragraph_unit_keys.get(paragraph_id, frozenset()))
+    return frozenset(unit_keys)
+
+
+def _merge_target_alignment_unit_keys(
+    alignments: dict[int, frozenset[str]],
+    *,
+    target_index: int,
+    unit_keys: frozenset[str] | set[str],
+) -> None:
+    if target_index < 0 or not unit_keys:
+        return
+    merged_keys = set(alignments.get(target_index, frozenset()))
+    merged_keys.update(str(value).strip() for value in unit_keys if str(value).strip())
+    if merged_keys:
+        alignments[target_index] = frozenset(merged_keys)
+
+
+def _build_target_alignments_from_source_registry(
+    formatting_payload: Mapping[str, object],
+    *,
+    paragraph_unit_keys: Mapping[str, frozenset[str]],
+) -> tuple[dict[int, frozenset[str]], dict[int, list[int]], list[Mapping[str, object]]]:
+    source_registry = formatting_payload.get("source_registry")
+    if not isinstance(source_registry, list):
+        return {}, {}, []
+    alignments: dict[int, frozenset[str]] = {}
+    source_positions_by_target_index: dict[int, list[int]] = {}
+    normalized_source_entries: list[Mapping[str, object]] = []
+    for position, entry in enumerate(source_registry):
+        if not isinstance(entry, Mapping):
+            continue
+        normalized_entry = cast(Mapping[str, object], entry)
+        normalized_source_entries.append(normalized_entry)
+        unit_keys = _registry_entry_unit_keys(normalized_entry, paragraph_unit_keys)
+        try:
+            raw_target_index = normalized_entry.get("mapped_target_index", -1)
+            target_index = int(cast(Any, raw_target_index if raw_target_index is not None else -1))
+        except (TypeError, ValueError):
+            continue
+        if target_index < 0:
+            continue
+        _merge_target_alignment_unit_keys(alignments, target_index=target_index, unit_keys=unit_keys)
+        source_positions_by_target_index.setdefault(target_index, []).append(position)
+    return alignments, source_positions_by_target_index, normalized_source_entries
+
+
+def _infer_target_alignment_unit_keys_from_source_intervals(
+    formatting_payload: Mapping[str, object],
+    *,
+    paragraph_unit_keys: Mapping[str, frozenset[str]],
+    alignments: dict[int, frozenset[str]],
+    source_positions_by_target_index: Mapping[int, Sequence[int]],
+    source_registry_entries: Sequence[Mapping[str, object]],
+) -> None:
+    target_registry = formatting_payload.get("target_registry")
+    if not isinstance(target_registry, list):
+        return
+    candidate_unmapped_target_indexes = formatting_payload.get("unmapped_target_indexes")
+    if not isinstance(candidate_unmapped_target_indexes, list):
+        return
+    unresolved_target_indexes: list[int] = []
+    for value in candidate_unmapped_target_indexes:
+        try:
+            unresolved_target_indexes.append(int(cast(Any, value)))
+        except (TypeError, ValueError):
+            continue
+    if not unresolved_target_indexes or not source_positions_by_target_index:
+        return
+    mapped_target_indexes = sorted(source_positions_by_target_index)
+    if len(mapped_target_indexes) < 2:
+        return
+    unresolved_target_set = set(unresolved_target_indexes)
+    for target_index in unresolved_target_indexes:
+        if alignments.get(target_index):
+            continue
+        previous_target_indexes = [value for value in mapped_target_indexes if value < target_index]
+        next_target_indexes = [value for value in mapped_target_indexes if value > target_index]
+        if not previous_target_indexes or not next_target_indexes:
+            continue
+        previous_target_index = previous_target_indexes[-1]
+        next_target_index = next_target_indexes[0]
+        unresolved_targets_in_interval = [
+            value
+            for value in unresolved_target_set
+            if previous_target_index < value < next_target_index and not alignments.get(value)
+        ]
+        if unresolved_targets_in_interval != [target_index]:
+            continue
+        previous_source_position = max(int(value) for value in source_positions_by_target_index.get(previous_target_index, ()))
+        next_source_position = min(int(value) for value in source_positions_by_target_index.get(next_target_index, ()))
+        if previous_source_position >= next_source_position:
+            continue
+        interval_unit_keys: set[str] = set()
+        for source_entry in source_registry_entries[previous_source_position + 1 : next_source_position]:
+            try:
+                raw_mapped_target_index = source_entry.get("mapped_target_index", -1)
+                mapped_target_index = int(cast(Any, raw_mapped_target_index if raw_mapped_target_index is not None else -1))
+            except (TypeError, ValueError):
+                mapped_target_index = -1
+            if mapped_target_index >= 0:
+                continue
+            interval_unit_keys.update(_registry_entry_unit_keys(source_entry, paragraph_unit_keys))
+        _merge_target_alignment_unit_keys(alignments, target_index=target_index, unit_keys=interval_unit_keys)
+
+
+def _align_target_indexes_to_unit_keys(
+    formatting_payload: Mapping[str, object],
+    *,
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
+    paragraph_unit_keys: Mapping[str, frozenset[str]],
+) -> dict[int, frozenset[str]] | None:
+    alignments, source_positions_by_target_index, source_registry_entries = _build_target_alignments_from_source_registry(
+        formatting_payload,
+        paragraph_unit_keys=paragraph_unit_keys,
+    )
+    target_registry = formatting_payload.get("target_registry")
+    if not isinstance(target_registry, list):
+        return None
+    if generated_paragraph_registry:
+        generated_entries = [entry for entry in generated_paragraph_registry if isinstance(entry, Mapping)]
+        generated_index = 0
+        for target_entry in target_registry:
+            if not isinstance(target_entry, Mapping):
+                continue
+            raw_target_index = target_entry.get("target_index", -1)
+            target_index = int(cast(Any, raw_target_index if raw_target_index is not None else -1))
+            if target_index < 0:
+                continue
+            target_preview = _normalize_registry_text_for_unit_alignment(target_entry.get("text_preview"))
+            while generated_index < len(generated_entries):
+                generated_entry = generated_entries[generated_index]
+                generated_index += 1
+                generated_preview = _normalize_registry_text_for_unit_alignment(generated_entry.get("text"))
+                if not generated_preview:
+                    continue
+                if target_preview and target_preview != generated_preview:
+                    continue
+                _merge_target_alignment_unit_keys(
+                    alignments,
+                    target_index=target_index,
+                    unit_keys=_registry_entry_unit_keys(generated_entry, paragraph_unit_keys),
+                )
+                break
+    _infer_target_alignment_unit_keys_from_source_intervals(
+        formatting_payload,
+        paragraph_unit_keys=paragraph_unit_keys,
+        alignments=alignments,
+        source_positions_by_target_index=source_positions_by_target_index,
+        source_registry_entries=source_registry_entries,
+    )
+    return alignments or None
+
+
+def _derive_unit_aware_unmapped_fields(
+    *,
+    source_paragraphs: Sequence[object],
+    topology_projection: object | None,
+    formatting_payload: Mapping[str, object] | None,
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
+) -> dict[str, object]:
+    unmapped_source_ids = []
+    unmapped_target_indexes = []
+    if formatting_payload is not None:
+        candidate_source_ids = formatting_payload.get("unmapped_source_ids")
+        if isinstance(candidate_source_ids, list):
+            unmapped_source_ids = [str(value).strip() for value in candidate_source_ids if str(value).strip()]
+        candidate_target_indexes = formatting_payload.get("unmapped_target_indexes")
+        if isinstance(candidate_target_indexes, list):
+            unresolved_indexes: list[int] = []
+            for value in candidate_target_indexes:
+                try:
+                    unresolved_indexes.append(int(cast(Any, value)))
+                except (TypeError, ValueError):
+                    continue
+            unmapped_target_indexes = unresolved_indexes
+    fields: dict[str, object] = {
+        "structure_unit_unmapped_source_count": len(unmapped_source_ids),
+        "structure_unit_unmapped_target_count": len(unmapped_target_indexes),
+        "unit_covered_source_fragment_count": 0,
+        "unit_covered_target_fragment_count": 0,
+        "unit_unmapped_source_gate_source": "legacy_paragraph",
+        "unit_unmapped_target_gate_source": "legacy_paragraph",
+    }
+    if formatting_payload is None or not _projection_has_units_or_operations(topology_projection):
+        return fields
+    paragraph_unit_keys, all_unit_keys = _build_source_paragraph_unit_membership(source_paragraphs, topology_projection)
+    if not paragraph_unit_keys:
+        return fields
+    unmapped_source_unit_keys: set[str] = set()
+    for paragraph_id in unmapped_source_ids:
+        unmapped_source_unit_keys.update(paragraph_unit_keys.get(paragraph_id, frozenset({f"paragraph:{paragraph_id}"})))
+    fields.update(
+        {
+            "structure_unit_total_count": len(all_unit_keys),
+            "structure_unit_unmapped_source_count": len(unmapped_source_unit_keys),
+            "unit_covered_source_fragment_count": max(0, len(all_unit_keys) - len(unmapped_source_unit_keys)),
+            "unit_unmapped_source_gate_source": "topology_unit",
+        }
+    )
+    if not unmapped_target_indexes:
+        fields.update(
+            {
+                "structure_unit_unmapped_target_count": 0,
+                "unit_unmapped_target_gate_source": "topology_unit",
+            }
+        )
+        return fields
+    aligned_target_unit_keys = _align_target_indexes_to_unit_keys(
+        formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+        paragraph_unit_keys=paragraph_unit_keys,
+    )
+    if aligned_target_unit_keys is None:
+        return fields
+    if any(not aligned_target_unit_keys.get(target_index) for target_index in unmapped_target_indexes):
+        return fields
+    unmapped_target_unit_keys: set[str] = set()
+    for target_index in unmapped_target_indexes:
+        unmapped_target_unit_keys.update(aligned_target_unit_keys.get(target_index, frozenset()))
+    target_registry = formatting_payload.get("target_registry")
+    covered_target_unit_keys: set[str] = set()
+    if isinstance(target_registry, list):
+        for target_entry in target_registry:
+            if not isinstance(target_entry, Mapping):
+                continue
+            if not bool(target_entry.get("mapped")):
+                continue
+            try:
+                raw_target_index = target_entry.get("target_index", -1)
+                target_index = int(cast(Any, raw_target_index if raw_target_index is not None else -1))
+            except (TypeError, ValueError):
+                continue
+            if target_index < 0:
+                continue
+            covered_target_unit_keys.update(aligned_target_unit_keys.get(target_index, frozenset()))
+    fields.update(
+        {
+            "structure_unit_unmapped_target_count": len(unmapped_target_unit_keys),
+            "unit_covered_target_fragment_count": len(covered_target_unit_keys),
+            "unit_unmapped_target_gate_source": "topology_unit",
+        }
+    )
+    return fields
+
+
+def _apply_metric_snapshot_fields(snapshot: dict[str, object], metrics: Mapping[str, object]) -> None:
+    for key in (
+        "toc_body_concat_detected",
+        "toc_body_concat_markdown_detected",
+        "toc_body_concat_structure_detected",
+        "toc_body_concat_gate_source",
+        "structure_unit_unmapped_source_count",
+        "structure_unit_unmapped_target_count",
+        "unit_covered_source_fragment_count",
+        "unit_covered_target_fragment_count",
+        "unit_unmapped_source_gate_source",
+        "unit_unmapped_target_gate_source",
+    ):
+        if key in metrics:
+            snapshot[key] = metrics[key]
+
+
 def _normalize_snapshot_or_metric_statuses(payload: dict[str, object]) -> None:
     quality_gate_status = str(payload.get("quality_gate_status") or "").strip()
     readiness_status = str(payload.get("readiness_status") or "").strip()
@@ -355,6 +958,7 @@ def run_structural_passthrough_validation(
             "effective_source_toc_region_count": _count_effective_toc_regions_from_source(source_paragraphs),
             "bullet_heading_count": _count_bullet_headings(latest_markdown),
             "toc_body_concat_detected": _has_toc_body_concat_markdown(latest_markdown),
+            "toc_body_concat_markdown_detected": _has_toc_body_concat_markdown(latest_markdown),
             "require_pdf_conversion_satisfied": source_path.suffix.lower() == ".pdf",
             "runtime_translation_domain": str(runtime_resolution.effective.translation_domain),
             "quality_gate_status": _extract_event_context_value(event_log, "structure_processing_outcome", "quality_gate_status"),
@@ -376,7 +980,17 @@ def run_structural_passthrough_validation(
             translation_domain=str(runtime_resolution.effective.translation_domain),
         )
     )
-    _apply_prepared_metric_fields(metrics, prepared)
+    generated_paragraph_registry = runtime_state.get("generated_paragraph_registry")
+    if not isinstance(generated_paragraph_registry, list):
+        generated_paragraph_registry = None
+    _apply_prepared_metric_fields(
+        metrics,
+        prepared,
+        source_paragraphs=source_paragraphs,
+        formatting_payload=canonical_formatting_diagnostics,
+        generated_paragraph_registry=cast(Sequence[Mapping[str, object]] | None, generated_paragraph_registry),
+    )
+    _apply_metric_snapshot_fields(preparation_diagnostic_snapshot, metrics)
     _normalize_snapshot_or_metric_statuses(metrics)
     checks = _build_extraction_checks(document_profile, metrics)
     checks.extend(
@@ -664,6 +1278,8 @@ def _apply_structure_summary_snapshot_fields(snapshot: dict[str, object], struct
 def _apply_prepared_snapshot_fields(snapshot: dict[str, object], prepared: object) -> None:
     structure_validation_report = getattr(prepared, "structure_validation_report", None)
     structure_summary = getattr(prepared, "structure_recognition_summary", None)
+    prepared_document_map = getattr(prepared, "document_map", None)
+    prepared_topology_projection = getattr(prepared, "document_topology_projection", None)
     _apply_structure_validation_snapshot_fields(snapshot, structure_validation_report)
     _apply_structure_summary_snapshot_fields(snapshot, structure_summary)
     if not str(snapshot.get("quality_gate_status") or ""):
@@ -691,7 +1307,16 @@ def _apply_prepared_snapshot_fields(snapshot: dict[str, object], prepared: objec
     if not current_document_map_status_reason and prepared_document_map_status_reason:
         snapshot["document_map_status_reason"] = prepared_document_map_status_reason
     if not bool(snapshot.get("document_map_present", False)):
-        snapshot["document_map_present"] = bool(getattr(prepared, "document_map", None) is not None)
+        snapshot["document_map_present"] = bool(prepared_document_map is not None)
+    if _has_high_confidence_bounded_document_map_toc_region(prepared_document_map):
+        if _as_int(snapshot, "bounded_toc_region_count") < 1:
+            snapshot["bounded_toc_region_count"] = 1
+        toc_header_count = _count_document_map_anchor_roles(prepared_document_map, role="toc_header")
+        if toc_header_count > _as_int(snapshot, "toc_header_count"):
+            snapshot["toc_header_count"] = toc_header_count
+        toc_entry_count = _count_document_map_anchor_roles(prepared_document_map, role="toc_entry")
+        if toc_entry_count > _as_int(snapshot, "toc_entry_count"):
+            snapshot["toc_entry_count"] = toc_entry_count
     current_topology_status = str(snapshot.get("document_topology_projection_status") or "").strip().lower()
     prepared_topology_status = str(getattr(prepared, "document_topology_projection_status", "") or "").strip()
     if prepared_topology_status and current_topology_status in {"", "not_requested"}:
@@ -700,9 +1325,23 @@ def _apply_prepared_snapshot_fields(snapshot: dict[str, object], prepared: objec
     prepared_topology_reason = str(getattr(prepared, "document_topology_projection_status_reason", "") or "").strip()
     if not current_topology_reason and prepared_topology_reason:
         snapshot["document_topology_projection_status_reason"] = prepared_topology_reason
-    prepared_topology_projection = getattr(prepared, "document_topology_projection", None)
     if prepared_topology_projection is not None:
         snapshot["document_topology_projection"] = asdict(prepared_topology_projection)
+        topology_toc_entry_count = _count_topology_toc_entry_units(prepared_topology_projection)
+        if topology_toc_entry_count > _as_int(snapshot, "toc_entry_count"):
+            snapshot["toc_entry_count"] = topology_toc_entry_count
+    if prepared_document_map is not None or prepared_topology_projection is not None:
+        snapshot.update(
+            {
+                key: value
+                for key, value in _derive_toc_body_concat_gate_fields(
+                    document_map=prepared_document_map,
+                    topology_projection=prepared_topology_projection,
+                    markdown_detected=False,
+                ).items()
+                if key in {"toc_body_concat_structure_detected", "toc_body_concat_gate_source"}
+            }
+        )
     _apply_quality_gate_readiness_fallback(snapshot)
     _normalize_snapshot_or_metric_statuses(snapshot)
 
@@ -770,9 +1409,18 @@ def _apply_quality_gate_readiness_fallback(snapshot: dict[str, object]) -> None:
         snapshot["readiness_status"] = _infer_readiness_status_from_quality_gate_reasons(quality_gate_reasons)
 
 
-def _apply_prepared_metric_fields(metrics: dict[str, object], prepared: object) -> None:
+def _apply_prepared_metric_fields(
+    metrics: dict[str, object],
+    prepared: object,
+    *,
+    source_paragraphs: Sequence[object] | None = None,
+    formatting_payload: Mapping[str, object] | None = None,
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
+) -> None:
     structure_validation_report = getattr(prepared, "structure_validation_report", None)
     structure_summary = getattr(prepared, "structure_recognition_summary", None)
+    prepared_document_map = getattr(prepared, "document_map", None)
+    prepared_topology_projection = getattr(prepared, "document_topology_projection", None)
     if not str(metrics.get("quality_gate_status") or ""):
         metrics["quality_gate_status"] = str(getattr(prepared, "quality_gate_status", "") or "")
     if not list(cast(list[str], metrics.get("quality_gate_reasons") or [])):
@@ -783,6 +1431,41 @@ def _apply_prepared_metric_fields(metrics: dict[str, object], prepared: object) 
         ]
     if not str(metrics.get("readiness_status") or ""):
         metrics["readiness_status"] = str(getattr(structure_validation_report, "readiness_status", "") or "")
+    document_map_toc_region_count = 1 if _has_high_confidence_bounded_document_map_toc_region(prepared_document_map) else 0
+    document_map_toc_detected = bool(
+        document_map_toc_region_count
+        or _count_document_map_anchor_roles(prepared_document_map, role="toc_header")
+        or _count_document_map_anchor_roles(prepared_document_map, role="toc_entry")
+    )
+    topology_toc_entry_count = _count_topology_toc_entry_units(prepared_topology_projection)
+    if document_map_toc_detected:
+        metrics["document_map_toc_detected"] = True
+    if document_map_toc_region_count > _as_int(metrics, "document_map_toc_region_count"):
+        metrics["document_map_toc_region_count"] = document_map_toc_region_count
+    if topology_toc_entry_count > _as_int(metrics, "topology_toc_entry_count"):
+        metrics["topology_toc_entry_count"] = topology_toc_entry_count
+    markdown_detected = bool(
+        metrics.get(
+            "toc_body_concat_markdown_detected",
+            metrics.get("toc_body_concat_detected", False),
+        )
+    )
+    metrics.update(
+        _derive_toc_body_concat_gate_fields(
+            document_map=prepared_document_map,
+            topology_projection=prepared_topology_projection,
+            markdown_detected=markdown_detected,
+        )
+    )
+    if source_paragraphs is not None:
+        metrics.update(
+            _derive_unit_aware_unmapped_fields(
+                source_paragraphs=source_paragraphs,
+                topology_projection=prepared_topology_projection,
+                formatting_payload=formatting_payload,
+                generated_paragraph_registry=generated_paragraph_registry,
+            )
+        )
     _apply_structure_summary_snapshot_fields(metrics, structure_summary)
     _normalize_snapshot_or_metric_statuses(metrics)
 
@@ -1041,6 +1724,18 @@ def _build_structural_checks(
     metrics: Mapping[str, object],
     output_artifacts: Mapping[str, object],
 ) -> list[dict[str, object]]:
+    unmapped_source_gate_source = str(metrics.get("unit_unmapped_source_gate_source") or "legacy_paragraph").strip().lower()
+    unmapped_source_actual = (
+        _as_int(metrics, "structure_unit_unmapped_source_count")
+        if unmapped_source_gate_source == "topology_unit"
+        else _as_int(metrics, "max_unmapped_source_paragraphs")
+    )
+    unmapped_target_gate_source = str(metrics.get("unit_unmapped_target_gate_source") or "legacy_paragraph").strip().lower()
+    unmapped_target_actual = (
+        _as_int(metrics, "structure_unit_unmapped_target_count")
+        if unmapped_target_gate_source == "topology_unit"
+        else _as_int(metrics, "max_unmapped_target_paragraphs")
+    )
     checks = [
         {"name": "pipeline_succeeded", "passed": result == "succeeded", "result": result},
         {
@@ -1056,15 +1751,21 @@ def _build_structural_checks(
         },
         {
             "name": "unmapped_source_threshold",
-            "passed": _as_int(metrics, "max_unmapped_source_paragraphs") <= document_profile.max_unmapped_source_paragraphs,
-            "actual": metrics["max_unmapped_source_paragraphs"],
+            "passed": unmapped_source_actual <= document_profile.max_unmapped_source_paragraphs,
+            "actual": unmapped_source_actual,
             "allowed": document_profile.max_unmapped_source_paragraphs,
+            "paragraph_actual": metrics["max_unmapped_source_paragraphs"],
+            "structure_unit_actual": metrics.get("structure_unit_unmapped_source_count"),
+            "unmapped_gate_source": metrics.get("unit_unmapped_source_gate_source"),
         },
         {
             "name": "unmapped_target_threshold",
-            "passed": _as_int(metrics, "max_unmapped_target_paragraphs") <= document_profile.max_unmapped_target_paragraphs,
-            "actual": metrics["max_unmapped_target_paragraphs"],
+            "passed": unmapped_target_actual <= document_profile.max_unmapped_target_paragraphs,
+            "actual": unmapped_target_actual,
             "allowed": document_profile.max_unmapped_target_paragraphs,
+            "paragraph_actual": metrics["max_unmapped_target_paragraphs"],
+            "structure_unit_actual": metrics.get("structure_unit_unmapped_target_count"),
+            "unmapped_gate_source": metrics.get("unit_unmapped_target_gate_source"),
         },
         {
             "name": "heading_level_drift_threshold",
@@ -1111,6 +1812,9 @@ def _build_structural_checks(
             or _as_int(metrics, "structure_repair_bounded_toc_regions") > 0
             or _as_int(metrics, "source_toc_region_count") > 0
             or _as_int(metrics, "effective_source_toc_region_count") > 0
+            or bool(metrics.get("document_map_toc_detected"))
+            or _as_int(metrics, "document_map_toc_region_count") > 0
+            or _as_int(metrics, "topology_toc_entry_count") > 0
         )
         checks.append(
             {
@@ -1121,6 +1825,9 @@ def _build_structural_checks(
                 "structure_repair_bounded_toc_regions": metrics.get("structure_repair_bounded_toc_regions"),
                 "source_toc_region_count": metrics.get("source_toc_region_count"),
                 "effective_source_toc_region_count": metrics.get("effective_source_toc_region_count"),
+                "document_map_toc_detected": metrics.get("document_map_toc_detected"),
+                "document_map_toc_region_count": metrics.get("document_map_toc_region_count"),
+                "topology_toc_entry_count": metrics.get("topology_toc_entry_count"),
             }
         )
     if document_profile.require_pdf_conversion:
@@ -1140,17 +1847,43 @@ def _build_structural_checks(
             }
         )
     if document_profile.require_no_toc_body_concat:
+        gate_source = str(metrics.get("toc_body_concat_gate_source") or "legacy_markdown").strip().lower() or "legacy_markdown"
+        structure_toc_boundary_resolved = bool(
+            _as_int(metrics, "document_map_toc_region_count") > 0
+            and (
+                _as_int(metrics, "topology_toc_entry_count") > 0
+                or _as_int(metrics, "topology_split_compound_toc_operation_count") > 0
+                or _as_int(metrics, "document_map_compound_toc_split_hint_count") == 0
+            )
+        )
         source_toc_boundary_repaired = (
             _as_int(metrics, "structure_repair_toc_body_boundary_repairs") > 0
             or _as_int(metrics, "effective_source_toc_region_count") > 0
+            or (gate_source == "topology_projection" and structure_toc_boundary_resolved)
+        )
+        gate_detected = bool(
+            metrics.get(
+                "toc_body_concat_structure_detected"
+                if gate_source == "topology_projection"
+                else "toc_body_concat_markdown_detected",
+                metrics.get("toc_body_concat_detected"),
+            )
         )
         checks.append(
             {
                 "name": "no_toc_body_concat_required",
-                "passed": not bool(metrics.get("toc_body_concat_detected")) and source_toc_boundary_repaired,
+                "passed": not gate_detected and source_toc_boundary_repaired,
                 "toc_body_concat_detected": metrics.get("toc_body_concat_detected"),
+                "toc_body_concat_markdown_detected": metrics.get("toc_body_concat_markdown_detected"),
+                "toc_body_concat_structure_detected": metrics.get("toc_body_concat_structure_detected"),
+                "toc_body_concat_gate_source": metrics.get("toc_body_concat_gate_source"),
                 "structure_repair_toc_body_boundary_repairs": metrics.get("structure_repair_toc_body_boundary_repairs"),
                 "effective_source_toc_region_count": metrics.get("effective_source_toc_region_count"),
+                "document_map_toc_region_count": metrics.get("document_map_toc_region_count"),
+                "topology_toc_entry_count": metrics.get("topology_toc_entry_count"),
+                "topology_split_compound_toc_operation_count": metrics.get(
+                    "topology_split_compound_toc_operation_count"
+                ),
             }
         )
     if document_profile.require_translation_domain:

@@ -81,6 +81,7 @@ class RunProfile:
     structure_recognition_mode: str | None = None
     structure_recognition_enabled: bool | None = None
     structure_recovery_topology_projection_enabled: bool | None = None
+    structure_recovery_topology_projection_binding_splits_enabled: bool | None = None
     translation_output_quality_gate_policy: str | None = None
     repeat_count: int = 1
 
@@ -245,6 +246,11 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
             "structure_recovery_topology_projection_enabled",
             None,
         ),
+        "structure_recovery_topology_projection_binding_splits_enabled": getattr(
+            run_profile,
+            "structure_recovery_topology_projection_binding_splits_enabled",
+            None,
+        ),
     }
     overrides: dict[str, object] = {
         key: value for key, value in explicit_profile_overrides.items() if value is not None
@@ -253,6 +259,15 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
     topology_projection_enabled = getattr(run_profile, "structure_recovery_topology_projection_enabled", None)
     if topology_projection_enabled is not None:
         app_config_overrides["structure_recovery_topology_projection_enabled"] = topology_projection_enabled
+    topology_projection_binding_splits_enabled = getattr(
+        run_profile,
+        "structure_recovery_topology_projection_binding_splits_enabled",
+        None,
+    )
+    if topology_projection_binding_splits_enabled is not None:
+        app_config_overrides[
+            "structure_recovery_topology_projection_binding_splits_enabled"
+        ] = topology_projection_binding_splits_enabled
     if run_profile.translation_output_quality_gate_policy is not None:
         app_config_overrides["translation_output_quality_gate_policy"] = run_profile.translation_output_quality_gate_policy
         overrides["translation_output_quality_gate_policy"] = run_profile.translation_output_quality_gate_policy
@@ -384,6 +399,10 @@ def _build_run_profile(payload: Any) -> RunProfile:
         structure_recognition_mode=_optional_structure_recognition_mode(payload, "structure_recognition_mode"),
         structure_recognition_enabled=_optional_bool(payload, "structure_recognition_enabled"),
         structure_recovery_topology_projection_enabled=_optional_bool(payload, "structure_recovery_topology_projection_enabled"),
+        structure_recovery_topology_projection_binding_splits_enabled=_optional_bool(
+            payload,
+            "structure_recovery_topology_projection_binding_splits_enabled",
+        ),
         translation_output_quality_gate_policy=translation_output_quality_gate_policy,
         repeat_count=repeat_count,
     )

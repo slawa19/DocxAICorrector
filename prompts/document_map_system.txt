@@ -26,6 +26,9 @@ Constraints:
 - confidences must be one of: high, medium, low
 - `split_hints`, when present, must use only `page_artifact_heading` or `compound_toc_entries` for `split_kind`
 - if you have no explicit split intent, return `split_hints: []`
+- if `toc_region` is present, paragraphs inside it should usually anchor as `toc_header` or `toc_entry`, not generic `body`, unless there is a strong reason not to
+- if one physical TOC paragraph clearly contains multiple ordered TOC entries, emit each TOC entry separately in `toc_region.entries` and add one `compound_toc_entries` split hint for that paragraph
+- only emit `compound_toc_entries` when those parts are supported one-to-one by the bounded TOC region and the body outline/body heading candidates; do not guess split parts from regex alone
 - for every `paragraph_anchors` item: if role is `heading`, `heading_level` must be an integer 1..6
 - for every `paragraph_anchors` item: if role is not `heading`, `heading_level` must be null
 - never copy outline levels, TOC target levels, or `emb.hl` hint values into non-heading anchors

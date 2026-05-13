@@ -19,11 +19,18 @@ from docxaicorrector.validation.structural import (
 )
 
 from docxaicorrector.core.models import (
+    DocumentMap,
+    DocumentMapAnchor,
+    DocumentMapTocEntry,
+    DocumentMapTocRegion,
+    DocumentTopologyOperation,
+    DocumentTopologyProjection,
     DocumentBlock,
     LayoutArtifactCleanupReport,
     ParagraphBoundaryNormalizationReport,
     ParagraphUnit,
     RelationNormalizationReport,
+    StructuralUnit,
 )
 from docxaicorrector.generation._generation import ensure_pandoc_available
 
@@ -108,7 +115,10 @@ def test_registry_structural_profiles_and_tolerance_contracts_are_consistent() -
         if document_profile.structural_mode == "tolerant":
             assert document_profile.tolerance_reason
         if "benchmark-only" in document_profile.tags:
-            assert document_profile.default_run_profile == "ui-parity-translate-benchmark-advisory"
+            expected_benchmark_profile = {
+                "lietaer-pdf-full-benchmark": "ui-parity-translate-benchmark-topology-advisory",
+            }.get(document_profile.id, "ui-parity-translate-benchmark-advisory")
+            assert document_profile.default_run_profile == expected_benchmark_profile
 
 
 def test_workflow_doc_describes_benchmark_only_policy_and_current_registered_mappings() -> None:
@@ -230,9 +240,24 @@ def test_lietaer_chapter_region_structural_run_profile_is_ai_first_default() -> 
     run_profile = _resolve_structural_run_profile(document_profile)
 
     assert run_profile.id == "structural-ai-first-default"
+    assert run_profile.structure_recovery_topology_projection_enabled is True
+    assert run_profile.structure_recovery_topology_projection_binding_splits_enabled is True
     assert document_profile.structural_expected_result == "pass"
     assert document_profile.structural_expected_failed_checks == ()
     assert document_profile.structural_optional_failed_checks == ()
+
+
+def test_lietaer_full_benchmark_default_run_profile_enables_topology_projection() -> None:
+    document_profile = REGISTRY.get_document_profile("lietaer-pdf-full-benchmark")
+    run_profile = REGISTRY.resolve_run_profile(document_profile)
+
+    assert document_profile.default_run_profile == "ui-parity-translate-benchmark-topology-advisory"
+    assert run_profile.tier == "full"
+    assert run_profile.processing_operation == "translate"
+    assert run_profile.translation_output_quality_gate_policy == "advisory"
+    assert run_profile.structure_recognition_mode == "always"
+    assert run_profile.structure_recovery_topology_projection_enabled is True
+    assert run_profile.structure_recovery_topology_projection_binding_splits_enabled is True
 
 
 def test_end_times_pdf_structural_diagnostic_artifact_matches_current_contract() -> None:
@@ -586,14 +611,18 @@ def test_runtime_resolution_applies_topology_projection_override() -> None:
         tier="structural",
         structure_recognition_mode="always",
         structure_recovery_topology_projection_enabled=True,
+        structure_recovery_topology_projection_binding_splits_enabled=True,
     )
 
     resolution = validation_profiles.resolve_runtime_resolution(app_config, run_profile)
     applied_config = validation_profiles.apply_runtime_resolution_to_app_config(app_config, resolution)
 
     assert resolution.overrides["structure_recovery_topology_projection_enabled"] is True
+    assert resolution.overrides["structure_recovery_topology_projection_binding_splits_enabled"] is True
     assert resolution.app_config_overrides["structure_recovery_topology_projection_enabled"] is True
+    assert resolution.app_config_overrides["structure_recovery_topology_projection_binding_splits_enabled"] is True
     assert applied_config["structure_recovery_topology_projection_enabled"] is True
+    assert applied_config["structure_recovery_topology_projection_binding_splits_enabled"] is True
 
 
 def _skip_if_legacy_doc_conversion_unavailable(source_path: Path) -> None:
@@ -1484,6 +1513,107 @@ def test_build_structural_checks_accepts_ai_bounded_toc_region_as_boundary_repai
     assert by_name["no_toc_body_concat_required"]["effective_source_toc_region_count"] == 1
 
 
+def test_build_structural_checks_prefers_structure_toc_body_gate_when_topology_authority_is_present() -> None:
+    document_profile = SimpleNamespace(
+        max_formatting_diagnostics=5,
+        max_unmapped_source_paragraphs=0,
+        max_unmapped_target_paragraphs=3,
+        max_heading_level_drift=1,
+        min_text_similarity=0.95,
+        require_numbered_lists_preserved=False,
+        require_nonempty_output=False,
+        forbid_heading_only_collapse=False,
+        require_toc_detected=True,
+        require_pdf_conversion=False,
+        require_no_bullet_headings=False,
+        require_no_toc_body_concat=True,
+        require_translation_domain=None,
+    )
+    metrics = {
+        "formatting_diagnostics_count": 0,
+        "max_unmapped_source_paragraphs": 0,
+        "max_unmapped_target_paragraphs": 0,
+        "heading_level_drift": 0,
+        "text_similarity": 0.99,
+        "heading_only_output_detected": False,
+        "source_toc_detected": True,
+        "output_toc_detected": False,
+        "structure_repair_bounded_toc_regions": 0,
+        "source_toc_region_count": 0,
+        "effective_source_toc_region_count": 0,
+        "toc_body_concat_detected": False,
+        "toc_body_concat_markdown_detected": True,
+        "toc_body_concat_structure_detected": False,
+        "toc_body_concat_gate_source": "topology_projection",
+        "structure_repair_toc_body_boundary_repairs": 0,
+        "document_map_toc_region_count": 1,
+        "topology_toc_entry_count": 2,
+        "topology_split_compound_toc_operation_count": 1,
+        "document_map_compound_toc_split_hint_count": 1,
+    }
+    output_artifacts = {"output_docx_openable": True, "output_visible_text_chars": 100}
+
+    checks = real_document_validation_structural._build_structural_checks(
+        document_profile=cast(Any, document_profile),
+        result="succeeded",
+        metrics=metrics,
+        output_artifacts=output_artifacts,
+    )
+
+    by_name = {check["name"]: check for check in checks}
+    assert by_name["no_toc_body_concat_required"]["passed"] is True
+    assert by_name["no_toc_body_concat_required"]["toc_body_concat_gate_source"] == "topology_projection"
+    assert by_name["no_toc_body_concat_required"]["toc_body_concat_markdown_detected"] is True
+    assert by_name["no_toc_body_concat_required"]["toc_body_concat_structure_detected"] is False
+
+
+def test_build_structural_checks_accepts_document_map_and_topology_toc_authority() -> None:
+    document_profile = SimpleNamespace(
+        max_formatting_diagnostics=5,
+        max_unmapped_source_paragraphs=0,
+        max_unmapped_target_paragraphs=3,
+        max_heading_level_drift=1,
+        min_text_similarity=0.95,
+        require_numbered_lists_preserved=False,
+        require_nonempty_output=False,
+        forbid_heading_only_collapse=False,
+        require_toc_detected=True,
+        require_pdf_conversion=False,
+        require_no_bullet_headings=False,
+        require_no_toc_body_concat=False,
+        require_translation_domain=None,
+    )
+    metrics = {
+        "formatting_diagnostics_count": 0,
+        "max_unmapped_source_paragraphs": 0,
+        "max_unmapped_target_paragraphs": 0,
+        "heading_level_drift": 0,
+        "text_similarity": 0.99,
+        "heading_only_output_detected": False,
+        "source_toc_detected": False,
+        "output_toc_detected": False,
+        "structure_repair_bounded_toc_regions": 0,
+        "source_toc_region_count": 0,
+        "effective_source_toc_region_count": 0,
+        "document_map_toc_detected": True,
+        "document_map_toc_region_count": 1,
+        "topology_toc_entry_count": 2,
+    }
+    output_artifacts = {"output_docx_openable": True, "output_visible_text_chars": 100}
+
+    checks = real_document_validation_structural._build_structural_checks(
+        document_profile=cast(Any, document_profile),
+        result="succeeded",
+        metrics=metrics,
+        output_artifacts=output_artifacts,
+    )
+
+    by_name = {check["name"]: check for check in checks}
+    assert by_name["toc_detected_required"]["passed"] is True
+    assert by_name["toc_detected_required"]["document_map_toc_region_count"] == 1
+    assert by_name["toc_detected_required"]["topology_toc_entry_count"] == 2
+
+
 def test_structural_passthrough_surfaces_structure_repair_and_event_metrics(tmp_path, monkeypatch) -> None:
     project_root = tmp_path / "project-root"
     source_dir = project_root / "tests" / "sources"
@@ -1958,6 +2088,397 @@ def test_apply_prepared_metric_fields_uses_explicit_unknown_when_statuses_missin
 
     assert metrics["quality_gate_status"] == "unknown"
     assert metrics["readiness_status"] == "unknown"
+
+
+def test_apply_prepared_snapshot_and_metric_fields_surface_document_map_and_topology_toc_authority() -> None:
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=DocumentMapTocRegion(
+            start_logical_index=0,
+            end_logical_index=9,
+            header_logical_index=0,
+            entries=(
+                DocumentMapTocEntry(
+                    title="8 Strategies for Governments",
+                    target_level=2,
+                    candidate_body_logical_index=10,
+                    confidence="high",
+                ),
+                DocumentMapTocEntry(
+                    title="10 Truth and Consequences: Lessons Learned",
+                    target_level=2,
+                    candidate_body_logical_index=161,
+                    confidence="high",
+                ),
+            ),
+            confidence="high",
+        ),
+        outline=(),
+        paragraph_anchors={
+            0: DocumentMapAnchor(role="toc_header", heading_level=None, confidence="high"),
+            8: DocumentMapAnchor(role="toc_entry", heading_level=None, confidence="high"),
+            9: DocumentMapAnchor(role="toc_entry", heading_level=None, confidence="high"),
+        },
+        review_zones=(),
+        split_hints=(),
+        sampled=False,
+        sampled_logical_indexes=(0, 8, 9),
+    )
+    projection = DocumentTopologyProjection(
+        cache_key="topology-key",
+        document_map_cache_key="document-map-key",
+        projected_units=(
+            StructuralUnit(
+                unit_type="toc_entry",
+                logical_indexes=(8,),
+                canonical_text="10 Truth and Consequences: Lessons Learned",
+                role="toc_entry",
+                heading_level=None,
+                confidence="high",
+                authority="document_map_toc",
+                evidence=("bounded_toc_region", "one_to_one_toc_entry_match", "toc_entry"),
+            ),
+            StructuralUnit(
+                unit_type="toc_entry",
+                logical_indexes=(8,),
+                canonical_text="11 Governance and We, the Citizens: An Ancient Future?",
+                role="toc_entry",
+                heading_level=None,
+                confidence="high",
+                authority="document_map_toc",
+                evidence=("bounded_toc_region", "one_to_one_toc_entry_match", "toc_entry"),
+            ),
+        ),
+    )
+    prepared = SimpleNamespace(
+        document_map=document_map,
+        document_map_status="ai",
+        document_map_status_reason="",
+        document_topology_projection=projection,
+        document_topology_projection_status="built",
+        document_topology_projection_status_reason="",
+        quality_gate_status="pass",
+        quality_gate_reasons=(),
+        structure_validation_report=SimpleNamespace(readiness_status="ready_with_warnings", readiness_reasons=()),
+        structure_recognition_summary=SimpleNamespace(
+            ai_first_degraded=False,
+            fallback_stage="",
+            fallback_reason="",
+            document_map_present=True,
+        ),
+    )
+
+    snapshot = real_document_validation_structural._build_preparation_diagnostic_defaults([])
+    metrics: dict[str, object] = {"toc_body_concat_markdown_detected": True, "toc_body_concat_detected": True}
+
+    real_document_validation_structural._apply_prepared_snapshot_fields(snapshot, prepared)
+    real_document_validation_structural._apply_prepared_metric_fields(metrics, prepared)
+
+    assert snapshot["bounded_toc_region_count"] == 1
+    assert snapshot["toc_header_count"] == 1
+    assert snapshot["toc_entry_count"] == 2
+    assert snapshot["toc_body_concat_gate_source"] == "topology_projection"
+    assert snapshot["toc_body_concat_structure_detected"] is False
+    assert metrics["document_map_toc_detected"] is True
+    assert metrics["document_map_toc_region_count"] == 1
+    assert metrics["topology_toc_entry_count"] == 2
+    assert metrics["toc_body_concat_markdown_detected"] is True
+    assert metrics["toc_body_concat_structure_detected"] is False
+    assert metrics["toc_body_concat_gate_source"] == "topology_projection"
+    assert metrics["toc_body_concat_detected"] is False
+
+
+def test_derive_toc_body_concat_gate_fields_falls_back_to_legacy_markdown_without_authoritative_projection() -> None:
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=DocumentMapTocRegion(
+            start_logical_index=0,
+            end_logical_index=9,
+            header_logical_index=0,
+            entries=(),
+            confidence="high",
+        ),
+        outline=(),
+        paragraph_anchors={},
+        review_zones=(),
+        split_hints=(),
+        sampled=False,
+        sampled_logical_indexes=(0,),
+    )
+    projection = DocumentTopologyProjection(
+        cache_key="topology-low-confidence",
+        projected_units=(
+            StructuralUnit(
+                unit_type="toc_entry",
+                logical_indexes=(8,),
+                canonical_text="10 Truth and Consequences",
+                role="toc_entry",
+                heading_level=None,
+                confidence="medium",
+                authority="document_map_toc",
+            ),
+        ),
+    )
+
+    fields = real_document_validation_structural._derive_toc_body_concat_gate_fields(
+        document_map=document_map,
+        topology_projection=projection,
+        markdown_detected=True,
+    )
+
+    assert fields["toc_body_concat_gate_source"] == "legacy_markdown"
+    assert fields["toc_body_concat_detected"] is True
+    assert fields["toc_body_concat_structure_detected"] is False
+
+
+def test_has_toc_body_concat_structure_ignores_authoritative_compound_toc_split_projection() -> None:
+    projection = DocumentTopologyProjection(
+        cache_key="topology-split-ok",
+        operations=(
+            DocumentTopologyOperation(
+                op="split_compound_toc_entries",
+                logical_indexes=(8,),
+                canonical_text="10 Truth and Consequences | 11 Governance and We, the Citizens",
+                authority="document_map_toc",
+                confidence="high",
+                evidence=("bounded_toc_region",),
+            ),
+        ),
+        projected_units=(
+            StructuralUnit(
+                unit_type="toc_entry",
+                logical_indexes=(8,),
+                canonical_text="10 Truth and Consequences",
+                role="toc_entry",
+                heading_level=None,
+                confidence="high",
+                authority="document_map_toc",
+            ),
+            StructuralUnit(
+                unit_type="toc_entry",
+                logical_indexes=(8,),
+                canonical_text="11 Governance and We, the Citizens",
+                role="toc_entry",
+                heading_level=None,
+                confidence="high",
+                authority="document_map_toc",
+            ),
+        ),
+    )
+
+    assert real_document_validation_structural.has_toc_body_concat_structure(projection) is False
+
+
+def test_derive_unit_aware_unmapped_fields_collapses_merged_source_fragments_to_one_unit() -> None:
+    source_paragraphs = [
+        ParagraphUnit(text="Governance and We,", role="heading", paragraph_id="p0000", source_index=0, logical_index=10),
+        ParagraphUnit(text="the Citizens", role="heading", paragraph_id="p0001", source_index=1, logical_index=11),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-merged-heading",
+        projected_units=(
+            StructuralUnit(
+                unit_type="chapter_heading",
+                logical_indexes=(10, 11),
+                canonical_text="Governance and We, the Citizens",
+                role="heading",
+                heading_level=1,
+                confidence="high",
+                authority="document_map_outline",
+            ),
+        ),
+    )
+    fields = real_document_validation_structural._derive_unit_aware_unmapped_fields(
+        source_paragraphs=source_paragraphs,
+        topology_projection=projection,
+        formatting_payload={
+            "unmapped_source_ids": ["p0000", "p0001"],
+            "unmapped_target_indexes": [],
+        },
+        generated_paragraph_registry=None,
+    )
+
+    assert fields["structure_unit_unmapped_source_count"] == 1
+    assert fields["unit_unmapped_source_gate_source"] == "topology_unit"
+
+
+def test_derive_unit_aware_unmapped_fields_counts_split_units_on_shared_logical_index_distinctly() -> None:
+    source_paragraphs = [
+        ParagraphUnit(text="10 Truth... 11 Governance...", role="body", paragraph_id="p0008", source_index=8, logical_index=8),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-split-toc-entry",
+        projected_units=(
+            StructuralUnit(
+                unit_type="toc_entry",
+                logical_indexes=(8,),
+                canonical_text="10 Truth and Consequences",
+                role="toc_entry",
+                heading_level=None,
+                confidence="high",
+                authority="document_map_toc",
+            ),
+            StructuralUnit(
+                unit_type="toc_entry",
+                logical_indexes=(8,),
+                canonical_text="11 Governance and We, the Citizens",
+                role="toc_entry",
+                heading_level=None,
+                confidence="high",
+                authority="document_map_toc",
+            ),
+        ),
+    )
+    fields = real_document_validation_structural._derive_unit_aware_unmapped_fields(
+        source_paragraphs=source_paragraphs,
+        topology_projection=projection,
+        formatting_payload={
+            "unmapped_source_ids": ["p0008"],
+            "unmapped_target_indexes": [],
+        },
+        generated_paragraph_registry=None,
+    )
+
+    assert fields["structure_unit_unmapped_source_count"] == 2
+    assert fields["unit_unmapped_source_gate_source"] == "topology_unit"
+
+
+def test_derive_unit_aware_unmapped_fields_collapses_unmapped_targets_by_aligned_topology_unit() -> None:
+    source_paragraphs = [
+        ParagraphUnit(text="Governance and We,", role="heading", paragraph_id="p0000", source_index=0, logical_index=10),
+        ParagraphUnit(text="the Citizens", role="heading", paragraph_id="p0001", source_index=1, logical_index=11),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-target-collapse",
+        projected_units=(
+            StructuralUnit(
+                unit_type="chapter_heading",
+                logical_indexes=(10, 11),
+                canonical_text="Governance and We, the Citizens",
+                role="heading",
+                heading_level=1,
+                confidence="high",
+                authority="document_map_outline",
+            ),
+        ),
+    )
+    formatting_payload = {
+        "unmapped_source_ids": [],
+        "unmapped_target_indexes": [0, 1],
+        "target_registry": [
+            {"target_index": 0, "mapped": False, "text_preview": "Governance and We,"},
+            {"target_index": 1, "mapped": False, "text_preview": "the Citizens"},
+        ],
+    }
+    generated_registry = [
+        {"paragraph_id": "p0000", "text": "# Governance and We,"},
+        {"paragraph_id": "p0001", "text": "# the Citizens"},
+    ]
+
+    fields = real_document_validation_structural._derive_unit_aware_unmapped_fields(
+        source_paragraphs=source_paragraphs,
+        topology_projection=projection,
+        formatting_payload=formatting_payload,
+        generated_paragraph_registry=generated_registry,
+    )
+
+    assert fields["structure_unit_unmapped_target_count"] == 1
+    assert fields["unit_unmapped_target_gate_source"] == "topology_unit"
+
+
+def test_derive_unit_aware_unmapped_fields_infers_single_unmapped_target_from_source_registry_interval() -> None:
+    source_paragraphs = [
+        ParagraphUnit(text="Intro", role="body", paragraph_id="p-prev", source_index=0, logical_index=9),
+        ParagraphUnit(text="Governance and We,", role="heading", paragraph_id="p0000", source_index=1, logical_index=10),
+        ParagraphUnit(text="the Citizens", role="heading", paragraph_id="p0001", source_index=2, logical_index=11),
+        ParagraphUnit(text="An Ancient Future?", role="heading", paragraph_id="p0002", source_index=3, logical_index=12),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-target-interval-collapse",
+        projected_units=(
+            StructuralUnit(
+                unit_type="chapter_heading",
+                logical_indexes=(10, 11, 12),
+                canonical_text="Governance and We, the Citizens An Ancient Future?",
+                role="heading",
+                heading_level=1,
+                confidence="high",
+                authority="document_map_outline",
+            ),
+        ),
+    )
+    formatting_payload = {
+        "unmapped_source_ids": ["p0000", "p0001"],
+        "unmapped_target_indexes": [1],
+        "source_registry": [
+            {"paragraph_id": "p-prev", "mapped_target_index": 0},
+            {"paragraph_id": "p0000", "mapped_target_index": None},
+            {"paragraph_id": "p0001", "mapped_target_index": None},
+            {"paragraph_id": "p0002", "mapped_target_index": 2},
+        ],
+        "target_registry": [
+            {"target_index": 0, "mapped": True, "text_preview": "Intro"},
+            {"target_index": 1, "mapped": False, "text_preview": "chapter eleven governance and we,"},
+            {"target_index": 2, "mapped": True, "text_preview": "An Ancient Future?"},
+        ],
+    }
+
+    fields = real_document_validation_structural._derive_unit_aware_unmapped_fields(
+        source_paragraphs=source_paragraphs,
+        topology_projection=projection,
+        formatting_payload=formatting_payload,
+        generated_paragraph_registry=None,
+    )
+
+    assert fields["structure_unit_unmapped_target_count"] == 1
+    assert fields["unit_unmapped_target_gate_source"] == "topology_unit"
+
+
+def test_build_structural_checks_prefers_topology_unit_unmapped_counts_when_available() -> None:
+    document_profile = SimpleNamespace(
+        max_formatting_diagnostics=5,
+        max_unmapped_source_paragraphs=1,
+        max_unmapped_target_paragraphs=1,
+        max_heading_level_drift=1,
+        min_text_similarity=0.95,
+        require_numbered_lists_preserved=False,
+        require_nonempty_output=False,
+        forbid_heading_only_collapse=False,
+        require_toc_detected=False,
+        require_pdf_conversion=False,
+        require_no_bullet_headings=False,
+        require_no_toc_body_concat=False,
+        require_translation_domain=None,
+    )
+    metrics = {
+        "formatting_diagnostics_count": 0,
+        "max_unmapped_source_paragraphs": 2,
+        "max_unmapped_target_paragraphs": 2,
+        "structure_unit_unmapped_source_count": 1,
+        "structure_unit_unmapped_target_count": 1,
+        "unit_unmapped_source_gate_source": "topology_unit",
+        "unit_unmapped_target_gate_source": "topology_unit",
+        "heading_level_drift": 0,
+        "text_similarity": 0.99,
+        "heading_only_output_detected": False,
+    }
+
+    checks = real_document_validation_structural._build_structural_checks(
+        document_profile=cast(Any, document_profile),
+        result="succeeded",
+        metrics=metrics,
+        output_artifacts={"output_docx_openable": True, "output_visible_text_chars": 100},
+    )
+
+    by_name = {check["name"]: check for check in checks}
+    assert by_name["unmapped_source_threshold"]["passed"] is True
+    assert by_name["unmapped_source_threshold"]["actual"] == 1
+    assert by_name["unmapped_source_threshold"]["paragraph_actual"] == 2
+    assert by_name["unmapped_source_threshold"]["unmapped_gate_source"] == "topology_unit"
+    assert by_name["unmapped_target_threshold"]["passed"] is True
+    assert by_name["unmapped_target_threshold"]["actual"] == 1
+    assert by_name["unmapped_target_threshold"]["paragraph_actual"] == 2
+    assert by_name["unmapped_target_threshold"]["unmapped_gate_source"] == "topology_unit"
 
 
 def test_structural_passthrough_failure_includes_preparation_diagnostic_snapshot(tmp_path, monkeypatch) -> None:

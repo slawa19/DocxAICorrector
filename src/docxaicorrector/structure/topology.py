@@ -293,6 +293,7 @@ def _build_binding_split_units(
 ) -> tuple[list[DocumentTopologyOperation], list[StructuralUnit]]:
     operations: list[DocumentTopologyOperation] = []
     projected_units: list[StructuralUnit] = []
+    resolved_compound_toc_split_indexes: set[int] = set()
     for split_hint in document_map.split_hints or ():
         split_result = _resolve_page_artifact_heading_split(
             split_hint=split_hint,
@@ -337,7 +338,214 @@ def _build_binding_split_units(
                 evidence=("split_hint", heading_authority_evidence, "local_heading_neighborhood"),
             )
         )
+    for split_hint in document_map.split_hints or ():
+        split_result = _resolve_compound_toc_entry_split(
+            split_hint=split_hint,
+            paragraphs=paragraphs,
+            position_by_logical_index=position_by_logical_index,
+            toc_region=document_map.toc_region,
+        )
+        if split_result is None:
+            continue
+        logical_index, canonical_titles, evidence = split_result
+        resolved_compound_toc_split_indexes.add(logical_index)
+        operations.append(
+            DocumentTopologyOperation(
+                op="split_compound_toc_entries",
+                logical_indexes=(logical_index,),
+                canonical_text=" | ".join(canonical_titles),
+                authority="document_map_split_hint",
+                confidence="high",
+                evidence=evidence,
+            )
+        )
+        projected_units.extend(
+            StructuralUnit(
+                unit_type="toc_entry",
+                logical_indexes=(logical_index,),
+                canonical_text=canonical_title,
+                role="toc_entry",
+                heading_level=None,
+                confidence="high",
+                authority="document_map_split_hint",
+                evidence=evidence,
+            )
+            for canonical_title in canonical_titles
+        )
+
+    implicit_toc_region = document_map.toc_region
+    if _is_high_confidence_bounded_toc_region(implicit_toc_region):
+        for paragraph in paragraphs:
+            logical_index = int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", -1)))
+            if logical_index in resolved_compound_toc_split_indexes:
+                continue
+            split_result = _resolve_implicit_compound_toc_entry_split(
+                paragraph=paragraph,
+                toc_region=implicit_toc_region,
+            )
+            if split_result is None:
+                continue
+            logical_index, canonical_titles = split_result
+            operations.append(
+                DocumentTopologyOperation(
+                    op="split_compound_toc_entries",
+                    logical_indexes=(logical_index,),
+                    canonical_text=" | ".join(canonical_titles),
+                    authority="document_map_toc",
+                    confidence="high",
+                    evidence=("bounded_toc_region", "one_to_one_toc_entry_match", "toc_entry"),
+                )
+            )
+            projected_units.extend(
+                StructuralUnit(
+                    unit_type="toc_entry",
+                    logical_indexes=(logical_index,),
+                    canonical_text=canonical_title,
+                    role="toc_entry",
+                    heading_level=None,
+                    confidence="high",
+                    authority="document_map_toc",
+                    evidence=("bounded_toc_region", "one_to_one_toc_entry_match", "toc_entry"),
+                )
+                for canonical_title in canonical_titles
+            )
     return operations, projected_units
+
+
+def _resolve_compound_toc_entry_split(
+    *,
+    split_hint: DocumentMapSplitHint,
+    paragraphs: list[ParagraphUnit],
+    position_by_logical_index: dict[int, int],
+    toc_region,
+) -> tuple[int, tuple[str, ...], tuple[str, ...]] | None:
+    if str(split_hint.split_kind or "").strip().lower() != "compound_toc_entries":
+        return None
+    if str(split_hint.confidence or "").strip().lower() != "high":
+        return None
+    if not _is_high_confidence_bounded_toc_region(toc_region):
+        return None
+    logical_index = int(split_hint.logical_index)
+    if not _logical_index_in_toc_region(logical_index, toc_region):
+        return None
+    position = position_by_logical_index.get(logical_index)
+    if position is None:
+        return None
+    paragraph_text = str(getattr(paragraphs[position], "text", "") or "").strip()
+    paragraph_tokens = _heading_tokens(paragraph_text)
+    if not paragraph_tokens:
+        return None
+    expected_parts = tuple(str(value or "").strip() for value in split_hint.expected_parts if str(value or "").strip())
+    if len(expected_parts) < 2:
+        return None
+    if not _titles_match_paragraph_tokens(paragraph_tokens, expected_parts):
+        return None
+    matched_region_titles = _match_high_confidence_toc_region_titles(paragraph_tokens=paragraph_tokens, toc_region=toc_region)
+    if not _same_title_sequence(expected_parts, matched_region_titles):
+        return None
+    evidence = ["split_hint", "bounded_toc_region", "toc_entry"]
+    evidence.append("one_to_one_toc_entry_match")
+    return logical_index, expected_parts, tuple(evidence)
+
+
+def _resolve_implicit_compound_toc_entry_split(
+    *,
+    paragraph: ParagraphUnit,
+    toc_region,
+) -> tuple[int, tuple[str, ...]] | None:
+    if not _is_high_confidence_bounded_toc_region(toc_region):
+        return None
+    logical_index = int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", -1)))
+    if not _logical_index_in_toc_region(logical_index, toc_region):
+        return None
+    paragraph_tokens = _heading_tokens(str(getattr(paragraph, "text", "") or "").strip())
+    if not paragraph_tokens:
+        return None
+    matched_titles = _match_high_confidence_toc_region_titles(paragraph_tokens=paragraph_tokens, toc_region=toc_region)
+    if len(matched_titles) < 2:
+        return None
+    return logical_index, matched_titles
+
+
+def _is_high_confidence_bounded_toc_region(toc_region) -> bool:
+    if toc_region is None:
+        return False
+    if str(getattr(toc_region, "confidence", "") or "").strip().lower() != "high":
+        return False
+    return int(getattr(toc_region, "start_logical_index", 0)) <= int(getattr(toc_region, "end_logical_index", -1))
+
+
+def _logical_index_in_toc_region(logical_index: int, toc_region) -> bool:
+    return int(getattr(toc_region, "start_logical_index", 0)) <= int(logical_index) <= int(
+        getattr(toc_region, "end_logical_index", -1)
+    )
+
+
+def _match_high_confidence_toc_region_titles(*, paragraph_tokens: list[str], toc_region) -> tuple[str, ...]:
+    cursor = 0
+    matched_titles: list[str] = []
+    for entry in getattr(toc_region, "entries", ()):
+        if str(getattr(entry, "confidence", "") or "").strip().lower() != "high":
+            continue
+        match = _find_title_token_match(paragraph_tokens, str(getattr(entry, "title", "") or ""), start=cursor)
+        if match is None:
+            continue
+        _, cursor = match
+        matched_titles.append(str(getattr(entry, "title", "") or "").strip())
+    return tuple(matched_titles) if len(matched_titles) >= 2 else ()
+
+
+def _titles_match_paragraph_tokens(paragraph_tokens: list[str], titles: tuple[str, ...]) -> bool:
+    cursor = 0
+    matched_count = 0
+    for title in titles:
+        match = _find_title_token_match(paragraph_tokens, title, start=cursor)
+        if match is None:
+            return False
+        _, cursor = match
+        matched_count += 1
+    return matched_count >= 2
+
+
+def _find_title_token_match(paragraph_tokens: list[str], title: str, *, start: int) -> tuple[int, int] | None:
+    best_match: tuple[int, int, int] | None = None
+    for variant in _title_token_variants(title):
+        position = _find_token_subsequence(paragraph_tokens, variant, start=start)
+        if position is None:
+            continue
+        candidate = (position, position + len(variant), len(variant))
+        if best_match is None or candidate[0] < best_match[0] or (candidate[0] == best_match[0] and candidate[2] > best_match[2]):
+            best_match = candidate
+    if best_match is None:
+        return None
+    return best_match[0], best_match[1]
+
+
+def _title_token_variants(title: str) -> tuple[list[str], ...]:
+    tokens = _heading_tokens(title)
+    if not tokens:
+        return ()
+    trimmed_tokens = _trim_heading_prefix(tokens)
+    variants = [tokens]
+    if trimmed_tokens and trimmed_tokens != tokens:
+        variants.append(trimmed_tokens)
+    return tuple(variants)
+
+
+def _find_token_subsequence(tokens: list[str], needle: list[str], *, start: int) -> int | None:
+    if not needle:
+        return None
+    max_start = len(tokens) - len(needle)
+    for position in range(max(0, int(start)), max_start + 1):
+        if tokens[position : position + len(needle)] == needle:
+            return position
+    return None
+
+
+def _same_title_sequence(left: tuple[str, ...], right: tuple[str, ...]) -> bool:
+    if len(left) != len(right):
+        return False
+    return all(_heading_tokens(left_title) == _heading_tokens(right_title) for left_title, right_title in zip(left, right, strict=False))
 
 
 def _resolve_page_artifact_heading_split(

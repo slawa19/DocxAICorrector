@@ -14,7 +14,7 @@ import docxaicorrector.structure.recognition as recognition_module
 import docxaicorrector.validation.structural as structural_validation
 from docxaicorrector.core.config import ModelRegistry, TextModelConfig
 from docxaicorrector.core.models import DocumentBlock
-from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, DocumentMapOutlineEntry, DocumentMapReviewZone, DocumentMapSplitHint, DocumentMapTocRegion
+from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, DocumentMapOutlineEntry, DocumentMapReviewZone, DocumentMapSplitHint, DocumentMapTocEntry, DocumentMapTocRegion
 from docxaicorrector.core.models import DocumentTopologyProjection, EmbeddedStructureHint, ParagraphClassification
 from docxaicorrector.core.models import ImageAsset, ImageVariantCandidate
 from docxaicorrector.core.models import LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport
@@ -516,6 +516,82 @@ def test_run_document_topology_projection_stage_writes_binding_split_payload_whe
     assert [unit["unit_type"] for unit in payload["projected_units"]] == ["page_artifact", "chapter_heading"]
 
 
+def test_run_document_topology_projection_stage_logs_compound_toc_split_operation_counts_when_enabled(monkeypatch, tmp_path):
+    paragraphs = [_build_paragraph(source_index=40, text="73 6 Strategies for Banking 95 7 Strategies for Business and Entrepreneurs")]
+    document_map = DocumentMap(
+        body_start_logical_index=141,
+        toc_region=DocumentMapTocRegion(
+            start_logical_index=35,
+            end_logical_index=42,
+            header_logical_index=35,
+            entries=(
+                DocumentMapTocEntry(
+                    title="6 Strategies for Banking",
+                    target_level=1,
+                    candidate_body_logical_index=141,
+                    confidence="high",
+                ),
+                DocumentMapTocEntry(
+                    title="7 Strategies for Business and Entrepreneurs",
+                    target_level=1,
+                    candidate_body_logical_index=159,
+                    confidence="high",
+                ),
+            ),
+            confidence="high",
+        ),
+        outline=(),
+        paragraph_anchors={},
+        review_zones=(),
+        split_hints=(
+            DocumentMapSplitHint(
+                logical_index=40,
+                split_kind="compound_toc_entries",
+                expected_parts=("6 Strategies for Banking", "7 Strategies for Business and Entrepreneurs"),
+                authority="document_map_toc",
+                confidence="high",
+                evidence=("split_hint",),
+            ),
+        ),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(40,),
+    )
+    artifact_dir = tmp_path / "document_topology"
+    captured_events: list[tuple[str, dict[str, object]]] = []
+
+    def _fake_log_event(level, event_id, message, **kwargs):
+        _ = level, message
+        captured_events.append((event_id, kwargs))
+
+    monkeypatch.setattr(preparation, "_DOCUMENT_TOPOLOGY_DEBUG_DIR", artifact_dir)
+    monkeypatch.setattr(preparation, "log_event", _fake_log_event)
+
+    projection, status, reason = preparation._run_document_topology_projection_stage(
+        paragraphs=paragraphs,
+        document_map=document_map,
+        app_config=_make_ai_first_config(
+            structure_recovery_topology_projection_enabled=True,
+            structure_recovery_topology_projection_binding_splits_enabled=True,
+            structure_recovery_topology_projection_save_debug_artifacts=True,
+        ),
+    )
+
+    assert projection is not None
+    assert status == "built"
+    assert reason == ""
+    artifact_path = artifact_dir / f"{projection.cache_key}.json"
+    assert artifact_path.exists()
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert [operation["op"] for operation in payload["operations"]] == ["split_compound_toc_entries"]
+    assert [unit["unit_type"] for unit in payload["projected_units"]] == ["toc_entry", "toc_entry"]
+    built_event = next(kwargs for event_id, kwargs in captured_events if event_id == "document_topology_projection_built")
+    assert built_event["operation_counts"] == {"split_compound_toc_entries": 1}
+    assert built_event["unit_type_counts"] == {"toc_entry": 2}
+
+
 def test_apply_prepared_snapshot_fields_exposes_document_topology_projection_from_prepared():
     projection = DocumentTopologyProjection(
         cache_key="topology-key",
@@ -595,6 +671,47 @@ def test_apply_topology_projection_snapshot_fallback_reconstructs_projection_fro
     assert snapshot["document_topology_projection_status_reason"] == ""
     assert len(snapshot["document_topology_projection"]["operations"]) == 1
     assert snapshot["document_topology_projection"]["projected_units"][0]["logical_indexes"] == (10, 11, 12, 13)
+
+
+def test_clone_prepared_document_preserves_document_topology_projection_fields():
+    projection = DocumentTopologyProjection(
+        cache_key="topology-key",
+        document_map_cache_key="document-map-key",
+        operations=(),
+        projected_units=(
+            StructuralUnit(
+                unit_type="toc_entry",
+                logical_indexes=(6,),
+                canonical_text="8 Strategies for Governments",
+                role="toc_entry",
+                heading_level=None,
+                confidence="high",
+                authority="document_map_toc",
+                evidence=("bounded_toc_region",),
+                unit_id="u_topology_test",
+            ),
+        ),
+    )
+    prepared = preparation.PreparedDocumentData(
+        source_text="",
+        paragraphs=[],
+        image_assets=[],
+        relations=[],
+        jobs=[],
+        prepared_source_key="original-key",
+        document_topology_projection=projection,
+        document_topology_projection_status="built",
+        document_topology_projection_status_reason="",
+    )
+
+    cloned = preparation._clone_prepared_document(prepared, "cached-key", cached=True)
+
+    assert cloned.document_topology_projection is not None
+    assert cloned.document_topology_projection is not projection
+    assert cloned.document_topology_projection.cache_key == "topology-key"
+    assert cloned.document_topology_projection.projected_units[0].unit_id == "u_topology_test"
+    assert cloned.document_topology_projection_status == "built"
+    assert cloned.document_topology_projection_status_reason == ""
 
 
 def _stub_single_block_preparation_builders(monkeypatch, *, source_text: str, job_text: str = "block"):

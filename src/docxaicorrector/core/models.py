@@ -599,9 +599,11 @@ class DocumentTopologyProjection:
         for unit in matching_units:
             if unit.role == "heading":
                 return unit
-        for unit in matching_units:
-            if unit.unit_type != "page_artifact":
-                return unit
+        non_page_artifact_units = tuple(unit for unit in matching_units if unit.unit_type != "page_artifact")
+        if len(non_page_artifact_units) == 1:
+            return non_page_artifact_units[0]
+        if len(non_page_artifact_units) > 1:
+            return None
         return matching_units[0]
 
 

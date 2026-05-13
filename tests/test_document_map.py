@@ -439,6 +439,44 @@ def test_parse_document_map_payload_rejects_unknown_split_kind():
         )
 
 
+def test_parse_document_map_payload_coerces_scalar_split_hint_expected_parts_to_single_item_tuple():
+    parsed = _parse_document_map_payload(
+        {
+            "body_start_logical_index": 0,
+            "toc_region": None,
+            "outline": [],
+            "paragraph_anchors": {},
+            "review_zones": [],
+            "split_hints": [
+                {
+                    "logical_index": 0,
+                    "split_kind": "compound_toc_entries",
+                    "expected_parts": "single part",
+                    "authority": "document_map_toc",
+                    "confidence": "high",
+                    "evidence": ["bounded_toc_region"],
+                }
+            ],
+        },
+        all_logical_indexes={0},
+        sampled_logical_indexes=(0,),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+    )
+
+    assert parsed.split_hints == (
+        DocumentMapSplitHint(
+            logical_index=0,
+            split_kind="compound_toc_entries",
+            expected_parts=("single part",),
+            authority="document_map_toc",
+            confidence="high",
+            evidence=("bounded_toc_region",),
+        ),
+    )
+
+
 def test_parse_document_map_payload_rejects_out_of_range_split_hint_logical_index():
     with pytest.raises(DocumentMapSchemaError, match="split_hints.logical_index references unknown logical index"):
         _parse_document_map_payload(
@@ -815,6 +853,106 @@ def test_build_document_map_recovers_missing_chapter_sequence_from_heading_gap(m
     ]
     assert [entry.title for entry in document_map.outline] == ["Chapter Eight", "Chapter Nine", "Chapter Ten"]
     assert [entry.logical_index for entry in document_map.outline] == [141, 159, 175]
+
+
+def test_build_document_map_recovers_compound_toc_entries_and_split_hint_from_bounded_toc_region(monkeypatch):
+    paragraphs = [
+        _paragraph(0, "Contents", structural_role="toc_header"),
+        _paragraph(
+            1,
+            "8 Strategies for Governments 141 9 Strategies for NGOs 159 10 Truth and Consequences 175",
+            structural_role="toc_entry",
+        ),
+        _paragraph(141, "STRATEGIES FOR GOVERNMENTS", role="heading", structural_role="body"),
+        _paragraph(159, "STRATEGIES FOR NGOS", role="heading", structural_role="body"),
+        _paragraph(175, "TRUTH AND CONSEQUENCES", role="heading", structural_role="body"),
+    ]
+
+    monkeypatch.setattr(
+        "docxaicorrector.structure.document_map._generate_document_map_from_ai",
+        lambda **kwargs: _parse_document_map_payload(
+            {
+                "body_start_logical_index": 141,
+                "toc_region": {
+                    "start_logical_index": 0,
+                    "end_logical_index": 1,
+                    "header_logical_index": 0,
+                    "entries": [],
+                    "confidence": "high",
+                },
+                "outline": [
+                    {
+                        "title": "STRATEGIES FOR GOVERNMENTS",
+                        "level": 1,
+                        "logical_index": 141,
+                        "confidence": "high",
+                        "evidence": ["toc_match"],
+                    },
+                    {
+                        "title": "STRATEGIES FOR NGOS",
+                        "level": 1,
+                        "logical_index": 159,
+                        "confidence": "high",
+                        "evidence": ["toc_match"],
+                    },
+                    {
+                        "title": "TRUTH AND CONSEQUENCES",
+                        "level": 1,
+                        "logical_index": 175,
+                        "confidence": "high",
+                        "evidence": ["toc_match"],
+                    },
+                ],
+                "paragraph_anchors": {
+                    "0": {"role": "body", "heading_level": None, "confidence": "low"},
+                    "1": {"role": "body", "heading_level": None, "confidence": "low"},
+                    "141": {"role": "heading", "heading_level": 1, "confidence": "high"},
+                    "159": {"role": "heading", "heading_level": 1, "confidence": "high"},
+                    "175": {"role": "heading", "heading_level": 1, "confidence": "high"},
+                },
+                "review_zones": [],
+                "split_hints": [],
+            },
+            all_logical_indexes={0, 1, 141, 159, 175},
+            sampled_logical_indexes=(0, 1, 141, 159, 175),
+            model_used="openrouter:test/document-map",
+            total_tokens_used=17,
+            processing_time_seconds=0.0,
+        ),
+    )
+
+    document_map = build_document_map(
+        paragraphs,
+        client=object(),
+        model="openrouter:test/document-map",
+        timeout=30.0,
+        max_input_paragraphs=20,
+        max_input_tokens=180000,
+    )
+
+    assert document_map.toc_region is not None
+    assert document_map.get_anchor(0) == DocumentMapAnchor(role="toc_header", heading_level=None, confidence="high")
+    assert document_map.get_anchor(1) == DocumentMapAnchor(role="toc_entry", heading_level=None, confidence="high")
+    assert [entry.title for entry in document_map.toc_region.entries] == [
+        "STRATEGIES FOR GOVERNMENTS",
+        "STRATEGIES FOR NGOS",
+        "TRUTH AND CONSEQUENCES",
+    ]
+    assert [entry.candidate_body_logical_index for entry in document_map.toc_region.entries] == [141, 159, 175]
+    assert document_map.split_hints == (
+        DocumentMapSplitHint(
+            logical_index=1,
+            split_kind="compound_toc_entries",
+            expected_parts=(
+                "STRATEGIES FOR GOVERNMENTS",
+                "STRATEGIES FOR NGOS",
+                "TRUTH AND CONSEQUENCES",
+            ),
+            authority="document_map_toc",
+            confidence="high",
+            evidence=("bounded_toc_region", "one_to_one_toc_entry_match", "toc_entry"),
+        ),
+    )
 
 
 def test_build_document_map_retries_once_after_schema_error(monkeypatch):

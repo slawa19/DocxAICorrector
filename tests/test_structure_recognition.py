@@ -186,6 +186,41 @@ def test_build_paragraph_descriptors_leave_split_paragraph_payload_unchanged_whe
     assert descriptors[0].unit_type is None
 
 
+def test_build_paragraph_descriptors_leave_multi_toc_unit_payload_unchanged_when_projection_cannot_pick_single_unit():
+    paragraphs = [_paragraph(source_index=40, text="73 6 Strategies for Banking 95 7 Strategies for Business and Entrepreneurs")]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-key",
+        document_map_cache_key="document-map-key",
+        projected_units=(
+            StructuralUnit(
+                unit_type="toc_entry",
+                logical_indexes=(40,),
+                canonical_text="6 Strategies for Banking",
+                role="toc_entry",
+                heading_level=None,
+                confidence="high",
+                authority="document_map_toc",
+                evidence=("bounded_toc_region", "one_to_one_toc_entry_match", "toc_entry"),
+            ),
+            StructuralUnit(
+                unit_type="toc_entry",
+                logical_indexes=(40,),
+                canonical_text="7 Strategies for Business and Entrepreneurs",
+                role="toc_entry",
+                heading_level=None,
+                confidence="high",
+                authority="document_map_toc",
+                evidence=("bounded_toc_region", "one_to_one_toc_entry_match", "toc_entry"),
+            ),
+        ),
+    )
+
+    descriptors = structure_recognition.build_paragraph_descriptors(paragraphs, topology_projection=projection)
+
+    assert "unit_id" not in descriptors[0].to_prompt_dict()
+    assert descriptors[0].unit_type is None
+
+
 def test_build_paragraph_descriptors_use_logical_index_for_duplicate_source_indexes():
     paragraphs = [
         _paragraph(source_index=7, text="ГЛАВА 1", heading_level=1, heading_source="explicit"),

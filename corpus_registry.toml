@@ -240,7 +240,7 @@ require_toc_detected = true
 require_pdf_conversion = true
 require_no_bullet_headings = true
 require_no_toc_body_concat = true
-default_run_profile = "ui-parity-translate-benchmark-advisory"
+default_run_profile = "ui-parity-translate-benchmark-topology-advisory"
 tags = ["pdf", "translation", "benchmark-only", "lietaer", "full-document"]
 provenance = "Benchmark-only full-document PDF profile for structure model comparison on the full Lietaer source."
 
@@ -276,6 +276,7 @@ image_mode = "safe"
 enable_paragraph_markers = false
 structure_recognition_mode = "always"
 structure_recovery_topology_projection_enabled = true
+structure_recovery_topology_projection_binding_splits_enabled = true
 repeat_count = 1
 
 [[run_profiles]]
@@ -317,6 +318,21 @@ target_language = "ru"
 audiobook_postprocess_enabled = false
 enable_paragraph_markers = true
 translation_output_quality_gate_policy = "advisory"
+repeat_count = 1
+
+[[run_profiles]]
+id = "ui-parity-translate-benchmark-topology-advisory"
+tier = "full"
+mode = "regression"
+processing_operation = "translate"
+source_language = "auto"
+target_language = "ru"
+audiobook_postprocess_enabled = false
+enable_paragraph_markers = true
+translation_output_quality_gate_policy = "advisory"
+structure_recognition_mode = "always"
+structure_recovery_topology_projection_enabled = true
+structure_recovery_topology_projection_binding_splits_enabled = true
 repeat_count = 1
 
 [[run_profiles]]
