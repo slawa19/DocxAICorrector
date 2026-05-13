@@ -588,12 +588,21 @@ class DocumentTopologyProjection:
     operations: tuple["DocumentTopologyOperation", ...] = ()
     projected_units: tuple["StructuralUnit", ...] = ()
 
-    def get_unit(self, logical_index: int) -> "StructuralUnit | None":
+    def get_units(self, logical_index: int) -> tuple["StructuralUnit", ...]:
         resolved_logical_index = int(logical_index)
-        for unit in self.projected_units:
-            if resolved_logical_index in unit.logical_indexes:
+        return tuple(unit for unit in self.projected_units if resolved_logical_index in unit.logical_indexes)
+
+    def get_unit(self, logical_index: int) -> "StructuralUnit | None":
+        matching_units = self.get_units(logical_index)
+        if not matching_units:
+            return None
+        for unit in matching_units:
+            if unit.role == "heading":
                 return unit
-        return None
+        for unit in matching_units:
+            if unit.unit_type != "page_artifact":
+                return unit
+        return matching_units[0]
 
 
 @dataclass

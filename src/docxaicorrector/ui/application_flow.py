@@ -92,8 +92,12 @@ class PreparedRunContext:
     structure_validation_report: object | None = None
     structure_recognition_mode: str = "off"
     structure_ai_attempted: bool = False
+    document_map: object | None = None
     document_map_status: str = "not_requested"
     document_map_status_reason: str = ""
+    document_topology_projection: object | None = None
+    document_topology_projection_status: str = "not_requested"
+    document_topology_projection_status_reason: str = ""
     quality_gate_status: str = "pass"
     quality_gate_reasons: tuple[str, ...] = ()
     translation_domain: str = "general"
@@ -446,8 +450,16 @@ def _build_prepared_run_context(*, uploaded_filename: str, uploaded_file_bytes: 
         structure_validation_report=getattr(prepared_document, "structure_validation_report", None),
         structure_recognition_mode=str(getattr(prepared_document, "structure_recognition_mode", "off") or "off"),
         structure_ai_attempted=bool(getattr(prepared_document, "structure_ai_attempted", False)),
+        document_map=getattr(prepared_document, "document_map", None),
         document_map_status=str(getattr(prepared_document, "document_map_status", "not_requested") or "not_requested"),
         document_map_status_reason=str(getattr(prepared_document, "document_map_status_reason", "") or ""),
+        document_topology_projection=getattr(prepared_document, "document_topology_projection", None),
+        document_topology_projection_status=str(
+            getattr(prepared_document, "document_topology_projection_status", "not_requested") or "not_requested"
+        ),
+        document_topology_projection_status_reason=str(
+            getattr(prepared_document, "document_topology_projection_status_reason", "") or ""
+        ),
         quality_gate_status=quality_gate_status,
         quality_gate_reasons=tuple(getattr(prepared_document, "quality_gate_reasons", ()) or ()),
         translation_domain=str(getattr(prepared_document, "translation_domain", "general") or "general"),

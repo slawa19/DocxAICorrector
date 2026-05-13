@@ -181,6 +181,39 @@ tags = ["pdf", "structure-recovery", "canonical-structural-diagnostic", "lietaer
 provenance = "Canonical first-20-pages PDF slice for AI-first structure-recovery diagnostics."
 
 [[documents]]
+id = "lietaer-pdf-chapter-region-core"
+source_path = "tests/sources/Rethinking-money-chapter-region-pages-10-11-and-156-217.pdf"
+artifact_prefix = "lietaer_pdf_chapter_region"
+output_basename = "Rethinking_money_chapter_region"
+structural_mode = "strict"
+min_paragraphs = 140
+has_headings = true
+min_headings = 4
+has_numbered_lists = false
+min_numbered_items = 0
+has_images = false
+min_images = 0
+has_tables = false
+min_tables = 0
+max_formatting_diagnostics = 8
+max_unmapped_source_paragraphs = 12
+max_unmapped_target_paragraphs = 6
+max_heading_level_drift = 2
+min_text_similarity = 0.94
+require_numbered_lists_preserved = false
+require_nonempty_output = true
+forbid_heading_only_collapse = true
+require_toc_detected = true
+require_pdf_conversion = true
+structural_run_profile = "structural-ai-first-default"
+structural_expected_result = "pass"
+structural_expected_failed_checks = []
+structural_optional_failed_checks = []
+default_run_profile = "ui-parity-translate-benchmark-advisory"
+tags = ["pdf", "structure-recovery", "chapter-region", "lietaer"]
+provenance = "Non-contiguous Lietaer PDF slice combining TOC pages 10-11 with body pages 156-217 to cover Chapter 8-11 late-book topology cases."
+
+[[documents]]
 id = "lietaer-pdf-full-benchmark"
 source_path = "tests/sources/Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne.pdf"
 artifact_prefix = "lietaer_pdf_full_benchmark"
@@ -242,6 +275,7 @@ mode = "regression"
 image_mode = "safe"
 enable_paragraph_markers = false
 structure_recognition_mode = "always"
+structure_recovery_topology_projection_enabled = true
 repeat_count = 1
 
 [[run_profiles]]

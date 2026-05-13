@@ -14,7 +14,7 @@ import docxaicorrector.structure.recognition as recognition_module
 import docxaicorrector.validation.structural as structural_validation
 from docxaicorrector.core.config import ModelRegistry, TextModelConfig
 from docxaicorrector.core.models import DocumentBlock
-from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, DocumentMapOutlineEntry, DocumentMapReviewZone, DocumentMapTocRegion
+from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, DocumentMapOutlineEntry, DocumentMapReviewZone, DocumentMapSplitHint, DocumentMapTocRegion
 from docxaicorrector.core.models import DocumentTopologyProjection, EmbeddedStructureHint, ParagraphClassification
 from docxaicorrector.core.models import ImageAsset, ImageVariantCandidate
 from docxaicorrector.core.models import LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport
@@ -461,6 +461,61 @@ def test_run_document_topology_projection_stage_writes_empty_projection_artifact
     assert payload["projected_units"] == []
 
 
+def test_run_document_topology_projection_stage_writes_binding_split_payload_when_enabled(monkeypatch, tmp_path):
+    paragraphs = [_build_paragraph(source_index=10, text="this page intentionally left blank chapter nine")]
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(
+            DocumentMapOutlineEntry(
+                title="Chapter Nine",
+                level=1,
+                logical_index=10,
+                confidence="high",
+                evidence=("outline_entry",),
+            ),
+        ),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        split_hints=(
+            DocumentMapSplitHint(
+                logical_index=10,
+                split_kind="page_artifact_heading",
+                expected_parts=("this page intentionally left blank", "chapter nine"),
+                authority="document_map_outline",
+                confidence="high",
+                evidence=("split_hint",),
+            ),
+        ),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+    artifact_dir = tmp_path / "document_topology"
+    monkeypatch.setattr(preparation, "_DOCUMENT_TOPOLOGY_DEBUG_DIR", artifact_dir)
+
+    projection, status, reason = preparation._run_document_topology_projection_stage(
+        paragraphs=paragraphs,
+        document_map=document_map,
+        app_config=_make_ai_first_config(
+            structure_recovery_topology_projection_enabled=True,
+            structure_recovery_topology_projection_binding_splits_enabled=True,
+            structure_recovery_topology_projection_save_debug_artifacts=True,
+        ),
+    )
+
+    assert projection is not None
+    assert status == "built"
+    assert reason == ""
+    artifact_path = artifact_dir / f"{projection.cache_key}.json"
+    assert artifact_path.exists()
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert [operation["op"] for operation in payload["operations"]] == ["split_page_artifact_from_heading"]
+    assert [unit["unit_type"] for unit in payload["projected_units"]] == ["page_artifact", "chapter_heading"]
+
+
 def test_apply_prepared_snapshot_fields_exposes_document_topology_projection_from_prepared():
     projection = DocumentTopologyProjection(
         cache_key="topology-key",
@@ -495,6 +550,51 @@ def test_apply_prepared_snapshot_fields_exposes_document_topology_projection_fro
     assert snapshot["document_topology_projection_status_reason"] == ""
     assert snapshot["document_topology_projection"]["cache_key"] == "topology-key"
     assert snapshot["document_topology_projection"]["projected_units"][0]["logical_indexes"] == (10, 11)
+
+
+def test_apply_topology_projection_snapshot_fallback_reconstructs_projection_from_prepared_document_map():
+    paragraphs = [
+        ParagraphUnit(text="11", role="body", structural_role="body", source_index=10, logical_index=10),
+        ParagraphUnit(text="Governance and We", role="body", structural_role="body", source_index=11, logical_index=11),
+        ParagraphUnit(text="the Citizens", role="body", structural_role="body", source_index=12, logical_index=12),
+        ParagraphUnit(text="An Ancient Future?", role="body", structural_role="body", source_index=13, logical_index=13),
+    ]
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(
+            DocumentMapOutlineEntry(
+                title="Governance and We the Citizens An Ancient Future",
+                level=1,
+                logical_index=10,
+                confidence="high",
+                evidence=("outline_entry",),
+            ),
+        ),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        sampled=False,
+        sampled_logical_indexes=(10, 11, 12, 13),
+    )
+    prepared = SimpleNamespace(
+        paragraphs=paragraphs,
+        document_map=document_map,
+        document_topology_projection=None,
+        document_topology_projection_status="not_requested",
+        document_topology_projection_status_reason="",
+    )
+
+    snapshot = structural_validation._build_preparation_diagnostic_defaults([])
+    structural_validation._apply_topology_projection_snapshot_fallback(
+        snapshot,
+        prepared,
+        app_config=_make_ai_first_config(structure_recovery_topology_projection_enabled=True),
+    )
+
+    assert snapshot["document_topology_projection_status"] == "built"
+    assert snapshot["document_topology_projection_status_reason"] == ""
+    assert len(snapshot["document_topology_projection"]["operations"]) == 1
+    assert snapshot["document_topology_projection"]["projected_units"][0]["logical_indexes"] == (10, 11, 12, 13)
 
 
 def _stub_single_block_preparation_builders(monkeypatch, *, source_text: str, job_text: str = "block"):

@@ -80,6 +80,7 @@ class RunProfile:
     keep_all_image_variants: bool | None = None
     structure_recognition_mode: str | None = None
     structure_recognition_enabled: bool | None = None
+    structure_recovery_topology_projection_enabled: bool | None = None
     translation_output_quality_gate_policy: str | None = None
     repeat_count: int = 1
 
@@ -239,11 +240,19 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         "keep_all_image_variants": run_profile.keep_all_image_variants,
         "structure_recognition_mode": run_profile.structure_recognition_mode,
         "structure_recognition_enabled": run_profile.structure_recognition_enabled,
+        "structure_recovery_topology_projection_enabled": getattr(
+            run_profile,
+            "structure_recovery_topology_projection_enabled",
+            None,
+        ),
     }
     overrides: dict[str, object] = {
         key: value for key, value in explicit_profile_overrides.items() if value is not None
     }
     app_config_overrides: dict[str, object] = {}
+    topology_projection_enabled = getattr(run_profile, "structure_recovery_topology_projection_enabled", None)
+    if topology_projection_enabled is not None:
+        app_config_overrides["structure_recovery_topology_projection_enabled"] = topology_projection_enabled
     if run_profile.translation_output_quality_gate_policy is not None:
         app_config_overrides["translation_output_quality_gate_policy"] = run_profile.translation_output_quality_gate_policy
         overrides["translation_output_quality_gate_policy"] = run_profile.translation_output_quality_gate_policy
@@ -374,6 +383,7 @@ def _build_run_profile(payload: Any) -> RunProfile:
         keep_all_image_variants=_optional_bool(payload, "keep_all_image_variants"),
         structure_recognition_mode=_optional_structure_recognition_mode(payload, "structure_recognition_mode"),
         structure_recognition_enabled=_optional_bool(payload, "structure_recognition_enabled"),
+        structure_recovery_topology_projection_enabled=_optional_bool(payload, "structure_recovery_topology_projection_enabled"),
         translation_output_quality_gate_policy=translation_output_quality_gate_policy,
         repeat_count=repeat_count,
     )

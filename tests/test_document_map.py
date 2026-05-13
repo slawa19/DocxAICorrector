@@ -475,19 +475,20 @@ def test_parse_document_map_payload_normalizes_review_zone_severity_synonyms():
             "outline": [],
             "paragraph_anchors": {},
             "review_zones": [
-                {"start_logical_index": 0, "end_logical_index": 0, "reason": "minor", "severity": "low"},
-                {"start_logical_index": 1, "end_logical_index": 1, "reason": "check", "severity": "medium"},
-                {"start_logical_index": 2, "end_logical_index": 2, "reason": "severe", "severity": "high"},
+                {"start_logical_index": 0, "end_logical_index": 0, "reason": "minor", "severity": "minor"},
+                {"start_logical_index": 1, "end_logical_index": 1, "reason": "minor", "severity": "low"},
+                {"start_logical_index": 2, "end_logical_index": 2, "reason": "check", "severity": "medium"},
+                {"start_logical_index": 3, "end_logical_index": 3, "reason": "severe", "severity": "high"},
             ],
         },
-        all_logical_indexes={0, 1, 2},
-        sampled_logical_indexes=(0, 1, 2),
+        all_logical_indexes={0, 1, 2, 3},
+        sampled_logical_indexes=(0, 1, 2, 3),
         model_used="openrouter:test/document-map",
         total_tokens_used=0,
         processing_time_seconds=0.0,
     )
 
-    assert [zone.severity for zone in document_map.review_zones] == ["info", "warning", "critical"]
+    assert [zone.severity for zone in document_map.review_zones] == ["info", "info", "warning", "critical"]
 
 
 def test_parse_document_map_payload_drops_outline_entries_inside_toc_region():

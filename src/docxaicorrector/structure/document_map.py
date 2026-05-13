@@ -43,6 +43,7 @@ DOCUMENT_MAP_SPLIT_HINT_SCHEMA_VERSION = 1
 _DOCUMENT_MAP_MALFORMED_DIR = RUN_DIR / "document_maps"
 _LOGGER = logging.getLogger(__name__)
 _REVIEW_ZONE_SEVERITY_SYNONYMS = {
+    "minor": "info",
     "low": "info",
     "medium": "warning",
     "high": "critical",

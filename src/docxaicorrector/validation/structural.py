@@ -37,6 +37,7 @@ from docxaicorrector.generation._generation import convert_markdown_to_docx_byte
 from docxaicorrector.image.reinsertion import reinsert_inline_images
 from docxaicorrector.core.models import ParagraphBoundaryNormalizationReport
 from docxaicorrector.processing.processing_service import clone_processing_service
+from docxaicorrector.structure.topology import apply_document_map_topology
 from docxaicorrector.validation.common import build_validation_event_logger, build_validation_runtime_config
 from docxaicorrector.validation.profiles import (
     DocumentProfile,
@@ -310,6 +311,11 @@ def run_structural_passthrough_validation(
         event_log=event_log,
     )
     _apply_prepared_snapshot_fields(preparation_diagnostic_snapshot, prepared)
+    _apply_topology_projection_snapshot_fallback(
+        preparation_diagnostic_snapshot,
+        prepared,
+        app_config=runtime_config,
+    )
     output_paragraphs = []
     output_image_assets = []
     if output_artifacts["output_docx_openable"]:
@@ -561,6 +567,39 @@ def _build_preparation_diagnostic_defaults(event_log: Sequence[Mapping[str, obje
     document_map_status_reason = str(
         _extract_event_context_value(event_log, "structure_processing_outcome", "document_map_status_reason") or ""
     ).strip()
+    topology_status = str(
+        _extract_event_context_value(event_log, "structure_processing_outcome", "document_topology_projection_status") or ""
+    ).strip()
+    topology_status_reason = str(
+        _extract_event_context_value(event_log, "structure_processing_outcome", "document_topology_projection_status_reason") or ""
+    ).strip()
+    topology_artifact_path = ""
+    for event in reversed(list(event_log)):
+        event_id = str(event.get("event_id") or "").strip()
+        if event_id not in {"document_topology_projection_built", "document_topology_projection_skipped"}:
+            continue
+        context = cast(Mapping[str, object], event.get("context") or {})
+        if not topology_status:
+            if event_id == "document_topology_projection_built":
+                topology_status = "built"
+            else:
+                reason = str(context.get("reason") or "").strip()
+                topology_status = "no_operations" if reason == "no_operations" else "skipped"
+                if not topology_status_reason:
+                    topology_status_reason = reason
+        topology_artifact_path = str(context.get("artifact_path") or "").strip()
+        if topology_artifact_path:
+            break
+    topology_projection = None
+    if topology_artifact_path:
+        artifact_path = Path(topology_artifact_path)
+        if not artifact_path.is_absolute():
+            artifact_path = (PROJECT_ROOT / artifact_path).resolve()
+        if artifact_path.exists():
+            try:
+                topology_projection = json.loads(artifact_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                topology_projection = None
     snapshot = {
         "paragraph_count": 0,
         "heading_count": 0,
@@ -575,9 +614,9 @@ def _build_preparation_diagnostic_defaults(event_log: Sequence[Mapping[str, obje
         "readiness_reasons": _extract_event_context_list(event_log, "structure_processing_outcome", "readiness_reasons"),
         "document_map_present": _extract_event_context_bool(event_log, "structure_processing_outcome", "document_map_present"),
         "outline_coverage_ratio": outline_coverage_ratio,
-        "document_topology_projection_status": "not_requested",
-        "document_topology_projection_status_reason": "",
-        "document_topology_projection": None,
+        "document_topology_projection_status": topology_status or "not_requested",
+        "document_topology_projection_status_reason": topology_status_reason,
+        "document_topology_projection": topology_projection,
         "front_matter_leaks": _extract_event_context_int_list(event_log, "reconciliation_report_saved", "front_matter_leaks"),
         "front_matter_body_advisories": _extract_event_context_int_list(
             event_log,
@@ -665,6 +704,37 @@ def _apply_prepared_snapshot_fields(snapshot: dict[str, object], prepared: objec
     if prepared_topology_projection is not None:
         snapshot["document_topology_projection"] = asdict(prepared_topology_projection)
     _apply_quality_gate_readiness_fallback(snapshot)
+    _normalize_snapshot_or_metric_statuses(snapshot)
+
+
+def _apply_topology_projection_snapshot_fallback(
+    snapshot: dict[str, object],
+    prepared: object,
+    *,
+    app_config: Mapping[str, Any],
+) -> None:
+    current_topology_status = str(snapshot.get("document_topology_projection_status") or "").strip().lower()
+    if current_topology_status not in {"", "not_requested"}:
+        return
+    if not bool(app_config.get("structure_recovery_enabled", False)):
+        return
+    if not bool(app_config.get("structure_recovery_topology_projection_enabled", False)):
+        return
+    paragraphs = list(getattr(prepared, "paragraphs", []) or [])
+    document_map = getattr(prepared, "document_map", None)
+    if not paragraphs or document_map is None:
+        return
+    try:
+        projection = apply_document_map_topology(
+            paragraphs,
+            document_map,
+            app_config=app_config,
+        )
+    except Exception:
+        return
+    snapshot["document_topology_projection"] = asdict(projection)
+    snapshot["document_topology_projection_status"] = "built" if projection.operations or projection.projected_units else "no_operations"
+    snapshot["document_topology_projection_status_reason"] = ""
     _normalize_snapshot_or_metric_statuses(snapshot)
 
 

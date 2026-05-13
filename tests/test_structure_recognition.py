@@ -140,6 +140,52 @@ def test_build_paragraph_descriptors_include_topology_unit_fields_only_when_proj
     assert with_projection[0].to_prompt_dict()["unit_member_count"] == 2
 
 
+def test_build_paragraph_descriptors_prefer_binding_heading_unit_when_projection_contains_page_artifact_split():
+    paragraphs = [_paragraph(source_index=10, text="this page intentionally left blank chapter nine")]
+    page_artifact_unit = StructuralUnit(
+        unit_type="page_artifact",
+        logical_indexes=(10,),
+        canonical_text="this page intentionally left blank",
+        role="body",
+        heading_level=None,
+        confidence="high",
+        authority="document_map_split_hint",
+        evidence=("split_hint", "page_artifact_phrase", "local_heading_neighborhood"),
+    )
+    heading_unit = StructuralUnit(
+        unit_type="chapter_heading",
+        logical_indexes=(10,),
+        canonical_text="Chapter Nine",
+        role="heading",
+        heading_level=1,
+        confidence="high",
+        authority="document_map_split_hint",
+        evidence=("split_hint", "outline_entry", "local_heading_neighborhood"),
+    )
+    projection = DocumentTopologyProjection(
+        cache_key="topology-key",
+        document_map_cache_key="document-map-key",
+        projected_units=(page_artifact_unit, heading_unit),
+    )
+
+    descriptors = structure_recognition.build_paragraph_descriptors(paragraphs, topology_projection=projection)
+
+    assert descriptors[0].unit_id == heading_unit.unit_id
+    assert descriptors[0].unit_type == "chapter_heading"
+    assert descriptors[0].unit_role == "heading"
+    assert descriptors[0].unit_heading_level == 1
+    assert descriptors[0].unit_canonical_text == "Chapter Nine"
+
+
+def test_build_paragraph_descriptors_leave_split_paragraph_payload_unchanged_when_projection_absent():
+    paragraphs = [_paragraph(source_index=10, text="this page intentionally left blank chapter nine")]
+
+    descriptors = structure_recognition.build_paragraph_descriptors(paragraphs)
+
+    assert "unit_id" not in descriptors[0].to_prompt_dict()
+    assert descriptors[0].unit_type is None
+
+
 def test_build_paragraph_descriptors_use_logical_index_for_duplicate_source_indexes():
     paragraphs = [
         _paragraph(source_index=7, text="ГЛАВА 1", heading_level=1, heading_source="explicit"),

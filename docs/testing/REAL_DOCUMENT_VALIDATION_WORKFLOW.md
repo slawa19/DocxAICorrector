@@ -42,14 +42,17 @@ Use this structure-scoped order instead:
 1. focused local tests for the directly touched structure module or preparation slice;
 2. `bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-first-20-structure-core`
 	as the default real-document PDF snapshot path;
-3. a full-tier validator only as a late checkpoint, and only when the defect is
+3. `bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-chapter-region-core`
+	for late-book topology regressions that live in the Chapter 8-11 composite-heading
+	and TOC area rather than in the first-20-pages slice;
+4. a full-tier validator only as a late checkpoint, and only when the defect is
 	already proven to live in final markdown/DOCX artifacts rather than in
 	preparation/structure artifacts.
 
 Corpus policy for this workflow:
 
 1. `lietaer-pdf-first-20-structure-core` (`tests/sources/Rethinking-money-first-20-pages.pdf`) is the canonical fast PDF slice for routine structure iteration.
-2. This single PDF slice is sufficient for the ordinary structure-recovery loop because it already contains front matter, TOC, and body headings.
+2. `lietaer-pdf-chapter-region-core` (`tests/sources/Rethinking-money-chapter-region-pages-10-11-and-156-217.pdf`) is the cheap non-contiguous proof slice for late-book Chapter 8-11 topology regressions that the first-20-pages slice cannot cover.
 3. `lietaer-core` is not the routine structure-recovery proof document for this workflow.
 4. `ui-parity-pdf-structural-recovery` is still a `full` tier translate profile with `structure_recognition_mode = "off"`; despite its name, it is not the default proof path for AI-first structure recognition.
 5. `tests/sources/The Value of Everything. Making and Taking in the Global Economy by Mariana Mazzucato (z-lib.org).pdf` exists in the repository, but it should not be treated as canonical structure evidence until a dedicated corpus entry with explicit structure expectations is registered.

@@ -145,6 +145,7 @@ def test_workflow_docs_reference_existing_registry_profiles_tasks_and_scripts() 
         "lietaer-core",
         "religion-wealth-core",
         "lietaer-pdf-first-20-structure-core",
+        "lietaer-pdf-chapter-region-core",
     }
     expected_run_profiles = {
         "ui-parity-default",
@@ -216,6 +217,16 @@ def test_end_times_pdf_structural_run_profile_is_generic_structural_recovery() -
 
 def test_lietaer_first20_structural_run_profile_is_ai_first_default() -> None:
     document_profile = REGISTRY.get_document_profile("lietaer-pdf-first-20-structure-core")
+    run_profile = _resolve_structural_run_profile(document_profile)
+
+    assert run_profile.id == "structural-ai-first-default"
+    assert document_profile.structural_expected_result == "pass"
+    assert document_profile.structural_expected_failed_checks == ()
+    assert document_profile.structural_optional_failed_checks == ()
+
+
+def test_lietaer_chapter_region_structural_run_profile_is_ai_first_default() -> None:
+    document_profile = REGISTRY.get_document_profile("lietaer-pdf-chapter-region-core")
     run_profile = _resolve_structural_run_profile(document_profile)
 
     assert run_profile.id == "structural-ai-first-default"
@@ -319,6 +330,8 @@ def test_build_preparation_diagnostic_defaults_includes_spec_acceptance_fields()
                     "document_map_status": "ai",
                     "document_map_status_reason": "",
                     "outline_coverage_ratio": 0.75,
+                    "document_topology_projection_status": "no_operations",
+                    "document_topology_projection_status_reason": "",
                 },
             },
             {
@@ -337,9 +350,50 @@ def test_build_preparation_diagnostic_defaults_includes_spec_acceptance_fields()
     assert snapshot["document_map_status"] == "ai"
     assert snapshot["document_map_status_reason"] == ""
     assert snapshot["outline_coverage_ratio"] == 0.75
+    assert snapshot["document_topology_projection_status"] == "no_operations"
+    assert snapshot["document_topology_projection_status_reason"] == ""
     assert snapshot["front_matter_leaks"] == [1, 3]
     assert snapshot["front_matter_body_advisories"] == [2]
     assert snapshot["targeted_recall_invoked"] is True
+
+
+def test_build_preparation_diagnostic_defaults_loads_topology_projection_artifact_from_event_log(tmp_path, monkeypatch) -> None:
+    artifact_path = tmp_path / "document_topology" / "projection.json"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "operations": [{"op": "merge_heading_continuation", "logical_indexes": [10, 11]}],
+                "projected_units": [{"unit_id": "u_test", "logical_indexes": [10, 11]}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(real_document_validation_structural, "PROJECT_ROOT", tmp_path)
+
+    snapshot = real_document_validation_structural._build_preparation_diagnostic_defaults(
+        [
+            {
+                "event_id": "structure_processing_outcome",
+                "context": {
+                    "document_topology_projection_status": "built",
+                },
+            },
+            {
+                "event_id": "document_topology_projection_built",
+                "context": {
+                    "artifact_path": str(artifact_path),
+                },
+            },
+        ]
+    )
+
+    assert snapshot["document_topology_projection_status"] == "built"
+    assert snapshot["document_topology_projection"] == {
+        "operations": [{"op": "merge_heading_continuation", "logical_indexes": [10, 11]}],
+        "projected_units": [{"unit_id": "u_test", "logical_indexes": [10, 11]}],
+    }
 
 
 def test_build_structural_metrics_uses_flagged_layout_cleanup_counts_for_signal_mode() -> None:
@@ -481,6 +535,65 @@ def test_runtime_resolution_applies_translation_quality_gate_policy_override() -
     assert resolution.overrides["translation_output_quality_gate_policy"] == "advisory"
     assert resolution.app_config_overrides["translation_output_quality_gate_policy"] == "advisory"
     assert applied_config["translation_output_quality_gate_policy"] == "advisory"
+
+
+def test_runtime_resolution_applies_topology_projection_override() -> None:
+    app_config = SimpleNamespace(
+        models=SimpleNamespace(
+            text=SimpleNamespace(
+                default="gpt-5.4-mini",
+                options=("gpt-5.4-mini",),
+            )
+        ),
+        to_dict=lambda: {
+            "models": SimpleNamespace(
+                text=SimpleNamespace(
+                    default="gpt-5.4-mini",
+                    options=("gpt-5.4-mini",),
+                )
+            ),
+            "model": "gpt-5.4",
+            "chunk_size": 6000,
+            "max_retries": 3,
+            "image_mode_default": "safe",
+            "processing_operation_default": "edit",
+            "source_language_default": "en",
+            "target_language_default": "ru",
+            "translation_domain_default": "general",
+            "audiobook_postprocess_default": False,
+            "enable_paragraph_markers": True,
+            "keep_all_image_variants": False,
+            "structure_recognition_mode": "off",
+            "structure_recognition_enabled": False,
+            "structure_recovery_topology_projection_enabled": False,
+        },
+        model="gpt-5.4",
+        chunk_size=6000,
+        max_retries=3,
+        image_mode_default="safe",
+        processing_operation_default="edit",
+        source_language_default="en",
+        target_language_default="ru",
+        translation_domain_default="general",
+        audiobook_postprocess_default=False,
+        enable_paragraph_markers=True,
+        keep_all_image_variants=False,
+        structure_recognition_mode="off",
+        structure_recognition_enabled=False,
+    )
+    run_profile = validation_profiles.RunProfile(
+        id="structural-ai-first-default",
+        tier="structural",
+        structure_recognition_mode="always",
+        structure_recovery_topology_projection_enabled=True,
+    )
+
+    resolution = validation_profiles.resolve_runtime_resolution(app_config, run_profile)
+    applied_config = validation_profiles.apply_runtime_resolution_to_app_config(app_config, resolution)
+
+    assert resolution.overrides["structure_recovery_topology_projection_enabled"] is True
+    assert resolution.app_config_overrides["structure_recovery_topology_projection_enabled"] is True
+    assert applied_config["structure_recovery_topology_projection_enabled"] is True
 
 
 def _skip_if_legacy_doc_conversion_unavailable(source_path: Path) -> None:
@@ -669,6 +782,45 @@ def test_structural_cli_uses_lietaer_first20_default_run_profile_and_prints_acce
         "outline_coverage_ratio": 1.0,
         "front_matter_leaks": [],
         "targeted_recall_invoked": False,
+        "quality_gate_status": "pass",
+    }
+
+
+def test_structural_cli_uses_lietaer_chapter_region_default_run_profile(capsys, monkeypatch) -> None:
+    captured = {}
+
+    def _fake_evaluate(document_profile, run_profile):
+        captured["document_profile_id"] = document_profile.id
+        captured["run_profile_id"] = run_profile.id
+        return {
+            "document_profile_id": document_profile.id,
+            "run_profile_id": run_profile.id,
+            "validation_tier": "structural",
+            "validation_execution_mode": "passthrough",
+            "passed": True,
+            "failed_checks": [],
+            "preparation_error": None,
+            "preparation_diagnostic_snapshot": {
+                "document_map_present": True,
+                "document_topology_projection_status": "built",
+                "quality_gate_status": "pass",
+            },
+        }
+
+    monkeypatch.setattr(real_document_validation_structural, "evaluate_structural_preparation_diagnostic", _fake_evaluate)
+
+    exit_code = real_document_validation_structural.main(["lietaer-pdf-chapter-region-core"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert captured == {
+        "document_profile_id": "lietaer-pdf-chapter-region-core",
+        "run_profile_id": "structural-ai-first-default",
+    }
+    assert payload["run_profile_id"] == "structural-ai-first-default"
+    assert payload["preparation_diagnostic_snapshot"] == {
+        "document_map_present": True,
+        "document_topology_projection_status": "built",
         "quality_gate_status": "pass",
     }
 
