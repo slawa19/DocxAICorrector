@@ -88,6 +88,11 @@ def test_load_app_config_applies_env_overrides_and_clamps(monkeypatch):
     assert app_config["structure_recovery_topology_projection_enabled"] is False
     assert app_config["structure_recovery_topology_projection_save_debug_artifacts"] is True
     assert app_config["structure_recovery_topology_projection_binding_splits_enabled"] is False
+    assert app_config["structure_recovery_topology_projection_layout_signals_enabled"] is False
+    assert app_config["structure_recovery_topology_projection_layout_signals_heading_ratio"] == 1.15
+    assert app_config["structure_recovery_topology_projection_layout_signals_short_line_chars"] == 80
+    assert app_config["structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt"] == 0.25
+    assert app_config["structure_recovery_topology_projection_layout_signals_min_tier_population"] == 2
     assert app_config["structure_recovery_reconciliation_targeted_enabled"] is False
     assert app_config["structure_recovery_reconciliation_targeted_threshold"] == 3
     assert app_config["structure_recovery_reconciliation_targeted_max_paragraphs"] == 60
@@ -156,6 +161,11 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
     assert app_config["structure_recovery_topology_projection_enabled"] is False
     assert app_config["structure_recovery_topology_projection_save_debug_artifacts"] is True
     assert app_config["structure_recovery_topology_projection_binding_splits_enabled"] is False
+    assert app_config["structure_recovery_topology_projection_layout_signals_enabled"] is False
+    assert app_config["structure_recovery_topology_projection_layout_signals_heading_ratio"] == 1.15
+    assert app_config["structure_recovery_topology_projection_layout_signals_short_line_chars"] == 80
+    assert app_config["structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt"] == 0.25
+    assert app_config["structure_recovery_topology_projection_layout_signals_min_tier_population"] == 2
     assert app_config["structure_validation_block_on_high_risk_noop"] is True
     assert app_config["relation_normalization_enabled"] is True
     assert app_config["relation_normalization_profile"] == "phase2_default"
@@ -303,12 +313,22 @@ def test_load_app_config_applies_topology_projection_env_overrides(monkeypatch):
     monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_ENABLED", "true")
     monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_SAVE_DEBUG_ARTIFACTS", "false")
     monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_BINDING_SPLITS_ENABLED", "true")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_LAYOUT_SIGNALS_ENABLED", "true")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_LAYOUT_SIGNALS_HEADING_RATIO", "5.0")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_LAYOUT_SIGNALS_SHORT_LINE_CHARS", "10")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_LAYOUT_SIGNALS_BASELINE_TOLERANCE_PT", "5.0")
+    monkeypatch.setenv("DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_LAYOUT_SIGNALS_MIN_TIER_POPULATION", "0")
 
     app_config = config.load_app_config()
 
     assert app_config["structure_recovery_topology_projection_enabled"] is True
     assert app_config["structure_recovery_topology_projection_save_debug_artifacts"] is False
     assert app_config["structure_recovery_topology_projection_binding_splits_enabled"] is True
+    assert app_config["structure_recovery_topology_projection_layout_signals_enabled"] is True
+    assert app_config["structure_recovery_topology_projection_layout_signals_heading_ratio"] == 2.0
+    assert app_config["structure_recovery_topology_projection_layout_signals_short_line_chars"] == 20
+    assert app_config["structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt"] == 2.0
+    assert app_config["structure_recovery_topology_projection_layout_signals_min_tier_population"] == 1
 
 
 def test_load_app_config_honors_audiobook_model_override_from_toml(monkeypatch, tmp_path):
@@ -480,6 +500,11 @@ def test_describe_provider_availability_reports_missing_key(monkeypatch):
         structure_recovery_topology_projection_enabled=False,
         structure_recovery_topology_projection_save_debug_artifacts=True,
         structure_recovery_topology_projection_binding_splits_enabled=False,
+        structure_recovery_topology_projection_layout_signals_enabled=False,
+        structure_recovery_topology_projection_layout_signals_heading_ratio=1.15,
+        structure_recovery_topology_projection_layout_signals_short_line_chars=80,
+        structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt=0.25,
+        structure_recovery_topology_projection_layout_signals_min_tier_population=2,
         structure_recovery_reconciliation_targeted_enabled=False,
         structure_recovery_reconciliation_targeted_threshold=3,
         structure_recovery_reconciliation_targeted_max_paragraphs=60,
@@ -621,6 +646,11 @@ def test_describe_provider_availability_loads_project_dotenv(monkeypatch):
         structure_recovery_topology_projection_enabled=False,
         structure_recovery_topology_projection_save_debug_artifacts=True,
         structure_recovery_topology_projection_binding_splits_enabled=False,
+        structure_recovery_topology_projection_layout_signals_enabled=False,
+        structure_recovery_topology_projection_layout_signals_heading_ratio=1.15,
+        structure_recovery_topology_projection_layout_signals_short_line_chars=80,
+        structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt=0.25,
+        structure_recovery_topology_projection_layout_signals_min_tier_population=2,
         structure_recovery_reconciliation_targeted_enabled=False,
         structure_recovery_reconciliation_targeted_threshold=3,
         structure_recovery_reconciliation_targeted_max_paragraphs=60,

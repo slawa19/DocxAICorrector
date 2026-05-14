@@ -381,12 +381,15 @@ def resolve_structure_recovery_settings(
     parse_config_bool_fn: Any,
     parse_choice_str_fn: Any,
     parse_config_int_fn: Any,
+    parse_config_float_fn: Any,
     parse_optional_config_str_fn: Any,
     parse_bool_env_fn: Any,
     parse_int_env_fn: Any,
+    parse_float_env_fn: Any,
     parse_choice_env_fn: Any,
     parse_optional_str_env_fn: Any,
     clamp_int_fn: Any,
+    clamp_float_fn: Any,
     structure_recovery_mode_values: tuple[str, ...],
     structure_recognition_min_confidence_values: tuple[str, ...],
 ) -> dict[str, Any]:
@@ -469,6 +472,19 @@ def resolve_structure_recovery_settings(
         "binding_splits_enabled",
         False,
     )
+    topology_projection_layout_signals_enabled = parse_config_bool_fn(topology_projection_config, "layout_signals_enabled", False)
+    topology_projection_layout_signals_heading_ratio = parse_config_float_fn(topology_projection_config, "layout_signals_heading_ratio", 1.15)
+    topology_projection_layout_signals_short_line_chars = parse_config_int_fn(topology_projection_config, "layout_signals_short_line_chars", 80)
+    topology_projection_layout_signals_baseline_tolerance_pt = parse_config_float_fn(
+        topology_projection_config,
+        "layout_signals_baseline_tolerance_pt",
+        0.25,
+    )
+    topology_projection_layout_signals_min_tier_population = parse_config_int_fn(
+        topology_projection_config,
+        "layout_signals_min_tier_population",
+        2,
+    )
 
     reconciliation_targeted_enabled = parse_config_bool_fn(reconciliation_config, "targeted_enabled", False)
     reconciliation_targeted_threshold = parse_config_int_fn(reconciliation_config, "targeted_threshold", 3)
@@ -550,6 +566,26 @@ def resolve_structure_recovery_settings(
         "DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_BINDING_SPLITS_ENABLED",
         topology_projection_binding_splits_enabled,
     )
+    topology_projection_layout_signals_enabled = parse_bool_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_LAYOUT_SIGNALS_ENABLED",
+        topology_projection_layout_signals_enabled,
+    )
+    topology_projection_layout_signals_heading_ratio = parse_float_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_LAYOUT_SIGNALS_HEADING_RATIO",
+        topology_projection_layout_signals_heading_ratio,
+    )
+    topology_projection_layout_signals_short_line_chars = parse_int_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_LAYOUT_SIGNALS_SHORT_LINE_CHARS",
+        topology_projection_layout_signals_short_line_chars,
+    )
+    topology_projection_layout_signals_baseline_tolerance_pt = parse_float_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_LAYOUT_SIGNALS_BASELINE_TOLERANCE_PT",
+        topology_projection_layout_signals_baseline_tolerance_pt,
+    )
+    topology_projection_layout_signals_min_tier_population = parse_int_env_fn(
+        "DOCX_AI_STRUCTURE_RECOVERY_TOPOLOGY_LAYOUT_SIGNALS_MIN_TIER_POPULATION",
+        topology_projection_layout_signals_min_tier_population,
+    )
 
     reconciliation_targeted_enabled = parse_bool_env_fn(
         "DOCX_AI_STRUCTURE_RECOVERY_RECONCILIATION_TARGETED_ENABLED",
@@ -612,6 +648,27 @@ def resolve_structure_recovery_settings(
         "structure_recovery_topology_projection_enabled": topology_projection_enabled,
         "structure_recovery_topology_projection_save_debug_artifacts": topology_projection_save_debug_artifacts,
         "structure_recovery_topology_projection_binding_splits_enabled": topology_projection_binding_splits_enabled,
+        "structure_recovery_topology_projection_layout_signals_enabled": topology_projection_layout_signals_enabled,
+        "structure_recovery_topology_projection_layout_signals_heading_ratio": clamp_float_fn(
+            topology_projection_layout_signals_heading_ratio,
+            minimum=1.05,
+            maximum=2.0,
+        ),
+        "structure_recovery_topology_projection_layout_signals_short_line_chars": clamp_int_fn(
+            topology_projection_layout_signals_short_line_chars,
+            minimum=20,
+            maximum=400,
+        ),
+        "structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt": clamp_float_fn(
+            topology_projection_layout_signals_baseline_tolerance_pt,
+            minimum=0.0,
+            maximum=2.0,
+        ),
+        "structure_recovery_topology_projection_layout_signals_min_tier_population": clamp_int_fn(
+            topology_projection_layout_signals_min_tier_population,
+            minimum=1,
+            maximum=100,
+        ),
         "structure_recovery_reconciliation_targeted_enabled": reconciliation_targeted_enabled,
         "structure_recovery_reconciliation_targeted_threshold": clamp_int_fn(
             reconciliation_targeted_threshold,

@@ -315,8 +315,8 @@ def _build_uploaded_payload(
     )
 
 
-def _build_paragraph(*, source_index: int, text: str, role: str = "body") -> ParagraphUnit:
-    return ParagraphUnit(text=text, role=role, source_index=source_index, logical_index=source_index)
+def _build_paragraph(*, source_index: int, text: str, role: str = "body", **kwargs) -> ParagraphUnit:
+    return ParagraphUnit(text=text, role=role, source_index=source_index, logical_index=source_index, **kwargs)
 
 
 def _build_runtime_model_registry(*, structure_recognition_model: str = "gpt-4o-mini") -> ModelRegistry:
@@ -377,6 +377,11 @@ def _make_ai_first_config(
         "structure_recovery_topology_projection_enabled": False,
         "structure_recovery_topology_projection_save_debug_artifacts": True,
         "structure_recovery_topology_projection_binding_splits_enabled": False,
+        "structure_recovery_topology_projection_layout_signals_enabled": False,
+        "structure_recovery_topology_projection_layout_signals_heading_ratio": 1.15,
+        "structure_recovery_topology_projection_layout_signals_short_line_chars": 80,
+        "structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt": 0.25,
+        "structure_recovery_topology_projection_layout_signals_min_tier_population": 2,
         "models": _build_runtime_model_registry(structure_recognition_model=structure_recognition_model),
     }
     config.update(overrides)
@@ -594,6 +599,107 @@ def test_run_document_topology_projection_stage_logs_compound_toc_split_operatio
     assert built_event["unit_type_counts"] == {"toc_entry": 2}
 
 
+def test_run_document_topology_projection_stage_builds_and_threads_layout_signals_when_enabled(monkeypatch, tmp_path):
+    paragraphs = [
+        _build_paragraph(source_index=10, text="Heading", font_size_pt=18.0),
+        _build_paragraph(source_index=11, text="Body one", font_size_pt=12.0),
+    ]
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(),
+        paragraph_anchors={},
+        review_zones=(),
+        sampled=False,
+        sampled_logical_indexes=(10, 11),
+    )
+    artifact_dir = tmp_path / "document_topology"
+    fake_layout_signals = SimpleNamespace(
+        body_baseline_pt=12.0,
+        tiers=(SimpleNamespace(is_heading_candidate=False), SimpleNamespace(is_heading_candidate=True)),
+        heading_ratio=1.2,
+    )
+    captured_apply_kwargs: dict[str, object] = {}
+    captured_events: list[tuple[str, dict[str, object]]] = []
+
+    def _fake_derive_layout_signals(*args, **kwargs):
+        _ = args, kwargs
+        return fake_layout_signals
+
+    def _fake_apply_document_map_topology(*args, **kwargs):
+        _ = args
+        captured_apply_kwargs.update(kwargs)
+        return DocumentTopologyProjection(cache_key="topology-key")
+
+    def _fake_log_event(level, event_id, message, **kwargs):
+        _ = level, message
+        captured_events.append((event_id, kwargs))
+
+    monkeypatch.setattr(preparation, "derive_layout_signals", _fake_derive_layout_signals)
+    monkeypatch.setattr(preparation, "apply_document_map_topology", _fake_apply_document_map_topology)
+    monkeypatch.setattr(preparation, "log_event", _fake_log_event)
+    monkeypatch.setattr(preparation, "_DOCUMENT_TOPOLOGY_DEBUG_DIR", artifact_dir)
+
+    projection, status, reason = preparation._run_document_topology_projection_stage(
+        paragraphs=paragraphs,
+        document_map=document_map,
+        app_config=_make_ai_first_config(
+            structure_recovery_topology_projection_enabled=True,
+            structure_recovery_topology_projection_layout_signals_enabled=True,
+            structure_recovery_topology_projection_layout_signals_heading_ratio=1.2,
+        ),
+    )
+
+    assert projection is not None
+    assert status == "no_operations"
+    assert reason == ""
+    assert captured_apply_kwargs["layout_signals"] is fake_layout_signals
+    built_event = next(kwargs for event_id, kwargs in captured_events if event_id == "document_topology_layout_signals_built")
+    assert built_event["body_baseline_pt"] == 12.0
+    assert built_event["tier_count"] == 2
+    assert built_event["heading_tier_count"] == 1
+    assert built_event["paragraphs_with_font_size_count"] == 2
+    assert built_event["heading_ratio"] == 1.2
+
+
+def test_run_document_topology_projection_stage_does_not_build_layout_signals_when_feature_disabled(monkeypatch, tmp_path):
+    paragraphs = [_build_paragraph(source_index=10, text="Heading", font_size_pt=18.0)]
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(),
+        paragraph_anchors={},
+        review_zones=(),
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+    artifact_dir = tmp_path / "document_topology"
+    captured_apply_kwargs: dict[str, object] = {}
+
+    def _unexpected_derive_layout_signals(*args, **kwargs):
+        raise AssertionError("derive_layout_signals should not run when feature is disabled")
+
+    def _fake_apply_document_map_topology(*args, **kwargs):
+        _ = args
+        captured_apply_kwargs.update(kwargs)
+        return DocumentTopologyProjection(cache_key="topology-key")
+
+    monkeypatch.setattr(preparation, "derive_layout_signals", _unexpected_derive_layout_signals)
+    monkeypatch.setattr(preparation, "apply_document_map_topology", _fake_apply_document_map_topology)
+    monkeypatch.setattr(preparation, "_DOCUMENT_TOPOLOGY_DEBUG_DIR", artifact_dir)
+
+    projection, status, reason = preparation._run_document_topology_projection_stage(
+        paragraphs=paragraphs,
+        document_map=document_map,
+        app_config=_make_ai_first_config(structure_recovery_topology_projection_enabled=True),
+    )
+
+    assert projection is not None
+    assert status == "no_operations"
+    assert reason == ""
+    assert captured_apply_kwargs["layout_signals"] is None
+
+
 def test_apply_prepared_snapshot_fields_exposes_document_topology_projection_from_prepared():
     projection = DocumentTopologyProjection(
         cache_key="topology-key",
@@ -760,6 +866,50 @@ def test_apply_topology_projection_snapshot_fallback_reconstructs_projection_fro
     assert snapshot["document_topology_projection_status_reason"] == ""
     assert len(snapshot["document_topology_projection"]["operations"]) == 1
     assert snapshot["document_topology_projection"]["projected_units"][0]["logical_indexes"] == (10, 11, 12, 13)
+
+
+def test_apply_topology_projection_snapshot_fallback_uses_feature_flagged_layout_signals_path(monkeypatch):
+    paragraphs = [_build_paragraph(source_index=10, text="Heading", font_size_pt=18.0)]
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(),
+        paragraph_anchors={},
+        review_zones=(),
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+    prepared = SimpleNamespace(
+        paragraphs=paragraphs,
+        document_map=document_map,
+        document_topology_projection=None,
+        document_topology_projection_status="not_requested",
+        document_topology_projection_status_reason="",
+    )
+    snapshot = structural_validation._build_preparation_diagnostic_defaults([])
+    fake_layout_signals = SimpleNamespace(body_baseline_pt=12.0, tiers=(), heading_ratio=1.15)
+    captured_apply_kwargs: dict[str, object] = {}
+
+    monkeypatch.setattr(structural_validation, "derive_layout_signals", lambda *args, **kwargs: fake_layout_signals)
+
+    def _fake_apply_document_map_topology(*args, **kwargs):
+        _ = args
+        captured_apply_kwargs.update(kwargs)
+        return DocumentTopologyProjection(cache_key="topology-key")
+
+    monkeypatch.setattr(structural_validation, "apply_document_map_topology", _fake_apply_document_map_topology)
+
+    structural_validation._apply_topology_projection_snapshot_fallback(
+        snapshot,
+        prepared,
+        app_config=_make_ai_first_config(
+            structure_recovery_topology_projection_enabled=True,
+            structure_recovery_topology_projection_layout_signals_enabled=True,
+        ),
+    )
+
+    assert captured_apply_kwargs["layout_signals"] is fake_layout_signals
+    assert snapshot["document_topology_projection_status"] == "no_operations"
 
 
 def test_clone_prepared_document_preserves_document_topology_projection_fields():

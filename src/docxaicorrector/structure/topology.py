@@ -15,10 +15,11 @@ from docxaicorrector.core.models import (
     ParagraphUnit,
     StructuralUnit,
 )
+from docxaicorrector.structure.layout_signals import LAYOUT_SIGNALS_SCHEMA_VERSION, LayoutSignals
 from docxaicorrector.structure.document_map import DOCUMENT_MAP_OUTLINE_MEMBERSHIP_SCHEMA_VERSION, DOCUMENT_MAP_SPLIT_HINT_SCHEMA_VERSION
 
 
-TOPOLOGY_PROJECTION_SCHEMA_VERSION = 1
+TOPOLOGY_PROJECTION_SCHEMA_VERSION = 2
 VALID_TOPOLOGY_UNIT_TYPES = frozenset({"chapter_heading", "section_heading", "toc_entry", "page_artifact", "body", "unknown"})
 VALID_TOPOLOGY_AUTHORITIES = frozenset(
     {
@@ -39,6 +40,17 @@ VALID_TOPOLOGY_EVIDENCE = frozenset(
         "bounded_toc_region",
         "page_artifact_phrase",
         "one_to_one_toc_entry_match",
+        "font_cluster_match",
+        "page_break_boundary",
+        "body_font_baseline_outlier",
+    }
+)
+VALID_TOPOLOGY_OPERATIONS = frozenset(
+    {
+        "merge_heading_continuation",
+        "split_page_artifact_from_heading",
+        "split_compound_toc_entries",
+        "candidate_page_artifact_split",
     }
 )
 _HEADING_CONTINUATION_WINDOW = 3
@@ -72,6 +84,13 @@ _ENGLISH_NUMBER_TOKENS = frozenset(
     }
 )
 _BINDING_SPLIT_HEADING_NEIGHBORHOOD = 1
+_PAGE_FURNITURE_PHRASES = (
+    "this page intentionally left blank",
+    "эта страница намеренно оставлена пустой",
+    "page intentionally left blank",
+    "intentionally blank",
+    "intentionally left blank",
+)
 
 
 @dataclass(frozen=True)
@@ -90,6 +109,7 @@ def build_document_topology_projection_cache_key(
     *,
     app_config: Mapping[str, Any],
     document_map_cache_key: str | None = None,
+    layout_signals: LayoutSignals | None = None,
 ) -> str:
     preview_chars = int(app_config.get("structure_recovery_document_map_preview_chars", _TOPOLOGY_TEXT_PREVIEW_CHARS) or _TOPOLOGY_TEXT_PREVIEW_CHARS)
     payload = {
@@ -115,6 +135,9 @@ def build_document_topology_projection_cache_key(
             for paragraph in paragraphs
         ],
     }
+    if layout_signals is not None:
+        payload["layout_signals_schema_version"] = int(getattr(layout_signals, "schema_version", LAYOUT_SIGNALS_SCHEMA_VERSION) or LAYOUT_SIGNALS_SCHEMA_VERSION)
+        payload["layout_signals_fingerprint"] = _build_layout_signals_fingerprint(layout_signals)
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
@@ -124,12 +147,14 @@ def apply_document_map_topology(
     *,
     app_config: Mapping[str, Any],
     document_map_cache_key: str | None = None,
+    layout_signals: LayoutSignals | None = None,
 ) -> DocumentTopologyProjection:
     cache_key = build_document_topology_projection_cache_key(
         paragraphs,
         document_map,
         app_config=app_config,
         document_map_cache_key=document_map_cache_key,
+        layout_signals=layout_signals,
     )
     projection = DocumentTopologyProjection(
         cache_key=cache_key,
@@ -156,6 +181,7 @@ def apply_document_map_topology(
             paragraphs=paragraphs,
             position_by_logical_index=position_by_logical_index,
             target=target,
+            layout_signals=layout_signals,
         )
         if unit is None:
             continue
@@ -181,6 +207,17 @@ def apply_document_map_topology(
         )
         operations.extend(split_operations)
         projected_units.extend(split_units)
+
+    if layout_signals is not None:
+        operations.extend(
+            _build_candidate_page_artifact_operations(
+                paragraphs=paragraphs,
+                authoritative_heading_targets=authoritative_heading_targets,
+                layout_signals=layout_signals,
+            )
+        )
+
+    _validate_projection_values(operations=operations, projected_units=projected_units)
 
     return DocumentTopologyProjection(
         cache_key=cache_key,
@@ -230,6 +267,7 @@ def _build_heading_continuation_unit(
     paragraphs: list[ParagraphUnit],
     position_by_logical_index: dict[int, int],
     target: _AuthoritativeHeadingTarget,
+    layout_signals: LayoutSignals | None = None,
 ) -> StructuralUnit | None:
     logical_index = int(target.logical_index)
     heading_level = int(target.heading_level)
@@ -251,10 +289,13 @@ def _build_heading_continuation_unit(
             canonical_text=canonical_text,
             authority=authority,
             evidence=evidence,
+            layout_signals=layout_signals,
         )
 
     collected_indexes: list[int] = []
     collected_tokens: list[str] = []
+    collected_evidence: list[str] = list(evidence)
+    anchor_paragraph = paragraphs[start_position]
     for offset in range(_HEADING_CONTINUATION_WINDOW + 1):
         position = start_position + offset
         if position >= len(paragraphs):
@@ -264,11 +305,18 @@ def _build_heading_continuation_unit(
         paragraph_tokens = _heading_tokens(paragraph_text)
         if not paragraph_tokens:
             break
-        if offset > 0 and not _is_heading_continuation_candidate(paragraph, paragraph_text):
-            break
         candidate_tokens = [*collected_tokens, *paragraph_tokens]
-        if not _token_sequences_compatible(candidate_tokens, normalized_canonical_tokens):
-            break
+        if offset > 0:
+            is_candidate, evidence_tags = _is_heading_continuation_candidate(
+                paragraph,
+                paragraph_text,
+                candidate_tokens=candidate_tokens,
+                canonical_tokens=normalized_canonical_tokens,
+                anchor_style_cluster_id=getattr(anchor_paragraph, "style_cluster_id", None),
+            )
+            if not is_candidate:
+                break
+            _extend_stable_evidence(collected_evidence, evidence_tags)
         collected_indexes.append(int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", -1))))
         collected_tokens = candidate_tokens
         if _normalized_heading_tokens(candidate_tokens) == _normalized_heading_tokens(normalized_canonical_tokens):
@@ -283,13 +331,19 @@ def _build_heading_continuation_unit(
         paragraph_tokens = _heading_tokens(paragraph_text)
         if not paragraph_tokens:
             break
-        if not _is_heading_continuation_candidate(paragraph, paragraph_text):
-            break
         candidate_tokens = [*paragraph_tokens, *collected_tokens]
-        if not _token_sequences_compatible(candidate_tokens, normalized_canonical_tokens):
+        is_candidate, evidence_tags = _is_heading_continuation_candidate(
+            paragraph,
+            paragraph_text,
+            candidate_tokens=candidate_tokens,
+            canonical_tokens=normalized_canonical_tokens,
+            anchor_style_cluster_id=getattr(anchor_paragraph, "style_cluster_id", None),
+        )
+        if not is_candidate:
             break
         collected_indexes.insert(0, int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", -1))))
         collected_tokens = candidate_tokens
+        _extend_stable_evidence(collected_evidence, evidence_tags)
         if _normalized_heading_tokens(candidate_tokens) == _normalized_heading_tokens(normalized_canonical_tokens):
             break
 
@@ -307,7 +361,7 @@ def _build_heading_continuation_unit(
         heading_level=int(heading_level),
         confidence="high",
         authority=authority,
-        evidence=tuple(evidence),
+        evidence=tuple(collected_evidence),
     )
 
 
@@ -321,6 +375,7 @@ def _build_explicit_heading_membership_unit(
     canonical_text: str,
     authority: str,
     evidence: tuple[str, ...],
+    layout_signals: LayoutSignals | None = None,
 ) -> StructuralUnit | None:
     if len(member_logical_indexes) <= 1 or int(logical_index) not in member_logical_indexes:
         return None
@@ -332,15 +387,32 @@ def _build_explicit_heading_membership_unit(
 
     positions: list[int] = []
     collected_tokens: list[str] = []
+    collected_evidence: list[str] = list(evidence)
+    anchor_position = position_by_logical_index.get(int(logical_index))
+    if anchor_position is None:
+        return None
+    anchor_paragraph = paragraphs[anchor_position]
     for member_logical_index in member_logical_indexes:
         position = position_by_logical_index.get(int(member_logical_index))
         if position is None:
             return None
         positions.append(position)
-        paragraph_text = str(getattr(paragraphs[position], "text", "") or "").strip()
+        paragraph = paragraphs[position]
+        paragraph_text = str(getattr(paragraph, "text", "") or "").strip()
         paragraph_tokens = _heading_tokens(paragraph_text)
         if not paragraph_tokens:
             return None
+        if layout_signals is not None and int(member_logical_index) != int(logical_index):
+            is_candidate, evidence_tags = _is_heading_continuation_candidate(
+                paragraph,
+                paragraph_text,
+                layout_signals=layout_signals,
+                anchor_logical_index=int(logical_index),
+                anchor_style_cluster_id=getattr(anchor_paragraph, "style_cluster_id", None),
+            )
+            if not is_candidate:
+                return None
+            _extend_stable_evidence(collected_evidence, evidence_tags)
         collected_tokens.extend(paragraph_tokens)
 
     for left_position, right_position in zip(positions, positions[1:], strict=False):
@@ -358,8 +430,108 @@ def _build_explicit_heading_membership_unit(
         heading_level=int(heading_level),
         confidence="high",
         authority=authority,
-        evidence=tuple(evidence),
+        evidence=tuple(collected_evidence),
     )
+
+
+def _build_candidate_page_artifact_operations(
+    *,
+    paragraphs: list[ParagraphUnit],
+    authoritative_heading_targets: tuple[_AuthoritativeHeadingTarget, ...],
+    layout_signals: LayoutSignals,
+) -> list[DocumentTopologyOperation]:
+    operations: list[DocumentTopologyOperation] = []
+
+    for position, paragraph in enumerate(paragraphs):
+        paragraph_text = _collapse_whitespace(str(getattr(paragraph, "text", "") or ""))
+        if not paragraph_text:
+            continue
+        lowered_text = paragraph_text.casefold()
+        matched_phrase = next(
+            (
+                phrase
+                for phrase in _PAGE_FURNITURE_PHRASES
+                if (match_position := lowered_text[:120].find(phrase)) >= 0
+                and len(lowered_text[match_position + len(phrase) :].strip()) >= 6
+            ),
+            None,
+        )
+        if matched_phrase is None:
+            continue
+        phrase_position = lowered_text[:120].find(matched_phrase)
+        remainder_text = paragraph_text[phrase_position + len(matched_phrase) :].strip()
+        heading_target = _find_candidate_page_artifact_heading_target(
+            paragraphs=paragraphs,
+            position=position,
+            remainder_text=remainder_text,
+            authoritative_heading_targets=authoritative_heading_targets,
+        )
+        if heading_target is None:
+            continue
+        logical_index = int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", -1)))
+        evidence = ["page_artifact_phrase", "local_heading_neighborhood"]
+        if _local_window_has_observed_page_hint_transition(paragraphs=paragraphs, position=position, layout_signals=layout_signals):
+            evidence.append("page_break_boundary")
+        operations.append(
+            DocumentTopologyOperation(
+                op="candidate_page_artifact_split",
+                logical_indexes=(logical_index,),
+                canonical_text=str(heading_target.canonical_text or "").strip(),
+                authority=heading_target.authority,
+                confidence="candidate",
+                evidence=tuple(evidence),
+            )
+        )
+
+    return operations
+
+
+def _find_candidate_page_artifact_heading_target(
+    *,
+    paragraphs: list[ParagraphUnit],
+    position: int,
+    remainder_text: str,
+    authoritative_heading_targets: tuple[_AuthoritativeHeadingTarget, ...],
+) -> _AuthoritativeHeadingTarget | None:
+    paragraph = paragraphs[position]
+    logical_index = int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", -1)))
+    remainder_tokens = _heading_tokens(remainder_text)
+    if remainder_tokens:
+        target = _find_local_heading_target(
+            logical_index=logical_index,
+            heading_hint_tokens=remainder_tokens,
+            authoritative_heading_targets=authoritative_heading_targets,
+        )
+        if target is not None:
+            return target
+    if position + 1 >= len(paragraphs):
+        return None
+    next_paragraph = paragraphs[position + 1]
+    next_tokens = _heading_tokens(str(getattr(next_paragraph, "text", "") or "").strip())
+    if not next_tokens:
+        return None
+    next_logical_index = int(getattr(next_paragraph, "logical_index", getattr(next_paragraph, "source_index", -1)))
+    return _find_local_heading_target(
+        logical_index=next_logical_index,
+        heading_hint_tokens=next_tokens,
+        authoritative_heading_targets=authoritative_heading_targets,
+    )
+
+
+def _local_window_has_observed_page_hint_transition(
+    *,
+    paragraphs: list[ParagraphUnit],
+    position: int,
+    layout_signals: LayoutSignals,
+) -> bool:
+    for candidate_position in (position, position + 1):
+        if candidate_position < 0 or candidate_position >= len(paragraphs):
+            continue
+        logical_index = int(getattr(paragraphs[candidate_position], "logical_index", getattr(paragraphs[candidate_position], "source_index", -1)))
+        record = layout_signals.get(logical_index)
+        if record is not None and record.is_first_on_page:
+            return True
+    return False
 
 
 def _build_binding_split_units(
@@ -703,22 +875,109 @@ def _find_local_heading_target(
     return matched_targets[0][1]
 
 
-def _is_heading_continuation_candidate(paragraph: ParagraphUnit, paragraph_text: str) -> bool:
+def _is_heading_continuation_candidate(
+    paragraph: ParagraphUnit,
+    paragraph_text: str,
+    *,
+    candidate_tokens: list[str] | None = None,
+    canonical_tokens: list[str] | None = None,
+    layout_signals: LayoutSignals | None = None,
+    anchor_logical_index: int | None = None,
+    anchor_style_cluster_id: int | None = None,
+) -> tuple[bool, tuple[str, ...]]:
     normalized = _collapse_whitespace(paragraph_text)
     if not normalized:
-        return False
+        return False, ()
     if bool(getattr(paragraph, "is_repeated_across_pages", False)) or bool(getattr(paragraph, "is_likely_page_number", False)):
-        return False
+        return False, ()
     if len(normalized) > 120:
-        return False
+        return False, ()
     words = normalized.split()
     if len(words) > 14:
-        return False
+        return False, ()
     if not any(char.isalpha() for char in normalized):
-        return False
+        return False, ()
     if normalized.endswith("."):
-        return False
-    return True
+        return False, ()
+    if candidate_tokens is not None and canonical_tokens is not None and _token_sequences_compatible(candidate_tokens, canonical_tokens):
+        return True, ("adjacent_short_heading_fragments",)
+    if layout_signals is not None and anchor_logical_index is not None:
+        logical_index = int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", -1)))
+        paragraph_record = layout_signals.get(logical_index)
+        candidate_style_cluster_id = getattr(paragraph, "style_cluster_id", None)
+        if (
+            paragraph_record is not None
+            and layout_signals.is_same_heading_tier(anchor_logical_index, logical_index)
+            and paragraph_record.is_short_line
+            and not layout_signals.is_page_break_between(anchor_logical_index, logical_index)
+            and (candidate_style_cluster_id is None or candidate_style_cluster_id == anchor_style_cluster_id)
+        ):
+            return True, ("adjacent_short_heading_fragments", "font_cluster_match")
+    return False, ()
+
+
+def _extend_stable_evidence(current: list[str], extra: tuple[str, ...]) -> None:
+    for tag in extra:
+        if tag not in current:
+            current.append(tag)
+
+
+def _build_layout_signals_fingerprint(layout_signals: LayoutSignals) -> str:
+    payload = {
+        "schema_version": int(getattr(layout_signals, "schema_version", LAYOUT_SIGNALS_SCHEMA_VERSION) or LAYOUT_SIGNALS_SCHEMA_VERSION),
+        "body_baseline_pt": layout_signals.body_baseline_pt,
+        "body_baseline_tolerance_pt": layout_signals.body_baseline_tolerance_pt,
+        "heading_ratio": layout_signals.heading_ratio,
+        "tiers": [
+            {
+                "tier_id": tier.tier_id,
+                "representative_pt": tier.representative_pt,
+                "member_logical_indexes": list(tier.member_logical_indexes),
+                "is_body_baseline": tier.is_body_baseline,
+                "is_heading_candidate": tier.is_heading_candidate,
+            }
+            for tier in layout_signals.tiers
+        ],
+        "records": [
+            {
+                "logical_index": logical_index,
+                "tier_id": record.tier_id,
+                "is_heading_tier": record.is_heading_tier,
+                "is_body_tier": record.is_body_tier,
+                "font_size_pt": record.font_size_pt,
+                "page_number": record.page_number,
+                "vertical_gap_before_pt": record.vertical_gap_before_pt,
+                "is_first_on_page": record.is_first_on_page,
+                "is_short_line": record.is_short_line,
+                "is_above_baseline": record.is_above_baseline,
+            }
+            for logical_index, record in sorted(layout_signals.records_by_logical_index.items())
+        ],
+    }
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _validate_projection_values(
+    *,
+    operations: list[DocumentTopologyOperation],
+    projected_units: list[StructuralUnit],
+) -> None:
+    for operation in operations:
+        if operation.op not in VALID_TOPOLOGY_OPERATIONS:
+            raise ValueError(f"Invalid topology operation: {operation.op}")
+        if operation.authority not in VALID_TOPOLOGY_AUTHORITIES:
+            raise ValueError(f"Invalid topology operation authority: {operation.authority}")
+        for evidence_tag in operation.evidence:
+            if evidence_tag not in VALID_TOPOLOGY_EVIDENCE:
+                raise ValueError(f"Invalid topology evidence tag: {evidence_tag}")
+    for unit in projected_units:
+        if unit.unit_type not in VALID_TOPOLOGY_UNIT_TYPES:
+            raise ValueError(f"Invalid topology unit type: {unit.unit_type}")
+        if unit.authority not in VALID_TOPOLOGY_AUTHORITIES:
+            raise ValueError(f"Invalid topology unit authority: {unit.authority}")
+        for evidence_tag in unit.evidence:
+            if evidence_tag not in VALID_TOPOLOGY_EVIDENCE:
+                raise ValueError(f"Invalid topology evidence tag: {evidence_tag}")
 
 
 def _heading_tokens(text: str) -> list[str]:

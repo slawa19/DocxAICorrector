@@ -198,3 +198,43 @@ def test_records_capture_short_line_first_on_page_and_above_baseline_flags():
     assert long_body_record.is_above_baseline is False
     assert new_page_record.is_first_on_page is True
     assert near_body_record.is_above_baseline is False
+
+
+def test_is_first_on_page_requires_concrete_page_hints_in_normal_path():
+    paragraphs = [
+        _paragraph(0, "Body zero", font_size_pt=12.0, page_number=None),
+        _paragraph(1, "Body one", font_size_pt=12.0, page_number=1),
+        _paragraph(2, "Body two", font_size_pt=12.0, page_number=1),
+        _paragraph(3, "Body three", font_size_pt=12.0, page_number=2),
+        _paragraph(4, "Body four", font_size_pt=12.0, page_number=None),
+        _paragraph(5, "Body five", font_size_pt=12.0, page_number=3),
+        _paragraph(6, "Body six", font_size_pt=12.0, page_number=3),
+        _paragraph(7, "Body seven", font_size_pt=12.0, page_number=4),
+    ]
+
+    signals = derive_layout_signals(paragraphs)
+
+    assert signals.get(1).is_first_on_page is False
+    assert signals.get(3).is_first_on_page is True
+    assert signals.get(4).is_first_on_page is False
+    assert signals.get(5).is_first_on_page is False
+
+
+def test_is_first_on_page_requires_concrete_page_hints_in_degraded_path():
+    paragraphs = [
+        _paragraph(0, "Heading", font_size_pt=18.0, page_number=None),
+        _paragraph(1, "Body one", font_size_pt=12.0, page_number=1),
+        _paragraph(2, "Body two", font_size_pt=12.0, page_number=2),
+        _paragraph(3, "Body three", font_size_pt=12.0, page_number=None),
+        _paragraph(4, "Body four", font_size_pt=12.0, page_number=3),
+        _paragraph(5, "Missing font", font_size_pt=None, page_number=3),
+        _paragraph(6, "Repeated footer", font_size_pt=9.0, page_number=3, is_repeated_across_pages=True),
+    ]
+
+    signals = derive_layout_signals(paragraphs)
+
+    assert signals.body_baseline_pt is None
+    assert signals.get(1).is_first_on_page is False
+    assert signals.get(2).is_first_on_page is True
+    assert signals.get(3).is_first_on_page is False
+    assert signals.get(4).is_first_on_page is False

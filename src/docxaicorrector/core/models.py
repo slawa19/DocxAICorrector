@@ -680,7 +680,7 @@ class DocumentTopologyProjection:
     schema_version: int = 1
     cache_key: str = ""
     document_map_cache_key: str | None = None
-    topology_projection_schema_version: int = 1
+    topology_projection_schema_version: int = 2
     topology_hint_schema_version: int = 1
     operations: tuple["DocumentTopologyOperation", ...] = ()
     projected_units: tuple["StructuralUnit", ...] = ()

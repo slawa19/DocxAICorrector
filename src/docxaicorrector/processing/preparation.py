@@ -78,6 +78,7 @@ from docxaicorrector.structure.reconciliation import (
     selection_has_authority_uncertainty_context,
     targeted_reclassify_with_reconciliation_context,
 )
+from docxaicorrector.structure.layout_signals import derive_layout_signals
 from docxaicorrector.structure.topology import TOPOLOGY_PROJECTION_SCHEMA_VERSION, apply_document_map_topology
 from docxaicorrector.structure.validation import StructureValidationReport, validate_structure_quality, write_structure_validation_debug_artifact
 from docxaicorrector.text.translation_domains import build_terminology_plan, build_translation_domain_instructions
@@ -1723,11 +1724,31 @@ def _run_document_topology_projection_stage(
 
     try:
         document_map_cache_key = _build_document_map_cache_key(paragraphs=paragraphs, app_config=app_config)
+        layout_signals = None
+        if bool(app_config.get("structure_recovery_topology_projection_layout_signals_enabled", False)):
+            layout_signals = derive_layout_signals(
+                paragraphs,
+                heading_ratio=float(app_config.get("structure_recovery_topology_projection_layout_signals_heading_ratio", 1.15) or 1.15),
+                short_line_chars=int(app_config.get("structure_recovery_topology_projection_layout_signals_short_line_chars", 80) or 80),
+                baseline_tolerance_pt=float(app_config.get("structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt", 0.25) or 0.25),
+                min_tier_population=int(app_config.get("structure_recovery_topology_projection_layout_signals_min_tier_population", 2) or 2),
+            )
+            log_event(
+                logging.INFO,
+                "document_topology_layout_signals_built",
+                "Построены layout signals для topology projection.",
+                body_baseline_pt=layout_signals.body_baseline_pt,
+                tier_count=len(layout_signals.tiers),
+                heading_tier_count=sum(1 for tier in layout_signals.tiers if tier.is_heading_candidate),
+                paragraphs_with_font_size_count=sum(1 for paragraph in paragraphs if getattr(paragraph, "font_size_pt", None) is not None),
+                heading_ratio=layout_signals.heading_ratio,
+            )
         projection = apply_document_map_topology(
             paragraphs,
             document_map,
             app_config=app_config,
             document_map_cache_key=document_map_cache_key,
+            layout_signals=layout_signals,
         )
     except Exception as exc:
         reason = _format_ai_first_fallback_reason(exc)

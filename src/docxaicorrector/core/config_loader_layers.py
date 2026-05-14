@@ -184,6 +184,21 @@ def build_app_config_payload(
         "structure_recovery_topology_projection_binding_splits_enabled": structure_recovery_settings[
             "structure_recovery_topology_projection_binding_splits_enabled"
         ],
+        "structure_recovery_topology_projection_layout_signals_enabled": structure_recovery_settings[
+            "structure_recovery_topology_projection_layout_signals_enabled"
+        ],
+        "structure_recovery_topology_projection_layout_signals_heading_ratio": structure_recovery_settings[
+            "structure_recovery_topology_projection_layout_signals_heading_ratio"
+        ],
+        "structure_recovery_topology_projection_layout_signals_short_line_chars": structure_recovery_settings[
+            "structure_recovery_topology_projection_layout_signals_short_line_chars"
+        ],
+        "structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt": structure_recovery_settings[
+            "structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt"
+        ],
+        "structure_recovery_topology_projection_layout_signals_min_tier_population": structure_recovery_settings[
+            "structure_recovery_topology_projection_layout_signals_min_tier_population"
+        ],
         "structure_recovery_reconciliation_targeted_enabled": structure_recovery_settings[
             "structure_recovery_reconciliation_targeted_enabled"
         ],

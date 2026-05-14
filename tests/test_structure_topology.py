@@ -3,11 +3,12 @@ from dataclasses import asdict
 import pytest
 
 from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, DocumentMapOutlineEntry, DocumentMapSplitHint, DocumentMapTocEntry, DocumentMapTocRegion, ParagraphUnit, StructuralUnit
+from docxaicorrector.structure.layout_signals import derive_layout_signals
 from docxaicorrector.structure.topology import TOPOLOGY_PROJECTION_SCHEMA_VERSION, apply_document_map_topology
 
 
-def _paragraph(index: int, text: str) -> ParagraphUnit:
-    return ParagraphUnit(text=text, role="body", structural_role="body", source_index=index, logical_index=index)
+def _paragraph(index: int, text: str, **kwargs) -> ParagraphUnit:
+    return ParagraphUnit(text=text, role="body", structural_role="body", source_index=index, logical_index=index, **kwargs)
 
 
 def _compound_toc_text() -> str:
@@ -121,6 +122,338 @@ def test_apply_document_map_topology_returns_schema_valid_empty_projection_when_
     assert projection.topology_projection_schema_version == TOPOLOGY_PROJECTION_SCHEMA_VERSION
     assert payload["operations"] == ()
     assert payload["projected_units"] == ()
+
+
+def test_apply_document_map_topology_disabled_path_is_semantically_identical_when_layout_signals_are_absent():
+    paragraphs = [
+        _paragraph(10, "Chapter Eleven"),
+        _paragraph(11, "Governance and We"),
+        _paragraph(12, "the Citizens"),
+        _paragraph(13, "An Ancient Future"),
+    ]
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(
+            DocumentMapOutlineEntry(
+                title="Chapter Eleven Governance and We the Citizens An Ancient Future",
+                level=1,
+                logical_index=10,
+                confidence="high",
+                evidence=("outline_entry",),
+            ),
+        ),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        sampled=False,
+        sampled_logical_indexes=(10, 11, 12, 13),
+    )
+
+    current = apply_document_map_topology(
+        paragraphs,
+        document_map,
+        app_config={"structure_recovery_document_map_preview_chars": 120},
+        document_map_cache_key="doc-map-key",
+    )
+    explicit_none = apply_document_map_topology(
+        paragraphs,
+        document_map,
+        app_config={"structure_recovery_document_map_preview_chars": 120},
+        document_map_cache_key="doc-map-key",
+        layout_signals=None,
+    )
+
+    assert asdict(current) == asdict(explicit_none)
+
+
+def test_apply_document_map_topology_layout_confirms_explicit_authority_bounded_members_when_enabled():
+    paragraphs = [
+        _paragraph(10, "Chapter Eleven", font_size_pt=18.0, style_cluster_id=7, page_number=1),
+        _paragraph(11, "Governance and We", font_size_pt=18.0, style_cluster_id=7, page_number=1),
+        _paragraph(12, "the Citizens", font_size_pt=18.0, style_cluster_id=7, page_number=1),
+        _paragraph(14, "Body paragraph one.", font_size_pt=12.0, page_number=1),
+        _paragraph(15, "Body paragraph two.", font_size_pt=12.0, page_number=1),
+        _paragraph(16, "Body paragraph three.", font_size_pt=12.0, page_number=1),
+        _paragraph(17, "Body paragraph four.", font_size_pt=12.0, page_number=1),
+        _paragraph(18, "Body paragraph five.", font_size_pt=12.0, page_number=1),
+        _paragraph(19, "Body paragraph six.", font_size_pt=12.0, page_number=1),
+    ]
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(
+            DocumentMapOutlineEntry(
+                title="Chapter Eleven Governance and We the Citizens",
+                level=1,
+                logical_index=10,
+                confidence="high",
+                evidence=("outline_entry",),
+                member_logical_indexes=(10, 11, 12),
+            ),
+        ),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        sampled=False,
+        sampled_logical_indexes=(10, 11, 12, 14, 15, 16, 17, 18, 19),
+    )
+    layout_signals = derive_layout_signals(paragraphs)
+
+    projection = apply_document_map_topology(
+        paragraphs,
+        document_map,
+        app_config={"structure_recovery_document_map_preview_chars": 120},
+        document_map_cache_key="doc-map-key",
+        layout_signals=layout_signals,
+    )
+
+    assert len(projection.projected_units) == 1
+    unit = projection.projected_units[0]
+    assert unit.logical_indexes == (10, 11, 12)
+    assert unit.canonical_text == "Chapter Eleven Governance and We the Citizens"
+    assert unit.evidence == ("outline_entry", "adjacent_short_heading_fragments", "font_cluster_match")
+    assert projection.operations[0].evidence == ("outline_entry", "adjacent_short_heading_fragments", "font_cluster_match")
+
+
+def test_apply_document_map_topology_layout_rejects_explicit_membership_on_font_mismatch():
+    paragraphs = [
+        _paragraph(10, "Chapter Eleven", font_size_pt=18.0, style_cluster_id=7, page_number=1),
+        _paragraph(11, "Governance and We", font_size_pt=18.0, style_cluster_id=7, page_number=1),
+        _paragraph(12, "the Citizens", font_size_pt=12.0, style_cluster_id=7, page_number=1),
+        _paragraph(14, "Body paragraph one.", font_size_pt=12.0, page_number=1),
+        _paragraph(15, "Body paragraph two.", font_size_pt=12.0, page_number=1),
+        _paragraph(16, "Body paragraph three.", font_size_pt=12.0, page_number=1),
+        _paragraph(17, "Body paragraph four.", font_size_pt=12.0, page_number=1),
+        _paragraph(18, "Body paragraph five.", font_size_pt=12.0, page_number=1),
+        _paragraph(19, "Body paragraph six.", font_size_pt=12.0, page_number=1),
+    ]
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(
+            DocumentMapOutlineEntry(
+                title="Chapter Eleven Governance and We the Citizens",
+                level=1,
+                logical_index=10,
+                confidence="high",
+                evidence=("outline_entry",),
+                member_logical_indexes=(10, 11, 12),
+            ),
+        ),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        sampled=False,
+        sampled_logical_indexes=(10, 11, 12, 14, 15, 16, 17, 18, 19),
+    )
+
+    projection = apply_document_map_topology(
+        paragraphs,
+        document_map,
+        app_config={"structure_recovery_document_map_preview_chars": 120},
+        document_map_cache_key="doc-map-key",
+        layout_signals=derive_layout_signals(paragraphs),
+    )
+
+    assert projection.projected_units == ()
+    assert projection.operations == ()
+
+
+def test_apply_document_map_topology_layout_rejects_explicit_membership_on_observed_page_hint_transition():
+    paragraphs = [
+        _paragraph(10, "Chapter Eleven", font_size_pt=18.0, style_cluster_id=7, page_number=1),
+        _paragraph(11, "Governance and We", font_size_pt=18.0, style_cluster_id=7, page_number=1),
+        _paragraph(12, "the Citizens", font_size_pt=18.0, style_cluster_id=7, page_number=2),
+        _paragraph(14, "Body paragraph one.", font_size_pt=12.0, page_number=2),
+        _paragraph(15, "Body paragraph two.", font_size_pt=12.0, page_number=2),
+        _paragraph(16, "Body paragraph three.", font_size_pt=12.0, page_number=2),
+        _paragraph(17, "Body paragraph four.", font_size_pt=12.0, page_number=2),
+        _paragraph(18, "Body paragraph five.", font_size_pt=12.0, page_number=2),
+        _paragraph(19, "Body paragraph six.", font_size_pt=12.0, page_number=2),
+    ]
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(
+            DocumentMapOutlineEntry(
+                title="Chapter Eleven Governance and We the Citizens",
+                level=1,
+                logical_index=10,
+                confidence="high",
+                evidence=("outline_entry",),
+                member_logical_indexes=(10, 11, 12),
+            ),
+        ),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        sampled=False,
+        sampled_logical_indexes=(10, 11, 12, 14, 15, 16, 17, 18, 19),
+    )
+
+    projection = apply_document_map_topology(
+        paragraphs,
+        document_map,
+        app_config={"structure_recovery_document_map_preview_chars": 120},
+        document_map_cache_key="doc-map-key",
+        layout_signals=derive_layout_signals(paragraphs),
+    )
+
+    assert projection.projected_units == ()
+    assert projection.operations == ()
+
+
+def test_apply_document_map_topology_does_not_use_layout_signals_to_recover_missing_stage1_membership():
+    paragraphs = [
+        _paragraph(10, "Governance and We", font_size_pt=18.0, style_cluster_id=7, page_number=1),
+        _paragraph(11, "the Citizens", font_size_pt=18.0, style_cluster_id=7, page_number=1),
+        _paragraph(12, "An Ancient Future?", font_size_pt=18.0, style_cluster_id=7, page_number=1),
+        _paragraph(13, "Body paragraph one.", font_size_pt=12.0, page_number=1),
+        _paragraph(14, "Body paragraph two.", font_size_pt=12.0, page_number=1),
+        _paragraph(15, "Body paragraph three.", font_size_pt=12.0, page_number=1),
+        _paragraph(16, "Body paragraph four.", font_size_pt=12.0, page_number=1),
+        _paragraph(17, "Body paragraph five.", font_size_pt=12.0, page_number=1),
+        _paragraph(18, "Body paragraph six.", font_size_pt=12.0, page_number=1),
+        _paragraph(19, "Body paragraph seven.", font_size_pt=12.0, page_number=1),
+    ]
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(
+            DocumentMapOutlineEntry(
+                title="Governance and We",
+                level=1,
+                logical_index=10,
+                confidence="high",
+                evidence=("outline_entry",),
+            ),
+        ),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        sampled=False,
+        sampled_logical_indexes=(10, 11, 12, 13, 14, 15, 16, 17, 18, 19),
+    )
+
+    projection = apply_document_map_topology(
+        paragraphs,
+        document_map,
+        app_config={"structure_recovery_document_map_preview_chars": 120},
+        document_map_cache_key="doc-map-key",
+        layout_signals=derive_layout_signals(paragraphs),
+    )
+
+    assert projection.projected_units == ()
+    assert projection.operations == ()
+
+
+def test_apply_document_map_topology_emits_candidate_page_artifact_split_with_optional_page_break_evidence():
+    paragraphs = [
+        _paragraph(9, "3", font_size_pt=12.0, page_number=1, is_likely_page_number=True),
+        _paragraph(10, "this page intentionally left blank chapter nine", font_size_pt=18.0, page_number=2, style_cluster_id=7),
+        _paragraph(11, "Body paragraph one.", font_size_pt=12.0, page_number=2),
+        _paragraph(12, "Body paragraph two.", font_size_pt=12.0, page_number=2),
+        _paragraph(13, "Body paragraph three.", font_size_pt=12.0, page_number=2),
+        _paragraph(14, "Body paragraph four.", font_size_pt=12.0, page_number=2),
+        _paragraph(15, "Body paragraph five.", font_size_pt=12.0, page_number=2),
+        _paragraph(16, "Body paragraph six.", font_size_pt=12.0, page_number=2),
+        _paragraph(17, "Body paragraph seven.", font_size_pt=12.0, page_number=2),
+        _paragraph(18, "Body paragraph eight.", font_size_pt=12.0, page_number=2),
+    ]
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(
+            DocumentMapOutlineEntry(
+                title="Chapter Nine",
+                level=1,
+                logical_index=10,
+                confidence="high",
+                evidence=("outline_entry",),
+            ),
+        ),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        sampled=False,
+        sampled_logical_indexes=(9, 10, 11, 12, 13, 14, 15, 16, 17, 18),
+    )
+
+    with_transition = apply_document_map_topology(
+        paragraphs,
+        document_map,
+        app_config={"structure_recovery_document_map_preview_chars": 120},
+        document_map_cache_key="doc-map-key",
+        layout_signals=derive_layout_signals(paragraphs),
+    )
+    without_transition_paragraphs = [
+        _paragraph(9, "Prelude", font_size_pt=12.0, page_number=None),
+        _paragraph(10, "this page intentionally left blank chapter nine", font_size_pt=18.0, page_number=None, style_cluster_id=7),
+        _paragraph(11, "Body paragraph one.", font_size_pt=12.0, page_number=2),
+        _paragraph(12, "Body paragraph two.", font_size_pt=12.0, page_number=2),
+        _paragraph(13, "Body paragraph three.", font_size_pt=12.0, page_number=2),
+        _paragraph(14, "Body paragraph four.", font_size_pt=12.0, page_number=2),
+        _paragraph(15, "Body paragraph five.", font_size_pt=12.0, page_number=2),
+        _paragraph(16, "Body paragraph six.", font_size_pt=12.0, page_number=2),
+        _paragraph(17, "Body paragraph seven.", font_size_pt=12.0, page_number=2),
+        _paragraph(18, "Body paragraph eight.", font_size_pt=12.0, page_number=2),
+    ]
+    without_transition = apply_document_map_topology(
+        without_transition_paragraphs,
+        document_map,
+        app_config={"structure_recovery_document_map_preview_chars": 120},
+        document_map_cache_key="doc-map-key",
+        layout_signals=derive_layout_signals(without_transition_paragraphs),
+    )
+
+    with_transition_op = next(operation for operation in with_transition.operations if operation.op == "candidate_page_artifact_split")
+    without_transition_op = next(operation for operation in without_transition.operations if operation.op == "candidate_page_artifact_split")
+    assert with_transition_op.confidence == "candidate"
+    assert with_transition_op.authority == "document_map_outline"
+    assert with_transition_op.evidence == ("page_artifact_phrase", "local_heading_neighborhood", "page_break_boundary")
+    assert without_transition_op.evidence == ("page_artifact_phrase", "local_heading_neighborhood")
+
+
+def test_apply_document_map_topology_raises_when_emitted_operation_vocab_is_invalid(monkeypatch):
+    paragraphs = [_paragraph(0, "Body paragraph.")]
+    document_map = DocumentMap(
+        body_start_logical_index=0,
+        toc_region=None,
+        outline=(),
+        paragraph_anchors={},
+        review_zones=(),
+        sampled=False,
+        sampled_logical_indexes=(0,),
+    )
+
+    monkeypatch.setattr(
+        "docxaicorrector.structure.topology._build_candidate_page_artifact_operations",
+        lambda **kwargs: [
+            __import__("docxaicorrector.core.models", fromlist=["DocumentTopologyOperation"]).DocumentTopologyOperation(
+                op="invalid_candidate_op",
+                logical_indexes=(0,),
+                canonical_text="Body paragraph.",
+                authority="document_map_outline",
+                confidence="candidate",
+                evidence=("page_artifact_phrase",),
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="Invalid topology operation"):
+        apply_document_map_topology(
+            paragraphs,
+            document_map,
+            app_config={"structure_recovery_document_map_preview_chars": 120},
+            document_map_cache_key="doc-map-key",
+            layout_signals=derive_layout_signals(
+                [
+                    _paragraph(0, "Body one", font_size_pt=12.0),
+                    _paragraph(1, "Body two", font_size_pt=12.0),
+                    _paragraph(2, "Body three", font_size_pt=12.0),
+                    _paragraph(3, "Body four", font_size_pt=12.0),
+                    _paragraph(4, "Body five", font_size_pt=12.0),
+                    _paragraph(5, "Body six", font_size_pt=12.0),
+                    _paragraph(6, "Body seven", font_size_pt=12.0),
+                    _paragraph(7, "Body eight", font_size_pt=12.0),
+                ]
+            ),
+        )
 
 
 def test_apply_document_map_topology_merges_heading_continuation_from_high_confidence_outline():

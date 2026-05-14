@@ -37,6 +37,7 @@ from docxaicorrector.generation._generation import convert_markdown_to_docx_byte
 from docxaicorrector.image.reinsertion import reinsert_inline_images
 from docxaicorrector.core.models import ParagraphBoundaryNormalizationReport
 from docxaicorrector.processing.processing_service import clone_processing_service
+from docxaicorrector.structure.layout_signals import derive_layout_signals
 from docxaicorrector.structure.topology import apply_document_map_topology
 from docxaicorrector.validation.common import build_validation_event_logger, build_validation_runtime_config
 from docxaicorrector.validation.profiles import (
@@ -1452,10 +1453,20 @@ def _apply_topology_projection_snapshot_fallback(
     if not paragraphs or document_map is None:
         return
     try:
+        layout_signals = None
+        if bool(app_config.get("structure_recovery_topology_projection_layout_signals_enabled", False)):
+            layout_signals = derive_layout_signals(
+                paragraphs,
+                heading_ratio=float(app_config.get("structure_recovery_topology_projection_layout_signals_heading_ratio", 1.15) or 1.15),
+                short_line_chars=int(app_config.get("structure_recovery_topology_projection_layout_signals_short_line_chars", 80) or 80),
+                baseline_tolerance_pt=float(app_config.get("structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt", 0.25) or 0.25),
+                min_tier_population=int(app_config.get("structure_recovery_topology_projection_layout_signals_min_tier_population", 2) or 2),
+            )
         projection = apply_document_map_topology(
             paragraphs,
             document_map,
             app_config=app_config,
+            layout_signals=layout_signals,
         )
     except Exception:
         return

@@ -260,6 +260,11 @@ class AppConfig(Mapping[str, Any]):
     structure_recovery_topology_projection_enabled: bool
     structure_recovery_topology_projection_save_debug_artifacts: bool
     structure_recovery_topology_projection_binding_splits_enabled: bool
+    structure_recovery_topology_projection_layout_signals_enabled: bool
+    structure_recovery_topology_projection_layout_signals_heading_ratio: float
+    structure_recovery_topology_projection_layout_signals_short_line_chars: int
+    structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt: float
+    structure_recovery_topology_projection_layout_signals_min_tier_population: int
     structure_recovery_reconciliation_targeted_enabled: bool
     structure_recovery_reconciliation_targeted_threshold: int
     structure_recovery_reconciliation_targeted_max_paragraphs: int
@@ -940,12 +945,15 @@ def _resolve_structure_recovery_settings(
         parse_config_bool_fn=parse_config_bool,
         parse_choice_str_fn=parse_choice_str,
         parse_config_int_fn=parse_config_int,
+        parse_config_float_fn=parse_config_float,
         parse_optional_config_str_fn=parse_optional_config_str,
         parse_bool_env_fn=parse_bool_env,
         parse_int_env_fn=parse_int_env,
+        parse_float_env_fn=parse_float_env,
         parse_choice_env_fn=parse_choice_env,
         parse_optional_str_env_fn=parse_optional_str_env,
         clamp_int_fn=_clamp_int,
+        clamp_float_fn=_clamp_float,
         structure_recovery_mode_values=STRUCTURE_RECOVERY_MODE_VALUES,
         structure_recognition_min_confidence_values=STRUCTURE_RECOGNITION_MIN_CONFIDENCE_VALUES,
     )

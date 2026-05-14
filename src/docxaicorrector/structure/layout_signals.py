@@ -136,6 +136,14 @@ def _mode_font_size(rounded_sizes: Sequence[float]) -> float:
     return min(size for size, count in counts.items() if count == max_count)
 
 
+def _is_observed_page_hint_transition(previous_page_number: int | None, current_page_number: int | None) -> bool:
+    return (
+        previous_page_number is not None
+        and current_page_number is not None
+        and previous_page_number != current_page_number
+    )
+
+
 def _build_tiers(
     paragraphs: Sequence[ParagraphUnit],
     *,
@@ -220,7 +228,7 @@ def _build_records(
             and representative_pt >= body_baseline_pt * heading_ratio
         )
         previous_page_number = paragraphs[offset - 1].page_number if offset > 0 else None
-        is_first_on_page = previous_page_number is not None and previous_page_number != paragraph.page_number
+        is_first_on_page = _is_observed_page_hint_transition(previous_page_number, paragraph.page_number)
         is_above_baseline = (
             paragraph.font_size_pt is not None
             and paragraph.font_size_pt > body_baseline_pt + baseline_tolerance_pt
@@ -250,7 +258,7 @@ def _build_degraded_records(
 
     for offset, paragraph in enumerate(paragraphs):
         previous_page_number = paragraphs[offset - 1].page_number if offset > 0 else None
-        is_first_on_page = previous_page_number is not None and previous_page_number != paragraph.page_number
+        is_first_on_page = _is_observed_page_hint_transition(previous_page_number, paragraph.page_number)
         records_by_logical_index[paragraph.logical_index] = LayoutSignalsRecord(
             logical_index=paragraph.logical_index,
             tier_id=-1,
