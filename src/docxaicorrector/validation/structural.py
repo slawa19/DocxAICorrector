@@ -1325,6 +1325,15 @@ def _apply_structure_summary_snapshot_fields(snapshot: dict[str, object], struct
         "structure_split_fallback_capped_descriptor_count": int(
             getattr(fallback_stats, "structure_split_fallback_capped_descriptor_count", 0) or 0
         ),
+        "structure_primary_classified_count": int(
+            getattr(structure_summary, "structure_primary_classified_count", 0) or 0
+        ),
+        "structure_retry_classified_count": int(
+            getattr(structure_summary, "structure_retry_classified_count", 0) or 0
+        ),
+        "structure_split_fallback_classified_count": int(
+            getattr(structure_summary, "structure_split_fallback_classified_count", 0) or 0
+        ),
     }
     for key, value in fallback_metrics.items():
         if _as_int(snapshot, key) == 0:
@@ -1365,6 +1374,16 @@ def _apply_prepared_snapshot_fields(snapshot: dict[str, object], prepared: objec
     ):
         if _as_int(snapshot, key) == 0:
             snapshot[key] = int(getattr(prepared_fallback_stats, key, 0) or 0)
+    prepared_fallback_provenance_metrics = (
+        prepared_structure_map.fallback_provenance_metrics() if prepared_structure_map is not None else {}
+    )
+    for key in (
+        "structure_primary_classified_count",
+        "structure_retry_classified_count",
+        "structure_split_fallback_classified_count",
+    ):
+        if _as_int(snapshot, key) == 0:
+            snapshot[key] = int(prepared_fallback_provenance_metrics.get(key, 0) or 0)
     current_document_map_status = str(snapshot.get("document_map_status") or "").strip().lower()
     prepared_document_map_status = str(getattr(prepared, "document_map_status", "") or "").strip()
     if prepared_document_map_status and current_document_map_status in {"", "not_requested"}:

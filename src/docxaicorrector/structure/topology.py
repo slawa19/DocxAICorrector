@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 import hashlib
 import json
 import re
@@ -14,7 +15,7 @@ from docxaicorrector.core.models import (
     ParagraphUnit,
     StructuralUnit,
 )
-from docxaicorrector.structure.document_map import DOCUMENT_MAP_SPLIT_HINT_SCHEMA_VERSION
+from docxaicorrector.structure.document_map import DOCUMENT_MAP_OUTLINE_MEMBERSHIP_SCHEMA_VERSION, DOCUMENT_MAP_SPLIT_HINT_SCHEMA_VERSION
 
 
 TOPOLOGY_PROJECTION_SCHEMA_VERSION = 1
@@ -73,6 +74,16 @@ _ENGLISH_NUMBER_TOKENS = frozenset(
 _BINDING_SPLIT_HEADING_NEIGHBORHOOD = 1
 
 
+@dataclass(frozen=True)
+class _AuthoritativeHeadingTarget:
+    authority: str
+    logical_index: int
+    heading_level: int
+    canonical_text: str
+    evidence: tuple[str, ...]
+    member_logical_indexes: tuple[int, ...] = ()
+
+
 def build_document_topology_projection_cache_key(
     paragraphs: list[ParagraphUnit],
     document_map: DocumentMap,
@@ -86,7 +97,16 @@ def build_document_topology_projection_cache_key(
         "document_map_cache_key": str(document_map_cache_key or ""),
         "topology_projection_schema_version": TOPOLOGY_PROJECTION_SCHEMA_VERSION,
         "topology_hint_schema_version": DOCUMENT_MAP_SPLIT_HINT_SCHEMA_VERSION,
+        "outline_membership_schema_version": DOCUMENT_MAP_OUTLINE_MEMBERSHIP_SCHEMA_VERSION,
         "binding_splits_enabled": bool(app_config.get("structure_recovery_topology_projection_binding_splits_enabled", False)),
+        "outline_fingerprint": [
+            {
+                "logical_index": int(entry.logical_index),
+                "title": str(entry.title or "").strip(),
+                "member_logical_indexes": [int(index) for index in getattr(entry, "member_logical_indexes", ()) or ()],
+            }
+            for entry in document_map.outline or ()
+        ],
         "paragraph_fingerprint": [
             {
                 "logical_index": int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", -1))),
@@ -129,17 +149,13 @@ def apply_document_map_topology(
     operations: list[DocumentTopologyOperation] = []
     occupied_logical_indexes: set[int] = set()
 
-    for authority, logical_index, heading_level, canonical_text, evidence in authoritative_heading_targets:
-        if logical_index in occupied_logical_indexes:
+    for target in authoritative_heading_targets:
+        if int(target.logical_index) in occupied_logical_indexes:
             continue
         unit = _build_heading_continuation_unit(
             paragraphs=paragraphs,
             position_by_logical_index=position_by_logical_index,
-            logical_index=logical_index,
-            heading_level=heading_level,
-            canonical_text=canonical_text,
-            authority=authority,
-            evidence=evidence,
+            target=target,
         )
         if unit is None:
             continue
@@ -183,12 +199,13 @@ def _iter_authoritative_heading_targets(document_map: DocumentMap):
             continue
         logical_index = int(entry.logical_index)
         seen_logical_indexes.add(logical_index)
-        yield (
-            "document_map_outline",
-            logical_index,
-            int(entry.level),
-            str(entry.title or "").strip(),
-            ("outline_entry", "adjacent_short_heading_fragments"),
+        yield _AuthoritativeHeadingTarget(
+            authority="document_map_outline",
+            logical_index=logical_index,
+            heading_level=int(entry.level),
+            canonical_text=str(entry.title or "").strip(),
+            evidence=("outline_entry",) if getattr(entry, "member_logical_indexes", ()) else ("outline_entry", "adjacent_short_heading_fragments"),
+            member_logical_indexes=tuple(int(index) for index in getattr(entry, "member_logical_indexes", ()) or ()),
         )
     toc_region = document_map.toc_region
     if toc_region is None:
@@ -199,12 +216,12 @@ def _iter_authoritative_heading_targets(document_map: DocumentMap):
             continue
         if str(entry.confidence or "").strip().lower() != "high":
             continue
-        yield (
-            "document_map_toc",
-            int(logical_index),
-            max(1, int(entry.target_level)),
-            str(entry.title or "").strip(),
-            ("toc_entry", "adjacent_short_heading_fragments"),
+        yield _AuthoritativeHeadingTarget(
+            authority="document_map_toc",
+            logical_index=int(logical_index),
+            heading_level=max(1, int(entry.target_level)),
+            canonical_text=str(entry.title or "").strip(),
+            evidence=("toc_entry", "adjacent_short_heading_fragments"),
         )
 
 
@@ -212,19 +229,31 @@ def _build_heading_continuation_unit(
     *,
     paragraphs: list[ParagraphUnit],
     position_by_logical_index: dict[int, int],
-    logical_index: int,
-    heading_level: int,
-    canonical_text: str,
-    authority: str,
-    evidence: tuple[str, ...],
+    target: _AuthoritativeHeadingTarget,
 ) -> StructuralUnit | None:
+    logical_index = int(target.logical_index)
+    heading_level = int(target.heading_level)
+    canonical_text = str(target.canonical_text or "").strip()
+    authority = str(target.authority or "").strip()
+    evidence = tuple(target.evidence)
+    member_logical_indexes = tuple(int(index) for index in target.member_logical_indexes)
     start_position = position_by_logical_index.get(int(logical_index))
     normalized_canonical_tokens = _heading_tokens(canonical_text)
     if start_position is None or len(normalized_canonical_tokens) < 2:
         return None
+    if member_logical_indexes:
+        return _build_explicit_heading_membership_unit(
+            paragraphs=paragraphs,
+            position_by_logical_index=position_by_logical_index,
+            logical_index=logical_index,
+            member_logical_indexes=member_logical_indexes,
+            heading_level=heading_level,
+            canonical_text=canonical_text,
+            authority=authority,
+            evidence=evidence,
+        )
 
     collected_indexes: list[int] = []
-    collected_texts: list[str] = []
     collected_tokens: list[str] = []
     for offset in range(_HEADING_CONTINUATION_WINDOW + 1):
         position = start_position + offset
@@ -241,7 +270,6 @@ def _build_heading_continuation_unit(
         if not _token_sequences_compatible(candidate_tokens, normalized_canonical_tokens):
             break
         collected_indexes.append(int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", -1))))
-        collected_texts.append(paragraph_text)
         collected_tokens = candidate_tokens
         if _normalized_heading_tokens(candidate_tokens) == _normalized_heading_tokens(normalized_canonical_tokens):
             break
@@ -261,20 +289,70 @@ def _build_heading_continuation_unit(
         if not _token_sequences_compatible(candidate_tokens, normalized_canonical_tokens):
             break
         collected_indexes.insert(0, int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", -1))))
-        collected_texts.insert(0, paragraph_text)
         collected_tokens = candidate_tokens
         if _normalized_heading_tokens(candidate_tokens) == _normalized_heading_tokens(normalized_canonical_tokens):
             break
 
     if len(collected_indexes) <= 1:
         return None
-    if not _token_sequences_compatible(collected_tokens, normalized_canonical_tokens):
+    if _normalized_heading_tokens(collected_tokens) != _normalized_heading_tokens(normalized_canonical_tokens):
         return None
 
     unit_type = "chapter_heading" if int(heading_level) <= 1 else "section_heading"
     return StructuralUnit(
         unit_type=unit_type,
         logical_indexes=tuple(collected_indexes),
+        canonical_text=str(canonical_text or "").strip(),
+        role="heading",
+        heading_level=int(heading_level),
+        confidence="high",
+        authority=authority,
+        evidence=tuple(evidence),
+    )
+
+
+def _build_explicit_heading_membership_unit(
+    *,
+    paragraphs: list[ParagraphUnit],
+    position_by_logical_index: dict[int, int],
+    logical_index: int,
+    member_logical_indexes: tuple[int, ...],
+    heading_level: int,
+    canonical_text: str,
+    authority: str,
+    evidence: tuple[str, ...],
+) -> StructuralUnit | None:
+    if len(member_logical_indexes) <= 1 or int(logical_index) not in member_logical_indexes:
+        return None
+    if tuple(member_logical_indexes) != tuple(sorted(member_logical_indexes)):
+        return None
+    for left_index, right_index in zip(member_logical_indexes, member_logical_indexes[1:], strict=False):
+        if int(right_index) != int(left_index) + 1:
+            return None
+
+    positions: list[int] = []
+    collected_tokens: list[str] = []
+    for member_logical_index in member_logical_indexes:
+        position = position_by_logical_index.get(int(member_logical_index))
+        if position is None:
+            return None
+        positions.append(position)
+        paragraph_text = str(getattr(paragraphs[position], "text", "") or "").strip()
+        paragraph_tokens = _heading_tokens(paragraph_text)
+        if not paragraph_tokens:
+            return None
+        collected_tokens.extend(paragraph_tokens)
+
+    for left_position, right_position in zip(positions, positions[1:], strict=False):
+        if int(right_position) != int(left_position) + 1:
+            return None
+    if _normalized_heading_tokens(collected_tokens) != _normalized_heading_tokens(_heading_tokens(canonical_text)):
+        return None
+
+    unit_type = "chapter_heading" if int(heading_level) <= 1 else "section_heading"
+    return StructuralUnit(
+        unit_type=unit_type,
+        logical_indexes=tuple(int(index) for index in member_logical_indexes),
         canonical_text=str(canonical_text or "").strip(),
         role="heading",
         heading_level=int(heading_level),
@@ -553,7 +631,7 @@ def _resolve_page_artifact_heading_split(
     split_hint: DocumentMapSplitHint,
     paragraphs: list[ParagraphUnit],
     position_by_logical_index: dict[int, int],
-    authoritative_heading_targets: tuple[tuple[str, int, int, str, tuple[str, ...]], ...],
+    authoritative_heading_targets: tuple[_AuthoritativeHeadingTarget, ...],
 ) -> tuple[int, str, str, int, str] | None:
     if str(split_hint.split_kind or "").strip().lower() != "page_artifact_heading":
         return None
@@ -590,7 +668,9 @@ def _resolve_page_artifact_heading_split(
     )
     if heading_target is None:
         return None
-    _, _, heading_level, canonical_text, evidence = heading_target
+    heading_level = int(heading_target.heading_level)
+    canonical_text = str(heading_target.canonical_text or "").strip()
+    evidence = tuple(heading_target.evidence)
     authority_evidence = "toc_entry" if "toc_entry" in evidence else "outline_entry"
     canonical_tokens = _heading_tokens(canonical_text)
     if not canonical_tokens:
@@ -604,20 +684,19 @@ def _find_local_heading_target(
     *,
     logical_index: int,
     heading_hint_tokens: list[str],
-    authoritative_heading_targets: tuple[tuple[str, int, int, str, tuple[str, ...]], ...],
-) -> tuple[str, int, int, str, tuple[str, ...]] | None:
-    matched_targets: list[tuple[tuple[int, int], tuple[str, int, int, str, tuple[str, ...]]]] = []
+    authoritative_heading_targets: tuple[_AuthoritativeHeadingTarget, ...],
+) -> _AuthoritativeHeadingTarget | None:
+    matched_targets: list[tuple[tuple[int, int], _AuthoritativeHeadingTarget]] = []
     for target in authoritative_heading_targets:
-        authority, target_logical_index, _, canonical_text, _ = target
-        if abs(int(target_logical_index) - int(logical_index)) > _BINDING_SPLIT_HEADING_NEIGHBORHOOD:
+        if abs(int(target.logical_index) - int(logical_index)) > _BINDING_SPLIT_HEADING_NEIGHBORHOOD:
             continue
-        canonical_tokens = _heading_tokens(canonical_text)
+        canonical_tokens = _heading_tokens(target.canonical_text)
         if not canonical_tokens:
             continue
         if not (_token_sequences_compatible(heading_hint_tokens, canonical_tokens) or _token_sequences_compatible(canonical_tokens, heading_hint_tokens)):
             continue
-        priority = 0 if authority == "document_map_outline" else 1
-        matched_targets.append(((abs(int(target_logical_index) - int(logical_index)), priority), target))
+        priority = 0 if target.authority == "document_map_outline" else 1
+        matched_targets.append(((abs(int(target.logical_index) - int(logical_index)), priority), target))
     if not matched_targets:
         return None
     matched_targets.sort(key=lambda item: item[0])

@@ -8,6 +8,8 @@ Goals:
 - build the body outline with consistent heading levels
 - assign paragraph anchors using the existing role taxonomy only
 - emit review zones for ambiguous ranges
+- preserve full canonical chapter titles when body evidence is longer or more complete than a shorter TOC wording
+- explicitly express multi-paragraph heading membership in outline authority when global evidence supports it
 
 Descriptor notes:
 - some paragraphs may include `emb`, a list of embedded sub-fragment hints extracted from a single compound paragraph
@@ -26,6 +28,12 @@ Constraints:
 - confidences must be one of: high, medium, low
 - `split_hints`, when present, must use only `page_artifact_heading` or `compound_toc_entries` for `split_kind`
 - if you have no explicit split intent, return `split_hints: []`
+- each outline item may include optional `member_logical_indexes`; omit it or return `[]` when the heading is a single paragraph or the membership is not globally supported
+- if `member_logical_indexes` is present, it must contain only adjacent logical indexes from the shown document coordinate space and must include that outline item's `logical_index`
+- for multi-paragraph chapter headings, keep `outline.title` as the full canonical title, not a shortened TOC-only form, when body plus TOC evidence together support a longer composite title
+- if a body heading includes a subtitle or suffix after `:` or `?`, keep it in `outline.title` when the combined evidence indicates it belongs to the same chapter title; do not drop it merely because the TOC version is shorter
+- when the TOC paragraph and body heading cluster describe the same chapter but the TOC wording is shorter, use the longer supported canonical body title for both `outline.title` and the matching TOC entry title instead of silently truncating to the shorter TOC wording
+- do not invent `member_logical_indexes` from local punctuation or line length alone; use them only when bounded global evidence supports one composite heading
 - if `toc_region` is present, paragraphs inside it should usually anchor as `toc_header` or `toc_entry`, not generic `body`, unless there is a strong reason not to
 - if one physical TOC paragraph clearly contains multiple ordered TOC entries, emit each TOC entry separately in `toc_region.entries` and add one `compound_toc_entries` split hint for that paragraph
 - only emit `compound_toc_entries` when those parts are supported one-to-one by the bounded TOC region and the body outline/body heading candidates; do not guess split parts from regex alone
@@ -58,7 +66,8 @@ Expected JSON shape:
       "level": 1,
       "logical_index": 120,
       "confidence": "high",
-      "evidence": ["toc_match", "bold_centered"]
+      "evidence": ["toc_match", "bold_centered"],
+      "member_logical_indexes": [120, 121]
     }
   ],
   "paragraph_anchors": {
@@ -75,3 +84,9 @@ Expected JSON shape:
   ],
   "split_hints": []
 }
+
+Heading authority rules:
+- Stage 1 may say that one heading spans multiple neighboring paragraphs, but it must say so explicitly through `outline.title` plus `member_logical_indexes`.
+- When global evidence supports a composite heading, prefer expressing the full canonical title in Stage 1 authority over leaving a shortened title that would force downstream topology repair to guess the missing suffix.
+- If the schema supports it, use `member_logical_indexes` to bind every paragraph that belongs to that one heading, and make `title` cover all those member paragraphs.
+- If evidence is insufficient, keep the outline conservative and omit `member_logical_indexes` rather than inventing extra membership.

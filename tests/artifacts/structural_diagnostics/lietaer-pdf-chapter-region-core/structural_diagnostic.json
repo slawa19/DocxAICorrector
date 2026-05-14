@@ -1,0 +1,44 @@
+{
+  "document_profile_id": "lietaer-pdf-chapter-region-core",
+  "run_profile_id": "structural-ai-first-default",
+  "validation_tier": "structural",
+  "validation_execution_mode": "passthrough",
+  "passed": true,
+  "failed_checks": [],
+  "preparation_error": null,
+  "preparation_diagnostic_snapshot": {
+    "document_map_present": true,
+    "document_topology_projection_status": "built",
+    "quality_gate_status": "pass",
+    "toc_body_concat_gate_source": "topology_projection",
+    "toc_body_concat_detected": false,
+    "toc_body_concat_structure_detected": false,
+    "document_topology_projection": {
+      "cache_key": "c5bfdec6aff946a4119a95b733617b97d9622a0c7841a7f436d71988cda9d28b",
+      "document_map_cache_key": "9b82a2e2693c1ce746f5e4e77a8c86abba2240d90d4c062bed2cddb182731558",
+      "operations": [
+        {
+          "op": "merge_heading_continuation",
+          "logical_indexes": [221, 222, 223, 224],
+          "canonical_text": "Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?",
+          "authority": "document_map_outline",
+          "confidence": "high",
+          "evidence": ["outline_entry"]
+        }
+      ],
+      "projected_units": [
+        {
+          "unit_type": "chapter_heading",
+          "logical_indexes": [221, 222, 223, 224],
+          "canonical_text": "Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?",
+          "role": "heading",
+          "heading_level": 1,
+          "confidence": "high",
+          "authority": "document_map_outline",
+          "evidence": ["outline_entry"],
+          "unit_id": "u_f31ba5073b8f"
+        }
+      ]
+    }
+  }
+}

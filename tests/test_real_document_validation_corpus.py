@@ -52,6 +52,15 @@ TASKS_PATH = Path(".vscode/tasks.json")
 WORKFLOW_DOC_PATH = Path("docs/testing/REAL_DOCUMENT_VALIDATION_WORKFLOW.md")
 MAINTENANCE_GUIDE_PATH = Path("docs/testing/UNIVERSAL_TEST_SYSTEM_MAINTENANCE_GUIDE_2026-03-21.md")
 REQUIRE_REAL_DOCUMENT_CAPABILITIES_ENV = "DOCXAI_REQUIRE_REAL_DOCUMENT_CAPABILITIES"
+LIETAER_CHAPTER_REGION_STRUCTURAL_DIAGNOSTIC_PATH = Path(
+    "tests/artifacts/structural_diagnostics/lietaer-pdf-chapter-region-core/structural_diagnostic.json"
+)
+LIETAER_CHAPTER_REGION_DOCUMENT_MAP_ARTIFACT_PATH = Path(
+    "tests/artifacts/structural_diagnostics/lietaer-pdf-chapter-region-core/document_map.json"
+)
+LIETAER_CHAPTER_REGION_TOPOLOGY_ARTIFACT_PATH = Path(
+    "tests/artifacts/structural_diagnostics/lietaer-pdf-chapter-region-core/document_topology_projection.json"
+)
 
 pytestmark = pytest.mark.system_deps
 
@@ -68,6 +77,110 @@ def _load_vscode_task_labels() -> set[str]:
 
 def _extract_backtick_values(text: str) -> set[str]:
     return {match.group(1) for match in re.finditer(r"`([^`]+)`", text)}
+
+
+def _load_json_payload(path: Path) -> dict[str, Any]:
+    return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
+
+
+def _assert_lietaer_chapter_region_chapter_11_stage1_authority_contract(
+    diagnostic_payload: dict[str, Any],
+    *,
+    document_map_payload: dict[str, Any],
+    topology_payload: dict[str, Any],
+) -> None:
+    snapshot = cast(dict[str, Any], diagnostic_payload["preparation_diagnostic_snapshot"])
+    snapshot_projection = cast(dict[str, Any], snapshot["document_topology_projection"])
+    toc_region = cast(dict[str, Any], document_map_payload["toc_region"])
+    toc_entries = cast(list[dict[str, Any]], toc_region["entries"])
+    outline_entries = cast(list[dict[str, Any]], document_map_payload["outline"])
+    topology_operations = cast(list[dict[str, Any]], topology_payload["operations"])
+    topology_units = cast(list[dict[str, Any]], topology_payload["projected_units"])
+    snapshot_operations = cast(list[dict[str, Any]], snapshot_projection["operations"])
+    snapshot_units = cast(list[dict[str, Any]], snapshot_projection["projected_units"])
+
+    assert diagnostic_payload["document_profile_id"] == "lietaer-pdf-chapter-region-core"
+    assert diagnostic_payload["run_profile_id"] == "structural-ai-first-default"
+    assert diagnostic_payload["validation_tier"] == "structural"
+    assert diagnostic_payload["validation_execution_mode"] == "passthrough"
+    assert diagnostic_payload["passed"] is True
+    assert diagnostic_payload["failed_checks"] == []
+
+    assert snapshot["document_map_present"] is True
+    assert snapshot["document_topology_projection_status"] == "built"
+    assert snapshot["quality_gate_status"] == "pass"
+    assert snapshot["toc_body_concat_gate_source"] == "topology_projection"
+    assert snapshot["toc_body_concat_detected"] is False
+    assert snapshot["toc_body_concat_structure_detected"] is False
+
+    assert snapshot_projection["cache_key"] == topology_payload["cache_key"]
+    assert snapshot_projection["document_map_cache_key"] == document_map_payload["cache_key"]
+    assert topology_payload["document_map_cache_key"] == document_map_payload["cache_key"]
+
+    chapter_11_toc_entry = [
+        entry
+        for entry in toc_entries
+        if entry["title"] == "11 Governance and We, the Citizens: An Ancient Future?"
+    ]
+    assert len(chapter_11_toc_entry) == 1, json.dumps(toc_entries, ensure_ascii=False, indent=2)
+    assert chapter_11_toc_entry[0]["candidate_body_logical_index"] == 221
+    assert chapter_11_toc_entry[0]["confidence"] == "high"
+
+    chapter_11_outline_entry = [
+        entry
+        for entry in outline_entries
+        if entry["title"] == "Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?"
+    ]
+    assert len(chapter_11_outline_entry) == 1, json.dumps(outline_entries, ensure_ascii=False, indent=2)
+    assert chapter_11_outline_entry[0]["logical_index"] == 222
+    assert chapter_11_outline_entry[0]["member_logical_indexes"] == [221, 222, 223, 224]
+    assert chapter_11_outline_entry[0]["confidence"] == "high"
+
+    chapter_11_topology_operation = [
+        operation
+        for operation in topology_operations
+        if operation["op"] == "merge_heading_continuation"
+        and operation["logical_indexes"] == [221, 222, 223, 224]
+    ]
+    assert len(chapter_11_topology_operation) == 1, json.dumps(topology_operations, ensure_ascii=False, indent=2)
+    assert chapter_11_topology_operation[0]["canonical_text"] == (
+        "Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?"
+    )
+    assert chapter_11_topology_operation[0]["authority"] == "document_map_outline"
+    assert chapter_11_topology_operation[0]["confidence"] == "high"
+    assert chapter_11_topology_operation[0]["evidence"] == ["outline_entry"]
+
+    chapter_11_snapshot_operation = [
+        operation
+        for operation in snapshot_operations
+        if operation["op"] == "merge_heading_continuation"
+        and operation["logical_indexes"] == [221, 222, 223, 224]
+    ]
+    assert len(chapter_11_snapshot_operation) == 1, json.dumps(snapshot_operations, ensure_ascii=False, indent=2)
+    assert chapter_11_snapshot_operation[0] == chapter_11_topology_operation[0]
+
+    chapter_11_topology_unit = [
+        unit
+        for unit in topology_units
+        if unit["unit_type"] == "chapter_heading" and unit["logical_indexes"] == [221, 222, 223, 224]
+    ]
+    assert len(chapter_11_topology_unit) == 1, json.dumps(topology_units, ensure_ascii=False, indent=2)
+    assert chapter_11_topology_unit[0]["canonical_text"] == (
+        "Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?"
+    )
+    assert chapter_11_topology_unit[0]["role"] == "heading"
+    assert chapter_11_topology_unit[0]["heading_level"] == 1
+    assert chapter_11_topology_unit[0]["authority"] == "document_map_outline"
+    assert chapter_11_topology_unit[0]["confidence"] == "high"
+    assert chapter_11_topology_unit[0]["evidence"] == ["outline_entry"]
+
+    chapter_11_snapshot_unit = [
+        unit
+        for unit in snapshot_units
+        if unit["unit_type"] == "chapter_heading" and unit["logical_indexes"] == [221, 222, 223, 224]
+    ]
+    assert len(chapter_11_snapshot_unit) == 1, json.dumps(snapshot_units, ensure_ascii=False, indent=2)
+    assert chapter_11_snapshot_unit[0] == chapter_11_topology_unit[0]
 
 
 def _require_or_skip_real_document_capability(message: str) -> None:
@@ -245,6 +358,44 @@ def test_lietaer_chapter_region_structural_run_profile_is_ai_first_default() -> 
     assert document_profile.structural_expected_result == "pass"
     assert document_profile.structural_expected_failed_checks == ()
     assert document_profile.structural_optional_failed_checks == ()
+
+
+def test_lietaer_chapter_region_structural_diagnostic_artifact_locks_chapter_11_stage1_authority_contract() -> None:
+    diagnostic_payload = _load_json_payload(LIETAER_CHAPTER_REGION_STRUCTURAL_DIAGNOSTIC_PATH)
+    document_map_payload = _load_json_payload(LIETAER_CHAPTER_REGION_DOCUMENT_MAP_ARTIFACT_PATH)
+    topology_payload = _load_json_payload(LIETAER_CHAPTER_REGION_TOPOLOGY_ARTIFACT_PATH)
+
+    _assert_lietaer_chapter_region_chapter_11_stage1_authority_contract(
+        diagnostic_payload,
+        document_map_payload=document_map_payload,
+        topology_payload=topology_payload,
+    )
+
+
+def test_lietaer_chapter_region_structural_passthrough_locks_chapter_11_stage1_authority_contract() -> None:
+    document_profile = REGISTRY.get_document_profile("lietaer-pdf-chapter-region-core")
+    source_path = document_profile.resolved_source_path()
+    _skip_if_missing_real_document_source(source_path)
+    _skip_if_legacy_doc_conversion_unavailable(source_path)
+    run_profile = _resolve_structural_run_profile(document_profile)
+    _skip_if_structural_passthrough_runtime_unavailable(run_profile)
+
+    diagnostic_payload = evaluate_structural_preparation_diagnostic(document_profile, run_profile)
+    snapshot = cast(dict[str, Any], diagnostic_payload["preparation_diagnostic_snapshot"])
+    snapshot_projection = cast(dict[str, Any], snapshot["document_topology_projection"])
+    document_map_cache_key = str(snapshot_projection["document_map_cache_key"])
+    topology_cache_key = str(snapshot_projection["cache_key"])
+    document_map_artifact_path = Path(".run/document_maps") / f"{document_map_cache_key}.json"
+    topology_artifact_path = Path(".run/document_topology") / f"{topology_cache_key}.json"
+
+    assert document_map_artifact_path.exists(), document_map_artifact_path
+    assert topology_artifact_path.exists(), topology_artifact_path
+
+    _assert_lietaer_chapter_region_chapter_11_stage1_authority_contract(
+        diagnostic_payload,
+        document_map_payload=_load_json_payload(document_map_artifact_path),
+        topology_payload=_load_json_payload(topology_artifact_path),
+    )
 
 
 def test_lietaer_full_benchmark_default_run_profile_enables_topology_projection() -> None:

@@ -198,6 +198,30 @@ For split operations, the chosen contract is **Variant A**:
 - Regex/text patterns are allowed only as validators for a Stage 1 hint or as
   signal extraction recorded in diagnostics.
 
+**Variant A applies symmetrically to merge operations.** The same rule must be
+enforced for `merge_heading_continuation` and for any future merge/group
+operation, not only for splits:
+
+- Projection must not extend `StructuralUnit.logical_indexes` past a Stage 1
+  authority boundary using text-pattern heuristics. "Stage 1 authority boundary"
+  means: the point at which the projected token sequence first matches the
+  Stage 1 `DocumentMapOutlineEntry.title` (or the canonical text exposed through
+  a future merge hint / multi-index outline range).
+- Specifically forbidden as binding membership signals: trailing punctuation
+  classes (`?`, `!`, `:`, `;`, `,`), "continues if previous line ended with
+  comma/colon" rules, generic short-line heading-fragment patterns, subtitle
+  shape detectors, and any combination of token-count thresholds with
+  punctuation shape that is not anchored to an explicit Stage 1 hint.
+- A merge operation must never produce a `StructuralUnit` whose
+  `canonical_text` does not cover the text of every member `logical_index`.
+  If body-side text contains material the Stage 1 outline title does not
+  cover (for example a subtitle after `:` or `?`), the correct fix is to
+  extend Stage 1 authority (outline canonical text, member-index range, or a
+  new merge hint kind), not to silently bind extra members in projection.
+- Regex/text patterns may still be used as candidate-only diagnostic signals
+  recorded in `evidence` / artifact, but must not change `logical_indexes`,
+  `canonical_text`, or gate inputs without a corresponding Stage 1 hint.
+
 This requires extending `DocumentMap` with explicit topology hints before
 `split_page_artifact_from_heading` and `split_compound_toc_entries` are allowed
 to affect structural readiness:
@@ -393,6 +417,24 @@ Rules:
   sufficient authority; the expected canonical title must come from
   `DocumentMap`/TOC/outline context.
 - The projection must record which physical logical indexes were grouped.
+- **Stop condition is non-negotiable.** Continuation collection must stop at
+  the first paragraph past which the accumulated tokens no longer match the
+  Stage 1 canonical title under the existing token-compatibility validator. The
+  projection must not introduce a "trailing suffix" / "one extra heading-like
+  line" / "continues on punctuation" path that lets membership extend beyond
+  the Stage 1 canonical match. Any such case must be modeled by extending Stage
+  1 authority (richer outline canonical text, an explicit member-index range,
+  or a new Stage 1 merge hint kind), not by widening projection heuristics.
+- **Canonical-text coverage invariant.** For every produced
+  `merge_heading_continuation` unit, the union of member paragraph texts must
+  be a subsequence (after normalization) of `canonical_text`. A unit whose
+  members include text not present in `canonical_text` is invalid and must be
+  rejected by projection rather than emitted with a divergent canonical text.
+- Tests for `merge_heading_continuation` must not encode document-specific
+  trailing fragments (for example `"An Ancient Future?"` as a binding
+  continuation past the Stage 1 title) as expected behavior. Such cases belong
+  to Stage 1 authority slices and must be expressed through the Stage 1 hint
+  schema, not through projection-side acceptance tests.
 
 ### Operation: `split_page_artifact_from_heading`
 
@@ -739,6 +781,21 @@ and restore/mapping diagnostics.
 - No full rewrite of `ParagraphUnit` identity.
 - No new document-specific regex branch for `the citizens`, `an ancient future?`,
   `2011.`, URL tails, or `ibid.`.
+- No projection-side "trailing suffix" / "one extra heading-like line past
+  canonical match" merge path in `src/docxaicorrector/structure/topology.py`,
+  regardless of how narrow the punctuation/length heuristic appears. The
+  failure mode this rules out is: a `_is_trailing_heading_suffix_candidate`-
+  style helper that lets `_build_heading_continuation_unit` keep collecting
+  paragraphs after the Stage 1 canonical title has matched, based on previous-
+  line punctuation (`,`, `:`) or current-line terminal punctuation (`?`, `!`)
+  and a token-count cap. Even when this helper has no string literal naming a
+  specific document, it is a document-pattern heuristic in disguise and a
+  Variant A violation.
+- No tests that encode the Lietaer-specific composite title
+  `"Governance and We, the Citizens" + "An Ancient Future?"` (or any other
+  document-specific subtitle shape) as expected projection acceptance. Such
+  cases must be exercised through Stage 1 hint fixtures, not through
+  projection-only fixtures that bind extra members past the outline title.
 
 ## Implementation Plan
 
@@ -746,6 +803,22 @@ and restore/mapping diagnostics.
 
 - Do not add another markdown structural postprocessor.
 - Do not add a special-case regex for `Governance and We, the Citizens`.
+- Do not add new text-pattern continuation/merge heuristics inside
+  `src/docxaicorrector/structure/topology.py`. The freeze covers, but is not
+  limited to: "trailing suffix" extension past Stage 1 canonical match,
+  previous-line-ends-with-`,`/`:` continuation rules, current-line-ends-with-
+  `?`/`!` heading-fragment acceptance, and bounded `len(tokens) <= N`
+  heading-suffix gates. These all bypass Variant A regardless of how local
+  the change looks.
+- Do not extend `_build_heading_continuation_unit` (or any equivalent
+  successor) with a `canonical_tokens_matched` mode that keeps collecting
+  paragraphs past the Stage 1 canonical title. Membership collection must
+  terminate at the canonical match; further membership requires Stage 1
+  authority.
+- Tests that look like `test_..._allows_one_trailing_..._fragment_beyond_
+  canonical_outline_title` must not be added. They institutionalize the
+  forbidden direction. If such a test exists from a previous iteration it
+  must be removed together with the heuristic it pins.
 - Keep existing dirty placeholder fix only as a transitional safety net until R1
   handles the source-side topology case.
 - Exit criterion: remove structural use of
@@ -757,6 +830,16 @@ and restore/mapping diagnostics.
   `corpus_registry.toml` covering Chapter 8-11 and the over-merged TOC region.
   Without it, late-book topology cases can only be verified through full-book
   reruns, which violates the inner-loop rule from the parent spec.
+- Correct response to a body-side composite title that contains material
+  beyond the Stage 1 outline title (for example a subtitle separated by `:`
+  or terminated with `?`) is one of: (a) extend the Stage 1 prompt and
+  `DocumentMapOutlineEntry` schema to carry the full canonical text and/or an
+  explicit member-index range, with a Stage 1 prompt-version bump and
+  `DocumentMap` cache-fingerprint bump; or (b) add a Stage 1
+  `merge_heading_continuation` hint kind, symmetric to the existing split
+  hint kinds, also with prompt-version and cache-fingerprint bumps. Adding a
+  projection-side punctuation/length rule is not an acceptable substitute
+  for either path.
 
 ### Phase 1a: DocumentMap Split Hint Schema
 
@@ -781,6 +864,12 @@ Acceptance:
   `logical_index` values.
 - The `DocumentMap` cache fingerprint is bumped; old cached maps are not
   reused as authority for any later binding split path.
+- If this phase or an immediate follow-up extends Stage 1 authoritative fields
+  used by projection (for example full-title preservation, member-index ranges,
+  or equivalent heading-membership authority), `DOCUMENT_MAP_PROMPT_VERSION`
+  must be bumped in the same branch together with the `DocumentMap` cache
+  fingerprint. Acceptance must fail if the proof run reuses a cached truncated
+  Stage 1 map that predates the new prompt/schema authority.
 - No downstream behavior change.
 
 ### Phase 1: Add Topology Projection Models And Artifact
@@ -810,6 +899,45 @@ Acceptance:
   through `core/config_structure_sections.py` with env overrides and clamps,
   covered by config-loader tests in the existing style.
 
+### Phase 1b: Stage 1 Chapter Title Authority Prompt Slice
+
+Prerequisite sub-slice for Phase 2 whenever a body-side composite heading
+contains material beyond the current Stage 1 outline title.
+
+Files likely affected:
+
+- `src/docxaicorrector/core/models.py` (extend Stage 1 heading authority only if
+  needed, for example `DocumentMapOutlineEntry.member_logical_indexes` or an
+  equivalent bounded membership/range field).
+- `src/docxaicorrector/structure/document_map.py` (serialization,
+  deserialization, schema validation, prompt-version bump, cache-fingerprint
+  bump).
+- `prompts/document_map_system.txt` (explicit instruction that body chapter
+  titles may span multiple adjacent paragraphs and may be longer than the TOC
+  title because of a subtitle/suffix).
+- targeted tests under `tests/test_document_map.py` and adjacent Stage 1 prompt
+  / cache-key coverage.
+
+Acceptance:
+
+- On a representative chapter-region run, `DocumentMap.toc_region.entries[*].title`
+  preserves the full subtitle when the owning TOC paragraph contains it and the
+  global TOC/body evidence supports one chapter title.
+- For the same chapter, `DocumentMap.outline[*].title` preserves that same full
+  title rather than a truncated prefix-only variant; subtitle loss is a Stage 1
+  failure, not a projection concern.
+- If Stage 1 heading authority is extended with explicit membership or range
+  metadata, the field round-trips through JSON and validation rejects malformed
+  indexes/ranges.
+- `DOCUMENT_MAP_PROMPT_VERSION` is bumped in the same slice as the new Stage 1
+  title/membership authority, and the `DocumentMap` cache fingerprint is bumped
+  with it. Acceptance evidence must come from a cold or invalidated Stage 1
+  cache, not from reuse of a cached truncated map.
+- The chapter-region acceptance artifact shows the active Stage 1 title for
+  Chapter 11 as `11 Governance and We, the Citizens: An Ancient Future?` (or an
+  equivalent full-title string that preserves the subtitle) rather than the
+  truncated `11 Governance and We, the Citizens` form.
+
 ### Phase 2: Project Chapter Heading Groups
 
 Implement `merge_heading_continuation` from `DocumentMap` outline/TOC authority.
@@ -829,6 +957,14 @@ Acceptance:
   heading members.
 - Reconciliation considers an outline entry covered when its logical index is a
   member of the projected heading unit.
+- Phase 2 acceptance for late-book composite chapter titles depends on active
+  Stage 1 authority already preserving the full chapter title / membership
+  boundary from Phase 1b. Projection must not recover a missing subtitle by a
+  topology-only punctuation/length heuristic.
+- For every emitted `chapter_heading` unit, `StructuralUnit.canonical_text`
+  covers the text of every paragraph in `logical_indexes`; a unit whose members
+  include text beyond `canonical_text` is invalid and does not satisfy Phase 2
+  acceptance.
 - On `lietaer-pdf-full-benchmark`, the late checkpoint must show a lower
   `structure_unit_unmapped_source_count` than the raw baseline for the affected
   composite-heading fragments after Phase 4 restore/mapping aggregation is in

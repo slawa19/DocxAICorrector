@@ -1,0 +1,27 @@
+{
+  "cache_key": "9b82a2e2693c1ce746f5e4e77a8c86abba2240d90d4c062bed2cddb182731558",
+  "stage": "document_map_v1",
+  "prompt_version": 7,
+  "split_hint_schema_version": 1,
+  "toc_region": {
+    "entries": [
+      {
+        "title": "11 Governance and We, the Citizens: An Ancient Future?",
+        "target_level": 1,
+        "candidate_body_logical_index": 221,
+        "confidence": "high"
+      }
+    ],
+    "confidence": "high"
+  },
+  "outline": [
+    {
+      "title": "Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?",
+      "level": 1,
+      "logical_index": 222,
+      "confidence": "high",
+      "evidence": ["toc_match"],
+      "member_logical_indexes": [221, 222, 223, 224]
+    }
+  ]
+}

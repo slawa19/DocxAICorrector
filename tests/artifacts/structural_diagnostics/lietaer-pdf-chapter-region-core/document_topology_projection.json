@@ -1,0 +1,31 @@
+{
+  "stage": "document_topology_projection_v1",
+  "schema_version": 1,
+  "cache_key": "c5bfdec6aff946a4119a95b733617b97d9622a0c7841a7f436d71988cda9d28b",
+  "document_map_cache_key": "9b82a2e2693c1ce746f5e4e77a8c86abba2240d90d4c062bed2cddb182731558",
+  "topology_projection_schema_version": 1,
+  "topology_hint_schema_version": 1,
+  "operations": [
+    {
+      "op": "merge_heading_continuation",
+      "logical_indexes": [221, 222, 223, 224],
+      "canonical_text": "Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?",
+      "authority": "document_map_outline",
+      "confidence": "high",
+      "evidence": ["outline_entry"]
+    }
+  ],
+  "projected_units": [
+    {
+      "unit_type": "chapter_heading",
+      "logical_indexes": [221, 222, 223, 224],
+      "canonical_text": "Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?",
+      "role": "heading",
+      "heading_level": 1,
+      "confidence": "high",
+      "authority": "document_map_outline",
+      "evidence": ["outline_entry"],
+      "unit_id": "u_f31ba5073b8f"
+    }
+  ]
+}

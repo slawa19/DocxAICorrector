@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import cast
 from types import SimpleNamespace
 import threading
@@ -5,8 +6,9 @@ import threading
 import pytest
 
 import docxaicorrector.structure.recognition as structure_recognition
+from docxaicorrector.structure.reconciliation import reconcile_with_document_map
 from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, DocumentTopologyProjection, EmbeddedStructureHint
-from docxaicorrector.core.models import ParagraphClassification, ParagraphUnit, StructuralUnit, StructureFallbackStats, StructureMap
+from docxaicorrector.core.models import ParagraphClassification, ParagraphUnit, StructuralUnit, StructureFallbackMetadata, StructureFallbackStats, StructureMap
 from docxaicorrector.structure.recognition import StructureRecognitionProgress
 
 
@@ -74,6 +76,19 @@ def _topology_projection(*units: StructuralUnit) -> DocumentTopologyProjection:
         cache_key="topology-cache-key",
         projected_units=units,
     )
+
+
+def _descriptors_for_indexes(
+    indexes: Sequence[int],
+    *,
+    topology_projection: DocumentTopologyProjection | None = None,
+) -> list:
+    paragraphs = [_paragraph(source_index=index, text=f"Paragraph {index}") for index in indexes]
+    return structure_recognition.build_paragraph_descriptors(paragraphs, topology_projection=topology_projection)
+
+
+def _split_boundary_key(descriptors, boundary: int) -> tuple[int, int]:
+    return descriptors[boundary - 1].index, descriptors[boundary].index
 
 
 def test_build_paragraph_descriptors_skips_blank_paragraphs_and_preserves_metadata():
@@ -1414,6 +1429,42 @@ def test_build_structure_map_returns_empty_map_on_classifier_failure(monkeypatch
 
     assert structure_map.classifications == {}
     assert structure_map.window_count == 1
+    assert structure_map.fallback_metadata_by_index == {}
+
+
+def test_build_structure_map_marks_primary_fallback_metadata_on_direct_success(monkeypatch):
+    paragraphs = [_paragraph(source_index=index, text=f"Paragraph {index}") for index in range(2)]
+
+    monkeypatch.setattr(
+        structure_recognition,
+        "_classify_descriptor_window",
+        lambda *, descriptors, **kwargs: (
+            [
+                ParagraphClassification(
+                    index=descriptor.index,
+                    role="body",
+                    heading_level=None,
+                    confidence="high",
+                    rationale=None,
+                )
+                for descriptor in descriptors
+            ],
+            2,
+        ),
+    )
+
+    structure_map = structure_recognition.build_structure_map(
+        paragraphs,
+        client=object(),
+        model="gpt-5-mini",
+        max_window_paragraphs=10,
+        overlap_paragraphs=0,
+    )
+
+    assert structure_map.fallback_metadata_by_index == {
+        0: StructureFallbackMetadata(fallback_depth=0, capped=False, source="primary"),
+        1: StructureFallbackMetadata(fallback_depth=0, capped=False, source="primary"),
+    }
 
 
 def test_build_structure_map_keeps_successful_windows_when_later_window_fails(monkeypatch):
@@ -1568,6 +1619,12 @@ def test_build_structure_map_retries_timeout_window_before_split_and_uses_retry_
         "structure_timeout_retry_failed_count": 0,
         "structure_split_fallback_capped_descriptor_count": 0,
     }
+    assert structure_map.fallback_metadata_by_index == {
+        0: StructureFallbackMetadata(fallback_depth=0, capped=False, source="retry"),
+        1: StructureFallbackMetadata(fallback_depth=0, capped=False, source="retry"),
+        2: StructureFallbackMetadata(fallback_depth=0, capped=False, source="retry"),
+        3: StructureFallbackMetadata(fallback_depth=0, capped=False, source="retry"),
+    }
 
 
 def test_build_structure_map_caps_nested_split_fallback_by_max_depth(monkeypatch):
@@ -1617,6 +1674,10 @@ def test_build_structure_map_caps_nested_split_fallback_by_max_depth(monkeypatch
         "structure_timeout_retry_succeeded_count": 0,
         "structure_timeout_retry_failed_count": 2,
         "structure_split_fallback_capped_descriptor_count": 2,
+    }
+    assert structure_map.fallback_metadata_by_index == {
+        2: StructureFallbackMetadata(fallback_depth=1, capped=False, source="split_fallback"),
+        3: StructureFallbackMetadata(fallback_depth=1, capped=False, source="split_fallback"),
     }
 
 
@@ -1722,6 +1783,7 @@ def test_build_structure_map_zero_split_caps_block_fallback_after_retry(monkeypa
 
     assert calls == [60.0, 90.0]
     assert structure_map.classified_count == 0
+    assert structure_map.fallback_metadata_by_index == {}
     assert structure_map.fallback_stats.as_metrics() == expected_metrics
 
 
@@ -2194,6 +2256,394 @@ def test_classify_descriptor_window_with_fallback_bounds_retry_timeout_and_only_
     assert [call["indexes"] for call in captured_calls] == [(0, 1), (0, 1)]
     assert total_tokens == 7
     assert len(resolved_windows) == 1
+    assert resolved_windows[0][2] == {
+        0: StructureFallbackMetadata(fallback_depth=0, capped=False, source="retry"),
+        1: StructureFallbackMetadata(fallback_depth=0, capped=False, source="retry"),
+    }
+
+
+def test_select_safe_split_boundary_snaps_midpoint_outside_protected_multi_index_unit():
+    projection = _topology_projection(
+        StructuralUnit(
+            unit_type="chapter_heading",
+            logical_indexes=(1, 2, 3),
+            canonical_text="Chapter heading",
+            role="heading",
+            heading_level=1,
+            confidence="high",
+            authority="document_map_outline",
+            evidence=("test",),
+        )
+    )
+    descriptors = _descriptors_for_indexes(range(5), topology_projection=projection)
+
+    boundary = structure_recognition._select_safe_split_boundary(
+        descriptors=descriptors,
+        topology_projection=projection,
+    )
+
+    assert boundary == 1
+    assert len(descriptors[:boundary]) == 1
+    assert len(descriptors[boundary:]) == 4
+
+
+def test_select_safe_split_boundary_keeps_midpoint_when_midpoint_is_safe():
+    projection = _topology_projection(
+        StructuralUnit(
+            unit_type="chapter_heading",
+            logical_indexes=(0, 1),
+            canonical_text="Leading heading",
+            role="heading",
+            heading_level=1,
+            confidence="high",
+            authority="document_map_outline",
+            evidence=("test",),
+        )
+    )
+    descriptors = _descriptors_for_indexes(range(6), topology_projection=projection)
+
+    boundary = structure_recognition._select_safe_split_boundary(
+        descriptors=descriptors,
+        topology_projection=projection,
+    )
+
+    assert boundary == 3
+
+
+def test_select_safe_split_boundary_prefers_boundary_preserving_larger_adjacent_unit_on_equal_distance():
+    projection = _topology_projection(
+        StructuralUnit(
+            unit_type="chapter_heading",
+            logical_indexes=(2, 3),
+            canonical_text="Left unit",
+            role="heading",
+            heading_level=1,
+            confidence="high",
+            authority="document_map_outline",
+            evidence=("test",),
+        ),
+        StructuralUnit(
+            unit_type="chapter_heading",
+            logical_indexes=(6, 7, 8),
+            canonical_text="Right unit",
+            role="heading",
+            heading_level=1,
+            confidence="high",
+            authority="document_map_toc",
+            evidence=("test",),
+        ),
+    )
+    descriptors = _descriptors_for_indexes(range(10), topology_projection=projection)
+
+    boundary = structure_recognition._select_safe_split_boundary(
+        descriptors=descriptors,
+        topology_projection=projection,
+        ancestor_split_points=(_split_boundary_key(descriptors, 5),),
+    )
+
+    assert boundary == 6
+
+
+def test_select_safe_split_boundary_prefers_left_boundary_on_full_tie():
+    projection = _topology_projection(
+        StructuralUnit(
+            unit_type="chapter_heading",
+            logical_indexes=(2, 3),
+            canonical_text="Left unit",
+            role="heading",
+            heading_level=1,
+            confidence="high",
+            authority="document_map_outline",
+            evidence=("test",),
+        ),
+        StructuralUnit(
+            unit_type="chapter_heading",
+            logical_indexes=(6, 7),
+            canonical_text="Right unit",
+            role="heading",
+            heading_level=1,
+            confidence="high",
+            authority="document_map_toc",
+            evidence=("test",),
+        ),
+    )
+    descriptors = _descriptors_for_indexes(range(10), topology_projection=projection)
+
+    boundary = structure_recognition._select_safe_split_boundary(
+        descriptors=descriptors,
+        topology_projection=projection,
+        ancestor_split_points=(_split_boundary_key(descriptors, 5),),
+    )
+
+    assert boundary == 4
+
+
+def test_select_safe_split_boundary_avoids_reusing_ancestor_split_point():
+    descriptors = _descriptors_for_indexes(range(6))
+    reused_boundary = _split_boundary_key(descriptors, 3)
+
+    boundary = structure_recognition._select_safe_split_boundary(
+        descriptors=descriptors,
+        topology_projection=None,
+        ancestor_split_points=(reused_boundary,),
+    )
+
+    assert boundary == 2
+    assert _split_boundary_key(descriptors, boundary) != reused_boundary
+
+
+def test_select_safe_split_boundary_snaps_away_from_edge_unit_without_empty_half():
+    projection = _topology_projection(
+        StructuralUnit(
+            unit_type="chapter_heading",
+            logical_indexes=(0, 1, 2),
+            canonical_text="Edge unit",
+            role="heading",
+            heading_level=1,
+            confidence="high",
+            authority="document_map_outline",
+            evidence=("test",),
+        )
+    )
+    descriptors = _descriptors_for_indexes(range(4), topology_projection=projection)
+
+    boundary = structure_recognition._select_safe_split_boundary(
+        descriptors=descriptors,
+        topology_projection=projection,
+    )
+
+    assert boundary == 3
+    assert len(descriptors[:boundary]) == 3
+    assert len(descriptors[boundary:]) == 1
+
+
+def test_select_safe_split_boundary_returns_none_when_no_safe_nonempty_boundary_exists():
+    projection = _topology_projection(
+        StructuralUnit(
+            unit_type="chapter_heading",
+            logical_indexes=(0, 1, 2),
+            canonical_text="Whole window unit",
+            role="heading",
+            heading_level=1,
+            confidence="high",
+            authority="document_map_outline",
+            evidence=("test",),
+        )
+    )
+    descriptors = _descriptors_for_indexes(range(3), topology_projection=projection)
+
+    boundary = structure_recognition._select_safe_split_boundary(
+        descriptors=descriptors,
+        topology_projection=projection,
+    )
+
+    assert boundary is None
+
+
+def test_build_structure_map_snaps_split_around_protected_topology_unit(monkeypatch):
+    paragraphs = [_paragraph(source_index=index, text=f"Paragraph {index}") for index in range(5)]
+    projection = _topology_projection(
+        StructuralUnit(
+            unit_type="chapter_heading",
+            logical_indexes=(1, 2, 3),
+            canonical_text="Protected heading",
+            role="heading",
+            heading_level=1,
+            confidence="high",
+            authority="document_map_outline",
+            evidence=("test",),
+        )
+    )
+    calls: list[tuple[int, ...]] = []
+    attempted_windows: dict[tuple[int, ...], int] = {}
+
+    def _classify(**kwargs):
+        indexes = tuple(descriptor.index for descriptor in kwargs["descriptors"])
+        calls.append(indexes)
+        attempted_windows[indexes] = attempted_windows.get(indexes, 0) + 1
+        if indexes == (0, 1, 2, 3, 4) and attempted_windows[indexes] <= 2:
+            raise TimeoutError("timeout")
+        return (
+            [
+                ParagraphClassification(
+                    index=descriptor.index,
+                    role="body",
+                    heading_level=None,
+                    confidence="high",
+                )
+                for descriptor in kwargs["descriptors"]
+            ],
+            len(indexes),
+        )
+
+    monkeypatch.setattr(structure_recognition, "_classify_descriptor_window", _classify)
+
+    structure_map = structure_recognition.build_structure_map(
+        paragraphs,
+        client=object(),
+        model="gpt-5-mini",
+        max_window_paragraphs=10,
+        overlap_paragraphs=0,
+        topology_projection=projection,
+    )
+
+    assert calls == [(0, 1, 2, 3, 4), (0, 1, 2, 3, 4), (0,), (1, 2, 3, 4)]
+    assert structure_map.classified_count == 5
+    assert structure_map.fallback_stats.as_metrics() == {
+        "structure_window_split_count": 1,
+        "structure_max_fallback_depth": 1,
+        "structure_split_fallback_descriptor_count": 5,
+        "structure_timeout_retry_count": 1,
+        "structure_timeout_retry_succeeded_count": 0,
+        "structure_timeout_retry_failed_count": 1,
+        "structure_split_fallback_capped_descriptor_count": 0,
+    }
+
+
+def test_build_structure_map_treats_unsplittable_window_as_fail_closed_without_empty_recursion(monkeypatch):
+    paragraphs = [_paragraph(source_index=index, text=f"Paragraph {index}") for index in range(3)]
+    projection = _topology_projection(
+        StructuralUnit(
+            unit_type="chapter_heading",
+            logical_indexes=(0, 1, 2),
+            canonical_text="Whole window unit",
+            role="heading",
+            heading_level=1,
+            confidence="high",
+            authority="document_map_outline",
+            evidence=("test",),
+        )
+    )
+    calls: list[tuple[int, ...]] = []
+
+    def _classify(**kwargs):
+        indexes = tuple(descriptor.index for descriptor in kwargs["descriptors"])
+        calls.append(indexes)
+        raise TimeoutError("timeout")
+
+    monkeypatch.setattr(structure_recognition, "_classify_descriptor_window", _classify)
+
+    structure_map = structure_recognition.build_structure_map(
+        paragraphs,
+        client=object(),
+        model="gpt-5-mini",
+        max_window_paragraphs=10,
+        overlap_paragraphs=0,
+        topology_projection=projection,
+    )
+
+    assert calls == [(0, 1, 2), (0, 1, 2)]
+    assert structure_map.classified_count == 0
+    assert structure_map.window_count == 0
+    assert structure_map.fallback_stats.as_metrics() == {
+        "structure_window_split_count": 0,
+        "structure_max_fallback_depth": 0,
+        "structure_split_fallback_descriptor_count": 0,
+        "structure_timeout_retry_count": 1,
+        "structure_timeout_retry_succeeded_count": 0,
+        "structure_timeout_retry_failed_count": 1,
+        "structure_split_fallback_capped_descriptor_count": 3,
+    }
+
+
+def test_build_structure_map_preserves_split_caps_after_boundary_snapping(monkeypatch):
+    paragraphs = [_paragraph(source_index=index, text=f"Paragraph {index}") for index in range(4)]
+    projection = _topology_projection(
+        StructuralUnit(
+            unit_type="chapter_heading",
+            logical_indexes=(1, 2, 3),
+            canonical_text="Protected heading",
+            role="heading",
+            heading_level=1,
+            confidence="high",
+            authority="document_map_outline",
+            evidence=("test",),
+        )
+    )
+    attempted_windows: dict[tuple[int, ...], int] = {}
+    calls: list[tuple[int, ...]] = []
+
+    def _classify(**kwargs):
+        indexes = tuple(descriptor.index for descriptor in kwargs["descriptors"])
+        calls.append(indexes)
+        attempted_windows[indexes] = attempted_windows.get(indexes, 0) + 1
+        if indexes in {(0, 1, 2, 3), (1, 2, 3)} and attempted_windows[indexes] <= 2:
+            raise TimeoutError("timeout")
+        return (
+            [
+                ParagraphClassification(
+                    index=descriptor.index,
+                    role="body",
+                    heading_level=None,
+                    confidence="high",
+                )
+                for descriptor in kwargs["descriptors"]
+            ],
+            len(indexes),
+        )
+
+    monkeypatch.setattr(structure_recognition, "_classify_descriptor_window", _classify)
+
+    structure_map = structure_recognition.build_structure_map(
+        paragraphs,
+        client=object(),
+        model="gpt-5-mini",
+        max_window_paragraphs=10,
+        overlap_paragraphs=0,
+        topology_projection=projection,
+        split_fallback_max_depth=1,
+    )
+
+    assert calls == [(0, 1, 2, 3), (0, 1, 2, 3), (0,), (1, 2, 3), (1, 2, 3)]
+    assert structure_map.classifications.keys() == {0}
+    assert structure_map.fallback_stats.as_metrics() == {
+        "structure_window_split_count": 1,
+        "structure_max_fallback_depth": 1,
+        "structure_split_fallback_descriptor_count": 4,
+        "structure_timeout_retry_count": 2,
+        "structure_timeout_retry_succeeded_count": 0,
+        "structure_timeout_retry_failed_count": 2,
+        "structure_split_fallback_capped_descriptor_count": 3,
+    }
+
+
+def test_reconcile_with_document_map_preserves_fallback_metadata_by_index():
+    paragraphs = [_paragraph(source_index=10, text="Chapter One")]
+    structure_map = StructureMap(
+        classifications={
+            10: ParagraphClassification(index=10, role="body", heading_level=None, confidence="medium"),
+        },
+        model_used="gpt-5-mini",
+        total_tokens_used=11,
+        processing_time_seconds=0.2,
+        window_count=1,
+        fallback_metadata_by_index={
+            10: StructureFallbackMetadata(fallback_depth=1, capped=False, source="split_fallback"),
+        },
+    )
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        model_used="gpt-4.1-mini",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+
+    reconciled_structure_map, _ = reconcile_with_document_map(paragraphs, document_map, structure_map)
+
+    assert reconciled_structure_map.classifications[10] == ParagraphClassification(
+        index=10,
+        role="heading",
+        heading_level=1,
+        confidence="high",
+        rationale="document_map_reconciliation",
+    )
+    assert reconciled_structure_map.fallback_metadata_by_index == structure_map.fallback_metadata_by_index
 
 
 def test_parse_classification_payload_accepts_compact_json_array():

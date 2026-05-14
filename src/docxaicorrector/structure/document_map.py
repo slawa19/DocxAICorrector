@@ -36,10 +36,11 @@ _VALID_DOCUMENT_MAP_CONFIDENCES = frozenset({"high", "medium", "low"})
 _VALID_REVIEW_ZONE_SEVERITIES = frozenset({"info", "warning", "critical"})
 _TIMEOUT_ERROR_NAMES = {"APITimeoutError", "TimeoutError"}
 DOCUMENT_MAP_SYSTEM_PROMPT_PATH = PROMPTS_DIR / "document_map_system.txt"
-DOCUMENT_MAP_PROMPT_VERSION = 6
+DOCUMENT_MAP_PROMPT_VERSION = 7
 DOCUMENT_MAP_DESCRIPTOR_SCHEMA_VERSION = 2
 DOCUMENT_MAP_POSTPROCESS_VERSION = 6
 DOCUMENT_MAP_SPLIT_HINT_SCHEMA_VERSION = 1
+DOCUMENT_MAP_OUTLINE_MEMBERSHIP_SCHEMA_VERSION = 1
 _DOCUMENT_MAP_MALFORMED_DIR = RUN_DIR / "document_maps"
 _LOGGER = logging.getLogger(__name__)
 _REVIEW_ZONE_SEVERITY_SYNONYMS = {
@@ -457,6 +458,7 @@ def _write_malformed_document_map_output_artifact(
                 "model": model,
                 "prompt_version": DOCUMENT_MAP_PROMPT_VERSION,
                 "descriptor_schema_version": DOCUMENT_MAP_DESCRIPTOR_SCHEMA_VERSION,
+                "outline_membership_schema_version": DOCUMENT_MAP_OUTLINE_MEMBERSHIP_SCHEMA_VERSION,
                 "descriptor_count": len(descriptors),
                 "sampled_logical_indexes": list(sampled_logical_indexes),
                 "schema_error_summary": schema_error_summary,
@@ -567,6 +569,9 @@ def _build_document_map_user_prompt(
     return (
         "Return a single JSON object with keys `body_start_logical_index`, `toc_region`, `outline`, `paragraph_anchors`, `review_zones`, and optional `split_hints`. "
         "For `paragraph_anchors`, use an object mapping logical indexes to `{role, heading_level, confidence}`. "
+        "For `outline`, use array items `{title, level, logical_index, confidence, evidence, member_logical_indexes}` where `member_logical_indexes` is optional, must stay within the shown logical indexes, and must include `logical_index` when present. "
+        "When a body heading spans multiple adjacent paragraphs, preserve the full canonical title in `title` and include the full physical membership in `member_logical_indexes` when global evidence supports it. "
+        "Do not shorten a composite body heading to the shorter TOC form when body and TOC evidence together support a longer canonical title. "
         "For `split_hints`, use an array of `{logical_index, split_kind, expected_parts, authority, confidence, evidence}` and return an empty array when there is no explicit split intent."
         " If `toc_region` is present, anchor the TOC header as `toc_header` and TOC entry paragraphs as `toc_entry` instead of generic body anchors whenever that interpretation is globally coherent."
         " If one physical TOC paragraph clearly contains multiple ordered TOC entries, keep one bounded `toc_region`, emit each TOC entry separately in `toc_region.entries`, and add a `compound_toc_entries` split hint for that owning logical index only when the parts are globally supported by the bounded TOC region and body outline/body heading candidates."
@@ -638,6 +643,10 @@ def _postprocess_document_map(document_map: DocumentMap, *, paragraphs: Sequence
         paragraph_anchors=paragraph_anchors,
         body_start_logical_index=int(document_map.body_start_logical_index or 0),
     )
+    toc_region = _enrich_toc_titles_from_authoritative_outline_membership(
+        toc_region,
+        outline=document_map.outline,
+    )
     outline = _recover_outline_entries(
         document_map.outline,
         toc_region=toc_region,
@@ -650,6 +659,15 @@ def _postprocess_document_map(document_map: DocumentMap, *, paragraphs: Sequence
         logical_to_paragraph=logical_to_paragraph,
         paragraph_anchors=paragraph_anchors,
         body_start_logical_index=int(document_map.body_start_logical_index or 0),
+    )
+    outline = _enrich_outline_titles_from_authoritative_membership(
+        outline,
+        logical_to_paragraph=logical_to_paragraph,
+        toc_region=toc_region,
+    )
+    toc_region = _enrich_toc_titles_from_authoritative_outline_membership(
+        toc_region,
+        outline=outline,
     )
     toc_region, paragraph_anchors, split_hints = _recover_compound_toc_stage1_authority(
         toc_region=toc_region,
@@ -966,6 +984,128 @@ def _recover_outline_entries(
     if not recovered:
         return outline
     return tuple(sorted(recovered_outline, key=lambda entry: int(entry.logical_index)))
+
+
+def _enrich_outline_titles_from_authoritative_membership(
+    outline: tuple[DocumentMapOutlineEntry, ...],
+    *,
+    logical_to_paragraph: dict[int, ParagraphUnit],
+    toc_region: DocumentMapTocRegion | None,
+) -> tuple[DocumentMapOutlineEntry, ...]:
+    recovered_outline: list[DocumentMapOutlineEntry] = []
+    recovered = False
+    for entry in outline:
+        authoritative_title = _resolve_authoritative_outline_title_from_membership(
+            entry,
+            logical_to_paragraph=logical_to_paragraph,
+            toc_region=toc_region,
+        )
+        if not authoritative_title or authoritative_title == str(entry.title or "").strip():
+            recovered_outline.append(entry)
+            continue
+        recovered_outline.append(
+            DocumentMapOutlineEntry(
+                title=authoritative_title,
+                level=int(entry.level),
+                logical_index=int(entry.logical_index),
+                confidence=str(entry.confidence or "").strip(),
+                evidence=tuple(entry.evidence),
+                member_logical_indexes=tuple(int(index) for index in entry.member_logical_indexes),
+            )
+        )
+        recovered = True
+    if not recovered:
+        return outline
+    return tuple(recovered_outline)
+
+
+def _enrich_toc_titles_from_authoritative_outline_membership(
+    toc_region: DocumentMapTocRegion | None,
+    *,
+    outline: tuple[DocumentMapOutlineEntry, ...],
+) -> DocumentMapTocRegion | None:
+    if toc_region is None or not toc_region.entries:
+        return toc_region
+    authoritative_titles_by_candidate_index = {
+        int(entry.logical_index): str(entry.title or "").strip()
+        for entry in outline
+        if str(entry.title or "").strip()
+    }
+    recovered_entries: list[DocumentMapTocEntry] = []
+    recovered = False
+    for entry in toc_region.entries:
+        candidate_index = entry.candidate_body_logical_index
+        authoritative_title = None if candidate_index is None else authoritative_titles_by_candidate_index.get(int(candidate_index))
+        if not authoritative_title or authoritative_title == str(entry.title or "").strip():
+            recovered_entries.append(entry)
+            continue
+        if not _document_map_titles_compatible(authoritative_title, entry.title):
+            recovered_entries.append(entry)
+            continue
+        recovered_entries.append(
+            DocumentMapTocEntry(
+                title=authoritative_title,
+                target_level=int(entry.target_level),
+                candidate_body_logical_index=None if candidate_index is None else int(candidate_index),
+                confidence=str(entry.confidence or "").strip(),
+            )
+        )
+        recovered = True
+    if not recovered:
+        return toc_region
+    return DocumentMapTocRegion(
+        start_logical_index=toc_region.start_logical_index,
+        end_logical_index=toc_region.end_logical_index,
+        header_logical_index=toc_region.header_logical_index,
+        entries=tuple(recovered_entries),
+        confidence=toc_region.confidence,
+    )
+
+
+def _resolve_authoritative_outline_title_from_membership(
+    entry: DocumentMapOutlineEntry,
+    *,
+    logical_to_paragraph: dict[int, ParagraphUnit],
+    toc_region: DocumentMapTocRegion | None,
+) -> str:
+    member_logical_indexes = tuple(int(index) for index in entry.member_logical_indexes)
+    if len(member_logical_indexes) <= 1:
+        return str(entry.title or "").strip()
+    paragraph_texts: list[str] = []
+    for logical_index in member_logical_indexes:
+        paragraph = logical_to_paragraph.get(int(logical_index))
+        if paragraph is None:
+            return str(entry.title or "").strip()
+        text = str(getattr(paragraph, "text", "") or "").strip()
+        if not text:
+            return str(entry.title or "").strip()
+        paragraph_texts.append(text)
+    cluster_title = re.sub(r"\s+", " ", " ".join(paragraph_texts)).strip()
+    if not cluster_title:
+        return str(entry.title or "").strip()
+    current_title = str(entry.title or "").strip()
+    if not current_title:
+        return cluster_title
+    if _normalize_document_map_title(cluster_title) == _normalize_document_map_title(current_title):
+        return cluster_title
+    if _document_map_titles_compatible(cluster_title, current_title):
+        return cluster_title
+    if toc_region is not None:
+        for toc_entry in toc_region.entries:
+            if int(toc_entry.candidate_body_logical_index or -1) != int(entry.logical_index):
+                continue
+            toc_title = str(toc_entry.title or "").strip()
+            if toc_title and _document_map_titles_compatible(cluster_title, toc_title):
+                return cluster_title
+    return current_title
+
+
+def _document_map_titles_compatible(left: str, right: str) -> bool:
+    left_tokens = _normalize_toc_matching_text(left)
+    right_tokens = _normalize_toc_matching_text(right)
+    if not left_tokens or not right_tokens:
+        return False
+    return left_tokens in right_tokens or right_tokens in left_tokens
 
 
 def _recover_missing_chapter_sequence_entries(
@@ -1328,16 +1468,53 @@ def _parse_outline_entries(raw_value: object, *, all_logical_indexes: set[int]) 
             raise DocumentMapSchemaError("outline evidence must be an array")
         if any(not isinstance(value, str) for value in evidence):
             raise DocumentMapSchemaError("outline evidence items must be strings")
+        logical_index = _coerce_known_logical_index(item.get("logical_index"), all_logical_indexes=all_logical_indexes, field_name="outline.logical_index")
+        member_logical_indexes = _parse_outline_member_logical_indexes(
+            item.get("member_logical_indexes"),
+            all_logical_indexes=all_logical_indexes,
+            anchor_logical_index=logical_index,
+        )
         parsed_entries.append(
             DocumentMapOutlineEntry(
                 title=str(item.get("title", "") or "").strip(),
                 level=_coerce_heading_level(item.get("level"), field_name="outline.level"),
-                logical_index=_coerce_known_logical_index(item.get("logical_index"), all_logical_indexes=all_logical_indexes, field_name="outline.logical_index"),
+                logical_index=logical_index,
                 confidence=_coerce_confidence(item.get("confidence"), field_name="outline.confidence"),
                 evidence=tuple(cast(str, value) for value in evidence),
+                member_logical_indexes=member_logical_indexes,
             )
         )
     return tuple(parsed_entries)
+
+
+def _parse_outline_member_logical_indexes(
+    raw_value: object,
+    *,
+    all_logical_indexes: set[int],
+    anchor_logical_index: int,
+) -> tuple[int, ...]:
+    if raw_value is None:
+        return ()
+    if isinstance(raw_value, tuple):
+        raw_value = list(raw_value)
+    if not isinstance(raw_value, list):
+        raise DocumentMapSchemaError("outline.member_logical_indexes must be an array")
+    if not raw_value:
+        return ()
+    parsed_indexes = [
+        _coerce_known_logical_index(value, all_logical_indexes=all_logical_indexes, field_name="outline.member_logical_indexes")
+        for value in raw_value
+    ]
+    if len(set(parsed_indexes)) != len(parsed_indexes):
+        raise DocumentMapSchemaError("outline.member_logical_indexes must not contain duplicates")
+    if parsed_indexes != sorted(parsed_indexes):
+        raise DocumentMapSchemaError("outline.member_logical_indexes must be sorted ascending")
+    if int(anchor_logical_index) not in parsed_indexes:
+        raise DocumentMapSchemaError("outline.member_logical_indexes must include outline.logical_index")
+    for left_index, right_index in zip(parsed_indexes, parsed_indexes[1:], strict=False):
+        if int(right_index) != int(left_index) + 1:
+            raise DocumentMapSchemaError("outline.member_logical_indexes must be contiguous")
+    return tuple(int(index) for index in parsed_indexes)
 
 
 def _parse_paragraph_anchors(raw_value: object, *, all_logical_indexes: set[int]) -> dict[int, DocumentMapAnchor]:

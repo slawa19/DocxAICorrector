@@ -352,7 +352,16 @@ def test_document_map_round_trips_with_split_hints_from_json_payload():
     source = DocumentMap(
         body_start_logical_index=0,
         toc_region=None,
-        outline=(DocumentMapOutlineEntry(title="Chapter 1", level=1, logical_index=1, confidence="high", evidence=("toc_match",)),),
+        outline=(
+            DocumentMapOutlineEntry(
+                title="Chapter 1: An Ancient Future?",
+                level=1,
+                logical_index=1,
+                confidence="high",
+                evidence=("toc_match",),
+                member_logical_indexes=(1, 2),
+            ),
+        ),
         paragraph_anchors={1: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
         review_zones=(),
         split_hints=(
@@ -374,14 +383,15 @@ def test_document_map_round_trips_with_split_hints_from_json_payload():
 
     parsed = _parse_document_map_payload(
         json.loads(json.dumps(asdict(source))),
-        all_logical_indexes={0, 1},
-        sampled_logical_indexes=(0, 1),
+        all_logical_indexes={0, 1, 2},
+        sampled_logical_indexes=(0, 1, 2),
         model_used=source.model_used,
         total_tokens_used=source.total_tokens_used,
         processing_time_seconds=source.processing_time_seconds,
     )
 
     assert parsed.split_hints == source.split_hints
+    assert parsed.outline == source.outline
 
 
 def test_document_map_round_trips_without_split_hints_from_json_payload():
@@ -499,6 +509,147 @@ def test_parse_document_map_payload_rejects_out_of_range_split_hint_logical_inde
             },
             all_logical_indexes={0},
             sampled_logical_indexes=(0,),
+            model_used="openrouter:test/document-map",
+            total_tokens_used=0,
+            processing_time_seconds=0.0,
+        )
+
+
+def test_parse_document_map_payload_accepts_outline_member_logical_indexes():
+    parsed = _parse_document_map_payload(
+        {
+            "body_start_logical_index": 0,
+            "toc_region": None,
+            "outline": [
+                {
+                    "title": "11 Governance and We, the Citizens: An Ancient Future?",
+                    "level": 1,
+                    "logical_index": 1,
+                    "confidence": "high",
+                    "evidence": ["toc_match", "body_heading_match"],
+                    "member_logical_indexes": [1, 2, 3, 4],
+                }
+            ],
+            "paragraph_anchors": {},
+            "review_zones": [],
+            "split_hints": [],
+        },
+        all_logical_indexes={0, 1, 2, 3, 4},
+        sampled_logical_indexes=(0, 1, 2, 3, 4),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+    )
+
+    assert parsed.outline == (
+        DocumentMapOutlineEntry(
+            title="11 Governance and We, the Citizens: An Ancient Future?",
+            level=1,
+            logical_index=1,
+            confidence="high",
+            evidence=("toc_match", "body_heading_match"),
+            member_logical_indexes=(1, 2, 3, 4),
+        ),
+    )
+
+
+def test_document_map_round_trip_preserves_outline_member_logical_indexes_and_full_title_in_json_payload():
+    source = DocumentMap(
+        body_start_logical_index=1,
+        toc_region=DocumentMapTocRegion(
+            start_logical_index=0,
+            end_logical_index=0,
+            header_logical_index=None,
+            entries=(
+                DocumentMapTocEntry(
+                    title="11 Governance and We, the Citizens: An Ancient Future?",
+                    target_level=1,
+                    candidate_body_logical_index=1,
+                    confidence="high",
+                ),
+            ),
+            confidence="high",
+        ),
+        outline=(
+            DocumentMapOutlineEntry(
+                title="11 Governance and We, the Citizens: An Ancient Future?",
+                level=1,
+                logical_index=1,
+                confidence="high",
+                evidence=("toc_match", "body_heading_match"),
+                member_logical_indexes=(1, 2, 3, 4),
+            ),
+        ),
+        paragraph_anchors={1: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        split_hints=(),
+        sampled=False,
+        sampled_logical_indexes=(0, 1, 2, 3, 4),
+    )
+
+    parsed = _parse_document_map_payload(
+        json.loads(json.dumps(asdict(source))),
+        all_logical_indexes={0, 1, 2, 3, 4},
+        sampled_logical_indexes=(0, 1, 2, 3, 4),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+    )
+
+    assert parsed.outline == source.outline
+    assert parsed.toc_region == source.toc_region
+
+
+def test_parse_document_map_payload_rejects_outline_member_logical_indexes_without_anchor():
+    with pytest.raises(DocumentMapSchemaError, match="outline.member_logical_indexes must include outline.logical_index"):
+        _parse_document_map_payload(
+            {
+                "body_start_logical_index": 0,
+                "toc_region": None,
+                "outline": [
+                    {
+                        "title": "Chapter 11",
+                        "level": 1,
+                        "logical_index": 1,
+                        "confidence": "high",
+                        "evidence": ["outline_entry"],
+                        "member_logical_indexes": [2, 3],
+                    }
+                ],
+                "paragraph_anchors": {},
+                "review_zones": [],
+                "split_hints": [],
+            },
+            all_logical_indexes={0, 1, 2, 3},
+            sampled_logical_indexes=(0, 1, 2, 3),
+            model_used="openrouter:test/document-map",
+            total_tokens_used=0,
+            processing_time_seconds=0.0,
+        )
+
+
+def test_parse_document_map_payload_rejects_non_contiguous_outline_member_logical_indexes():
+    with pytest.raises(DocumentMapSchemaError, match="outline.member_logical_indexes must be contiguous"):
+        _parse_document_map_payload(
+            {
+                "body_start_logical_index": 0,
+                "toc_region": None,
+                "outline": [
+                    {
+                        "title": "Chapter 11",
+                        "level": 1,
+                        "logical_index": 1,
+                        "confidence": "high",
+                        "evidence": ["outline_entry"],
+                        "member_logical_indexes": [1, 3],
+                    }
+                ],
+                "paragraph_anchors": {},
+                "review_zones": [],
+                "split_hints": [],
+            },
+            all_logical_indexes={0, 1, 2, 3},
+            sampled_logical_indexes=(0, 1, 2, 3),
             model_used="openrouter:test/document-map",
             total_tokens_used=0,
             processing_time_seconds=0.0,

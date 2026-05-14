@@ -13,7 +13,7 @@ from typing import Any, Callable, Protocol, cast
 
 from docxaicorrector.core.constants import PROMPTS_DIR
 from docxaicorrector.generation._generation import normalize_model_output
-from docxaicorrector.core.models import DocumentMap, DocumentTopologyProjection, ParagraphClassification, ParagraphDescriptor, ParagraphUnit, StructuralUnit, StructureFallbackStats, StructureMap
+from docxaicorrector.core.models import DocumentMap, DocumentTopologyProjection, ParagraphClassification, ParagraphDescriptor, ParagraphUnit, StructuralUnit, StructureFallbackMetadata, StructureFallbackStats, StructureMap
 from docxaicorrector.generation.openai_response_utils import collect_response_text_traversal
 from docxaicorrector.structure._responses_timeout import call_responses_with_hard_timeout
 
@@ -484,6 +484,7 @@ def build_structure_map(
     )
 
     merged_classifications: dict[int, ParagraphClassification] = {}
+    merged_fallback_metadata: dict[int, StructureFallbackMetadata] = {}
     window_count = 0
     total_tokens_used = 0
     for window_index, window in enumerate(windows, start=1):
@@ -502,6 +503,7 @@ def build_structure_map(
                 client=cast(_StructureRecognitionClient, client),
                 model=model,
                 descriptors=window,
+                topology_projection=topology_projection,
                 timeout=timeout,
                 progress_callback=progress_callback,
                 processed_windows=processed_windows,
@@ -530,8 +532,19 @@ def build_structure_map(
             continue
         window_count += len(resolved_windows)
         total_tokens_used += resolved_tokens
-        for resolved_window, window_classifications in resolved_windows:
-            _merge_window_classifications(merged_classifications, window_classifications, window=resolved_window)
+        for resolved_entry in resolved_windows:
+            if len(resolved_entry) == 2:
+                resolved_window, window_classifications = resolved_entry
+                window_fallback_metadata_by_index: dict[int, StructureFallbackMetadata] = {}
+            else:
+                resolved_window, window_classifications, window_fallback_metadata_by_index = resolved_entry
+            _merge_window_classifications(
+                merged_classifications,
+                window_classifications,
+                window=resolved_window,
+                merged_fallback_metadata_by_index=merged_fallback_metadata,
+                window_fallback_metadata_by_index=window_fallback_metadata_by_index,
+            )
         processed_windows += 1
         _emit_structure_progress(
             progress_callback,
@@ -558,6 +571,7 @@ def build_structure_map(
         processing_time_seconds=max(0.0, time.perf_counter() - started_at),
         window_count=window_count,
         fallback_stats=fallback_stats,
+        fallback_metadata_by_index=merged_fallback_metadata,
     )
 
 
@@ -566,19 +580,21 @@ def _classify_descriptor_window_with_fallback(
     client: _StructureRecognitionClient,
     model: str,
     descriptors: Sequence[ParagraphDescriptor],
+    topology_projection: DocumentTopologyProjection | None = None,
     timeout: float,
     progress_callback: StructureProgressCallback | None = None,
     processed_windows: int = 0,
     total_windows: int = 0,
     current_window: int | None = None,
     fallback_depth: int = 0,
+    ancestor_split_points: tuple[tuple[int, int], ...] = (),
     fallback_stats: StructureFallbackStats | None = None,
     timeout_retry_multiplier: float = 1.5,
     timeout_retry_max_seconds: float = 120.0,
     split_fallback_max_depth: int = 3,
     split_fallback_max_expansions: int = 8,
     fallback_budget: _SplitFallbackBudget | None = None,
-) -> tuple[list[tuple[list[ParagraphDescriptor], list[ParagraphClassification]]], int]:
+) -> tuple[list[tuple[list[ParagraphDescriptor], list[ParagraphClassification], dict[int, StructureFallbackMetadata]]], int]:
     descriptor_list = list(descriptors)
     try:
         classifications, total_tokens = _classify_descriptor_window(
@@ -587,7 +603,17 @@ def _classify_descriptor_window_with_fallback(
             descriptors=descriptor_list,
             timeout=timeout,
         )
-        return [(descriptor_list, classifications)], total_tokens
+        return [
+            (
+                descriptor_list,
+                classifications,
+                _build_fallback_metadata_by_index(
+                    classifications,
+                    source="primary" if fallback_depth == 0 else "split_fallback",
+                    fallback_depth=fallback_depth,
+                ),
+            )
+        ], total_tokens
     except Exception as exc:
         if not _should_split_descriptor_window(exc=exc, descriptor_count=len(descriptor_list)):
             raise
@@ -608,7 +634,17 @@ def _classify_descriptor_window_with_fallback(
         )
         if fallback_stats is not None:
             fallback_stats.structure_timeout_retry_succeeded_count += 1
-        return [(descriptor_list, classifications)], total_tokens
+        return [
+            (
+                descriptor_list,
+                classifications,
+                _build_fallback_metadata_by_index(
+                    classifications,
+                    source="retry",
+                    fallback_depth=fallback_depth,
+                ),
+            )
+        ], total_tokens
     except Exception as retry_exc:
         if _is_timeout_like_exception(retry_exc) and fallback_stats is not None:
             fallback_stats.structure_timeout_retry_failed_count += 1
@@ -618,6 +654,16 @@ def _classify_descriptor_window_with_fallback(
     next_fallback_depth = fallback_depth + 1
     expansion_count = 0 if fallback_budget is None else fallback_budget.expansion_count
     if next_fallback_depth > split_fallback_max_depth or expansion_count >= split_fallback_max_expansions:
+        if fallback_stats is not None:
+            fallback_stats.structure_split_fallback_capped_descriptor_count += len(descriptor_list)
+        return [], 0
+
+    split_boundary = _select_safe_split_boundary(
+        descriptors=descriptor_list,
+        topology_projection=topology_projection,
+        ancestor_split_points=ancestor_split_points,
+    )
+    if split_boundary is None:
         if fallback_stats is not None:
             fallback_stats.structure_split_fallback_capped_descriptor_count += len(descriptor_list)
         return [], 0
@@ -645,17 +691,19 @@ def _classify_descriptor_window_with_fallback(
         ),
     )
 
-    midpoint = max(1, len(descriptor_list) // 2)
+    split_point = _split_boundary_key(descriptor_list, split_boundary)
     left_windows, left_tokens = _classify_descriptor_window_with_fallback(
         client=client,
         model=model,
-        descriptors=descriptor_list[:midpoint],
+        descriptors=descriptor_list[:split_boundary],
+        topology_projection=topology_projection,
         timeout=timeout,
         progress_callback=progress_callback,
         processed_windows=processed_windows,
         total_windows=total_windows,
         current_window=current_window,
-        fallback_depth=fallback_depth + 1,
+        fallback_depth=next_fallback_depth,
+        ancestor_split_points=ancestor_split_points + (split_point,),
         fallback_stats=fallback_stats,
         timeout_retry_multiplier=timeout_retry_multiplier,
         timeout_retry_max_seconds=timeout_retry_max_seconds,
@@ -666,13 +714,15 @@ def _classify_descriptor_window_with_fallback(
     right_windows, right_tokens = _classify_descriptor_window_with_fallback(
         client=client,
         model=model,
-        descriptors=descriptor_list[midpoint:],
+        descriptors=descriptor_list[split_boundary:],
+        topology_projection=topology_projection,
         timeout=timeout,
         progress_callback=progress_callback,
         processed_windows=processed_windows,
         total_windows=total_windows,
         current_window=current_window,
-        fallback_depth=fallback_depth + 1,
+        fallback_depth=next_fallback_depth,
+        ancestor_split_points=ancestor_split_points + (split_point,),
         fallback_stats=fallback_stats,
         timeout_retry_multiplier=timeout_retry_multiplier,
         timeout_retry_max_seconds=timeout_retry_max_seconds,
@@ -686,6 +736,111 @@ def _classify_descriptor_window_with_fallback(
 @dataclass
 class _SplitFallbackBudget:
     expansion_count: int = 0
+
+
+@dataclass(frozen=True)
+class _ProtectedSplitRange:
+    start: int
+    end: int
+    unit_size: int
+    unit_id: str
+
+
+def _build_protected_split_ranges(
+    *,
+    descriptors: Sequence[ParagraphDescriptor],
+    topology_projection: DocumentTopologyProjection | None,
+) -> tuple[_ProtectedSplitRange, ...]:
+    if topology_projection is None or len(descriptors) <= 1:
+        return ()
+
+    window_positions = {descriptor.index: position for position, descriptor in enumerate(descriptors)}
+    protected_ranges: list[_ProtectedSplitRange] = []
+    for unit in sorted(
+        topology_projection.projected_units,
+        key=lambda item: (
+            item.logical_indexes[0] if item.logical_indexes else math.inf,
+            item.logical_indexes[-1] if item.logical_indexes else math.inf,
+            item.unit_id,
+        ),
+    ):
+        if unit.confidence != "high" or unit.authority not in _TOPOLOGY_GUARD_AUTHORITIES:
+            continue
+        if len(unit.logical_indexes) <= 1:
+            continue
+
+        member_positions = sorted({window_positions[index] for index in unit.logical_indexes if index in window_positions})
+        if len(member_positions) <= 1:
+            continue
+
+        protected_ranges.append(
+            _ProtectedSplitRange(
+                start=member_positions[0],
+                end=member_positions[-1],
+                unit_size=len(unit.logical_indexes),
+                unit_id=unit.unit_id,
+            )
+        )
+    return tuple(protected_ranges)
+
+
+def _split_boundary_key(descriptors: Sequence[ParagraphDescriptor], boundary: int) -> tuple[int, int]:
+    return descriptors[boundary - 1].index, descriptors[boundary].index
+
+
+def _is_boundary_protected(boundary: int, protected_ranges: Sequence[_ProtectedSplitRange]) -> bool:
+    return any(protected_range.start < boundary <= protected_range.end for protected_range in protected_ranges)
+
+
+def _adjacent_protected_unit_size(boundary: int, protected_ranges: Sequence[_ProtectedSplitRange]) -> int:
+    return max(
+        (
+            protected_range.unit_size
+            for protected_range in protected_ranges
+            if boundary == protected_range.start or boundary == protected_range.end + 1
+        ),
+        default=0,
+    )
+
+
+def _select_safe_split_boundary(
+    *,
+    descriptors: Sequence[ParagraphDescriptor],
+    topology_projection: DocumentTopologyProjection | None,
+    ancestor_split_points: Sequence[tuple[int, int]] = (),
+) -> int | None:
+    descriptor_count = len(descriptors)
+    if descriptor_count <= 1:
+        return None
+
+    midpoint = max(1, descriptor_count // 2)
+    protected_ranges = _build_protected_split_ranges(
+        descriptors=descriptors,
+        topology_projection=topology_projection,
+    )
+    ancestor_boundaries = frozenset(ancestor_split_points)
+    candidates: list[int] = []
+    for boundary in range(1, descriptor_count):
+        if _split_boundary_key(descriptors, boundary) in ancestor_boundaries:
+            continue
+        if _is_boundary_protected(boundary, protected_ranges):
+            continue
+        candidates.append(boundary)
+
+    if midpoint in candidates:
+        return midpoint
+    if not candidates:
+        return None
+
+    return min(
+        candidates,
+        key=lambda boundary: (
+            abs(boundary - midpoint),
+            -_adjacent_protected_unit_size(boundary, protected_ranges),
+            0 if boundary < midpoint else 1,
+            boundary,
+        ),
+    )
 
 
 def _resolve_retry_timeout(*, timeout: float, retry_multiplier: float, retry_max_seconds: float) -> float:
@@ -931,6 +1086,8 @@ def _merge_window_classifications(
     window_classifications: Sequence[ParagraphClassification],
     *,
     window: Sequence[ParagraphDescriptor],
+    merged_fallback_metadata_by_index: dict[int, StructureFallbackMetadata] | None = None,
+    window_fallback_metadata_by_index: dict[int, StructureFallbackMetadata] | None = None,
 ) -> None:
     if not window:
         return
@@ -941,11 +1098,42 @@ def _merge_window_classifications(
         existing = merged.get(classification.index)
         if existing is None:
             merged[classification.index] = classification
+            if (
+                merged_fallback_metadata_by_index is not None
+                and window_fallback_metadata_by_index is not None
+                and classification.index in window_fallback_metadata_by_index
+            ):
+                merged_fallback_metadata_by_index[classification.index] = window_fallback_metadata_by_index[
+                    classification.index
+                ]
             continue
         existing_distance = min(abs(existing.index - left_edge), abs(right_edge - existing.index))
         candidate_distance = min(abs(classification.index - left_edge), abs(right_edge - classification.index))
         if candidate_distance > existing_distance:
             merged[classification.index] = classification
+            if merged_fallback_metadata_by_index is not None:
+                if window_fallback_metadata_by_index is not None and classification.index in window_fallback_metadata_by_index:
+                    merged_fallback_metadata_by_index[classification.index] = window_fallback_metadata_by_index[
+                        classification.index
+                    ]
+                else:
+                    merged_fallback_metadata_by_index.pop(classification.index, None)
+
+
+def _build_fallback_metadata_by_index(
+    classifications: Sequence[ParagraphClassification],
+    *,
+    source: str,
+    fallback_depth: int,
+) -> dict[int, StructureFallbackMetadata]:
+    return {
+        classification.index: StructureFallbackMetadata(
+            fallback_depth=fallback_depth,
+            capped=False,
+            source=source,
+        )
+        for classification in classifications
+    }
 
 
 def _map_ai_role_to_pipeline_role(ai_role: str) -> str:

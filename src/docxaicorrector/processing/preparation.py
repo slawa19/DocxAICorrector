@@ -53,6 +53,7 @@ from docxaicorrector.document.segments import (
 from docxaicorrector.document.structure_authority import get_effective_structural_role
 from docxaicorrector.structure.document_map import (
     DOCUMENT_MAP_DESCRIPTOR_SCHEMA_VERSION,
+    DOCUMENT_MAP_OUTLINE_MEMBERSHIP_SCHEMA_VERSION,
     DOCUMENT_MAP_POSTPROCESS_VERSION,
     DOCUMENT_MAP_PROMPT_VERSION,
     DOCUMENT_MAP_SPLIT_HINT_SCHEMA_VERSION,
@@ -570,6 +571,7 @@ def _build_structure_recognition_summary(
     divergence_metrics: dict[str, int],
     structure_map: StructureMap | None,
 ) -> StructureRecognitionSummary:
+    fallback_provenance_metrics = {} if structure_map is None else structure_map.fallback_provenance_metrics()
     return StructureRecognitionSummary(
         ai_classified_count=int(applied_metrics.get("ai_classified", 0) or 0),
         ai_heading_count=int(applied_metrics.get("ai_headings", 0) or 0),
@@ -581,6 +583,11 @@ def _build_structure_recognition_summary(
         reconciliation_locked_override_count=int(applied_metrics.get("reconciliation_locked_overrides_applied", 0) or 0),
         reconciliation_locked_override_skip_count=int(applied_metrics.get("reconciliation_locked_overrides_skipped", 0) or 0),
         fallback_stats=StructureFallbackStats.from_source(None if structure_map is None else structure_map.fallback_stats),
+        structure_primary_classified_count=int(fallback_provenance_metrics.get("structure_primary_classified_count", 0) or 0),
+        structure_retry_classified_count=int(fallback_provenance_metrics.get("structure_retry_classified_count", 0) or 0),
+        structure_split_fallback_classified_count=int(
+            fallback_provenance_metrics.get("structure_split_fallback_classified_count", 0) or 0
+        ),
     )
 
 
@@ -792,6 +799,7 @@ def _build_document_map_cache_key(*, paragraphs: list, app_config: Mapping[str, 
         "descriptor_schema_version": DOCUMENT_MAP_DESCRIPTOR_SCHEMA_VERSION,
         "postprocess_version": DOCUMENT_MAP_POSTPROCESS_VERSION,
         "split_hint_schema_version": DOCUMENT_MAP_SPLIT_HINT_SCHEMA_VERSION,
+        "outline_membership_schema_version": DOCUMENT_MAP_OUTLINE_MEMBERSHIP_SCHEMA_VERSION,
         "structure_recovery_enabled": structure_recovery_enabled,
         "structure_recovery_mode": structure_recovery_mode,
         "coordinate_schema_version": coordinate_schema_version,
@@ -2560,6 +2568,9 @@ def _prepare_document_for_processing(
         quality_gate_reasons=list(quality_gate_reasons),
         ai_classified_count=structure_summary.ai_classified_count,
         ai_heading_count=structure_summary.ai_heading_count,
+        structure_primary_classified_count=structure_summary.structure_primary_classified_count,
+        structure_retry_classified_count=structure_summary.structure_retry_classified_count,
+        structure_split_fallback_classified_count=structure_summary.structure_split_fallback_classified_count,
         **structure_summary.fallback_stats.as_metrics(),
         first_block_has_toc=(
             _block_has_toc_roles(

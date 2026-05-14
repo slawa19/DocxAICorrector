@@ -197,6 +197,7 @@ def reconcile_with_document_map(
         processing_time_seconds=structure_map.processing_time_seconds,
         window_count=structure_map.window_count,
         fallback_stats=structure_map.fallback_stats,
+        fallback_metadata_by_index=dict(structure_map.fallback_metadata_by_index),
     )
     report = _build_reconciliation_report(
         paragraphs=paragraphs,
@@ -316,6 +317,7 @@ def targeted_reclassify_with_reconciliation_context(
         processing_time_seconds=structure_map.processing_time_seconds,
         window_count=structure_map.window_count,
         fallback_stats=structure_map.fallback_stats,
+        fallback_metadata_by_index=dict(structure_map.fallback_metadata_by_index),
     )
 
 

@@ -207,6 +207,125 @@ def test_apply_document_map_topology_merges_numeric_chapter_label_prefix_when_ou
     assert projection.operations[0].op == "merge_heading_continuation"
 
 
+def test_apply_document_map_topology_uses_explicit_outline_membership_for_multi_paragraph_heading():
+    paragraphs = [
+        _paragraph(10, "Chapter Eleven"),
+        _paragraph(11, "Governance and We,"),
+        _paragraph(12, "the Citizens"),
+        _paragraph(13, "An Ancient Future?"),
+        _paragraph(14, "Body paragraph starts here."),
+    ]
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(
+            DocumentMapOutlineEntry(
+                title="11 Governance and We the Citizens An Ancient Future",
+                level=1,
+                logical_index=11,
+                confidence="high",
+                evidence=("outline_entry",),
+                member_logical_indexes=(10, 11, 12, 13),
+            ),
+        ),
+        paragraph_anchors={11: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        sampled=False,
+        sampled_logical_indexes=(10, 11, 12, 13, 14),
+    )
+
+    projection = apply_document_map_topology(
+        paragraphs,
+        document_map,
+        app_config={"structure_recovery_document_map_preview_chars": 120},
+        document_map_cache_key="doc-map-key",
+    )
+
+    assert len(projection.projected_units) == 1
+    unit = projection.projected_units[0]
+    assert unit.logical_indexes == (10, 11, 12, 13)
+    assert unit.canonical_text == "11 Governance and We the Citizens An Ancient Future"
+    assert unit.evidence == ("outline_entry",)
+    assert projection.operations[0].op == "merge_heading_continuation"
+
+
+def test_apply_document_map_topology_does_not_extend_membership_past_canonical_outline_title_without_explicit_stage1_membership():
+    paragraphs = [
+        _paragraph(10, "Chapter Eleven"),
+        _paragraph(11, "Governance and We,"),
+        _paragraph(12, "the Citizens"),
+        _paragraph(13, "An Ancient Future?"),
+        _paragraph(14, "Body paragraph starts here."),
+    ]
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(
+            DocumentMapOutlineEntry(
+                title="Governance and We the Citizens",
+                level=1,
+                logical_index=11,
+                confidence="high",
+                evidence=("outline_entry",),
+            ),
+        ),
+        paragraph_anchors={11: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        sampled=False,
+        sampled_logical_indexes=(10, 11, 12, 13, 14),
+    )
+
+    projection = apply_document_map_topology(
+        paragraphs,
+        document_map,
+        app_config={"structure_recovery_document_map_preview_chars": 120},
+        document_map_cache_key="doc-map-key",
+    )
+
+    assert len(projection.projected_units) == 1
+    unit = projection.projected_units[0]
+    assert unit.logical_indexes == (10, 11, 12)
+    assert unit.canonical_text == "Governance and We the Citizens"
+    assert projection.operations[0].op == "merge_heading_continuation"
+
+
+def test_apply_document_map_topology_does_not_add_trailing_subtitle_or_prefix_once_canonical_title_boundary_is_reached():
+    paragraphs = [
+        _paragraph(10, "11"),
+        _paragraph(11, "Governance and We,"),
+        _paragraph(12, "the Citizens"),
+        _paragraph(13, "An Ancient Future?"),
+    ]
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(
+            DocumentMapOutlineEntry(
+                title="Governance and We the Citizens",
+                level=1,
+                logical_index=11,
+                confidence="high",
+                evidence=("outline_entry",),
+            ),
+        ),
+        paragraph_anchors={11: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        sampled=False,
+        sampled_logical_indexes=(10, 11, 12, 13),
+    )
+
+    projection = apply_document_map_topology(
+        paragraphs,
+        document_map,
+        app_config={"structure_recovery_document_map_preview_chars": 120},
+        document_map_cache_key="doc-map-key",
+    )
+
+    assert len(projection.projected_units) == 1
+    assert projection.projected_units[0].logical_indexes == (11, 12)
+    assert projection.projected_units[0].canonical_text == "Governance and We the Citizens"
+
+
 def test_apply_document_map_topology_merges_preceding_chapter_label_when_outline_anchor_starts_on_second_fragment():
     paragraphs = [
         _paragraph(10, "Chapter Eleven"),

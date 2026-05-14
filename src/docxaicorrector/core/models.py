@@ -417,6 +417,13 @@ class StructureFallbackStats:
 
 
 @dataclass(frozen=True)
+class StructureFallbackMetadata:
+    fallback_depth: int = 0
+    capped: bool = False
+    source: str = "primary"
+
+
+@dataclass(frozen=True)
 class StructureRecognitionSummary:
     ai_classified_count: int = 0
     ai_heading_count: int = 0
@@ -432,6 +439,9 @@ class StructureRecognitionSummary:
     fallback_reason: str = ""
     document_map_present: bool = False
     fallback_stats: StructureFallbackStats = field(default_factory=StructureFallbackStats)
+    structure_primary_classified_count: int = 0
+    structure_retry_classified_count: int = 0
+    structure_split_fallback_classified_count: int = 0
 
     @classmethod
     def from_source(cls, source: object | None) -> "StructureRecognitionSummary":
@@ -452,6 +462,11 @@ class StructureRecognitionSummary:
             fallback_reason=str(getattr(source, "fallback_reason", "") or ""),
             document_map_present=bool(getattr(source, "document_map_present", False)),
             fallback_stats=StructureFallbackStats.from_source(getattr(source, "fallback_stats", source)),
+            structure_primary_classified_count=int(getattr(source, "structure_primary_classified_count", 0) or 0),
+            structure_retry_classified_count=int(getattr(source, "structure_retry_classified_count", 0) or 0),
+            structure_split_fallback_classified_count=int(
+                getattr(source, "structure_split_fallback_classified_count", 0) or 0
+            ),
         )
 
     def as_progress_metrics(self, *, structure_map: "StructureMap | None" = None) -> dict[str, int]:
@@ -459,8 +474,16 @@ class StructureRecognitionSummary:
         if structure_map is not None:
             metrics["structure_window_count"] = structure_map.window_count
             metrics.update(structure_map.fallback_stats.as_metrics())
+            metrics.update(structure_map.fallback_provenance_metrics())
         else:
             metrics.update(self.fallback_stats.as_metrics())
+            metrics.update(
+                {
+                    "structure_primary_classified_count": self.structure_primary_classified_count,
+                    "structure_retry_classified_count": self.structure_retry_classified_count,
+                    "structure_split_fallback_classified_count": self.structure_split_fallback_classified_count,
+                }
+            )
         if self.ai_classified_count:
             metrics["ai_classified"] = self.ai_classified_count
         if self.ai_heading_count:
@@ -495,6 +518,9 @@ class StructureRecognitionSummary:
             "reconciliation_locked_overrides_applied": self.reconciliation_locked_override_count,
             "reconciliation_locked_overrides_skipped": self.reconciliation_locked_override_skip_count,
             "ai_first_degraded": int(self.ai_first_degraded),
+            "structure_primary_classified_count": self.structure_primary_classified_count,
+            "structure_retry_classified_count": self.structure_retry_classified_count,
+            "structure_split_fallback_classified_count": self.structure_split_fallback_classified_count,
             **self.fallback_stats.as_metrics(),
         }
 
@@ -507,6 +533,7 @@ class StructureMap:
     processing_time_seconds: float
     window_count: int
     fallback_stats: StructureFallbackStats = field(default_factory=StructureFallbackStats)
+    fallback_metadata_by_index: dict[int, StructureFallbackMetadata] = field(default_factory=dict)
 
     def get(self, index: int) -> ParagraphClassification | None:
         return self.classifications.get(index)
@@ -519,6 +546,23 @@ class StructureMap:
     def heading_count(self) -> int:
         return sum(1 for classification in self.classifications.values() if classification.role == "heading")
 
+    def fallback_provenance_metrics(self) -> dict[str, int]:
+        counts = {
+            "structure_primary_classified_count": 0,
+            "structure_retry_classified_count": 0,
+            "structure_split_fallback_classified_count": 0,
+        }
+        for logical_index, metadata in self.fallback_metadata_by_index.items():
+            if logical_index not in self.classifications:
+                continue
+            if metadata.source == "primary":
+                counts["structure_primary_classified_count"] += 1
+            elif metadata.source == "retry":
+                counts["structure_retry_classified_count"] += 1
+            elif metadata.source == "split_fallback":
+                counts["structure_split_fallback_classified_count"] += 1
+        return counts
+
 
 @dataclass(frozen=True)
 class DocumentMapOutlineEntry:
@@ -527,6 +571,10 @@ class DocumentMapOutlineEntry:
     logical_index: int
     confidence: str
     evidence: tuple[str, ...] = ()
+    member_logical_indexes: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "member_logical_indexes", tuple(int(index) for index in self.member_logical_indexes))
 
 
 @dataclass(frozen=True)

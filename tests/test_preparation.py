@@ -19,7 +19,7 @@ from docxaicorrector.core.models import DocumentTopologyProjection, EmbeddedStru
 from docxaicorrector.core.models import ImageAsset, ImageVariantCandidate
 from docxaicorrector.core.models import LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport
 from docxaicorrector.core.models import ParagraphRelation, ParagraphRelationDecision, ParagraphUnit, RelationNormalizationReport
-from docxaicorrector.core.models import StructuralUnit, StructureMap
+from docxaicorrector.core.models import StructuralUnit, StructureFallbackMetadata, StructureMap
 from docxaicorrector.core.models import StructureFallbackStats, StructureRecognitionSummary, StructureRepairReport
 from docxaicorrector.document.segments import CHAPTER_SEGMENTS_DETECTOR_VERSION
 from docxaicorrector.processing.processing_runtime import FrozenUploadPayload, build_in_memory_uploaded_file, build_preparation_request_marker
@@ -668,6 +668,53 @@ def test_apply_prepared_snapshot_fields_exposes_structure_fallback_stats_from_pr
     assert snapshot["structure_timeout_retry_succeeded_count"] == 1
     assert snapshot["structure_timeout_retry_failed_count"] == 3
     assert snapshot["structure_split_fallback_capped_descriptor_count"] == 6
+
+
+def test_apply_prepared_snapshot_fields_exposes_structure_fallback_provenance_counts():
+    fallback_stats = StructureFallbackStats(structure_window_split_count=1)
+    fallback_metadata_by_index = {
+        10: StructureFallbackMetadata(fallback_depth=0, capped=False, source="primary"),
+        11: StructureFallbackMetadata(fallback_depth=0, capped=False, source="retry"),
+        12: StructureFallbackMetadata(fallback_depth=2, capped=False, source="split_fallback"),
+    }
+    structure_map = StructureMap(
+        classifications={
+            10: ParagraphClassification(index=10, role="body", heading_level=None, confidence="high"),
+            11: ParagraphClassification(index=11, role="body", heading_level=None, confidence="medium"),
+            12: ParagraphClassification(index=12, role="heading", heading_level=1, confidence="low"),
+        },
+        model_used="gpt-4o-mini",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        window_count=1,
+        fallback_stats=fallback_stats,
+        fallback_metadata_by_index=fallback_metadata_by_index,
+    )
+    summary = preparation._build_structure_recognition_summary(
+        applied_metrics={"ai_classified": 3, "ai_headings": 1},
+        divergence_metrics={},
+        structure_map=structure_map,
+    )
+    prepared = SimpleNamespace(
+        document_map=None,
+        document_map_status="not_requested",
+        document_map_status_reason="",
+        document_topology_projection=None,
+        document_topology_projection_status="not_requested",
+        document_topology_projection_status_reason="",
+        structure_map=structure_map,
+        structure_recognition_summary=summary,
+    )
+
+    snapshot = structural_validation._build_preparation_diagnostic_defaults([])
+    structural_validation._apply_prepared_snapshot_fields(snapshot, prepared)
+
+    assert summary.structure_primary_classified_count == 1
+    assert summary.structure_retry_classified_count == 1
+    assert summary.structure_split_fallback_classified_count == 1
+    assert snapshot["structure_primary_classified_count"] == 1
+    assert snapshot["structure_retry_classified_count"] == 1
+    assert snapshot["structure_split_fallback_classified_count"] == 1
 
 
 def test_apply_topology_projection_snapshot_fallback_reconstructs_projection_from_prepared_document_map():
