@@ -9,20 +9,23 @@ not change Variant A authority discipline. Adds new `evidence` tags only.
 ## TL;DR
 
 Stage 1.5 currently decides `merge_heading_continuation` membership only from
-text-token compatibility against the (possibly truncated) `DocumentMap` canonical
-title. We have richer per-paragraph signals already attached to
-`ParagraphUnit` (font size, font cluster, page number, vertical gap, repeated-
+text-token compatibility against the Stage 1 `DocumentMap` canonical title.
+We have richer per-paragraph signals already attached to `ParagraphUnit`
+(font size, font cluster, optional page-number hints, vertical gap, repeated-
 across-pages flag) that are not consulted in that decision. This slice plugs
 those existing signals into the **evidence layer** of Stage 1.5 so that:
 
-- Continuation members can be accepted when token-prefix matching is impossible
-  due to a truncated `DocumentMap.outline.title` but the font cluster, vertical
-  gap, and page locality unambiguously confirm they belong to the same heading
-  unit.
-- Page-artifact + heading concatenations detected through page-boundary signals
-  can become candidate diagnostics (not binding splits) before Phase 3.
-- Stage 2 descriptors expose normalized font-cluster information so the
-  classifier and Slice 1 topology precedence guard can use them.
+- Continuation members can be accepted when token-prefix matching alone is
+  insufficient but Stage 1 authority already preserves the full canonical title
+  or explicit member bounds from Phase 1b, and local font/style signals confirm
+  that those paragraphs belong to one heading unit.
+- Page-artifact + heading concatenations can become candidate diagnostics (not
+  binding splits) from page-furniture phrase detection plus local heading
+  neighborhood, with page-boundary evidence emitted only when trustworthy page
+  hints are actually present.
+- Stage 2 and Slice 1 topology-precedence consumers continue to rely on the
+  existing projected-unit surfaces (`unit_id`, `unit_heading_level`,
+  `authority`). No descriptor schema change is introduced by this slice.
 
 No new runtime dependencies. No PDF backend change. No GPL/AGPL code lifted.
 All paragraph-level inputs already exist in `core/models.py` `ParagraphUnit`.
@@ -54,10 +57,18 @@ references for algorithm shape.
 - No reading-order recomputation (XYCut, etc.). Reading order remains the order
   produced by LibreOffice → python-docx.
 - No change to Stage 1 `DocumentMap` prompt or schema. Stage 1 prompt slice is
-  separate (see Phase 1b proposal in the parent spec follow-up).
+  separate (see Phase 1b in the parent spec). This slice assumes Phase 1b is
+  already active whenever late-book composite chapter titles require full-title
+  or explicit-member authority.
+- No projection-side recovery of text or membership beyond Stage 1 authority.
+  If Stage 1 emits a truncated title or incomplete member boundary, this slice
+  must fail closed rather than synthesize the missing suffix from layout alone.
 - No new binding split path. `split_page_artifact_from_heading` remains gated
   by `DocumentMapSplitHint` per Variant A. This slice only adds **candidate-
   only** diagnostics for page-artifact detection.
+- No new per-paragraph physical page-coordinate extraction. Current
+  `page_number` semantics are treated as optional hints, not as a universal
+  page-boundary oracle.
 - No change to `ParagraphUnit` schema. All required fields already exist.
 
 If at a later stage bbox-level signals are required, that is a separate spec
@@ -73,10 +84,12 @@ that would justify adding `pdfplumber` (MIT) as a single new dependency.
 - `font_size_z_score: float | None`
 - `style_cluster_id: int | None`
 - `vertical_gap_before_pt: float | None`
-- `page_number: int | None`
+- `page_number: int | None` (sparse page-number hint, not a reliable physical
+  page coordinate for every paragraph)
 - `is_repeated_across_pages: bool`
 - `is_likely_page_number: bool`
-- `explicit_heading_level: int | None` (from DOCX style "Heading N")
+- `heading_level: int | None` together with `heading_source: str | None`
+  (explicit DOCX heading style is represented as `heading_source == "explicit"`)
 - `heuristic_heading_level_hint: int | None`
 - `is_bold: bool`, `is_italic: bool`
 - `style_name: str`
@@ -88,28 +101,34 @@ to the extraction layer for this slice.
 
 In `src/docxaicorrector/structure/topology.py`:
 
-- `_is_heading_continuation_candidate(paragraph, paragraph_text)` only checks
-  `is_repeated_across_pages` and `is_likely_page_number`. It does not consult
-  font cluster or page boundary.
+- `_is_heading_continuation_candidate(paragraph, paragraph_text)` applies only
+  lexical/shape guards (`is_repeated_across_pages`, `is_likely_page_number`,
+  max-length / max-word-count / alphabetic / trailing-period filters). It does
+  not consult font cluster, style cluster, vertical gap, or observed page
+  boundaries.
 - `_build_heading_continuation_unit(...)` walks forward up to
   `_HEADING_CONTINUATION_WINDOW = 3` paragraphs and accepts a continuation only
   if `_token_sequences_compatible(candidate_tokens, canonical_tokens)` returns
   true. When `canonical_tokens` come from a truncated `DocumentMap.outline.title`
   (e.g., `"Governance and We"` with no `the Citizens: An Ancient Future?`), the
-  match fails for every continuation member, and the unit is built with only
-  the first physical paragraph as a member.
+  match fails for every continuation member, and the function emits **no merged
+  unit** because a one-member collection is rejected.
 
 This is the failure mode that the upstream chapter-region diagnostic exhibits
-on the Lietaer Chapter 11 case. The token check is necessary but not
-sufficient.
+on the Lietaer Chapter 11 case. In the current code, the token check is the
+only membership gate; this slice broadens the evidence layer only when Stage 1
+authority is already sufficient.
 
-### Page Boundary And Page-Artifact Phrases
+### Page Boundary Hints And Page-Artifact Phrases
 
-The `page_number` field on `ParagraphUnit` already changes value at page
-breaks. This means a paragraph stem like `"this page intentionally left blank"`
-that LibreOffice merges with `"Chapter Nine"` into a single paragraph is
-locally observable: a single paragraph straddles a known page-furniture phrase
-prefix. We can detect that without bbox.
+The current `page_number` field on `ParagraphUnit` is not a generalized
+per-paragraph page locator; in the current extraction path it behaves mainly as
+an optional page-number hint. This means page-boundary corroboration is **not**
+universally observable today. For this slice, candidate page-artifact
+diagnostics must rely primarily on a closed page-furniture phrase library plus
+local authoritative-heading neighborhood. A `page_break_boundary` evidence tag
+may be attached only when trustworthy page-hint transitions are actually
+present.
 
 ## Architectural Position
 
@@ -124,20 +143,23 @@ DocumentMap (Stage 1)
         app_config=...,
      )
         # Inside projection:
-        # - _is_heading_continuation_candidate consults font cluster
-        # - _build_heading_continuation_unit can widen on font/page evidence
+        # - _is_heading_continuation_candidate consults font/style evidence
+        # - _build_heading_continuation_unit can confirm Stage 1-bounded members
         # - candidate page-artifact diagnostics are recorded
 ```
 
 Stage 1.5 still uses Stage 1 authority. The widening rule is: **a continuation
-member is accepted iff token-prefix compatibility OR (heading-cluster font
-match AND adjacency AND short-text AND same-page-or-adjacent-page)**. Neither
-half of this OR is allowed to invent a new authority value: `authority`
+member is accepted only inside the Stage 1 authority envelope**. Concretely,
+the projection may use layout evidence to validate or reject candidate members
+already bounded by Stage 1 canonical text and/or explicit Stage 1
+`member_logical_indexes` from Phase 1b. The widening path must not invent a new
+authority value, new member boundary, or new canonical suffix. `authority`
 remains `document_map_outline` or `document_map_toc`, and the new path is
 recorded in `evidence` only.
 
-This preserves Variant A: regex/text-token logic is allowed as a validator and
-as evidence enrichment, but the authority is still Stage 1's.
+This preserves Variant A: text-token logic remains a validator, layout signals
+remain evidence enrichers, and missing Stage 1 title/membership authority is
+still a Stage 1 failure rather than a projection concern.
 
 ## Data Model Additions
 
@@ -168,9 +190,9 @@ class LayoutSignalsRecord:
     is_heading_tier: bool
     is_body_tier: bool
     font_size_pt: float | None
-    page_number: int | None
+    page_number: int | None      # optional page hint; absent for many paragraphs
     vertical_gap_before_pt: float | None
-    is_first_on_page: bool
+    is_first_on_page: bool       # true only for observed page-hint transitions
     is_short_line: bool          # text length <= SHORT_LINE_CHARS
     is_above_baseline: bool      # font_size_pt > baseline_pt + baseline_tolerance_pt
 
@@ -216,9 +238,10 @@ Vocabulary semantics:
 
 - `font_cluster_match`: continuation member's `FontClusterTier.tier_id` equals
   the heading anchor's tier_id and that tier is a heading tier.
-- `page_break_boundary`: the candidate page artifact split is corroborated by
-  a `page_number` change inside the same physical paragraph stem matching a
-  page-furniture phrase. Diagnostic only; never binding without Stage 1 hint.
+- `page_break_boundary`: the candidate page artifact split is additionally
+  corroborated by an **observed** page-hint transition in the local window.
+  This evidence is opportunistic only; its absence does not block the candidate
+  diagnostic, and it never becomes binding without Stage 1 hint authority.
 - `body_font_baseline_outlier`: paragraph's `font_size_pt` is detectable as
   body baseline outlier (used for low-confidence diagnostics, not binding).
 
@@ -278,9 +301,11 @@ Algorithm:
    - `tier_id` via the buckets above; missing `font_size_pt` → `tier_id = -1`
      and both `is_heading_tier=False, is_body_tier=False`.
    - `is_short_line := len(text.strip()) <= short_line_chars`.
-   - `is_first_on_page := previous paragraph's page_number is not None and
-     previous page_number != this page_number`.
-   - `is_above_baseline := font_size_pt > body_baseline_pt + baseline_tolerance_pt`.
+    - `is_first_on_page := previous paragraph's page_number is not None and
+      this page_number is not None and previous page_number != this page_number`.
+      This is an observed page-hint transition only and may remain `False` for
+      most paragraphs in current production extraction.
+    - `is_above_baseline := font_size_pt > body_baseline_pt + baseline_tolerance_pt`.
 
 `heading_ratio = 1.15` is the conservative default from `unstructured.io`-style
 font-rule pipelines. It tolerates `12pt body + 14pt heading` while rejecting
@@ -307,44 +332,47 @@ appends them to the unit's `evidence` field, deduplicated, in stable order.
 
 Acceptance rules, evaluated in order:
 
-1. **Hard reject**: if `is_repeated_across_pages` or `is_likely_page_number`,
-   return `(False, ())`. Unchanged from current behavior.
+1. **Existing hard/lexical guards stay in force**: keep today's reject rules
+   for repeated-across-pages, likely page numbers, overlong fragments,
+   non-alphabetic fragments, and fragments ending with a period. This slice
+   layers layout evidence on top of those guards; it does not remove them.
 2. **Token-prefix path**: if `_token_sequences_compatible(...)` succeeds
-   against the canonical heading tokens, return
+   against the Stage 1 canonical heading tokens, return
    `(True, ("adjacent_short_heading_fragments",))`. Unchanged.
-3. **Layout widening path** (new):
+3. **Layout confirmation path** (new, authority-bounded):
    - require `layout_signals is not None` and `anchor_logical_index is not None`;
+   - require the Stage 1 target already bounds this candidate via explicit
+     `member_logical_indexes` or equivalent Phase 1b authority metadata;
    - require `layout_signals.is_same_heading_tier(anchor_logical_index, paragraph.logical_index)`;
    - require `paragraph_record.is_short_line` is True;
-   - require NOT `layout_signals.is_page_break_between(anchor_logical_index, paragraph.logical_index)`;
+   - if `layout_signals.is_page_break_between(anchor_logical_index, paragraph.logical_index)`
+     is `True`, reject;
    - require `paragraph.style_cluster_id is None or paragraph.style_cluster_id == anchor.style_cluster_id` (i.e., not crossing into a different visual style);
-   - if all four hold, return
+   - if all checks hold, return
      `(True, ("adjacent_short_heading_fragments", "font_cluster_match"))`.
 4. **Default**: `(False, ())`.
 
-This is the durable fix for the truncated-title case: when Stage 1 emits
-`"Governance and We"` but font tier and same-page-locality unambiguously place
-`the Citizens` and `An Ancient Future?` in the same heading block,
-continuation widening accepts them and records the evidence trail honestly.
+This is **not** a durable fix for a truncated-title Stage 1 map. If Stage 1
+still emits `"Governance and We"` without the subtitle or without explicit
+member bounds from Phase 1b, this slice must not recover `the Citizens` /
+`An Ancient Future?` from layout alone. The durable fix for that case remains
+Phase 1b authority.
 
 ### Canonical Text Coverage Invariant Compliance
 
 The parent spec mandates that `StructuralUnit.canonical_text` cover the text of
-every member `logical_index`. The widening path must therefore extend the
-unit's `canonical_text` accordingly.
+every member `logical_index`. Because this slice does **not** extend Stage 1
+authority, the widening path must not synthesize canonical text by appending
+physical paragraph text outside the Stage 1 title.
 
-Update `_build_heading_continuation_unit(...)` so that when a continuation
-member is accepted via the layout widening path, the canonical text is
-recomputed as:
+Update `_build_heading_continuation_unit(...)` so that layout-confirmed members
+are emitted only when the Stage 1 target already provides a `canonical_text`
+that covers all authorized members (for example, because Phase 1b preserved the
+full title or because explicit member indexes are paired with a full canonical
+title). If that invariant is not met, fail closed and emit no widened unit.
 
-```text
-canonical_text = canonical_text + " " + paragraph.text.strip()
-```
-
-with whitespace normalized via `_collapse_whitespace(...)`. The first member
-keeps `target.canonical_text` as its base. Members accepted via token-prefix
-path keep the existing behavior (canonical text already covers them). This is
-the existing invariant being made enforceable, not a new authority claim.
+This keeps the invariant honest without turning layout evidence into a hidden
+authority-extension path.
 
 ### Page-Artifact Candidate Diagnostic
 
@@ -367,19 +395,19 @@ Algorithm:
 2. For each paragraph `P`:
    - lowercase normalize `P.text`;
    - if any phrase from the library is a prefix substring within the first
-     120 characters AND the paragraph text length exceeds the phrase length
-     by at least 6 characters (i.e., something follows it) AND the local
-     neighborhood window `[P-1, P, P+1]` contains a `page_number` change
-     (`is_page_break_between(P-1, P) or is_first_on_page(P)`) AND
-     `_find_local_heading_target(...)` returns a non-None local heading target
-     for `P` or `P+1`:
-   - emit a `DocumentTopologyOperation` with:
-     - `op = "candidate_page_artifact_split"` (new candidate-only op kind,
-       allowlisted but not bound);
-     - `authority = "document_map_outline"` or `"document_map_toc"` depending
-       on the matched target;
-     - `confidence = "candidate"`;
-     - `evidence = ("page_artifact_phrase", "page_break_boundary", "local_heading_neighborhood")`.
+      120 characters AND the paragraph text length exceeds the phrase length
+      by at least 6 characters (i.e., something follows it) AND
+      `_find_local_heading_target(...)` returns a non-None local heading target
+      for `P` or `P+1`:
+    - emit a `DocumentTopologyOperation` with:
+      - `op = "candidate_page_artifact_split"` (new candidate-only op kind,
+        allowlisted but not bound);
+      - `authority = "document_map_outline"` or `"document_map_toc"` depending
+        on the matched target;
+      - `confidence = "candidate"`;
+      - `evidence = ("page_artifact_phrase", "local_heading_neighborhood")`,
+        plus `"page_break_boundary"` only if the local window also shows an
+        observed page-hint transition.
 3. The candidate operation does **not** create a `StructuralUnit`. It is a
    diagnostic that subsequent phases (Phase 3 binding split) can promote into
    a binding split once Stage 1 emits the corresponding `DocumentMapSplitHint`.
@@ -396,7 +424,10 @@ for that defect.
 The `DocumentTopologyOperation.op` field is currently not validated against a
 closed vocabulary in the dataclass itself. This slice formalizes the closed
 set in `topology.py` as a module-level constant and validates inside
-`apply_document_map_topology(...)`:
+`apply_document_map_topology(...)` via a dedicated helper (for example,
+`_validate_projection_vocabularies(...)`) that checks every emitted operation's
+`op` and `evidence`, and every emitted unit's `unit_type` / `authority` /
+`evidence`, raising `ValueError` on an out-of-vocabulary value:
 
 ```python
 VALID_TOPOLOGY_OPERATIONS = frozenset(
@@ -452,10 +483,10 @@ def apply_document_map_topology(
     ...
 ```
 
-When `layout_signals is None`, behavior must be byte-compatible with the
-existing implementation (only token-prefix path; no candidate page-artifact
-diagnostics). When the caller passes `layout_signals`, the widening path
-becomes active.
+When `layout_signals is None`, behavior must remain semantically compatible
+with the existing implementation (only token-prefix path; no candidate
+page-artifact diagnostics). When the caller passes `layout_signals`, the
+evidence-enrichment path becomes active.
 
 6. Update `_is_heading_continuation_candidate(...)` signature and behavior as
    defined in **Continuation Widening Inside `_is_heading_continuation_candidate`**.
@@ -463,18 +494,20 @@ becomes active.
    - accept `layout_signals` and the heading anchor's `logical_index`;
    - thread evidence tags returned by `_is_heading_continuation_candidate(...)`
      into the unit's `evidence` field (deduplicated, stable order);
-   - extend `canonical_text` per the coverage-invariant rule.
+   - fail closed if Stage 1 `canonical_text` does not already cover all
+     authority-bounded members.
 8. Add `_emit_candidate_page_artifact_operations(...)` as defined above.
 9. Update `build_document_topology_projection_cache_key(...)` payload:
    - add `layout_signals_schema_version` field;
    - add `layout_signals_fingerprint` field that summarizes the body baseline
      and tier representatives. Suggested payload:
      `{"body_baseline_pt": ..., "tiers": [{"tier_id": ..., "pt": ...}, ...]}`.
-   - Only include this fingerprint when `layout_signals is not None`. When
-     `layout_signals is None`, the cache key payload must be byte-compatible
-     with today's output (this is required so that the existing chapter-region
-     and full-book cached projections are not invalidated for runs without
-     the flag).
+   - Include this fingerprint only when `layout_signals is not None`.
+   - Because this slice bumps `TOPOLOGY_PROJECTION_SCHEMA_VERSION`, existing
+     topology artifacts and cache keys are expected to invalidate once the
+     slice lands. Disabled-path compatibility requirement is therefore
+     **semantic**, not byte-identical: units/operations must match today's
+     behavior when the flag is off.
 
 ### File: `src/docxaicorrector/processing/preparation.py`
 
@@ -484,7 +517,7 @@ Find the existing call site of `apply_document_map_topology(...)`. Wire
 ```python
 layout_signals = (
     derive_layout_signals(paragraphs)
-    if bool(app_config.get("structure_recovery_topology_layout_signals_enabled", False))
+    if bool(app_config.get("structure_recovery_topology_projection_layout_signals_enabled", False))
     else None
 )
 topology_projection = apply_document_map_topology(
@@ -496,7 +529,7 @@ topology_projection = apply_document_map_topology(
 )
 ```
 
-`structure_recovery_topology_layout_signals_enabled` is the slice's feature
+`structure_recovery_topology_projection_layout_signals_enabled` is the slice's feature
 flag. Default `False` until acceptance tests pass.
 
 When `layout_signals is not None`, emit a new event
@@ -511,6 +544,13 @@ When `layout_signals is not None`, emit a new event
 The event is observability only. It is part of the existing event log and is
 covered by `docs/LOGGING_AND_ARTIFACT_RETENTION.md` retention defaults.
 
+### File: `src/docxaicorrector/validation/structural.py`
+
+Update the topology-projection snapshot fallback path so it threads
+`layout_signals` through `apply_document_map_topology(...)` under the same
+feature flag. This keeps structural diagnostic snapshots from silently using a
+different projection path than the preparation pipeline.
+
 ### File: `src/docxaicorrector/core/models.py`
 
 No schema changes for `ParagraphUnit`, `StructuralUnit`,
@@ -523,15 +563,16 @@ round-trip.
 
 ### File: `src/docxaicorrector/core/config_structure_sections.py`
 
-Add config keys:
+Add config keys under the existing `[structure_recovery.topology_projection]`
+section using the repository's current flattening pattern:
 
 ```toml
-[structure_recovery.topology_projection.layout_signals]
-enabled = false
-heading_ratio = 1.15
-short_line_chars = 80
-baseline_tolerance_pt = 0.25
-min_tier_population = 2
+[structure_recovery.topology_projection]
+layout_signals_enabled = false
+layout_signals_heading_ratio = 1.15
+layout_signals_short_line_chars = 80
+layout_signals_baseline_tolerance_pt = 0.25
+layout_signals_min_tier_population = 2
 ```
 
 Corresponding env overrides:
@@ -548,6 +589,14 @@ Clamping:
 - `short_line_chars` clamped to `[20, 400]`;
 - `baseline_tolerance_pt` clamped to `[0.0, 2.0]`;
 - `min_tier_population` clamped to `[1, 100]`.
+
+Flattened app-config keys must follow the same naming convention:
+
+- `structure_recovery_topology_projection_layout_signals_enabled`
+- `structure_recovery_topology_projection_layout_signals_heading_ratio`
+- `structure_recovery_topology_projection_layout_signals_short_line_chars`
+- `structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt`
+- `structure_recovery_topology_projection_layout_signals_min_tier_population`
 
 These follow the existing config-loader clamp pattern.
 
@@ -576,6 +625,9 @@ Stage 1 `DocumentMap` cache key.
 
 - `TOPOLOGY_PROJECTION_SCHEMA_VERSION`: `1 -> 2`.
 - `LAYOUT_SIGNALS_SCHEMA_VERSION`: new constant, starts at `1`.
+- Existing topology cache artifacts are expected to invalidate at rollout
+  because the projection schema changes. This is acceptable and should be
+  treated as an intentional one-time cache turnover.
 
 ### Payload Fingerprint For `layout_signals_fingerprint`
 
@@ -593,8 +645,9 @@ Stage 1 `DocumentMap` cache key.
 ```
 
 When `layout_signals is None`, this key is **absent** from the payload, not
-present-with-null. Absence preserves byte-compatibility for the
-flag-disabled path.
+present-with-null. This keeps the disabled-path payload minimal, but the
+overall cache key is still expected to change because the projection schema
+version is bumped by this slice.
 
 ### Artifact Retention
 
@@ -610,7 +663,8 @@ payload only. If a debug artifact is later needed, it is a follow-up.
 ## Stage 2 Descriptor Interaction
 
 `ParagraphDescriptor` already serializes `pt` (font_size_pt) and `hl`
-(explicit_heading_level). The widening path of Stage 1.5 will produce
+(derived from `heading_level` when the paragraph carries explicit heading
+authority). The widening path of Stage 1.5 will produce
 `StructuralUnit` membership for paragraphs that previously appeared as
 standalone descriptors. Through the existing `unit_id`/`unit_heading_level`
 fields on `ParagraphDescriptor`, Stage 2 already sees them as members of one
@@ -681,8 +735,9 @@ Acceptance:
 - `LayoutSignals.is_same_heading_tier(a, b)` returns `True` when two
   paragraphs share a heading tier and `False` when one of them has no font
   size.
-- `LayoutSignals.is_page_break_between(a, b)` returns `False` when both
-  share the same `page_number`, `True` when they differ.
+- `LayoutSignals.is_page_break_between(a, b)` returns `True` only when both
+  records carry concrete page hints and those hints differ; unknown/absent page
+  hints must resolve conservatively to `False`.
 - Round-trip test on a synthetic ten-paragraph fixture covers all branches
   of the bucketing logic, including the tie-break "prefer smallest tier" rule.
 
@@ -703,28 +758,32 @@ Files:
 Acceptance with `enabled = false`:
 
 - `tests/test_structure_topology.py` continues to pass unchanged.
-- Cache-key bytes are byte-identical to today's for the disabled path. A
-  targeted test asserts this on a fixture map + paragraph set.
+- Units and operations are semantically identical to today's disabled path. A
+  targeted test asserts identical emitted projection content on a fixture map +
+  paragraph set even though the cache key/schema version changes at rollout.
 
 Acceptance with `enabled = true`:
 
-- A synthetic fixture with truncated outline title `"Governance and We"`,
-  three continuation paragraphs of the same font size as the heading anchor,
-  same page number, short lines, produces a single `StructuralUnit` with
-  four `logical_indexes` and `evidence` containing both
-  `adjacent_short_heading_fragments` and `font_cluster_match`.
+- A synthetic fixture where the Stage 1 target already preserves the full
+  chapter title or explicit `member_logical_indexes` from Phase 1b, and three
+  continuation paragraphs share the heading font tier/style and remain short,
+  produces a single `StructuralUnit` with four `logical_indexes` and
+  `evidence` containing both `adjacent_short_heading_fragments` and
+  `font_cluster_match`.
 - The same fixture with one continuation paragraph at body-baseline font
   produces a unit with **two** `logical_indexes` (anchor + first matching
   continuation), not four. Font-cluster mismatch must reject continuation
   widening.
-- A fixture where a continuation paragraph crosses a page boundary
-  (`page_number` change) is rejected from widening even if its font tier
-  matches.
+- A fixture where an observed page-hint transition exists between anchor and
+  continuation is rejected from widening even if font tier matches.
 - A fixture with a paragraph stem `"this page intentionally left blank chapter nine"`
-  spanning a page boundary emits a `candidate_page_artifact_split`
-  operation with `confidence == "candidate"`.
-- The unit's `canonical_text` covers all member paragraph texts after
-  widening (canonical-text coverage invariant).
+  and a local authoritative heading target emits a
+  `candidate_page_artifact_split` operation with `confidence == "candidate"`.
+- The same fixture emits `page_break_boundary` only when the local window also
+  carries a concrete page-hint transition.
+- If the Stage 1 title is truncated and does not already cover the proposed
+  members, no widened unit is emitted. Projection must fail closed rather than
+  append the missing subtitle into `canonical_text`.
 - The new `evidence` tags appear in `VALID_TOPOLOGY_EVIDENCE` and pass
   serialization validation.
 - The new `candidate_page_artifact_split` op appears in
@@ -744,10 +803,14 @@ Files:
 
 Acceptance on `lietaer-pdf-chapter-region-core` with `enabled = true`:
 
-- Chapter 11 heading produces a single `StructuralUnit` covering the
-  multi-line title.
-- `canonical_text` for that unit includes `An Ancient Future?` (or the
-  document's actual full title after extraction).
+- Prerequisite: Phase 1b has already landed for this profile, and the Stage 1
+  artifact for Chapter 11 preserves the full title and/or explicit member
+  bounds needed by Variant A.
+- Under that prerequisite, Chapter 11 heading produces a single
+  `StructuralUnit` covering the multi-line title.
+- `canonical_text` for that unit matches the Stage 1 canonical title and
+  already includes `An Ancient Future?` (or the document's actual full title
+  after extraction).
 - No new `unmapped_target` fragments are introduced compared to baseline.
 - Existing Chapter 9 recovery is preserved.
 - The chapter-region structural diagnostic snapshot includes the
@@ -763,6 +826,9 @@ This slice will **not** fix the following classes:
 - Headings where Stage 1 emits no outline entry at all for the chapter. The
   layout widening requires an anchor target. If `DocumentMap.outline` and
   `toc_region.entries` both fail to anchor the chapter, no widening occurs.
+- Headings where Stage 1 emits a truncated title or incomplete member boundary.
+  This slice does not recover the missing suffix or member range from layout
+  alone; Phase 1b remains the durable fix.
 - Page-artifact splits in the absence of `DocumentMapSplitHint`. Only
   candidate diagnostics are produced. Binding remains Phase 3 work.
 - Compound TOC splits. Out of scope for this slice (handled by Phase 3 with
@@ -783,7 +849,7 @@ the slice.
   same font tier sits adjacent to a real heading. Mitigated by:
   - the `_HEADING_CONTINUATION_WINDOW = 3` bound;
   - the `is_short_line` filter;
-  - the page-boundary rejection;
+  - rejection on observed page-hint transitions when such hints exist;
   - same `style_cluster_id` requirement when present.
   In a counterfactual where the body baseline is incorrectly detected as
   matching the heading font (e.g., a monotone 12pt document with no
@@ -791,10 +857,9 @@ the slice.
   `body_baseline_pt` equal to the only tier, `is_heading_tier=False` for all
   paragraphs, and widening cannot fire. Failure mode is "no improvement",
   not "false continuation".
-- Cache-key bump may invalidate `.run/document_topology/*` artifacts. This is
-  expected and acceptable because the schema actually changes when
-  `layout_signals is not None`. The byte-compat guarantee for `is None` is
-  the protective surface for cached production runs.
+- Cache-key bump invalidates existing `.run/document_topology/*` artifacts.
+  This is expected and acceptable because the projection schema changes for the
+  whole slice rollout.
 - `candidate_page_artifact_split` diagnostics may grow in count. They are
   observability only; quality gates do not consume them. Retention policy
   is unchanged.
@@ -839,7 +904,7 @@ the flag to `True` by default before:
 - a documented runtime-cost measurement (single CPU pass, no I/O) confirms
   `derive_layout_signals` adds less than 50 ms on a 1000-paragraph book.
 
-This is the smallest implementation-ready slice that closes the truncated-
-canonical-text gap surfaced by the recent Chapter 11 diagnostic, while
-staying inside Variant A authority discipline and without introducing any
-new runtime dependency.
+This is the smallest implementation-ready slice that adds layout-derived
+evidence and candidate page-artifact diagnostics without violating Variant A.
+It intentionally does **not** claim to close a truncated Stage 1 canonical-text
+gap; that remains Phase 1b authority work.
