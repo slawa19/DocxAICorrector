@@ -903,16 +903,19 @@ def _is_heading_continuation_candidate(
         return True, ("adjacent_short_heading_fragments",)
     if layout_signals is not None and anchor_logical_index is not None:
         logical_index = int(getattr(paragraph, "logical_index", getattr(paragraph, "source_index", -1)))
+        anchor_record = layout_signals.get(int(anchor_logical_index))
         paragraph_record = layout_signals.get(logical_index)
         candidate_style_cluster_id = getattr(paragraph, "style_cluster_id", None)
         if (
             paragraph_record is not None
-            and layout_signals.is_same_heading_tier(anchor_logical_index, logical_index)
             and paragraph_record.is_short_line
             and not layout_signals.is_page_break_between(anchor_logical_index, logical_index)
             and (candidate_style_cluster_id is None or candidate_style_cluster_id == anchor_style_cluster_id)
         ):
-            return True, ("adjacent_short_heading_fragments", "font_cluster_match")
+            if layout_signals.is_same_heading_tier(anchor_logical_index, logical_index):
+                return True, ("adjacent_short_heading_fragments", "font_cluster_match")
+            if anchor_record is not None and anchor_record.is_heading_tier and paragraph_record.is_heading_tier:
+                return True, ("adjacent_short_heading_fragments", "body_font_baseline_outlier")
     return False, ()
 
 

@@ -914,7 +914,11 @@ def run_structural_passthrough_validation(
         chunk_size=int(runtime_resolution.effective.chunk_size),
         event_log=event_log,
     )
-    _apply_prepared_snapshot_fields(preparation_diagnostic_snapshot, prepared)
+    _apply_prepared_snapshot_fields(
+        preparation_diagnostic_snapshot,
+        prepared,
+        app_config=runtime_config,
+    )
     _apply_topology_projection_snapshot_fallback(
         preparation_diagnostic_snapshot,
         prepared,
@@ -1215,6 +1219,7 @@ def _build_preparation_diagnostic_defaults(event_log: Sequence[Mapping[str, obje
                 topology_projection = json.loads(artifact_path.read_text(encoding="utf-8"))
             except (OSError, ValueError, json.JSONDecodeError):
                 topology_projection = None
+    layout_signals_context = dict(_extract_event_context(event_log, "document_topology_layout_signals_built"))
     snapshot = {
         "paragraph_count": 0,
         "heading_count": 0,
@@ -1232,6 +1237,7 @@ def _build_preparation_diagnostic_defaults(event_log: Sequence[Mapping[str, obje
         "document_topology_projection_status": topology_status or "not_requested",
         "document_topology_projection_status_reason": topology_status_reason,
         "document_topology_projection": topology_projection,
+        "document_topology_layout_signals": None if not layout_signals_context else layout_signals_context,
         "front_matter_leaks": _extract_event_context_int_list(event_log, "reconciliation_report_saved", "front_matter_leaks"),
         "front_matter_body_advisories": _extract_event_context_int_list(
             event_log,
@@ -1341,11 +1347,66 @@ def _apply_structure_summary_snapshot_fields(snapshot: dict[str, object], struct
             snapshot[key] = value
 
 
-def _apply_prepared_snapshot_fields(snapshot: dict[str, object], prepared: object) -> None:
+def _build_layout_signals_snapshot_context(
+    *,
+    layout_signals: object,
+    paragraphs: Sequence[object],
+) -> dict[str, object]:
+    tiers = tuple(getattr(layout_signals, "tiers", ()) or ())
+    return {
+        "body_baseline_pt": getattr(layout_signals, "body_baseline_pt", None),
+        "tier_count": len(tiers),
+        "heading_tier_count": sum(1 for tier in tiers if bool(getattr(tier, "is_heading_candidate", False))),
+        "paragraphs_with_font_size_count": sum(
+            1 for paragraph in paragraphs if getattr(paragraph, "font_size_pt", None) is not None
+        ),
+        "heading_ratio": float(getattr(layout_signals, "heading_ratio", 1.15) or 1.15),
+    }
+
+
+def _maybe_backfill_layout_signals_snapshot(
+    snapshot: dict[str, object],
+    *,
+    paragraphs: Sequence[object],
+    app_config: Mapping[str, Any] | None,
+) -> None:
+    if snapshot.get("document_topology_layout_signals") is not None:
+        return
+    if app_config is None:
+        return
+    if not bool(app_config.get("structure_recovery_topology_projection_enabled", False)):
+        return
+    if not bool(app_config.get("structure_recovery_topology_projection_layout_signals_enabled", False)):
+        return
+    if not paragraphs:
+        return
+    try:
+        layout_signals = derive_layout_signals(
+            paragraphs,
+            heading_ratio=float(app_config.get("structure_recovery_topology_projection_layout_signals_heading_ratio", 1.15) or 1.15),
+            short_line_chars=int(app_config.get("structure_recovery_topology_projection_layout_signals_short_line_chars", 80) or 80),
+            baseline_tolerance_pt=float(app_config.get("structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt", 0.25) or 0.25),
+            min_tier_population=int(app_config.get("structure_recovery_topology_projection_layout_signals_min_tier_population", 2) or 2),
+        )
+    except Exception:
+        return
+    snapshot["document_topology_layout_signals"] = _build_layout_signals_snapshot_context(
+        layout_signals=layout_signals,
+        paragraphs=paragraphs,
+    )
+
+
+def _apply_prepared_snapshot_fields(
+    snapshot: dict[str, object],
+    prepared: object,
+    *,
+    app_config: Mapping[str, Any] | None = None,
+) -> None:
     structure_validation_report = getattr(prepared, "structure_validation_report", None)
     structure_summary = getattr(prepared, "structure_recognition_summary", None)
     prepared_document_map = getattr(prepared, "document_map", None)
     prepared_topology_projection = getattr(prepared, "document_topology_projection", None)
+    prepared_paragraphs = tuple(getattr(prepared, "paragraphs", ()) or ())
     _apply_structure_validation_snapshot_fields(snapshot, structure_validation_report)
     _apply_structure_summary_snapshot_fields(snapshot, structure_summary)
     if not str(snapshot.get("quality_gate_status") or ""):
@@ -1431,6 +1492,11 @@ def _apply_prepared_snapshot_fields(snapshot: dict[str, object], prepared: objec
                 if key in {"toc_body_concat_structure_detected", "toc_body_concat_gate_source"}
             }
         )
+    _maybe_backfill_layout_signals_snapshot(
+        snapshot,
+        paragraphs=prepared_paragraphs,
+        app_config=app_config,
+    )
     _apply_quality_gate_readiness_fallback(snapshot)
     _normalize_snapshot_or_metric_statuses(snapshot)
 
@@ -1461,6 +1527,10 @@ def _apply_topology_projection_snapshot_fallback(
                 short_line_chars=int(app_config.get("structure_recovery_topology_projection_layout_signals_short_line_chars", 80) or 80),
                 baseline_tolerance_pt=float(app_config.get("structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt", 0.25) or 0.25),
                 min_tier_population=int(app_config.get("structure_recovery_topology_projection_layout_signals_min_tier_population", 2) or 2),
+            )
+            snapshot["document_topology_layout_signals"] = _build_layout_signals_snapshot_context(
+                layout_signals=layout_signals,
+                paragraphs=paragraphs,
             )
         projection = apply_document_map_topology(
             paragraphs,

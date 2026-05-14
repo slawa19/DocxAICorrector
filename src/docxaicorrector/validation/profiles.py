@@ -81,6 +81,7 @@ class RunProfile:
     structure_recognition_mode: str | None = None
     structure_recognition_enabled: bool | None = None
     structure_recovery_topology_projection_enabled: bool | None = None
+    structure_recovery_topology_projection_layout_signals_enabled: bool | None = None
     structure_recovery_topology_projection_binding_splits_enabled: bool | None = None
     translation_output_quality_gate_policy: str | None = None
     repeat_count: int = 1
@@ -246,6 +247,11 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
             "structure_recovery_topology_projection_enabled",
             None,
         ),
+        "structure_recovery_topology_projection_layout_signals_enabled": getattr(
+            run_profile,
+            "structure_recovery_topology_projection_layout_signals_enabled",
+            None,
+        ),
         "structure_recovery_topology_projection_binding_splits_enabled": getattr(
             run_profile,
             "structure_recovery_topology_projection_binding_splits_enabled",
@@ -259,6 +265,15 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
     topology_projection_enabled = getattr(run_profile, "structure_recovery_topology_projection_enabled", None)
     if topology_projection_enabled is not None:
         app_config_overrides["structure_recovery_topology_projection_enabled"] = topology_projection_enabled
+    topology_projection_layout_signals_enabled = getattr(
+        run_profile,
+        "structure_recovery_topology_projection_layout_signals_enabled",
+        None,
+    )
+    if topology_projection_layout_signals_enabled is not None:
+        app_config_overrides[
+            "structure_recovery_topology_projection_layout_signals_enabled"
+        ] = topology_projection_layout_signals_enabled
     topology_projection_binding_splits_enabled = getattr(
         run_profile,
         "structure_recovery_topology_projection_binding_splits_enabled",
@@ -399,6 +414,10 @@ def _build_run_profile(payload: Any) -> RunProfile:
         structure_recognition_mode=_optional_structure_recognition_mode(payload, "structure_recognition_mode"),
         structure_recognition_enabled=_optional_bool(payload, "structure_recognition_enabled"),
         structure_recovery_topology_projection_enabled=_optional_bool(payload, "structure_recovery_topology_projection_enabled"),
+        structure_recovery_topology_projection_layout_signals_enabled=_optional_bool(
+            payload,
+            "structure_recovery_topology_projection_layout_signals_enabled",
+        ),
         structure_recovery_topology_projection_binding_splits_enabled=_optional_bool(
             payload,
             "structure_recovery_topology_projection_binding_splits_enabled",

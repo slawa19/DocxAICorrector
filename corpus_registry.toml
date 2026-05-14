@@ -276,6 +276,7 @@ image_mode = "safe"
 enable_paragraph_markers = false
 structure_recognition_mode = "always"
 structure_recovery_topology_projection_enabled = true
+structure_recovery_topology_projection_layout_signals_enabled = true
 structure_recovery_topology_projection_binding_splits_enabled = true
 repeat_count = 1
 

@@ -914,6 +914,52 @@ def test_build_document_map_recovers_missing_toc_and_outline_entry_from_candidat
     assert [entry.logical_index for entry in document_map.outline] == [141, 159, 179]
 
 
+def test_parse_document_map_payload_treats_negative_optional_toc_candidate_index_as_absent() -> None:
+    payload = {
+        "body_start_logical_index": 10,
+        "toc_region": {
+            "start_logical_index": 0,
+            "end_logical_index": 1,
+            "header_logical_index": 0,
+            "entries": [
+                {
+                    "title": "Chapter Eleven",
+                    "target_level": 1,
+                    "candidate_body_logical_index": -1,
+                    "confidence": "medium",
+                }
+            ],
+            "confidence": "high",
+        },
+        "outline": [
+            {
+                "title": "Chapter Eleven",
+                "level": 1,
+                "logical_index": 10,
+                "confidence": "high",
+                "evidence": ["toc_match"],
+            }
+        ],
+        "paragraph_anchors": {
+            "10": {"role": "heading", "heading_level": 1, "confidence": "high"},
+        },
+        "review_zones": [],
+    }
+
+    document_map = _parse_document_map_payload(
+        payload,
+        all_logical_indexes={0, 1, 10},
+        sampled_logical_indexes=(0, 1, 10),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=17,
+        processing_time_seconds=0.0,
+    )
+
+    assert document_map.toc_region is not None
+    assert len(document_map.toc_region.entries) == 1
+    assert document_map.toc_region.entries[0].candidate_body_logical_index is None
+
+
 def test_build_document_map_recovers_missing_chapter_sequence_from_heading_gap(monkeypatch):
     paragraphs = [
         _paragraph(35, "Contents", structural_role="toc_header"),

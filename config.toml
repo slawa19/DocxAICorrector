@@ -170,6 +170,11 @@ min_confidence = "medium"
 enabled = false
 save_debug_artifacts = true
 binding_splits_enabled = false
+layout_signals_enabled = false
+layout_signals_heading_ratio = 1.15
+layout_signals_short_line_chars = 80
+layout_signals_baseline_tolerance_pt = 0.25
+layout_signals_min_tier_population = 2
 
 [structure_recovery.reconciliation]
 targeted_enabled = false

@@ -2,6 +2,11 @@ import json
 from pathlib import Path
 
 import docxaicorrector.structure.validation as structure_validation
+import docxaicorrector.validation.structural as structural_validation_runtime
+from docxaicorrector.core.models import DocumentMap
+from docxaicorrector.core.models import DocumentMapTocRegion
+from docxaicorrector.core.models import DocumentTopologyOperation
+from docxaicorrector.core.models import DocumentTopologyProjection
 from docxaicorrector.core.models import ParagraphUnit
 from docxaicorrector.structure.validation import StructureValidationReport, validate_structure_quality
 
@@ -388,3 +393,63 @@ def test_validate_structure_quality_keeps_outline_coverage_ratio_advisory_only_f
     assert baseline.readiness_reasons == low_coverage.readiness_reasons == ()
     assert low_coverage.document_map_present is True
     assert low_coverage.outline_coverage_ratio == 0.0
+
+
+def test_candidate_page_artifact_projection_remains_non_binding_for_toc_body_concat_gate() -> None:
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=DocumentMapTocRegion(
+            start_logical_index=0,
+            end_logical_index=9,
+            header_logical_index=0,
+            entries=(),
+            confidence="high",
+        ),
+        outline=(),
+        paragraph_anchors={},
+        review_zones=(),
+        split_hints=(),
+        sampled=False,
+        sampled_logical_indexes=(0,),
+    )
+    projection = DocumentTopologyProjection(
+        cache_key="candidate-page-artifact-only",
+        operations=(
+            DocumentTopologyOperation(
+                op="candidate_page_artifact_split",
+                logical_indexes=(9, 10),
+                canonical_text="This page intentionally left blank Chapter 11",
+                authority="document_map_outline",
+                confidence="candidate",
+                evidence=("page_artifact_phrase", "local_heading_neighborhood", "page_break_boundary"),
+            ),
+            DocumentTopologyOperation(
+                op="merge_heading_continuation",
+                logical_indexes=(10, 11),
+                canonical_text="Governance and We, the Citizens",
+                authority="document_map_outline",
+                confidence="high",
+                evidence=("outline_entry", "adjacent_short_heading_fragments"),
+            ),
+        ),
+    )
+
+    assert (
+        structural_validation_runtime._projection_supports_toc_body_concat_gate(
+            document_map=document_map,
+            topology_projection=projection,
+        )
+        is False
+    )
+
+    fields = structural_validation_runtime._derive_toc_body_concat_gate_fields(
+        document_map=document_map,
+        topology_projection=projection,
+        markdown_detected=True,
+    )
+
+    assert fields["toc_body_concat_gate_source"] == "legacy_markdown"
+    assert fields["toc_body_concat_detected"] is True
+    assert fields["toc_body_concat_structure_detected"] is False
+    assert fields["topology_split_compound_toc_operation_count"] == 0
+    assert fields["topology_merge_heading_operation_count"] == 1

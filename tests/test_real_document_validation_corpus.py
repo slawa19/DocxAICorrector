@@ -91,6 +91,7 @@ def _assert_lietaer_chapter_region_chapter_11_stage1_authority_contract(
 ) -> None:
     snapshot = cast(dict[str, Any], diagnostic_payload["preparation_diagnostic_snapshot"])
     snapshot_projection = cast(dict[str, Any], snapshot["document_topology_projection"])
+    snapshot_layout_signals = cast(dict[str, Any] | None, snapshot.get("document_topology_layout_signals"))
     toc_region = cast(dict[str, Any], document_map_payload["toc_region"])
     toc_entries = cast(list[dict[str, Any]], toc_region["entries"])
     outline_entries = cast(list[dict[str, Any]], document_map_payload["outline"])
@@ -112,6 +113,9 @@ def _assert_lietaer_chapter_region_chapter_11_stage1_authority_contract(
     assert snapshot["toc_body_concat_gate_source"] == "topology_projection"
     assert snapshot["toc_body_concat_detected"] is False
     assert snapshot["toc_body_concat_structure_detected"] is False
+    if snapshot_layout_signals is not None:
+        assert snapshot_layout_signals["heading_ratio"] == 1.15
+        assert int(snapshot_layout_signals["paragraphs_with_font_size_count"]) > 0
 
     assert snapshot_projection["cache_key"] == topology_payload["cache_key"]
     assert snapshot_projection["document_map_cache_key"] == document_map_payload["cache_key"]
@@ -354,10 +358,36 @@ def test_lietaer_chapter_region_structural_run_profile_is_ai_first_default() -> 
 
     assert run_profile.id == "structural-ai-first-default"
     assert run_profile.structure_recovery_topology_projection_enabled is True
+    assert run_profile.structure_recovery_topology_projection_layout_signals_enabled is True
     assert run_profile.structure_recovery_topology_projection_binding_splits_enabled is True
     assert document_profile.structural_expected_result == "pass"
     assert document_profile.structural_expected_failed_checks == ()
     assert document_profile.structural_optional_failed_checks == ()
+
+
+def test_build_preparation_diagnostic_defaults_includes_layout_signals_event_context() -> None:
+    snapshot = real_document_validation_structural._build_preparation_diagnostic_defaults(
+        [
+            {
+                "event_id": "document_topology_layout_signals_built",
+                "context": {
+                    "body_baseline_pt": 11.0,
+                    "tier_count": 3,
+                    "heading_tier_count": 2,
+                    "paragraphs_with_font_size_count": 42,
+                    "heading_ratio": 1.15,
+                },
+            }
+        ]
+    )
+
+    assert snapshot["document_topology_layout_signals"] == {
+        "body_baseline_pt": 11.0,
+        "tier_count": 3,
+        "heading_tier_count": 2,
+        "paragraphs_with_font_size_count": 42,
+        "heading_ratio": 1.15,
+    }
 
 
 def test_lietaer_chapter_region_structural_diagnostic_artifact_locks_chapter_11_stage1_authority_contract() -> None:
@@ -742,6 +772,7 @@ def test_runtime_resolution_applies_topology_projection_override() -> None:
             "structure_recognition_mode": "off",
             "structure_recognition_enabled": False,
             "structure_recovery_topology_projection_enabled": False,
+            "structure_recovery_topology_projection_layout_signals_enabled": False,
         },
         model="gpt-5.4",
         chunk_size=6000,
@@ -762,6 +793,7 @@ def test_runtime_resolution_applies_topology_projection_override() -> None:
         tier="structural",
         structure_recognition_mode="always",
         structure_recovery_topology_projection_enabled=True,
+        structure_recovery_topology_projection_layout_signals_enabled=True,
         structure_recovery_topology_projection_binding_splits_enabled=True,
     )
 
@@ -769,10 +801,13 @@ def test_runtime_resolution_applies_topology_projection_override() -> None:
     applied_config = validation_profiles.apply_runtime_resolution_to_app_config(app_config, resolution)
 
     assert resolution.overrides["structure_recovery_topology_projection_enabled"] is True
+    assert resolution.overrides["structure_recovery_topology_projection_layout_signals_enabled"] is True
     assert resolution.overrides["structure_recovery_topology_projection_binding_splits_enabled"] is True
     assert resolution.app_config_overrides["structure_recovery_topology_projection_enabled"] is True
+    assert resolution.app_config_overrides["structure_recovery_topology_projection_layout_signals_enabled"] is True
     assert resolution.app_config_overrides["structure_recovery_topology_projection_binding_splits_enabled"] is True
     assert applied_config["structure_recovery_topology_projection_enabled"] is True
+    assert applied_config["structure_recovery_topology_projection_layout_signals_enabled"] is True
     assert applied_config["structure_recovery_topology_projection_binding_splits_enabled"] is True
 
 

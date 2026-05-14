@@ -1628,7 +1628,13 @@ def _coerce_known_logical_index(raw_value: object, *, all_logical_indexes: set[i
 def _coerce_optional_known_logical_index(raw_value: object, *, all_logical_indexes: set[int], field_name: str) -> int | None:
     if raw_value is None:
         return None
-    return _coerce_known_logical_index(raw_value, all_logical_indexes=all_logical_indexes, field_name=field_name)
+    try:
+        logical_index = int(cast(Any, raw_value))
+    except Exception as exc:
+        raise DocumentMapSchemaError(f"{field_name} must be an integer logical index") from exc
+    if logical_index < 0:
+        return None
+    return _coerce_known_logical_index(logical_index, all_logical_indexes=all_logical_indexes, field_name=field_name)
 
 
 def _coerce_heading_level(raw_value: object, *, field_name: str) -> int:

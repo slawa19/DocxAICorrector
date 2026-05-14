@@ -242,8 +242,11 @@ Vocabulary semantics:
   corroborated by an **observed** page-hint transition in the local window.
   This evidence is opportunistic only; its absence does not block the candidate
   diagnostic, and it never becomes binding without Stage 1 hint authority.
-- `body_font_baseline_outlier`: paragraph's `font_size_pt` is detectable as
-  body baseline outlier (used for low-confidence diagnostics, not binding).
+- `body_font_baseline_outlier`: paragraph remains on the heading side of the
+  detected body baseline even when it does not share the anchor's exact
+  heading tier. In the implemented slice this is used only inside an existing
+  authoritative Stage 1 member set; it is evidence enrichment, not new
+  authority.
 
 Adding these requires bumping `TOPOLOGY_PROJECTION_SCHEMA_VERSION` from `1`
 to `2` (see Cache Key & Schema below).
@@ -343,13 +346,16 @@ Acceptance rules, evaluated in order:
    - require `layout_signals is not None` and `anchor_logical_index is not None`;
    - require the Stage 1 target already bounds this candidate via explicit
      `member_logical_indexes` or equivalent Phase 1b authority metadata;
-   - require `layout_signals.is_same_heading_tier(anchor_logical_index, paragraph.logical_index)`;
    - require `paragraph_record.is_short_line` is True;
    - if `layout_signals.is_page_break_between(anchor_logical_index, paragraph.logical_index)`
      is `True`, reject;
    - require `paragraph.style_cluster_id is None or paragraph.style_cluster_id == anchor.style_cluster_id` (i.e., not crossing into a different visual style);
-   - if all checks hold, return
-     `(True, ("adjacent_short_heading_fragments", "font_cluster_match"))`.
+   - if `layout_signals.is_same_heading_tier(anchor_logical_index, paragraph.logical_index)`
+     holds, return
+     `(True, ("adjacent_short_heading_fragments", "font_cluster_match"))`;
+   - otherwise, if both anchor and candidate remain in heading-side tiers above
+     the detected body baseline, return
+     `(True, ("adjacent_short_heading_fragments", "body_font_baseline_outlier"))`.
 4. **Default**: `(False, ())`.
 
 This is **not** a durable fix for a truncated-title Stage 1 map. If Stage 1
@@ -544,12 +550,24 @@ When `layout_signals is not None`, emit a new event
 The event is observability only. It is part of the existing event log and is
 covered by `docs/LOGGING_AND_ARTIFACT_RETENTION.md` retention defaults.
 
+Because live structural passthrough does not guarantee that this internal event
+survives into every diagnostic `event_log`, the diagnostic snapshot surface is
+required to backfill the same summary from `prepared.paragraphs` whenever the
+runtime config still shows
+`structure_recovery_topology_projection_layout_signals_enabled = true` and the
+event context is absent. This keeps `document_topology_layout_signals`
+consistent with the already-materialized topology projection instead of making
+observability depend on event capture details.
+
 ### File: `src/docxaicorrector/validation/structural.py`
 
 Update the topology-projection snapshot fallback path so it threads
 `layout_signals` through `apply_document_map_topology(...)` under the same
-feature flag. This keeps structural diagnostic snapshots from silently using a
-different projection path than the preparation pipeline.
+feature flag. Also update the prepared-snapshot path so live structural
+diagnostics can backfill `document_topology_layout_signals` from the prepared
+paragraph set when the event context is missing. This keeps structural
+diagnostic snapshots from silently using a different projection path than the
+preparation pipeline or under-reporting layout-signals usage.
 
 ### File: `src/docxaicorrector/core/models.py`
 
@@ -770,6 +788,12 @@ Acceptance with `enabled = true`:
   produces a single `StructuralUnit` with four `logical_indexes` and
   `evidence` containing both `adjacent_short_heading_fragments` and
   `font_cluster_match`.
+- A synthetic fixture where the Stage 1 target already preserves explicit
+  `member_logical_indexes`, the continuation members stay short and
+  same-style, and all of them remain above the detected body baseline but span
+  multiple heading-sized tiers, still produces one authoritative merged unit.
+  Evidence uses `body_font_baseline_outlier` rather than
+  `font_cluster_match` for the mixed-tier members.
 - The same fixture with one continuation paragraph at body-baseline font
   produces a unit with **two** `logical_indexes` (anchor + first matching
   continuation), not four. Font-cluster mismatch must reject continuation
@@ -806,6 +830,11 @@ Acceptance on `lietaer-pdf-chapter-region-core` with `enabled = true`:
 - Prerequisite: Phase 1b has already landed for this profile, and the Stage 1
   artifact for Chapter 11 preserves the full title and/or explicit member
   bounds needed by Variant A.
+- Runtime prerequisite: the chapter-region structural run profile must also
+  propagate `structure_recovery_topology_projection_layout_signals_enabled = true`
+  into runtime `app_config`. Passing behavior in the confirmed workspace
+  depends on both the topology acceptance change and this runtime enablement;
+  the Chapter 11 merge is not attributed to topology logic alone.
 - Under that prerequisite, Chapter 11 heading produces a single
   `StructuralUnit` covering the multi-line title.
 - `canonical_text` for that unit matches the Stage 1 canonical title and
@@ -813,8 +842,10 @@ Acceptance on `lietaer-pdf-chapter-region-core` with `enabled = true`:
   after extraction).
 - No new `unmapped_target` fragments are introduced compared to baseline.
 - Existing Chapter 9 recovery is preserved.
-- The chapter-region structural diagnostic snapshot includes the
-  `document_topology_layout_signals_built` event.
+- The chapter-region structural diagnostic snapshot exposes a populated
+  `document_topology_layout_signals` summary. It may come directly from the
+  `document_topology_layout_signals_built` event or from prepared-snapshot
+  backfill when passthrough event capture omits that event.
 
 No full-book quality-gate rerun in this slice. Phase 4 parent-spec
 acceptance covers structure-aware gate validation.

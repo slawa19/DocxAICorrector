@@ -214,6 +214,60 @@ def test_apply_document_map_topology_layout_confirms_explicit_authority_bounded_
     assert projection.operations[0].evidence == ("outline_entry", "adjacent_short_heading_fragments", "font_cluster_match")
 
 
+def test_apply_document_map_topology_layout_confirms_explicit_authority_across_mixed_heading_tiers():
+    paragraphs = [
+        _paragraph(10, "Chapter Eleven", font_size_pt=16.0, page_number=1),
+        _paragraph(11, "GOVERNANCE AND WE,", font_size_pt=23.5, page_number=1),
+        _paragraph(12, "THE CITIZENS", font_size_pt=23.5, page_number=1),
+        _paragraph(13, "An Ancient Future?", font_size_pt=20.0, page_number=1),
+        _paragraph(14, "Body paragraph starts here.", font_size_pt=11.0, page_number=1),
+        _paragraph(15, "Body paragraph two.", font_size_pt=11.0, page_number=1),
+        _paragraph(16, "Body paragraph three.", font_size_pt=11.0, page_number=1),
+        _paragraph(17, "Body paragraph four.", font_size_pt=11.0, page_number=1),
+        _paragraph(18, "Body paragraph five.", font_size_pt=11.0, page_number=1),
+        _paragraph(19, "Body paragraph six.", font_size_pt=11.0, page_number=1),
+        _paragraph(20, "Appendix Preview", font_size_pt=16.0, page_number=2),
+        _paragraph(21, "Closing Reflection", font_size_pt=20.0, page_number=2),
+    ]
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(
+            DocumentMapOutlineEntry(
+                title="Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?",
+                level=1,
+                logical_index=10,
+                confidence="high",
+                evidence=("outline_entry",),
+                member_logical_indexes=(10, 11, 12, 13),
+            ),
+        ),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        sampled=False,
+        sampled_logical_indexes=(10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21),
+    )
+
+    projection = apply_document_map_topology(
+        paragraphs,
+        document_map,
+        app_config={"structure_recovery_document_map_preview_chars": 120},
+        document_map_cache_key="doc-map-key",
+        layout_signals=derive_layout_signals(paragraphs),
+    )
+
+    assert len(projection.projected_units) == 1
+    unit = projection.projected_units[0]
+    assert unit.logical_indexes == (10, 11, 12, 13)
+    assert unit.canonical_text == "Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?"
+    assert unit.evidence == ("outline_entry", "adjacent_short_heading_fragments", "body_font_baseline_outlier")
+    assert projection.operations[0].evidence == (
+        "outline_entry",
+        "adjacent_short_heading_fragments",
+        "body_font_baseline_outlier",
+    )
+
+
 def test_apply_document_map_topology_layout_rejects_explicit_membership_on_font_mismatch():
     paragraphs = [
         _paragraph(10, "Chapter Eleven", font_size_pt=18.0, style_cluster_id=7, page_number=1),

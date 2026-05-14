@@ -910,6 +910,51 @@ def test_apply_topology_projection_snapshot_fallback_uses_feature_flagged_layout
 
     assert captured_apply_kwargs["layout_signals"] is fake_layout_signals
     assert snapshot["document_topology_projection_status"] == "no_operations"
+    assert snapshot["document_topology_layout_signals"] == {
+        "body_baseline_pt": 12.0,
+        "tier_count": 0,
+        "heading_tier_count": 0,
+        "paragraphs_with_font_size_count": 1,
+        "heading_ratio": 1.15,
+    }
+
+
+def test_apply_prepared_snapshot_fields_backfills_layout_signals_context_when_enabled_runtime_config_present():
+    paragraphs = [
+        _build_paragraph(source_index=10, text="Chapter Eleven", font_size_pt=18.0),
+        _build_paragraph(source_index=11, text="Governance and We", font_size_pt=18.0),
+        _build_paragraph(source_index=12, text="Body paragraph one.", font_size_pt=12.0),
+        _build_paragraph(source_index=13, text="Body paragraph two.", font_size_pt=12.0),
+        _build_paragraph(source_index=14, text="Body paragraph three.", font_size_pt=12.0),
+        _build_paragraph(source_index=15, text="Body paragraph four.", font_size_pt=12.0),
+        _build_paragraph(source_index=16, text="Body paragraph five.", font_size_pt=12.0),
+        _build_paragraph(source_index=17, text="Body paragraph six.", font_size_pt=12.0),
+    ]
+    prepared = SimpleNamespace(
+        paragraphs=paragraphs,
+        document_topology_projection=DocumentTopologyProjection(cache_key="topology-key"),
+        document_topology_projection_status="built",
+        document_topology_projection_status_reason="",
+        document_map=None,
+    )
+    snapshot = structural_validation._build_preparation_diagnostic_defaults([])
+
+    structural_validation._apply_prepared_snapshot_fields(
+        snapshot,
+        prepared,
+        app_config=_make_ai_first_config(
+            structure_recovery_topology_projection_enabled=True,
+            structure_recovery_topology_projection_layout_signals_enabled=True,
+        ),
+    )
+
+    assert snapshot["document_topology_layout_signals"] == {
+        "body_baseline_pt": 12.0,
+        "tier_count": 2,
+        "heading_tier_count": 1,
+        "paragraphs_with_font_size_count": 8,
+        "heading_ratio": 1.15,
+    }
 
 
 def test_clone_prepared_document_preserves_document_topology_projection_fields():
