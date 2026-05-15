@@ -2799,7 +2799,7 @@ def test_run_document_processing_surfaces_advisory_quality_notice_on_mapping_dri
     assert payload["gate_reasons"] == ["unmapped_source_paragraphs_above_advisory_threshold"]
 
 
-def test_run_document_processing_normalizes_false_fragment_headings_before_quality_gate(tmp_path, monkeypatch):
+def test_run_document_processing_keeps_false_fragment_cleanup_display_only_after_quality_gate_decoupling(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
@@ -2819,22 +2819,19 @@ def test_run_document_processing_normalizes_false_fragment_headings_before_quali
         ),
     )
 
-    report_files = list(quality_dir.glob("*.json"))
-    if report_files:
-        payload = json.loads(report_files[0].read_text(encoding="utf-8"))
-        assert payload["quality_status"] == "pass", json.dumps(payload, ensure_ascii=False, indent=2)
-
-    assert result == "succeeded"
+    assert result == "failed"
     assert "## (Матфея 24:36)" not in runtime["state"]["latest_markdown"]
     assert "## Спутники? Ракеты?)" not in runtime["state"]["latest_markdown"]
     report_files = list(quality_dir.glob("*.json"))
     assert len(report_files) == 1
     payload = json.loads(report_files[0].read_text(encoding="utf-8"))
-    assert payload["quality_status"] == "pass"
-    assert payload["false_fragment_heading_count"] == 0
+    assert payload["quality_status"] == "fail"
+    assert payload["gate_reasons"] == ["false_fragment_headings_present"]
+    assert payload["false_fragment_heading_count"] == 2
+    assert payload["scripture_reference_heading_count"] == 1
 
 
-def test_run_document_processing_quality_report_uses_runtime_normalized_heading_text_for_sentence_split_case(tmp_path, monkeypatch):
+def test_run_document_processing_quality_report_uses_pre_display_gate_input_for_sentence_split_case(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
@@ -2867,13 +2864,14 @@ def test_run_document_processing_quality_report_uses_runtime_normalized_heading_
         ),
     )
 
-    assert result == "succeeded"
+    assert result == "failed"
     assert "## Великая скорбь\n\n." not in runtime["state"]["latest_markdown"]
     report_files = list(quality_dir.glob("*.json"))
     assert len(report_files) == 1
     payload = json.loads(report_files[0].read_text(encoding="utf-8"))
-    assert payload["quality_status"] == "pass"
-    assert payload["false_fragment_heading_count"] == 0
+    assert payload["quality_status"] == "fail"
+    assert payload["gate_reasons"] == ["false_fragment_headings_present"]
+    assert payload["false_fragment_heading_count"] == 1
 
 
 def test_run_document_processing_normalizes_residual_bullet_glyphs_before_quality_gate(tmp_path, monkeypatch):
@@ -3063,13 +3061,14 @@ def test_build_translation_quality_report_exposes_new_residual_quality_metrics_a
 
     assert report["quality_status"] == "fail"
     assert report["gate_reasons"] == [
+        "false_fragment_headings_present",
         "residual_bullet_glyphs_present",
         "list_fragment_regressions_present",
         "mixed_script_terms_present",
     ]
     assert report["bullet_heading_count"] == 0
-    assert report["false_fragment_heading_count"] == 0
-    assert report["scripture_reference_heading_count"] == 0
+    assert report["false_fragment_heading_count"] == 2
+    assert report["scripture_reference_heading_count"] == 1
     assert report["residual_bullet_glyph_count"] == 1
     assert report["list_fragment_regression_count"] == 1
     mixed_script_term_count = report["mixed_script_term_count"]
@@ -3186,6 +3185,116 @@ def test_build_translation_quality_report_reports_entry_aware_false_heading_samp
             translation_domain="general",
         ),
         final_markdown="На людей, получивших начертание зверя и поклонявшихся его образу.",
+        formatting_diagnostics_artifacts=[],
+        assembly_result=assembly_result,
+    )
+
+    assert report["quality_status"] == "pass"
+    assert report["gate_reasons"] == []
+    assert report["false_fragment_heading_count"] == 0
+    assert report["false_fragment_heading_samples"] == []
+
+
+def test_build_translation_quality_report_flags_raw_false_fragment_without_entry_authority():
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+        ),
+        final_markdown=(
+            "Иисус постоянно говорит о том, как важно распознавать знамения, чтобы, если им будет даровано пережить\n\n"
+            "## Великую скорбь\n\n"
+            "они могли устоять до конца."
+        ),
+        formatting_diagnostics_artifacts=[],
+    )
+
+    assert report["quality_status"] == "fail"
+    assert report["gate_reasons"] == ["false_fragment_headings_present"]
+    assert report["false_fragment_heading_count"] == 1
+    assert report["false_fragment_heading_samples"] == [
+        {
+            "line": 3,
+            "text": "## Великую скорбь",
+            "reason": "inline_term_heading_present",
+        }
+    ]
+
+
+def test_build_translation_quality_report_flags_scripture_reference_false_heading_without_normalizer_override():
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+        ),
+        final_markdown="Наблюдайте внимательно.\n\n## (Матфея 24:36)\n\nЭто продолжение абзаца.",
+        formatting_diagnostics_artifacts=[],
+    )
+
+    assert report["quality_status"] == "fail"
+    assert report["gate_reasons"] == ["false_fragment_headings_present"]
+    assert report["false_fragment_heading_count"] == 1
+    assert report["scripture_reference_heading_count"] == 1
+    assert report["scripture_reference_heading_samples"] == [
+        {
+            "line": 3,
+            "text": "## (Матфея 24:36)",
+            "reason": "scripture_reference_heading_present",
+        }
+    ]
+
+
+def test_build_translation_quality_report_prefers_entry_authority_over_raw_false_fragment_markdown():
+    assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
+        final_markdown="Иисус постоянно говорит о том, как важно распознавать знамения, чтобы, если им будет даровано пережить Великую скорбь они могли устоять до конца.",
+        entries=(
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="Иисус постоянно говорит о том, как важно распознавать знамения, чтобы, если им будет даровано пережить",
+                block_index=1,
+                paragraph_id="p1",
+                source_index=0,
+                role="body",
+                structural_role="body",
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="Великую скорбь",
+                block_index=1,
+                paragraph_id="p2",
+                source_index=1,
+                role="body",
+                structural_role="body",
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="они могли устоять до конца.",
+                block_index=1,
+                paragraph_id="p3",
+                source_index=2,
+                role="body",
+                structural_role="body",
+                from_registry=True,
+            ),
+        ),
+        diagnostics=document_pipeline_output_validation.FinalAssemblyDiagnostics(),
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+        ),
+        final_markdown=(
+            "Иисус постоянно говорит о том, как важно распознавать знамения, чтобы, если им будет даровано пережить\n\n"
+            "## Великую скорбь\n\n"
+            "они могли устоять до конца."
+        ),
         formatting_diagnostics_artifacts=[],
         assembly_result=assembly_result,
     )
@@ -3367,6 +3476,35 @@ def test_build_translation_quality_report_flags_suspicious_heading_repetition_wi
             "reason": "suspicious_heading_repetition_present",
         }
     ]
+
+
+def test_build_translation_quality_report_keeps_list_fragment_runtime_cleanup_display_only():
+    final_markdown = (
+        "Поразительно, но все петли следуют одной и той же схеме: 1.\n"
+        "Духовные существа восстают против Бога.\n"
+        "2. Бог судит их за грех.\n"
+        "3. Бог спасает остаток верных."
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+        ),
+        final_markdown=final_markdown,
+        formatting_diagnostics_artifacts=[],
+    )
+
+    display_markdown = document_pipeline_late_phases._normalize_final_markdown_for_runtime_display(final_markdown)
+
+    assert report["quality_status"] == "fail"
+    assert report["gate_reasons"] == ["list_fragment_regressions_present"]
+    assert report["list_fragment_regression_count"] == 1
+    assert "схеме: 1." in final_markdown
+    assert "схеме: 1." not in display_markdown
+    assert "1. Духовные существа восстают против Бога." in display_markdown
 
 
 def test_run_document_processing_warns_on_advisory_structural_markdown_quality_gate(tmp_path, monkeypatch):

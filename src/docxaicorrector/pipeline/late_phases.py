@@ -69,7 +69,6 @@ def _format_translation_quality_gate_failure_message(gate_reasons: Sequence[str]
 
 def _normalize_final_markdown_for_quality_gate(text: str) -> str:
     normalized = normalize_page_placeholder_heading_concats_markdown(text)
-    normalized = normalize_false_fragment_headings_markdown(normalized)
     normalized = normalize_residual_bullet_glyphs_markdown(normalized)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
     if "\n" not in normalized and "\n\n" in text:
@@ -345,19 +344,16 @@ def _build_translation_quality_report(
     assembly_uses_fallback = any(bool(getattr(entry, "used_fallback", False)) for entry in assembly_entries)
     entry_false_fragment_heading_samples = collect_false_fragment_heading_samples_from_entries(assembly_entries) if assembly_entries else []
     raw_false_fragment_heading_samples = collect_false_fragment_heading_samples(final_markdown)
-    normalized_false_fragment_heading_samples = collect_false_fragment_heading_samples(normalized_quality_markdown)
-    false_fragment_heading_samples = normalized_false_fragment_heading_samples
+    false_fragment_heading_samples = raw_false_fragment_heading_samples
     if assembly_entries and not assembly_uses_fallback:
         false_fragment_heading_samples = entry_false_fragment_heading_samples
-    elif not normalized_false_fragment_heading_samples and raw_false_fragment_heading_samples:
-        false_fragment_heading_samples = []
     if not false_fragment_heading_samples and any(
         getattr(sample, "reason", "") == "suspicious_heading_repetition_present"
         for sample in raw_false_fragment_heading_samples
     ):
         false_fragment_heading_samples = raw_false_fragment_heading_samples
     residual_bullet_glyph_samples = collect_residual_bullet_glyph_samples(final_markdown)
-    list_fragment_regression_samples = collect_list_fragment_regression_samples(normalized_quality_markdown)
+    list_fragment_regression_samples = collect_list_fragment_regression_samples(final_markdown)
     mixed_script_samples = collect_mixed_script_samples(final_markdown)
     recovered_heading_entries = collect_recovered_heading_entries(assembly_entries) if assembly_entries and not assembly_uses_fallback else []
     translation_domain = str(getattr(context, "translation_domain", "") or context.app_config.get("translation_domain", "general") or "general")
@@ -1250,8 +1246,10 @@ def finalize_processing_success(
         source_paragraphs=context.source_paragraphs,
     )
     _log_boundary_recovery_diagnostics(dependencies=dependencies, context=context, assembly_result=assembly_result)
-    final_markdown = _normalize_final_markdown_for_runtime_display(
-        str(docx_phase.get("final_markdown") or assembly_result.final_markdown)
+    gate_input_markdown = assembly_result.final_markdown
+    final_markdown = str(
+        docx_phase.get("final_markdown")
+        or _normalize_final_markdown_for_runtime_display(gate_input_markdown)
     )
     formatting_diagnostics_artifacts = cast(
         Sequence[str],
@@ -1259,7 +1257,7 @@ def finalize_processing_success(
     )
     quality_report = _build_translation_quality_report(
         context=context,
-        final_markdown=final_markdown,
+        final_markdown=gate_input_markdown,
         formatting_diagnostics_artifacts=formatting_diagnostics_artifacts,
         assembly_result=assembly_result,
     )

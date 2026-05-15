@@ -101,7 +101,7 @@ A document is considered structurally recognized when the pipeline can:
 3. Preserve Stage 1 authority through Stage 2 and Stage 3 without allowing local classifier fallback to override high-confidence topology units.
 4. Represent multi-line headings, compound TOC entries, page artifacts, and TOC/body boundaries as structural facts, not as markdown cleanup side effects.
 5. Make quality gates depend on structure-aware signals when Stage 1 and topology projection are present.
-6. Keep legacy/markdown signals visible as advisory diagnostics during migration, without letting them override stronger structural authority.
+6. Keep legacy/markdown signals visible as advisory diagnostics during migration when stronger topology authority is present, while preserving explicit `legacy_markdown` fallback authority for conservative gating when topology support is insufficient.
 7. Produce reproducible diagnostics and tracked fixtures that survive clean checkout.
 
 ## 4. Final Acceptance Criteria
@@ -148,10 +148,11 @@ When topology projection is present:
 1. `toc_body_concat_markdown_detected` remains visible as raw/advisory evidence.
 2. `toc_body_concat_structure_detected` is the authoritative gate signal when projection support is sufficient.
 3. `toc_body_concat_gate_source` clearly states whether the gate used `topology_projection` or `legacy_markdown`.
-4. `candidate_page_artifact_split` never flips the gate to topology authority.
-5. Binding split operations and projected TOC units may flip the gate to topology authority.
-6. Raw unmapped counts remain visible.
-7. Structure-unit unmapped counts are used for structural gate decisions when topology projection is present.
+4. When projection support is insufficient, `legacy_markdown` remains the conservative authoritative fallback and `toc_body_concat_markdown_detected` may still decide the gate.
+5. `candidate_page_artifact_split` never flips the gate to topology authority.
+6. Binding split operations and projected TOC units may flip the gate to topology authority.
+7. Raw unmapped counts remain visible.
+8. Structure-unit unmapped counts are used for structural gate decisions when topology projection is present.
 
 ### 4.4 Full-book checkpoint acceptance
 
@@ -248,7 +249,7 @@ C1. Audit every gate that still depends on markdown-only structural signals.
 
 C2. For `toc_body_concat`:
 
-- keep markdown detector as advisory;
+- keep markdown detector as advisory when topology authority is sufficient, and keep explicit `legacy_markdown` fallback authoritative when topology support is insufficient;
 - use topology projection when bounded TOC and binding projected TOC units/splits are present;
 - never use `candidate_page_artifact_split` as binding gate support.
 
@@ -261,7 +262,7 @@ C3. For unmapped thresholds:
 
 C4. Add focused tests covering:
 
-- legacy fallback path when no projection exists;
+- legacy fallback path when projection support is absent or insufficient;
 - topology path when binding TOC split exists;
 - candidate-only page artifact remains non-binding;
 - raw vs structure-unit unmapped counts.
@@ -269,7 +270,7 @@ C4. Add focused tests covering:
 Acceptance:
 
 - structural profiles pass/fail from structure-aware gate fields when projection is authoritative;
-- markdown fields remain visible but advisory;
+- markdown fields remain visible as advisory evidence when topology is authoritative, while `legacy_markdown` remains the conservative fallback gate source when topology support is insufficient;
 - tests prove the fallback behavior is conservative.
 
 ### Workstream D: Markdown structural normalizer retirement

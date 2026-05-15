@@ -462,6 +462,7 @@ def _build_structural_projection_result(
     _write_json(blocks_path, {"blocks": blocks})
     first_block_preview = blocks[0] if blocks else ""
     first_block_risk, first_block_risk_reasons = _derive_first_block_risk(first_block_preview)
+    toc_body_concat_detected = _detect_toc_body_concat_projection(projection_text)
     return CandidateResult(
         candidate_id=candidate_id,
         candidate_version=candidate_version,
@@ -472,7 +473,7 @@ def _build_structural_projection_result(
         duration_seconds=duration_seconds,
         diagnostic_mode="benchmark-only",
         metric_basis="benchmark_block_projection",
-        preparation_gate_basis="benchmark_structural_proxy",
+        preparation_gate_basis="benchmark_projection_heuristic",
         artifact_paths={
             "blocks_json": _relative_artifact_path(blocks_path),
             "projection_preview": _relative_artifact_path(preview_path),
@@ -486,14 +487,17 @@ def _build_structural_projection_result(
         toc_like_block_count=sum(1 for block in blocks if _is_toc_like(block)),
         preparation_gate_outcome="not_applicable",
         failed_checks=[],
-        toc_body_concat_detected=_detect_toc_body_concat_projection(projection_text),
-        toc_body_concat_detector="benchmark_block_detector",
+        toc_body_concat_detected=toc_body_concat_detected,
+        toc_body_concat_detector="benchmark_block_detector:heuristic_benchmark_only",
         normalized_text_similarity_to_baseline=None,
         first_20_blocks_have_nonempty_text=all(bool(block.strip()) for block in blocks[:20]),
         first_block_risk=first_block_risk,
         first_block_risk_reasons=first_block_risk_reasons,
         first_block_preview=first_block_preview[:1200],
-        notes=list(notes or []),
+        notes=[
+            *(notes or []),
+            "Structural-extractor TOC/body concat is a benchmark-only block heuristic because this path has no preparation snapshot authority inputs.",
+        ],
     )
 
 
@@ -660,6 +664,20 @@ def _run_pymupdf(context: BenchmarkContext) -> CandidateResult:
     return benchmark_result
 
 
+def _has_heuristic_toc_body_concat_evidence(candidate: CandidateResult) -> bool:
+    return (
+        candidate.preparation_gate_basis == "benchmark_projection_heuristic"
+        or "heuristic_benchmark_only" in candidate.toc_body_concat_detector
+    )
+
+
+def _toc_body_concat_is_comparable_for_recommendation(
+    baseline: CandidateResult,
+    candidate: CandidateResult,
+) -> bool:
+    return not _has_heuristic_toc_body_concat_evidence(baseline) and not _has_heuristic_toc_body_concat_evidence(candidate)
+
+
 def _recommendation(candidates: Sequence[CandidateResult], baseline: CandidateResult) -> dict[str, object]:
     baseline_visible = max(baseline.visible_text_chars, 1)
     promising: list[str] = []
@@ -675,7 +693,11 @@ def _recommendation(candidates: Sequence[CandidateResult], baseline: CandidateRe
             and baseline.preparation_gate_outcome == "blocked"
             and candidate.preparation_gate_outcome == "pass"
         )
-        toc_improved = baseline.toc_body_concat_detected and not candidate.toc_body_concat_detected
+        toc_improved = (
+            _toc_body_concat_is_comparable_for_recommendation(baseline, candidate)
+            and baseline.toc_body_concat_detected
+            and not candidate.toc_body_concat_detected
+        )
         isolated_baseline = max(baseline.isolated_marker_paragraph_count, 1)
         isolated_improved = (
             candidate.isolated_marker_paragraph_count < baseline.isolated_marker_paragraph_count
@@ -687,6 +709,10 @@ def _recommendation(candidates: Sequence[CandidateResult], baseline: CandidateRe
         if candidate.first_block_risk == "high":
             notes.append(f"{candidate.candidate_id}: not promising because first block risk remained high.")
             continue
+        if baseline.toc_body_concat_detected and not candidate.toc_body_concat_detected and not toc_improved:
+            notes.append(
+                f"{candidate.candidate_id}: TOC/body concat delta ignored for recommendation because the evidence provenance is not comparable."
+            )
         if gate_improved or toc_improved or isolated_improved:
             promising.append(candidate.candidate_id)
     if not promising:

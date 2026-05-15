@@ -111,10 +111,12 @@ def _assert_lietaer_chapter_region_chapter_11_stage1_authority_contract(
     assert diagnostic_payload["failed_checks"] == []
 
     assert snapshot["document_map_present"] is True
+    assert snapshot["toc_entry_count"] == 9
     assert snapshot["document_topology_projection_status"] == "built"
     assert snapshot["quality_gate_status"] == "pass"
-    assert snapshot["toc_body_concat_gate_source"] in {"topology_projection", "legacy_markdown"}
-    assert snapshot["toc_body_concat_detected"] is snapshot["toc_body_concat_markdown_detected"]
+    assert snapshot["toc_body_concat_gate_source"] == "topology_projection"
+    assert snapshot["toc_body_concat_detected"] is False
+    assert snapshot["toc_body_concat_markdown_detected"] is True
     assert snapshot["toc_body_concat_structure_detected"] is False
     assert snapshot_layout_signals == {
         "body_baseline_pt": 11.0,
@@ -128,6 +130,7 @@ def _assert_lietaer_chapter_region_chapter_11_stage1_authority_contract(
     assert snapshot_projection["document_map_cache_key"] == document_map_cache_key
     assert topology_payload["document_map_cache_key"] == document_map_cache_key
     assert topology_payload["topology_projection_schema_version"] == 2
+    assert snapshot_projection == topology_payload
 
     chapter_11_toc_entry = [
         entry
@@ -164,7 +167,6 @@ def _assert_lietaer_chapter_region_chapter_11_stage1_authority_contract(
         "outline_entry",
         "adjacent_short_heading_fragments",
         "body_font_baseline_outlier",
-        "font_cluster_match",
     ]
 
     chapter_11_snapshot_operation = [
@@ -193,7 +195,6 @@ def _assert_lietaer_chapter_region_chapter_11_stage1_authority_contract(
         "outline_entry",
         "adjacent_short_heading_fragments",
         "body_font_baseline_outlier",
-        "font_cluster_match",
     ]
 
     chapter_11_snapshot_unit = [
@@ -218,6 +219,25 @@ def _assert_lietaer_chapter_region_chapter_11_stage1_authority_contract(
         assert matching_units[0]["authority"] == "document_map_outline"
         assert "body_font_baseline_outlier" in matching_units[0]["evidence"]
 
+    split_toc_operations = [
+        operation for operation in topology_operations if operation["op"] == "split_compound_toc_entries"
+    ]
+    assert len(split_toc_operations) == 2, json.dumps(topology_operations, ensure_ascii=False, indent=2)
+    assert {tuple(operation["logical_indexes"]) for operation in split_toc_operations} == {(6,), (8,)}
+    assert {operation["authority"] for operation in split_toc_operations} == {"document_map_split_hint"}
+
+    split_toc_units = [unit for unit in topology_units if unit["unit_type"] == "toc_entry"]
+    assert len(split_toc_units) == 4, json.dumps(topology_units, ensure_ascii=False, indent=2)
+    assert {tuple(unit["logical_indexes"]) for unit in split_toc_units} == {(6,), (8,)}
+    assert {unit["authority"] for unit in split_toc_units} == {"document_map_split_hint"}
+    assert {unit["canonical_text"] for unit in split_toc_units} == {
+        "Chapter Eight STRATEGIES FOR GOVERNMENTS",
+        "Strategies for NGOs",
+        "Chapter Ten TRUTH AND CONSEQUENCES Lessons Learned",
+        "Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?",
+    }
+
+    assert not [unit for unit in topology_units if tuple(unit["logical_indexes"]) == (104, 105)]
     assert not [operation for operation in topology_operations if operation["op"] == "candidate_page_artifact_split"]
 
 
@@ -451,14 +471,20 @@ def test_lietaer_chapter_region_structural_passthrough_locks_chapter_11_stage1_a
     topology_cache_key = str(snapshot_projection["cache_key"])
     document_map_artifact_path = Path(".run/document_maps") / f"{document_map_cache_key}.json"
     topology_artifact_path = Path(".run/document_topology") / f"{topology_cache_key}.json"
+    tracked_document_map_payload = _load_json_payload(LIETAER_CHAPTER_REGION_DOCUMENT_MAP_ARTIFACT_PATH)
+    tracked_topology_payload = _load_json_payload(LIETAER_CHAPTER_REGION_TOPOLOGY_ARTIFACT_PATH)
 
     assert document_map_artifact_path.exists(), document_map_artifact_path
     assert topology_artifact_path.exists(), topology_artifact_path
+    assert document_map_cache_key == str(tracked_document_map_payload["cache_key"])
+    assert topology_cache_key == str(tracked_topology_payload["cache_key"])
+    assert _load_json_payload(document_map_artifact_path) == tracked_document_map_payload
+    assert _load_json_payload(topology_artifact_path) == tracked_topology_payload
 
     _assert_lietaer_chapter_region_chapter_11_stage1_authority_contract(
         diagnostic_payload,
-        document_map_payload=_load_json_payload(document_map_artifact_path),
-        topology_payload=_load_json_payload(topology_artifact_path),
+        document_map_payload=tracked_document_map_payload,
+        topology_payload=tracked_topology_payload,
     )
 
 

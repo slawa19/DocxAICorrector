@@ -195,33 +195,56 @@ def _resolve_acceptance_unmapped_target_count(
     return max(quality_count, formatting_count)
 
 
-def _build_acceptance_toc_body_concat_check(
+def _build_toc_body_concat_provenance_details(
     *,
-    preparation_diagnostic_snapshot: Mapping[str, object],
-    translation_quality_report: Mapping[str, object],
+    preparation_diagnostic_snapshot: Mapping[str, object] | None = None,
+    translation_quality_report: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
+    snapshot = preparation_diagnostic_snapshot or {}
+    report = translation_quality_report or {}
     gate_source = (
         str(
-            preparation_diagnostic_snapshot.get("toc_body_concat_gate_source")
-            or translation_quality_report.get("toc_body_concat_gate_source")
+            snapshot.get("toc_body_concat_gate_source")
+            or report.get("toc_body_concat_gate_source")
             or "legacy_markdown"
         )
         .strip()
         .lower()
         or "legacy_markdown"
     )
-    effective_gate_detected = preparation_diagnostic_snapshot.get(
+    effective_gate_detected = snapshot.get(
         "toc_body_concat_detected",
-        translation_quality_report.get("toc_body_concat_detected"),
+        report.get("toc_body_concat_detected"),
     )
-    markdown_gate_detected = preparation_diagnostic_snapshot.get(
+    markdown_gate_detected = snapshot.get(
         "toc_body_concat_markdown_detected",
-        translation_quality_report.get("toc_body_concat_markdown_detected", effective_gate_detected),
+        report.get("toc_body_concat_markdown_detected", effective_gate_detected),
     )
-    structure_gate_detected = preparation_diagnostic_snapshot.get(
+    structure_gate_detected = snapshot.get(
         "toc_body_concat_structure_detected",
-        translation_quality_report.get("toc_body_concat_structure_detected"),
+        report.get("toc_body_concat_structure_detected"),
     )
+    return {
+        "toc_body_concat_detected": effective_gate_detected,
+        "toc_body_concat_markdown_detected": markdown_gate_detected,
+        "toc_body_concat_structure_detected": structure_gate_detected,
+        "toc_body_concat_gate_source": gate_source,
+    }
+
+
+def _build_acceptance_toc_body_concat_check(
+    *,
+    preparation_diagnostic_snapshot: Mapping[str, object],
+    translation_quality_report: Mapping[str, object],
+) -> dict[str, object]:
+    provenance = _build_toc_body_concat_provenance_details(
+        preparation_diagnostic_snapshot=preparation_diagnostic_snapshot,
+        translation_quality_report=translation_quality_report,
+    )
+    gate_source = str(provenance["toc_body_concat_gate_source"] or "legacy_markdown")
+    effective_gate_detected = provenance["toc_body_concat_detected"]
+    markdown_gate_detected = provenance["toc_body_concat_markdown_detected"]
+    structure_gate_detected = provenance["toc_body_concat_structure_detected"]
     structure_toc_boundary_resolved = bool(
         _coerce_int(preparation_diagnostic_snapshot.get("document_map_toc_region_count")) > 0
         and (
@@ -1813,7 +1836,9 @@ def evaluate_lietaer_acceptance(
             (
                 "toc_body_concatenation_detected",
                 not bool(translation_quality_report.get("toc_body_concat_detected")),
-                {"toc_body_concat_detected": translation_quality_report.get("toc_body_concat_detected")},
+                _build_toc_body_concat_provenance_details(
+                    translation_quality_report=translation_quality_report,
+                ),
             ),
         )
         for check_name, passed, details in residual_gate_checks:

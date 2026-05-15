@@ -213,11 +213,15 @@ def test_evaluate_lietaer_acceptance_fails_on_translation_quality_report_residua
             "list_fragment_regression_count": 1,
             "mixed_script_term_count": 1,
             "theology_style_deterministic_issue_count": 3,
-            "toc_body_concat_detected": False,
+            "toc_body_concat_detected": True,
+            "toc_body_concat_markdown_detected": True,
+            "toc_body_concat_structure_detected": False,
+            "toc_body_concat_gate_source": "legacy_markdown",
         },
     }
 
     acceptance = validation.evaluate_lietaer_acceptance(report)
+    by_name = {check["name"]: check for check in acceptance["checks"]}
 
     assert acceptance["passed"] is False
     assert acceptance["failed_checks"] == [
@@ -225,8 +229,13 @@ def test_evaluate_lietaer_acceptance_fails_on_translation_quality_report_residua
         "residual_bullet_glyphs_present",
         "list_fragment_regressions_present",
         "mixed_script_terms_present",
+        "toc_body_concatenation_detected",
         "structural_comparison_available",
     ]
+    assert by_name["toc_body_concatenation_detected"]["toc_body_concat_detected"] is True
+    assert by_name["toc_body_concatenation_detected"]["toc_body_concat_markdown_detected"] is True
+    assert by_name["toc_body_concatenation_detected"]["toc_body_concat_structure_detected"] is False
+    assert by_name["toc_body_concatenation_detected"]["toc_body_concat_gate_source"] == "legacy_markdown"
 
 
 def test_evaluate_lietaer_acceptance_ignores_centered_heading_alignment_for_minimal_formatter_contract() -> None:

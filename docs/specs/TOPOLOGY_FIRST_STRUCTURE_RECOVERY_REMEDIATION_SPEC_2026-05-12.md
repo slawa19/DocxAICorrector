@@ -666,13 +666,14 @@ Add explicit fields to the preparation diagnostic snapshot and gate report:
   "excluded_page_artifact_unmapped_count": 4,
   "excluded_toc_unmapped_count": 12,
   "excluded_front_matter_advisory_count": 3,
+  "toc_body_concat_detected": false,
   "toc_body_concat_structure_detected": false,
   "toc_body_concat_markdown_detected": true,
-  "toc_body_concat_gate_source": "structure"
+  "toc_body_concat_gate_source": "topology_projection"
 }
 ```
 
-This keeps observability while moving authority to structure.
+This keeps observability while moving authority to topology-supported structure when sufficient evidence exists.
 
 ## R3: Markdown Postprocessor Retirement Plan
 
@@ -699,19 +700,23 @@ readiness gates.
 
 ### Transitional Rule
 
-During migration, markdown detectors may remain as advisory fields:
+During migration, markdown detectors may remain as advisory fields when structure authority is present:
 
 ```json
 {
-  "markdown_toc_body_concat_detected": true,
-  "structure_toc_body_concat_detected": false,
-  "quality_gate_source": "structure",
-  "markdown_signal_status": "advisory"
+  "toc_body_concat_markdown_detected": true,
+  "toc_body_concat_structure_detected": false,
+  "toc_body_concat_gate_source": "topology_projection"
 }
 ```
 
 A markdown advisory must not fail a structure profile when structure authority is
 present and passes.
+
+When topology support is absent or insufficient, the compatibility boundary is
+explicit: `toc_body_concat_gate_source = "legacy_markdown"` remains the
+conservative fallback and `toc_body_concat_markdown_detected` may still fail the
+gate until a later policy slice intentionally shrinks that fallback.
 
 ### Rendering Scope
 
@@ -883,7 +888,9 @@ Acceptance:
 - Structural diagnostic reports both markdown and structure signals.
 - Structure profiles fail/pass based on structure-aware gate fields when
   `DocumentMap` and topology projection are present.
-- Legacy/full-output profiles may continue exposing markdown advisory signals.
+- Legacy/full-output profiles may continue exposing markdown advisory signals,
+  and profiles without sufficient topology support may continue using explicit
+  `legacy_markdown` fallback authority.
 - Restore/reassembly diagnostics expose raw paragraph coverage and projected
   unit coverage side by side.
 
