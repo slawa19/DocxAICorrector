@@ -37,6 +37,13 @@ tail -n 40 .run/end_times_structural_snapshot.json
 - Canonical setup для нового WSL/server runtime: `bash scripts/setup-wsl.sh` или VS Code task `Setup Project`; Python dependencies живут в `requirements.txt`, WSL system dependencies — в `system-requirements.apt`.
 - PDF import требует LibreOffice (`soffice`/`libreoffice`) внутри WSL и использует Writer PDF import filter `--infilter=writer_pdf_import`; не называйте env готовым для PDF без проверки LibreOffice availability.
 
+## Line Ending Contract
+
+- Репозиторий закрепляет LF как canonical line ending через `.gitattributes` и `.editorconfig`.
+- На Windows не считайте CRLF в рабочем дереве допустимой нормой только потому, что shell или editor запущены вне WSL.
+- Если после добавления правил старые файлы всё ещё показывают CRLF warnings, это означает, что им нужна разовая renormalization; не интерпретируйте это как отсутствие эффекта от новых настроек.
+- После текстовых правок, чувствительных к whitespace/EOL, предпочтительная быстрая проверка: `git diff --check`.
+
 ## Canonical Test Commands
 
 Используйте только канонический entry point:

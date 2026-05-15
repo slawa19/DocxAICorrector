@@ -7,38 +7,216 @@
   "failed_checks": [],
   "preparation_error": null,
   "preparation_diagnostic_snapshot": {
+    "paragraph_count": 336,
+    "heading_count": 7,
+    "toc_header_count": 1,
+    "toc_entry_count": 9,
+    "bounded_toc_region_count": 1,
+    "repaired_bullet_items": 0,
+    "repaired_numbered_items": 0,
+    "toc_body_boundary_repairs": 0,
+    "remaining_isolated_marker_count": 0,
+    "readiness_status": "ready_with_warnings",
+    "readiness_reasons": [],
     "document_map_present": true,
+    "outline_coverage_ratio": 1.0,
     "document_topology_projection_status": "built",
-    "quality_gate_status": "pass",
-    "toc_body_concat_gate_source": "topology_projection",
-    "toc_body_concat_detected": false,
-    "toc_body_concat_structure_detected": false,
+    "document_topology_projection_status_reason": "",
     "document_topology_projection": {
-      "cache_key": "c5bfdec6aff946a4119a95b733617b97d9622a0c7841a7f436d71988cda9d28b",
+      "stage": "document_topology_projection_v1",
+      "schema_version": 1,
+      "cache_key": "87af68062f8b22411672c65db89b876216156f415a1dee75503addb18f521887",
       "document_map_cache_key": "9b82a2e2693c1ce746f5e4e77a8c86abba2240d90d4c062bed2cddb182731558",
+      "topology_projection_schema_version": 2,
+      "topology_hint_schema_version": 1,
       "operations": [
         {
           "op": "merge_heading_continuation",
-          "logical_indexes": [221, 222, 223, 224],
+          "logical_indexes": [
+            10,
+            11
+          ],
+          "canonical_text": "Chapter Eight STRATEGIES FOR GOVERNMENTS",
+          "authority": "document_map_outline",
+          "confidence": "high",
+          "evidence": [
+            "outline_entry",
+            "adjacent_short_heading_fragments",
+            "body_font_baseline_outlier"
+          ]
+        },
+        {
+          "op": "merge_heading_continuation",
+          "logical_indexes": [
+            104,
+            105
+          ],
+          "canonical_text": "Chapter Nine STRATEGIES FOR NGO S",
+          "authority": "document_map_outline",
+          "confidence": "high",
+          "evidence": [
+            "outline_entry",
+            "adjacent_short_heading_fragments",
+            "body_font_baseline_outlier"
+          ]
+        },
+        {
+          "op": "merge_heading_continuation",
+          "logical_indexes": [
+            161,
+            162
+          ],
+          "canonical_text": "Chapter Ten TRUTH AND CONSEQUENCES Lessons Learned",
+          "authority": "document_map_outline",
+          "confidence": "high",
+          "evidence": [
+            "outline_entry",
+            "adjacent_short_heading_fragments",
+            "body_font_baseline_outlier"
+          ]
+        },
+        {
+          "op": "merge_heading_continuation",
+          "logical_indexes": [
+            221,
+            222,
+            223,
+            224
+          ],
           "canonical_text": "Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?",
           "authority": "document_map_outline",
           "confidence": "high",
-          "evidence": ["outline_entry"]
+          "evidence": [
+            "outline_entry",
+            "adjacent_short_heading_fragments",
+            "body_font_baseline_outlier",
+            "font_cluster_match"
+          ]
         }
       ],
       "projected_units": [
         {
           "unit_type": "chapter_heading",
-          "logical_indexes": [221, 222, 223, 224],
+          "logical_indexes": [
+            10,
+            11
+          ],
+          "canonical_text": "Chapter Eight STRATEGIES FOR GOVERNMENTS",
+          "role": "heading",
+          "heading_level": 1,
+          "confidence": "high",
+          "authority": "document_map_outline",
+          "evidence": [
+            "outline_entry",
+            "adjacent_short_heading_fragments",
+            "body_font_baseline_outlier"
+          ],
+          "unit_id": "u_e6dc447c08b4"
+        },
+        {
+          "unit_type": "chapter_heading",
+          "logical_indexes": [
+            104,
+            105
+          ],
+          "canonical_text": "Chapter Nine STRATEGIES FOR NGO S",
+          "role": "heading",
+          "heading_level": 1,
+          "confidence": "high",
+          "authority": "document_map_outline",
+          "evidence": [
+            "outline_entry",
+            "adjacent_short_heading_fragments",
+            "body_font_baseline_outlier"
+          ],
+          "unit_id": "u_9cc42ba2e4fb"
+        },
+        {
+          "unit_type": "chapter_heading",
+          "logical_indexes": [
+            161,
+            162
+          ],
+          "canonical_text": "Chapter Ten TRUTH AND CONSEQUENCES Lessons Learned",
+          "role": "heading",
+          "heading_level": 1,
+          "confidence": "high",
+          "authority": "document_map_outline",
+          "evidence": [
+            "outline_entry",
+            "adjacent_short_heading_fragments",
+            "body_font_baseline_outlier"
+          ],
+          "unit_id": "u_5d1872afa904"
+        },
+        {
+          "unit_type": "chapter_heading",
+          "logical_indexes": [
+            221,
+            222,
+            223,
+            224
+          ],
           "canonical_text": "Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?",
           "role": "heading",
           "heading_level": 1,
           "confidence": "high",
           "authority": "document_map_outline",
-          "evidence": ["outline_entry"],
+          "evidence": [
+            "outline_entry",
+            "adjacent_short_heading_fragments",
+            "body_font_baseline_outlier",
+            "font_cluster_match"
+          ],
           "unit_id": "u_f31ba5073b8f"
         }
       ]
-    }
+    },
+    "document_topology_layout_signals": {
+      "body_baseline_pt": 11.0,
+      "tier_count": 5,
+      "heading_tier_count": 3,
+      "paragraphs_with_font_size_count": 336,
+      "heading_ratio": 1.15
+    },
+    "front_matter_leaks": [],
+    "front_matter_body_advisories": [],
+    "targeted_recall_invoked": false,
+    "quality_gate_status": "pass",
+    "quality_gate_reasons": [],
+    "structure_ai_attempted": true,
+    "ai_first_degraded": false,
+    "fallback_stage": "",
+    "fallback_reason": "",
+    "document_map_status": "ai",
+    "document_map_status_reason": "",
+    "ai_classified_count": 35,
+    "ai_heading_count": 11,
+    "structure_window_split_count": 0,
+    "structure_max_fallback_depth": 0,
+    "structure_split_fallback_descriptor_count": 0,
+    "structure_timeout_retry_count": 0,
+    "structure_timeout_retry_succeeded_count": 0,
+    "structure_timeout_retry_failed_count": 0,
+    "structure_split_fallback_capped_descriptor_count": 0,
+    "semantic_block_count": 27,
+    "first_block_target_chars": 885,
+    "first_block_has_toc": false,
+    "first_block_has_epigraph": false,
+    "first_block_has_body_start": true,
+    "first_block_has_isolated_marker": false,
+    "structure_primary_classified_count": 336,
+    "structure_retry_classified_count": 0,
+    "structure_split_fallback_classified_count": 0,
+    "toc_body_concat_structure_detected": false,
+    "toc_body_concat_gate_source": "legacy_markdown",
+    "toc_body_concat_detected": true,
+    "toc_body_concat_markdown_detected": true,
+    "structure_unit_unmapped_source_count": 7,
+    "structure_unit_unmapped_target_count": 6,
+    "unit_covered_source_fragment_count": 323,
+    "unit_covered_target_fragment_count": 326,
+    "unit_unmapped_source_gate_source": "topology_unit",
+    "unit_unmapped_target_gate_source": "topology_unit"
   }
 }

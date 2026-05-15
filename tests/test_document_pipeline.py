@@ -15,7 +15,12 @@ import docxaicorrector.pipeline.output_validation as document_pipeline_output_va
 import docxaicorrector.pipeline.reassembly as document_pipeline_reassembly
 from docx import Document
 
+from docxaicorrector.core.models import DocumentMap
+from docxaicorrector.core.models import DocumentMapTocRegion
+from docxaicorrector.core.models import DocumentTopologyOperation
+from docxaicorrector.core.models import DocumentTopologyProjection
 from docxaicorrector.core.models import ParagraphUnit
+from docxaicorrector.core.models import StructuralUnit
 from docxaicorrector.document._document import extract_document_content_from_docx
 from docxaicorrector.pipeline.contracts import SegmentSelection
 
@@ -46,6 +51,25 @@ class PlannedJobs:
 
 class ParagraphStub:
     role = "body"
+
+
+def _bounded_toc_document_map() -> DocumentMap:
+    return DocumentMap(
+        body_start_logical_index=10,
+        toc_region=DocumentMapTocRegion(
+            start_logical_index=0,
+            end_logical_index=9,
+            header_logical_index=0,
+            entries=(),
+            confidence="high",
+        ),
+        outline=(),
+        paragraph_anchors={},
+        review_zones=(),
+        split_hints=(),
+        sampled=False,
+        sampled_logical_indexes=(0,),
+    )
 
 
 def _build_runtime_capture():
@@ -3372,6 +3396,137 @@ def test_run_document_processing_warns_on_advisory_structural_markdown_quality_g
     assert payload["quality_status"] == "warn"
     assert payload["gate_reasons"] == ["toc_body_concatenation_detected"]
     assert payload["toc_body_concat_detected"] is True
+
+
+def test_run_document_processing_quality_report_prefers_topology_authority_over_markdown_toc_concat(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    quality_dir = tmp_path / "quality_reports"
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+
+    result = _run_processing(
+        runtime,
+        app_config={"translation_output_quality_gate_policy": "strict"},
+        processing_operation="translate",
+        document_map=_bounded_toc_document_map(),
+        document_topology_projection=DocumentTopologyProjection(
+            cache_key="topology-authoritative-toc",
+            projected_units=(
+                StructuralUnit(
+                    unit_type="toc_entry",
+                    logical_indexes=(8,),
+                    canonical_text="10 Truth and Consequences",
+                    role="toc_entry",
+                    heading_level=None,
+                    confidence="high",
+                    authority="document_map_toc",
+                ),
+                StructuralUnit(
+                    unit_type="toc_entry",
+                    logical_indexes=(8,),
+                    canonical_text="11 Governance and We, the Citizens",
+                    role="toc_entry",
+                    heading_level=None,
+                    confidence="high",
+                    authority="document_map_toc",
+                ),
+            ),
+        ),
+        generate_markdown_block=lambda **kwargs: "Заключение........ 29 Введение",
+    )
+
+    assert result == "succeeded"
+    report_files = list(quality_dir.glob("*.json"))
+    assert len(report_files) == 1
+    payload = json.loads(report_files[0].read_text(encoding="utf-8"))
+    assert payload["quality_status"] == "pass"
+    assert payload["gate_reasons"] == []
+    assert payload["toc_body_concat_gate_source"] == "topology_projection"
+    assert payload["toc_body_concat_markdown_detected"] is True
+    assert payload["toc_body_concat_structure_detected"] is False
+    assert payload["toc_body_concat_detected"] is False
+
+
+def test_run_document_processing_quality_report_keeps_candidate_page_artifact_non_binding(tmp_path, monkeypatch):
+    runtime = _build_runtime_capture()
+    quality_dir = tmp_path / "quality_reports"
+    monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
+    monkeypatch.setattr(document_pipeline_late_phases, "QUALITY_REPORTS_DIR", quality_dir)
+
+    result = _run_processing(
+        runtime,
+        app_config={"translation_output_quality_gate_policy": "strict"},
+        processing_operation="translate",
+        document_map=_bounded_toc_document_map(),
+        document_topology_projection=DocumentTopologyProjection(
+            cache_key="candidate-page-artifact-only",
+            operations=(
+                DocumentTopologyOperation(
+                    op="candidate_page_artifact_split",
+                    logical_indexes=(9, 10),
+                    canonical_text="This page intentionally left blank Chapter 11",
+                    authority="document_map_outline",
+                    confidence="candidate",
+                    evidence=("page_artifact_phrase", "local_heading_neighborhood", "page_break_boundary"),
+                ),
+            ),
+        ),
+        generate_markdown_block=lambda **kwargs: "Заключение........ 29 Введение",
+    )
+
+    assert result == "failed"
+    report_files = list(quality_dir.glob("*.json"))
+    assert len(report_files) == 1
+    payload = json.loads(report_files[0].read_text(encoding="utf-8"))
+    assert payload["quality_status"] == "fail"
+    assert payload["gate_reasons"] == ["toc_body_concatenation_detected"]
+    assert payload["toc_body_concat_gate_source"] == "legacy_markdown"
+    assert payload["toc_body_concat_markdown_detected"] is True
+    assert payload["toc_body_concat_structure_detected"] is False
+    assert payload["toc_body_concat_detected"] is True
+
+
+def test_build_translation_quality_report_exposes_structure_unit_unmapped_basis_without_raw_override(monkeypatch):
+    monkeypatch.setattr(
+        document_pipeline_late_phases,
+        "_load_formatting_diagnostics_payloads",
+        lambda artifact_paths: [{"unmapped_source_ids": ["p0000", "p0001"], "unmapped_target_indexes": [], "source_count": 2, "target_count": 2}],
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+            source_paragraphs=[
+                ParagraphUnit(text="Governance and We,", role="heading", paragraph_id="p0000", source_index=0, logical_index=10),
+                ParagraphUnit(text="the Citizens", role="heading", paragraph_id="p0001", source_index=1, logical_index=11),
+            ],
+            document_map=None,
+            document_topology_projection=DocumentTopologyProjection(
+                cache_key="topology-merged-heading",
+                projected_units=(
+                    StructuralUnit(
+                        unit_type="chapter_heading",
+                        logical_indexes=(10, 11),
+                        canonical_text="Governance and We, the Citizens",
+                        role="heading",
+                        heading_level=1,
+                        confidence="high",
+                        authority="document_map_outline",
+                    ),
+                ),
+            ),
+        ),
+        final_markdown="## Governance and We, the Citizens",
+        formatting_diagnostics_artifacts=["ignored.json"],
+    )
+
+    assert report["raw_unmapped_source_paragraph_count"] == 2
+    assert report["structure_unit_unmapped_source_count"] == 1
+    assert report["unmapped_source_count_basis"] == "topology_unit"
+    assert report["unmapped_source_count"] == 1
 
 
 def test_run_document_processing_logs_compact_block_plan_summary_at_info() -> None:

@@ -156,6 +156,17 @@ def _resolve_acceptance_unmapped_source_count(
     formatting_diagnostics: Sequence[Mapping[str, object]],
     translation_quality_report: Mapping[str, object],
 ) -> int:
+    count_basis = str(translation_quality_report.get("unmapped_source_count_basis") or "").strip().lower()
+    if count_basis == "topology_unit":
+        return _coerce_int(
+            translation_quality_report.get(
+                "structure_unit_unmapped_source_count",
+                translation_quality_report.get(
+                    "worst_unmapped_source_count",
+                    translation_quality_report.get("unmapped_source_count"),
+                ),
+            )
+        )
     quality_count = _coerce_int(
         translation_quality_report.get(
             "worst_unmapped_source_count",
@@ -171,6 +182,14 @@ def _resolve_acceptance_unmapped_target_count(
     formatting_diagnostics: Sequence[Mapping[str, object]],
     translation_quality_report: Mapping[str, object],
 ) -> int:
+    count_basis = str(translation_quality_report.get("unmapped_target_count_basis") or "").strip().lower()
+    if count_basis == "topology_unit":
+        return _coerce_int(
+            translation_quality_report.get(
+                "structure_unit_unmapped_target_count",
+                translation_quality_report.get("unmapped_target_count"),
+            )
+        )
     quality_count = _coerce_int(translation_quality_report.get("unmapped_target_count"))
     formatting_count = _max_payload_list_length(formatting_diagnostics, "unmapped_target_indexes")
     return max(quality_count, formatting_count)
@@ -191,6 +210,18 @@ def _build_acceptance_toc_body_concat_check(
         .lower()
         or "legacy_markdown"
     )
+    effective_gate_detected = preparation_diagnostic_snapshot.get(
+        "toc_body_concat_detected",
+        translation_quality_report.get("toc_body_concat_detected"),
+    )
+    markdown_gate_detected = preparation_diagnostic_snapshot.get(
+        "toc_body_concat_markdown_detected",
+        translation_quality_report.get("toc_body_concat_markdown_detected", effective_gate_detected),
+    )
+    structure_gate_detected = preparation_diagnostic_snapshot.get(
+        "toc_body_concat_structure_detected",
+        translation_quality_report.get("toc_body_concat_structure_detected"),
+    )
     structure_toc_boundary_resolved = bool(
         _coerce_int(preparation_diagnostic_snapshot.get("document_map_toc_region_count")) > 0
         and (
@@ -205,30 +236,14 @@ def _build_acceptance_toc_body_concat_check(
         or (gate_source == "topology_projection" and structure_toc_boundary_resolved)
     )
     gate_detected = bool(
-        preparation_diagnostic_snapshot.get(
-            "toc_body_concat_structure_detected"
-            if gate_source == "topology_projection"
-            else "toc_body_concat_markdown_detected",
-            preparation_diagnostic_snapshot.get(
-                "toc_body_concat_detected",
-                translation_quality_report.get("toc_body_concat_detected"),
-            ),
-        )
+        structure_gate_detected if gate_source == "topology_projection" else markdown_gate_detected
     )
     return {
         "name": "no_toc_body_concat_required",
         "passed": not gate_detected and source_toc_boundary_repaired,
-        "toc_body_concat_detected": preparation_diagnostic_snapshot.get(
-            "toc_body_concat_detected",
-            translation_quality_report.get("toc_body_concat_detected"),
-        ),
-        "toc_body_concat_markdown_detected": preparation_diagnostic_snapshot.get(
-            "toc_body_concat_markdown_detected",
-            translation_quality_report.get("toc_body_concat_detected"),
-        ),
-        "toc_body_concat_structure_detected": preparation_diagnostic_snapshot.get(
-            "toc_body_concat_structure_detected"
-        ),
+        "toc_body_concat_detected": effective_gate_detected,
+        "toc_body_concat_markdown_detected": markdown_gate_detected,
+        "toc_body_concat_structure_detected": structure_gate_detected,
         "toc_body_concat_gate_source": gate_source,
         "structure_repair_toc_body_boundary_repairs": preparation_diagnostic_snapshot.get(
             "structure_repair_toc_body_boundary_repairs"
@@ -1739,8 +1754,11 @@ def evaluate_lietaer_acceptance(
     )
     add_check(
         "formatting_diagnostics_threshold",
-        worst_unmapped_source_count <= mismatch_threshold and total_caption_heading_conflicts == 0,
+        explicit_unmapped_source_count <= mismatch_threshold and total_caption_heading_conflicts == 0,
+        actual=explicit_unmapped_source_count,
         worst_unmapped_source_count=worst_unmapped_source_count,
+        raw_worst_unmapped_source_count=worst_unmapped_source_count,
+        unmapped_source_count_basis=translation_quality_report.get("unmapped_source_count_basis"),
         mismatch_threshold=mismatch_threshold,
         caption_heading_conflicts=total_caption_heading_conflicts,
         artifact_count=len(formatting_diagnostics),

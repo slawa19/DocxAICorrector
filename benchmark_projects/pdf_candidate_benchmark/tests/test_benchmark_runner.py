@@ -157,3 +157,34 @@ def test_docx_profile_for_artifact_disables_pdf_conversion_requirement(tmp_path:
     assert profile.require_pdf_conversion is False
     assert profile.require_translation_domain == "theology"
     assert profile.source_path.endswith("benchmark_projects/pdf_candidate_benchmark/artifacts/tmp/normalized.docx")
+
+
+def test_docx_structural_proxy_prefers_snapshot_toc_gate_fields_over_preview_detector(monkeypatch) -> None:
+    monkeypatch.setattr(
+        benchmark_runner,
+        "build_preparation_diagnostic_snapshot",
+        lambda **kwargs: {
+            "toc_entry_count": 1,
+            "bounded_toc_region_count": 1,
+            "remaining_isolated_marker_count": 0,
+            "first_block_has_toc": False,
+            "first_block_has_body_start": False,
+            "toc_body_concat_detected": False,
+            "toc_body_concat_markdown_detected": True,
+            "toc_body_concat_structure_detected": False,
+            "toc_body_concat_gate_source": "topology_projection",
+        },
+    )
+
+    result = benchmark_runner._build_docx_structural_proxy(
+        paragraphs=[],
+        relations=[],
+        structure_repair_report=None,
+        preview_paragraphs=["Contents........ 1 Introduction"],
+    )
+
+    metrics = result["metrics"]
+    assert metrics["toc_body_concat_detected"] is False
+    assert metrics["toc_body_concat_markdown_detected"] is True
+    assert metrics["toc_body_concat_structure_detected"] is False
+    assert metrics["toc_body_concat_gate_source"] == "topology_projection"

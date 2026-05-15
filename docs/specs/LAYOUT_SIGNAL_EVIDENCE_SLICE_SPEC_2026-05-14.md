@@ -1,10 +1,20 @@
 # Layout Signal Evidence Slice Spec
 
 Date: 2026-05-14
-Status: Proposed
+Status: Runtime mostly implemented; acceptance package remains open for fixture and hygiene closure
 Parent spec: `docs/specs/TOPOLOGY_FIRST_STRUCTURE_RECOVERY_REMEDIATION_SPEC_2026-05-12.md`
 Authority position: **Slice between Phase 1 and Phase 2** of the parent spec. Does
 not change Variant A authority discipline. Adds new `evidence` tags only.
+
+Current continuation source of truth:
+`docs/specs/STRUCTURE_RECOGNITION_COMPLETION_PLAN_2026-05-14.md`.
+
+Implementation note: the confirmed `lietaer-pdf-chapter-region-core` passing
+state depends on both the topology acceptance rule and runtime propagation of
+`structure_recovery_topology_projection_layout_signals_enabled`. Do not describe
+the Chapter 11 pass as a topology-only fix. Live diagnostics expose
+`document_topology_layout_signals` from the event-log context when available and
+from prepared-snapshot backfill when passthrough event capture omits that event.
 
 ## TL;DR
 

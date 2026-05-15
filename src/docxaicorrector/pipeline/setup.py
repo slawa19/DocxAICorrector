@@ -126,6 +126,8 @@ def build_processing_context(
     include_toc: bool = False,
     source_paragraphs: object,
     image_assets: object,
+    document_map: object | None = None,
+    document_topology_projection: object | None = None,
     image_mode: str,
     app_config: Mapping[str, object],
     model: str,
@@ -199,6 +201,8 @@ def build_processing_context(
         model_id=model_id,
         document_context_prompt=str(document_context_prompt or app_config.get("document_context_prompt", "") or ""),
         segment_selection=resolved_segment_selection,
+        document_map=document_map,
+        document_topology_projection=document_topology_projection,
     )
 
 
@@ -218,6 +222,8 @@ def build_processing_run_components(
     include_toc: bool = False,
     source_paragraphs: object,
     image_assets: object,
+    document_map: object | None = None,
+    document_topology_projection: object | None = None,
     image_mode: str,
     app_config: Mapping[str, object],
     model: str,
@@ -300,6 +306,8 @@ def build_processing_run_components(
         include_toc=include_toc,
         source_paragraphs=source_paragraphs,
         image_assets=image_assets,
+        document_map=document_map,
+        document_topology_projection=document_topology_projection,
         image_mode=image_mode,
         app_config=app_config,
         model=model,

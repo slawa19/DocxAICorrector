@@ -372,10 +372,27 @@ def _build_translation_quality_report(
     scripture_reference_heading_samples = [
         sample for sample in false_fragment_heading_samples if getattr(sample, "reason", "") == "scripture_reference_heading_present"
     ]
-    toc_body_concat_detected = _has_toc_body_concat_markdown(final_markdown)
+    authority_fields = _derive_translation_quality_authority_fields(
+        context=context,
+        final_markdown=final_markdown,
+        formatting_payload=latest_payload if isinstance(latest_payload, Mapping) else None,
+        assembly_result=assembly_result,
+    )
+    toc_body_concat_detected = bool(authority_fields.get("toc_body_concat_detected", False))
     source_paragraph_count = latest_payload.get("source_count") if isinstance(latest_payload, Mapping) else None
     output_paragraph_count = latest_payload.get("target_count") if isinstance(latest_payload, Mapping) else None
-    worst_unmapped_source_count = len(unmapped_source_ids) if isinstance(unmapped_source_ids, list) else 0
+    worst_unmapped_source_count = _effective_authoritative_unmapped_count(
+        authority_fields,
+        basis_key="unmapped_source_count_basis",
+        raw_count_key="raw_unmapped_source_paragraph_count",
+        structure_count_key="structure_unit_unmapped_source_count",
+    )
+    effective_unmapped_target_count = _effective_authoritative_unmapped_count(
+        authority_fields,
+        basis_key="unmapped_target_count_basis",
+        raw_count_key="raw_unmapped_target_paragraph_count",
+        structure_count_key="structure_unit_unmapped_target_count",
+    )
     prepared_paragraph_count = getattr(context, "paragraph_count", None) or getattr(context, "total_paragraphs", None)
     if isinstance(prepared_paragraph_count, int) and prepared_paragraph_count > 0:
         if source_paragraph_count is None:
@@ -383,12 +400,17 @@ def _build_translation_quality_report(
         if output_paragraph_count is None:
             output_paragraph_count = prepared_paragraph_count
     if context.processing_operation == "translate":
-        if policy == "strict" and isinstance(unmapped_source_ids, list) and unmapped_source_ids:
+        basis = str(authority_fields.get("unmapped_source_count_basis") or "legacy_paragraph").strip().lower() or "legacy_paragraph"
+        effective_source_total = source_paragraph_count
+        if basis == "topology_unit":
+            structure_unit_total_count = authority_fields.get("structure_unit_total_count")
+            if isinstance(structure_unit_total_count, int) and structure_unit_total_count > 0:
+                effective_source_total = structure_unit_total_count
+        if policy == "strict" and worst_unmapped_source_count > 0:
             quality_status = "fail"
             gate_reasons.append("unmapped_source_paragraphs_present")
-        elif policy == "advisory" and isinstance(unmapped_source_ids, list) and unmapped_source_ids:
-            source_count = latest_payload.get("source_count")
-            if isinstance(source_count, int) and source_count > 0 and (len(unmapped_source_ids) / source_count) > 0.01:
+        elif policy == "advisory" and worst_unmapped_source_count > 0:
+            if isinstance(effective_source_total, int) and effective_source_total > 0 and (worst_unmapped_source_count / effective_source_total) > 0.01:
                 quality_status = "warn"
                 gate_reasons.append("unmapped_source_paragraphs_above_advisory_threshold")
         if bullet_heading_count > 0:
@@ -447,8 +469,15 @@ def _build_translation_quality_report(
         "output_paragraph_count": output_paragraph_count,
         "mapped_count": latest_payload.get("mapped_count") if isinstance(latest_payload, Mapping) else None,
         "unmapped_source_count": worst_unmapped_source_count,
-        "unmapped_target_count": len(unmapped_target_indexes) if isinstance(unmapped_target_indexes, list) else 0,
+        "unmapped_target_count": effective_unmapped_target_count,
         "worst_unmapped_source_count": worst_unmapped_source_count,
+        "raw_unmapped_source_paragraph_count": authority_fields.get("raw_unmapped_source_paragraph_count", len(unmapped_source_ids) if isinstance(unmapped_source_ids, list) else 0),
+        "raw_unmapped_target_paragraph_count": authority_fields.get("raw_unmapped_target_paragraph_count", len(unmapped_target_indexes) if isinstance(unmapped_target_indexes, list) else 0),
+        "structure_unit_total_count": authority_fields.get("structure_unit_total_count"),
+        "structure_unit_unmapped_source_count": authority_fields.get("structure_unit_unmapped_source_count"),
+        "structure_unit_unmapped_target_count": authority_fields.get("structure_unit_unmapped_target_count"),
+        "unmapped_source_count_basis": authority_fields.get("unmapped_source_count_basis", "legacy_paragraph"),
+        "unmapped_target_count_basis": authority_fields.get("unmapped_target_count_basis", "legacy_paragraph"),
         "accepted_merged_sources_count": len(accepted_merged_sources) if isinstance(accepted_merged_sources, list) else 0,
         "caption_heading_conflicts_count": len(caption_heading_conflicts) if isinstance(caption_heading_conflicts, list) else 0,
         "bullet_heading_count": bullet_heading_count,
@@ -468,6 +497,9 @@ def _build_translation_quality_report(
         "theology_style_deterministic_issue_count": len(theology_style_samples),
         "theology_style_deterministic_issue_samples": _serialize_quality_samples(theology_style_samples),
         "toc_body_concat_detected": toc_body_concat_detected,
+        "toc_body_concat_markdown_detected": authority_fields.get("toc_body_concat_markdown_detected", False),
+        "toc_body_concat_structure_detected": authority_fields.get("toc_body_concat_structure_detected", False),
+        "toc_body_concat_gate_source": authority_fields.get("toc_body_concat_gate_source", "legacy_markdown"),
         "formatting_diagnostics_artifact_count": len(formatting_diagnostics_artifacts),
         "final_markdown_chars": len(normalized_quality_markdown),
         "quality_status": quality_status,
@@ -487,6 +519,103 @@ def _build_translation_quality_report(
         },
     }
     return report
+
+
+def _derive_translation_quality_authority_fields(
+    *,
+    context: Any,
+    final_markdown: str,
+    formatting_payload: Mapping[str, object] | None,
+    assembly_result: Any | None,
+) -> dict[str, object]:
+    markdown_detected = _has_toc_body_concat_markdown(final_markdown)
+    raw_unmapped_source_count = 0
+    raw_unmapped_target_count = 0
+    if formatting_payload is not None:
+        candidate_source_ids = formatting_payload.get("unmapped_source_ids")
+        if isinstance(candidate_source_ids, list):
+            raw_unmapped_source_count = len(candidate_source_ids)
+        candidate_target_indexes = formatting_payload.get("unmapped_target_indexes")
+        if isinstance(candidate_target_indexes, list):
+            raw_unmapped_target_count = len(candidate_target_indexes)
+    fields: dict[str, object] = {
+        "toc_body_concat_detected": markdown_detected,
+        "toc_body_concat_markdown_detected": markdown_detected,
+        "toc_body_concat_structure_detected": False,
+        "toc_body_concat_gate_source": "legacy_markdown",
+        "raw_unmapped_source_paragraph_count": raw_unmapped_source_count,
+        "raw_unmapped_target_paragraph_count": raw_unmapped_target_count,
+        "structure_unit_unmapped_source_count": raw_unmapped_source_count,
+        "structure_unit_unmapped_target_count": raw_unmapped_target_count,
+        "unmapped_source_count_basis": "legacy_paragraph",
+        "unmapped_target_count_basis": "legacy_paragraph",
+    }
+    document_map = getattr(context, "document_map", None)
+    topology_projection = getattr(context, "document_topology_projection", None)
+    source_paragraphs = cast(Sequence[object], getattr(context, "source_paragraphs", None) or ())
+    if formatting_payload is None and document_map is None and topology_projection is None:
+        return fields
+    try:
+        from docxaicorrector.validation import structural as structural_validation_runtime
+    except Exception:
+        return fields
+    fields.update(
+        {
+            key: value
+            for key, value in structural_validation_runtime._derive_toc_body_concat_gate_fields(
+                document_map=document_map,
+                topology_projection=topology_projection,
+                markdown_detected=markdown_detected,
+            ).items()
+            if key
+            in {
+                "toc_body_concat_detected",
+                "toc_body_concat_markdown_detected",
+                "toc_body_concat_structure_detected",
+                "toc_body_concat_gate_source",
+            }
+        }
+    )
+    generated_paragraph_registry = None
+    if assembly_result is not None:
+        assembly_entries = tuple(getattr(assembly_result, "entries", ()) or ())
+        if assembly_entries:
+            generated_paragraph_registry = build_generated_paragraph_registry_from_entries(assembly_entries)
+    unmapped_fields = structural_validation_runtime._derive_unit_aware_unmapped_fields(
+        source_paragraphs=source_paragraphs,
+        topology_projection=topology_projection,
+        formatting_payload=formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+    )
+    fields.update(
+        {
+            key: value
+            for key, value in unmapped_fields.items()
+            if key
+            in {
+                "raw_unmapped_source_paragraph_count",
+                "raw_unmapped_target_paragraph_count",
+                "structure_unit_total_count",
+                "structure_unit_unmapped_source_count",
+                "structure_unit_unmapped_target_count",
+                "unmapped_source_count_basis",
+                "unmapped_target_count_basis",
+            }
+        }
+    )
+    return fields
+
+
+def _effective_authoritative_unmapped_count(
+    fields: Mapping[str, object],
+    *,
+    basis_key: str,
+    raw_count_key: str,
+    structure_count_key: str,
+) -> int:
+    basis = str(fields.get(basis_key) or "legacy_paragraph").strip().lower() or "legacy_paragraph"
+    candidate = fields.get(structure_count_key) if basis == "topology_unit" else fields.get(raw_count_key)
+    return int(candidate or 0) if isinstance(candidate, (int, float, bool)) else 0
 
 
 def _build_result_quality_warning(

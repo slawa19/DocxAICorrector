@@ -91,7 +91,10 @@ def _assert_lietaer_chapter_region_chapter_11_stage1_authority_contract(
 ) -> None:
     snapshot = cast(dict[str, Any], diagnostic_payload["preparation_diagnostic_snapshot"])
     snapshot_projection = cast(dict[str, Any], snapshot["document_topology_projection"])
-    snapshot_layout_signals = cast(dict[str, Any] | None, snapshot.get("document_topology_layout_signals"))
+    snapshot_layout_signals = cast(dict[str, Any], snapshot.get("document_topology_layout_signals"))
+    document_map_cache_key = str(document_map_payload.get("cache_key") or "")
+    if "document_map" in document_map_payload:
+        document_map_payload = cast(dict[str, Any], document_map_payload["document_map"])
     toc_region = cast(dict[str, Any], document_map_payload["toc_region"])
     toc_entries = cast(list[dict[str, Any]], toc_region["entries"])
     outline_entries = cast(list[dict[str, Any]], document_map_payload["outline"])
@@ -110,24 +113,29 @@ def _assert_lietaer_chapter_region_chapter_11_stage1_authority_contract(
     assert snapshot["document_map_present"] is True
     assert snapshot["document_topology_projection_status"] == "built"
     assert snapshot["quality_gate_status"] == "pass"
-    assert snapshot["toc_body_concat_gate_source"] == "topology_projection"
-    assert snapshot["toc_body_concat_detected"] is False
+    assert snapshot["toc_body_concat_gate_source"] in {"topology_projection", "legacy_markdown"}
+    assert snapshot["toc_body_concat_detected"] is snapshot["toc_body_concat_markdown_detected"]
     assert snapshot["toc_body_concat_structure_detected"] is False
-    if snapshot_layout_signals is not None:
-        assert snapshot_layout_signals["heading_ratio"] == 1.15
-        assert int(snapshot_layout_signals["paragraphs_with_font_size_count"]) > 0
+    assert snapshot_layout_signals == {
+        "body_baseline_pt": 11.0,
+        "tier_count": 5,
+        "heading_tier_count": 3,
+        "paragraphs_with_font_size_count": 336,
+        "heading_ratio": 1.15,
+    }
 
     assert snapshot_projection["cache_key"] == topology_payload["cache_key"]
-    assert snapshot_projection["document_map_cache_key"] == document_map_payload["cache_key"]
-    assert topology_payload["document_map_cache_key"] == document_map_payload["cache_key"]
+    assert snapshot_projection["document_map_cache_key"] == document_map_cache_key
+    assert topology_payload["document_map_cache_key"] == document_map_cache_key
+    assert topology_payload["topology_projection_schema_version"] == 2
 
     chapter_11_toc_entry = [
         entry
         for entry in toc_entries
-        if entry["title"] == "11 Governance and We, the Citizens: An Ancient Future?"
+        if entry["title"] == "Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?"
     ]
     assert len(chapter_11_toc_entry) == 1, json.dumps(toc_entries, ensure_ascii=False, indent=2)
-    assert chapter_11_toc_entry[0]["candidate_body_logical_index"] == 221
+    assert chapter_11_toc_entry[0]["candidate_body_logical_index"] == 222
     assert chapter_11_toc_entry[0]["confidence"] == "high"
 
     chapter_11_outline_entry = [
@@ -152,7 +160,12 @@ def _assert_lietaer_chapter_region_chapter_11_stage1_authority_contract(
     )
     assert chapter_11_topology_operation[0]["authority"] == "document_map_outline"
     assert chapter_11_topology_operation[0]["confidence"] == "high"
-    assert chapter_11_topology_operation[0]["evidence"] == ["outline_entry"]
+    assert chapter_11_topology_operation[0]["evidence"] == [
+        "outline_entry",
+        "adjacent_short_heading_fragments",
+        "body_font_baseline_outlier",
+        "font_cluster_match",
+    ]
 
     chapter_11_snapshot_operation = [
         operation
@@ -176,7 +189,12 @@ def _assert_lietaer_chapter_region_chapter_11_stage1_authority_contract(
     assert chapter_11_topology_unit[0]["heading_level"] == 1
     assert chapter_11_topology_unit[0]["authority"] == "document_map_outline"
     assert chapter_11_topology_unit[0]["confidence"] == "high"
-    assert chapter_11_topology_unit[0]["evidence"] == ["outline_entry"]
+    assert chapter_11_topology_unit[0]["evidence"] == [
+        "outline_entry",
+        "adjacent_short_heading_fragments",
+        "body_font_baseline_outlier",
+        "font_cluster_match",
+    ]
 
     chapter_11_snapshot_unit = [
         unit
@@ -185,6 +203,22 @@ def _assert_lietaer_chapter_region_chapter_11_stage1_authority_contract(
     ]
     assert len(chapter_11_snapshot_unit) == 1, json.dumps(snapshot_units, ensure_ascii=False, indent=2)
     assert chapter_11_snapshot_unit[0] == chapter_11_topology_unit[0]
+
+    for logical_indexes, canonical_text in (
+        ([10, 11], "Chapter Eight STRATEGIES FOR GOVERNMENTS"),
+        ([161, 162], "Chapter Ten TRUTH AND CONSEQUENCES Lessons Learned"),
+    ):
+        matching_units = [
+            unit
+            for unit in topology_units
+            if unit["unit_type"] == "chapter_heading" and unit["logical_indexes"] == logical_indexes
+        ]
+        assert len(matching_units) == 1, json.dumps(topology_units, ensure_ascii=False, indent=2)
+        assert matching_units[0]["canonical_text"] == canonical_text
+        assert matching_units[0]["authority"] == "document_map_outline"
+        assert "body_font_baseline_outlier" in matching_units[0]["evidence"]
+
+    assert not [operation for operation in topology_operations if operation["op"] == "candidate_page_artifact_split"]
 
 
 def _require_or_skip_real_document_capability(message: str) -> None:

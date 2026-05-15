@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import docxaicorrector.structure.validation as structure_validation
 import docxaicorrector.validation.structural as structural_validation_runtime
@@ -8,6 +9,7 @@ from docxaicorrector.core.models import DocumentMapTocRegion
 from docxaicorrector.core.models import DocumentTopologyOperation
 from docxaicorrector.core.models import DocumentTopologyProjection
 from docxaicorrector.core.models import ParagraphUnit
+from docxaicorrector.core.models import StructuralUnit
 from docxaicorrector.structure.validation import StructureValidationReport, validate_structure_quality
 
 
@@ -453,3 +455,158 @@ def test_candidate_page_artifact_projection_remains_non_binding_for_toc_body_con
     assert fields["toc_body_concat_structure_detected"] is False
     assert fields["topology_split_compound_toc_operation_count"] == 0
     assert fields["topology_merge_heading_operation_count"] == 1
+
+
+def test_apply_prepared_snapshot_fields_prefers_topology_authority_for_toc_body_concat_detected() -> None:
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=DocumentMapTocRegion(
+            start_logical_index=0,
+            end_logical_index=9,
+            header_logical_index=0,
+            entries=(),
+            confidence="high",
+        ),
+        outline=(),
+        paragraph_anchors={},
+        review_zones=(),
+        split_hints=(),
+        sampled=False,
+        sampled_logical_indexes=(0,),
+    )
+    projection = DocumentTopologyProjection(
+        cache_key="topology-authoritative-toc",
+        projected_units=(
+            StructuralUnit(
+                unit_type="toc_entry",
+                logical_indexes=(8,),
+                canonical_text="10 Truth and Consequences",
+                role="toc_entry",
+                heading_level=None,
+                confidence="high",
+                authority="document_map_toc",
+            ),
+        ),
+    )
+    prepared = SimpleNamespace(
+        document_map=document_map,
+        document_map_status="ai",
+        document_map_status_reason="",
+        document_topology_projection=projection,
+        document_topology_projection_status="built",
+        document_topology_projection_status_reason="",
+        quality_gate_status="pass",
+        quality_gate_reasons=(),
+        paragraphs=[],
+    )
+    snapshot = structural_validation_runtime._build_preparation_diagnostic_defaults([])
+    snapshot["toc_body_concat_detected"] = True
+    snapshot["toc_body_concat_markdown_detected"] = True
+
+    structural_validation_runtime._apply_prepared_snapshot_fields(
+        snapshot,
+        prepared,
+        app_config={
+            "structure_recovery_enabled": True,
+            "structure_recovery_topology_projection_enabled": True,
+        },
+    )
+
+    assert snapshot["toc_body_concat_markdown_detected"] is True
+    assert snapshot["toc_body_concat_structure_detected"] is False
+    assert snapshot["toc_body_concat_gate_source"] == "topology_projection"
+    assert snapshot["toc_body_concat_detected"] is False
+
+
+def test_derive_unit_aware_unmapped_fields_exposes_raw_counts_and_explicit_basis() -> None:
+    source_paragraphs = [
+        ParagraphUnit(text="Governance and We,", role="heading", paragraph_id="p0000", source_index=0, logical_index=10),
+        ParagraphUnit(text="the Citizens", role="heading", paragraph_id="p0001", source_index=1, logical_index=11),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-merged-heading",
+        projected_units=(
+            StructuralUnit(
+                unit_type="chapter_heading",
+                logical_indexes=(10, 11),
+                canonical_text="Governance and We, the Citizens",
+                role="heading",
+                heading_level=1,
+                confidence="high",
+                authority="document_map_outline",
+            ),
+        ),
+    )
+
+    fields = structural_validation_runtime._derive_unit_aware_unmapped_fields(
+        source_paragraphs=source_paragraphs,
+        topology_projection=projection,
+        formatting_payload={
+            "unmapped_source_ids": ["p0000", "p0001"],
+            "unmapped_target_indexes": [0, 1],
+            "target_registry": [
+                {"target_index": 0, "mapped": False, "text_preview": "Governance and We,"},
+                {"target_index": 1, "mapped": False, "text_preview": "the Citizens"},
+            ],
+        },
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0000", "text": "# Governance and We,"},
+            {"paragraph_id": "p0001", "text": "# the Citizens"},
+        ],
+    )
+
+    assert fields["raw_unmapped_source_paragraph_count"] == 2
+    assert fields["raw_unmapped_target_paragraph_count"] == 2
+    assert fields["structure_unit_unmapped_source_count"] == 1
+    assert fields["structure_unit_unmapped_target_count"] == 1
+    assert fields["unmapped_source_count_basis"] == "topology_unit"
+    assert fields["unmapped_target_count_basis"] == "topology_unit"
+    assert fields["unit_unmapped_source_gate_source"] == "topology_unit"
+    assert fields["unit_unmapped_target_gate_source"] == "topology_unit"
+
+
+def test_build_structural_checks_exposes_explicit_unmapped_count_basis() -> None:
+    document_profile = SimpleNamespace(
+        max_formatting_diagnostics=5,
+        max_unmapped_source_paragraphs=2,
+        max_unmapped_target_paragraphs=2,
+        max_heading_level_drift=1,
+        min_text_similarity=0.95,
+        require_numbered_lists_preserved=False,
+        require_nonempty_output=False,
+        forbid_heading_only_collapse=False,
+        require_toc_detected=False,
+        require_pdf_conversion=False,
+        require_no_bullet_headings=False,
+        require_no_toc_body_concat=False,
+        require_translation_domain=None,
+    )
+    checks = structural_validation_runtime._build_structural_checks(
+        document_profile=document_profile,
+        result="succeeded",
+        metrics={
+            "formatting_diagnostics_count": 0,
+            "max_unmapped_source_paragraphs": 2,
+            "max_unmapped_target_paragraphs": 2,
+            "raw_unmapped_source_paragraph_count": 2,
+            "raw_unmapped_target_paragraph_count": 2,
+            "structure_unit_unmapped_source_count": 1,
+            "structure_unit_unmapped_target_count": 1,
+            "unmapped_source_count_basis": "topology_unit",
+            "unmapped_target_count_basis": "topology_unit",
+            "heading_level_drift": 0,
+            "text_similarity": 0.99,
+            "heading_only_output_detected": False,
+        },
+        output_artifacts={"output_docx_openable": True, "output_visible_text_chars": 100},
+    )
+
+    by_name = {check["name"]: check for check in checks}
+    assert by_name["unmapped_source_threshold"]["actual"] == 1
+    assert by_name["unmapped_source_threshold"]["count_basis"] == "topology_unit"
+    assert by_name["unmapped_source_threshold"]["raw_paragraph_actual"] == 2
+    assert by_name["unmapped_source_threshold"]["unmapped_gate_source"] == "topology_unit"
+    assert by_name["unmapped_target_threshold"]["actual"] == 1
+    assert by_name["unmapped_target_threshold"]["count_basis"] == "topology_unit"
+    assert by_name["unmapped_target_threshold"]["raw_paragraph_actual"] == 2
+    assert by_name["unmapped_target_threshold"]["unmapped_gate_source"] == "topology_unit"

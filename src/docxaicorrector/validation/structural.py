@@ -645,10 +645,14 @@ def _derive_unit_aware_unmapped_fields(
                     continue
             unmapped_target_indexes = unresolved_indexes
     fields: dict[str, object] = {
+        "raw_unmapped_source_paragraph_count": len(unmapped_source_ids),
+        "raw_unmapped_target_paragraph_count": len(unmapped_target_indexes),
         "structure_unit_unmapped_source_count": len(unmapped_source_ids),
         "structure_unit_unmapped_target_count": len(unmapped_target_indexes),
         "unit_covered_source_fragment_count": 0,
         "unit_covered_target_fragment_count": 0,
+        "unmapped_source_count_basis": "legacy_paragraph",
+        "unmapped_target_count_basis": "legacy_paragraph",
         "unit_unmapped_source_gate_source": "legacy_paragraph",
         "unit_unmapped_target_gate_source": "legacy_paragraph",
     }
@@ -665,6 +669,7 @@ def _derive_unit_aware_unmapped_fields(
             "structure_unit_total_count": len(all_unit_keys),
             "structure_unit_unmapped_source_count": len(unmapped_source_unit_keys),
             "unit_covered_source_fragment_count": max(0, len(all_unit_keys) - len(unmapped_source_unit_keys)),
+            "unmapped_source_count_basis": "topology_unit",
             "unit_unmapped_source_gate_source": "topology_unit",
         }
     )
@@ -672,6 +677,7 @@ def _derive_unit_aware_unmapped_fields(
         fields.update(
             {
                 "structure_unit_unmapped_target_count": 0,
+                "unmapped_target_count_basis": "topology_unit",
                 "unit_unmapped_target_gate_source": "topology_unit",
             }
         )
@@ -708,6 +714,7 @@ def _derive_unit_aware_unmapped_fields(
         {
             "structure_unit_unmapped_target_count": len(unmapped_target_unit_keys),
             "unit_covered_target_fragment_count": len(covered_target_unit_keys),
+            "unmapped_target_count_basis": "topology_unit",
             "unit_unmapped_target_gate_source": "topology_unit",
         }
     )
@@ -720,10 +727,14 @@ def _apply_metric_snapshot_fields(snapshot: dict[str, object], metrics: Mapping[
         "toc_body_concat_markdown_detected",
         "toc_body_concat_structure_detected",
         "toc_body_concat_gate_source",
+        "raw_unmapped_source_paragraph_count",
+        "raw_unmapped_target_paragraph_count",
         "structure_unit_unmapped_source_count",
         "structure_unit_unmapped_target_count",
         "unit_covered_source_fragment_count",
         "unit_covered_target_fragment_count",
+        "unmapped_source_count_basis",
+        "unmapped_target_count_basis",
         "unit_unmapped_source_gate_source",
         "unit_unmapped_target_gate_source",
     ):
@@ -1481,15 +1492,27 @@ def _apply_prepared_snapshot_fields(
         if topology_toc_entry_count > _as_int(snapshot, "toc_entry_count"):
             snapshot["toc_entry_count"] = topology_toc_entry_count
     if prepared_document_map is not None or prepared_topology_projection is not None:
+        markdown_detected = bool(
+            snapshot.get(
+                "toc_body_concat_markdown_detected",
+                snapshot.get("toc_body_concat_detected", False),
+            )
+        )
         snapshot.update(
             {
                 key: value
                 for key, value in _derive_toc_body_concat_gate_fields(
                     document_map=prepared_document_map,
                     topology_projection=prepared_topology_projection,
-                    markdown_detected=False,
+                    markdown_detected=markdown_detected,
                 ).items()
-                if key in {"toc_body_concat_structure_detected", "toc_body_concat_gate_source"}
+                if key
+                in {
+                    "toc_body_concat_detected",
+                    "toc_body_concat_markdown_detected",
+                    "toc_body_concat_structure_detected",
+                    "toc_body_concat_gate_source",
+                }
             }
         )
     _maybe_backfill_layout_signals_snapshot(
@@ -1893,13 +1916,21 @@ def _build_structural_checks(
     metrics: Mapping[str, object],
     output_artifacts: Mapping[str, object],
 ) -> list[dict[str, object]]:
-    unmapped_source_gate_source = str(metrics.get("unit_unmapped_source_gate_source") or "legacy_paragraph").strip().lower()
+    unmapped_source_gate_source = str(
+        metrics.get("unmapped_source_count_basis")
+        or metrics.get("unit_unmapped_source_gate_source")
+        or "legacy_paragraph"
+    ).strip().lower()
     unmapped_source_actual = (
         _as_int(metrics, "structure_unit_unmapped_source_count")
         if unmapped_source_gate_source == "topology_unit"
         else _as_int(metrics, "max_unmapped_source_paragraphs")
     )
-    unmapped_target_gate_source = str(metrics.get("unit_unmapped_target_gate_source") or "legacy_paragraph").strip().lower()
+    unmapped_target_gate_source = str(
+        metrics.get("unmapped_target_count_basis")
+        or metrics.get("unit_unmapped_target_gate_source")
+        or "legacy_paragraph"
+    ).strip().lower()
     unmapped_target_actual = (
         _as_int(metrics, "structure_unit_unmapped_target_count")
         if unmapped_target_gate_source == "topology_unit"
@@ -1923,18 +1954,34 @@ def _build_structural_checks(
             "passed": unmapped_source_actual <= document_profile.max_unmapped_source_paragraphs,
             "actual": unmapped_source_actual,
             "allowed": document_profile.max_unmapped_source_paragraphs,
+            "count_basis": unmapped_source_gate_source,
+            "raw_paragraph_actual": metrics.get(
+                "raw_unmapped_source_paragraph_count",
+                metrics["max_unmapped_source_paragraphs"],
+            ),
             "paragraph_actual": metrics["max_unmapped_source_paragraphs"],
             "structure_unit_actual": metrics.get("structure_unit_unmapped_source_count"),
-            "unmapped_gate_source": metrics.get("unit_unmapped_source_gate_source"),
+            "unmapped_gate_source": metrics.get(
+                "unmapped_source_count_basis",
+                metrics.get("unit_unmapped_source_gate_source"),
+            ),
         },
         {
             "name": "unmapped_target_threshold",
             "passed": unmapped_target_actual <= document_profile.max_unmapped_target_paragraphs,
             "actual": unmapped_target_actual,
             "allowed": document_profile.max_unmapped_target_paragraphs,
+            "count_basis": unmapped_target_gate_source,
+            "raw_paragraph_actual": metrics.get(
+                "raw_unmapped_target_paragraph_count",
+                metrics["max_unmapped_target_paragraphs"],
+            ),
             "paragraph_actual": metrics["max_unmapped_target_paragraphs"],
             "structure_unit_actual": metrics.get("structure_unit_unmapped_target_count"),
-            "unmapped_gate_source": metrics.get("unit_unmapped_target_gate_source"),
+            "unmapped_gate_source": metrics.get(
+                "unmapped_target_count_basis",
+                metrics.get("unit_unmapped_target_gate_source"),
+            ),
         },
         {
             "name": "heading_level_drift_threshold",

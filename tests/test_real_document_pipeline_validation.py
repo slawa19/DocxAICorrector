@@ -592,6 +592,59 @@ def test_evaluate_lietaer_acceptance_emits_explicit_unmapped_threshold_checks() 
     assert "structural_comparison_available" not in by_name
 
 
+def test_evaluate_lietaer_acceptance_prefers_structure_unit_unmapped_basis_over_raw_formatting_counts() -> None:
+    validation = _load_validation_module()
+
+    source_doc = Document()
+    source_doc.add_paragraph("Один абзац")
+    output_doc = Document()
+    output_doc.add_paragraph("Один абзац")
+
+    report = {
+        "result": "succeeded",
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [
+            {
+                "unmapped_source_ids": ["p0003", "p0004"],
+                "unmapped_target_indexes": [12, 13],
+            }
+        ],
+        "translation_quality_report": {
+            "worst_unmapped_source_count": 1,
+            "unmapped_source_count": 1,
+            "raw_unmapped_source_paragraph_count": 2,
+            "structure_unit_unmapped_source_count": 1,
+            "unmapped_source_count_basis": "topology_unit",
+            "unmapped_target_count": 1,
+            "raw_unmapped_target_paragraph_count": 2,
+            "structure_unit_unmapped_target_count": 1,
+            "unmapped_target_count_basis": "topology_unit",
+            "toc_body_concat_detected": False,
+        },
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+        mismatch_threshold=1,
+        unmapped_target_threshold=1,
+    )
+
+    by_name = {check["name"]: check for check in acceptance["checks"]}
+    assert by_name["formatting_diagnostics_threshold"]["passed"] is True
+    assert by_name["formatting_diagnostics_threshold"]["actual"] == 1
+    assert by_name["formatting_diagnostics_threshold"]["raw_worst_unmapped_source_count"] == 2
+    assert by_name["formatting_diagnostics_threshold"]["unmapped_source_count_basis"] == "topology_unit"
+    assert by_name["unmapped_source_threshold"]["passed"] is True
+    assert by_name["unmapped_source_threshold"]["actual"] == 1
+    assert by_name["unmapped_target_threshold"]["passed"] is True
+    assert by_name["unmapped_target_threshold"]["actual"] == 1
+
+
 def test_evaluate_lietaer_acceptance_emits_required_no_toc_body_concat_check() -> None:
     validation = _load_validation_module()
 
@@ -673,6 +726,49 @@ def test_evaluate_lietaer_acceptance_prefers_topology_toc_body_signal_for_requir
     by_name = {check["name"]: check for check in acceptance["checks"]}
     assert by_name["no_toc_body_concat_required"]["passed"] is True
     assert by_name["no_toc_body_concat_required"]["toc_body_concat_gate_source"] == "topology_projection"
+    assert by_name["no_toc_body_concat_required"]["toc_body_concat_markdown_detected"] is True
+    assert by_name["no_toc_body_concat_required"]["toc_body_concat_structure_detected"] is False
+
+
+def test_evaluate_lietaer_acceptance_uses_explicit_report_markdown_field_for_legacy_toc_gate_fallback() -> None:
+    validation = _load_validation_module()
+
+    source_doc = Document()
+    source_doc.add_paragraph("Содержание")
+    output_doc = Document()
+    output_doc.add_paragraph("Содержание")
+
+    report = {
+        "result": "succeeded",
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [],
+        "translation_quality_report": {
+            "toc_body_concat_detected": False,
+            "toc_body_concat_markdown_detected": True,
+            "toc_body_concat_structure_detected": False,
+            "toc_body_concat_gate_source": "legacy_markdown",
+        },
+        "preparation_diagnostic_snapshot": {
+            "toc_body_concat_detected": False,
+            "effective_source_toc_region_count": 1,
+            "document_map_toc_region_count": 1,
+        },
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+        require_no_toc_body_concat=True,
+    )
+
+    by_name = {check["name"]: check for check in acceptance["checks"]}
+    assert by_name["no_toc_body_concat_required"]["passed"] is False
+    assert by_name["no_toc_body_concat_required"]["toc_body_concat_gate_source"] == "legacy_markdown"
+    assert by_name["no_toc_body_concat_required"]["toc_body_concat_detected"] is False
     assert by_name["no_toc_body_concat_required"]["toc_body_concat_markdown_detected"] is True
     assert by_name["no_toc_body_concat_required"]["toc_body_concat_structure_detected"] is False
 

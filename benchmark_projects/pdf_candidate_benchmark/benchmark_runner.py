@@ -328,6 +328,15 @@ def _build_docx_structural_proxy(
         event_log=[],
     ))
     preview_text = "\n\n".join(preview_paragraphs)
+    toc_body_concat_detected = bool(snapshot.get("toc_body_concat_detected", False))
+    toc_body_concat_markdown_detected = bool(
+        snapshot.get("toc_body_concat_markdown_detected", toc_body_concat_detected)
+    )
+    toc_body_concat_structure_detected = bool(snapshot.get("toc_body_concat_structure_detected", False))
+    toc_body_concat_gate_source = (
+        str(snapshot.get("toc_body_concat_gate_source") or "legacy_markdown").strip().lower()
+        or "legacy_markdown"
+    )
     failed_checks: list[str] = []
     if _coerce_int(snapshot.get("toc_entry_count")) > 0 and _coerce_int(snapshot.get("bounded_toc_region_count")) == 0:
         failed_checks.append("unbounded_toc_region")
@@ -350,7 +359,10 @@ def _build_docx_structural_proxy(
         "metrics": {
             "quality_gate_status": preparation_gate_outcome,
             "readiness_status": readiness_status,
-            "toc_body_concat_detected": _detect_toc_body_concat_projection(preview_text),
+            "toc_body_concat_detected": toc_body_concat_detected,
+            "toc_body_concat_markdown_detected": toc_body_concat_markdown_detected,
+            "toc_body_concat_structure_detected": toc_body_concat_structure_detected,
+            "toc_body_concat_gate_source": toc_body_concat_gate_source,
         },
         "preparation_diagnostic_snapshot": {
             **snapshot,
@@ -385,6 +397,7 @@ def _build_docx_candidate_result(
     _write_json(structural_result_path, structural_result)
     snapshot_obj = structural_result.get("preparation_diagnostic_snapshot")
     snapshot = cast(dict[str, Any], snapshot_obj if isinstance(snapshot_obj, dict) else {})
+    metrics = cast(dict[str, Any], structural_result.get("metrics") if isinstance(structural_result.get("metrics"), dict) else {})
     quality_gate_status = str(snapshot.get("quality_gate_status") or "")
     first_block_preview = "\n\n".join(preview_paragraphs[:5])
     first_block_risk, first_block_risk_reasons = _derive_first_block_risk(first_block_preview)
@@ -421,12 +434,8 @@ def _build_docx_candidate_result(
         toc_like_block_count=int(snapshot.get("toc_header_count") or 0) + int(snapshot.get("toc_entry_count") or 0) or projection_metrics["toc_like_block_count"],
         preparation_gate_outcome=("blocked" if quality_gate_status == "blocked" else ("pass" if quality_gate_status == "pass" else "error")),
         failed_checks=[str(item) for item in cast(list[Any], structural_result.get("failed_checks") or [])],
-        toc_body_concat_detected=bool(
-            cast(dict[str, Any], structural_result.get("metrics") if isinstance(structural_result.get("metrics"), dict) else {}).get(
-                "toc_body_concat_detected"
-            )
-        ),
-        toc_body_concat_detector="benchmark_block_detector",
+        toc_body_concat_detected=bool(metrics.get("toc_body_concat_detected")),
+        toc_body_concat_detector=f"preparation_snapshot:{str(metrics.get('toc_body_concat_gate_source') or 'legacy_markdown')}",
         normalized_text_similarity_to_baseline=None,
         first_20_blocks_have_nonempty_text=all(bool(paragraph.strip()) for paragraph in preview_paragraphs[:20]),
         first_block_risk=first_block_risk,
