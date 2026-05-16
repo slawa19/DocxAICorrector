@@ -111,14 +111,33 @@ def build_document_topology_projection_cache_key(
     document_map_cache_key: str | None = None,
     layout_signals: LayoutSignals | None = None,
 ) -> str:
+    payload = build_document_topology_projection_identity_payload(
+        paragraphs,
+        document_map,
+        app_config=app_config,
+        document_map_cache_key=document_map_cache_key,
+        layout_signals=layout_signals,
+    )
+    return _hash_document_topology_projection_identity_payload(payload)
+
+
+def build_document_topology_projection_identity_payload(
+    paragraphs: list[ParagraphUnit],
+    document_map: DocumentMap,
+    *,
+    app_config: Mapping[str, Any],
+    document_map_cache_key: str | None = None,
+    layout_signals: LayoutSignals | None = None,
+) -> dict[str, Any]:
     preview_chars = int(app_config.get("structure_recovery_document_map_preview_chars", _TOPOLOGY_TEXT_PREVIEW_CHARS) or _TOPOLOGY_TEXT_PREVIEW_CHARS)
+    binding_splits_enabled = bool(app_config.get("structure_recovery_topology_projection_binding_splits_enabled", False))
     payload = {
         "stage": "document_topology_projection_v1",
         "document_map_cache_key": str(document_map_cache_key or ""),
         "topology_projection_schema_version": TOPOLOGY_PROJECTION_SCHEMA_VERSION,
         "topology_hint_schema_version": DOCUMENT_MAP_SPLIT_HINT_SCHEMA_VERSION,
         "outline_membership_schema_version": DOCUMENT_MAP_OUTLINE_MEMBERSHIP_SCHEMA_VERSION,
-        "binding_splits_enabled": bool(app_config.get("structure_recovery_topology_projection_binding_splits_enabled", False)),
+        "binding_splits_enabled": binding_splits_enabled,
         "outline_fingerprint": [
             {
                 "logical_index": int(entry.logical_index),
@@ -134,10 +153,48 @@ def build_document_topology_projection_cache_key(
             }
             for paragraph in paragraphs
         ],
+        "toc_entries_fingerprint": [
+            {
+                "title": str(getattr(entry, "title", "") or "").strip(),
+                "target_level": int(getattr(entry, "target_level", 0) or 0),
+                "candidate_body_logical_index": (
+                    None
+                    if getattr(entry, "candidate_body_logical_index", None) is None
+                    else int(getattr(entry, "candidate_body_logical_index", None))
+                ),
+                "confidence": str(getattr(entry, "confidence", "") or "").strip().lower(),
+            }
+            for entry in getattr(getattr(document_map, "toc_region", None), "entries", ()) or ()
+        ],
     }
+    if binding_splits_enabled:
+        payload["bounded_toc_region_fingerprint"] = _build_bounded_toc_region_fingerprint(getattr(document_map, "toc_region", None))
+        payload["split_hints_fingerprint"] = [
+            {
+                "logical_index": int(split_hint.logical_index),
+                "split_kind": str(split_hint.split_kind or "").strip().lower(),
+                "expected_parts": [str(part or "").strip() for part in split_hint.expected_parts],
+                "confidence": str(split_hint.confidence or "").strip().lower(),
+            }
+            for split_hint in document_map.split_hints or ()
+        ]
     if layout_signals is not None:
         payload["layout_signals_schema_version"] = int(getattr(layout_signals, "schema_version", LAYOUT_SIGNALS_SCHEMA_VERSION) or LAYOUT_SIGNALS_SCHEMA_VERSION)
         payload["layout_signals_fingerprint"] = _build_layout_signals_fingerprint(layout_signals)
+    return payload
+
+
+def _build_bounded_toc_region_fingerprint(toc_region) -> dict[str, Any] | None:
+    if toc_region is None:
+        return None
+    return {
+        "start_logical_index": int(getattr(toc_region, "start_logical_index", 0)),
+        "end_logical_index": int(getattr(toc_region, "end_logical_index", -1)),
+        "confidence": str(getattr(toc_region, "confidence", "") or "").strip().lower(),
+    }
+
+
+def _hash_document_topology_projection_identity_payload(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 

@@ -1,10 +1,12 @@
 from dataclasses import asdict
+import hashlib
+import json
 
 import pytest
 
 from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, DocumentMapOutlineEntry, DocumentMapSplitHint, DocumentMapTocEntry, DocumentMapTocRegion, ParagraphUnit, StructuralUnit
 from docxaicorrector.structure.layout_signals import derive_layout_signals
-from docxaicorrector.structure.topology import TOPOLOGY_PROJECTION_SCHEMA_VERSION, apply_document_map_topology
+from docxaicorrector.structure.topology import TOPOLOGY_PROJECTION_SCHEMA_VERSION, apply_document_map_topology, build_document_topology_projection_cache_key, build_document_topology_projection_identity_payload
 
 
 def _paragraph(index: int, text: str, **kwargs) -> ParagraphUnit:
@@ -59,6 +61,123 @@ def _non_matching_compound_toc_region() -> DocumentMapTocRegion:
         ),
         confidence="high",
     )
+
+
+def _cache_identity_document_map(
+    *,
+    toc_title: str = "6 Strategies for Banking",
+    expected_parts: tuple[str, ...] = ("6 Strategies for Banking", "7 Strategies for Business and Entrepreneurs"),
+    model_used: str = "openrouter:test/document-map",
+    total_tokens_used: int = 0,
+) -> DocumentMap:
+    return DocumentMap(
+        body_start_logical_index=141,
+        toc_region=DocumentMapTocRegion(
+            start_logical_index=35,
+            end_logical_index=42,
+            header_logical_index=35,
+            entries=(
+                DocumentMapTocEntry(
+                    title=toc_title,
+                    target_level=1,
+                    candidate_body_logical_index=141,
+                    confidence="high",
+                ),
+                DocumentMapTocEntry(
+                    title="7 Strategies for Business and Entrepreneurs",
+                    target_level=1,
+                    candidate_body_logical_index=159,
+                    confidence="high",
+                ),
+            ),
+            confidence="high",
+        ),
+        outline=(),
+        paragraph_anchors={},
+        review_zones=(),
+        split_hints=(
+            DocumentMapSplitHint(
+                logical_index=40,
+                split_kind="compound_toc_entries",
+                expected_parts=expected_parts,
+                authority="document_map_toc",
+                confidence="high",
+                evidence=("split_hint",),
+            ),
+        ),
+        model_used=model_used,
+        total_tokens_used=total_tokens_used,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(40,),
+    )
+
+
+def test_build_document_topology_projection_cache_key_changes_when_consumed_toc_or_split_hint_inputs_change():
+    paragraphs = [_paragraph(40, _compound_toc_text())]
+    app_config = {
+        "structure_recovery_document_map_preview_chars": 120,
+        "structure_recovery_topology_projection_binding_splits_enabled": True,
+    }
+
+    baseline_key = build_document_topology_projection_cache_key(
+        paragraphs,
+        _cache_identity_document_map(),
+        app_config=app_config,
+        document_map_cache_key="doc-map-key",
+    )
+    toc_variant_key = build_document_topology_projection_cache_key(
+        paragraphs,
+        _cache_identity_document_map(toc_title="6 Strategies for Cooperative Banking"),
+        app_config=app_config,
+        document_map_cache_key="doc-map-key",
+    )
+    split_variant_key = build_document_topology_projection_cache_key(
+        paragraphs,
+        _cache_identity_document_map(expected_parts=("6 Strategies for Banking", "7 Strategies for Social Enterprise")),
+        app_config=app_config,
+        document_map_cache_key="doc-map-key",
+    )
+
+    assert toc_variant_key != baseline_key
+    assert split_variant_key != baseline_key
+
+
+def test_build_document_topology_projection_cache_key_ignores_unrelated_document_map_metadata_and_payload_matches_key():
+    paragraphs = [_paragraph(40, _compound_toc_text())]
+    app_config = {
+        "structure_recovery_document_map_preview_chars": 120,
+        "structure_recovery_topology_projection_binding_splits_enabled": True,
+    }
+
+    baseline_payload = build_document_topology_projection_identity_payload(
+        paragraphs,
+        _cache_identity_document_map(),
+        app_config=app_config,
+        document_map_cache_key="doc-map-key",
+    )
+    metadata_variant_payload = build_document_topology_projection_identity_payload(
+        paragraphs,
+        _cache_identity_document_map(model_used="openrouter:test/other-model", total_tokens_used=99),
+        app_config=app_config,
+        document_map_cache_key="doc-map-key",
+    )
+    baseline_key = build_document_topology_projection_cache_key(
+        paragraphs,
+        _cache_identity_document_map(),
+        app_config=app_config,
+        document_map_cache_key="doc-map-key",
+    )
+    metadata_variant_key = build_document_topology_projection_cache_key(
+        paragraphs,
+        _cache_identity_document_map(model_used="openrouter:test/other-model", total_tokens_used=99),
+        app_config=app_config,
+        document_map_cache_key="doc-map-key",
+    )
+
+    assert metadata_variant_payload == baseline_payload
+    assert metadata_variant_key == baseline_key
+    assert hashlib.sha256(json.dumps(baseline_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest() == baseline_key
 
 
 def test_structural_unit_id_is_stable_hash_not_sequence_based():

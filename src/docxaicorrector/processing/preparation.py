@@ -80,6 +80,7 @@ from docxaicorrector.structure.reconciliation import (
 )
 from docxaicorrector.structure.layout_signals import derive_layout_signals
 from docxaicorrector.structure.topology import TOPOLOGY_PROJECTION_SCHEMA_VERSION, apply_document_map_topology
+from docxaicorrector.structure.topology import TOPOLOGY_PROJECTION_SCHEMA_VERSION, apply_document_map_topology, build_document_topology_projection_identity_payload
 from docxaicorrector.structure.validation import StructureValidationReport, validate_structure_quality, write_structure_validation_debug_artifact
 from docxaicorrector.text.translation_domains import build_terminology_plan, build_translation_domain_instructions
 
@@ -563,6 +564,8 @@ _DOCUMENT_MAP_CACHE_LIMIT = 8
 _document_map_cache: OrderedDict[str, DocumentMap] = OrderedDict()
 _document_map_cache_lock = Lock()
 _DOCUMENT_MAP_DEBUG_DIR = RUN_DIR / "document_maps"
+_DOCUMENT_MAP_IDENTITY_DEBUG_DIR = RUN_DIR / "document_map_identities"
+_DOCUMENT_TOPOLOGY_INPUT_DEBUG_DIR = RUN_DIR / "document_topology_inputs"
 STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION = 1
 
 
@@ -841,6 +844,61 @@ def _build_document_map_cache_key(*, paragraphs: list, app_config: Mapping[str, 
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _build_document_map_identity_payload(document_map: DocumentMap) -> dict[str, Any]:
+    toc_region = document_map.toc_region
+    return {
+        "body_start_logical_index": int(document_map.body_start_logical_index or 0),
+        "toc_region_fingerprint": (
+            None
+            if toc_region is None
+            else {
+                "start_logical_index": int(toc_region.start_logical_index),
+                "end_logical_index": int(toc_region.end_logical_index),
+                "confidence": str(toc_region.confidence or "").strip().lower(),
+                "entries": [
+                    {
+                        "title": str(entry.title or "").strip(),
+                        "target_level": int(entry.target_level),
+                        "candidate_body_logical_index": (
+                            None if entry.candidate_body_logical_index is None else int(entry.candidate_body_logical_index)
+                        ),
+                        "confidence": str(entry.confidence or "").strip().lower(),
+                    }
+                    for entry in toc_region.entries or ()
+                ],
+            }
+        ),
+        "outline_fingerprint": [
+            {
+                "logical_index": int(entry.logical_index),
+                "title": str(entry.title or "").strip(),
+                "level": int(entry.level),
+                "confidence": str(entry.confidence or "").strip().lower(),
+                "member_logical_indexes": [int(index) for index in entry.member_logical_indexes],
+            }
+            for entry in document_map.outline or ()
+        ],
+        "paragraph_anchor_fingerprint": [
+            {
+                "logical_index": int(logical_index),
+                "role": str(anchor.role or "").strip().lower(),
+                "heading_level": None if anchor.heading_level is None else int(anchor.heading_level),
+                "confidence": str(anchor.confidence or "").strip().lower(),
+            }
+            for logical_index, anchor in sorted((document_map.paragraph_anchors or {}).items())
+        ],
+        "split_hints_fingerprint": [
+            {
+                "logical_index": int(split_hint.logical_index),
+                "split_kind": str(split_hint.split_kind or "").strip().lower(),
+                "expected_parts": [str(part or "").strip() for part in split_hint.expected_parts],
+                "confidence": str(split_hint.confidence or "").strip().lower(),
+            }
+            for split_hint in document_map.split_hints or ()
+        ],
+    }
+
+
 def _read_cached_structure_map(cache_key: str) -> StructureMap | None:
     with _structure_map_cache_lock:
         cached = _structure_map_cache.get(cache_key)
@@ -957,12 +1015,57 @@ def _write_document_map_debug_artifact(*, cache_key: str, document_map: Document
     return str(artifact_path)
 
 
+def _write_document_map_identity_debug_artifact(*, cache_key: str, document_map: DocumentMap) -> str:
+    _DOCUMENT_MAP_IDENTITY_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    artifact_path = _DOCUMENT_MAP_IDENTITY_DEBUG_DIR / f"{cache_key}.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "cache_key": cache_key,
+                "stage": "document_map_identity_v1",
+                "identity_payload": _build_document_map_identity_payload(document_map),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    prune_artifact_dir(
+        target_dir=_DOCUMENT_MAP_IDENTITY_DEBUG_DIR,
+        max_age_seconds=STRUCTURE_MAPS_MAX_AGE_SECONDS,
+        max_count=STRUCTURE_MAPS_MAX_COUNT,
+    )
+    return str(artifact_path)
+
+
 def _write_document_topology_debug_artifact(*, projection: DocumentTopologyProjection) -> str:
     _DOCUMENT_TOPOLOGY_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
     artifact_path = _DOCUMENT_TOPOLOGY_DEBUG_DIR / f"{projection.cache_key}.json"
     artifact_path.write_text(json.dumps(asdict(projection), ensure_ascii=False, indent=2), encoding="utf-8")
     prune_artifact_dir(
         target_dir=_DOCUMENT_TOPOLOGY_DEBUG_DIR,
+        max_age_seconds=DOCUMENT_TOPOLOGY_MAX_AGE_SECONDS,
+        max_count=DOCUMENT_TOPOLOGY_MAX_COUNT,
+    )
+    return str(artifact_path)
+
+
+def _write_document_topology_input_debug_artifact(*, cache_key: str, identity_payload: Mapping[str, Any]) -> str:
+    _DOCUMENT_TOPOLOGY_INPUT_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    artifact_path = _DOCUMENT_TOPOLOGY_INPUT_DEBUG_DIR / f"{cache_key}.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "cache_key": str(cache_key or ""),
+                "identity_payload": identity_payload,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    prune_artifact_dir(
+        target_dir=_DOCUMENT_TOPOLOGY_INPUT_DEBUG_DIR,
         max_age_seconds=DOCUMENT_TOPOLOGY_MAX_AGE_SECONDS,
         max_count=DOCUMENT_TOPOLOGY_MAX_COUNT,
     )
@@ -1682,11 +1785,16 @@ def _run_document_map_stage(
             document_map=document_map,
             app_config=app_config,
         )
+        identity_artifact_path = _write_document_map_identity_debug_artifact(
+            cache_key=cache_key,
+            document_map=document_map,
+        )
         log_event(
             logging.INFO,
             "document_map_debug_artifact_saved",
             "Сохранён debug artifact глобальной карты документа.",
             artifact_path=artifact_path,
+            identity_artifact_path=identity_artifact_path,
         )
     return document_map
 
@@ -1762,8 +1870,21 @@ def _run_document_topology_projection_stage(
         return None, "failed", reason
 
     artifact_path = None
+    artifact_path = None
+    identity_artifact_path = None
     if bool(app_config.get("structure_recovery_topology_projection_save_debug_artifacts", True)):
         artifact_path = _write_document_topology_debug_artifact(projection=projection)
+        identity_payload = build_document_topology_projection_identity_payload(
+            paragraphs,
+            document_map,
+            app_config=app_config,
+            document_map_cache_key=document_map_cache_key,
+            layout_signals=layout_signals,
+        )
+        identity_artifact_path = _write_document_topology_input_debug_artifact(
+            cache_key=projection.cache_key,
+            identity_payload=identity_payload,
+        )
 
     operation_counts = dict(Counter(operation.op for operation in projection.operations))
     unit_type_counts = dict(Counter(unit.unit_type for unit in projection.projected_units))
@@ -1781,6 +1902,7 @@ def _run_document_topology_projection_stage(
             unit_type_counts=unit_type_counts,
             authority_counts=authority_counts,
             artifact_path=artifact_path,
+            identity_artifact_path=identity_artifact_path,
         )
         return projection, "built", ""
 
@@ -1793,6 +1915,7 @@ def _run_document_topology_projection_stage(
         operation_count=0,
         projected_unit_count=0,
         artifact_path=artifact_path,
+        identity_artifact_path=identity_artifact_path,
     )
     return projection, "no_operations", ""
 

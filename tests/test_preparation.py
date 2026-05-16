@@ -11,6 +11,7 @@ import docxaicorrector.document.segments as document_segments
 import docxaicorrector.processing.preparation as preparation
 import docxaicorrector.structure.document_map as document_map_module
 import docxaicorrector.structure.recognition as recognition_module
+import docxaicorrector.structure.topology as topology_module
 import docxaicorrector.validation.structural as structural_validation
 from docxaicorrector.core.config import ModelRegistry, TextModelConfig
 from docxaicorrector.core.models import DocumentBlock
@@ -501,16 +502,19 @@ def test_run_document_topology_projection_stage_writes_binding_split_payload_whe
         sampled_logical_indexes=(10,),
     )
     artifact_dir = tmp_path / "document_topology"
+    identity_artifact_dir = tmp_path / "document_topology_inputs"
+    app_config = _make_ai_first_config(
+        structure_recovery_topology_projection_enabled=True,
+        structure_recovery_topology_projection_binding_splits_enabled=True,
+        structure_recovery_topology_projection_save_debug_artifacts=True,
+    )
     monkeypatch.setattr(preparation, "_DOCUMENT_TOPOLOGY_DEBUG_DIR", artifact_dir)
+    monkeypatch.setattr(preparation, "_DOCUMENT_TOPOLOGY_INPUT_DEBUG_DIR", identity_artifact_dir)
 
     projection, status, reason = preparation._run_document_topology_projection_stage(
         paragraphs=paragraphs,
         document_map=document_map,
-        app_config=_make_ai_first_config(
-            structure_recovery_topology_projection_enabled=True,
-            structure_recovery_topology_projection_binding_splits_enabled=True,
-            structure_recovery_topology_projection_save_debug_artifacts=True,
-        ),
+        app_config=app_config,
     )
 
     assert projection is not None
@@ -521,6 +525,16 @@ def test_run_document_topology_projection_stage_writes_binding_split_payload_whe
     payload = json.loads(artifact_path.read_text(encoding="utf-8"))
     assert [operation["op"] for operation in payload["operations"]] == ["split_page_artifact_from_heading"]
     assert [unit["unit_type"] for unit in payload["projected_units"]] == ["page_artifact", "chapter_heading"]
+    identity_artifact_path = identity_artifact_dir / f"{projection.cache_key}.json"
+    assert identity_artifact_path.exists()
+    identity_artifact_payload = json.loads(identity_artifact_path.read_text(encoding="utf-8"))
+    assert identity_artifact_payload["cache_key"] == projection.cache_key
+    assert identity_artifact_payload["identity_payload"] == topology_module.build_document_topology_projection_identity_payload(
+        paragraphs,
+        document_map,
+        app_config=app_config,
+        document_map_cache_key=preparation._build_document_map_cache_key(paragraphs=paragraphs, app_config=app_config),
+    )
 
 
 def test_run_document_topology_projection_stage_logs_compound_toc_split_operation_counts_when_enabled(monkeypatch, tmp_path):
@@ -567,6 +581,7 @@ def test_run_document_topology_projection_stage_logs_compound_toc_split_operatio
         sampled_logical_indexes=(40,),
     )
     artifact_dir = tmp_path / "document_topology"
+    identity_artifact_dir = tmp_path / "document_topology_inputs"
     captured_events: list[tuple[str, dict[str, object]]] = []
 
     def _fake_log_event(level, event_id, message, **kwargs):
@@ -574,6 +589,7 @@ def test_run_document_topology_projection_stage_logs_compound_toc_split_operatio
         captured_events.append((event_id, kwargs))
 
     monkeypatch.setattr(preparation, "_DOCUMENT_TOPOLOGY_DEBUG_DIR", artifact_dir)
+    monkeypatch.setattr(preparation, "_DOCUMENT_TOPOLOGY_INPUT_DEBUG_DIR", identity_artifact_dir)
     monkeypatch.setattr(preparation, "log_event", _fake_log_event)
 
     projection, status, reason = preparation._run_document_topology_projection_stage(
@@ -597,6 +613,7 @@ def test_run_document_topology_projection_stage_logs_compound_toc_split_operatio
     built_event = next(kwargs for event_id, kwargs in captured_events if event_id == "document_topology_projection_built")
     assert built_event["operation_counts"] == {"split_compound_toc_entries": 1}
     assert built_event["unit_type_counts"] == {"toc_entry": 2}
+    assert built_event["identity_artifact_path"] == str(identity_artifact_dir / f"{projection.cache_key}.json")
 
 
 def test_run_document_topology_projection_stage_builds_and_threads_layout_signals_when_enabled(monkeypatch, tmp_path):
@@ -1368,6 +1385,145 @@ def test_build_document_map_cache_key_includes_prompt_and_descriptor_versions(mo
 
     assert key_a != key_b
     assert key_b != key_c
+
+
+def test_build_document_map_identity_payload_changes_when_structural_fields_change():
+    document_map_a = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=DocumentMapTocRegion(
+            start_logical_index=2,
+            end_logical_index=5,
+            header_logical_index=2,
+            entries=(
+                DocumentMapTocEntry(
+                    title="Chapter One",
+                    target_level=1,
+                    candidate_body_logical_index=10,
+                    confidence="high",
+                ),
+            ),
+            confidence="high",
+        ),
+        outline=(
+            DocumentMapOutlineEntry(
+                title="Chapter One",
+                level=1,
+                logical_index=10,
+                confidence="high",
+                member_logical_indexes=(10, 11),
+            ),
+        ),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        split_hints=(
+            DocumentMapSplitHint(
+                logical_index=4,
+                split_kind="compound_toc_entries",
+                expected_parts=("Chapter One", "Chapter Two"),
+                authority="document_map_toc",
+                confidence="high",
+                evidence=("split_hint",),
+            ),
+        ),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=17,
+        processing_time_seconds=0.2,
+        sampled=False,
+        sampled_logical_indexes=(10, 11),
+    )
+    document_map_b = DocumentMap(
+        body_start_logical_index=12,
+        toc_region=DocumentMapTocRegion(
+            start_logical_index=2,
+            end_logical_index=5,
+            header_logical_index=2,
+            entries=(
+                DocumentMapTocEntry(
+                    title="Chapter I",
+                    target_level=1,
+                    candidate_body_logical_index=10,
+                    confidence="high",
+                ),
+            ),
+            confidence="high",
+        ),
+        outline=(
+            DocumentMapOutlineEntry(
+                title="Chapter I",
+                level=1,
+                logical_index=10,
+                confidence="high",
+                member_logical_indexes=(10,),
+            ),
+        ),
+        paragraph_anchors={10: DocumentMapAnchor(role="body", heading_level=None, confidence="medium")},
+        review_zones=(),
+        split_hints=(
+            DocumentMapSplitHint(
+                logical_index=4,
+                split_kind="compound_toc_entries",
+                expected_parts=("Chapter I", "Chapter Two"),
+                authority="document_map_toc",
+                confidence="high",
+                evidence=("split_hint",),
+            ),
+        ),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=17,
+        processing_time_seconds=0.2,
+        sampled=False,
+        sampled_logical_indexes=(10, 11),
+    )
+
+    payload_a = preparation._build_document_map_identity_payload(document_map_a)
+    payload_b = preparation._build_document_map_identity_payload(document_map_b)
+
+    assert payload_a != payload_b
+
+
+def test_build_document_map_identity_payload_ignores_unrelated_metadata():
+    document_map_a = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(
+            DocumentMapOutlineEntry(
+                title="Chapter One",
+                level=1,
+                logical_index=10,
+                confidence="high",
+            ),
+        ),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        split_hints=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=17,
+        processing_time_seconds=0.2,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+    document_map_b = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(
+            DocumentMapOutlineEntry(
+                title="Chapter One",
+                level=1,
+                logical_index=10,
+                confidence="high",
+            ),
+        ),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        split_hints=(),
+        model_used="openrouter:test/other-model",
+        total_tokens_used=999,
+        processing_time_seconds=4.5,
+        sampled=True,
+        sampled_logical_indexes=(10, 11, 12),
+    )
+
+    assert preparation._build_document_map_identity_payload(document_map_a) == preparation._build_document_map_identity_payload(document_map_b)
 
 
 def test_prepare_document_for_processing_passes_processing_operation_to_job_builder(monkeypatch):
@@ -6365,6 +6521,12 @@ def test_run_document_map_stage_uses_cache_and_skips_second_builder_call(monkeyp
 
 def test_run_document_map_stage_writes_debug_artifact(monkeypatch, tmp_path):
     paragraphs = [_build_paragraph(source_index=0, text="Heading"), _build_paragraph(source_index=1, text="Body")]
+    identity_artifact_dir = tmp_path / "identities"
+    captured_events: list[tuple[str, dict[str, object]]] = []
+
+    def _fake_log_event(level, event_id, message, **kwargs):
+        _ = level, message
+        captured_events.append((event_id, kwargs))
 
     monkeypatch.setattr(
         preparation,
@@ -6373,6 +6535,8 @@ def test_run_document_map_stage_writes_debug_artifact(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(preparation, "get_client", lambda: object())
     monkeypatch.setattr(preparation, "_DOCUMENT_MAP_DEBUG_DIR", tmp_path)
+    monkeypatch.setattr(preparation, "_DOCUMENT_MAP_IDENTITY_DEBUG_DIR", identity_artifact_dir)
+    monkeypatch.setattr(preparation, "log_event", _fake_log_event)
     monkeypatch.setattr(
         preparation,
         "build_document_map",
@@ -6415,11 +6579,14 @@ def test_run_document_map_stage_writes_debug_artifact(monkeypatch, tmp_path):
 
     cache_key = preparation._build_document_map_cache_key(paragraphs=paragraphs, app_config=app_config)
     artifact_path = tmp_path / f"{cache_key}.json"
+    identity_artifact_path = identity_artifact_dir / f"{cache_key}.json"
 
     assert document_map is not None
     assert artifact_path.exists()
+    assert identity_artifact_path.exists()
 
     payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    identity_payload = json.loads(identity_artifact_path.read_text(encoding="utf-8"))
 
     assert payload["cache_key"] == cache_key
     assert payload["stage"] == "document_map_v1"
@@ -6430,6 +6597,12 @@ def test_run_document_map_stage_writes_debug_artifact(monkeypatch, tmp_path):
     assert payload["sampled"] is False
     assert payload["sampled_logical_indexes"] == [0, 1]
     assert payload["document_map"]["model_used"] == "openrouter:test/document-map"
+    assert identity_payload["cache_key"] == cache_key
+    assert identity_payload["stage"] == "document_map_identity_v1"
+    assert identity_payload["identity_payload"] == preparation._build_document_map_identity_payload(document_map)
+    debug_event = next(kwargs for event_id, kwargs in captured_events if event_id == "document_map_debug_artifact_saved")
+    assert debug_event["artifact_path"] == str(artifact_path)
+    assert debug_event["identity_artifact_path"] == str(identity_artifact_path)
 
 
 def test_prepare_document_for_processing_reports_pdf_import_stage(monkeypatch):
