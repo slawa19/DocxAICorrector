@@ -1,0 +1,2537 @@
+{
+  "document_map_cache_key": "9b82a2e2693c1ce746f5e4e77a8c86abba2240d90d4c062bed2cddb182731558",
+  "stage": "document_map_postprocess_payload_v1",
+  "postprocess_version": 6,
+  "model_used": "openrouter:google/gemini-3.1-flash-lite-preview",
+  "sampled": false,
+  "sampled_logical_indexes": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60,
+    61,
+    62,
+    63,
+    64,
+    65,
+    66,
+    67,
+    68,
+    69,
+    70,
+    71,
+    72,
+    73,
+    74,
+    75,
+    76,
+    77,
+    78,
+    79,
+    80,
+    81,
+    82,
+    83,
+    84,
+    85,
+    86,
+    87,
+    88,
+    89,
+    90,
+    91,
+    92,
+    93,
+    94,
+    95,
+    96,
+    97,
+    98,
+    99,
+    100,
+    101,
+    102,
+    103,
+    104,
+    105,
+    106,
+    107,
+    108,
+    109,
+    110,
+    111,
+    112,
+    113,
+    114,
+    115,
+    116,
+    117,
+    118,
+    119,
+    120,
+    121,
+    122,
+    123,
+    124,
+    125,
+    126,
+    127,
+    128,
+    129,
+    130,
+    131,
+    132,
+    133,
+    134,
+    135,
+    136,
+    137,
+    138,
+    139,
+    140,
+    141,
+    142,
+    143,
+    144,
+    145,
+    146,
+    147,
+    148,
+    149,
+    150,
+    151,
+    152,
+    153,
+    154,
+    155,
+    156,
+    157,
+    158,
+    159,
+    160,
+    161,
+    162,
+    163,
+    164,
+    165,
+    166,
+    167,
+    168,
+    169,
+    170,
+    171,
+    172,
+    173,
+    174,
+    175,
+    176,
+    177,
+    178,
+    179,
+    180,
+    181,
+    182,
+    183,
+    184,
+    185,
+    186,
+    187,
+    188,
+    189,
+    190,
+    191,
+    192,
+    193,
+    194,
+    195,
+    196,
+    197,
+    198,
+    199,
+    200,
+    201,
+    202,
+    203,
+    204,
+    205,
+    206,
+    207,
+    208,
+    209,
+    210,
+    211,
+    212,
+    213,
+    214,
+    215,
+    216,
+    217,
+    218,
+    219,
+    220,
+    221,
+    222,
+    223,
+    224,
+    225,
+    226,
+    227,
+    228,
+    229,
+    230,
+    231,
+    232,
+    233,
+    234,
+    235,
+    236,
+    237,
+    238,
+    239,
+    240,
+    241,
+    242,
+    243,
+    244,
+    245,
+    246,
+    247,
+    248,
+    249,
+    250,
+    251,
+    252,
+    253,
+    254,
+    255,
+    256,
+    257,
+    258,
+    259,
+    260,
+    261,
+    262,
+    263,
+    264,
+    265,
+    266,
+    267,
+    268,
+    269,
+    270,
+    271,
+    272,
+    273,
+    274,
+    275,
+    276,
+    277,
+    278,
+    279,
+    280,
+    281,
+    282,
+    283,
+    284,
+    285,
+    286,
+    287,
+    288,
+    289,
+    290,
+    291,
+    292,
+    293,
+    294,
+    295,
+    296,
+    297,
+    298,
+    299,
+    300,
+    301,
+    302,
+    303,
+    304,
+    305,
+    306,
+    307,
+    308,
+    309,
+    310,
+    311,
+    312,
+    313,
+    314,
+    315,
+    316,
+    317,
+    318,
+    319,
+    320,
+    321,
+    322,
+    323,
+    324,
+    325,
+    326,
+    327,
+    328,
+    329,
+    330,
+    331,
+    332,
+    333,
+    334,
+    335
+  ],
+  "document_map": {
+    "body_start_logical_index": 10,
+    "toc_region": {
+      "start_logical_index": 0,
+      "end_logical_index": 9,
+      "header_logical_index": 0,
+      "entries": [
+        {
+          "title": "Chapter Eight STRATEGIES FOR GOVERNMENTS",
+          "target_level": 1,
+          "candidate_body_logical_index": 10,
+          "confidence": "high"
+        },
+        {
+          "title": "STRATEGIES FOR NGOs",
+          "target_level": 1,
+          "candidate_body_logical_index": 104,
+          "confidence": "high"
+        },
+        {
+          "title": "Chapter Ten TRUTH AND CONSEQUENCES Lessons Learned",
+          "target_level": 1,
+          "candidate_body_logical_index": 161,
+          "confidence": "high"
+        },
+        {
+          "title": "Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?",
+          "target_level": 1,
+          "candidate_body_logical_index": 221,
+          "confidence": "high"
+        }
+      ],
+      "confidence": "high"
+    },
+    "outline": [
+      {
+        "title": "Chapter Eight STRATEGIES FOR GOVERNMENTS",
+        "level": 1,
+        "logical_index": 10,
+        "confidence": "high",
+        "evidence": [
+          "page_artifact_heading",
+          "toc_match"
+        ],
+        "member_logical_indexes": [
+          10,
+          11
+        ]
+      },
+      {
+        "title": "STRATEGIES FOR NGOs",
+        "level": 1,
+        "logical_index": 104,
+        "confidence": "high",
+        "evidence": [
+          "page_artifact_heading",
+          "toc_match"
+        ],
+        "member_logical_indexes": [
+          104,
+          105
+        ]
+      },
+      {
+        "title": "Chapter Ten TRUTH AND CONSEQUENCES Lessons Learned",
+        "level": 1,
+        "logical_index": 161,
+        "confidence": "high",
+        "evidence": [
+          "page_artifact_heading",
+          "toc_match"
+        ],
+        "member_logical_indexes": [
+          161,
+          162
+        ]
+      },
+      {
+        "title": "Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?",
+        "level": 1,
+        "logical_index": 221,
+        "confidence": "high",
+        "evidence": [
+          "page_artifact_heading",
+          "toc_match"
+        ],
+        "member_logical_indexes": [
+          221,
+          222,
+          223,
+          224
+        ]
+      }
+    ],
+    "paragraph_anchors": {
+      "0": {
+        "role": "toc_header",
+        "heading_level": null,
+        "confidence": "high"
+      },
+      "1": {
+        "role": "toc_entry",
+        "heading_level": null,
+        "confidence": "high"
+      },
+      "2": {
+        "role": "toc_entry",
+        "heading_level": null,
+        "confidence": "high"
+      },
+      "3": {
+        "role": "toc_entry",
+        "heading_level": null,
+        "confidence": "high"
+      },
+      "4": {
+        "role": "toc_entry",
+        "heading_level": null,
+        "confidence": "high"
+      },
+      "6": {
+        "role": "toc_entry",
+        "heading_level": null,
+        "confidence": "high"
+      },
+      "7": {
+        "role": "toc_entry",
+        "heading_level": null,
+        "confidence": "high"
+      },
+      "8": {
+        "role": "toc_entry",
+        "heading_level": null,
+        "confidence": "high"
+      },
+      "9": {
+        "role": "toc_entry",
+        "heading_level": null,
+        "confidence": "high"
+      },
+      "10": {
+        "role": "heading",
+        "heading_level": 1,
+        "confidence": "high"
+      },
+      "11": {
+        "role": "heading",
+        "heading_level": 1,
+        "confidence": "high"
+      },
+      "104": {
+        "role": "heading",
+        "heading_level": 1,
+        "confidence": "high"
+      },
+      "105": {
+        "role": "heading",
+        "heading_level": 1,
+        "confidence": "high"
+      },
+      "161": {
+        "role": "heading",
+        "heading_level": 1,
+        "confidence": "high"
+      },
+      "162": {
+        "role": "heading",
+        "heading_level": 1,
+        "confidence": "high"
+      },
+      "221": {
+        "role": "heading",
+        "heading_level": 1,
+        "confidence": "high"
+      },
+      "222": {
+        "role": "heading",
+        "heading_level": 1,
+        "confidence": "high"
+      },
+      "223": {
+        "role": "heading",
+        "heading_level": 1,
+        "confidence": "high"
+      },
+      "224": {
+        "role": "heading",
+        "heading_level": 1,
+        "confidence": "high"
+      },
+      "5": {
+        "role": "toc_entry",
+        "heading_level": null,
+        "confidence": "high"
+      },
+      "12": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "13": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "14": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "15": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "16": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "17": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "18": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "19": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "20": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "21": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "22": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "23": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "24": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "25": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "26": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "27": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "28": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "29": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "30": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "31": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "32": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "33": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "34": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "35": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "36": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "37": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "38": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "39": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "40": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "41": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "42": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "43": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "44": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "45": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "46": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "47": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "48": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "49": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "50": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "51": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "52": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "53": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "54": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "55": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "56": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "57": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "58": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "59": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "60": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "61": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "62": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "63": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "64": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "65": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "66": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "67": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "68": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "69": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "70": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "71": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "72": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "73": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "74": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "75": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "76": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "77": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "78": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "79": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "80": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "81": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "82": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "83": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "84": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "85": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "86": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "87": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "88": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "89": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "90": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "91": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "92": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "93": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "94": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "95": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "96": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "97": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "98": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "99": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "100": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "101": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "102": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "103": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "106": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "107": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "108": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "109": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "110": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "111": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "112": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "113": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "114": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "115": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "116": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "117": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "118": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "119": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "120": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "121": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "122": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "123": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "124": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "125": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "126": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "127": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "128": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "129": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "130": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "131": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "132": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "133": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "134": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "135": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "136": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "137": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "138": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "139": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "140": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "141": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "142": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "143": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "144": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "145": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "146": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "147": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "148": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "149": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "150": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "151": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "152": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "153": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "154": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "155": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "156": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "157": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "158": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "159": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "160": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "163": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "164": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "165": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "166": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "167": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "168": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "169": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "170": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "171": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "172": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "173": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "174": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "175": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "176": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "177": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "178": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "179": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "180": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "181": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "182": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "183": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "184": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "185": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "186": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "187": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "188": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "189": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "190": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "191": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "192": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "193": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "194": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "195": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "196": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "197": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "198": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "199": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "200": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "201": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "202": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "203": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "204": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "205": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "206": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "207": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "208": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "209": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "210": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "211": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "212": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "213": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "214": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "215": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "216": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "217": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "218": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "219": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "220": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "225": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "226": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "227": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "228": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "229": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "230": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "231": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "232": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "233": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "234": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "235": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "236": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "237": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "238": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "239": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "240": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "241": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "242": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "243": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "244": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "245": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "246": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "247": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "248": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "249": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "250": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "251": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "252": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "253": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "254": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "255": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "256": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "257": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "258": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "259": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "260": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "261": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "262": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "263": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "264": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "265": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "266": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "267": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "268": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "269": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "270": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "271": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "272": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "273": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "274": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "275": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "276": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "277": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "278": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "279": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "280": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "281": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "282": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "283": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "284": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "285": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "286": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "287": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "288": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "289": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "290": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "291": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "292": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "293": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "294": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "295": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "296": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "297": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "298": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "299": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "300": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "301": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "302": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "303": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "304": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "305": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "306": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "307": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "308": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "309": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "310": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "311": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "312": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "313": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "314": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "315": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "316": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "317": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "318": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "319": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "320": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "321": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "322": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "323": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "324": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "325": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "326": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "327": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "328": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "329": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "330": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "331": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "332": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "333": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "334": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      },
+      "335": {
+        "role": "body",
+        "heading_level": null,
+        "confidence": "low"
+      }
+    },
+    "review_zones": [],
+    "split_hints": [
+      {
+        "logical_index": 2,
+        "split_kind": "compound_toc_entries",
+        "expected_parts": [
+          "1",
+          "2",
+          "3"
+        ],
+        "authority": "sample_descriptors",
+        "confidence": "high",
+        "evidence": [
+          "logical_sequence"
+        ]
+      },
+      {
+        "logical_index": 4,
+        "split_kind": "compound_toc_entries",
+        "expected_parts": [
+          "4",
+          "5"
+        ],
+        "authority": "sample_descriptors",
+        "confidence": "high",
+        "evidence": [
+          "logical_sequence"
+        ]
+      },
+      {
+        "logical_index": 6,
+        "split_kind": "compound_toc_entries",
+        "expected_parts": [
+          "6",
+          "7",
+          "8",
+          "9"
+        ],
+        "authority": "sample_descriptors",
+        "confidence": "high",
+        "evidence": [
+          "logical_sequence"
+        ]
+      },
+      {
+        "logical_index": 9,
+        "split_kind": "compound_toc_entries",
+        "expected_parts": [
+          "12",
+          "13"
+        ],
+        "authority": "sample_descriptors",
+        "confidence": "high",
+        "evidence": [
+          "logical_sequence"
+        ]
+      },
+      {
+        "logical_index": 8,
+        "split_kind": "compound_toc_entries",
+        "expected_parts": [
+          "Chapter Ten TRUTH AND CONSEQUENCES Lessons Learned",
+          "Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?"
+        ],
+        "authority": "document_map_toc",
+        "confidence": "high",
+        "evidence": [
+          "bounded_toc_region",
+          "one_to_one_toc_entry_match",
+          "toc_entry"
+        ]
+      }
+    ],
+    "model_used": "openrouter:google/gemini-3.1-flash-lite-preview",
+    "total_tokens_used": 43882,
+    "processing_time_seconds": 9.143884667000009,
+    "sampled": false,
+    "sampled_logical_indexes": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      47,
+      48,
+      49,
+      50,
+      51,
+      52,
+      53,
+      54,
+      55,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63,
+      64,
+      65,
+      66,
+      67,
+      68,
+      69,
+      70,
+      71,
+      72,
+      73,
+      74,
+      75,
+      76,
+      77,
+      78,
+      79,
+      80,
+      81,
+      82,
+      83,
+      84,
+      85,
+      86,
+      87,
+      88,
+      89,
+      90,
+      91,
+      92,
+      93,
+      94,
+      95,
+      96,
+      97,
+      98,
+      99,
+      100,
+      101,
+      102,
+      103,
+      104,
+      105,
+      106,
+      107,
+      108,
+      109,
+      110,
+      111,
+      112,
+      113,
+      114,
+      115,
+      116,
+      117,
+      118,
+      119,
+      120,
+      121,
+      122,
+      123,
+      124,
+      125,
+      126,
+      127,
+      128,
+      129,
+      130,
+      131,
+      132,
+      133,
+      134,
+      135,
+      136,
+      137,
+      138,
+      139,
+      140,
+      141,
+      142,
+      143,
+      144,
+      145,
+      146,
+      147,
+      148,
+      149,
+      150,
+      151,
+      152,
+      153,
+      154,
+      155,
+      156,
+      157,
+      158,
+      159,
+      160,
+      161,
+      162,
+      163,
+      164,
+      165,
+      166,
+      167,
+      168,
+      169,
+      170,
+      171,
+      172,
+      173,
+      174,
+      175,
+      176,
+      177,
+      178,
+      179,
+      180,
+      181,
+      182,
+      183,
+      184,
+      185,
+      186,
+      187,
+      188,
+      189,
+      190,
+      191,
+      192,
+      193,
+      194,
+      195,
+      196,
+      197,
+      198,
+      199,
+      200,
+      201,
+      202,
+      203,
+      204,
+      205,
+      206,
+      207,
+      208,
+      209,
+      210,
+      211,
+      212,
+      213,
+      214,
+      215,
+      216,
+      217,
+      218,
+      219,
+      220,
+      221,
+      222,
+      223,
+      224,
+      225,
+      226,
+      227,
+      228,
+      229,
+      230,
+      231,
+      232,
+      233,
+      234,
+      235,
+      236,
+      237,
+      238,
+      239,
+      240,
+      241,
+      242,
+      243,
+      244,
+      245,
+      246,
+      247,
+      248,
+      249,
+      250,
+      251,
+      252,
+      253,
+      254,
+      255,
+      256,
+      257,
+      258,
+      259,
+      260,
+      261,
+      262,
+      263,
+      264,
+      265,
+      266,
+      267,
+      268,
+      269,
+      270,
+      271,
+      272,
+      273,
+      274,
+      275,
+      276,
+      277,
+      278,
+      279,
+      280,
+      281,
+      282,
+      283,
+      284,
+      285,
+      286,
+      287,
+      288,
+      289,
+      290,
+      291,
+      292,
+      293,
+      294,
+      295,
+      296,
+      297,
+      298,
+      299,
+      300,
+      301,
+      302,
+      303,
+      304,
+      305,
+      306,
+      307,
+      308,
+      309,
+      310,
+      311,
+      312,
+      313,
+      314,
+      315,
+      316,
+      317,
+      318,
+      319,
+      320,
+      321,
+      322,
+      323,
+      324,
+      325,
+      326,
+      327,
+      328,
+      329,
+      330,
+      331,
+      332,
+      333,
+      334,
+      335
+    ]
+  }
+}

@@ -1,0 +1,48 @@
+Run: pre_reconciliation_run1
+Source: reused existing canonical baseline evidence from post_topology_run1_*
+New canonical rerun performed: no
+
+Exact source functions for drifting fields:
+- reconciliation report save path: src/docxaicorrector/processing/preparation.py::_write_reconciliation_report_artifact
+- reconciliation report event emission: src/docxaicorrector/processing/preparation.py::_run_structure_recognition
+- structure map save path: src/docxaicorrector/processing/preparation.py::_write_structure_map_debug_artifact
+- structure map apply-stage counters: src/docxaicorrector/structure/recognition.py::apply_structure_map
+- structure summary assembly: src/docxaicorrector/processing/preparation.py::_build_structure_recognition_summary
+- structure outcome event emission: src/docxaicorrector/processing/preparation.py::structure_processing_outcome log_event site
+- raw_unmapped_source_paragraph_count: src/docxaicorrector/validation/structural.py::_derive_unit_aware_unmapped_fields
+- structure_unit_unmapped_source_count: src/docxaicorrector/validation/structural.py::_derive_unit_aware_unmapped_fields
+- snapshot metric injection: src/docxaicorrector/validation/structural.py::_apply_metric_snapshot_fields
+- snapshot ai counters extraction: src/docxaicorrector/validation/structural.py::_build_preparation_diagnostic_snapshot_from_source helpers around structure_processing_outcome extraction
+
+Exact artifact/log/event names that already exist:
+- reconciliation_report_saved
+- structure_recognition_debug_artifact_saved
+- structure_processing_outcome
+
+Confirmed:
+- Current code path has no existing saved artifact before reconciliation in src/docxaicorrector/structure/recognition.py.
+- Current code path has no user-visible pre-reconciliation event boundary in the saved diagnostic snapshot; the snapshot contains summary fields, not the full event_log.
+- structure_map debug artifact is saved after reconciliation and before apply_structure_map.
+- ai_classified_count and ai_heading_count are apply-stage summary fields, not raw structure_map classified_count.
+
+Partially confirmed:
+- Stage 2 provenance can still be observed indirectly through structure_timeout_retry_count and structure_primary/structure_retry classified counters carried into later summary surfaces.
+
+Unconfirmed:
+- Exact first raw divergence inside Stage 2 before reconciliation.
+- Whether the first actual divergence is raw provider response variance or Stage 2 post-provider reassembly variance.
+
+Caveats:
+- Baseline run1 alone cannot prove the first actual drift surface.
+- Historical 313 -> 20 ai_classified_count collapse is not resolved by this baseline file.
+
+Earliest existing saved divergence boundary:
+- Not determined from run1 alone.
+- Known from prior verified pair: reconciliation_report_saved.
+
+Earliest actual observed divergence boundary:
+- Not determined from run1 alone.
+
+Still-unobserved gap:
+- Missing saved pre-reconciliation structure artifact.
+- Missing persisted apply_structure_map metrics/defer payload.

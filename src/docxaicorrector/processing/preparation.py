@@ -24,7 +24,7 @@ from docxaicorrector.document._document import (
 )
 from docxaicorrector.document.relations import build_paragraph_relations
 from docxaicorrector.core.logger import log_event
-from docxaicorrector.core.models import DocumentMap, DocumentTopologyProjection, LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport, ParagraphRelation, RelationNormalizationReport
+from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, DocumentMapOutlineEntry, DocumentMapReviewZone, DocumentMapSplitHint, DocumentMapTocEntry, DocumentMapTocRegion, DocumentTopologyProjection, LayoutArtifactCleanupReport, ParagraphBoundaryNormalizationReport, ParagraphRelation, RelationNormalizationReport
 from docxaicorrector.core.models import StructureFallbackStats, StructureRecognitionSummary
 from docxaicorrector.core.models import StructureRepairReport
 from docxaicorrector.core.models import clone_prepared_image_asset
@@ -60,6 +60,7 @@ from docxaicorrector.structure.document_map import (
     DocumentMapRequestTimeout,
     DocumentMapSchemaError,
     build_document_map,
+    capture_document_map_debug_payloads,
 )
 from docxaicorrector.structure.recognition import (
     STRUCTURE_RECOGNITION_DESCRIPTOR_SCHEMA_VERSION,
@@ -79,7 +80,6 @@ from docxaicorrector.structure.reconciliation import (
     targeted_reclassify_with_reconciliation_context,
 )
 from docxaicorrector.structure.layout_signals import derive_layout_signals
-from docxaicorrector.structure.topology import TOPOLOGY_PROJECTION_SCHEMA_VERSION, apply_document_map_topology
 from docxaicorrector.structure.topology import TOPOLOGY_PROJECTION_SCHEMA_VERSION, apply_document_map_topology, build_document_topology_projection_identity_payload
 from docxaicorrector.structure.validation import StructureValidationReport, validate_structure_quality, write_structure_validation_debug_artifact
 from docxaicorrector.text.translation_domains import build_terminology_plan, build_translation_domain_instructions
@@ -558,6 +558,7 @@ _STRUCTURE_MAP_CACHE_LIMIT = 8
 _structure_map_cache: OrderedDict[str, StructureMap] = OrderedDict()
 _structure_map_cache_lock = Lock()
 _STRUCTURE_MAP_DEBUG_DIR = RUN_DIR / "structure_maps"
+_STRUCTURE_MAP_PRE_RECONCILIATION_DEBUG_DIR = RUN_DIR / "structure_maps_pre_reconciliation"
 _RECONCILIATION_REPORT_DEBUG_DIR = RUN_DIR / "reconciliation_reports"
 _DOCUMENT_TOPOLOGY_DEBUG_DIR = RUN_DIR / "document_topology"
 _DOCUMENT_MAP_CACHE_LIMIT = 8
@@ -565,6 +566,8 @@ _document_map_cache: OrderedDict[str, DocumentMap] = OrderedDict()
 _document_map_cache_lock = Lock()
 _DOCUMENT_MAP_DEBUG_DIR = RUN_DIR / "document_maps"
 _DOCUMENT_MAP_IDENTITY_DEBUG_DIR = RUN_DIR / "document_map_identities"
+_DOCUMENT_MAP_PROVIDER_DEBUG_DIR = RUN_DIR / "document_map_provider_payloads"
+_DOCUMENT_MAP_POSTPROCESS_DEBUG_DIR = RUN_DIR / "document_map_postprocess_payloads"
 _DOCUMENT_TOPOLOGY_INPUT_DEBUG_DIR = RUN_DIR / "document_topology_inputs"
 STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION = 1
 
@@ -916,9 +919,16 @@ def _store_cached_structure_map(cache_key: str, structure_map: StructureMap) -> 
             _structure_map_cache.popitem(last=False)
 
 
-def _write_structure_map_debug_artifact(*, cache_key: str, structure_map: StructureMap, app_config: Mapping[str, Any]) -> str:
-    _STRUCTURE_MAP_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-    artifact_path = _STRUCTURE_MAP_DEBUG_DIR / f"{cache_key}.json"
+def _write_structure_map_debug_artifact(
+    *,
+    cache_key: str,
+    structure_map: StructureMap,
+    app_config: Mapping[str, Any],
+    target_dir: Path = _STRUCTURE_MAP_DEBUG_DIR,
+    stage: str = "structure_recognition_v1",
+) -> str:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    artifact_path = target_dir / f"{cache_key}.json"
     coordinate_schema_version = int(
         app_config.get("structure_recovery_coordinate_schema_version", STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION)
         or STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION
@@ -927,7 +937,7 @@ def _write_structure_map_debug_artifact(*, cache_key: str, structure_map: Struct
         json.dumps(
             {
                 "cache_key": cache_key,
-                "stage": "structure_recognition_v1",
+                "stage": stage,
                 "model": get_model_role_value(app_config, "structure_recognition"),
                 "prompt_version": STRUCTURE_RECOGNITION_PROMPT_VERSION,
                 "descriptor_schema_version": STRUCTURE_RECOGNITION_DESCRIPTOR_SCHEMA_VERSION,
@@ -954,7 +964,7 @@ def _write_structure_map_debug_artifact(*, cache_key: str, structure_map: Struct
         encoding="utf-8",
     )
     prune_artifact_dir(
-        target_dir=_STRUCTURE_MAP_DEBUG_DIR,
+        target_dir=target_dir,
         max_age_seconds=STRUCTURE_MAPS_MAX_AGE_SECONDS,
         max_count=STRUCTURE_MAPS_MAX_COUNT,
     )
@@ -978,9 +988,160 @@ def _store_cached_document_map(cache_key: str, document_map: DocumentMap) -> Non
             _document_map_cache.popitem(last=False)
 
 
+def _document_map_debug_artifact_path(cache_key: str) -> Path:
+    return _DOCUMENT_MAP_DEBUG_DIR / f"{cache_key}.json"
+
+
+def _read_persisted_document_map(cache_key: str) -> DocumentMap | None:
+    artifact_path = _document_map_debug_artifact_path(cache_key)
+    if not artifact_path.exists():
+        return None
+
+    def _coerce_sequence(value: object, *, field_name: str) -> Sequence[object]:
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+            raise ValueError(f"{field_name} must be an array")
+        return value
+
+    try:
+        payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, Mapping):
+            raise ValueError("artifact payload must be an object")
+        raw_document_map = payload.get("document_map")
+        if not isinstance(raw_document_map, Mapping):
+            raise ValueError("artifact payload is missing document_map")
+
+        raw_toc_region = raw_document_map.get("toc_region")
+        toc_region = None
+        if raw_toc_region is not None:
+            if not isinstance(raw_toc_region, Mapping):
+                raise ValueError("document_map.toc_region must be an object")
+            raw_entries = _coerce_sequence(raw_toc_region.get("entries", ()), field_name="document_map.toc_region.entries")
+            toc_region = DocumentMapTocRegion(
+                start_logical_index=int(raw_toc_region["start_logical_index"]),
+                end_logical_index=int(raw_toc_region["end_logical_index"]),
+                header_logical_index=(
+                    None
+                    if raw_toc_region.get("header_logical_index") is None
+                    else int(raw_toc_region["header_logical_index"])
+                ),
+                entries=tuple(
+                    DocumentMapTocEntry(
+                        title=str(entry.get("title") or ""),
+                        target_level=int(entry.get("target_level") or 0),
+                        candidate_body_logical_index=(
+                            None
+                            if entry.get("candidate_body_logical_index") is None
+                            else int(entry["candidate_body_logical_index"])
+                        ),
+                        confidence=str(entry.get("confidence") or "low"),
+                    )
+                    for entry in raw_entries
+                    if isinstance(entry, Mapping)
+                ),
+                confidence=str(raw_toc_region.get("confidence") or "low"),
+            )
+            if len(toc_region.entries) != len(raw_entries):
+                raise ValueError("document_map.toc_region.entries must contain only objects")
+
+        raw_outline = _coerce_sequence(raw_document_map.get("outline", ()), field_name="document_map.outline")
+        outline = tuple(
+            DocumentMapOutlineEntry(
+                title=str(entry.get("title") or ""),
+                level=int(entry.get("level") or 0),
+                logical_index=int(entry["logical_index"]),
+                confidence=str(entry.get("confidence") or "low"),
+                evidence=tuple(str(item) for item in _coerce_sequence(entry.get("evidence", ()), field_name="document_map.outline.evidence")),
+                member_logical_indexes=tuple(
+                    int(item) for item in _coerce_sequence(entry.get("member_logical_indexes", ()), field_name="document_map.outline.member_logical_indexes")
+                ),
+            )
+            for entry in raw_outline
+            if isinstance(entry, Mapping)
+        )
+        if len(outline) != len(raw_outline):
+            raise ValueError("document_map.outline must contain only objects")
+
+        raw_paragraph_anchors = raw_document_map.get("paragraph_anchors", {})
+        if not isinstance(raw_paragraph_anchors, Mapping):
+            raise ValueError("document_map.paragraph_anchors must be an object")
+        paragraph_anchors: dict[int, DocumentMapAnchor] = {}
+        for logical_index, anchor in raw_paragraph_anchors.items():
+            if not isinstance(anchor, Mapping):
+                raise ValueError("document_map.paragraph_anchors values must be objects")
+            paragraph_anchors[int(logical_index)] = DocumentMapAnchor(
+                role=str(anchor.get("role") or "body"),
+                heading_level=None if anchor.get("heading_level") is None else int(anchor["heading_level"]),
+                confidence=str(anchor.get("confidence") or "low"),
+            )
+
+        raw_review_zones = _coerce_sequence(raw_document_map.get("review_zones", ()), field_name="document_map.review_zones")
+        review_zones = tuple(
+            DocumentMapReviewZone(
+                start_logical_index=int(zone["start_logical_index"]),
+                end_logical_index=int(zone["end_logical_index"]),
+                reason=str(zone.get("reason") or ""),
+                severity=str(zone.get("severity") or "info"),
+            )
+            for zone in raw_review_zones
+            if isinstance(zone, Mapping)
+        )
+        if len(review_zones) != len(raw_review_zones):
+            raise ValueError("document_map.review_zones must contain only objects")
+
+        raw_split_hints = _coerce_sequence(raw_document_map.get("split_hints", ()), field_name="document_map.split_hints")
+        split_hints = tuple(
+            DocumentMapSplitHint(
+                logical_index=int(hint["logical_index"]),
+                split_kind=str(hint.get("split_kind") or ""),
+                expected_parts=tuple(
+                    str(part) for part in _coerce_sequence(hint.get("expected_parts", ()), field_name="document_map.split_hints.expected_parts")
+                ),
+                authority=str(hint.get("authority") or ""),
+                confidence=str(hint.get("confidence") or "low"),
+                evidence=tuple(str(item) for item in _coerce_sequence(hint.get("evidence", ()), field_name="document_map.split_hints.evidence")),
+            )
+            for hint in raw_split_hints
+            if isinstance(hint, Mapping)
+        )
+        if len(split_hints) != len(raw_split_hints):
+            raise ValueError("document_map.split_hints must contain only objects")
+
+        sampled_logical_indexes = tuple(
+            int(item)
+            for item in _coerce_sequence(raw_document_map.get("sampled_logical_indexes", ()), field_name="document_map.sampled_logical_indexes")
+        )
+
+        document_map = DocumentMap(
+            body_start_logical_index=int(raw_document_map["body_start_logical_index"]),
+            toc_region=toc_region,
+            outline=outline,
+            paragraph_anchors=paragraph_anchors,
+            review_zones=review_zones,
+            split_hints=split_hints,
+            model_used=str(raw_document_map.get("model_used") or ""),
+            total_tokens_used=int(raw_document_map.get("total_tokens_used") or 0),
+            processing_time_seconds=float(raw_document_map.get("processing_time_seconds") or 0.0),
+            sampled=bool(raw_document_map.get("sampled", False)),
+            sampled_logical_indexes=sampled_logical_indexes,
+        )
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        log_event(
+            logging.WARNING,
+            "document_map_persisted_cache_invalid",
+            "Сохранённый artifact глобальной карты документа повреждён. Выполняю fresh generation.",
+            cache_key=cache_key,
+            artifact_path=str(artifact_path),
+            error_message=str(exc),
+        )
+        return None
+
+    _store_cached_document_map(cache_key, document_map)
+    return document_map
+
+
 def _write_document_map_debug_artifact(*, cache_key: str, document_map: DocumentMap, app_config: Mapping[str, Any]) -> str:
     _DOCUMENT_MAP_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-    artifact_path = _DOCUMENT_MAP_DEBUG_DIR / f"{cache_key}.json"
+    artifact_path = _document_map_debug_artifact_path(cache_key)
     coordinate_schema_version = int(
         app_config.get("structure_recovery_coordinate_schema_version", STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION)
         or STRUCTURE_RECOVERY_COORDINATE_SCHEMA_VERSION
@@ -1032,6 +1193,51 @@ def _write_document_map_identity_debug_artifact(*, cache_key: str, document_map:
     )
     prune_artifact_dir(
         target_dir=_DOCUMENT_MAP_IDENTITY_DEBUG_DIR,
+        max_age_seconds=STRUCTURE_MAPS_MAX_AGE_SECONDS,
+        max_count=STRUCTURE_MAPS_MAX_COUNT,
+    )
+    return str(artifact_path)
+
+
+def _build_document_map_debug_payload_artifact_path(*, target_dir: Path, cache_key: str, payload: Mapping[str, Any]) -> Path:
+    artifact_key = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    return target_dir / f"{cache_key}.{artifact_key}.json"
+
+
+def _write_document_map_provider_debug_artifact(*, cache_key: str, payload: Mapping[str, Any]) -> str:
+    _DOCUMENT_MAP_PROVIDER_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    artifact_payload = {
+        "document_map_cache_key": str(cache_key or ""),
+        **payload,
+    }
+    artifact_path = _build_document_map_debug_payload_artifact_path(
+        target_dir=_DOCUMENT_MAP_PROVIDER_DEBUG_DIR,
+        cache_key=cache_key,
+        payload=artifact_payload,
+    )
+    artifact_path.write_text(json.dumps(artifact_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    prune_artifact_dir(
+        target_dir=_DOCUMENT_MAP_PROVIDER_DEBUG_DIR,
+        max_age_seconds=STRUCTURE_MAPS_MAX_AGE_SECONDS,
+        max_count=STRUCTURE_MAPS_MAX_COUNT,
+    )
+    return str(artifact_path)
+
+
+def _write_document_map_postprocess_debug_artifact(*, cache_key: str, payload: Mapping[str, Any]) -> str:
+    _DOCUMENT_MAP_POSTPROCESS_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    artifact_payload = {
+        "document_map_cache_key": str(cache_key or ""),
+        **payload,
+    }
+    artifact_path = _build_document_map_debug_payload_artifact_path(
+        target_dir=_DOCUMENT_MAP_POSTPROCESS_DEBUG_DIR,
+        cache_key=cache_key,
+        payload=artifact_payload,
+    )
+    artifact_path.write_text(json.dumps(artifact_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    prune_artifact_dir(
+        target_dir=_DOCUMENT_MAP_POSTPROCESS_DEBUG_DIR,
         max_age_seconds=STRUCTURE_MAPS_MAX_AGE_SECONDS,
         max_count=STRUCTURE_MAPS_MAX_COUNT,
     )
@@ -1299,6 +1505,38 @@ def _run_structure_recognition(
                 fallback_stage="stage2_structure_recognition_provider",
                 reason=reason,
                 detail="AI-first provider path недоступен. Используются текущие правила.",
+            )
+
+    if bool(app_config.get("structure_recognition_save_debug_artifacts", True)):
+        effective_cache_key = cache_key
+        if effective_cache_key is None:
+            effective_cache_key = _build_structure_map_cache_key(
+                paragraphs=paragraphs,
+                app_config=app_config,
+                document_map=document_map,
+                topology_projection=topology_projection,
+                resolved_model=resolved_model or get_model_role_value(app_config, "structure_recognition"),
+            )
+        try:
+            artifact_path = _write_structure_map_debug_artifact(
+                cache_key=effective_cache_key,
+                structure_map=structure_map,
+                app_config=app_config,
+                target_dir=_STRUCTURE_MAP_PRE_RECONCILIATION_DEBUG_DIR,
+                stage="structure_recognition_pre_reconciliation_v1",
+            )
+            log_event(
+                logging.INFO,
+                "structure_recognition_pre_reconciliation_artifact_saved",
+                "Сохранён pre-reconciliation artifact распознанной структуры.",
+                artifact_path=artifact_path,
+            )
+        except Exception as exc:
+            log_event(
+                logging.WARNING,
+                "structure_recognition_pre_reconciliation_artifact_save_failed",
+                "Не удалось сохранить pre-reconciliation artifact распознанной структуры.",
+                error_message=_format_ai_first_fallback_reason(exc),
             )
 
     if document_map is not None:
@@ -1605,8 +1843,15 @@ def _run_document_map_stage(
             metrics={**base_metrics, "source_format": source_format, "conversion_backend": conversion_backend},
         )
         document_map = None
+        document_map_cache_source = ""
         if bool(app_config.get("structure_recovery_document_map_cache_enabled", True)):
             document_map = _read_cached_document_map(cache_key)
+            if document_map is not None:
+                document_map_cache_source = "memory_cache"
+            else:
+                document_map = _read_persisted_document_map(cache_key)
+                if document_map is not None:
+                    document_map_cache_source = "persisted_artifact_cache"
     except Exception as exc:
         reason = _format_ai_first_fallback_reason(exc)
         _record_document_map_state(
@@ -1647,16 +1892,22 @@ def _run_document_map_stage(
                 model_selector=model_selector,
                 app_config=app_config,
             )
-            document_map = build_document_map(
-                paragraphs,
-                client=client,
-                model=model_selector,
-                timeout=float(app_config.get("structure_recovery_document_map_timeout_seconds", 120) or 120),
-                max_input_paragraphs=int(app_config.get("structure_recovery_document_map_max_input_paragraphs", 6000) or 6000),
-                max_input_tokens=int(app_config.get("structure_recovery_document_map_max_input_tokens", 180000) or 180000),
-                preview_chars=int(app_config.get("structure_recovery_document_map_preview_chars", 120) or 120),
-                progress_callback=_emit_document_map_progress,
-            )
+            captured_debug_payloads: dict[str, dict[str, object]] = {}
+
+            def _capture_document_map_debug_payload(payload_kind: str, payload: dict[str, object]) -> None:
+                captured_debug_payloads[payload_kind] = dict(payload)
+
+            with capture_document_map_debug_payloads(_capture_document_map_debug_payload):
+                document_map = build_document_map(
+                    paragraphs,
+                    client=client,
+                    model=model_selector,
+                    timeout=float(app_config.get("structure_recovery_document_map_timeout_seconds", 120) or 120),
+                    max_input_paragraphs=int(app_config.get("structure_recovery_document_map_max_input_paragraphs", 6000) or 6000),
+                    max_input_tokens=int(app_config.get("structure_recovery_document_map_max_input_tokens", 180000) or 180000),
+                    preview_chars=int(app_config.get("structure_recovery_document_map_preview_chars", 120) or 120),
+                    progress_callback=_emit_document_map_progress,
+                )
             if bool(app_config.get("structure_recovery_document_map_cache_enabled", True)):
                 _store_cached_document_map(cache_key, document_map)
             _record_document_map_state(
@@ -1664,16 +1915,41 @@ def _run_document_map_stage(
                 status="ai",
                 document_map_present=True,
             )
+            log_event(
+                logging.INFO,
+                "document_map_source_resolved",
+                "Глобальная карта документа построена свежим AI generation вызовом.",
+                document_map_source="ai_generation",
+                cache_key=cache_key,
+            )
         else:
+            captured_debug_payloads = {}
             _record_document_map_state(
                 fallback_state,
                 status="cache",
+                reason=document_map_cache_source,
                 document_map_present=True,
+            )
+            log_event(
+                logging.INFO,
+                "document_map_source_resolved",
+                "Глобальная карта документа загружена из cache.",
+                document_map_source=document_map_cache_source,
+                cache_key=cache_key,
+                artifact_path=(
+                    str(_document_map_debug_artifact_path(cache_key))
+                    if document_map_cache_source == "persisted_artifact_cache"
+                    else None
+                ),
             )
             emit_preparation_progress(
                 progress_callback,
                 stage="Карта документа…",
-                detail="Использую сохранённую карту документа.",
+                detail=(
+                    "Использую карту документа из памяти."
+                    if document_map_cache_source == "memory_cache"
+                    else "Использую сохранённую карту документа из .run."
+                ),
                 progress=0.4,
                 metrics={
                     **base_metrics,
@@ -1789,12 +2065,28 @@ def _run_document_map_stage(
             cache_key=cache_key,
             document_map=document_map,
         )
+        provider_artifact_path = None
+        provider_payload = captured_debug_payloads.get("provider_raw_payload")
+        if provider_payload is not None:
+            provider_artifact_path = _write_document_map_provider_debug_artifact(
+                cache_key=cache_key,
+                payload=provider_payload,
+            )
+        postprocess_artifact_path = None
+        postprocess_payload = captured_debug_payloads.get("postprocess_structural_payload")
+        if postprocess_payload is not None:
+            postprocess_artifact_path = _write_document_map_postprocess_debug_artifact(
+                cache_key=cache_key,
+                payload=postprocess_payload,
+            )
         log_event(
             logging.INFO,
             "document_map_debug_artifact_saved",
             "Сохранён debug artifact глобальной карты документа.",
             artifact_path=artifact_path,
             identity_artifact_path=identity_artifact_path,
+            provider_artifact_path=provider_artifact_path,
+            postprocess_artifact_path=postprocess_artifact_path,
         )
     return document_map
 

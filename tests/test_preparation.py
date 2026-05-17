@@ -3686,8 +3686,269 @@ def test_run_document_map_stage_sets_cache_status_on_cache_hit(monkeypatch):
 
     assert document_map == cached_document_map
     assert fallback_state["document_map_status"] == "cache"
-    assert fallback_state["document_map_status_reason"] == ""
+    assert fallback_state["document_map_status_reason"] == "memory_cache"
     assert fallback_state["document_map_present"] is True
+
+
+def test_run_document_map_stage_reuses_persisted_artifact_when_memory_cache_is_empty(monkeypatch, tmp_path):
+    paragraphs = [_build_paragraph(source_index=0, text="ГЛАВА 1")]
+    paragraphs[0].logical_index = 10
+    fallback_state = {}
+    captured_events: list[tuple[str, dict[str, object]]] = []
+    app_config = {
+        "structure_recovery_enabled": True,
+        "structure_recovery_document_map_enabled": True,
+        "structure_recovery_document_map_model": "openrouter:test/document-map",
+        "structure_recovery_document_map_cache_enabled": True,
+        "structure_recovery_document_map_save_debug_artifacts": False,
+    }
+    cache_key = preparation._build_document_map_cache_key(paragraphs=paragraphs, app_config=app_config)
+    artifact_path = tmp_path / f"{cache_key}.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "cache_key": cache_key,
+                "stage": "document_map_v1",
+                "document_map": {
+                    "body_start_logical_index": 10,
+                    "toc_region": {
+                        "start_logical_index": 0,
+                        "end_logical_index": 0,
+                        "header_logical_index": 0,
+                        "entries": [
+                            {
+                                "title": "ГЛАВА 1",
+                                "target_level": 1,
+                                "candidate_body_logical_index": 10,
+                                "confidence": "high",
+                            }
+                        ],
+                        "confidence": "high",
+                    },
+                    "outline": [
+                        {
+                            "title": "ГЛАВА 1",
+                            "level": 1,
+                            "logical_index": 10,
+                            "confidence": "high",
+                            "evidence": ["toc_match"],
+                            "member_logical_indexes": [10],
+                        }
+                    ],
+                    "paragraph_anchors": {
+                        "10": {
+                            "role": "heading",
+                            "heading_level": 1,
+                            "confidence": "high",
+                        }
+                    },
+                    "review_zones": [
+                        {
+                            "start_logical_index": 0,
+                            "end_logical_index": 0,
+                            "reason": "toc_review",
+                            "severity": "warning",
+                        }
+                    ],
+                    "split_hints": [
+                        {
+                            "logical_index": 0,
+                            "split_kind": "compound_toc_entries",
+                            "expected_parts": ["ГЛАВА 1"],
+                            "authority": "sample_descriptors",
+                            "confidence": "high",
+                            "evidence": ["logical_sequence"],
+                        }
+                    ],
+                    "model_used": "openrouter:test/document-map",
+                    "total_tokens_used": 17,
+                    "processing_time_seconds": 0.2,
+                    "sampled": False,
+                    "sampled_logical_indexes": [10],
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(preparation, "_DOCUMENT_MAP_DEBUG_DIR", tmp_path)
+    monkeypatch.setattr(preparation, "_read_cached_document_map", lambda cache_key: None)
+    monkeypatch.setattr(
+        preparation,
+        "build_document_map",
+        lambda *args, **kwargs: pytest.fail("builder should not run on persisted document-map cache hit"),
+    )
+    monkeypatch.setattr(preparation, "log_event", lambda level, event_id, message, **kwargs: captured_events.append((event_id, kwargs)))
+
+    document_map = preparation._run_document_map_stage(
+        paragraphs=paragraphs,
+        image_assets=[],
+        app_config=app_config,
+        get_client_fn=lambda: object(),
+        progress_callback=None,
+        normalization_report=_build_report(raw=1, logical=1),
+        relation_report=None,
+        fallback_state=fallback_state,
+    )
+
+    assert document_map == DocumentMap(
+        body_start_logical_index=10,
+        toc_region=DocumentMapTocRegion(
+            start_logical_index=0,
+            end_logical_index=0,
+            header_logical_index=0,
+            entries=(DocumentMapTocEntry(title="ГЛАВА 1", target_level=1, candidate_body_logical_index=10, confidence="high"),),
+            confidence="high",
+        ),
+        outline=(DocumentMapOutlineEntry(title="ГЛАВА 1", level=1, logical_index=10, confidence="high", evidence=("toc_match",), member_logical_indexes=(10,)),),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(DocumentMapReviewZone(start_logical_index=0, end_logical_index=0, reason="toc_review", severity="warning"),),
+        split_hints=(
+            DocumentMapSplitHint(
+                logical_index=0,
+                split_kind="compound_toc_entries",
+                expected_parts=("ГЛАВА 1",),
+                authority="sample_descriptors",
+                confidence="high",
+                evidence=("logical_sequence",),
+            ),
+        ),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=17,
+        processing_time_seconds=0.2,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+    assert fallback_state["document_map_status"] == "cache"
+    assert fallback_state["document_map_status_reason"] == "persisted_artifact_cache"
+    assert fallback_state["document_map_present"] is True
+    source_event = next(kwargs for event_id, kwargs in captured_events if event_id == "document_map_source_resolved")
+    assert source_event["document_map_source"] == "persisted_artifact_cache"
+    assert source_event["artifact_path"] == str(artifact_path)
+
+
+def test_run_document_map_stage_falls_back_to_provider_when_persisted_artifact_is_malformed(monkeypatch, tmp_path):
+    paragraphs = [_build_paragraph(source_index=0, text="ГЛАВА 1")]
+    paragraphs[0].logical_index = 10
+    fallback_state = {}
+    captured_events: list[tuple[str, dict[str, object]]] = []
+    app_config = {
+        "structure_recovery_enabled": True,
+        "structure_recovery_document_map_enabled": True,
+        "structure_recovery_document_map_model": "openrouter:test/document-map",
+        "structure_recovery_document_map_cache_enabled": True,
+        "structure_recovery_document_map_save_debug_artifacts": False,
+    }
+    built_document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(),
+        paragraph_anchors={10: DocumentMapAnchor(role="body", heading_level=None, confidence="low")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+    cache_key = preparation._build_document_map_cache_key(paragraphs=paragraphs, app_config=app_config)
+    (tmp_path / f"{cache_key}.json").write_text("{not-json", encoding="utf-8")
+
+    monkeypatch.setattr(preparation, "_DOCUMENT_MAP_DEBUG_DIR", tmp_path)
+    monkeypatch.setattr(preparation, "_read_cached_document_map", lambda cache_key: None)
+    monkeypatch.setattr(preparation, "build_document_map", lambda paragraphs, **kwargs: built_document_map)
+    monkeypatch.setattr(preparation, "log_event", lambda level, event_id, message, **kwargs: captured_events.append((event_id, kwargs)))
+
+    document_map = preparation._run_document_map_stage(
+        paragraphs=paragraphs,
+        image_assets=[],
+        app_config=app_config,
+        get_client_fn=lambda: object(),
+        progress_callback=None,
+        normalization_report=_build_report(raw=1, logical=1),
+        relation_report=None,
+        fallback_state=fallback_state,
+    )
+
+    assert document_map == built_document_map
+    assert fallback_state["document_map_status"] == "ai"
+    invalid_event = next(kwargs for event_id, kwargs in captured_events if event_id == "document_map_persisted_cache_invalid")
+    assert invalid_event["cache_key"] == cache_key
+    assert invalid_event["artifact_path"] == str(tmp_path / f"{cache_key}.json")
+
+
+def test_run_document_map_stage_ignores_persisted_artifact_when_cache_is_disabled(monkeypatch, tmp_path):
+    paragraphs = [_build_paragraph(source_index=0, text="ГЛАВА 1")]
+    paragraphs[0].logical_index = 10
+    app_config = {
+        "structure_recovery_enabled": True,
+        "structure_recovery_document_map_enabled": True,
+        "structure_recovery_document_map_model": "openrouter:test/document-map",
+        "structure_recovery_document_map_cache_enabled": False,
+        "structure_recovery_document_map_save_debug_artifacts": False,
+    }
+    built_document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(DocumentMapOutlineEntry(title="FROM_BUILDER", level=1, logical_index=10, confidence="high"),),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        model_used="openrouter:test/document-map",
+        total_tokens_used=0,
+        processing_time_seconds=0.0,
+        sampled=False,
+        sampled_logical_indexes=(10,),
+    )
+    cache_key = preparation._build_document_map_cache_key(paragraphs=paragraphs, app_config=app_config)
+    (tmp_path / f"{cache_key}.json").write_text(
+        json.dumps(
+            {
+                "cache_key": cache_key,
+                "stage": "document_map_v1",
+                "document_map": {
+                    "body_start_logical_index": 10,
+                    "toc_region": None,
+                    "outline": [
+                        {
+                            "title": "FROM_ARTIFACT",
+                            "level": 1,
+                            "logical_index": 10,
+                            "confidence": "high",
+                        }
+                    ],
+                    "paragraph_anchors": {},
+                    "review_zones": [],
+                    "split_hints": [],
+                    "model_used": "openrouter:test/document-map",
+                    "total_tokens_used": 0,
+                    "processing_time_seconds": 0.0,
+                    "sampled": False,
+                    "sampled_logical_indexes": [10],
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(preparation, "_DOCUMENT_MAP_DEBUG_DIR", tmp_path)
+    monkeypatch.setattr(preparation, "build_document_map", lambda paragraphs, **kwargs: built_document_map)
+
+    document_map = preparation._run_document_map_stage(
+        paragraphs=paragraphs,
+        image_assets=[],
+        app_config=app_config,
+        get_client_fn=lambda: object(),
+        progress_callback=None,
+        normalization_report=_build_report(raw=1, logical=1),
+        relation_report=None,
+    )
+
+    assert document_map == built_document_map
+    assert document_map.outline[0].title == "FROM_BUILDER"
 
 
 def test_run_document_map_stage_sets_schema_failed_status(monkeypatch):
@@ -6264,6 +6525,78 @@ def test_build_document_map_strips_provider_prefix_before_openrouter_request(mon
     assert captured["model"] == "test/document-map"
 
 
+def test_build_document_map_emits_provider_and_postprocess_debug_payloads(monkeypatch):
+    captured_payloads: dict[str, dict[str, object]] = {}
+
+    class _ResponsesClient:
+        class responses:
+            @staticmethod
+            def create(**kwargs):
+                _ = kwargs
+                return type(
+                    "ResponseStub",
+                    (),
+                    {
+                        "output": [
+                            type(
+                                "OutputItem",
+                                (),
+                                {
+                                    "content": [
+                                        type(
+                                            "ContentItem",
+                                            (),
+                                            {
+                                                "type": "output_text",
+                                                "text": json.dumps(
+                                                    {
+                                                        "body_start_logical_index": 0,
+                                                        "toc_region": None,
+                                                        "outline": [],
+                                                        "paragraph_anchors": {
+                                                            "0": {
+                                                                "role": "body",
+                                                                "heading_level": None,
+                                                                "confidence": "low",
+                                                            }
+                                                        },
+                                                        "review_zones": [],
+                                                    },
+                                                    ensure_ascii=False,
+                                                ),
+                                            },
+                                        )()
+                                    ]
+                                },
+                            )()
+                        ],
+                        "output_text": "",
+                        "usage": type("UsageStub", (), {"total_tokens": 13})(),
+                    },
+                )()
+
+    monkeypatch.setattr(document_map_module, "_with_request_timeout", lambda client, timeout: client)
+    monkeypatch.setattr(document_map_module, "_load_system_prompt", lambda: "system")
+
+    with document_map_module.capture_document_map_debug_payloads(lambda kind, payload: captured_payloads.setdefault(kind, payload)):
+        document_map = document_map_module.build_document_map(
+            [_build_paragraph(source_index=0, text="Body")],
+            client=_ResponsesClient(),
+            model="openrouter:test/document-map",
+            timeout=10.0,
+            max_input_paragraphs=100,
+            max_input_tokens=1000,
+            preview_chars=120,
+        )
+
+    assert document_map is not None
+    assert captured_payloads["provider_raw_payload"]["stage"] == "document_map_provider_response_v1"
+    assert captured_payloads["provider_raw_payload"]["normalized_payload_text"]
+    assert captured_payloads["provider_raw_payload"]["total_tokens_used"] == 13
+    assert captured_payloads["postprocess_structural_payload"]["stage"] == "document_map_postprocess_payload_v1"
+    assert captured_payloads["postprocess_structural_payload"]["document_map"]["body_start_logical_index"] == 0
+
+
 def test_build_structure_map_strips_provider_prefix_before_openrouter_request(monkeypatch):
     captured = {}
 
@@ -6522,6 +6855,8 @@ def test_run_document_map_stage_uses_cache_and_skips_second_builder_call(monkeyp
 def test_run_document_map_stage_writes_debug_artifact(monkeypatch, tmp_path):
     paragraphs = [_build_paragraph(source_index=0, text="Heading"), _build_paragraph(source_index=1, text="Body")]
     identity_artifact_dir = tmp_path / "identities"
+    provider_artifact_dir = tmp_path / "provider"
+    postprocess_artifact_dir = tmp_path / "postprocess"
     captured_events: list[tuple[str, dict[str, object]]] = []
 
     def _fake_log_event(level, event_id, message, **kwargs):
@@ -6536,7 +6871,51 @@ def test_run_document_map_stage_writes_debug_artifact(monkeypatch, tmp_path):
     monkeypatch.setattr(preparation, "get_client", lambda: object())
     monkeypatch.setattr(preparation, "_DOCUMENT_MAP_DEBUG_DIR", tmp_path)
     monkeypatch.setattr(preparation, "_DOCUMENT_MAP_IDENTITY_DEBUG_DIR", identity_artifact_dir)
+    monkeypatch.setattr(preparation, "_DOCUMENT_MAP_PROVIDER_DEBUG_DIR", provider_artifact_dir)
+    monkeypatch.setattr(preparation, "_DOCUMENT_MAP_POSTPROCESS_DEBUG_DIR", postprocess_artifact_dir)
     monkeypatch.setattr(preparation, "log_event", _fake_log_event)
+
+    class _FakeCaptureContext:
+        def __init__(self, callback):
+            self._callback = callback
+
+        def __enter__(self):
+            self._callback(
+                "provider_raw_payload",
+                {
+                    "stage": "document_map_provider_response_v1",
+                    "normalized_payload_text": '{"body_start_logical_index": 0}',
+                    "collected_texts": ['{"body_start_logical_index": 0}'],
+                    "total_tokens_used": 17,
+                },
+            )
+            self._callback(
+                "postprocess_structural_payload",
+                {
+                    "stage": "document_map_postprocess_payload_v1",
+                    "postprocess_version": preparation.DOCUMENT_MAP_POSTPROCESS_VERSION,
+                    "document_map": {
+                        "body_start_logical_index": 0,
+                        "toc_region": None,
+                        "outline": [],
+                        "paragraph_anchors": {},
+                        "review_zones": [],
+                        "split_hints": [],
+                        "model_used": "openrouter:test/document-map",
+                        "total_tokens_used": 17,
+                        "processing_time_seconds": 0.2,
+                        "sampled": False,
+                        "sampled_logical_indexes": [0, 1],
+                    },
+                },
+            )
+            return None
+
+        def __exit__(self, exc_type, exc, tb):
+            _ = exc_type, exc, tb
+            return False
+
+    monkeypatch.setattr(preparation, "capture_document_map_debug_payloads", lambda callback: _FakeCaptureContext(callback))
     monkeypatch.setattr(
         preparation,
         "build_document_map",
@@ -6580,13 +6959,19 @@ def test_run_document_map_stage_writes_debug_artifact(monkeypatch, tmp_path):
     cache_key = preparation._build_document_map_cache_key(paragraphs=paragraphs, app_config=app_config)
     artifact_path = tmp_path / f"{cache_key}.json"
     identity_artifact_path = identity_artifact_dir / f"{cache_key}.json"
+    provider_artifact_paths = list(provider_artifact_dir.glob("*.json"))
+    postprocess_artifact_paths = list(postprocess_artifact_dir.glob("*.json"))
 
     assert document_map is not None
     assert artifact_path.exists()
     assert identity_artifact_path.exists()
+    assert len(provider_artifact_paths) == 1
+    assert len(postprocess_artifact_paths) == 1
 
     payload = json.loads(artifact_path.read_text(encoding="utf-8"))
     identity_payload = json.loads(identity_artifact_path.read_text(encoding="utf-8"))
+    provider_payload = json.loads(provider_artifact_paths[0].read_text(encoding="utf-8"))
+    postprocess_payload = json.loads(postprocess_artifact_paths[0].read_text(encoding="utf-8"))
 
     assert payload["cache_key"] == cache_key
     assert payload["stage"] == "document_map_v1"
@@ -6600,9 +6985,17 @@ def test_run_document_map_stage_writes_debug_artifact(monkeypatch, tmp_path):
     assert identity_payload["cache_key"] == cache_key
     assert identity_payload["stage"] == "document_map_identity_v1"
     assert identity_payload["identity_payload"] == preparation._build_document_map_identity_payload(document_map)
+    assert provider_payload["document_map_cache_key"] == cache_key
+    assert provider_payload["stage"] == "document_map_provider_response_v1"
+    assert provider_payload["normalized_payload_text"] == '{"body_start_logical_index": 0}'
+    assert postprocess_payload["document_map_cache_key"] == cache_key
+    assert postprocess_payload["stage"] == "document_map_postprocess_payload_v1"
+    assert postprocess_payload["document_map"]["body_start_logical_index"] == 0
     debug_event = next(kwargs for event_id, kwargs in captured_events if event_id == "document_map_debug_artifact_saved")
     assert debug_event["artifact_path"] == str(artifact_path)
     assert debug_event["identity_artifact_path"] == str(identity_artifact_path)
+    assert debug_event["provider_artifact_path"] == str(provider_artifact_paths[0])
+    assert debug_event["postprocess_artifact_path"] == str(postprocess_artifact_paths[0])
 
 
 def test_prepare_document_for_processing_reports_pdf_import_stage(monkeypatch):

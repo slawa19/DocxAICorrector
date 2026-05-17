@@ -1,0 +1,51 @@
+Run: pre_reconciliation_run2
+Source: reused existing canonical baseline evidence from post_topology_run2_* plus pairwise comparison against pre_reconciliation_run1_*
+New canonical rerun performed: no
+
+Exact source functions for drifting fields:
+- reconciliation report save path: src/docxaicorrector/processing/preparation.py::_write_reconciliation_report_artifact
+- reconciliation report event emission: src/docxaicorrector/processing/preparation.py::_run_structure_recognition
+- structure map save path: src/docxaicorrector/processing/preparation.py::_write_structure_map_debug_artifact
+- structure map apply-stage counters: src/docxaicorrector/structure/recognition.py::apply_structure_map
+- structure summary assembly: src/docxaicorrector/processing/preparation.py::_build_structure_recognition_summary
+- structure outcome event emission: src/docxaicorrector/processing/preparation.py::structure_processing_outcome log_event site
+- raw_unmapped_source_paragraph_count: src/docxaicorrector/validation/structural.py::_derive_unit_aware_unmapped_fields
+- structure_unit_unmapped_source_count: src/docxaicorrector/validation/structural.py::_derive_unit_aware_unmapped_fields
+- snapshot metric injection: src/docxaicorrector/validation/structural.py::_apply_metric_snapshot_fields
+- snapshot ai counters extraction: src/docxaicorrector/validation/structural.py around structure_processing_outcome extraction
+
+Exact artifact/log/event names that already exist:
+- reconciliation_report_saved -> .run/reconciliation_reports/<structure_map_cache_key>.json
+- structure_recognition_debug_artifact_saved -> .run/structure_maps/<structure_map_cache_key>.json
+- structure_processing_outcome -> later summary event, not a pre-reconciliation saved artifact
+
+Confirmed:
+- No existing saved artifact or user-visible saved event boundary exists before reconciliation in the current code path.
+- earliest existing saved divergence boundary remains reconciliation_report_saved.
+- adjacent saved structure_map artifact also diverges.
+- ai_classified_count is downstream of apply_structure_map, not raw structure_map classified_count.
+- raw_unmapped_source_paragraph_count and structure_unit_unmapped_source_count are later formatting/topology-derived metrics, not pre-reconciliation boundaries.
+
+Partially confirmed:
+- First actual drift surface classification: provider/stage2 drift.
+- Reason: pre_reconciliation_run1_structure_map.json vs pre_reconciliation_run2_structure_map.json differ in heading_count 31 -> 30 and fallback provenance 1 retry -> 0 retries, while stable document_map/topology keys remain unchanged.
+- This proves drift starts before apply_structure_map and before late formatting-only reporting.
+
+Unconfirmed:
+- Exact earliest sub-boundary inside Stage 2: raw provider/classification output vs post-provider reassembly.
+- Whether reconciliation adds additional drift on top of the already-diverging Stage 2 output in every historical failing pair.
+
+Caveats:
+- structure_map artifact is written after reconciliation, so it is not itself a pre-reconciliation saved boundary.
+- The stage2/provenance classification above is therefore partially confirmed, not fully proven at a raw pre-reconciliation save point.
+- This review pair did not reproduce the larger historical ai_classified_count collapse 313 -> 20.
+
+Earliest existing saved divergence boundary:
+- reconciliation_report_saved.
+
+Earliest actual observed divergence boundary:
+- provider/stage2 drift, partially confirmed via carried stage2 provenance and divergent structure_map heading_count.
+
+Still-unobserved gap:
+- Missing saved pre-reconciliation structure artifact immediately after build_structure_map and before reconcile_with_document_map.
+- If the priority is the historical ai_classified_count collapse, the remaining missing boundary is persisted apply_structure_map metrics/defer counts around src/docxaicorrector/structure/recognition.py::apply_structure_map.

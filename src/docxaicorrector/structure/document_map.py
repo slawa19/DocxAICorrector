@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import asdict, dataclass
 from functools import lru_cache
 import hashlib
 from math import isclose
@@ -43,6 +46,10 @@ DOCUMENT_MAP_SPLIT_HINT_SCHEMA_VERSION = 1
 DOCUMENT_MAP_OUTLINE_MEMBERSHIP_SCHEMA_VERSION = 1
 _DOCUMENT_MAP_MALFORMED_DIR = RUN_DIR / "document_maps"
 _LOGGER = logging.getLogger(__name__)
+_DOCUMENT_MAP_DEBUG_CAPTURE_CALLBACK: ContextVar[Callable[[str, dict[str, object]], None] | None] = ContextVar(
+    "document_map_debug_capture_callback",
+    default=None,
+)
 _REVIEW_ZONE_SEVERITY_SYNONYMS = {
     "minor": "info",
     "low": "info",
@@ -117,6 +124,22 @@ class _ResponsesCreateClient(Protocol):
     responses: _ResponsesApi
 
 
+@contextmanager
+def capture_document_map_debug_payloads(callback: Callable[[str, dict[str, object]], None]) -> Iterator[None]:
+    token = _DOCUMENT_MAP_DEBUG_CAPTURE_CALLBACK.set(callback)
+    try:
+        yield
+    finally:
+        _DOCUMENT_MAP_DEBUG_CAPTURE_CALLBACK.reset(token)
+
+
+def _emit_document_map_debug_payload(payload_kind: str, payload: dict[str, object]) -> None:
+    callback = _DOCUMENT_MAP_DEBUG_CAPTURE_CALLBACK.get()
+    if callback is None:
+        return
+    callback(payload_kind, payload)
+
+
 class DocumentMapRequestTimeout(TimeoutError):
     pass
 
@@ -179,6 +202,17 @@ def build_document_map(
     document_map.model_used = str(model or document_map.model_used or "")
     if document_map is default_document_map:
         document_map.processing_time_seconds = max(0.0, time.perf_counter() - started_at)
+    _emit_document_map_debug_payload(
+        "postprocess_structural_payload",
+        {
+            "stage": "document_map_postprocess_payload_v1",
+            "postprocess_version": DOCUMENT_MAP_POSTPROCESS_VERSION,
+            "model_used": str(document_map.model_used or ""),
+            "sampled": bool(document_map.sampled),
+            "sampled_logical_indexes": [int(index) for index in document_map.sampled_logical_indexes],
+            "document_map": asdict(document_map),
+        },
+    )
     _emit_progress(
         progress_callback,
         DocumentMapProgress(
@@ -522,6 +556,23 @@ def _request_document_map_payload(
     content = normalize_model_output("\n".join(traversal.collected_texts) if traversal.collected_texts else (traversal.raw_output_text or ""))
     usage = getattr(response, "usage", None)
     total_tokens = int(getattr(usage, "total_tokens", 0) or 0)
+    _emit_document_map_debug_payload(
+        "provider_raw_payload",
+        {
+            "stage": "document_map_provider_response_v1",
+            "model": str(model or ""),
+            "request_model": str(request_model or ""),
+            "prompt_version": DOCUMENT_MAP_PROMPT_VERSION,
+            "descriptor_schema_version": DOCUMENT_MAP_DESCRIPTOR_SCHEMA_VERSION,
+            "descriptor_count": len(descriptors),
+            "sampled_logical_indexes": [int(index) for index in sampled_logical_indexes],
+            "schema_error_summary": schema_error_summary,
+            "raw_output_text": str(traversal.raw_output_text or ""),
+            "collected_texts": [str(text or "") for text in traversal.collected_texts],
+            "normalized_payload_text": content,
+            "total_tokens_used": total_tokens,
+        },
+    )
     return content, total_tokens
 
 

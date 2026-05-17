@@ -1,0 +1,22 @@
+{
+  "cache_key": "9da8e93192a9a757fca24950aa3bc257b682187b7db2bf4ad0614ed5a460d94b",
+  "stage": "structure_recognition_v1",
+  "model": "openrouter:google/gemini-3.1-flash-lite-preview",
+  "prompt_version": 3,
+  "descriptor_schema_version": 2,
+  "coordinate_schema_version": 1,
+  "window_count": 1,
+  "classified_count": 336,
+  "heading_count": 30,
+  "fallback_stats": {
+    "structure_window_split_count": 0,
+    "structure_max_fallback_depth": 0,
+    "structure_split_fallback_descriptor_count": 0,
+    "structure_timeout_retry_count": 0,
+    "structure_timeout_retry_succeeded_count": 0,
+    "structure_timeout_retry_failed_count": 0,
+    "structure_split_fallback_capped_descriptor_count": 0
+  },
+  "total_tokens_used": 117608,
+  "processing_time_seconds": 22.741050043
+}
