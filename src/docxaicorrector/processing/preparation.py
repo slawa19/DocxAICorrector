@@ -1480,6 +1480,8 @@ def _run_structure_recognition(
                 split_fallback_max_depth=int(app_config.get("structure_recognition_split_fallback_max_depth", 3) or 3),
                 split_fallback_max_expansions=int(app_config.get("structure_recognition_split_fallback_max_expansions", 8) or 8),
                 progress_callback=_emit_structure_progress,
+                save_debug_artifacts=bool(app_config.get("structure_recognition_save_debug_artifacts", True)),
+                artifact_cache_key=cache_key,
             )
             if bool(app_config.get("structure_recognition_cache_enabled", True)):
                 _store_cached_structure_map(cache_key, structure_map)

@@ -516,6 +516,11 @@ def test_apply_prepared_snapshot_fields_prefers_topology_authority_for_toc_body_
     assert snapshot["toc_body_concat_structure_detected"] is False
     assert snapshot["toc_body_concat_gate_source"] == "topology_projection"
     assert snapshot["toc_body_concat_detected"] is False
+    assert snapshot["document_map_toc_detected"] is True
+    assert snapshot["document_map_toc_region_count"] == 1
+    assert snapshot["topology_toc_entry_count"] == 1
+    assert snapshot["topology_split_compound_toc_operation_count"] == 0
+    assert snapshot["document_map_compound_toc_split_hint_count"] == 0
 
 
 def test_derive_unit_aware_unmapped_fields_exposes_raw_counts_and_explicit_basis() -> None:

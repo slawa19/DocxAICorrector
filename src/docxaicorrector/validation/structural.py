@@ -35,7 +35,7 @@ from docxaicorrector.document._document import (
 from docxaicorrector.generation.formatting_transfer import preserve_source_paragraph_properties
 from docxaicorrector.generation._generation import convert_markdown_to_docx_bytes, ensure_pandoc_available
 from docxaicorrector.image.reinsertion import reinsert_inline_images
-from docxaicorrector.core.models import ParagraphBoundaryNormalizationReport
+from docxaicorrector.core.models import ParagraphBoundaryNormalizationReport, ParagraphUnit
 from docxaicorrector.processing.processing_service import clone_processing_service
 from docxaicorrector.structure.layout_signals import derive_layout_signals
 from docxaicorrector.structure.topology import apply_document_map_topology
@@ -95,13 +95,64 @@ def _build_markdown_quality_metrics(*, latest_markdown: str, translation_domain:
     )
     return {
         "false_fragment_heading_count": len(false_fragment_heading_samples),
+        "false_fragment_heading_gate_source": "legacy_markdown",
+        "raw_false_fragment_heading_count": len(false_fragment_heading_samples),
         "residual_bullet_glyph_count": len(residual_bullet_glyph_samples),
         "list_fragment_regression_count": len(list_fragment_regression_samples),
+        "list_fragment_regression_gate_source": "legacy_markdown",
+        "raw_list_fragment_regression_count": len(list_fragment_regression_samples),
         "mixed_script_term_count": len(mixed_script_samples),
         "theology_style_deterministic_issue_count": len(theology_style_samples),
         "suspicious_heading_repetition_count": suspicious_heading_repetition_count,
         "scripture_reference_heading_count": scripture_reference_heading_count,
     }
+
+
+def _extract_quality_report_artifact_path(event_log: Sequence[Mapping[str, object]]) -> str | None:
+    for event in reversed(event_log):
+        if str(event.get("event_id") or "").strip() != "quality_report_saved":
+            continue
+        context = event.get("context")
+        if not isinstance(context, Mapping):
+            continue
+        artifact_path = context.get("artifact_path")
+        if isinstance(artifact_path, str) and artifact_path.strip():
+            return artifact_path.strip()
+    return None
+
+
+def _load_translation_quality_report(event_log: Sequence[Mapping[str, object]]) -> tuple[dict[str, object] | None, str | None]:
+    artifact_path = _extract_quality_report_artifact_path(event_log)
+    if not artifact_path:
+        return None, None
+    candidate = Path(artifact_path)
+    if not candidate.is_absolute():
+        candidate = (PROJECT_ROOT / candidate).resolve()
+    try:
+        payload = json.loads(candidate.read_text(encoding="utf-8"))
+    except Exception:
+        return None, str(candidate)
+    if not isinstance(payload, dict):
+        return None, str(candidate)
+    return payload, str(candidate)
+
+
+def _merge_translation_quality_report_metrics(
+    metrics: dict[str, object],
+    translation_quality_report: Mapping[str, object],
+) -> None:
+    for key in (
+        "false_fragment_heading_count",
+        "false_fragment_heading_gate_source",
+        "raw_false_fragment_heading_count",
+        "scripture_reference_heading_count",
+        "suspicious_heading_repetition_count",
+        "list_fragment_regression_count",
+        "list_fragment_regression_gate_source",
+        "raw_list_fragment_regression_count",
+    ):
+        if key in translation_quality_report:
+            metrics[key] = translation_quality_report[key]
 
 
 def _count_effective_toc_regions_from_source(paragraphs: Sequence[object]) -> int:
@@ -414,7 +465,7 @@ def _projection_units_for_logical_index(projection: object | None, logical_index
             resolved = get_units(int(logical_index))
         except Exception:
             resolved = ()
-        return tuple(resolved or ())
+        return tuple(cast(Sequence[object], resolved or ()))
     return tuple(
         unit
         for unit in tuple(getattr(projection, "projected_units", ()) or ())
@@ -723,10 +774,22 @@ def _derive_unit_aware_unmapped_fields(
 
 def _apply_metric_snapshot_fields(snapshot: dict[str, object], metrics: Mapping[str, object]) -> None:
     for key in (
+        "document_map_toc_detected",
+        "document_map_toc_region_count",
+        "topology_toc_entry_count",
+        "false_fragment_heading_count",
+        "false_fragment_heading_gate_source",
+        "raw_false_fragment_heading_count",
+        "list_fragment_regression_count",
+        "list_fragment_regression_gate_source",
+        "raw_list_fragment_regression_count",
         "toc_body_concat_detected",
         "toc_body_concat_markdown_detected",
         "toc_body_concat_structure_detected",
         "toc_body_concat_gate_source",
+        "topology_split_compound_toc_operation_count",
+        "topology_merge_heading_operation_count",
+        "document_map_compound_toc_split_hint_count",
         "raw_unmapped_source_paragraph_count",
         "raw_unmapped_target_paragraph_count",
         "structure_unit_unmapped_source_count",
@@ -996,6 +1059,11 @@ def run_structural_passthrough_validation(
             translation_domain=str(runtime_resolution.effective.translation_domain),
         )
     )
+    translation_quality_report, translation_quality_report_path = _load_translation_quality_report(event_log)
+    if translation_quality_report is not None:
+        _merge_translation_quality_report_metrics(metrics, translation_quality_report)
+    if translation_quality_report_path:
+        metrics["translation_quality_report_path"] = translation_quality_report_path
     generated_paragraph_registry = runtime_state.get("generated_paragraph_registry")
     if not isinstance(generated_paragraph_registry, list):
         generated_paragraph_registry = None
@@ -1393,7 +1461,7 @@ def _maybe_backfill_layout_signals_snapshot(
         return
     try:
         layout_signals = derive_layout_signals(
-            paragraphs,
+            cast(Sequence[ParagraphUnit], paragraphs),
             heading_ratio=float(app_config.get("structure_recovery_topology_projection_layout_signals_heading_ratio", 1.15) or 1.15),
             short_line_chars=int(app_config.get("structure_recovery_topology_projection_layout_signals_short_line_chars", 80) or 80),
             baseline_tolerance_pt=float(app_config.get("structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt", 0.25) or 0.25),
@@ -1491,6 +1559,19 @@ def _apply_prepared_snapshot_fields(
         topology_toc_entry_count = _count_topology_toc_entry_units(prepared_topology_projection)
         if topology_toc_entry_count > _as_int(snapshot, "toc_entry_count"):
             snapshot["toc_entry_count"] = topology_toc_entry_count
+    document_map_toc_region_count = 1 if _has_high_confidence_bounded_document_map_toc_region(prepared_document_map) else 0
+    document_map_toc_detected = bool(
+        document_map_toc_region_count
+        or _count_document_map_anchor_roles(prepared_document_map, role="toc_header")
+        or _count_document_map_anchor_roles(prepared_document_map, role="toc_entry")
+    )
+    if document_map_toc_detected:
+        snapshot["document_map_toc_detected"] = True
+    if document_map_toc_region_count > _as_int(snapshot, "document_map_toc_region_count"):
+        snapshot["document_map_toc_region_count"] = document_map_toc_region_count
+    topology_toc_entry_count = _count_topology_toc_entry_units(prepared_topology_projection)
+    if topology_toc_entry_count > _as_int(snapshot, "topology_toc_entry_count"):
+        snapshot["topology_toc_entry_count"] = topology_toc_entry_count
     if prepared_document_map is not None or prepared_topology_projection is not None:
         markdown_detected = bool(
             snapshot.get(
@@ -1512,6 +1593,9 @@ def _apply_prepared_snapshot_fields(
                     "toc_body_concat_markdown_detected",
                     "toc_body_concat_structure_detected",
                     "toc_body_concat_gate_source",
+                    "topology_split_compound_toc_operation_count",
+                    "topology_merge_heading_operation_count",
+                    "document_map_compound_toc_split_hint_count",
                 }
             }
         )
@@ -1545,7 +1629,7 @@ def _apply_topology_projection_snapshot_fallback(
         layout_signals = None
         if bool(app_config.get("structure_recovery_topology_projection_layout_signals_enabled", False)):
             layout_signals = derive_layout_signals(
-                paragraphs,
+                cast(Sequence[ParagraphUnit], paragraphs),
                 heading_ratio=float(app_config.get("structure_recovery_topology_projection_layout_signals_heading_ratio", 1.15) or 1.15),
                 short_line_chars=int(app_config.get("structure_recovery_topology_projection_layout_signals_short_line_chars", 80) or 80),
                 baseline_tolerance_pt=float(app_config.get("structure_recovery_topology_projection_layout_signals_baseline_tolerance_pt", 0.25) or 0.25),

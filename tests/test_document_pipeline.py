@@ -3214,6 +3214,8 @@ def test_build_translation_quality_report_flags_raw_false_fragment_without_entry
     assert report["quality_status"] == "fail"
     assert report["gate_reasons"] == ["false_fragment_headings_present"]
     assert report["false_fragment_heading_count"] == 1
+    assert report["false_fragment_heading_gate_source"] == "legacy_markdown"
+    assert report["raw_false_fragment_heading_count"] == 1
     assert report["false_fragment_heading_samples"] == [
         {
             "line": 3,
@@ -3303,6 +3305,8 @@ def test_build_translation_quality_report_prefers_entry_authority_over_raw_false
     assert report["gate_reasons"] == []
     assert report["false_fragment_heading_count"] == 0
     assert report["false_fragment_heading_samples"] == []
+    assert report["false_fragment_heading_gate_source"] == "entry_assembly"
+    assert report["raw_false_fragment_heading_count"] == 1
 
 
 def test_collect_false_fragment_heading_samples_from_entries_preserves_source_backed_real_heading():
@@ -3502,9 +3506,100 @@ def test_build_translation_quality_report_keeps_list_fragment_runtime_cleanup_di
     assert report["quality_status"] == "fail"
     assert report["gate_reasons"] == ["list_fragment_regressions_present"]
     assert report["list_fragment_regression_count"] == 1
+    assert report["list_fragment_regression_gate_source"] == "legacy_markdown"
+    assert report["raw_list_fragment_regression_count"] == 1
     assert "схеме: 1." in final_markdown
     assert "схеме: 1." not in display_markdown
     assert "1. Духовные существа восстают против Бога." in display_markdown
+
+
+def test_build_translation_quality_report_keeps_list_fragment_markdown_observability_advisory_with_topology_authority():
+    final_markdown = (
+        "Поразительно, но все петли следуют одной и той же схеме: 1.\n"
+        "Духовные существа восстают против Бога.\n"
+        "2. Бог судит их за грех.\n"
+        "3. Бог спасает остаток верных."
+    )
+    assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
+        final_markdown=(
+            "Поразительно, но все петли следуют одной и той же схеме.\n\n"
+            "1. Духовные существа восстают против Бога.\n"
+            "2. Бог судит их за грех.\n"
+            "3. Бог спасает остаток верных."
+        ),
+        entries=(
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="Поразительно, но все петли следуют одной и той же схеме.",
+                block_index=1,
+                paragraph_id="p1",
+                source_index=0,
+                role="body",
+                structural_role="body",
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="1. Духовные существа восстают против Бога.",
+                block_index=2,
+                paragraph_id="p2",
+                source_index=1,
+                role="body",
+                structural_role="body",
+                list_kind="ordered",
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="2. Бог судит их за грех.",
+                block_index=3,
+                paragraph_id="p3",
+                source_index=2,
+                role="body",
+                structural_role="body",
+                list_kind="ordered",
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="3. Бог спасает остаток верных.",
+                block_index=4,
+                paragraph_id="p4",
+                source_index=3,
+                role="body",
+                structural_role="body",
+                list_kind="ordered",
+                from_registry=True,
+            ),
+        ),
+        diagnostics=document_pipeline_output_validation.FinalAssemblyDiagnostics(),
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+            document_topology_projection=SimpleNamespace(
+                projected_units=[SimpleNamespace(authority="document_map", confidence="high")],
+                operations=[],
+            ),
+        ),
+        final_markdown=final_markdown,
+        formatting_diagnostics_artifacts=[],
+        assembly_result=assembly_result,
+    )
+
+    assert report["quality_status"] == "pass"
+    assert report["gate_reasons"] == []
+    assert report["list_fragment_regression_count"] == 0
+    assert report["list_fragment_regression_samples"] == []
+    assert report["list_fragment_regression_gate_source"] == "topology_projection"
+    assert report["raw_list_fragment_regression_count"] == 1
+    assert report["raw_list_fragment_regression_samples"] == [
+        {
+            "line": 1,
+            "text": "Поразительно, но все петли следуют одной и той же схеме: 1.",
+            "reason": "list_fragment_regressions_present",
+        }
+    ]
 
 
 def test_run_document_processing_warns_on_advisory_structural_markdown_quality_gate(tmp_path, monkeypatch):
@@ -3583,6 +3678,11 @@ def test_run_document_processing_quality_report_prefers_topology_authority_over_
     assert payload["toc_body_concat_markdown_detected"] is True
     assert payload["toc_body_concat_structure_detected"] is False
     assert payload["toc_body_concat_detected"] is False
+    assert payload["document_map_toc_detected"] is True
+    assert payload["document_map_toc_region_count"] == 1
+    assert payload["topology_toc_entry_count"] == 2
+    assert payload["topology_split_compound_toc_operation_count"] == 0
+    assert payload["document_map_compound_toc_split_hint_count"] == 0
 
 
 def test_run_document_processing_quality_report_keeps_candidate_page_artifact_non_binding(tmp_path, monkeypatch):
@@ -3622,6 +3722,9 @@ def test_run_document_processing_quality_report_keeps_candidate_page_artifact_no
     assert payload["toc_body_concat_markdown_detected"] is True
     assert payload["toc_body_concat_structure_detected"] is False
     assert payload["toc_body_concat_detected"] is True
+    assert payload["topology_split_compound_toc_operation_count"] == 0
+    assert payload["topology_merge_heading_operation_count"] == 0
+    assert payload["document_map_compound_toc_split_hint_count"] == 0
 
 
 def test_build_translation_quality_report_exposes_structure_unit_unmapped_basis_without_raw_override(monkeypatch):
@@ -3662,8 +3765,13 @@ def test_build_translation_quality_report_exposes_structure_unit_unmapped_basis_
     )
 
     assert report["raw_unmapped_source_paragraph_count"] == 2
+    assert report["raw_unmapped_target_paragraph_count"] == 0
     assert report["structure_unit_unmapped_source_count"] == 1
+    assert report["structure_unit_unmapped_target_count"] == 0
     assert report["unmapped_source_count_basis"] == "topology_unit"
+    assert report["unmapped_target_count_basis"] == "topology_unit"
+    assert report["unit_unmapped_source_gate_source"] == "topology_unit"
+    assert report["unit_unmapped_target_gate_source"] == "topology_unit"
     assert report["unmapped_source_count"] == 1
 
 
@@ -4235,7 +4343,7 @@ def test_run_document_processing_stops_after_image_phase_before_placeholder_vali
         lambda **kwargs: calls.__setitem__("late_validate", calls["late_validate"] + 1) or True,
     )
 
-    def should_stop(_runtime):
+    def should_stop(runtime):
         stop_checks["count"] += 1
         return stop_checks["count"] >= 2
 

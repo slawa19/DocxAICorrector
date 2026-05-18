@@ -44,6 +44,15 @@ The current workspace has moved beyond the original baseline in several importan
     - `document_topology_projection_status: built`
     - `document_topology_layout_signals` populated
     - Chapter 11 merge on logical indexes `[221, 222, 223, 224]`
+11. Core Workstream C authority/provenance wiring is now aligned across both structural validation and late-phase runtime quality reporting for the touched surfaces:
+   - `toc_body_concat_detected` can remain topology-authoritative while `toc_body_concat_markdown_detected` stays advisory;
+   - `toc_body_concat_gate_source` is carried together with supporting TOC/topology provenance fields in diagnostics/reporting;
+   - raw unmapped counts remain visible while structure-unit basis and gate-source fields are explicit in runtime reporting.
+12. Workstream D is now materially advanced on the late-phase report surface:
+   - `false_fragment_heading_count` now follows explicit authority (`entry_assembly` or `legacy_markdown`) instead of silently collapsing raw markdown and source-backed assembly evidence;
+   - `list_fragment_regression_count` now becomes non-binding when topology projection support and source-backed assembly authority are both present, while raw markdown evidence remains visible through `raw_*` report fields;
+   - real-document acceptance now consumes those authoritative counts while preserving raw markdown observability in check details;
+   - structural validation metrics/snapshots now default these touched fields to explicit `legacy_markdown` provenance and, when a saved quality report exists, reuse its authoritative counts plus raw-count observability instead of silently rebuilding the report surface from runtime markdown alone.
 
 ### 1.2 Important correction to earlier narrative
 
@@ -67,6 +76,29 @@ The workspace is dirty. Current known hygiene issues:
 
 Before any PR or commit, the fixture and whitespace state must be made clean and intentional.
 
+Repo-root diagnostic clutter is not an accepted steady state. Manual drift-investigation snapshots, ad-hoc comparison scripts, and local evidence files must be moved under specialized ignored `.run/...` directories, with `.run/manual_investigations/<topic>/...` as the default path for local investigation evidence. Versioned regression fixtures belong only under `tests/artifacts/...`.
+
+The current tracked repo-root deletion set is an intentional cleanup set, not a fixture regression. Historical root artifacts such as `diagnostic_snapshot.json`, `test_output.json`, `git_*.txt`, `run{1,2}_*.{json,txt}`, `persist_run{1,2}_*.{json,txt}`, `pre_reconciliation_run{1,2}_*.{json,txt}`, and `post_topology_run{1,2}_*.{json,txt}` are obsolete manual-investigation evidence and must not be restored to repo root. If any of that evidence still needs to be kept locally, it belongs under `.run/manual_investigations/...`; accepted versioned fixtures still belong only under `tests/artifacts/...`. The tracked zero-byte repo-root file `$null` is historical clutter with no accepted repository role.
+
+### 1.4 Current drift investigation status
+
+Reviewer-safe status for the current workspace:
+
+- Confirmed:
+  - persisted `DocumentMap` reuse is stable in the current workspace;
+  - topology cache identity is stable;
+  - the earliest saved divergence boundary is now localized to the pre-projection SDK-native `to_json()` boundary;
+  - divergence is already visible after `_call_structure_responses_with_timeout(...)`, before `_project_provider_native_response(...)`, and before `collect_response_text_traversal(...)`.
+- Partially confirmed:
+  - the earliest content-level diff is already visible inside the serialized SDK-native payload produced by `to_json()`;
+  - downstream artifacts continue to drift later as well, so later counters and snapshots are not the earliest source.
+- Unconfirmed:
+  - true wire-level upstream/provider payload drift;
+  - whether the earliest divergence comes from upstream payload variability or from SDK `to_json()` serialization behavior.
+- Caveats:
+  - do not claim the projected provider-native artifacts become equal after removing volatile metadata keys; current evidence does not support that narrative because content-level diff remains in `output[0].content[0].text.value`;
+  - tracked fixture refresh remains blocked until this pre-projection boundary is either sufficiently explained or explicitly accepted as the baseline limitation.
+
 ## 2. What Is Not Yet Complete
 
 ### 2.1 Layout Signal Evidence slice
@@ -84,8 +116,8 @@ The runtime behavior is mostly implemented, but the slice is not fully closed as
 The parent remediation is not complete. Current status by area:
 
 - R1 Stage 1.5 topology projection: substantially implemented.
-- R2 structure-aware quality gates: partially implemented, not complete as a universal gate migration.
-- R3 markdown structural postprocessor retirement: not complete.
+- R2 structure-aware quality gates: materially advanced for `toc_body_concat` and unmapped-threshold authority/provenance, but not complete as a universal gate migration.
+- R3 markdown structural postprocessor retirement: materially advanced on touched late-phase quality-report surfaces, but not complete.
 - Full-book acceptance: not complete.
 
 The code still uses markdown-side structural normalizers and markdown detectors in runtime paths. That is allowed during migration, but it means the end-state architecture has not yet been reached.
@@ -194,6 +226,8 @@ A2. Remove or ignore scratch diagnostic files only if they are confirmed not req
 - `git_stat.txt`
 - `git_status.txt`
 
+When scratch artifacts are still needed for active investigation, move them out of repo root into a specialized ignored `.run/...` directory instead of leaving them in root or legalizing them with new root-level ignore patterns.
+
 A3. Normalize intentional line endings / whitespace without unrelated churn.
 
 A4. Regenerate or update the tracked chapter-region fixture trio:
@@ -276,6 +310,8 @@ Acceptance:
 ### Workstream D: Markdown structural normalizer retirement
 
 Goal: stop using final markdown cleanup as structural proof.
+
+Current status: materially advanced for late-phase, acceptance, and structural-validation reporting on `false_fragment_heading` and `list_fragment_regression`. Authoritative gate counts are now explicit, raw markdown detections remain visible as advisory `raw_*` fields on the touched surfaces, and structural validation now reuses saved quality-report authority when available instead of flattening everything back into runtime markdown-only counts. Broader retirement of remaining markdown cleanup and untouched call sites is still pending.
 
 Tasks:
 
@@ -367,19 +403,11 @@ Acceptance:
 
 ### Immediate next tasks
 
-1. Update tracked chapter-region fixtures to match current live diagnostic.
-2. Make `git diff --check` clean.
-3. Finish spec synchronization in the two active spec files.
-4. Run focused verification:
-
-```bash
-bash scripts/test.sh tests/test_structure_topology.py::test_apply_document_map_topology_layout_confirms_explicit_authority_across_mixed_heading_tiers -q
-bash scripts/test.sh tests/test_preparation.py::test_apply_prepared_snapshot_fields_backfills_layout_signals_context_when_enabled_runtime_config_present -q
-bash scripts/test.sh tests/test_real_document_validation_corpus.py::test_build_preparation_diagnostic_defaults_includes_layout_signals_event_context -q
-bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-chapter-region-core
-```
-
-5. If fixtures changed, run the fixture-lock test(s) in `tests/test_real_document_validation_corpus.py`.
+1. Keep this plan aligned with the current reviewer-safe drift classification.
+2. Do not refresh tracked fixtures while the earliest saved divergence remains only localized to the pre-projection SDK-native `to_json()` boundary without an accepted explanation.
+3. Decide explicitly whether any workstream truly requires a transport-closest slice below `to_json()` to separate upstream payload drift from SDK serialization drift.
+4. If no deeper split is required, continue with minimal doc/spec synchronization only.
+5. If a deeper split is explicitly required, take one smallest transport-closest slice below `to_json()` and avoid widening observability automatically.
 
 ### Next implementation tasks after hygiene
 
@@ -451,11 +479,11 @@ The structure-recognition remediation can be called complete when:
 
 ## 10. Recommended Next Action
 
-The next safest step is Workstream A plus B:
+The next safest step is a reviewer-grade status sync, not an automatic implementation sprint:
 
-1. update chapter-region fixture trio from the accepted live diagnostic;
-2. clean whitespace/EOL issues;
-3. finish spec synchronization;
-4. rerun focused fixture and chapter-region diagnostics.
+1. record that the earliest saved divergence boundary is now the pre-projection SDK-native `to_json()` boundary;
+2. record that `_project_provider_native_response(...)` and traversal/normalize are ruled out as the earliest sources;
+3. keep fixture refresh blocked;
+4. only take a transport-closest slice below `to_json()` if the plan explicitly needs wire-level vs SDK-serialization separation.
 
-Only after that should implementation move deeper into Workstream C and D for complete structure-aware gate migration and markdown structural normalizer retirement.
+Only after that decision should work resume on fixture refresh, deeper observability, or broader implementation workstreams.

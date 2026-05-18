@@ -321,6 +321,35 @@ def _serialize_recovered_heading_entries(entries: Sequence[object], *, limit: in
     return serialized
 
 
+def _has_source_backed_entry_authority(assembly_entries: Sequence[object]) -> bool:
+    return any(
+        bool(getattr(entry, "from_registry", False)) and not bool(getattr(entry, "used_fallback", False))
+        for entry in assembly_entries
+    )
+
+
+def _resolve_false_fragment_heading_gate_samples(
+    *,
+    raw_samples: Sequence[object],
+    entry_samples: Sequence[object],
+    source_backed_entry_authority: bool,
+) -> tuple[list[object], str]:
+    if source_backed_entry_authority:
+        return list(entry_samples), "entry_assembly"
+    return list(raw_samples), "legacy_markdown"
+
+
+def _resolve_list_fragment_regression_gate_samples(
+    *,
+    raw_samples: Sequence[object],
+    source_backed_entry_authority: bool,
+    topology_projection_supported: bool,
+) -> tuple[list[object], str]:
+    if source_backed_entry_authority and topology_projection_supported:
+        return [], "topology_projection"
+    return list(raw_samples), "legacy_markdown"
+
+
 def _build_translation_quality_report(
     *,
     context: Any,
@@ -342,18 +371,11 @@ def _build_translation_quality_report(
     bullet_heading_count = len(bullet_heading_samples)
     assembly_entries = tuple(getattr(assembly_result, "entries", ()) or ())
     assembly_uses_fallback = any(bool(getattr(entry, "used_fallback", False)) for entry in assembly_entries)
+    source_backed_entry_authority = _has_source_backed_entry_authority(assembly_entries) and not assembly_uses_fallback
     entry_false_fragment_heading_samples = collect_false_fragment_heading_samples_from_entries(assembly_entries) if assembly_entries else []
     raw_false_fragment_heading_samples = collect_false_fragment_heading_samples(final_markdown)
-    false_fragment_heading_samples = raw_false_fragment_heading_samples
-    if assembly_entries and not assembly_uses_fallback:
-        false_fragment_heading_samples = entry_false_fragment_heading_samples
-    if not false_fragment_heading_samples and any(
-        getattr(sample, "reason", "") == "suspicious_heading_repetition_present"
-        for sample in raw_false_fragment_heading_samples
-    ):
-        false_fragment_heading_samples = raw_false_fragment_heading_samples
     residual_bullet_glyph_samples = collect_residual_bullet_glyph_samples(final_markdown)
-    list_fragment_regression_samples = collect_list_fragment_regression_samples(final_markdown)
+    raw_list_fragment_regression_samples = collect_list_fragment_regression_samples(final_markdown)
     mixed_script_samples = collect_mixed_script_samples(final_markdown)
     recovered_heading_entries = collect_recovered_heading_entries(assembly_entries) if assembly_entries and not assembly_uses_fallback else []
     translation_domain = str(getattr(context, "translation_domain", "") or context.app_config.get("translation_domain", "general") or "general")
@@ -362,18 +384,28 @@ def _build_translation_quality_report(
         if translation_domain.strip().lower() == "theology"
         else []
     )
-    suspicious_heading_repetition_samples = [
-        sample for sample in false_fragment_heading_samples if getattr(sample, "reason", "") == "suspicious_heading_repetition_present"
-    ]
-    scripture_reference_heading_samples = [
-        sample for sample in false_fragment_heading_samples if getattr(sample, "reason", "") == "scripture_reference_heading_present"
-    ]
     authority_fields = _derive_translation_quality_authority_fields(
         context=context,
         final_markdown=final_markdown,
         formatting_payload=latest_payload if isinstance(latest_payload, Mapping) else None,
         assembly_result=assembly_result,
     )
+    false_fragment_heading_samples, false_fragment_heading_gate_source = _resolve_false_fragment_heading_gate_samples(
+        raw_samples=raw_false_fragment_heading_samples,
+        entry_samples=entry_false_fragment_heading_samples,
+        source_backed_entry_authority=source_backed_entry_authority,
+    )
+    list_fragment_regression_samples, list_fragment_regression_gate_source = _resolve_list_fragment_regression_gate_samples(
+        raw_samples=raw_list_fragment_regression_samples,
+        source_backed_entry_authority=source_backed_entry_authority,
+        topology_projection_supported=bool(authority_fields.get("topology_projection_supported", False)),
+    )
+    suspicious_heading_repetition_samples = [
+        sample for sample in false_fragment_heading_samples if getattr(sample, "reason", "") == "suspicious_heading_repetition_present"
+    ]
+    scripture_reference_heading_samples = [
+        sample for sample in false_fragment_heading_samples if getattr(sample, "reason", "") == "scripture_reference_heading_present"
+    ]
     toc_body_concat_detected = bool(authority_fields.get("toc_body_concat_detected", False))
     source_paragraph_count = latest_payload.get("source_count") if isinstance(latest_payload, Mapping) else None
     output_paragraph_count = latest_payload.get("target_count") if isinstance(latest_payload, Mapping) else None
@@ -474,12 +506,35 @@ def _build_translation_quality_report(
         "structure_unit_unmapped_target_count": authority_fields.get("structure_unit_unmapped_target_count"),
         "unmapped_source_count_basis": authority_fields.get("unmapped_source_count_basis", "legacy_paragraph"),
         "unmapped_target_count_basis": authority_fields.get("unmapped_target_count_basis", "legacy_paragraph"),
+        "unit_unmapped_source_gate_source": authority_fields.get(
+            "unit_unmapped_source_gate_source",
+            authority_fields.get("unmapped_source_count_basis", "legacy_paragraph"),
+        ),
+        "unit_unmapped_target_gate_source": authority_fields.get(
+            "unit_unmapped_target_gate_source",
+            authority_fields.get("unmapped_target_count_basis", "legacy_paragraph"),
+        ),
+        "document_map_toc_detected": authority_fields.get("document_map_toc_detected", False),
+        "document_map_toc_region_count": authority_fields.get("document_map_toc_region_count", 0),
+        "topology_toc_entry_count": authority_fields.get("topology_toc_entry_count", 0),
+        "topology_split_compound_toc_operation_count": authority_fields.get(
+            "topology_split_compound_toc_operation_count",
+            0,
+        ),
+        "topology_merge_heading_operation_count": authority_fields.get("topology_merge_heading_operation_count", 0),
+        "document_map_compound_toc_split_hint_count": authority_fields.get(
+            "document_map_compound_toc_split_hint_count",
+            0,
+        ),
         "accepted_merged_sources_count": len(accepted_merged_sources) if isinstance(accepted_merged_sources, list) else 0,
         "caption_heading_conflicts_count": len(caption_heading_conflicts) if isinstance(caption_heading_conflicts, list) else 0,
         "bullet_heading_count": bullet_heading_count,
         "bullet_heading_samples": _serialize_quality_samples(bullet_heading_samples),
         "false_fragment_heading_count": len(false_fragment_heading_samples),
         "false_fragment_heading_samples": _serialize_quality_samples(false_fragment_heading_samples),
+        "false_fragment_heading_gate_source": false_fragment_heading_gate_source,
+        "raw_false_fragment_heading_count": len(raw_false_fragment_heading_samples),
+        "raw_false_fragment_heading_samples": _serialize_quality_samples(raw_false_fragment_heading_samples),
         "suspicious_heading_repetition_count": len(suspicious_heading_repetition_samples),
         "suspicious_heading_repetition_samples": _serialize_quality_samples(suspicious_heading_repetition_samples),
         "scripture_reference_heading_count": len(scripture_reference_heading_samples),
@@ -488,6 +543,9 @@ def _build_translation_quality_report(
         "residual_bullet_glyph_samples": _serialize_quality_samples(residual_bullet_glyph_samples),
         "list_fragment_regression_count": len(list_fragment_regression_samples),
         "list_fragment_regression_samples": _serialize_quality_samples(list_fragment_regression_samples),
+        "list_fragment_regression_gate_source": list_fragment_regression_gate_source,
+        "raw_list_fragment_regression_count": len(raw_list_fragment_regression_samples),
+        "raw_list_fragment_regression_samples": _serialize_quality_samples(raw_list_fragment_regression_samples),
         "mixed_script_term_count": len(mixed_script_samples),
         "mixed_script_term_samples": _serialize_quality_samples(mixed_script_samples),
         "theology_style_deterministic_issue_count": len(theology_style_samples),
@@ -539,12 +597,21 @@ def _derive_translation_quality_authority_fields(
         "toc_body_concat_markdown_detected": markdown_detected,
         "toc_body_concat_structure_detected": False,
         "toc_body_concat_gate_source": "legacy_markdown",
+        "topology_projection_supported": False,
+        "document_map_toc_detected": False,
+        "document_map_toc_region_count": 0,
+        "topology_toc_entry_count": 0,
+        "topology_split_compound_toc_operation_count": 0,
+        "topology_merge_heading_operation_count": 0,
+        "document_map_compound_toc_split_hint_count": 0,
         "raw_unmapped_source_paragraph_count": raw_unmapped_source_count,
         "raw_unmapped_target_paragraph_count": raw_unmapped_target_count,
         "structure_unit_unmapped_source_count": raw_unmapped_source_count,
         "structure_unit_unmapped_target_count": raw_unmapped_target_count,
         "unmapped_source_count_basis": "legacy_paragraph",
         "unmapped_target_count_basis": "legacy_paragraph",
+        "unit_unmapped_source_gate_source": "legacy_paragraph",
+        "unit_unmapped_target_gate_source": "legacy_paragraph",
     }
     document_map = getattr(context, "document_map", None)
     topology_projection = getattr(context, "document_topology_projection", None)
@@ -569,9 +636,24 @@ def _derive_translation_quality_authority_fields(
                 "toc_body_concat_markdown_detected",
                 "toc_body_concat_structure_detected",
                 "toc_body_concat_gate_source",
+                "topology_split_compound_toc_operation_count",
+                "topology_merge_heading_operation_count",
+                "document_map_compound_toc_split_hint_count",
             }
         }
     )
+    fields["document_map_toc_detected"] = bool(
+        structural_validation_runtime._has_high_confidence_bounded_document_map_toc_region(document_map)
+        or structural_validation_runtime._count_document_map_anchor_roles(document_map, role="toc_header")
+        or structural_validation_runtime._count_document_map_anchor_roles(document_map, role="toc_entry")
+    )
+    fields["topology_projection_supported"] = bool(
+        structural_validation_runtime._projection_has_units_or_operations(topology_projection)
+    )
+    fields["document_map_toc_region_count"] = (
+        1 if structural_validation_runtime._has_high_confidence_bounded_document_map_toc_region(document_map) else 0
+    )
+    fields["topology_toc_entry_count"] = structural_validation_runtime._count_topology_toc_entry_units(topology_projection)
     generated_paragraph_registry = None
     if assembly_result is not None:
         assembly_entries = tuple(getattr(assembly_result, "entries", ()) or ())
@@ -596,6 +678,8 @@ def _derive_translation_quality_authority_fields(
                 "structure_unit_unmapped_target_count",
                 "unmapped_source_count_basis",
                 "unmapped_target_count_basis",
+                "unit_unmapped_source_gate_source",
+                "unit_unmapped_target_gate_source",
             }
         }
     )

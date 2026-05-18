@@ -194,9 +194,12 @@ bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && python3 scripts/_list_lo
 | `.run/restart_*`, `.run/completed_*` | TTL 12 часов, cleanup при старте приложения | `restart_store.cleanup_stale_persisted_sources`, вызов из `app._schedule_stale_persisted_sources_cleanup` |
 | `.run/project.log` | Size-rollover на PowerShell-стороне (`Invoke-ProjectLogRollover`), backupCount=5, порог `256 KiB` | `scripts/_shared.ps1` |
 | `.run/streamlit.log` | Size-rollover в WSL control-скрипте, backupCount=5, порог `256 KiB`, check каждые 30s | `scripts/project-control-wsl.sh :: rotate_streamlit_log_if_needed` |
-| stale ad-hoc root файлы (`full_pytest_*.txt`, `wrapper-*.{out,exit}`, `min*.ps1`, `shared-fragment.ps1`, …) | Ручная очистка whitelisted patterns старше `--min-age-days` (по умолчанию 14) | `scripts/clean-stale-run-artifacts.sh` (`--apply` чтобы выполнить) |
+| stale ad-hoc root файлы (`full_pytest_*.txt`, `wrapper-*.{out,exit}`, `min*.ps1`, `shared-fragment.ps1`, …) | Legacy debt only. Ручная очистка whitelisted patterns старше `--min-age-days` (по умолчанию 14) | `scripts/clean-stale-run-artifacts.sh` (`--apply` чтобы выполнить) |
+| `.run/manual_investigations/<topic>/*` | Canonical ignored area for manual local investigation evidence and ad-hoc debug snapshots. No runtime pruning guarantee; owner is the human/agent that created the evidence. | Manual placement under `.run/`; migrate from repo root instead of leaving files in workspace root |
 
 Все эти механики трогают строго свои файлы и не ходят в `tests/artifacts/...`.
+
+Root workspace is not an artifact drop zone. Runtime/debug/manual investigation artifacts must live either under a specialized ignored `.run/<family>/...` directory or under `.run/manual_investigations/<topic>/...`. Accepted versioned regression fixtures live only under `tests/artifacts/...`; do not leave diagnostic JSON/TXT/PY outputs in the repo root and do not legitimize new root clutter by adding more root-level ignore patterns.
 
 Политики per-family зафиксированы как константы в `runtime_artifact_retention.py` — это **единственный source of truth** для TTL/count. Writers импортируют оттуда нужную пару значений и вызывают `prune_artifact_dir(target_dir=..., max_age_seconds=..., max_count=...)` сразу после записи нового файла. Pruner является synchronous, filesystem-only, no-op для отсутствующей директории.
 
@@ -226,6 +229,13 @@ bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && python3 scripts/_list_lo
 6. Добавить unit-тест на retention (pruning по age, по count, preservation of newest). Шаблон тестов — `tests/test_runtime_artifact_retention.py`.
 7. Не трогать `tests/artifacts/...` из runtime-кода. Runtime cleanup действует только на `.run/`.
 8. Если артефакт-семья генерируется только тест-сценариями, а не production-путём, добавлять её в `scripts/clean-stale-run-artifacts.sh` whitelisted patterns, а не в runtime pruner.
+
+Дополнительные правила размещения:
+
+1. Repo root не использовать как drop zone для diagnostic JSON/TXT/PY artifacts, manual comparison scripts или investigation snapshots.
+2. Если локальное расследование требует сохранить evidence, переносить его в `.run/manual_investigations/<topic>/...`, а не оставлять в корне workspace.
+3. Если артефакт стал намеренно versioned regression fixture, он должен жить только в `tests/artifacts/...`; не держать accepted fixtures в корне и не маскировать их root-level ignore rules.
+4. Если для новой artifact family нужен долгоживущий ignored path, сначала выбрать специализированную `.run/<family>/` директорию и описать её cleanup/retention story в этом документе.
 
 ### 5.5 Разграничение persisted source и итогового output
 

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from functools import lru_cache
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+import hashlib
 import logging
 import math
 import json
@@ -11,14 +12,20 @@ import re
 import time
 from typing import Any, Callable, Protocol, cast
 
-from docxaicorrector.core.constants import PROMPTS_DIR
+from docxaicorrector.core.constants import PROMPTS_DIR, RUN_DIR
+from docxaicorrector.core.logger import log_event
 from docxaicorrector.generation._generation import normalize_model_output
 from docxaicorrector.core.models import DocumentMap, DocumentTopologyProjection, ParagraphClassification, ParagraphDescriptor, ParagraphUnit, StructuralUnit, StructureFallbackMetadata, StructureFallbackStats, StructureMap
-from docxaicorrector.generation.openai_response_utils import collect_response_text_traversal
+from docxaicorrector.generation.openai_response_utils import collect_response_text_traversal, read_response_field
+from docxaicorrector.runtime.artifact_retention import STRUCTURE_MAPS_MAX_AGE_SECONDS, STRUCTURE_MAPS_MAX_COUNT, prune_artifact_dir
 from docxaicorrector.structure._responses_timeout import call_responses_with_hard_timeout
 
 
 SYSTEM_PROMPT_PATH = PROMPTS_DIR / "structure_recognition_system.txt"
+_STRUCTURE_MAP_STAGE2_INTERNAL_DEBUG_DIR = RUN_DIR / "structure_maps_stage2_internal"
+_STRUCTURE_MAP_STAGE2_RAW_WINDOW_DEBUG_DIR = RUN_DIR / "structure_maps_stage2_raw_window"
+_STRUCTURE_MAP_STAGE2_PROVIDER_NATIVE_DEBUG_DIR = RUN_DIR / "structure_maps_stage2_provider_native"
+_STRUCTURE_MAP_STAGE2_PRE_PROJECTION_DEBUG_DIR = RUN_DIR / "structure_maps_stage2_pre_projection"
 _LOGGER = logging.getLogger(__name__)
 _PIPELINE_BODY_STRUCTURAL_ROLES = {"epigraph", "attribution", "toc_entry", "toc_header", "dedication"}
 _VALID_AI_ROLES = {"heading", "body", "caption", "epigraph", "attribution", "toc_entry", "toc_header", "dedication", "list"}
@@ -31,6 +38,8 @@ _DESCRIPTOR_PREVIEW_CHARS = 600
 _MIN_TOKEN_BUDGET_PREVIEW_CHARS = 120
 STRUCTURE_RECOGNITION_PROMPT_VERSION = 3
 STRUCTURE_RECOGNITION_DESCRIPTOR_SCHEMA_VERSION = 2
+_PRE_PROJECTION_SERIALIZED_PREVIEW_CHARS = 2000
+_PRE_PROJECTION_SERIALIZED_PAYLOAD_MAX_CHARS = 50000
 _TIMEOUT_ERROR_NAMES = {"APITimeoutError", "TimeoutError"}
 _SCRIPTURE_REFERENCE_PATTERN = re.compile(
     r"\b(?:[1-3]\s*)?(?:Genesis|Exodus|Leviticus|Numbers|Deuteronomy|Joshua|Judges|Ruth|"
@@ -126,6 +135,365 @@ def _emit_structure_progress(
             exc_info=True,
         )
         return
+
+
+def _write_stage2_internal_debug_artifact(
+    *,
+    cache_key: str,
+    model: str,
+    total_windows_requested: int,
+    total_tokens_used: int,
+    fallback_stats: StructureFallbackStats,
+    resolved_windows_payload: Sequence[dict[str, object]],
+) -> str:
+    _STRUCTURE_MAP_STAGE2_INTERNAL_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    artifact_path = _STRUCTURE_MAP_STAGE2_INTERNAL_DEBUG_DIR / f"{cache_key}.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "cache_key": cache_key,
+                "stage": "structure_recognition_stage2_internal_v1",
+                "model": model,
+                "prompt_version": STRUCTURE_RECOGNITION_PROMPT_VERSION,
+                "descriptor_schema_version": STRUCTURE_RECOGNITION_DESCRIPTOR_SCHEMA_VERSION,
+                "total_windows_requested": total_windows_requested,
+                "resolved_window_count": len(resolved_windows_payload),
+                "total_tokens_used": total_tokens_used,
+                "fallback_stats": fallback_stats.as_metrics(),
+                "resolved_windows": list(resolved_windows_payload),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    prune_artifact_dir(
+        target_dir=_STRUCTURE_MAP_STAGE2_INTERNAL_DEBUG_DIR,
+        max_age_seconds=STRUCTURE_MAPS_MAX_AGE_SECONDS,
+        max_count=STRUCTURE_MAPS_MAX_COUNT,
+    )
+    return str(artifact_path)
+
+
+def _write_stage2_raw_window_debug_artifact(
+    *,
+    cache_key: str,
+    model: str,
+    raw_windows_payload: Sequence[dict[str, object]],
+) -> str:
+    _STRUCTURE_MAP_STAGE2_RAW_WINDOW_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    artifact_path = _STRUCTURE_MAP_STAGE2_RAW_WINDOW_DEBUG_DIR / f"{cache_key}.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "cache_key": cache_key,
+                "stage": "structure_recognition_stage2_raw_window_v1",
+                "model": model,
+                "prompt_version": STRUCTURE_RECOGNITION_PROMPT_VERSION,
+                "descriptor_schema_version": STRUCTURE_RECOGNITION_DESCRIPTOR_SCHEMA_VERSION,
+                "raw_window_count": len(raw_windows_payload),
+                "raw_windows": list(raw_windows_payload),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    prune_artifact_dir(
+        target_dir=_STRUCTURE_MAP_STAGE2_RAW_WINDOW_DEBUG_DIR,
+        max_age_seconds=STRUCTURE_MAPS_MAX_AGE_SECONDS,
+        max_count=STRUCTURE_MAPS_MAX_COUNT,
+    )
+    return str(artifact_path)
+
+
+def _write_stage2_provider_native_debug_artifact(
+    *,
+    cache_key: str,
+    model: str,
+    provider_native_payload: Sequence[dict[str, object]],
+) -> str:
+    _STRUCTURE_MAP_STAGE2_PROVIDER_NATIVE_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    artifact_path = _STRUCTURE_MAP_STAGE2_PROVIDER_NATIVE_DEBUG_DIR / f"{cache_key}.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "cache_key": cache_key,
+                "stage": "structure_recognition_stage2_provider_native_v1",
+                "model": model,
+                "prompt_version": STRUCTURE_RECOGNITION_PROMPT_VERSION,
+                "descriptor_schema_version": STRUCTURE_RECOGNITION_DESCRIPTOR_SCHEMA_VERSION,
+                "provider_native_window_count": len(provider_native_payload),
+                "provider_native_windows": list(provider_native_payload),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    prune_artifact_dir(
+        target_dir=_STRUCTURE_MAP_STAGE2_PROVIDER_NATIVE_DEBUG_DIR,
+        max_age_seconds=STRUCTURE_MAPS_MAX_AGE_SECONDS,
+        max_count=STRUCTURE_MAPS_MAX_COUNT,
+    )
+    return str(artifact_path)
+
+
+def _write_stage2_pre_projection_debug_artifact(
+    *,
+    cache_key: str,
+    model: str,
+    pre_projection_payload: Sequence[dict[str, object]],
+) -> str:
+    _STRUCTURE_MAP_STAGE2_PRE_PROJECTION_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    artifact_path = _STRUCTURE_MAP_STAGE2_PRE_PROJECTION_DEBUG_DIR / f"{cache_key}.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "cache_key": cache_key,
+                "stage": "structure_recognition_stage2_pre_projection_v1",
+                "model": model,
+                "prompt_version": STRUCTURE_RECOGNITION_PROMPT_VERSION,
+                "descriptor_schema_version": STRUCTURE_RECOGNITION_DESCRIPTOR_SCHEMA_VERSION,
+                "pre_projection_window_count": len(pre_projection_payload),
+                "pre_projection_windows": list(pre_projection_payload),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    prune_artifact_dir(
+        target_dir=_STRUCTURE_MAP_STAGE2_PRE_PROJECTION_DEBUG_DIR,
+        max_age_seconds=STRUCTURE_MAPS_MAX_AGE_SECONDS,
+        max_count=STRUCTURE_MAPS_MAX_COUNT,
+    )
+    return str(artifact_path)
+
+
+def _try_response_native_dump(response: object) -> object | None:
+    model_dump = getattr(response, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return model_dump(mode="json")
+        except TypeError:
+            try:
+                return model_dump()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    to_dict = getattr(response, "to_dict", None)
+    if callable(to_dict):
+        try:
+            return to_dict()
+        except Exception:
+            pass
+
+    to_json = getattr(response, "to_json", None)
+    if callable(to_json):
+        try:
+            json_payload = to_json()
+        except Exception:
+            pass
+        else:
+            if isinstance(json_payload, str):
+                try:
+                    return json.loads(json_payload)
+                except Exception:
+                    return None
+
+    return None
+
+
+def _stable_json_text(payload: object) -> str:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _build_serialized_preview(serialized_text: str) -> tuple[str, str, int, bool]:
+    encoded = serialized_text.encode("utf-8")
+    return (
+        hashlib.sha256(encoded).hexdigest(),
+        serialized_text[:_PRE_PROJECTION_SERIALIZED_PREVIEW_CHARS],
+        len(serialized_text),
+        len(serialized_text) > _PRE_PROJECTION_SERIALIZED_PAYLOAD_MAX_CHARS,
+    )
+
+
+def _serialize_response_pre_projection(response: object) -> dict[str, object]:
+    to_json = getattr(response, "to_json", None)
+    if callable(to_json):
+        try:
+            serialized_text = to_json()
+        except Exception:
+            serialized_text = None
+        if isinstance(serialized_text, str):
+            native_hash, preview, char_count, truncated = _build_serialized_preview(serialized_text)
+            return {
+                "serialization_strategy": "to_json",
+                "native_serialized_hash": native_hash,
+                "native_serialized_preview": preview,
+                "native_serialized_char_count": char_count,
+                "native_serialized_payload": None if truncated else serialized_text,
+            }
+
+    model_dump = getattr(response, "model_dump", None)
+    if callable(model_dump):
+        try:
+            dumped_payload = model_dump(mode="json")
+        except TypeError:
+            try:
+                dumped_payload = model_dump()
+            except Exception:
+                dumped_payload = None
+        except Exception:
+            dumped_payload = None
+        if dumped_payload is not None:
+            safe_payload = _json_safe_projection(dumped_payload)
+            serialized_text = _stable_json_text(safe_payload)
+            native_hash, preview, char_count, truncated = _build_serialized_preview(serialized_text)
+            return {
+                "serialization_strategy": "model_dump",
+                "native_serialized_hash": native_hash,
+                "native_serialized_preview": preview,
+                "native_serialized_char_count": char_count,
+                "native_serialized_payload": None if truncated else safe_payload,
+            }
+
+    to_dict = getattr(response, "to_dict", None)
+    if callable(to_dict):
+        try:
+            dumped_payload = to_dict()
+        except Exception:
+            dumped_payload = None
+        if dumped_payload is not None:
+            safe_payload = _json_safe_projection(dumped_payload)
+            serialized_text = _stable_json_text(safe_payload)
+            native_hash, preview, char_count, truncated = _build_serialized_preview(serialized_text)
+            return {
+                "serialization_strategy": "to_dict",
+                "native_serialized_hash": native_hash,
+                "native_serialized_preview": preview,
+                "native_serialized_char_count": char_count,
+                "native_serialized_payload": None if truncated else safe_payload,
+            }
+
+    fallback_preview = repr(response)
+    native_hash, preview, char_count, _ = _build_serialized_preview(fallback_preview)
+    return {
+        "serialization_strategy": "fallback_repr",
+        "native_serialized_hash": native_hash,
+        "native_serialized_preview": preview,
+        "native_serialized_char_count": char_count,
+        "native_serialized_payload": None,
+        "native_serialization_unavailable": True,
+        "response_type": type(response).__name__,
+    }
+
+
+def _json_safe_projection(value: object) -> object:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe_projection(nested_value) for key, nested_value in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_json_safe_projection(item) for item in value]
+
+    native_dump = _try_response_native_dump(value)
+    if native_dump is not None:
+        return _json_safe_projection(native_dump)
+
+    if hasattr(value, "__dataclass_fields__"):
+        return {
+            str(key): _json_safe_projection(nested_value)
+            for key, nested_value in vars(value).items()
+            if not str(key).startswith("_")
+        }
+
+    return repr(value)
+
+
+def _project_provider_native_text_field(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    projected: dict[str, object] = {}
+    field_type = read_response_field(value, "type")
+    if field_type is not None:
+        projected["type"] = _json_safe_projection(field_type)
+    text_value = read_response_field(value, "value")
+    if text_value is None and isinstance(value, str):
+        text_value = value
+    if text_value is None:
+        text_value = read_response_field(value, "text")
+    if text_value is not None:
+        projected["value"] = _json_safe_projection(text_value)
+    annotations = read_response_field(value, "annotations")
+    if annotations is not None:
+        projected["annotations"] = _json_safe_projection(annotations)
+    return projected or None
+
+
+def _project_provider_native_output_item(value: object) -> dict[str, object]:
+    projected: dict[str, object] = {}
+    for field_name in ("id", "type", "role", "status"):
+        field_value = read_response_field(value, field_name)
+        if field_value is not None:
+            projected[field_name] = _json_safe_projection(field_value)
+
+    direct_text = _project_provider_native_text_field(read_response_field(value, "text"))
+    if direct_text is not None:
+        projected["text"] = direct_text
+
+    content_items = read_response_field(value, "content")
+    if content_items is not None and not isinstance(content_items, (str, bytes)) and isinstance(content_items, Iterable):
+        projected["content"] = [
+            {
+                key: nested_value
+                for key, nested_value in {
+                    "id": _json_safe_projection(read_response_field(content_item, "id")),
+                    "type": _json_safe_projection(read_response_field(content_item, "type")),
+                    "status": _json_safe_projection(read_response_field(content_item, "status")),
+                    "text": _project_provider_native_text_field(read_response_field(content_item, "text")),
+                }.items()
+                if nested_value is not None
+            }
+            for content_item in content_items
+        ]
+
+    return projected
+
+
+def _project_provider_native_response(response: object) -> dict[str, object]:
+    native_dump = _try_response_native_dump(response)
+    source = response if native_dump is None else native_dump
+    projected: dict[str, object] = {
+        "projection_strategy": "field_projection" if native_dump is None else "native_dump_projection",
+    }
+    for field_name in ("id", "status", "model"):
+        field_value = read_response_field(source, field_name)
+        if field_value is not None:
+            projected[field_name] = _json_safe_projection(field_value)
+
+    output_text = read_response_field(source, "output_text")
+    if output_text is not None:
+        projected["output_text"] = _json_safe_projection(output_text)
+
+    usage = read_response_field(source, "usage")
+    if usage is not None:
+        usage_projection = {
+            field_name: _json_safe_projection(read_response_field(usage, field_name))
+            for field_name in ("total_tokens", "input_tokens", "output_tokens")
+            if read_response_field(usage, field_name) is not None
+        }
+        if usage_projection:
+            projected["usage"] = usage_projection
+
+    output_items = read_response_field(source, "output")
+    if output_items is not None and not isinstance(output_items, (str, bytes)) and isinstance(output_items, Iterable):
+        projected["output"] = [_project_provider_native_output_item(output_item) for output_item in output_items]
+
+    return projected
 
 
 def _with_request_timeout(client: object, *, timeout: float) -> object:
@@ -449,6 +817,8 @@ def build_structure_map(
     split_fallback_max_depth: int = 3,
     split_fallback_max_expansions: int = 8,
     progress_callback: StructureProgressCallback | None = None,
+    save_debug_artifacts: bool = False,
+    artifact_cache_key: str | None = None,
 ) -> StructureMap:
     started_at = time.perf_counter()
     fallback_stats = StructureFallbackStats()
@@ -485,6 +855,10 @@ def build_structure_map(
 
     merged_classifications: dict[int, ParagraphClassification] = {}
     merged_fallback_metadata: dict[int, StructureFallbackMetadata] = {}
+    stage2_pre_projection_payloads: list[dict[str, object]] = []
+    stage2_provider_native_payloads: list[dict[str, object]] = []
+    stage2_raw_window_payloads: list[dict[str, object]] = []
+    stage2_internal_windows_payload: list[dict[str, object]] = []
     window_count = 0
     total_tokens_used = 0
     for window_index, window in enumerate(windows, start=1):
@@ -515,6 +889,9 @@ def build_structure_map(
                 split_fallback_max_depth=split_fallback_max_depth,
                 split_fallback_max_expansions=split_fallback_max_expansions,
                 fallback_budget=fallback_budget,
+                pre_projection_artifact_payloads=stage2_pre_projection_payloads,
+                provider_native_artifact_payloads=stage2_provider_native_payloads,
+                raw_window_artifact_payloads=stage2_raw_window_payloads,
             )
         except Exception:
             window_count += 1
@@ -532,12 +909,37 @@ def build_structure_map(
             continue
         window_count += len(resolved_windows)
         total_tokens_used += resolved_tokens
-        for resolved_entry in resolved_windows:
+        for resolved_window_ordinal, resolved_entry in enumerate(resolved_windows, start=1):
             if len(resolved_entry) == 2:
                 resolved_window, window_classifications = resolved_entry
                 window_fallback_metadata_by_index: dict[int, StructureFallbackMetadata] = {}
             else:
                 resolved_window, window_classifications, window_fallback_metadata_by_index = resolved_entry
+            stage2_internal_windows_payload.append(
+                {
+                    "source_window_index": window_index,
+                    "resolved_window_ordinal": resolved_window_ordinal,
+                    "logical_indexes": [descriptor.index for descriptor in resolved_window],
+                    "classifications": [
+                        {
+                            "index": classification.index,
+                            "role": classification.role,
+                            "heading_level": classification.heading_level,
+                            "confidence": classification.confidence,
+                        }
+                        for classification in window_classifications
+                    ],
+                    "fallback_metadata": [
+                        {
+                            "index": logical_index,
+                            "source": metadata.source,
+                            "fallback_depth": metadata.fallback_depth,
+                            "capped": bool(metadata.capped),
+                        }
+                        for logical_index, metadata in sorted(window_fallback_metadata_by_index.items())
+                    ],
+                }
+            )
             _merge_window_classifications(
                 merged_classifications,
                 window_classifications,
@@ -556,6 +958,94 @@ def build_structure_map(
                 descriptor_count=len(window),
             ),
         )
+    if save_debug_artifacts and artifact_cache_key:
+        try:
+            artifact_path = _write_stage2_pre_projection_debug_artifact(
+                cache_key=artifact_cache_key,
+                model=model,
+                pre_projection_payload=stage2_pre_projection_payloads,
+            )
+            log_event(
+                logging.INFO,
+                "structure_recognition_stage2_pre_projection_artifact_saved",
+                "Сохранён pre-projection Stage 2 artifact распознанной структуры.",
+                artifact_path=artifact_path,
+                pre_projection_window_count=len(stage2_pre_projection_payloads),
+            )
+        except Exception as exc:
+            log_event(
+                logging.WARNING,
+                "structure_recognition_stage2_pre_projection_artifact_save_failed",
+                "Не удалось сохранить pre-projection Stage 2 artifact распознанной структуры.",
+                error_message=str(exc),
+            )
+    if save_debug_artifacts and artifact_cache_key:
+        try:
+            artifact_path = _write_stage2_provider_native_debug_artifact(
+                cache_key=artifact_cache_key,
+                model=model,
+                provider_native_payload=stage2_provider_native_payloads,
+            )
+            log_event(
+                logging.INFO,
+                "structure_recognition_stage2_provider_native_artifact_saved",
+                "Сохранён provider-native Stage 2 artifact распознанной структуры.",
+                artifact_path=artifact_path,
+                provider_native_window_count=len(stage2_provider_native_payloads),
+            )
+        except Exception as exc:
+            log_event(
+                logging.WARNING,
+                "structure_recognition_stage2_provider_native_artifact_save_failed",
+                "Не удалось сохранить provider-native Stage 2 artifact распознанной структуры.",
+                error_message=str(exc),
+            )
+    if save_debug_artifacts and artifact_cache_key:
+        try:
+            artifact_path = _write_stage2_raw_window_debug_artifact(
+                cache_key=artifact_cache_key,
+                model=model,
+                raw_windows_payload=stage2_raw_window_payloads,
+            )
+            log_event(
+                logging.INFO,
+                "structure_recognition_stage2_raw_window_artifact_saved",
+                "Сохранён raw-window Stage 2 artifact распознанной структуры.",
+                artifact_path=artifact_path,
+                raw_window_count=len(stage2_raw_window_payloads),
+            )
+        except Exception as exc:
+            log_event(
+                logging.WARNING,
+                "structure_recognition_stage2_raw_window_artifact_save_failed",
+                "Не удалось сохранить raw-window Stage 2 artifact распознанной структуры.",
+                error_message=str(exc),
+            )
+    if save_debug_artifacts and artifact_cache_key:
+        try:
+            artifact_path = _write_stage2_internal_debug_artifact(
+                cache_key=artifact_cache_key,
+                model=model,
+                total_windows_requested=total_windows,
+                total_tokens_used=total_tokens_used,
+                fallback_stats=fallback_stats,
+                resolved_windows_payload=stage2_internal_windows_payload,
+            )
+            log_event(
+                logging.INFO,
+                "structure_recognition_stage2_internal_artifact_saved",
+                "Сохранён internal Stage 2 artifact распознанной структуры.",
+                artifact_path=artifact_path,
+                total_windows_requested=total_windows,
+                resolved_window_count=len(stage2_internal_windows_payload),
+            )
+        except Exception as exc:
+            log_event(
+                logging.WARNING,
+                "structure_recognition_stage2_internal_artifact_save_failed",
+                "Не удалось сохранить internal Stage 2 artifact распознанной структуры.",
+                error_message=str(exc),
+            )
     _emit_structure_progress(
         progress_callback,
         StructureRecognitionProgress(
@@ -594,6 +1084,9 @@ def _classify_descriptor_window_with_fallback(
     split_fallback_max_depth: int = 3,
     split_fallback_max_expansions: int = 8,
     fallback_budget: _SplitFallbackBudget | None = None,
+    pre_projection_artifact_payloads: list[dict[str, object]] | None = None,
+    provider_native_artifact_payloads: list[dict[str, object]] | None = None,
+    raw_window_artifact_payloads: list[dict[str, object]] | None = None,
 ) -> tuple[list[tuple[list[ParagraphDescriptor], list[ParagraphClassification], dict[int, StructureFallbackMetadata]]], int]:
     descriptor_list = list(descriptors)
     try:
@@ -602,6 +1095,12 @@ def _classify_descriptor_window_with_fallback(
             model=model,
             descriptors=descriptor_list,
             timeout=timeout,
+            current_window=current_window,
+            attempt_source="primary" if fallback_depth == 0 else "split_fallback",
+            fallback_depth=fallback_depth,
+            pre_projection_artifact_payloads=pre_projection_artifact_payloads,
+            provider_native_artifact_payloads=provider_native_artifact_payloads,
+            raw_window_artifact_payloads=raw_window_artifact_payloads,
         )
         return [
             (
@@ -631,6 +1130,12 @@ def _classify_descriptor_window_with_fallback(
             model=model,
             descriptors=descriptor_list,
             timeout=retry_timeout,
+            current_window=current_window,
+            attempt_source="retry",
+            fallback_depth=fallback_depth,
+            pre_projection_artifact_payloads=pre_projection_artifact_payloads,
+            provider_native_artifact_payloads=provider_native_artifact_payloads,
+            raw_window_artifact_payloads=raw_window_artifact_payloads,
         )
         if fallback_stats is not None:
             fallback_stats.structure_timeout_retry_succeeded_count += 1
@@ -710,6 +1215,9 @@ def _classify_descriptor_window_with_fallback(
         split_fallback_max_depth=split_fallback_max_depth,
         split_fallback_max_expansions=split_fallback_max_expansions,
         fallback_budget=fallback_budget,
+        pre_projection_artifact_payloads=pre_projection_artifact_payloads,
+        provider_native_artifact_payloads=provider_native_artifact_payloads,
+        raw_window_artifact_payloads=raw_window_artifact_payloads,
     )
     right_windows, right_tokens = _classify_descriptor_window_with_fallback(
         client=client,
@@ -729,6 +1237,9 @@ def _classify_descriptor_window_with_fallback(
         split_fallback_max_depth=split_fallback_max_depth,
         split_fallback_max_expansions=split_fallback_max_expansions,
         fallback_budget=fallback_budget,
+        pre_projection_artifact_payloads=pre_projection_artifact_payloads,
+        provider_native_artifact_payloads=provider_native_artifact_payloads,
+        raw_window_artifact_payloads=raw_window_artifact_payloads,
     )
     return left_windows + right_windows, left_tokens + right_tokens
 
@@ -873,6 +1384,12 @@ def _classify_descriptor_window(
     model: str,
     descriptors: Sequence[ParagraphDescriptor],
     timeout: float,
+    current_window: int | None = None,
+    attempt_source: str = "primary",
+    fallback_depth: int = 0,
+    pre_projection_artifact_payloads: list[dict[str, object]] | None = None,
+    provider_native_artifact_payloads: list[dict[str, object]] | None = None,
+    raw_window_artifact_payloads: list[dict[str, object]] | None = None,
 ) -> tuple[list[ParagraphClassification], int]:
     system_prompt = _load_system_prompt()
     descriptor_payload = [descriptor.to_prompt_dict() for descriptor in descriptors]
@@ -897,13 +1414,51 @@ def _classify_descriptor_window(
         },
         timeout=timeout,
     )
+    usage = getattr(response, "usage", None)
+    total_tokens = int(getattr(usage, "total_tokens", 0) or 0)
+    if pre_projection_artifact_payloads is not None:
+        pre_projection_artifact_payloads.append(
+            {
+                "current_window": current_window,
+                "attempt_source": attempt_source,
+                "fallback_depth": fallback_depth,
+                "descriptor_indexes": [descriptor.index for descriptor in descriptors],
+                "descriptor_count": len(descriptors),
+                "total_tokens_used": total_tokens,
+                **_serialize_response_pre_projection(response),
+            }
+        )
+    if provider_native_artifact_payloads is not None:
+        provider_native_artifact_payloads.append(
+            {
+                "current_window": current_window,
+                "attempt_source": attempt_source,
+                "fallback_depth": fallback_depth,
+                "descriptor_indexes": [descriptor.index for descriptor in descriptors],
+                "descriptor_count": len(descriptors),
+                "total_tokens_used": total_tokens,
+                "provider_native_response": _project_provider_native_response(response),
+            }
+        )
     traversal = collect_response_text_traversal(
         response,
         unsupported_message="Structure recognition response used an unsupported text shape.",
     )
     content = normalize_model_output("\n".join(traversal.collected_texts) if traversal.collected_texts else (traversal.raw_output_text or ""))
-    usage = getattr(response, "usage", None)
-    total_tokens = int(getattr(usage, "total_tokens", 0) or 0)
+    if raw_window_artifact_payloads is not None:
+        raw_window_artifact_payloads.append(
+            {
+                "current_window": current_window,
+                "attempt_source": attempt_source,
+                "fallback_depth": fallback_depth,
+                "descriptor_indexes": [descriptor.index for descriptor in descriptors],
+                "descriptor_count": len(descriptors),
+                "total_tokens_used": total_tokens,
+                "collected_texts": list(traversal.collected_texts),
+                "raw_output_text": traversal.raw_output_text,
+                "normalized_content": content,
+            }
+        )
     return _parse_classification_payload(content), total_tokens
 
 

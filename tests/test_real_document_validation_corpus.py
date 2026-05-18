@@ -3085,3 +3085,183 @@ def test_structural_passthrough_failure_derives_detailed_snapshot_reasons_from_p
     assert snapshot["structure_ai_attempted"] is True
     assert snapshot["ai_classified_count"] == 0
     assert snapshot["ai_heading_count"] == 0
+
+
+def test_structural_passthrough_prefers_saved_quality_report_authority_fields(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project-root"
+    source_dir = project_root / "tests" / "sources"
+    source_dir.mkdir(parents=True)
+    source_path = source_dir / "sample.pdf"
+    source_path.write_bytes(b"%PDF-1.4 sample")
+
+    quality_report_path = project_root / ".run" / "quality_reports" / "saved_quality_report.json"
+    quality_report_path.parent.mkdir(parents=True, exist_ok=True)
+    quality_report_path.write_text(
+        json.dumps(
+            {
+                "quality_status": "pass",
+                "gate_reasons": [],
+                "false_fragment_heading_count": 0,
+                "false_fragment_heading_gate_source": "entry_assembly",
+                "raw_false_fragment_heading_count": 2,
+                "scripture_reference_heading_count": 1,
+                "suspicious_heading_repetition_count": 0,
+                "residual_bullet_glyph_count": 0,
+                "list_fragment_regression_count": 0,
+                "list_fragment_regression_gate_source": "topology_projection",
+                "raw_list_fragment_regression_count": 1,
+                "toc_body_concat_detected": False,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    document_profile = SimpleNamespace(id="end-times-pdf-core", resolved_source_path=lambda project_root=None: source_path)
+    run_profile = SimpleNamespace(id="ui-parity-pdf-structural-recovery", image_mode="safe")
+
+    class _StructureRepairReport:
+        repaired_bullet_items = 4
+        repaired_numbered_items = 5
+        bounded_toc_regions = 1
+        toc_body_boundary_repairs = 1
+        heading_candidates_from_toc = 7
+        remaining_isolated_marker_count = 0
+
+    def _resolution_payload(**values):
+        return SimpleNamespace(**values, to_dict=lambda: dict(values))
+
+    source_paragraphs = [
+        ParagraphUnit(text="Contents", role="body", structural_role="toc_header", source_index=0),
+        ParagraphUnit(text="Chapter 1........ 12", role="body", structural_role="toc_entry", source_index=1),
+        ParagraphUnit(text="Introduction", role="heading", structural_role="body", heading_level=1, source_index=2),
+    ]
+
+    monkeypatch.setattr(real_document_validation_structural, "PROJECT_ROOT", Path(project_root))
+    monkeypatch.setattr(real_document_validation_structural, "load_app_config", lambda: object())
+    monkeypatch.setattr(
+        real_document_validation_structural,
+        "resolve_runtime_resolution",
+        lambda app_config, run_profile: SimpleNamespace(
+            effective=_resolution_payload(
+                chunk_size=6000,
+                image_mode="safe",
+                keep_all_image_variants=False,
+                model="gpt-5.4",
+                max_retries=1,
+                translation_domain="theology",
+            ),
+            ui_defaults=_resolution_payload(image_mode="safe"),
+        ),
+    )
+    monkeypatch.setattr(
+        real_document_validation_structural,
+        "apply_runtime_resolution_to_app_config",
+        lambda app_config, runtime_resolution: {"translation_domain_default": "theology"},
+    )
+    monkeypatch.setattr(
+        real_document_validation_structural,
+        "build_validation_runtime_config",
+        lambda runtime_resolution: {
+            "effective": runtime_resolution.effective.to_dict(),
+            "ui_defaults": runtime_resolution.ui_defaults.to_dict(),
+        },
+    )
+    monkeypatch.setattr(
+        real_document_validation_structural.processing_runtime,
+        "normalize_uploaded_document",
+        lambda **kwargs: SimpleNamespace(content_bytes=b"PK\x03\x04normalized"),
+    )
+    monkeypatch.setattr(
+        real_document_validation_structural,
+        "extract_document_content_with_normalization_reports",
+        lambda uploaded_file: (
+            source_paragraphs,
+            [],
+            ParagraphBoundaryNormalizationReport(0, 0, 0, 0),
+            [],
+            RelationNormalizationReport(1, {"toc_region": 1}, 0),
+            _cleanup_report(),
+            _StructureRepairReport(),
+        ),
+    )
+    monkeypatch.setattr(real_document_validation_structural, "_build_extraction_checks", lambda document_profile, metrics: [])
+    monkeypatch.setattr(real_document_validation_structural, "_build_structural_checks", lambda **kwargs: [])
+
+    def _run_prepared_background_document(**kwargs):
+        runtime = kwargs["runtime"]
+        runtime["state"]["latest_docx_bytes"] = b"PK\x03\x04output"
+        runtime["state"]["latest_markdown"] = (
+            "Иисус постоянно говорит о том, как важно распознавать знамения.\n\n"
+            "## Великую скорбь\n\n"
+            "они могли устоять до конца.\n\n"
+            "Поразительно, но все петли следуют одной и той же схеме: 1.\n"
+            "Духовные существа восстают против Бога."
+        )
+        return "succeeded", SimpleNamespace(
+            uploaded_file_bytes=b"PK\x03\x04normalized-source",
+            source_text="text",
+            paragraphs=source_paragraphs,
+            image_assets=[],
+            jobs=[{"job_kind": "llm"}],
+        )
+
+    monkeypatch.setattr(
+        real_document_validation_structural,
+        "_build_validation_processing_service",
+        lambda event_log: SimpleNamespace(
+            run_prepared_background_document=lambda **kwargs: (
+                event_log.append(
+                    {
+                        "event_id": "structure_processing_outcome",
+                        "context": {
+                            "quality_gate_status": "pass",
+                            "quality_gate_reasons": [],
+                            "readiness_status": "ready",
+                        },
+                    }
+                ),
+                event_log.append(
+                    {
+                        "event_id": "block_plan_summary",
+                        "context": {
+                            "block_count": 3,
+                            "llm_block_count": 2,
+                            "passthrough_block_count": 1,
+                            "first_block_target_chars": [3891, 946, 935],
+                        },
+                    }
+                ),
+                event_log.append(
+                    {
+                        "event_id": "quality_report_saved",
+                        "context": {"artifact_path": ".run/quality_reports/saved_quality_report.json"},
+                    }
+                ),
+                _run_prepared_background_document(**kwargs),
+            )[-1]
+        ),
+    )
+
+    result = cast(
+        dict[str, Any],
+        run_structural_passthrough_validation(cast(Any, document_profile), cast(Any, run_profile)),
+    )
+
+    metrics = cast(dict[str, Any], result["metrics"])
+    snapshot = cast(dict[str, Any], result["preparation_diagnostic_snapshot"])
+
+    assert metrics["false_fragment_heading_count"] == 0
+    assert metrics["false_fragment_heading_gate_source"] == "entry_assembly"
+    assert metrics["raw_false_fragment_heading_count"] == 2
+    assert metrics["scripture_reference_heading_count"] == 1
+    assert metrics["list_fragment_regression_count"] == 0
+    assert metrics["list_fragment_regression_gate_source"] == "topology_projection"
+    assert metrics["raw_list_fragment_regression_count"] == 1
+    assert metrics["translation_quality_report_path"] == str(quality_report_path.resolve())
+    assert snapshot["false_fragment_heading_count"] == 0
+    assert snapshot["false_fragment_heading_gate_source"] == "entry_assembly"
+    assert snapshot["raw_false_fragment_heading_count"] == 2
+    assert snapshot["list_fragment_regression_count"] == 0
+    assert snapshot["list_fragment_regression_gate_source"] == "topology_projection"
+    assert snapshot["raw_list_fragment_regression_count"] == 1

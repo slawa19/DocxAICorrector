@@ -38,6 +38,28 @@ to correct global document topology.
 
 ## Verified Current-State Evidence
 
+### Status Addendum 2026-05-18
+
+The late-phase quality-report surface has moved one step closer to the intended
+authority boundary:
+
+- `toc_body_concat` and unmapped-threshold reporting already carried explicit
+  structure-aware gate provenance from the earlier Workstream C slice;
+- `false_fragment_heading_count` now uses explicit authoritative sourcing
+  (`entry_assembly` vs `legacy_markdown`) instead of silently treating raw
+  markdown as the only decisive signal;
+- `list_fragment_regression_count` now stays non-binding when topology
+  projection support and source-backed assembly authority are both present,
+  while raw markdown detections remain visible as advisory `raw_*` fields.
+- structural validation/reporting now defaults these touched metrics to
+  explicit `legacy_markdown` provenance and reuses the saved quality-report
+  authority fields when that artifact is present, instead of rebuilding the
+  adjacent report surface only from runtime markdown.
+
+This is still an intermediate migration state, not R3 completion: markdown
+cleanup remains in the runtime/display stack, and untouched call sites still
+need the same audit before the postprocessor layer can be considered retired.
+
 ### Markdown Postprocessor Stack
 
 The current dirty implementation imports and applies multiple output-level
@@ -674,6 +696,13 @@ Add explicit fields to the preparation diagnostic snapshot and gate report:
 ```
 
 This keeps observability while moving authority to topology-supported structure when sufficient evidence exists.
+
+Status addendum, 2026-05-18:
+
+- Runtime gate authority for `toc_body_concat` and unmapped thresholds is now aligned on the touched paths between structural validation and late-phase translation-quality reporting.
+- Preparation diagnostic snapshots and translation-quality reports now carry the same explicit topology-support provenance needed to explain `toc_body_concat_gate_source`, including bounded-TOC/topology support counts instead of only the final boolean gate fields.
+- Raw unmapped counts remain observable, while late-phase reporting now also carries explicit structure-unit basis/gate-source fields for the touched source/target unmapped counters.
+- This addendum does not claim universal R2 completion; broader gate migration and markdown-authority retirement outside the touched surfaces remain pending.
 
 ## R3: Markdown Postprocessor Retirement Plan
 

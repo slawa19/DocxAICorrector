@@ -1802,53 +1802,72 @@ def evaluate_lietaer_acceptance(
     )
 
     if translation_quality_report:
-        residual_gate_checks = (
-            (
-                "bullet_marker_headings_present",
-                _coerce_int(translation_quality_report.get("bullet_heading_count")) == 0,
-                {"bullet_heading_count": translation_quality_report.get("bullet_heading_count")},
-            ),
-            (
-                "false_fragment_headings_present",
-                _coerce_int(translation_quality_report.get("false_fragment_heading_count")) == 0,
-                {"false_fragment_heading_count": translation_quality_report.get("false_fragment_heading_count")},
-            ),
-            (
-                "residual_bullet_glyphs_present",
-                _coerce_int(translation_quality_report.get("residual_bullet_glyph_count")) == 0,
-                {"residual_bullet_glyph_count": translation_quality_report.get("residual_bullet_glyph_count")},
-            ),
-            (
-                "list_fragment_regressions_present",
-                _coerce_int(translation_quality_report.get("list_fragment_regression_count")) == 0,
-                {"list_fragment_regression_count": translation_quality_report.get("list_fragment_regression_count")},
-            ),
-            (
-                "mixed_script_terms_present",
-                _coerce_int(translation_quality_report.get("mixed_script_term_count")) == 0,
-                {"mixed_script_term_count": translation_quality_report.get("mixed_script_term_count")},
-            ),
-            (
-                "theology_style_deterministic_issues_present",
-                True,
-                {"theology_style_deterministic_issue_count": translation_quality_report.get("theology_style_deterministic_issue_count"), "failed_reason": "advisory_only"},
-            ),
-            (
-                "toc_body_concatenation_detected",
-                not bool(translation_quality_report.get("toc_body_concat_detected")),
-                _build_toc_body_concat_provenance_details(
-                    translation_quality_report=translation_quality_report,
-                ),
+        add_check(
+            "bullet_marker_headings_present",
+            _coerce_int(translation_quality_report.get("bullet_heading_count")) == 0,
+            bullet_heading_count=translation_quality_report.get("bullet_heading_count"),
+        )
+        add_check(
+            "false_fragment_headings_present",
+            _coerce_int(translation_quality_report.get("false_fragment_heading_count")) == 0,
+            false_fragment_heading_count=translation_quality_report.get("false_fragment_heading_count"),
+            false_fragment_heading_gate_source=translation_quality_report.get("false_fragment_heading_gate_source"),
+            raw_false_fragment_heading_count=translation_quality_report.get("raw_false_fragment_heading_count"),
+        )
+        add_check(
+            "residual_bullet_glyphs_present",
+            _coerce_int(translation_quality_report.get("residual_bullet_glyph_count")) == 0,
+            residual_bullet_glyph_count=translation_quality_report.get("residual_bullet_glyph_count"),
+        )
+        add_check(
+            "list_fragment_regressions_present",
+            _coerce_int(translation_quality_report.get("list_fragment_regression_count")) == 0,
+            list_fragment_regression_count=translation_quality_report.get("list_fragment_regression_count"),
+            list_fragment_regression_gate_source=translation_quality_report.get("list_fragment_regression_gate_source"),
+            raw_list_fragment_regression_count=translation_quality_report.get("raw_list_fragment_regression_count"),
+        )
+        add_check(
+            "mixed_script_terms_present",
+            _coerce_int(translation_quality_report.get("mixed_script_term_count")) == 0,
+            mixed_script_term_count=translation_quality_report.get("mixed_script_term_count"),
+        )
+        add_check(
+            "theology_style_deterministic_issues_present",
+            True,
+            theology_style_deterministic_issue_count=translation_quality_report.get("theology_style_deterministic_issue_count"),
+            failed_reason="advisory_only",
+        )
+        add_check(
+            "toc_body_concatenation_detected",
+            not bool(translation_quality_report.get("toc_body_concat_detected")),
+            **_build_toc_body_concat_provenance_details(
+                translation_quality_report=translation_quality_report,
             ),
         )
-        for check_name, passed, details in residual_gate_checks:
-            add_check(check_name, passed, **details)
     if require_no_toc_body_concat:
+        toc_body_concat_check = _build_acceptance_toc_body_concat_check(
+            preparation_diagnostic_snapshot=preparation_diagnostic_snapshot,
+            translation_quality_report=translation_quality_report,
+        )
         add_check(
-            **_build_acceptance_toc_body_concat_check(
-                preparation_diagnostic_snapshot=preparation_diagnostic_snapshot,
-                translation_quality_report=translation_quality_report,
-            )
+            str(toc_body_concat_check["name"]),
+            bool(toc_body_concat_check["passed"]),
+            toc_body_concat_detected=toc_body_concat_check.get("toc_body_concat_detected"),
+            toc_body_concat_markdown_detected=toc_body_concat_check.get("toc_body_concat_markdown_detected"),
+            toc_body_concat_structure_detected=toc_body_concat_check.get("toc_body_concat_structure_detected"),
+            toc_body_concat_gate_source=toc_body_concat_check.get("toc_body_concat_gate_source"),
+            structure_repair_toc_body_boundary_repairs=toc_body_concat_check.get(
+                "structure_repair_toc_body_boundary_repairs"
+            ),
+            effective_source_toc_region_count=toc_body_concat_check.get("effective_source_toc_region_count"),
+            document_map_toc_region_count=toc_body_concat_check.get("document_map_toc_region_count"),
+            topology_toc_entry_count=toc_body_concat_check.get("topology_toc_entry_count"),
+            topology_split_compound_toc_operation_count=toc_body_concat_check.get(
+                "topology_split_compound_toc_operation_count"
+            ),
+            document_map_compound_toc_split_hint_count=toc_body_concat_check.get(
+                "document_map_compound_toc_split_hint_count"
+            ),
         )
 
     if source_docx_bytes and output_docx_bytes:
