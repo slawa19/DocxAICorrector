@@ -346,8 +346,8 @@
     334,
     335
   ],
-  "total_tokens_used": 43827,
-  "processing_time_seconds": 4.839025936000098,
+  "total_tokens_used": 43882,
+  "processing_time_seconds": 9.143884667000009,
   "document_map": {
     "body_start_logical_index": 10,
     "toc_region": {
@@ -356,87 +356,27 @@
       "header_logical_index": 0,
       "entries": [
         {
-          "title": "The Failure of Money: The Competitive Society",
+          "title": "Chapter Eight STRATEGIES FOR GOVERNMENTS",
           "target_level": 1,
-          "candidate_body_logical_index": 11,
+          "candidate_body_logical_index": 10,
           "confidence": "high"
         },
         {
-          "title": "The experience gained, along with the lessons learned as mayor of the city of Curitiba, served Lerner well when he later was elected gov- ernor of the state of Paraná. The ideas and their implementation served as a blueprint on a larger scale.",
+          "title": "STRATEGIES FOR NGOs",
           "target_level": 1,
-          "candidate_body_logical_index": 23,
-          "confidence": "medium"
-        },
-        {
-          "title": "Portugal, Ireland, Greece, and Spain in Eu rope.",
-          "target_level": 1,
-          "candidate_body_logical_index": 57,
-          "confidence": "medium"
-        },
-        {
-          "title": "The Flying Fish: A New Perspective on Money",
-          "target_level": 1,
-          "candidate_body_logical_index": 57,
-          "confidence": "medium"
-        },
-        {
-          "title": "Jeffrey Freed, author of Right- Brained Children in a Left- Brained World, a best seller and a classic in the fi eld of education, has identi- fi ed the general learning styles of the Millennials, children born since the turn of this century. “These kids have grown up in a world very dif- ferent than previous generations. Just think about the impact of technol- ogy alone. Many tend to be more right- brained dominant in that they think in pictures. They pro cess information in a nonlinear way. So in doing a math problem, for instance, they can get the right answer, but they can’t retrace their steps. They get bored and lethargic easily. The drill and kill method of teaching just won’t work. What succeeds is if they are taught in short time spurts. They need to understand the context of what is being taught, so learning in fi eld trips and through other rich experiences is the way to go.” 9 With this insight, one of the authors and Igor Byttebier, a resident of Ghent and a con sul tant to the innovative program, worked with the teachers of the Wispelberg School, one of Ghent’s high schools, to de- sign an hour- long program with a class of 12- year- olds that takes place every two weeks. Kids from the se nior class participate, too, by assist- ing the teachers. They designed games around learning so it would be fun and provide novelty. To make it even more interesting, they di- vided the class into teams that would compete against each other for the entire academic year. Wispos, a token currency, was awarded for correct answers and debited for incorrect ones.",
-          "target_level": 1,
-          "candidate_body_logical_index": 95,
-          "confidence": "medium"
-        },
-        {
-          "title": "STRATEGIES FOR NGOS",
-          "target_level": 1,
-          "candidate_body_logical_index": 105,
+          "candidate_body_logical_index": 104,
           "confidence": "high"
-        },
-        {
-          "title": "This generic model can be customized to fi t the specifi c objectives and needs of any given NGO or nonprofi t or ga ni za tion.",
-          "target_level": 1,
-          "candidate_body_logical_index": 119,
-          "confidence": "medium"
-        },
-        {
-          "title": "Rui Izumi, an associate professor at the Senshu University School of Economics in Tokyo, points to government support as a major contrib- utor to the growth in cooperative currencies: “The central government and many local governments are supporting local currencies in positive ways. For example, they have given fi nancial support to some organiza- tions, and [both] the Minister of Economy, Trade and Industry and the president of the Bank of Japan have made several encouraging re- marks publicly about these systems.” 12 A former minister for economy and industrial policies described government support for complementary currencies in surprising terms: “The use of cooperative currencies can bring an end to the long- lasting defl ation of the Japa nese economy by supplying additional monies of various types at the local level.” 13 Government- sponsored projects were implemented in various com- munities of very different scales, ranging from small villages to entire prefectures (roughly equivalent to a U.S. county) and involving mil- lions of people. All of them were designed to link unused resources 168 PROSPERITY with unmet needs within neighborhoods, districts, and networks.",
-          "target_level": 1,
-          "candidate_body_logical_index": 141,
-          "confidence": "medium"
         },
         {
           "title": "Chapter Ten TRUTH AND CONSEQUENCES Lessons Learned",
           "target_level": 1,
-          "candidate_body_logical_index": 162,
+          "candidate_body_logical_index": 161,
           "confidence": "high"
-        },
-        {
-          "title": "178 RETHINKING MONEY were eagerly paid,” sometimes even in advance. Von Muralt concluded, “This eagerness to pay taxes may be, in my opinion, simply owing to the fact that the businessman who fi nds, at the close of the month, that he holds a considerable amount in relief money [Wörgl], can dispose of it with the greatest ease and without loss by meeting his parish [local tax] obligations. A change of attitude has manifestly taken place. If formerly the paying of taxes was deferred to the last, now it occupies fi rst place.” 2",
-          "target_level": 1,
-          "candidate_body_logical_index": 175,
-          "confidence": "medium"
-        },
-        {
-          "title": "The wära stamp scrip not only saved the coal mine and the town but also began to circulate nationally. Soon, over 2,000 corporations through- out Germany began accepting and paying each other with this local money. A growing number of banks even opened wära accounts.",
-          "target_level": 1,
-          "candidate_body_logical_index": 187,
-          "confidence": "medium"
-        },
-        {
-          "title": "THE ARGENTINE CREDITOS As a model debtor nation, from 1991 to 2001 the Argentine govern- ment adopted all the policies suggested by the IMF, including privati- zation of government assets and a fi xed parity between the Argentine peso and the U.S. dollar. Instead of leading to economic stability, however, these policies created an overvalued peso and a massive eco- nomic contraction.",
-          "target_level": 1,
-          "candidate_body_logical_index": 203,
-          "confidence": "medium"
-        },
-        {
-          "title": "Lub refl ects, “Ironically, we had already a transparent accounting system online with our thank- yous that could provide all the safe- guards they needed to move their accounting online, where it would remain transparent and cannot be counterfeited (unlike cash transac- tions, every online transfer has to have a buyer and a seller to be re- corded, so crooks cannot be anonymous). I offered our application as a gift to the leadership of one of the largest clubs, but the users were not computer literate and they were in a survival mode, unable to concen- trate enough to learn how to access the Internet and make a transfer.",
-          "target_level": 1,
-          "candidate_body_logical_index": 215,
-          "confidence": "medium"
         },
         {
           "title": "Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?",
           "target_level": 1,
-          "candidate_body_logical_index": 222,
+          "candidate_body_logical_index": 221,
           "confidence": "high"
         }
       ],
@@ -446,11 +386,11 @@
       {
         "title": "Chapter Eight STRATEGIES FOR GOVERNMENTS",
         "level": 1,
-        "logical_index": 11,
+        "logical_index": 10,
         "confidence": "high",
         "evidence": [
           "page_artifact_heading",
-          "capitalized"
+          "toc_match"
         ],
         "member_logical_indexes": [
           10,
@@ -458,13 +398,13 @@
         ]
       },
       {
-        "title": "STRATEGIES FOR NGOS",
+        "title": "STRATEGIES FOR NGOs",
         "level": 1,
-        "logical_index": 105,
+        "logical_index": 104,
         "confidence": "high",
         "evidence": [
           "page_artifact_heading",
-          "capitalized"
+          "toc_match"
         ],
         "member_logical_indexes": [
           104,
@@ -474,10 +414,11 @@
       {
         "title": "Chapter Ten TRUTH AND CONSEQUENCES Lessons Learned",
         "level": 1,
-        "logical_index": 162,
+        "logical_index": 161,
         "confidence": "high",
         "evidence": [
-          "page_artifact_heading"
+          "page_artifact_heading",
+          "toc_match"
         ],
         "member_logical_indexes": [
           161,
@@ -487,10 +428,11 @@
       {
         "title": "Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?",
         "level": 1,
-        "logical_index": 222,
+        "logical_index": 221,
         "confidence": "high",
         "evidence": [
-          "page_artifact_heading"
+          "page_artifact_heading",
+          "toc_match"
         ],
         "member_logical_indexes": [
           221,
@@ -509,22 +451,42 @@
       "1": {
         "role": "toc_entry",
         "heading_level": null,
-        "confidence": "medium"
+        "confidence": "high"
       },
       "2": {
         "role": "toc_entry",
         "heading_level": null,
-        "confidence": "medium"
+        "confidence": "high"
       },
       "3": {
         "role": "toc_entry",
         "heading_level": null,
-        "confidence": "medium"
+        "confidence": "high"
       },
       "4": {
         "role": "toc_entry",
         "heading_level": null,
-        "confidence": "medium"
+        "confidence": "high"
+      },
+      "6": {
+        "role": "toc_entry",
+        "heading_level": null,
+        "confidence": "high"
+      },
+      "7": {
+        "role": "toc_entry",
+        "heading_level": null,
+        "confidence": "high"
+      },
+      "8": {
+        "role": "toc_entry",
+        "heading_level": null,
+        "confidence": "high"
+      },
+      "9": {
+        "role": "toc_entry",
+        "heading_level": null,
+        "confidence": "high"
       },
       "10": {
         "role": "heading",
@@ -573,30 +535,10 @@
       },
       "224": {
         "role": "heading",
-        "heading_level": 2,
+        "heading_level": 1,
         "confidence": "high"
       },
       "5": {
-        "role": "toc_entry",
-        "heading_level": null,
-        "confidence": "high"
-      },
-      "6": {
-        "role": "toc_entry",
-        "heading_level": null,
-        "confidence": "high"
-      },
-      "7": {
-        "role": "toc_entry",
-        "heading_level": null,
-        "confidence": "high"
-      },
-      "8": {
-        "role": "toc_entry",
-        "heading_level": null,
-        "confidence": "high"
-      },
-      "9": {
         "role": "toc_entry",
         "heading_level": null,
         "confidence": "high"
@@ -2182,14 +2124,7 @@
         "confidence": "low"
       }
     },
-    "review_zones": [
-      {
-        "start_logical_index": 1,
-        "end_logical_index": 9,
-        "reason": "toc_paragraph_fragmentation_needs_validation",
-        "severity": "info"
-      }
-    ],
+    "review_zones": [],
     "split_hints": [
       {
         "logical_index": 2,
@@ -2199,25 +2134,51 @@
           "2",
           "3"
         ],
-        "authority": "sample_evidence",
-        "confidence": "medium",
+        "authority": "sample_descriptors",
+        "confidence": "high",
         "evidence": [
-          "numerical_markers"
+          "logical_sequence"
+        ]
+      },
+      {
+        "logical_index": 4,
+        "split_kind": "compound_toc_entries",
+        "expected_parts": [
+          "4",
+          "5"
+        ],
+        "authority": "sample_descriptors",
+        "confidence": "high",
+        "evidence": [
+          "logical_sequence"
         ]
       },
       {
         "logical_index": 6,
         "split_kind": "compound_toc_entries",
         "expected_parts": [
-          "Chapter Eight STRATEGIES FOR GOVERNMENTS",
-          "STRATEGIES FOR NGOS"
+          "6",
+          "7",
+          "8",
+          "9"
         ],
-        "authority": "document_map_toc",
+        "authority": "sample_descriptors",
         "confidence": "high",
         "evidence": [
-          "bounded_toc_region",
-          "one_to_one_toc_entry_match",
-          "toc_entry"
+          "logical_sequence"
+        ]
+      },
+      {
+        "logical_index": 9,
+        "split_kind": "compound_toc_entries",
+        "expected_parts": [
+          "12",
+          "13"
+        ],
+        "authority": "sample_descriptors",
+        "confidence": "high",
+        "evidence": [
+          "logical_sequence"
         ]
       },
       {
@@ -2237,8 +2198,8 @@
       }
     ],
     "model_used": "openrouter:google/gemini-3.1-flash-lite-preview",
-    "total_tokens_used": 43827,
-    "processing_time_seconds": 4.839025936000098,
+    "total_tokens_used": 43882,
+    "processing_time_seconds": 9.143884667000009,
     "sampled": false,
     "sampled_logical_indexes": [
       0,

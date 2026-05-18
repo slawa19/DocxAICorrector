@@ -210,6 +210,8 @@ def test_evaluate_lietaer_acceptance_fails_on_translation_quality_report_residua
             "bullet_heading_count": 0,
             "false_fragment_heading_count": 2,
             "residual_bullet_glyph_count": 1,
+            "residual_bullet_glyph_gate_source": "legacy_markdown",
+            "raw_residual_bullet_glyph_count": 1,
             "list_fragment_regression_count": 1,
             "mixed_script_term_count": 1,
             "theology_style_deterministic_issue_count": 3,
@@ -232,6 +234,8 @@ def test_evaluate_lietaer_acceptance_fails_on_translation_quality_report_residua
         "toc_body_concatenation_detected",
         "structural_comparison_available",
     ]
+    assert by_name["residual_bullet_glyphs_present"]["residual_bullet_glyph_gate_source"] == "legacy_markdown"
+    assert by_name["residual_bullet_glyphs_present"]["raw_residual_bullet_glyph_count"] == 1
     assert by_name["toc_body_concatenation_detected"]["toc_body_concat_detected"] is True
     assert by_name["toc_body_concatenation_detected"]["toc_body_concat_markdown_detected"] is True
     assert by_name["toc_body_concatenation_detected"]["toc_body_concat_structure_detected"] is False
@@ -254,6 +258,8 @@ def test_evaluate_lietaer_acceptance_uses_authoritative_structural_markdown_coun
             "false_fragment_heading_gate_source": "entry_assembly",
             "raw_false_fragment_heading_count": 2,
             "residual_bullet_glyph_count": 0,
+            "residual_bullet_glyph_gate_source": "legacy_markdown",
+            "raw_residual_bullet_glyph_count": 0,
             "list_fragment_regression_count": 0,
             "list_fragment_regression_gate_source": "topology_projection",
             "raw_list_fragment_regression_count": 1,
@@ -271,6 +277,9 @@ def test_evaluate_lietaer_acceptance_uses_authoritative_structural_markdown_coun
     assert by_name["false_fragment_headings_present"]["false_fragment_heading_count"] == 0
     assert by_name["false_fragment_headings_present"]["false_fragment_heading_gate_source"] == "entry_assembly"
     assert by_name["false_fragment_headings_present"]["raw_false_fragment_heading_count"] == 2
+    assert by_name["residual_bullet_glyphs_present"]["residual_bullet_glyph_count"] == 0
+    assert by_name["residual_bullet_glyphs_present"]["residual_bullet_glyph_gate_source"] == "legacy_markdown"
+    assert by_name["residual_bullet_glyphs_present"]["raw_residual_bullet_glyph_count"] == 0
     assert by_name["list_fragment_regressions_present"]["list_fragment_regression_count"] == 0
     assert by_name["list_fragment_regressions_present"]["list_fragment_regression_gate_source"] == "topology_projection"
     assert by_name["list_fragment_regressions_present"]["raw_list_fragment_regression_count"] == 1
@@ -539,6 +548,49 @@ def test_evaluate_lietaer_acceptance_detects_known_false_split_in_runtime_markdo
     assert acceptance["passed"] is False
     assert "known_false_split_absent_in_final_markdown:lietaer_exchange_install_roof_split" in acceptance["failed_checks"]
     assert "known_false_split_absent_in_processed_markdown:lietaer_exchange_install_roof_split" in acceptance["failed_checks"]
+
+
+def test_evaluate_lietaer_acceptance_classifies_placeholder_heading_concat_as_display_hygiene() -> None:
+    validation = _load_validation_module()
+
+    source_doc = Document()
+    source_doc.add_paragraph("Однако деньги — не единственное средство обмена.")
+    output_doc = Document()
+    output_doc.add_paragraph("Однако деньги — не единственное средство обмена.")
+
+    report = {
+        "result": "succeeded",
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [],
+        "runtime": {
+            "state": {
+                "latest_markdown": "This page intentionally left blank\n\nChapter Nine STRATEGIES FOR NGO S",
+                "processed_block_markdowns": ["This page intentionally left blank Chapter Nine STRATEGIES FOR NGO S"],
+            }
+        },
+        "translation_quality_report": {
+            "page_placeholder_heading_concat_count": 0,
+            "page_placeholder_heading_concat_source": "legacy_markdown",
+            "page_placeholder_heading_concat_classification": "display_hygiene",
+            "raw_page_placeholder_heading_concat_count": 1,
+        },
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+    )
+    by_name = {check["name"]: check for check in acceptance["checks"]}
+
+    assert "page_placeholder_heading_concat_hygiene_applied" not in acceptance["failed_checks"]
+    assert by_name["page_placeholder_heading_concat_hygiene_applied"]["page_placeholder_heading_concat_count"] == 0
+    assert by_name["page_placeholder_heading_concat_hygiene_applied"]["raw_page_placeholder_heading_concat_count"] == 1
+    assert by_name["page_placeholder_heading_concat_hygiene_applied"]["page_placeholder_heading_concat_source"] == "legacy_markdown"
+    assert by_name["page_placeholder_heading_concat_hygiene_applied"]["page_placeholder_heading_concat_classification"] == "display_hygiene"
 
 
 def test_evaluate_lietaer_acceptance_preserves_richer_formatting_diagnostics_payload() -> None:
@@ -1102,11 +1154,24 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
                     "residual_bullet_glyphs_present",
                 ],
                 "bullet_heading_count": 0,
+                "page_placeholder_heading_concat_count": 0,
+                "page_placeholder_heading_concat_source": "legacy_markdown",
+                "page_placeholder_heading_concat_classification": "display_hygiene",
+                "raw_page_placeholder_heading_concat_count": 1,
                 "false_fragment_heading_count": 2,
+                "false_fragment_heading_gate_source": "entry_assembly",
+                "raw_false_fragment_heading_count": 2,
                 "residual_bullet_glyph_count": 1,
+                "residual_bullet_glyph_gate_source": "legacy_markdown",
+                "raw_residual_bullet_glyph_count": 1,
                 "list_fragment_regression_count": 0,
+                "list_fragment_regression_gate_source": "topology_projection",
+                "raw_list_fragment_regression_count": 1,
                 "theology_style_deterministic_issue_count": 0,
                 "toc_body_concat_detected": False,
+                "toc_body_concat_markdown_detected": False,
+                "toc_body_concat_structure_detected": False,
+                "toc_body_concat_gate_source": "legacy_markdown",
             },
             ensure_ascii=False,
         ),
@@ -1324,6 +1389,16 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
     assert '"readiness_status": "blocked_unsafe_best_effort_only"' in summary_text
     assert "translation_quality_status=fail" in summary_text
     assert "translation_quality_gate_reasons=false_fragment_headings_present,residual_bullet_glyphs_present" in summary_text
+    assert "translation_quality_page_placeholder_heading_concat_source=legacy_markdown" in summary_text
+    assert "translation_quality_page_placeholder_heading_concat_classification=display_hygiene" in summary_text
+    assert "translation_quality_raw_page_placeholder_heading_concat_count=1" in summary_text
+    assert "translation_quality_false_fragment_heading_gate_source=entry_assembly" in summary_text
+    assert "translation_quality_raw_false_fragment_heading_count=2" in summary_text
+    assert "translation_quality_residual_bullet_glyph_gate_source=legacy_markdown" in summary_text
+    assert "translation_quality_raw_residual_bullet_glyph_count=1" in summary_text
+    assert "translation_quality_list_fragment_regression_gate_source=topology_projection" in summary_text
+    assert "translation_quality_raw_list_fragment_regression_count=1" in summary_text
+    assert "translation_quality_toc_body_concat_gate_source=legacy_markdown" in summary_text
     assert "source_file" not in report
     assert "runtime_configuration" not in report
 
@@ -1597,6 +1672,23 @@ def test_print_terminal_completion_summary_is_concise() -> None:
                     "passed": False,
                     "failed_checks": ["centered_short_paragraphs_preserved"],
                 },
+                "translation_quality_report": {
+                    "quality_status": "fail",
+                    "gate_reasons": ["false_fragment_headings_present"],
+                    "page_placeholder_heading_concat_count": 0,
+                    "page_placeholder_heading_concat_source": "legacy_markdown",
+                    "page_placeholder_heading_concat_classification": "display_hygiene",
+                    "raw_page_placeholder_heading_concat_count": 1,
+                    "false_fragment_heading_count": 0,
+                    "false_fragment_heading_gate_source": "entry_assembly",
+                    "raw_false_fragment_heading_count": 2,
+                    "residual_bullet_glyph_count": 1,
+                    "residual_bullet_glyph_gate_source": "legacy_markdown",
+                    "raw_residual_bullet_glyph_count": 1,
+                    "list_fragment_regression_count": 0,
+                    "list_fragment_regression_gate_source": "topology_projection",
+                    "raw_list_fragment_regression_count": 1,
+                },
             },
         )
 
@@ -1604,6 +1696,11 @@ def test_print_terminal_completion_summary_is_concise() -> None:
 
     assert "[summary]" in output
     assert "[artifacts]" in output
+    assert "[translation_quality]" in output
+    assert "page_placeholder_heading_concat_source=legacy_markdown" in output
+    assert "false_fragment_heading_gate_source=entry_assembly" in output
+    assert "residual_bullet_glyph_gate_source=legacy_markdown" in output
+    assert "raw_list_fragment_regression_count=1" in output
     assert "[acceptance] failed_checks=centered_short_paragraphs_preserved" in output
     assert "latest_docx_bytes" not in output
     assert "processed_block_markdowns" not in output

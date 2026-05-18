@@ -1,7 +1,7 @@
 # Layout Signal Evidence Slice Spec
 
 Date: 2026-05-14
-Status: Runtime mostly implemented; acceptance package remains open for fixture and hygiene closure
+Status: Runtime mostly implemented; the focused chapter-region fixture package now accepts the pre-projection baseline caveat and refreshes the tracked trio, while upstream drift attribution remains separate follow-up work
 Parent spec: `docs/specs/TOPOLOGY_FIRST_STRUCTURE_RECOVERY_REMEDIATION_SPEC_2026-05-12.md`
 Authority position: **Slice between Phase 1 and Phase 2** of the parent spec. Does
 not change Variant A authority discipline. Adds new `evidence` tags only.
@@ -15,6 +15,11 @@ state depends on both the topology acceptance rule and runtime propagation of
 the Chapter 11 pass as a topology-only fix. Live diagnostics expose
 `document_topology_layout_signals` from the event-log context when available and
 from prepared-snapshot backfill when passthrough event capture omits that event.
+That live passing state was not, by itself, enough to refresh tracked
+chapter-region fixtures. The accepted baseline decision for this package is
+the narrower claim that the current canonical chapter-region diagnostic payload
+is an acceptable tracked baseline despite the unresolved pre-projection
+SDK-native `to_json()` attribution caveat.
 
 ## TL;DR
 

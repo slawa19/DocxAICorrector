@@ -2874,7 +2874,7 @@ def test_run_document_processing_quality_report_uses_pre_display_gate_input_for_
     assert payload["false_fragment_heading_count"] == 1
 
 
-def test_run_document_processing_normalizes_residual_bullet_glyphs_before_quality_gate(tmp_path, monkeypatch):
+def test_run_document_processing_keeps_residual_bullet_cleanup_in_runtime_display_but_not_quality_gate(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
@@ -2891,13 +2891,16 @@ def test_run_document_processing_normalizes_residual_bullet_glyphs_before_qualit
         ),
     )
 
-    assert result == "succeeded"
+    assert result == "failed"
     assert "●" not in runtime["state"]["latest_markdown"]
     report_files = list(quality_dir.glob("*.json"))
     assert len(report_files) == 1
     payload = json.loads(report_files[0].read_text(encoding="utf-8"))
-    assert payload["quality_status"] == "pass"
-    assert payload["residual_bullet_glyph_count"] == 0
+    assert payload["quality_status"] == "fail"
+    assert payload["gate_reasons"] == ["residual_bullet_glyphs_present"]
+    assert payload["residual_bullet_glyph_count"] == 3
+    assert payload["residual_bullet_glyph_gate_source"] == "legacy_markdown"
+    assert payload["raw_residual_bullet_glyph_count"] == 3
 
 
 def test_run_document_processing_normalizes_list_fragment_regressions_before_quality_gate(tmp_path, monkeypatch):
@@ -3035,6 +3038,88 @@ def test_normalize_final_markdown_for_runtime_display_splits_placeholder_from_ch
     )
 
     assert normalized == "This page intentionally left blank\n\nChapter Nine STRATEGIES FOR NGO S"
+
+
+def test_build_translation_quality_report_classifies_placeholder_heading_concat_as_display_hygiene_with_raw_observability():
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+        ),
+        final_markdown="This page intentionally left blank Chapter Nine STRATEGIES FOR NGO S",
+        formatting_diagnostics_artifacts=[],
+    )
+
+    assert report["quality_status"] == "pass"
+    assert report["gate_reasons"] == []
+    assert report["page_placeholder_heading_concat_count"] == 0
+    assert report["page_placeholder_heading_concat_source"] == "legacy_markdown"
+    assert report["page_placeholder_heading_concat_classification"] == "display_hygiene"
+    assert report["raw_page_placeholder_heading_concat_count"] == 1
+    assert report["page_placeholder_heading_concat_samples"] == []
+    raw_page_placeholder_heading_concat_samples = cast(
+        list[dict[str, object]],
+        report["raw_page_placeholder_heading_concat_samples"],
+    )
+    assert raw_page_placeholder_heading_concat_samples[0]["reason"] == "page_placeholder_heading_concat_markdown_present"
+
+
+def test_normalize_final_markdown_for_quality_gate_preserves_placeholder_cleanup_as_non_gate_input():
+    normalized = document_pipeline_late_phases._normalize_final_markdown_for_quality_gate(
+        "This page intentionally left blank Chapter Nine STRATEGIES FOR NGO S"
+    )
+
+    assert normalized == "This page intentionally left blank Chapter Nine STRATEGIES FOR NGO S"
+
+
+def test_normalize_final_markdown_for_display_hygiene_reporting_keeps_residual_bullet_cleanup_out_of_reporting_path():
+    normalized = document_pipeline_late_phases._normalize_final_markdown_for_display_hygiene_reporting(
+        "Посттрибулационисты считают, что Иисус придёт в конце ● скорби."
+    )
+
+    assert normalized == "Посттрибулационисты считают, что Иисус придёт в конце ● скорби."
+
+
+def test_normalize_final_markdown_for_runtime_display_applies_structure_compatibility_cleanup_only():
+    normalized = document_pipeline_late_phases._normalize_final_markdown_for_runtime_display(
+        "Наблюдайте внимательно.\n\n"
+        "## (Матфея 24:36)\n\n"
+        "Это продолжение абзаца.\n\n"
+        "Поразительно, но все петли следуют одной и той же схеме: 1.\n\n"
+        "Духовные существа восстают против Бога.\n\n"
+        "2. Бог судит их за грех."
+    )
+
+    assert normalized == (
+        "Наблюдайте внимательно.\n\n"
+        "(Матфея 24:36)\n\n"
+        "Это продолжение абзаца.\n\n"
+        "Поразительно, но все петли следуют одной и той же схеме:\n\n"
+        "1. Духовные существа восстают против Бога.\n\n"
+        "2. Бог судит их за грех."
+    )
+
+
+def test_resolve_runtime_display_markdown_prefers_explicit_runtime_display_payload():
+    resolved = document_pipeline_late_phases._resolve_runtime_display_markdown(
+        docx_phase={
+            "runtime_display_markdown": "display-cleaned",
+        },
+        fallback_markdown="raw-gate-input",
+    )
+
+    assert resolved == "display-cleaned"
+
+
+def test_resolve_runtime_display_markdown_ignores_legacy_final_markdown_alias():
+    resolved = document_pipeline_late_phases._resolve_runtime_display_markdown(
+        docx_phase={"final_markdown": "legacy-display-cleaned"},
+        fallback_markdown="This page intentionally left blank Chapter Nine STRATEGIES FOR NGO S",
+    )
+
+    assert resolved == "This page intentionally left blank\n\nChapter Nine STRATEGIES FOR NGO S"
 
 
 def test_build_translation_quality_report_exposes_new_residual_quality_metrics_and_gate_reasons():

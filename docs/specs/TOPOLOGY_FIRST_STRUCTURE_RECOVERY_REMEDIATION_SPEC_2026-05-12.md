@@ -1,7 +1,7 @@
 ﻿# Topology-First Structure Recovery Remediation Spec
 
 Date: 2026-05-12
-Status: Proposed
+Status: Active migration spec; R1 mostly implemented, R2 partial, R3 migration in progress, fallback-hardening Slices 1-6 implemented
 Parent spec: `docs/AI_FIRST_STRUCTURE_RECOVERY_SPEC_2026-05-08.md`
 Related follow-up: `docs/specs/Folloup AI structure recovery.md`
 
@@ -40,6 +40,14 @@ to correct global document topology.
 
 ### Status Addendum 2026-05-18
 
+Overall migration state:
+
+- R1 Stage 1.5 `DocumentMap` topology projection is mostly implemented. The layout-signal evidence slice is implemented as an intermediate R1 slice and the chapter-region Chapter 11 case is confirmed on the current dirty workspace. For the focused chapter-region fixture package, the earliest unexplained pre-projection SDK-native `to_json()` boundary is now accepted as the current baseline limitation and the tracked chapter-region trio is refreshed to the current canonical payload. This is a scoped baseline decision, not proof that upstream/provider or SDK-serialization drift has disappeared.
+- R2 structure-aware quality gates are partially implemented. `toc_body_concat`, unmapped basis/source fields, and the touched `false_fragment_heading` / `list_fragment_regression` report surfaces now preserve explicit authority/provenance, but this is not a universal gate migration claim.
+- R3 markdown postprocessor retirement has not completed. The current work has labelled and separated authority from raw markdown observability on touched surfaces; actual retirement/removal of normalizers from structural authority remains pending.
+- Stage 2 fallback hardening and topology protection Slices 1-6 are implemented and tested. Slice 7 root-window tuning remains a future diagnostic/config-only step if telemetry proves it is needed.
+- Full-book acceptance remains pending and must not be used as the ordinary tuning loop.
+
 The late-phase quality-report surface has moved one step closer to the intended
 authority boundary:
 
@@ -55,10 +63,34 @@ authority boundary:
   explicit `legacy_markdown` provenance and reuses the saved quality-report
   authority fields when that artifact is present, instead of rebuilding the
   adjacent report surface only from runtime markdown.
+- the real-document harness summary/export path now reuses those saved
+  quality-report authority/raw fields directly, so adjacent user-visible
+  summaries no longer collapse the touched structural surfaces back to generic
+  gate-reason-only reporting.
 
 This is still an intermediate migration state, not R3 completion: markdown
 cleanup remains in the runtime/display stack, and untouched call sites still
 need the same audit before the postprocessor layer can be considered retired.
+
+### Stage 2 Fallback Hardening Status Map
+
+The fallback-hardening slices below are implementation-status indexed here so
+future work does not reimplement already landed behavior:
+
+| Slice | Current status | Primary implementation surface | Focused coverage |
+| --- | --- | --- | --- |
+| Slice 1: topology precedence guard | Implemented | `src/docxaicorrector/structure/recognition.py::apply_structure_map(...)` | `tests/test_structure_recognition.py::TestTopologyAuthorityGuard` covers inactive guard cases, concord/conflict rows, heading-level mismatch, counters, and no-topology regression behavior. |
+| Slice 2: split fallback telemetry and honest progress | Implemented | `src/docxaicorrector/structure/recognition.py` fallback stats/progress paths and `StructureFallbackStats` | `tests/test_structure_recognition.py` fallback telemetry/progress tests cover split counts, retry counters, capped descriptor counters, and progress events. |
+| Slice 3: bounded retry before split | Implemented | `_classify_descriptor_window_with_fallback(...)` retry path | `tests/test_structure_recognition.py::test_build_structure_map_retries_timeout_window_before_split_and_uses_retry_result` and related timeout fallback tests. |
+| Slice 4: recursion cap with fail-closed semantics | Implemented | fallback depth/expansion caps in `_classify_descriptor_window_with_fallback(...)` | `tests/test_structure_recognition.py` cap tests cover max depth, max expansions, and zero-cap behavior. |
+| Slice 5: topology-aware split boundary | Implemented for boundary snapping | `_build_protected_split_ranges(...)` and `_select_safe_split_boundary(...)` | `tests/test_structure_recognition.py` safe-boundary tests cover protected ranges, ancestor split-point avoidance, deterministic selection, non-empty halves, and multi-index protected units. |
+| Slice 6: fallback provenance side-map | Implemented | `StructureFallbackMetadata` / `StructureMap.fallback_metadata_by_index` in `src/docxaicorrector/core/models.py` plus recognition merge paths | `tests/test_structure_recognition.py` metadata tests cover primary, retry, split fallback, and capped fallback provenance; `tests/test_preparation.py` covers propagation into preparation surfaces. |
+| Slice 7: root window tuning from diagnostics | Not started | Future config-only tuning if telemetry justifies it | No implementation expected until representative telemetry satisfies the threshold rule below. |
+
+Candidate-only topology diagnostics remain non-binding. In particular,
+`candidate_page_artifact_split` must not become a gate authority source unless a
+future Stage 1 binding split hint or one-to-one high-confidence TOC entry match
+materializes the operation as binding topology authority.
 
 ### Markdown Postprocessor Stack
 

@@ -257,7 +257,7 @@ def has_toc_body_concat_signal(*, target_text: str, processed_chunk: str) -> boo
 
 
 def has_toc_body_concat_markdown(text: str) -> bool:
-    paragraphs = _split_markdown_paragraphs(normalize_page_placeholder_heading_concats_markdown(text))
+    paragraphs = _split_markdown_paragraphs(_normalize_markdown_for_toc_body_concat_advisory_detection(text))
     if not paragraphs:
         return False
     return any(_TOC_BODY_CONCAT_MARKDOWN_PATTERN.search(paragraph) for paragraph in paragraphs)
@@ -579,16 +579,40 @@ def normalize_page_placeholder_heading_concats_markdown(text: str) -> str:
     return _collapse_markdown_blank_lines("\n".join(normalized_lines))
 
 
+def collect_page_placeholder_heading_concat_samples(text: str) -> list[QualityIssueSample]:
+    samples: list[QualityIssueSample] = []
+    for line_number, raw_line in iter_markdown_lines_with_numbers(text):
+        stripped = raw_line.rstrip()
+        if not stripped:
+            continue
+        if _PAGE_PLACEHOLDER_CHAPTER_CONCAT_PATTERN.match(stripped) is None:
+            continue
+        samples.append(
+            QualityIssueSample(
+                line=line_number,
+                text=stripped,
+                reason="page_placeholder_heading_concat_markdown_present",
+            )
+        )
+    return samples
+
+
+def _normalize_markdown_for_toc_body_concat_advisory_detection(text: str) -> str:
+    # Placeholder splitting here is compatibility preprocessing for markdown advisory detection,
+    # not new structure authority.
+    return normalize_page_placeholder_heading_concats_markdown(text)
+
+
 def _normalize_entry_text(entry: FinalAssemblyEntry) -> str:
     text = entry.text.strip()
     if entry.from_registry and not entry.used_fallback:
         return text
-    return normalize_mixed_script_markdown(normalize_residual_bullet_glyphs_markdown(text))
+    return normalize_mixed_script_markdown(text)
 
 
 def _normalize_final_entry_text(text: str) -> str:
-    normalized = normalize_residual_bullet_glyphs_markdown(text)
-    normalized = normalize_mixed_script_markdown(normalized)
+    # Assembly stays close to recovered source-backed text. Display-only cleanup runs later.
+    normalized = normalize_mixed_script_markdown(text)
     return normalized.strip()
 
 

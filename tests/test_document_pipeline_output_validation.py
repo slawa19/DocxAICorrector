@@ -818,7 +818,7 @@ def test_assemble_final_markdown_normalizes_mixed_script_in_registry_backed_entr
     assert result.entries[0].text == "Прежде чем суперразума догонит квантовый скачок."
 
 
-def test_assemble_final_markdown_normalizes_residual_bullet_glyphs_in_registry_backed_entries():
+def test_assemble_final_markdown_preserves_residual_bullet_glyphs_in_registry_backed_entries_for_late_phase_classification():
     result = document_pipeline_output_validation.assemble_final_markdown(
         processed_chunks=[
             "Посттрибулационисты считают, что Иисус придёт в конце ● скорби.\n\n● собирают армию в 200 миллионов солдат."
@@ -841,14 +841,14 @@ def test_assemble_final_markdown_normalizes_residual_bullet_glyphs_in_registry_b
         ],
     )
 
-    assert "●" not in result.final_markdown
-    assert "в конце скорби." in result.final_markdown
-    assert "- собирают армию в 200 миллионов солдат." in result.final_markdown
-    assert result.entries[0].text == "Посттрибулационисты считают, что Иисус придёт в конце скорби."
-    assert result.entries[1].text == "- собирают армию в 200 миллионов солдат."
+    assert "●" in result.final_markdown
+    assert "Посттрибулационисты считают, что Иисус придёт в конце ● скорби." in result.final_markdown
+    assert "● собирают армию в 200 миллионов солдат." in result.final_markdown
+    assert result.entries[0].text == "Посттрибулационисты считают, что Иисус придёт в конце ● скорби."
+    assert result.entries[1].text == "● собирают армию в 200 миллионов солдат."
 
 
-def test_assemble_final_markdown_does_not_convert_heading_into_bullet_heading_during_post_normalization():
+def test_assemble_final_markdown_preserves_heading_boundary_without_running_bullet_display_cleanup():
     result = document_pipeline_output_validation.assemble_final_markdown(
         processed_chunks=["## Раздел", "● собирают армию в 200 миллионов солдат."],
         generated_paragraph_registry=[
@@ -862,7 +862,7 @@ def test_assemble_final_markdown_does_not_convert_heading_into_bullet_heading_du
     )
 
     assert result.entries[0].text == "## Раздел"
-    assert result.entries[1].text == "- собирают армию в 200 миллионов солдат."
+    assert result.entries[1].text == "● собирают армию в 200 миллионов солдат."
     assert result.final_markdown.startswith("## Раздел\n\n")
 
 

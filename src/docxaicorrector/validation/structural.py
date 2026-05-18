@@ -19,6 +19,7 @@ from docxaicorrector.pipeline.output_validation import (
     collect_false_fragment_heading_samples,
     collect_list_fragment_regression_samples,
     collect_mixed_script_samples,
+    collect_page_placeholder_heading_concat_samples,
     collect_residual_bullet_glyph_samples,
     collect_theology_style_issue_samples,
     has_toc_body_concat_markdown as _shared_has_toc_body_concat_markdown,
@@ -73,10 +74,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 FORMATTING_DIAGNOSTICS_DIR = PROJECT_ROOT / ".run" / "formatting_diagnostics"
 
 
-def _build_markdown_quality_metrics(*, latest_markdown: str, translation_domain: str) -> dict[str, object]:
-    false_fragment_heading_samples = collect_false_fragment_heading_samples(latest_markdown)
+def _build_markdown_quality_metrics(
+    *,
+    latest_markdown: str,
+    raw_markdown: str,
+    raw_structural_markdown: str,
+    translation_domain: str,
+) -> dict[str, object]:
+    false_fragment_heading_samples = collect_false_fragment_heading_samples(raw_structural_markdown)
+    page_placeholder_heading_concat_samples = collect_page_placeholder_heading_concat_samples(latest_markdown)
+    raw_page_placeholder_heading_concat_samples = collect_page_placeholder_heading_concat_samples(raw_markdown)
     residual_bullet_glyph_samples = collect_residual_bullet_glyph_samples(latest_markdown)
-    list_fragment_regression_samples = collect_list_fragment_regression_samples(latest_markdown)
+    list_fragment_regression_samples = collect_list_fragment_regression_samples(raw_structural_markdown)
     mixed_script_samples = collect_mixed_script_samples(latest_markdown)
     theology_style_samples = (
         collect_theology_style_issue_samples(latest_markdown)
@@ -97,7 +106,13 @@ def _build_markdown_quality_metrics(*, latest_markdown: str, translation_domain:
         "false_fragment_heading_count": len(false_fragment_heading_samples),
         "false_fragment_heading_gate_source": "legacy_markdown",
         "raw_false_fragment_heading_count": len(false_fragment_heading_samples),
+        "page_placeholder_heading_concat_count": len(page_placeholder_heading_concat_samples),
+        "page_placeholder_heading_concat_source": "legacy_markdown",
+        "page_placeholder_heading_concat_classification": "display_hygiene",
+        "raw_page_placeholder_heading_concat_count": len(raw_page_placeholder_heading_concat_samples),
         "residual_bullet_glyph_count": len(residual_bullet_glyph_samples),
+        "residual_bullet_glyph_gate_source": "legacy_markdown",
+        "raw_residual_bullet_glyph_count": len(residual_bullet_glyph_samples),
         "list_fragment_regression_count": len(list_fragment_regression_samples),
         "list_fragment_regression_gate_source": "legacy_markdown",
         "raw_list_fragment_regression_count": len(list_fragment_regression_samples),
@@ -145,6 +160,13 @@ def _merge_translation_quality_report_metrics(
         "false_fragment_heading_count",
         "false_fragment_heading_gate_source",
         "raw_false_fragment_heading_count",
+        "page_placeholder_heading_concat_count",
+        "page_placeholder_heading_concat_source",
+        "page_placeholder_heading_concat_classification",
+        "raw_page_placeholder_heading_concat_count",
+        "residual_bullet_glyph_count",
+        "residual_bullet_glyph_gate_source",
+        "raw_residual_bullet_glyph_count",
         "scripture_reference_heading_count",
         "suspicious_heading_repetition_count",
         "list_fragment_regression_count",
@@ -780,6 +802,13 @@ def _apply_metric_snapshot_fields(snapshot: dict[str, object], metrics: Mapping[
         "false_fragment_heading_count",
         "false_fragment_heading_gate_source",
         "raw_false_fragment_heading_count",
+        "page_placeholder_heading_concat_count",
+        "page_placeholder_heading_concat_source",
+        "page_placeholder_heading_concat_classification",
+        "raw_page_placeholder_heading_concat_count",
+        "residual_bullet_glyph_count",
+        "residual_bullet_glyph_gate_source",
+        "raw_residual_bullet_glyph_count",
         "list_fragment_regression_count",
         "list_fragment_regression_gate_source",
         "raw_list_fragment_regression_count",
@@ -968,6 +997,13 @@ def run_structural_passthrough_validation(
     runtime_state = _runtime_state(runtime)
     latest_docx_bytes = runtime_state.get("latest_docx_bytes")
     latest_markdown = str(runtime_state.get("latest_markdown") or "")
+    processed_block_markdowns = cast(Sequence[object], runtime_state.get("processed_block_markdowns") or [])
+    raw_structural_markdown = "\n\n".join(
+        str(item) for item in processed_block_markdowns if isinstance(item, str) and item.strip()
+    )
+    raw_markdown = raw_structural_markdown
+    if not raw_markdown:
+        raw_markdown = latest_markdown
     if not isinstance(latest_docx_bytes, (bytes, bytearray)):
         latest_docx_bytes = b""
     output_artifacts = _build_output_artifacts(bytes(latest_docx_bytes), latest_markdown)
@@ -1056,6 +1092,8 @@ def run_structural_passthrough_validation(
     metrics.update(
         _build_markdown_quality_metrics(
             latest_markdown=latest_markdown,
+            raw_markdown=raw_markdown,
+            raw_structural_markdown=raw_structural_markdown,
             translation_domain=str(runtime_resolution.effective.translation_domain),
         )
     )

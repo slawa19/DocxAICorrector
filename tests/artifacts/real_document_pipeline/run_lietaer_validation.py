@@ -51,6 +51,7 @@ from docxaicorrector.document._document import (
     ORDERED_LIST_FORMATS,
     extract_document_content_from_docx,
 )
+from docxaicorrector.pipeline.output_validation import collect_page_placeholder_heading_concat_samples
 from docxaicorrector.generation._generation import (
     convert_markdown_to_docx_bytes,
     ensure_pandoc_available,
@@ -402,10 +403,42 @@ def _as_float_or_none(value: object) -> float | None:
     return None
 
 
+def _build_translation_quality_summary_lines(
+    translation_quality_report: Mapping[str, object] | None,
+) -> list[str]:
+    report = translation_quality_report or {}
+    lines = [
+        f"translation_quality_status={report.get('quality_status')}",
+        f"translation_quality_gate_reasons={','.join(_as_string_list(report.get('gate_reasons')))}",
+    ]
+    for key in (
+        "toc_body_concat_gate_source",
+        "toc_body_concat_markdown_detected",
+        "toc_body_concat_structure_detected",
+        "page_placeholder_heading_concat_count",
+        "page_placeholder_heading_concat_source",
+        "page_placeholder_heading_concat_classification",
+        "raw_page_placeholder_heading_concat_count",
+        "false_fragment_heading_count",
+        "false_fragment_heading_gate_source",
+        "raw_false_fragment_heading_count",
+        "residual_bullet_glyph_count",
+        "residual_bullet_glyph_gate_source",
+        "raw_residual_bullet_glyph_count",
+        "list_fragment_regression_count",
+        "list_fragment_regression_gate_source",
+        "raw_list_fragment_regression_count",
+    ):
+        if key in report:
+            lines.append(f"translation_quality_{key}={report.get(key)}")
+    return lines
+
+
 def _print_terminal_completion_summary(*, report: Mapping[str, object], final_status: str) -> None:
     output_artifacts = cast(Mapping[str, object], report.get("output_artifacts") or {})
     acceptance = cast(Mapping[str, object], report.get("acceptance") or {})
     failed_checks = _as_string_list(acceptance.get("failed_checks"))
+    translation_quality_report = cast(Mapping[str, object], report.get("translation_quality_report") or {})
     print(
         "[summary] "
         f"status={final_status} "
@@ -421,6 +454,61 @@ def _print_terminal_completion_summary(*, report: Mapping[str, object], final_st
         f"progress={report.get('progress_path')}",
         flush=True,
     )
+    if translation_quality_report:
+        print(
+            "[translation_quality] "
+            + " ".join(
+                part
+                for part in (
+                    f"status={translation_quality_report.get('quality_status')}",
+                    f"gate_reasons={','.join(_as_string_list(translation_quality_report.get('gate_reasons')))}",
+                    f"toc_body_concat_gate_source={translation_quality_report.get('toc_body_concat_gate_source')}"
+                    if "toc_body_concat_gate_source" in translation_quality_report
+                    else "",
+                    f"page_placeholder_heading_concat_count={translation_quality_report.get('page_placeholder_heading_concat_count')}"
+                    if "page_placeholder_heading_concat_count" in translation_quality_report
+                    else "",
+                    f"page_placeholder_heading_concat_source={translation_quality_report.get('page_placeholder_heading_concat_source')}"
+                    if "page_placeholder_heading_concat_source" in translation_quality_report
+                    else "",
+                    f"page_placeholder_heading_concat_classification={translation_quality_report.get('page_placeholder_heading_concat_classification')}"
+                    if "page_placeholder_heading_concat_classification" in translation_quality_report
+                    else "",
+                    f"raw_page_placeholder_heading_concat_count={translation_quality_report.get('raw_page_placeholder_heading_concat_count')}"
+                    if "raw_page_placeholder_heading_concat_count" in translation_quality_report
+                    else "",
+                    f"false_fragment_heading_count={translation_quality_report.get('false_fragment_heading_count')}"
+                    if "false_fragment_heading_count" in translation_quality_report
+                    else "",
+                    f"false_fragment_heading_gate_source={translation_quality_report.get('false_fragment_heading_gate_source')}"
+                    if "false_fragment_heading_gate_source" in translation_quality_report
+                    else "",
+                    f"raw_false_fragment_heading_count={translation_quality_report.get('raw_false_fragment_heading_count')}"
+                    if "raw_false_fragment_heading_count" in translation_quality_report
+                    else "",
+                    f"residual_bullet_glyph_count={translation_quality_report.get('residual_bullet_glyph_count')}"
+                    if "residual_bullet_glyph_count" in translation_quality_report
+                    else "",
+                    f"residual_bullet_glyph_gate_source={translation_quality_report.get('residual_bullet_glyph_gate_source')}"
+                    if "residual_bullet_glyph_gate_source" in translation_quality_report
+                    else "",
+                    f"raw_residual_bullet_glyph_count={translation_quality_report.get('raw_residual_bullet_glyph_count')}"
+                    if "raw_residual_bullet_glyph_count" in translation_quality_report
+                    else "",
+                    f"list_fragment_regression_count={translation_quality_report.get('list_fragment_regression_count')}"
+                    if "list_fragment_regression_count" in translation_quality_report
+                    else "",
+                    f"list_fragment_regression_gate_source={translation_quality_report.get('list_fragment_regression_gate_source')}"
+                    if "list_fragment_regression_gate_source" in translation_quality_report
+                    else "",
+                    f"raw_list_fragment_regression_count={translation_quality_report.get('raw_list_fragment_regression_count')}"
+                    if "raw_list_fragment_regression_count" in translation_quality_report
+                    else "",
+                )
+                if part
+            ),
+            flush=True,
+        )
     if failed_checks:
         print(f"[acceptance] failed_checks={','.join(str(item) for item in failed_checks)}", flush=True)
 
@@ -1741,6 +1829,33 @@ def evaluate_lietaer_acceptance(
     combined_processed_markdown = "\n\n".join(
         str(item) for item in processed_block_markdowns if isinstance(item, str) and item.strip()
     )
+    if translation_quality_report:
+        page_placeholder_heading_concat_count = _coerce_int(
+            translation_quality_report.get("page_placeholder_heading_concat_count")
+        )
+        raw_page_placeholder_heading_concat_count = _coerce_int(
+            translation_quality_report.get("raw_page_placeholder_heading_concat_count")
+        )
+        page_placeholder_heading_concat_source = translation_quality_report.get("page_placeholder_heading_concat_source")
+        page_placeholder_heading_concat_classification = translation_quality_report.get(
+            "page_placeholder_heading_concat_classification"
+        )
+    else:
+        page_placeholder_heading_concat_count = len(collect_page_placeholder_heading_concat_samples(latest_markdown))
+        raw_page_placeholder_heading_concat_count = len(
+            collect_page_placeholder_heading_concat_samples(combined_processed_markdown or latest_markdown)
+        )
+        page_placeholder_heading_concat_source = "legacy_markdown"
+        page_placeholder_heading_concat_classification = "display_hygiene"
+
+    add_check(
+        "page_placeholder_heading_concat_hygiene_applied",
+        page_placeholder_heading_concat_count == 0,
+        page_placeholder_heading_concat_count=page_placeholder_heading_concat_count,
+        raw_page_placeholder_heading_concat_count=raw_page_placeholder_heading_concat_count,
+        page_placeholder_heading_concat_source=page_placeholder_heading_concat_source,
+        page_placeholder_heading_concat_classification=page_placeholder_heading_concat_classification,
+    )
 
     known_false_split_patterns = {
         "lietaer_exchange_install_roof_split": "установить\n\nустановить новую крышу",
@@ -1818,6 +1933,8 @@ def evaluate_lietaer_acceptance(
             "residual_bullet_glyphs_present",
             _coerce_int(translation_quality_report.get("residual_bullet_glyph_count")) == 0,
             residual_bullet_glyph_count=translation_quality_report.get("residual_bullet_glyph_count"),
+            residual_bullet_glyph_gate_source=translation_quality_report.get("residual_bullet_glyph_gate_source"),
+            raw_residual_bullet_glyph_count=translation_quality_report.get("raw_residual_bullet_glyph_count"),
         )
         add_check(
             "list_fragment_regressions_present",
@@ -2567,8 +2684,6 @@ def main() -> None:
         f"formatting_diagnostics_count={len(formatting_diagnostics_payloads)}",
         f"formatting_diagnostics_discovery_source={formatting_diagnostics_discovery_source}",
         f"translation_quality_report_path={report['translation_quality_report_path']}",
-        f"translation_quality_status={cast(Mapping[str, object], report['translation_quality_report'] or {}).get('quality_status')}",
-        f"translation_quality_gate_reasons={','.join(_as_string_list(cast(Mapping[str, object], report['translation_quality_report'] or {}).get('gate_reasons')))}",
         f"acceptance_passed={report['acceptance']['passed']}",
         f"acceptance_failed_checks={','.join(_as_string_list(cast(Mapping[str, object], report['acceptance']).get('failed_checks')))}",
         f"last_error={last_error}",
@@ -2585,6 +2700,11 @@ def main() -> None:
         f"is_wsl={report['run']['environment']['is_wsl']}",
         f"git_head={report['run']['environment']['git_head']}",
     ]
+    summary_lines.extend(
+        _build_translation_quality_summary_lines(
+            cast(Mapping[str, object], report["translation_quality_report"] or {}),
+        )
+    )
     summary_path.write_text("\n".join(summary_lines), encoding="utf-8")
     report_path.write_text(
         json.dumps(sanitized_report, ensure_ascii=False, indent=2), encoding="utf-8"

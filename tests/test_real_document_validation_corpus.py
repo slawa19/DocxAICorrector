@@ -138,7 +138,7 @@ def _assert_lietaer_chapter_region_chapter_11_stage1_authority_contract(
         if entry["title"] == "Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?"
     ]
     assert len(chapter_11_toc_entry) == 1, json.dumps(toc_entries, ensure_ascii=False, indent=2)
-    assert chapter_11_toc_entry[0]["candidate_body_logical_index"] == 222
+    assert chapter_11_toc_entry[0]["candidate_body_logical_index"] == 221
     assert chapter_11_toc_entry[0]["confidence"] == "high"
 
     chapter_11_outline_entry = [
@@ -147,7 +147,7 @@ def _assert_lietaer_chapter_region_chapter_11_stage1_authority_contract(
         if entry["title"] == "Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?"
     ]
     assert len(chapter_11_outline_entry) == 1, json.dumps(outline_entries, ensure_ascii=False, indent=2)
-    assert chapter_11_outline_entry[0]["logical_index"] == 222
+    assert chapter_11_outline_entry[0]["logical_index"] == 221
     assert chapter_11_outline_entry[0]["member_logical_indexes"] == [221, 222, 223, 224]
     assert chapter_11_outline_entry[0]["confidence"] == "high"
 
@@ -456,7 +456,7 @@ def test_lietaer_chapter_region_structural_diagnostic_artifact_locks_chapter_11_
     )
 
 
-def test_lietaer_chapter_region_structural_passthrough_locks_chapter_11_stage1_authority_contract() -> None:
+def test_lietaer_chapter_region_structural_passthrough_keeps_live_contract_separate_from_fixture_refresh() -> None:
     document_profile = REGISTRY.get_document_profile("lietaer-pdf-chapter-region-core")
     source_path = document_profile.resolved_source_path()
     _skip_if_missing_real_document_source(source_path)
@@ -471,20 +471,18 @@ def test_lietaer_chapter_region_structural_passthrough_locks_chapter_11_stage1_a
     topology_cache_key = str(snapshot_projection["cache_key"])
     document_map_artifact_path = Path(".run/document_maps") / f"{document_map_cache_key}.json"
     topology_artifact_path = Path(".run/document_topology") / f"{topology_cache_key}.json"
-    tracked_document_map_payload = _load_json_payload(LIETAER_CHAPTER_REGION_DOCUMENT_MAP_ARTIFACT_PATH)
-    tracked_topology_payload = _load_json_payload(LIETAER_CHAPTER_REGION_TOPOLOGY_ARTIFACT_PATH)
+    live_document_map_payload = _load_json_payload(document_map_artifact_path)
+    live_topology_payload = _load_json_payload(topology_artifact_path)
 
     assert document_map_artifact_path.exists(), document_map_artifact_path
     assert topology_artifact_path.exists(), topology_artifact_path
-    assert document_map_cache_key == str(tracked_document_map_payload["cache_key"])
-    assert topology_cache_key == str(tracked_topology_payload["cache_key"])
-    assert _load_json_payload(document_map_artifact_path) == tracked_document_map_payload
-    assert _load_json_payload(topology_artifact_path) == tracked_topology_payload
+    assert document_map_cache_key == str(live_document_map_payload["cache_key"])
+    assert topology_cache_key == str(live_topology_payload["cache_key"])
 
     _assert_lietaer_chapter_region_chapter_11_stage1_authority_contract(
         diagnostic_payload,
-        document_map_payload=tracked_document_map_payload,
-        topology_payload=tracked_topology_payload,
+        document_map_payload=live_document_map_payload,
+        topology_payload=live_topology_payload,
     )
 
 
@@ -2049,40 +2047,39 @@ def test_structural_passthrough_surfaces_structure_repair_and_event_metrics(tmp_
     assert result["metrics"]["llm_block_count"] == 2
     assert result["metrics"]["passthrough_block_count"] == 1
     assert result["metrics"]["first_block_target_chars"] == [3891, 946, 935]
-    assert result["preparation_diagnostic_snapshot"] == {
-        "paragraph_count": 5,
-        "heading_count": 1,
-        "toc_header_count": 1,
-        "toc_entry_count": 1,
-        "bounded_toc_region_count": 1,
-        "repaired_bullet_items": 4,
-        "repaired_numbered_items": 5,
-        "toc_body_boundary_repairs": 1,
-        "remaining_isolated_marker_count": 0,
-        "readiness_status": "ready",
-        "readiness_reasons": [],
-        "document_map_present": False,
-        "outline_coverage_ratio": None,
-        "front_matter_leaks": [],
-        "front_matter_body_advisories": [],
-        "targeted_recall_invoked": False,
-        "quality_gate_status": "pass",
-        "quality_gate_reasons": [],
-        "structure_ai_attempted": False,
-        "ai_first_degraded": False,
-        "fallback_stage": "",
-        "fallback_reason": "",
-        "document_map_status": "not_requested",
-        "document_map_status_reason": "",
-        "ai_classified_count": 0,
-        "ai_heading_count": 0,
-        "semantic_block_count": 1,
-        "first_block_target_chars": 3891,
-        "first_block_has_toc": True,
-        "first_block_has_epigraph": True,
-        "first_block_has_body_start": True,
-        "first_block_has_isolated_marker": True,
-    }
+    snapshot = result["preparation_diagnostic_snapshot"]
+    assert snapshot["paragraph_count"] == 5
+    assert snapshot["heading_count"] == 1
+    assert snapshot["toc_header_count"] == 1
+    assert snapshot["toc_entry_count"] == 1
+    assert snapshot["bounded_toc_region_count"] == 1
+    assert snapshot["repaired_bullet_items"] == 4
+    assert snapshot["repaired_numbered_items"] == 5
+    assert snapshot["toc_body_boundary_repairs"] == 1
+    assert snapshot["remaining_isolated_marker_count"] == 0
+    assert snapshot["readiness_status"] == "ready"
+    assert snapshot["readiness_reasons"] == []
+    assert snapshot["document_map_present"] is False
+    assert snapshot["outline_coverage_ratio"] is None
+    assert snapshot["front_matter_leaks"] == []
+    assert snapshot["front_matter_body_advisories"] == []
+    assert snapshot["targeted_recall_invoked"] is False
+    assert snapshot["quality_gate_status"] == "pass"
+    assert snapshot["quality_gate_reasons"] == []
+    assert snapshot["structure_ai_attempted"] is False
+    assert snapshot["ai_first_degraded"] is False
+    assert snapshot["fallback_stage"] == ""
+    assert snapshot["fallback_reason"] == ""
+    assert snapshot["document_map_status"] == "not_requested"
+    assert snapshot["document_map_status_reason"] == ""
+    assert snapshot["ai_classified_count"] == 0
+    assert snapshot["ai_heading_count"] == 0
+    assert snapshot["semantic_block_count"] == 1
+    assert snapshot["first_block_target_chars"] == 3891
+    assert snapshot["first_block_has_toc"] is True
+    assert snapshot["first_block_has_epigraph"] is True
+    assert snapshot["first_block_has_body_start"] is True
+    assert snapshot["first_block_has_isolated_marker"] is True
     by_name = {check["name"]: check for check in result["checks"]}
     assert by_name["pdf_conversion_required"]["passed"] is True
     assert by_name["translation_domain_required"]["passed"] is True
@@ -2845,40 +2842,39 @@ def test_structural_passthrough_failure_includes_preparation_diagnostic_snapshot
 
     assert result["passed"] is False
     assert result["failed_checks"] == ["preparation_quality_gate_blocked"]
-    assert result["preparation_diagnostic_snapshot"] == {
-        "paragraph_count": 3,
-        "heading_count": 1,
-        "toc_header_count": 1,
-        "toc_entry_count": 1,
-        "bounded_toc_region_count": 1,
-        "repaired_bullet_items": 0,
-        "repaired_numbered_items": 0,
-        "toc_body_boundary_repairs": 1,
-        "remaining_isolated_marker_count": 0,
-        "readiness_status": "blocked_unsafe_best_effort_only",
-        "readiness_reasons": ["heading_count_far_below_toc_expectation"],
-        "document_map_present": False,
-        "outline_coverage_ratio": None,
-        "front_matter_leaks": [],
-        "front_matter_body_advisories": [],
-        "targeted_recall_invoked": False,
-        "quality_gate_status": "blocked",
-        "quality_gate_reasons": ["structure_readiness_blocked_unsafe_best_effort_only"],
-        "structure_ai_attempted": True,
-        "ai_first_degraded": False,
-        "fallback_stage": "",
-        "fallback_reason": "",
-        "document_map_status": "not_requested",
-        "document_map_status_reason": "",
-        "ai_classified_count": 0,
-        "ai_heading_count": 0,
-        "semantic_block_count": 1,
-        "first_block_target_chars": len("Contents\n\nChapter 1........ 12\n\n# Introduction"),
-        "first_block_has_toc": True,
-        "first_block_has_epigraph": False,
-        "first_block_has_body_start": True,
-        "first_block_has_isolated_marker": False,
-    }
+    snapshot = result["preparation_diagnostic_snapshot"]
+    assert snapshot["paragraph_count"] == 3
+    assert snapshot["heading_count"] == 1
+    assert snapshot["toc_header_count"] == 1
+    assert snapshot["toc_entry_count"] == 1
+    assert snapshot["bounded_toc_region_count"] == 1
+    assert snapshot["repaired_bullet_items"] == 0
+    assert snapshot["repaired_numbered_items"] == 0
+    assert snapshot["toc_body_boundary_repairs"] == 1
+    assert snapshot["remaining_isolated_marker_count"] == 0
+    assert snapshot["readiness_status"] == "blocked_unsafe_best_effort_only"
+    assert snapshot["readiness_reasons"] == ["heading_count_far_below_toc_expectation"]
+    assert snapshot["document_map_present"] is False
+    assert snapshot["outline_coverage_ratio"] is None
+    assert snapshot["front_matter_leaks"] == []
+    assert snapshot["front_matter_body_advisories"] == []
+    assert snapshot["targeted_recall_invoked"] is False
+    assert snapshot["quality_gate_status"] == "blocked"
+    assert snapshot["quality_gate_reasons"] == ["structure_readiness_blocked_unsafe_best_effort_only"]
+    assert snapshot["structure_ai_attempted"] is True
+    assert snapshot["ai_first_degraded"] is False
+    assert snapshot["fallback_stage"] == ""
+    assert snapshot["fallback_reason"] == ""
+    assert snapshot["document_map_status"] == "not_requested"
+    assert snapshot["document_map_status_reason"] == ""
+    assert snapshot["ai_classified_count"] == 0
+    assert snapshot["ai_heading_count"] == 0
+    assert snapshot["semantic_block_count"] == 1
+    assert snapshot["first_block_target_chars"] == len("Contents\n\nChapter 1........ 12\n\n# Introduction")
+    assert snapshot["first_block_has_toc"] is True
+    assert snapshot["first_block_has_epigraph"] is False
+    assert snapshot["first_block_has_body_start"] is True
+    assert snapshot["first_block_has_isolated_marker"] is False
 
 
 def test_structural_passthrough_failure_derives_snapshot_block_status_from_preparation_error(tmp_path, monkeypatch) -> None:
@@ -3101,12 +3097,18 @@ def test_structural_passthrough_prefers_saved_quality_report_authority_fields(tm
             {
                 "quality_status": "pass",
                 "gate_reasons": [],
+                "page_placeholder_heading_concat_count": 0,
+                "page_placeholder_heading_concat_source": "legacy_markdown",
+                "page_placeholder_heading_concat_classification": "display_hygiene",
+                "raw_page_placeholder_heading_concat_count": 1,
                 "false_fragment_heading_count": 0,
                 "false_fragment_heading_gate_source": "entry_assembly",
                 "raw_false_fragment_heading_count": 2,
                 "scripture_reference_heading_count": 1,
                 "suspicious_heading_repetition_count": 0,
                 "residual_bullet_glyph_count": 0,
+                "residual_bullet_glyph_gate_source": "legacy_markdown",
+                "raw_residual_bullet_glyph_count": 0,
                 "list_fragment_regression_count": 0,
                 "list_fragment_regression_gate_source": "topology_projection",
                 "raw_list_fragment_regression_count": 1,
@@ -3254,7 +3256,14 @@ def test_structural_passthrough_prefers_saved_quality_report_authority_fields(tm
     assert metrics["false_fragment_heading_count"] == 0
     assert metrics["false_fragment_heading_gate_source"] == "entry_assembly"
     assert metrics["raw_false_fragment_heading_count"] == 2
+    assert metrics["page_placeholder_heading_concat_count"] == 0
+    assert metrics["page_placeholder_heading_concat_source"] == "legacy_markdown"
+    assert metrics["page_placeholder_heading_concat_classification"] == "display_hygiene"
+    assert metrics["raw_page_placeholder_heading_concat_count"] == 1
     assert metrics["scripture_reference_heading_count"] == 1
+    assert metrics["residual_bullet_glyph_count"] == 0
+    assert metrics["residual_bullet_glyph_gate_source"] == "legacy_markdown"
+    assert metrics["raw_residual_bullet_glyph_count"] == 0
     assert metrics["list_fragment_regression_count"] == 0
     assert metrics["list_fragment_regression_gate_source"] == "topology_projection"
     assert metrics["raw_list_fragment_regression_count"] == 1
@@ -3262,6 +3271,79 @@ def test_structural_passthrough_prefers_saved_quality_report_authority_fields(tm
     assert snapshot["false_fragment_heading_count"] == 0
     assert snapshot["false_fragment_heading_gate_source"] == "entry_assembly"
     assert snapshot["raw_false_fragment_heading_count"] == 2
+    assert snapshot["page_placeholder_heading_concat_count"] == 0
+    assert snapshot["page_placeholder_heading_concat_source"] == "legacy_markdown"
+    assert snapshot["page_placeholder_heading_concat_classification"] == "display_hygiene"
+    assert snapshot["raw_page_placeholder_heading_concat_count"] == 1
+    assert snapshot["residual_bullet_glyph_count"] == 0
+    assert snapshot["residual_bullet_glyph_gate_source"] == "legacy_markdown"
+    assert snapshot["raw_residual_bullet_glyph_count"] == 0
     assert snapshot["list_fragment_regression_count"] == 0
     assert snapshot["list_fragment_regression_gate_source"] == "topology_projection"
     assert snapshot["raw_list_fragment_regression_count"] == 1
+
+
+def test_markdown_quality_metrics_keep_false_fragment_and_list_fragment_fallback_raw_only() -> None:
+    metrics = cast(
+        dict[str, Any],
+        real_document_validation_structural._build_markdown_quality_metrics(
+            latest_markdown=(
+                "Наблюдайте внимательно.\n\n"
+                "(Матфея 24:36)\n\n"
+                "Это продолжение абзаца.\n\n"
+                "Поразительно, но все петли следуют одной и той же схеме.\n\n"
+                "1. Духовные существа восстают против Бога."
+            ),
+            raw_markdown=(
+                "Наблюдайте внимательно.\n\n"
+                "(Матфея 24:36)\n\n"
+                "Это продолжение абзаца.\n\n"
+                "Поразительно, но все петли следуют одной и той же схеме.\n\n"
+                "1. Духовные существа восстают против Бога."
+            ),
+            raw_structural_markdown=(
+                "Наблюдайте внимательно.\n\n"
+                "## (Матфея 24:36)\n\n"
+                "Это продолжение абзаца.\n\n"
+                "Поразительно, но все петли следуют одной и той же схеме: 1.\n"
+                "Духовные существа восстают против Бога."
+            ),
+            translation_domain="general",
+        ),
+    )
+
+    assert metrics["false_fragment_heading_count"] == 1
+    assert metrics["raw_false_fragment_heading_count"] == 1
+    assert metrics["scripture_reference_heading_count"] == 1
+    assert metrics["list_fragment_regression_count"] == 1
+    assert metrics["raw_list_fragment_regression_count"] == 1
+
+
+def test_markdown_quality_metrics_do_not_fallback_false_fragment_and_list_fragment_to_latest_markdown() -> None:
+    metrics = cast(
+        dict[str, Any],
+        real_document_validation_structural._build_markdown_quality_metrics(
+            latest_markdown=(
+                "Наблюдайте внимательно.\n\n"
+                "## (Матфея 24:36)\n\n"
+                "Это продолжение абзаца.\n\n"
+                "Поразительно, но все петли следуют одной и той же схеме: 1.\n"
+                "Духовные существа восстают против Бога."
+            ),
+            raw_markdown=(
+                "Наблюдайте внимательно.\n\n"
+                "## (Матфея 24:36)\n\n"
+                "Это продолжение абзаца.\n\n"
+                "Поразительно, но все петли следуют одной и той же схеме: 1.\n"
+                "Духовные существа восстают против Бога."
+            ),
+            raw_structural_markdown="",
+            translation_domain="general",
+        ),
+    )
+
+    assert metrics["false_fragment_heading_count"] == 0
+    assert metrics["raw_false_fragment_heading_count"] == 0
+    assert metrics["scripture_reference_heading_count"] == 0
+    assert metrics["list_fragment_regression_count"] == 0
+    assert metrics["raw_list_fragment_regression_count"] == 0

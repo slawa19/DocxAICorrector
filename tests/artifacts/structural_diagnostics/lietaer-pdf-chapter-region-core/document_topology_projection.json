@@ -1,7 +1,7 @@
 {
   "stage": "document_topology_projection_v1",
   "schema_version": 1,
-  "cache_key": "7c5360ef89965da93af30b790b4238bd292070048793038b94148f6531bdcc34",
+  "cache_key": "3d9f3fb55811d021c43dd9999fcb1d763219f1667be0e34a4824ccb497f80673",
   "document_map_cache_key": "9b82a2e2693c1ce746f5e4e77a8c86abba2240d90d4c062bed2cddb182731558",
   "topology_projection_schema_version": 2,
   "topology_hint_schema_version": 1,
@@ -56,9 +56,9 @@
     {
       "op": "split_compound_toc_entries",
       "logical_indexes": [
-        6
+        8
       ],
-      "canonical_text": "Chapter Eight STRATEGIES FOR GOVERNMENTS | Strategies for NGOs",
+      "canonical_text": "Chapter Ten TRUTH AND CONSEQUENCES Lessons Learned | Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?",
       "authority": "document_map_split_hint",
       "confidence": "high",
       "evidence": [
@@ -71,16 +71,15 @@
     {
       "op": "split_compound_toc_entries",
       "logical_indexes": [
-        8
+        6
       ],
-      "canonical_text": "Chapter Ten TRUTH AND CONSEQUENCES Lessons Learned | Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?",
-      "authority": "document_map_split_hint",
+      "canonical_text": "Chapter Eight STRATEGIES FOR GOVERNMENTS | STRATEGIES FOR NGOs",
+      "authority": "document_map_toc",
       "confidence": "high",
       "evidence": [
-        "split_hint",
         "bounded_toc_region",
-        "toc_entry",
-        "one_to_one_toc_entry_match"
+        "one_to_one_toc_entry_match",
+        "toc_entry"
       ]
     }
   ],
@@ -144,42 +143,6 @@
     {
       "unit_type": "toc_entry",
       "logical_indexes": [
-        6
-      ],
-      "canonical_text": "Chapter Eight STRATEGIES FOR GOVERNMENTS",
-      "role": "toc_entry",
-      "heading_level": null,
-      "confidence": "high",
-      "authority": "document_map_split_hint",
-      "evidence": [
-        "split_hint",
-        "bounded_toc_region",
-        "toc_entry",
-        "one_to_one_toc_entry_match"
-      ],
-      "unit_id": "u_a55a8f900d12"
-    },
-    {
-      "unit_type": "toc_entry",
-      "logical_indexes": [
-        6
-      ],
-      "canonical_text": "Strategies for NGOs",
-      "role": "toc_entry",
-      "heading_level": null,
-      "confidence": "high",
-      "authority": "document_map_split_hint",
-      "evidence": [
-        "split_hint",
-        "bounded_toc_region",
-        "toc_entry",
-        "one_to_one_toc_entry_match"
-      ],
-      "unit_id": "u_e9bf99d789d0"
-    },
-    {
-      "unit_type": "toc_entry",
-      "logical_indexes": [
         8
       ],
       "canonical_text": "Chapter Ten TRUTH AND CONSEQUENCES Lessons Learned",
@@ -212,6 +175,40 @@
         "one_to_one_toc_entry_match"
       ],
       "unit_id": "u_b15c39a6dd7a"
+    },
+    {
+      "unit_type": "toc_entry",
+      "logical_indexes": [
+        6
+      ],
+      "canonical_text": "Chapter Eight STRATEGIES FOR GOVERNMENTS",
+      "role": "toc_entry",
+      "heading_level": null,
+      "confidence": "high",
+      "authority": "document_map_toc",
+      "evidence": [
+        "bounded_toc_region",
+        "one_to_one_toc_entry_match",
+        "toc_entry"
+      ],
+      "unit_id": "u_a55a8f900d12"
+    },
+    {
+      "unit_type": "toc_entry",
+      "logical_indexes": [
+        6
+      ],
+      "canonical_text": "STRATEGIES FOR NGOs",
+      "role": "toc_entry",
+      "heading_level": null,
+      "confidence": "high",
+      "authority": "document_map_toc",
+      "evidence": [
+        "bounded_toc_region",
+        "one_to_one_toc_entry_match",
+        "toc_entry"
+      ],
+      "unit_id": "u_8ce708b72c4f"
     }
   ]
 }

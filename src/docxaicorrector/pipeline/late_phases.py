@@ -16,6 +16,7 @@ from docxaicorrector.pipeline.output_validation import (
     collect_false_fragment_heading_samples_from_entries,
     collect_list_fragment_regression_samples,
     collect_mixed_script_samples,
+    collect_page_placeholder_heading_concat_samples,
     collect_residual_bullet_glyph_samples,
     collect_theology_style_issue_samples,
     has_toc_body_concat_markdown,
@@ -68,24 +69,48 @@ def _format_translation_quality_gate_failure_message(gate_reasons: Sequence[str]
 
 
 def _normalize_final_markdown_for_quality_gate(text: str) -> str:
-    normalized = normalize_page_placeholder_heading_concats_markdown(text)
-    normalized = normalize_residual_bullet_glyphs_markdown(normalized)
+    normalized = text
     normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
     if "\n" not in normalized and "\n\n" in text:
         return text
     return normalized
+
+
+def _normalize_final_markdown_for_display_hygiene_reporting(text: str) -> str:
+    normalized = normalize_page_placeholder_heading_concats_markdown(text)
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
+    if "\n" not in normalized and "\n\n" in text:
+        return text
+    return normalized
+
+
+def _apply_runtime_display_structure_compatibility_cleanup(text: str) -> str:
+    # These repairs are display-only compatibility cleanup; quality/report logic keeps using raw gate input.
+    normalized = normalize_false_fragment_headings_markdown(text)
+    return normalize_list_fragment_regressions_markdown(normalized)
+
+
+def _apply_runtime_display_hygiene_cleanup(text: str) -> str:
+    normalized = normalize_page_placeholder_heading_concats_markdown(text)
+    normalized = normalize_residual_bullet_glyphs_markdown(normalized)
+    return normalize_mixed_script_markdown(normalized)
 
 
 def _normalize_final_markdown_for_runtime_display(text: str) -> str:
-    normalized = normalize_page_placeholder_heading_concats_markdown(text)
-    normalized = normalize_false_fragment_headings_markdown(normalized)
-    normalized = normalize_residual_bullet_glyphs_markdown(normalized)
-    normalized = normalize_list_fragment_regressions_markdown(normalized)
-    normalized = normalize_mixed_script_markdown(normalized)
+    normalized = _apply_runtime_display_structure_compatibility_cleanup(text)
+    normalized = _apply_runtime_display_hygiene_cleanup(normalized)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
     if "\n" not in normalized and "\n\n" in text:
         return text
     return normalized
+
+
+def _resolve_runtime_display_markdown(*, docx_phase: Mapping[str, object], fallback_markdown: str) -> str:
+    runtime_display_markdown = docx_phase.get("runtime_display_markdown")
+    if isinstance(runtime_display_markdown, str) and runtime_display_markdown:
+        return runtime_display_markdown
+
+    return _normalize_final_markdown_for_runtime_display(fallback_markdown)
 
 
 def _serialize_assembly_decisions(decisions: Sequence[object], *, limit: int = 20) -> list[dict[str, object]]:
@@ -358,6 +383,7 @@ def _build_translation_quality_report(
     assembly_result: Any | None = None,
 ) -> dict[str, object]:
     normalized_quality_markdown = _normalize_final_markdown_for_quality_gate(final_markdown)
+    display_hygiene_markdown = _normalize_final_markdown_for_display_hygiene_reporting(final_markdown)
     payloads = _load_formatting_diagnostics_payloads(formatting_diagnostics_artifacts)
     latest_payload = payloads[-1] if payloads else {}
     unmapped_source_ids = latest_payload.get("unmapped_source_ids") if isinstance(latest_payload, Mapping) else []
@@ -369,6 +395,8 @@ def _build_translation_quality_report(
     gate_reasons: list[str] = []
     bullet_heading_samples = collect_bullet_heading_samples(normalized_quality_markdown)
     bullet_heading_count = len(bullet_heading_samples)
+    raw_page_placeholder_heading_concat_samples = collect_page_placeholder_heading_concat_samples(final_markdown)
+    page_placeholder_heading_concat_samples = collect_page_placeholder_heading_concat_samples(display_hygiene_markdown)
     assembly_entries = tuple(getattr(assembly_result, "entries", ()) or ())
     assembly_uses_fallback = any(bool(getattr(entry, "used_fallback", False)) for entry in assembly_entries)
     source_backed_entry_authority = _has_source_backed_entry_authority(assembly_entries) and not assembly_uses_fallback
@@ -530,6 +558,12 @@ def _build_translation_quality_report(
         "caption_heading_conflicts_count": len(caption_heading_conflicts) if isinstance(caption_heading_conflicts, list) else 0,
         "bullet_heading_count": bullet_heading_count,
         "bullet_heading_samples": _serialize_quality_samples(bullet_heading_samples),
+        "page_placeholder_heading_concat_count": len(page_placeholder_heading_concat_samples),
+        "page_placeholder_heading_concat_samples": _serialize_quality_samples(page_placeholder_heading_concat_samples),
+        "page_placeholder_heading_concat_source": "legacy_markdown",
+        "page_placeholder_heading_concat_classification": "display_hygiene",
+        "raw_page_placeholder_heading_concat_count": len(raw_page_placeholder_heading_concat_samples),
+        "raw_page_placeholder_heading_concat_samples": _serialize_quality_samples(raw_page_placeholder_heading_concat_samples),
         "false_fragment_heading_count": len(false_fragment_heading_samples),
         "false_fragment_heading_samples": _serialize_quality_samples(false_fragment_heading_samples),
         "false_fragment_heading_gate_source": false_fragment_heading_gate_source,
@@ -540,6 +574,8 @@ def _build_translation_quality_report(
         "scripture_reference_heading_count": len(scripture_reference_heading_samples),
         "scripture_reference_heading_samples": _serialize_quality_samples(scripture_reference_heading_samples),
         "residual_bullet_glyph_count": len(residual_bullet_glyph_samples),
+        "residual_bullet_glyph_gate_source": "legacy_markdown",
+        "raw_residual_bullet_glyph_count": len(residual_bullet_glyph_samples),
         "residual_bullet_glyph_samples": _serialize_quality_samples(residual_bullet_glyph_samples),
         "list_fragment_regression_count": len(list_fragment_regression_samples),
         "list_fragment_regression_samples": _serialize_quality_samples(list_fragment_regression_samples),
@@ -862,8 +898,8 @@ def run_image_processing_phase(
     )
     _log_boundary_recovery_diagnostics(dependencies=dependencies, context=context, assembly_result=assembly_result)
     final_markdown = assembly_result.final_markdown
-    display_markdown = _normalize_final_markdown_for_runtime_display(final_markdown)
-    emitters.emit_state(context.runtime, latest_markdown=display_markdown)
+    runtime_display_markdown = _normalize_final_markdown_for_runtime_display(final_markdown)
+    emitters.emit_state(context.runtime, latest_markdown=runtime_display_markdown)
     try:
         image_client = initialization.openai_client
         image_mode_requires_openai_client = context.image_mode not in {
@@ -892,7 +928,7 @@ def run_image_processing_phase(
             raise RuntimeError("Пайплайн обработки изображений вернул None вместо коллекции ассетов.")
 
         normalized_image_assets = list(processed_image_assets)
-        placeholder_integrity = dependencies.inspect_placeholder_integrity(display_markdown, normalized_image_assets)
+        placeholder_integrity = dependencies.inspect_placeholder_integrity(runtime_display_markdown, normalized_image_assets)
         if not isinstance(placeholder_integrity, Mapping):
             raise TypeError("Проверка целостности placeholder вернула неподдерживаемый тип результата.")
 
@@ -904,13 +940,13 @@ def run_image_processing_phase(
             exc,
             "Ошибка обработки изображений",
             filename=context.uploaded_filename,
-            final_markdown_chars=len(display_markdown),
+            final_markdown_chars=len(runtime_display_markdown),
             image_count=len(context.image_assets),
             image_mode=context.image_mode,
         )
         emitters.emit_state(
             context.runtime,
-            latest_markdown=display_markdown,
+            latest_markdown=runtime_display_markdown,
             last_error=error_message,
             latest_docx_bytes=None,
             latest_narration_text=None,
@@ -924,7 +960,7 @@ def run_image_processing_phase(
             activity_message="Ошибка на этапе обработки изображений документа.",
             block_index=initialization.job_count,
             block_count=initialization.job_count,
-            target_chars=len(display_markdown),
+            target_chars=len(runtime_display_markdown),
             context_chars=0,
             log_details=error_message,
         )
@@ -1189,14 +1225,14 @@ def run_docx_build_phase(
                 translated_segment_count=sum(1 for value in selected_with_context_result.segment_provenance_by_id.values() if value == "translated"),
                 source_segment_count=sum(1 for value in selected_with_context_result.segment_provenance_by_id.values() if value == "source"),
             )
-    display_markdown = _normalize_final_markdown_for_runtime_display(final_markdown)
+    runtime_display_markdown = _normalize_final_markdown_for_runtime_display(final_markdown)
     emitters.emit_status(
         context.runtime,
         stage="Сборка DOCX",
         detail="Все блоки готовы. Собираю итоговый DOCX из Markdown.",
         current_block=job_count,
         block_count=job_count,
-        target_chars=len(display_markdown),
+        target_chars=len(runtime_display_markdown),
         context_chars=0,
         progress=1.0,
         is_running=True,
@@ -1206,7 +1242,7 @@ def run_docx_build_phase(
     build_started_at_epoch = time.time()
 
     try:
-        docx_bytes = dependencies.convert_markdown_to_docx_bytes(display_markdown)
+        docx_bytes = dependencies.convert_markdown_to_docx_bytes(runtime_display_markdown)
         if context.source_paragraphs:
             docx_bytes = call_docx_restorer_with_optional_registry_fn(
                 dependencies.preserve_source_paragraph_properties,
@@ -1223,7 +1259,7 @@ def run_docx_build_phase(
             exc,
             "Ошибка сборки DOCX",
             filename=context.uploaded_filename,
-            final_markdown_chars=len(display_markdown),
+            final_markdown_chars=len(runtime_display_markdown),
         )
         emitters.emit_state(
             context.runtime,
@@ -1240,7 +1276,7 @@ def run_docx_build_phase(
             activity_message="Ошибка на этапе сборки DOCX.",
             block_index=job_count,
             block_count=job_count,
-            target_chars=len(display_markdown),
+            target_chars=len(runtime_display_markdown),
             context_chars=0,
             log_details=error_message,
         )
@@ -1264,7 +1300,7 @@ def run_docx_build_phase(
                 status=severity,
                 block_index=job_count,
                 block_count=job_count,
-                target_chars=len(final_markdown),
+                target_chars=len(runtime_display_markdown),
                 context_chars=0,
                 details=user_summary,
             )
@@ -1298,7 +1334,7 @@ def run_docx_build_phase(
             activity_message="DOCX собран без содержимого.",
             block_index=job_count,
             block_count=job_count,
-            target_chars=len(final_markdown),
+            target_chars=len(runtime_display_markdown),
             context_chars=0,
             log_details=critical_message,
         )
@@ -1306,7 +1342,7 @@ def run_docx_build_phase(
 
     return {
         "docx_bytes": docx_bytes,
-        "final_markdown": display_markdown,
+        "runtime_display_markdown": runtime_display_markdown,
         "latest_result_notice": latest_result_notice,
         "formatting_diagnostics_artifacts": list(formatting_diagnostics_artifacts),
         "assembly_entries": list(assembly_result.entries),
@@ -1331,9 +1367,9 @@ def finalize_processing_success(
     )
     _log_boundary_recovery_diagnostics(dependencies=dependencies, context=context, assembly_result=assembly_result)
     gate_input_markdown = assembly_result.final_markdown
-    final_markdown = str(
-        docx_phase.get("final_markdown")
-        or _normalize_final_markdown_for_runtime_display(gate_input_markdown)
+    runtime_display_markdown = _resolve_runtime_display_markdown(
+        docx_phase=docx_phase,
+        fallback_markdown=gate_input_markdown,
     )
     formatting_diagnostics_artifacts = cast(
         Sequence[str],
@@ -1375,7 +1411,7 @@ def finalize_processing_success(
         )
         emitters.emit_state(
             context.runtime,
-            latest_markdown=final_markdown,
+            latest_markdown=runtime_display_markdown,
             latest_docx_bytes=docx_phase["docx_bytes"],
             latest_narration_text=None,
             latest_result_notice={
@@ -1402,7 +1438,7 @@ def finalize_processing_success(
             activity_message=_build_quality_gate_activity_message(gate_reasons),
             block_index=job_count,
             block_count=job_count,
-            target_chars=len(final_markdown),
+            target_chars=len(runtime_display_markdown),
             context_chars=0,
             log_details=error_message,
         )
@@ -1428,7 +1464,7 @@ def finalize_processing_success(
             emitters.emit_state(
                 context.runtime,
                 latest_docx_bytes=docx_phase["docx_bytes"],
-                latest_markdown=final_markdown,
+                latest_markdown=runtime_display_markdown,
                 latest_narration_text=None,
                 latest_result_notice=docx_phase["latest_result_notice"],
                 last_error=error_message,
@@ -1444,7 +1480,7 @@ def finalize_processing_success(
         else:
             emitters.emit_state(
                 context.runtime,
-                latest_markdown=final_markdown,
+                latest_markdown=runtime_display_markdown,
                 latest_docx_bytes=None,
                 latest_narration_text=None,
                 last_error=error_message,
@@ -1458,7 +1494,7 @@ def finalize_processing_success(
                 activity_message="Ошибка на этапе подготовки текста для ElevenLabs.",
                 block_index=job_count,
                 block_count=job_count,
-                target_chars=len(final_markdown),
+                target_chars=len(runtime_display_markdown),
                 context_chars=0,
                 log_details=error_message,
             )
@@ -1480,7 +1516,7 @@ def finalize_processing_success(
                 emitters.emit_state(
                     context.runtime,
                     latest_docx_bytes=docx_phase["docx_bytes"],
-                    latest_markdown=final_markdown,
+                    latest_markdown=runtime_display_markdown,
                     latest_narration_text=None,
                     latest_result_notice=docx_phase["latest_result_notice"],
                     last_error=error_message,
@@ -1496,7 +1532,7 @@ def finalize_processing_success(
             else:
                 emitters.emit_state(
                     context.runtime,
-                    latest_markdown=final_markdown,
+                    latest_markdown=runtime_display_markdown,
                     latest_docx_bytes=None,
                     latest_narration_text=None,
                     last_error=error_message,
@@ -1510,14 +1546,14 @@ def finalize_processing_success(
                     activity_message="Текст для ElevenLabs не прошёл deterministic validation.",
                     block_index=job_count,
                     block_count=job_count,
-                    target_chars=len(final_markdown),
+                    target_chars=len(runtime_display_markdown),
                     context_chars=0,
                     log_details=error_message,
                 )
     emitters.emit_state(
         context.runtime,
         latest_docx_bytes=docx_phase["docx_bytes"],
-        latest_markdown=final_markdown,
+        latest_markdown=runtime_display_markdown,
         latest_narration_text=narration_text,
         latest_result_notice=docx_phase["latest_result_notice"],
         last_error=narration_error_message,
@@ -1534,7 +1570,7 @@ def finalize_processing_success(
         )
         artifact_writer_kwargs = {
             "source_name": context.uploaded_filename,
-            "markdown_text": final_markdown,
+            "markdown_text": runtime_display_markdown,
             "docx_bytes": docx_phase["docx_bytes"],
             "assembly_mode": reassembly_plan.assembly_mode,
             "result_manifest": docx_phase.get("result_manifest")
@@ -1633,7 +1669,7 @@ def finalize_processing_success(
         "Документ обработан полностью",
         filename=context.uploaded_filename,
         block_count=job_count,
-        final_markdown_chars=len(final_markdown),
+        final_markdown_chars=len(runtime_display_markdown),
         narration_chars=len(narration_text or ""),
         elapsed_seconds=round(time.perf_counter() - state.started_at, 2),
         translation_second_pass_enabled=_is_translation_second_pass_effectively_enabled(context=context),
@@ -1644,7 +1680,7 @@ def finalize_processing_success(
         status="DONE",
         block_index=job_count,
         block_count=job_count,
-        target_chars=len(final_markdown),
+        target_chars=len(runtime_display_markdown),
         context_chars=0,
         details=f"весь документ обработан за {time.perf_counter() - state.started_at:.1f} сек.",
     )
