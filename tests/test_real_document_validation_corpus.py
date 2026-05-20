@@ -2917,6 +2917,102 @@ def test_derive_unit_aware_unmapped_fields_infers_single_unmapped_target_from_so
     assert fields["unit_unmapped_target_gate_source"] == "topology_unit"
 
 
+def test_derive_unit_aware_unmapped_fields_recovers_multi_target_interval_gap() -> None:
+    source_paragraphs = [
+        ParagraphUnit(text="Prelude", role="body", paragraph_id="p-prev", source_index=0, logical_index=9),
+        ParagraphUnit(
+            text="This page intentionally left blank introduction",
+            role="body",
+            paragraph_id="p0057",
+            source_index=57,
+            logical_index=57,
+        ),
+        ParagraphUnit(
+            text="From scarcity to prosperity",
+            role="body",
+            paragraph_id="p0058",
+            source_index=58,
+            logical_index=58,
+        ),
+        ParagraphUnit(
+            text="Within a generation",
+            role="body",
+            paragraph_id="p0059",
+            source_index=59,
+            logical_index=59,
+        ),
+        ParagraphUnit(
+            text="The foreman said",
+            role="body",
+            paragraph_id="p0060",
+            source_index=60,
+            logical_index=60,
+        ),
+        ParagraphUnit(text="Meanwhile", role="body", paragraph_id="p0061", source_index=61, logical_index=61),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-multi-target-interval-gap",
+        projected_units=(
+            StructuralUnit(
+                unit_id="u_elsewhere",
+                unit_type="chapter_heading",
+                logical_indexes=(200, 201),
+                canonical_text="Elsewhere",
+                role="heading",
+                heading_level=1,
+                confidence="high",
+                authority="document_map_outline",
+            ),
+        ),
+    )
+    formatting_payload = {
+        "source_registry": [
+            {"paragraph_id": "p-prev", "mapped_target_index": 44},
+            {"paragraph_id": "p0057", "mapped_target_index": None},
+            {"paragraph_id": "p0058", "mapped_target_index": None},
+            {"paragraph_id": "p0059", "mapped_target_index": None},
+            {"paragraph_id": "p0060", "mapped_target_index": None},
+            {"paragraph_id": "p0061", "mapped_target_index": 47},
+        ],
+        "unmapped_source_ids": ["p0057", "p0058", "p0059", "p0060"],
+        "unmapped_target_indexes": [45, 46],
+        "target_registry": [
+            {"target_index": 44, "mapped": True, "text_preview": "Prelude"},
+            {"target_index": 45, "mapped": False, "text_preview": "Within a generation"},
+            {"target_index": 46, "mapped": False, "text_preview": "The foreman said"},
+            {"target_index": 47, "mapped": True, "text_preview": "Meanwhile"},
+        ],
+    }
+
+    paragraph_unit_keys, _ = real_document_validation_structural._build_source_paragraph_unit_membership(
+        source_paragraphs,
+        projection,
+    )
+    aligned_target_unit_keys = real_document_validation_structural._align_target_indexes_to_unit_keys(
+        formatting_payload,
+        generated_paragraph_registry=None,
+        paragraph_unit_keys=paragraph_unit_keys,
+    )
+    fields = real_document_validation_structural._derive_unit_aware_unmapped_fields(
+        source_paragraphs=source_paragraphs,
+        topology_projection=projection,
+        formatting_payload=formatting_payload,
+        generated_paragraph_registry=None,
+    )
+
+    assert aligned_target_unit_keys is not None
+    assert aligned_target_unit_keys[45] == frozenset(
+        {"paragraph:p0057", "paragraph:p0058", "paragraph:p0059", "paragraph:p0060"}
+    )
+    assert aligned_target_unit_keys[46] == frozenset(
+        {"paragraph:p0057", "paragraph:p0058", "paragraph:p0059", "paragraph:p0060"}
+    )
+    assert fields["structure_unit_unmapped_source_count"] == 0
+    assert fields["structure_unit_unmapped_target_count"] == 0
+    assert fields["unmapped_source_count_basis"] == "topology_unit"
+    assert fields["unmapped_target_count_basis"] == "topology_unit"
+
+
 def test_build_structural_checks_prefers_topology_unit_unmapped_counts_when_available() -> None:
     document_profile = SimpleNamespace(
         max_formatting_diagnostics=5,

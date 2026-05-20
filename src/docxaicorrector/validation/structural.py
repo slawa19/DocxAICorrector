@@ -673,7 +673,7 @@ def _infer_target_alignment_unit_keys_from_source_intervals(
             for value in unresolved_target_set
             if previous_target_index < value < next_target_index and not alignments.get(value)
         ]
-        if unresolved_targets_in_interval != [target_index]:
+        if not unresolved_targets_in_interval or target_index != unresolved_targets_in_interval[0]:
             continue
         previous_source_position = max(int(value) for value in source_positions_by_target_index.get(previous_target_index, ()))
         next_source_position = min(int(value) for value in source_positions_by_target_index.get(next_target_index, ()))
@@ -689,7 +689,14 @@ def _infer_target_alignment_unit_keys_from_source_intervals(
             if mapped_target_index >= 0:
                 continue
             interval_unit_keys.update(_registry_entry_unit_keys(source_entry, paragraph_unit_keys))
-        _merge_target_alignment_unit_keys(alignments, target_index=target_index, unit_keys=interval_unit_keys)
+        if not interval_unit_keys:
+            continue
+        for unresolved_target_index in unresolved_targets_in_interval:
+            _merge_target_alignment_unit_keys(
+                alignments,
+                target_index=unresolved_target_index,
+                unit_keys=interval_unit_keys,
+            )
 
 
 def _align_target_indexes_to_unit_keys(

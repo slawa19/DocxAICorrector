@@ -138,7 +138,9 @@ The code still uses markdown-side structural normalizers and markdown detectors 
 
 ### 2.3 Index region and page-range heading entries
 
-The latest `lietaer-pdf-full-benchmark` report fails `key_headings_preserved` on entries whose source text is page-range markers such as `179–180` and `182, 192–193`. These are not chapter headings; they are entries of the book index / appendix where the heading text is a page-number range.
+The latest completed `lietaer-pdf-full-benchmark` milestone (`20260520T111314Z_1196_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne`) no longer fails `key_headings_preserved`. Compared with the prior baseline run `20260519T082926Z_963_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne`, the old C example set (`"11,12"`, `"179– 180"`, `"182, 192–1 93"`) now clears under the adopted narrow validator contract documented in `INDEX_REGION_AUTHORITY_SPEC_2026-05-20.md`.
+
+Reviewer-safe interpretation: this is validator/acceptance-layer confirmation for the old C example set, not proof that upstream recognition now has a general index / back-matter authority class.
 
 Current code state:
 
@@ -153,19 +155,21 @@ This is a new authority class. It is explicitly OUT OF SCOPE for:
 - `LAYOUT_SIGNAL_EVIDENCE_SLICE_SPEC_2026-05-14.md`;
 - Workstreams A-F in this plan.
 
-Addressing it requires a separate spec (working name: `INDEX_REGION_AUTHORITY_SPEC_YYYY-MM-DD.md`). It must NOT be merged into the topology-first remediation work, and it must NOT be solved by extending Stage 1 prompt scope without that spec.
+The separate spec is now opened at `INDEX_REGION_AUTHORITY_SPEC_2026-05-20.md`, and the narrow validator-side contract has milestone evidence behind it. Any broader index / back-matter recognition redesign still must NOT be merged into the topology-first remediation work, and it must NOT be solved by extending Stage 1 prompt scope without a separate approved package.
 
 ### 2.4 Residual bullet glyphs
 
-The latest full-book report fails `residual_bullet_glyphs_present` with `residual_bullet_glyph_count: 25` against threshold `0`. The profile `lietaer-pdf-full-benchmark` explicitly requires `require_no_bullet_headings: true` (see `corpus_registry.toml`). This is a blocking gate, not cosmetic noise.
+The latest completed full-book milestone no longer fails `residual_bullet_glyphs_present`: the gated `residual_bullet_glyph_count` is now `0`, while `raw_residual_bullet_glyph_count` remains `25` in the same report.
 
-The failure has not been root-caused yet at the fragment level. Before any fix, sample at least 5 of the 25 residual bullets and classify each as one of:
+Reviewer-safe interpretation: Mini-plan A is milestone-confirmed at the gate/display-hygiene layer, not as proof that the raw residual-glyph phenomenon disappeared.
+
+If a future package explicitly reopens Mini-plan A, sample at least 5 of the still-observable raw residual bullets and classify each as one of:
 
 - markdown-only hygiene (a normalizer scope/order bug);
 - authority-level mismatch (paragraph should have been classified `list_entry`, not `body`/`heading`);
 - input-side glyph survival (the bullet character survived earlier extraction or PDF import).
 
-Framing residual bullets as a "minor non-blocker" is a known false direction (see section 11) and is rejected.
+Framing residual bullets as a "minor non-blocker" is still a known false direction (see section 11) and is rejected.
 
 ## 3. Final Target
 
@@ -253,19 +257,22 @@ Only after focused chapter-region and gate tests are green:
 
 This section is the mandatory source of truth for what the latest real-document run actually fails on. It MUST be updated whenever a new full-book or focused real-document run is performed. Hypotheses, mini-plans, and Workstream tasks below are not allowed to reference "failing" or "missing" behavior that is not represented in this inventory.
 
-Baseline source: latest completed run-scoped report for `lietaer-pdf-full-benchmark`, currently `tests/artifacts/real_document_pipeline/runs/20260519T082926Z_963_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne/lietaer_pdf_full_benchmark_report.json`, as confirmed by `tests/artifacts/real_document_pipeline/lietaer_pdf_full_benchmark_latest.json` after that run moved to `status: "failed"` with `acceptance_passed: false`.
+Baseline source: latest completed run-scoped report for `lietaer-pdf-full-benchmark`, currently `tests/artifacts/real_document_pipeline/runs/20260520T111314Z_1196_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne/lietaer_pdf_full_benchmark_report.json`, as confirmed by `tests/artifacts/real_document_pipeline/lietaer_pdf_full_benchmark_latest.json` after that run moved to `status: "failed"` with `acceptance_passed: false`.
 
-Discovery refresh on 2026-05-19: the failed-check set remains unchanged, but the latest completed run materially worsens Mini-plan B counts (`199` source / `175` target) and expands Mini-plan C from two missing strings to three by adding `"11,12"`. Reviewer-safe interpretation remains: residual bullets stay on the legacy-markdown/display surface; the three unmapped checks still cluster as restore/alignment drift around topology-resolved TOC/chapter/note composites; and `key_headings_preserved` remains a separate non-B package, now including at least one source-heading-inventory anomaly/body marker (`"11,12"`) in addition to the page-range/index-style strings. This still does not reopen late-book chapter narratives.
+Discovery refresh on 2026-05-20: compared with the prior baseline run `20260519T082926Z_963_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne`, the failed-check set shrank from five items to three. Mini-plan A moved out of live failures at the acceptance layer: `residual_bullet_glyph_count` is now `0`, but `raw_residual_bullet_glyph_count` remains `25`, so this is gate-layer confirmation rather than elimination of the raw phenomenon. Mini-plan C also moved out of live failures under the adopted narrow validator contract: `key_headings_preserved` now passes with `missing = []` and `source_heading_count = 0`, which confirms the validator/acceptance contract for the old C example set without claiming upstream recognition redesign. Mini-plan B remains the only active live failing package, with improved but still failing counts (`172` source / `157` target). This still does not reopen late-book chapter narratives.
 
 Format:
 
 | check | actual | threshold | overage | gate_source | root-cause class | mini-plan |
 |---|---|---|---|---|---|---|
-| `formatting_diagnostics_threshold` | 199 | 12 | 16.6× | `topology_unit` count basis | unmapped_alignment (subset of B) | B |
-| `unmapped_source_threshold` | 199 | 12 | 16.6× | `topology_unit` count basis | unmapped_alignment | B |
-| `unmapped_target_threshold` | 175 | 6 | 29.2× | `legacy_paragraph` count basis | unmapped_alignment | B |
-| `residual_bullet_glyphs_present` | 25 | 0 | ∞ | `legacy_markdown` | markdown_hygiene | A |
-| `key_headings_preserved` | missing `["11,12", "179– 180", "182, 192–1 93"]` | n/a | n/a | source heading inventory | new_authority_class | C |
+| `formatting_diagnostics_threshold` | 172 | 12 | 14.3× | `topology_unit` count basis | unmapped_alignment (subset of B) | B |
+| `unmapped_source_threshold` | 172 | 12 | 14.3× | `topology_unit` count basis | unmapped_alignment | B |
+| `unmapped_target_threshold` | 157 | 6 | 26.2× | `legacy_paragraph` count basis | unmapped_alignment | B |
+
+Milestone-confirmed non-live package outcomes from the same latest run:
+
+- Mini-plan A: `residual_bullet_glyphs_present` now passes with gated `residual_bullet_glyph_count = 0`; `raw_residual_bullet_glyph_count` remains `25`, so the milestone confirms only the gate/display-hygiene layer.
+- Mini-plan C: `key_headings_preserved` now passes with `missing = []` and `source_heading_count = 0` under the adopted narrow validator contract; the milestone does not claim broader upstream recognition redesign.
 
 When the table is stale, freeze all implementation work until it is refreshed.
 
@@ -281,13 +288,13 @@ Before any code change targeting failing full-book checks:
 
 No implementation step in any Workstream may begin until this gate is satisfied for the check it claims to address.
 
-### 5.0.2 Independent mini-plans for current failing checks
+### 5.0.2 Package registry after the 2026-05-20 milestone
 
-These mini-plans run independently. Do NOT bundle them into one slice. Each is decided strictly by its own discovery outcome.
+These packages remain independent. Do NOT bundle them into one slice. Only Mini-plan B is still active in the live failure inventory.
 
-- **Mini-plan A — residual bullets.** Cheapest, highest relative overage. Discovery: 5 sample glyphs traced from source paragraph to final markdown. If `markdown_hygiene` → normalizer scope/order fix. If `structure_authority` → fix at classifier (list_entry vs body) before any normalizer.
-- **Mini-plan B — unmapped fragments.** Discovery: 5 sample unmapped source fragments and 5 sample unmapped target fragments, each traced through document_map → topology → Stage 2 → final output. Outcome is one or two breakage patterns. Focused fix per pattern; inner-loop fixture per pattern.
-- **Mini-plan C — index / page-range heading authority.** Requires new spec (`INDEX_REGION_AUTHORITY_SPEC_YYYY-MM-DD.md`). Do not start implementation without that spec approved.
+- **Mini-plan A — residual bullets.** No longer an active live failure package in the latest full-book milestone. The acceptance-layer gate now passes with `residual_bullet_glyph_count = 0`, while `raw_residual_bullet_glyph_count = 25` remains observable. Reopen only if a later run returns it to `failed_checks` or if a dedicated raw-phenomenon investigation is explicitly requested.
+- **Mini-plan B — unmapped fragments.** The only active live failure package. Discovery: 5 sample unmapped source fragments and 5 sample unmapped target fragments, each traced through document_map → topology → Stage 2 → final output. Outcome is one or two breakage patterns. Focused fix per pattern; inner-loop fixture per pattern.
+- **Mini-plan C — index / page-range heading authority.** Separate spec path is now opened at [INDEX_REGION_AUTHORITY_SPEC_2026-05-20.md](./INDEX_REGION_AUTHORITY_SPEC_2026-05-20.md). The adopted narrow validator contract is milestone-confirmed for the old example set (`missing = []`, `source_heading_count = 0` in the latest run), so C is not part of the active live failure inventory. Any broader upstream recognition redesign remains separate and out of scope unless a later run or an explicitly approved package reopens it.
 
 If any future failing check does not fit A/B/C, add a new mini-plan letter with its own discovery output. Do not silently extend an existing mini-plan to cover a different root-cause class.
 

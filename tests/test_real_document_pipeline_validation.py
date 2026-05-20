@@ -495,6 +495,166 @@ def test_evaluate_lietaer_acceptance_translate_mode_matches_scripture_heading_by
     assert heading_check["missing"] == []
 
 
+def test_evaluate_lietaer_acceptance_translate_mode_ignores_numeric_body_marker_heading_token() -> None:
+    validation = _load_validation_module()
+
+    source_doc = Document()
+    source_doc.add_paragraph("11,12", style="Heading 2")
+
+    output_doc = Document()
+    output_doc.add_paragraph("Деньги против бартера", style="Heading 2")
+
+    report = {
+        "result": "succeeded",
+        "runtime_config": {"effective": {"processing_operation": "translate"}},
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [],
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+    )
+
+    heading_check = next(check for check in acceptance["checks"] if check["name"] == "key_headings_preserved")
+
+    assert heading_check["passed"] is True
+    assert heading_check["missing"] == []
+    assert heading_check["source_heading_count"] == 0
+
+
+def test_evaluate_lietaer_acceptance_translate_mode_ignores_page_range_heading_token() -> None:
+    validation = _load_validation_module()
+
+    source_doc = Document()
+    source_doc.add_paragraph("179–180", style="Heading 2")
+
+    output_doc = Document()
+    output_doc.add_paragraph("Указатель", style="Heading 1")
+
+    report = {
+        "result": "succeeded",
+        "runtime_config": {"effective": {"processing_operation": "translate"}},
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [],
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+    )
+
+    heading_check = next(check for check in acceptance["checks"] if check["name"] == "key_headings_preserved")
+
+    assert heading_check["passed"] is True
+    assert heading_check["missing"] == []
+    assert heading_check["source_heading_count"] == 0
+
+
+def test_evaluate_lietaer_acceptance_translate_mode_ignores_comma_plus_page_range_heading_token() -> None:
+    validation = _load_validation_module()
+
+    source_doc = Document()
+    source_doc.add_paragraph("182, 192–193", style="Heading 2")
+
+    output_doc = Document()
+    output_doc.add_paragraph("Указатель", style="Heading 1")
+
+    report = {
+        "result": "succeeded",
+        "runtime_config": {"effective": {"processing_operation": "translate"}},
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [],
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+    )
+
+    heading_check = next(check for check in acceptance["checks"] if check["name"] == "key_headings_preserved")
+
+    assert heading_check["passed"] is True
+    assert heading_check["missing"] == []
+    assert heading_check["source_heading_count"] == 0
+
+
+def test_evaluate_lietaer_acceptance_translate_mode_still_requires_meaningful_heading() -> None:
+    validation = _load_validation_module()
+
+    source_doc = Document()
+    source_doc.add_paragraph("Устойчивое изобилие", style="Heading 2")
+
+    output_doc = Document()
+    output_doc.add_paragraph("Другая тема", style="Heading 2")
+
+    report = {
+        "result": "succeeded",
+        "runtime_config": {"effective": {"processing_operation": "translate"}},
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [],
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+    )
+
+    heading_check = next(check for check in acceptance["checks"] if check["name"] == "key_headings_preserved")
+
+    assert heading_check["passed"] is False
+    assert heading_check["missing"] == ["устойчивое изобилие"]
+    assert heading_check["source_heading_count"] == 1
+
+
+def test_evaluate_lietaer_acceptance_translate_mode_does_not_blanket_exclude_reference_heading() -> None:
+    validation = _load_validation_module()
+
+    source_doc = Document()
+    source_doc.add_paragraph("Справочный указатель", style="Heading 1")
+
+    output_doc = Document()
+    output_doc.add_paragraph("Справочный указатель", style="Heading 1")
+
+    report = {
+        "result": "succeeded",
+        "runtime_config": {"effective": {"processing_operation": "translate"}},
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [],
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+    )
+
+    heading_check = next(check for check in acceptance["checks"] if check["name"] == "key_headings_preserved")
+
+    assert heading_check["passed"] is True
+    assert heading_check["missing"] == []
+    assert heading_check["source_heading_count"] == 1
+
+
 def test_normalize_structural_text_strips_markdown_wrappers() -> None:
     validation = _load_validation_module()
 

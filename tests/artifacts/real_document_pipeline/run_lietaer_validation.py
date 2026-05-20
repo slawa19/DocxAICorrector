@@ -1412,10 +1412,25 @@ def _resolve_missing_key_headings(
     return resolved_missing
 
 
+def _is_numeric_marker_or_page_range_key_heading(text: str) -> bool:
+    normalized = _normalize_structural_text(text)
+    if not normalized:
+        return False
+    numeric_fragment = r"\d[\d\s]*"
+    return bool(
+        re.fullmatch(
+            rf"{numeric_fragment}(?:(?:\s*,\s*|\s*[-–—]\s*){numeric_fragment})+",
+            normalized,
+        )
+    )
+
+
 def _is_meaningful_key_heading(text: str) -> bool:
     normalized = _normalize_structural_text(text)
     fragment = _classify_centered_fragment(normalized)
     if fragment["kind"] == "attribution":
+        return False
+    if _is_numeric_marker_or_page_range_key_heading(normalized):
         return False
     alnum_only = re.sub(r"[^0-9a-zа-яё]+", "", normalized, flags=re.IGNORECASE)
     if len(alnum_only) < 3:
