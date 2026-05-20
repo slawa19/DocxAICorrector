@@ -1,15 +1,30 @@
 ﻿# Topology-First Structure Recovery Remediation Spec
 
 Date: 2026-05-12
-Status: Active migration spec; R1 mostly implemented, R2 partial, R3 migration in progress, fallback-hardening Slices 1-6 implemented
+Status: Partially implemented; Phase 4 Prerequisite COMPLETE for contracted scope
 Parent spec: `docs/AI_FIRST_STRUCTURE_RECOVERY_SPEC_2026-05-08.md`
 Related follow-up: `docs/specs/Folloup AI structure recovery.md`
+Continuation source of truth: `docs/specs/STRUCTURE_RECOGNITION_COMPLETION_PLAN_2026-05-14.md`
 
-## Problem Statement
+## Implementation Status (as of 2026-05-19)
+
+This addendum is the authoritative landed-status summary for this spec. Read it before referencing any later section to avoid treating proposed wording as implemented behavior.
+
+Landed:
+
+- **R1 Stage 1.5 DocumentMap Topology Projection** \u2014 substantially implemented. `DocumentTopologyProjection` / `StructuralUnit` exist, projection schema is at version 2, `apply_document_map_topology(...)` consumes layout signals, and the closed `unit_type` / `authority` vocabularies are in place.
+- **Layout Signal Evidence Slice** (separate spec `docs/specs/LAYOUT_SIGNAL_EVIDENCE_SLICE_SPEC_2026-05-14.md`) \u2014 implemented as an intermediate slice between R1 and the rest of this spec. Layout evidence may confirm but never synthesize Stage 1 authority. `body_font_baseline_outlier`, `font_cluster_match`, `page_break_boundary` are accepted evidence tags; `candidate_page_artifact_split` remains candidate-only.
+- **Phase 4 Prerequisite \u2014 Split Fallback Hardening (Slices 1\u20136)** \u2014 IMPLEMENTED and verified by focused tests:\n  - Slice 1 Topology Precedence Guard in `apply_structure_map(...)` (`src/docxaicorrector/structure/recognition.py`), covered by `TestTopologyAuthorityGuard` (13 tests).\n  - Slice 2 Fallback Telemetry via `StructureFallbackStats` (`src/docxaicorrector/core/models.py`).\n  - Slice 3 Bounded Retry \u2014 timeout-only; no temperature / max_tokens changes.\n  - Slice 4 Recursion Cap \u2014 fail-closed semantics.\n  - Slice 5 Topology-Aware Boundary Snapping via `_select_safe_split_boundary` and `_build_protected_split_ranges` (14 boundary tests).\n  - Slice 6 Fallback Metadata Side-Map via `StructureFallbackMetadata` + `fallback_metadata_by_index`. No `ParagraphClassification` schema change.\n- **R2 Structure-Aware Quality Gates** \u2014 materially advanced for `toc_body_concat` and unmapped thresholds (`*_gate_source` fields, structure-unit basis when projection is present), but not a universal gate migration.\n\nNot yet implemented:\n\n- **Slice 7 root window tuning.** Diagnostic / config-only. Gated by the threshold rule: retry-success ratio < 0.3 AND splits >= 3 per document AND capped == 0. Awaiting telemetry data.\n- **R3 Markdown Postprocessor Retirement.** Authority labelling and provenance fields landed on touched late-phase / acceptance / structural-validation surfaces, but `normalize_false_fragment_headings_markdown`, `normalize_list_fragment_regressions_markdown`, `normalize_page_placeholder_heading_concats_markdown`, and `normalize_residual_bullet_glyphs_markdown` still execute in the pipeline. Actual normalizer removal has not started globally.\n- **Full-book acceptance.** `lietaer-pdf-full-benchmark` continues to fail on `formatting_diagnostics_threshold`, `unmapped_source_threshold`, `unmapped_target_threshold`, `residual_bullet_glyphs_present`, `key_headings_preserved`. See the continuation plan's section 5.0 Live Failure Inventory for the current numbers.\n\nExplicitly out of scope for this spec:\n\n- Stage 1 prompt / schema / cache changes (including any \"multi-signal chapter promotion from TOC + body neighborhoods\"). The latest full-book report explicitly preserves Chapter 8, Chapter 10, and Chapter 11 as `chapter_heading` units plus the bounded TOC split; any stronger claim about Chapter 9 (either still missing or already fully promoted) requires a direct file:line citation from the latest run report, per the continuation plan section 1.1 item 10.\n- Index / page-range heading authority class (e.g. entries like `179\u2013180`, `182, 192\u2013193`). This is a new authority class and requires a separate spec under `docs/specs/`.\n- Residual bullet glyph root-cause work. Belongs to the continuation plan's mini-plan A.\n- Unmapped-fragment tracing in the back matter / index region. Belongs to the continuation plan's mini-plan B and the future index-region spec.\n\nWhen following Slices 1\u20137 below, treat Slices 1\u20136 as historical reference: their proposed wording has been implemented and may differ from the current code shape. Slice 7 wording remains proposal-state.\n\n## Problem Statement
 
 The current `lietaer-pdf-full-benchmark` work has reached diminishing returns. The
 latest iterations improved isolated symptoms, but the full-book structural gate
 still fails on the same classes:
+
+Historical note: the section immediately below predates the 2026-05-19 status
+addendum and is preserved as architectural diagnosis context, not as the live
+failure inventory. For current full-book failing checks, priorities, and
+allowed next steps, treat `docs/specs/STRUCTURE_RECOGNITION_COMPLETION_PLAN_2026-05-14.md`
+section `5.0 Live Failure Inventory` as authoritative.
 
 - `unmapped_source_threshold`
 - `unmapped_target_threshold`
@@ -37,60 +52,6 @@ AI-first stages instead of giving the AI-first structure authority enough power
 to correct global document topology.
 
 ## Verified Current-State Evidence
-
-### Status Addendum 2026-05-18
-
-Overall migration state:
-
-- R1 Stage 1.5 `DocumentMap` topology projection is mostly implemented. The layout-signal evidence slice is implemented as an intermediate R1 slice and the chapter-region Chapter 11 case is confirmed on the current dirty workspace. For the focused chapter-region fixture package, the earliest unexplained pre-projection SDK-native `to_json()` boundary is now accepted as the current baseline limitation and the tracked chapter-region trio is refreshed to the current canonical payload. This is a scoped baseline decision, not proof that upstream/provider or SDK-serialization drift has disappeared.
-- R2 structure-aware quality gates are partially implemented. `toc_body_concat`, unmapped basis/source fields, and the touched `false_fragment_heading` / `list_fragment_regression` report surfaces now preserve explicit authority/provenance, but this is not a universal gate migration claim.
-- R3 markdown postprocessor retirement has not completed. The current work has labelled and separated authority from raw markdown observability on touched surfaces; actual retirement/removal of normalizers from structural authority remains pending.
-- Stage 2 fallback hardening and topology protection Slices 1-6 are implemented and tested. Slice 7 root-window tuning remains a future diagnostic/config-only step if telemetry proves it is needed.
-- Full-book acceptance remains pending and must not be used as the ordinary tuning loop.
-
-The late-phase quality-report surface has moved one step closer to the intended
-authority boundary:
-
-- `toc_body_concat` and unmapped-threshold reporting already carried explicit
-  structure-aware gate provenance from the earlier Workstream C slice;
-- `false_fragment_heading_count` now uses explicit authoritative sourcing
-  (`entry_assembly` vs `legacy_markdown`) instead of silently treating raw
-  markdown as the only decisive signal;
-- `list_fragment_regression_count` now stays non-binding when topology
-  projection support and source-backed assembly authority are both present,
-  while raw markdown detections remain visible as advisory `raw_*` fields.
-- structural validation/reporting now defaults these touched metrics to
-  explicit `legacy_markdown` provenance and reuses the saved quality-report
-  authority fields when that artifact is present, instead of rebuilding the
-  adjacent report surface only from runtime markdown.
-- the real-document harness summary/export path now reuses those saved
-  quality-report authority/raw fields directly, so adjacent user-visible
-  summaries no longer collapse the touched structural surfaces back to generic
-  gate-reason-only reporting.
-
-This is still an intermediate migration state, not R3 completion: markdown
-cleanup remains in the runtime/display stack, and untouched call sites still
-need the same audit before the postprocessor layer can be considered retired.
-
-### Stage 2 Fallback Hardening Status Map
-
-The fallback-hardening slices below are implementation-status indexed here so
-future work does not reimplement already landed behavior:
-
-| Slice | Current status | Primary implementation surface | Focused coverage |
-| --- | --- | --- | --- |
-| Slice 1: topology precedence guard | Implemented | `src/docxaicorrector/structure/recognition.py::apply_structure_map(...)` | `tests/test_structure_recognition.py::TestTopologyAuthorityGuard` covers inactive guard cases, concord/conflict rows, heading-level mismatch, counters, and no-topology regression behavior. |
-| Slice 2: split fallback telemetry and honest progress | Implemented | `src/docxaicorrector/structure/recognition.py` fallback stats/progress paths and `StructureFallbackStats` | `tests/test_structure_recognition.py` fallback telemetry/progress tests cover split counts, retry counters, capped descriptor counters, and progress events. |
-| Slice 3: bounded retry before split | Implemented | `_classify_descriptor_window_with_fallback(...)` retry path | `tests/test_structure_recognition.py::test_build_structure_map_retries_timeout_window_before_split_and_uses_retry_result` and related timeout fallback tests. |
-| Slice 4: recursion cap with fail-closed semantics | Implemented | fallback depth/expansion caps in `_classify_descriptor_window_with_fallback(...)` | `tests/test_structure_recognition.py` cap tests cover max depth, max expansions, and zero-cap behavior. |
-| Slice 5: topology-aware split boundary | Implemented for boundary snapping | `_build_protected_split_ranges(...)` and `_select_safe_split_boundary(...)` | `tests/test_structure_recognition.py` safe-boundary tests cover protected ranges, ancestor split-point avoidance, deterministic selection, non-empty halves, and multi-index protected units. |
-| Slice 6: fallback provenance side-map | Implemented | `StructureFallbackMetadata` / `StructureMap.fallback_metadata_by_index` in `src/docxaicorrector/core/models.py` plus recognition merge paths | `tests/test_structure_recognition.py` metadata tests cover primary, retry, split fallback, and capped fallback provenance; `tests/test_preparation.py` covers propagation into preparation surfaces. |
-| Slice 7: root window tuning from diagnostics | Not started | Future config-only tuning if telemetry justifies it | No implementation expected until representative telemetry satisfies the threshold rule below. |
-
-Candidate-only topology diagnostics remain non-binding. In particular,
-`candidate_page_artifact_split` must not become a gate authority source unless a
-future Stage 1 binding split hint or one-to-one high-confidence TOC entry match
-materializes the operation as binding topology authority.
 
 ### Markdown Postprocessor Stack
 
@@ -720,21 +681,13 @@ Add explicit fields to the preparation diagnostic snapshot and gate report:
   "excluded_page_artifact_unmapped_count": 4,
   "excluded_toc_unmapped_count": 12,
   "excluded_front_matter_advisory_count": 3,
-  "toc_body_concat_detected": false,
   "toc_body_concat_structure_detected": false,
   "toc_body_concat_markdown_detected": true,
-  "toc_body_concat_gate_source": "topology_projection"
+  "toc_body_concat_gate_source": "structure"
 }
 ```
 
-This keeps observability while moving authority to topology-supported structure when sufficient evidence exists.
-
-Status addendum, 2026-05-18:
-
-- Runtime gate authority for `toc_body_concat` and unmapped thresholds is now aligned on the touched paths between structural validation and late-phase translation-quality reporting.
-- Preparation diagnostic snapshots and translation-quality reports now carry the same explicit topology-support provenance needed to explain `toc_body_concat_gate_source`, including bounded-TOC/topology support counts instead of only the final boolean gate fields.
-- Raw unmapped counts remain observable, while late-phase reporting now also carries explicit structure-unit basis/gate-source fields for the touched source/target unmapped counters.
-- This addendum does not claim universal R2 completion; broader gate migration and markdown-authority retirement outside the touched surfaces remain pending.
+This keeps observability while moving authority to structure.
 
 ## R3: Markdown Postprocessor Retirement Plan
 
@@ -761,23 +714,19 @@ readiness gates.
 
 ### Transitional Rule
 
-During migration, markdown detectors may remain as advisory fields when structure authority is present:
+During migration, markdown detectors may remain as advisory fields:
 
 ```json
 {
-  "toc_body_concat_markdown_detected": true,
-  "toc_body_concat_structure_detected": false,
-  "toc_body_concat_gate_source": "topology_projection"
+  "markdown_toc_body_concat_detected": true,
+  "structure_toc_body_concat_detected": false,
+  "quality_gate_source": "structure",
+  "markdown_signal_status": "advisory"
 }
 ```
 
 A markdown advisory must not fail a structure profile when structure authority is
 present and passes.
-
-When topology support is absent or insufficient, the compatibility boundary is
-explicit: `toc_body_concat_gate_source = "legacy_markdown"` remains the
-conservative fallback and `toc_body_concat_markdown_detected` may still fail the
-gate until a later policy slice intentionally shrinks that fallback.
 
 ### Rendering Scope
 
@@ -949,9 +898,7 @@ Acceptance:
 - Structural diagnostic reports both markdown and structure signals.
 - Structure profiles fail/pass based on structure-aware gate fields when
   `DocumentMap` and topology projection are present.
-- Legacy/full-output profiles may continue exposing markdown advisory signals,
-  and profiles without sufficient topology support may continue using explicit
-  `legacy_markdown` fallback authority.
+- Legacy/full-output profiles may continue exposing markdown advisory signals.
 - Restore/reassembly diagnostics expose raw paragraph coverage and projected
   unit coverage side by side.
 

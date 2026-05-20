@@ -2629,6 +2629,246 @@ def test_derive_unit_aware_unmapped_fields_collapses_unmapped_targets_by_aligned
     assert fields["unit_unmapped_target_gate_source"] == "topology_unit"
 
 
+def test_derive_unit_aware_unmapped_fields_cancels_shared_chapter_heading_unit_between_unmapped_source_and_target() -> None:
+    source_paragraphs = [
+        ParagraphUnit(text="Chapter Eight", role="heading", paragraph_id="p0793", source_index=793, logical_index=200),
+        ParagraphUnit(text="Strategies for Governments", role="heading", paragraph_id="p0794", source_index=794, logical_index=201),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-shared-heading-cancel",
+        projected_units=(
+            StructuralUnit(
+                unit_type="chapter_heading",
+                logical_indexes=(200, 201),
+                canonical_text="Chapter Eight STRATEGIES FOR GOVERNMENTS",
+                role="heading",
+                heading_level=1,
+                confidence="high",
+                authority="document_map_outline",
+            ),
+        ),
+    )
+
+    fields = real_document_validation_structural._derive_unit_aware_unmapped_fields(
+        source_paragraphs=source_paragraphs,
+        topology_projection=projection,
+        formatting_payload={
+            "unmapped_source_ids": ["p0793", "p0794"],
+            "unmapped_target_indexes": [753],
+            "target_registry": [
+                {"target_index": 753, "mapped": False, "text_preview": "глава восьмая стратегии для государств"},
+            ],
+        },
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0793",
+                "merged_paragraph_ids": ["p0793", "p0794"],
+                "text": "# Глава восьмая стратегии для государств",
+            },
+        ],
+    )
+
+    assert fields["structure_unit_unmapped_source_count"] == 0
+    assert fields["structure_unit_unmapped_target_count"] == 0
+    assert fields["unmapped_source_count_basis"] == "topology_unit"
+    assert fields["unmapped_target_count_basis"] == "topology_unit"
+    assert fields["unit_unmapped_source_gate_source"] == "topology_unit"
+    assert fields["unit_unmapped_target_gate_source"] == "topology_unit"
+
+
+def test_derive_unit_aware_unmapped_fields_aligns_truncated_toc_target_preview_to_generated_composite() -> None:
+    source_paragraphs = [
+        ParagraphUnit(
+            text="4 the flying fish: a new perspective on money 57 5 the future has arrived but isn't distributed evenly...",
+            role="body",
+            structural_role="toc_entry",
+            paragraph_id="p0038",
+            source_index=38,
+            logical_index=40,
+        ),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-truncated-toc-preview",
+        projected_units=(
+            StructuralUnit(
+                unit_type="toc_entry",
+                logical_indexes=(40,),
+                canonical_text="Chapter Eight STRATEGIES FOR GOVERNMENTS",
+                role="toc_entry",
+                heading_level=None,
+                confidence="high",
+                authority="document_map_toc",
+            ),
+            StructuralUnit(
+                unit_type="toc_entry",
+                logical_indexes=(40,),
+                canonical_text="Strategies for NGOs",
+                role="toc_entry",
+                heading_level=None,
+                confidence="high",
+                authority="document_map_toc",
+            ),
+        ),
+    )
+    generated_text = (
+        "4 летучая рыба: новый взгляд на деньги 57 5 будущее уже наступило, но распределено неравномерно, "
+        "но пока что только для немногих регионов и институтов"
+    )
+    target_preview = generated_text[:119].rstrip() + "…"
+
+    fields = real_document_validation_structural._derive_unit_aware_unmapped_fields(
+        source_paragraphs=source_paragraphs,
+        topology_projection=projection,
+        formatting_payload={
+            "unmapped_source_ids": ["p0038"],
+            "unmapped_target_indexes": [31],
+            "target_registry": [
+                {"target_index": 31, "mapped": False, "text_preview": target_preview},
+            ],
+        },
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0038", "text": generated_text},
+        ],
+    )
+
+    assert fields["structure_unit_unmapped_source_count"] == 0
+    assert fields["structure_unit_unmapped_target_count"] == 0
+    assert fields["unmapped_target_count_basis"] == "topology_unit"
+    assert fields["unit_unmapped_target_gate_source"] == "topology_unit"
+
+
+def test_derive_unit_aware_unmapped_fields_suppresses_source_unit_already_covered_by_mapped_target_alignment() -> None:
+    source_paragraphs = [
+        ParagraphUnit(text="Chapter One", role="heading", paragraph_id="p0103", source_index=103, logical_index=103),
+        ParagraphUnit(text="The Failure of Money", role="heading", paragraph_id="p0104", source_index=104, logical_index=104),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-covered-source-unit",
+        projected_units=(
+            StructuralUnit(
+                unit_type="chapter_heading",
+                logical_indexes=(103, 104),
+                canonical_text="Chapter One THE FAILURE OF MONEY",
+                role="heading",
+                heading_level=1,
+                confidence="high",
+                authority="document_map_outline",
+            ),
+        ),
+    )
+
+    fields = real_document_validation_structural._derive_unit_aware_unmapped_fields(
+        source_paragraphs=source_paragraphs,
+        topology_projection=projection,
+        formatting_payload={
+            "unmapped_source_ids": ["p0103"],
+            "unmapped_target_indexes": [],
+            "target_registry": [
+                {"target_index": 93, "mapped": True, "text_preview": "глава первая крах денег"},
+            ],
+        },
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0103",
+                "merged_paragraph_ids": ["p0103", "p0104"],
+                "text": "# Глава первая крах денег",
+            },
+        ],
+    )
+
+    assert fields["structure_unit_unmapped_source_count"] == 0
+    assert fields["structure_unit_unmapped_target_count"] == 0
+    assert fields["unmapped_source_count_basis"] == "topology_unit"
+    assert fields["unit_unmapped_target_gate_source"] == "topology_unit"
+
+
+def test_derive_unit_aware_unmapped_fields_cancels_note_heading_interval_recovery_with_paragraph_fallback_keys() -> None:
+    source_paragraphs = [
+        ParagraphUnit(text="Underclass (Oxford: Blackwell, 1996).", role="body", paragraph_id="p1429", source_index=1429, logical_index=1429),
+        ParagraphUnit(text="230 notes", role="heading", paragraph_id="p1430", source_index=1430, logical_index=1430, heading_level=1),
+        ParagraphUnit(text="chapter 4", role="heading", paragraph_id="p1431", source_index=1431, logical_index=1431, heading_level=1),
+        ParagraphUnit(
+            text="Glyn Davies, A History of Money from Ancient Times to the Present Day",
+            role="list",
+            paragraph_id="p1432",
+            source_index=1432,
+            logical_index=1432,
+            list_kind="ordered",
+            list_level=0,
+        ),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-note-interval-recovery",
+        projected_units=(
+            StructuralUnit(
+                unit_id="u_elsewhere",
+                unit_type="chapter_heading",
+                logical_indexes=(10, 11),
+                canonical_text="Elsewhere",
+                role="heading",
+                heading_level=1,
+                confidence="high",
+                authority="document_map_outline",
+            ),
+        ),
+    )
+    formatting_payload = {
+        "source_registry": [
+            {"paragraph_id": "p1429", "mapped_target_index": 1331},
+            {"paragraph_id": "p1430", "mapped_target_index": None},
+            {"paragraph_id": "p1431", "mapped_target_index": None},
+            {"paragraph_id": "p1432", "mapped_target_index": 1333},
+        ],
+        "unmapped_source_ids": ["p1430", "p1431"],
+        "unmapped_target_indexes": [1332],
+        "target_registry": [
+            {"target_index": 1331, "mapped": True, "text_preview": "низшие слои общества"},
+            {"target_index": 1332, "mapped": False, "text_preview": "230 примечания глава 4"},
+            {"target_index": 1333, "mapped": True, "text_preview": "глин дэвис"},
+        ],
+    }
+    generated_paragraph_registry = [
+        {"paragraph_id": "p1430", "text": "# 230 ПРИМЕЧАНИЯ"},
+        {"paragraph_id": "p1431", "text": "# Глава 4"},
+        {"paragraph_id": "p1432", "text": "1. Глин Дэвис"},
+    ]
+
+    paragraph_unit_keys, _ = real_document_validation_structural._build_source_paragraph_unit_membership(
+        source_paragraphs,
+        projection,
+    )
+    source_registry_alignments, _, _ = real_document_validation_structural._build_target_alignments_from_source_registry(
+        formatting_payload,
+        paragraph_unit_keys=paragraph_unit_keys,
+    )
+    aligned_target_unit_keys = real_document_validation_structural._align_target_indexes_to_unit_keys(
+        formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+        paragraph_unit_keys=paragraph_unit_keys,
+    )
+    fields = real_document_validation_structural._derive_unit_aware_unmapped_fields(
+        source_paragraphs=source_paragraphs,
+        topology_projection=projection,
+        formatting_payload=formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+    )
+
+    assert paragraph_unit_keys["p1430"] == frozenset({"paragraph:p1430"})
+    assert paragraph_unit_keys["p1431"] == frozenset({"paragraph:p1431"})
+    assert source_registry_alignments == {
+        1331: frozenset({"paragraph:p1429"}),
+        1333: frozenset({"paragraph:p1432"}),
+    }
+    assert aligned_target_unit_keys is not None
+    assert aligned_target_unit_keys[1332] == frozenset({"paragraph:p1430", "paragraph:p1431"})
+    assert fields["structure_unit_unmapped_source_count"] == 0
+    assert fields["structure_unit_unmapped_target_count"] == 0
+    assert fields["unmapped_source_count_basis"] == "topology_unit"
+    assert fields["unmapped_target_count_basis"] == "topology_unit"
+    assert fields["unit_unmapped_source_gate_source"] == "topology_unit"
+    assert fields["unit_unmapped_target_gate_source"] == "topology_unit"
+
+
 def test_derive_unit_aware_unmapped_fields_infers_single_unmapped_target_from_source_registry_interval() -> None:
     source_paragraphs = [
         ParagraphUnit(text="Intro", role="body", paragraph_id="p-prev", source_index=0, logical_index=9),
@@ -3260,13 +3500,26 @@ def test_structural_passthrough_prefers_saved_quality_report_authority_fields(tm
     assert metrics["page_placeholder_heading_concat_source"] == "legacy_markdown"
     assert metrics["page_placeholder_heading_concat_classification"] == "display_hygiene"
     assert metrics["raw_page_placeholder_heading_concat_count"] == 1
+    assert metrics["bullet_heading_count"] == 0
+    assert metrics["bullet_heading_gate_source"] == "legacy_markdown"
+    assert metrics["bullet_heading_classification"] == "markdown_gate"
+    assert metrics["raw_bullet_heading_count"] == 0
     assert metrics["scripture_reference_heading_count"] == 1
     assert metrics["residual_bullet_glyph_count"] == 0
     assert metrics["residual_bullet_glyph_gate_source"] == "legacy_markdown"
+    assert metrics["residual_bullet_glyph_classification"] == "display_hygiene"
     assert metrics["raw_residual_bullet_glyph_count"] == 0
     assert metrics["list_fragment_regression_count"] == 0
     assert metrics["list_fragment_regression_gate_source"] == "topology_projection"
     assert metrics["raw_list_fragment_regression_count"] == 1
+    assert metrics["mixed_script_term_count"] == 0
+    assert metrics["mixed_script_term_gate_source"] == "legacy_markdown"
+    assert metrics["mixed_script_term_classification"] == "non_structural_hygiene"
+    assert metrics["raw_mixed_script_term_count"] == 0
+    assert metrics["theology_style_deterministic_issue_count"] == 0
+    assert metrics["theology_style_deterministic_issue_source"] == "legacy_markdown"
+    assert metrics["theology_style_deterministic_issue_classification"] == "domain_style_advisory"
+    assert metrics["raw_theology_style_deterministic_issue_count"] == 0
     assert metrics["translation_quality_report_path"] == str(quality_report_path.resolve())
     assert snapshot["false_fragment_heading_count"] == 0
     assert snapshot["false_fragment_heading_gate_source"] == "entry_assembly"
@@ -3275,12 +3528,25 @@ def test_structural_passthrough_prefers_saved_quality_report_authority_fields(tm
     assert snapshot["page_placeholder_heading_concat_source"] == "legacy_markdown"
     assert snapshot["page_placeholder_heading_concat_classification"] == "display_hygiene"
     assert snapshot["raw_page_placeholder_heading_concat_count"] == 1
+    assert snapshot["bullet_heading_count"] == 0
+    assert snapshot["bullet_heading_gate_source"] == "legacy_markdown"
+    assert snapshot["bullet_heading_classification"] == "markdown_gate"
+    assert snapshot["raw_bullet_heading_count"] == 0
     assert snapshot["residual_bullet_glyph_count"] == 0
     assert snapshot["residual_bullet_glyph_gate_source"] == "legacy_markdown"
+    assert snapshot["residual_bullet_glyph_classification"] == "display_hygiene"
     assert snapshot["raw_residual_bullet_glyph_count"] == 0
     assert snapshot["list_fragment_regression_count"] == 0
     assert snapshot["list_fragment_regression_gate_source"] == "topology_projection"
     assert snapshot["raw_list_fragment_regression_count"] == 1
+    assert snapshot["mixed_script_term_count"] == 0
+    assert snapshot["mixed_script_term_gate_source"] == "legacy_markdown"
+    assert snapshot["mixed_script_term_classification"] == "non_structural_hygiene"
+    assert snapshot["raw_mixed_script_term_count"] == 0
+    assert snapshot["theology_style_deterministic_issue_count"] == 0
+    assert snapshot["theology_style_deterministic_issue_source"] == "legacy_markdown"
+    assert snapshot["theology_style_deterministic_issue_classification"] == "domain_style_advisory"
+    assert snapshot["raw_theology_style_deterministic_issue_count"] == 0
 
 
 def test_markdown_quality_metrics_keep_false_fragment_and_list_fragment_fallback_raw_only() -> None:
@@ -3314,9 +3580,19 @@ def test_markdown_quality_metrics_keep_false_fragment_and_list_fragment_fallback
 
     assert metrics["false_fragment_heading_count"] == 1
     assert metrics["raw_false_fragment_heading_count"] == 1
+    assert metrics["bullet_heading_count"] == 0
+    assert metrics["bullet_heading_gate_source"] == "legacy_markdown"
+    assert metrics["bullet_heading_classification"] == "markdown_gate"
+    assert metrics["raw_bullet_heading_count"] == 0
     assert metrics["scripture_reference_heading_count"] == 1
     assert metrics["list_fragment_regression_count"] == 1
     assert metrics["raw_list_fragment_regression_count"] == 1
+    assert metrics["mixed_script_term_gate_source"] == "legacy_markdown"
+    assert metrics["mixed_script_term_classification"] == "non_structural_hygiene"
+    assert metrics["raw_mixed_script_term_count"] == 0
+    assert metrics["theology_style_deterministic_issue_source"] == "legacy_markdown"
+    assert metrics["theology_style_deterministic_issue_classification"] == "domain_style_advisory"
+    assert metrics["raw_theology_style_deterministic_issue_count"] == 0
 
 
 def test_markdown_quality_metrics_do_not_fallback_false_fragment_and_list_fragment_to_latest_markdown() -> None:
@@ -3344,6 +3620,42 @@ def test_markdown_quality_metrics_do_not_fallback_false_fragment_and_list_fragme
 
     assert metrics["false_fragment_heading_count"] == 0
     assert metrics["raw_false_fragment_heading_count"] == 0
+    assert metrics["bullet_heading_count"] == 0
+    assert metrics["bullet_heading_gate_source"] == "legacy_markdown"
+    assert metrics["bullet_heading_classification"] == "markdown_gate"
+    assert metrics["raw_bullet_heading_count"] == 0
     assert metrics["scripture_reference_heading_count"] == 0
     assert metrics["list_fragment_regression_count"] == 0
+    assert metrics["mixed_script_term_gate_source"] == "legacy_markdown"
+    assert metrics["mixed_script_term_classification"] == "non_structural_hygiene"
+    assert metrics["raw_mixed_script_term_count"] == 0
+    assert metrics["theology_style_deterministic_issue_source"] == "legacy_markdown"
+    assert metrics["theology_style_deterministic_issue_classification"] == "domain_style_advisory"
+    assert metrics["raw_theology_style_deterministic_issue_count"] == 0
     assert metrics["raw_list_fragment_regression_count"] == 0
+
+
+def test_markdown_quality_metrics_keep_residual_bullet_raw_observability_separate_from_latest_markdown() -> None:
+    metrics = cast(
+        dict[str, Any],
+        real_document_validation_structural._build_markdown_quality_metrics(
+            latest_markdown=(
+                "- В 27 начальных школах Чикаго с самым низким рейтингом пяти- и\n\n"
+                "шестиклассники зарабатывали тайм-кредиты."
+            ),
+            raw_markdown=(
+                "• В 27 начальных школах Чикаго с самым низким рейтингом пяти- и\n\n"
+                "шестиклассники зарабатывали тайм-кредиты."
+            ),
+            raw_structural_markdown=(
+                "• В 27 начальных школах Чикаго с самым низким рейтингом пяти- и\n\n"
+                "шестиклассники зарабатывали тайм-кредиты."
+            ),
+            translation_domain="general",
+        ),
+    )
+
+    assert metrics["residual_bullet_glyph_count"] == 0
+    assert metrics["residual_bullet_glyph_gate_source"] == "legacy_markdown"
+    assert metrics["residual_bullet_glyph_classification"] == "display_hygiene"
+    assert metrics["raw_residual_bullet_glyph_count"] == 1

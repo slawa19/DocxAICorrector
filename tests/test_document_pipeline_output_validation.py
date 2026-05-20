@@ -787,6 +787,25 @@ def test_assemble_final_markdown_merges_adjacent_registry_fragments_for_body_onl
     assert len(result.entries) == 1
 
 
+def test_assemble_final_markdown_preserves_index_page_reference_fragment_boundary():
+    result = document_pipeline_output_validation.assemble_final_markdown(
+        processed_chunks=["Local Capital Project, 128– 130\n\n179– 180"],
+        generated_paragraph_registry=[
+            {"block_index": 1, "paragraph_id": "index-left", "text": "Local Capital Project, 128– 130"},
+            {"block_index": 1, "paragraph_id": "index-right", "text": "179– 180"},
+        ],
+        source_paragraphs=[
+            _make_paragraph_stub("index-left", 0),
+            _make_paragraph_stub("index-right", 1),
+        ],
+    )
+
+    assert result.final_markdown == "Local Capital Project, 128– 130\n\n179– 180"
+    assert result.diagnostics.accepted_merges == 0
+    assert result.diagnostics.protected_boundary_denials >= 1
+    assert [entry.merged_paragraph_ids for entry in result.entries] == [("index-left",), ("index-right",)]
+
+
 def test_assemble_final_markdown_preserves_registry_backed_text_verbatim():
     result = document_pipeline_output_validation.assemble_final_markdown(
         processed_chunks=["Суд Judgment #1 уже начался."],

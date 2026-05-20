@@ -2874,7 +2874,7 @@ def test_run_document_processing_quality_report_uses_pre_display_gate_input_for_
     assert payload["false_fragment_heading_count"] == 1
 
 
-def test_run_document_processing_keeps_residual_bullet_cleanup_in_runtime_display_but_not_quality_gate(tmp_path, monkeypatch):
+def test_run_document_processing_applies_residual_bullet_cleanup_before_display_hygiene_gating(tmp_path, monkeypatch):
     runtime = _build_runtime_capture()
     quality_dir = tmp_path / "quality_reports"
     monkeypatch.setattr(document_pipeline_late_phases, "collect_recent_formatting_diagnostics_artifacts", lambda since_epoch_seconds, diagnostics_dir: [])
@@ -2891,14 +2891,14 @@ def test_run_document_processing_keeps_residual_bullet_cleanup_in_runtime_displa
         ),
     )
 
-    assert result == "failed"
+    assert result == "succeeded"
     assert "●" not in runtime["state"]["latest_markdown"]
     report_files = list(quality_dir.glob("*.json"))
     assert len(report_files) == 1
     payload = json.loads(report_files[0].read_text(encoding="utf-8"))
-    assert payload["quality_status"] == "fail"
-    assert payload["gate_reasons"] == ["residual_bullet_glyphs_present"]
-    assert payload["residual_bullet_glyph_count"] == 3
+    assert payload["quality_status"] == "pass"
+    assert payload["gate_reasons"] == []
+    assert payload["residual_bullet_glyph_count"] == 0
     assert payload["residual_bullet_glyph_gate_source"] == "legacy_markdown"
     assert payload["raw_residual_bullet_glyph_count"] == 3
 
@@ -3004,6 +3004,9 @@ def test_build_translation_quality_report_flags_bullet_marker_headings_in_strict
     assert report["quality_status"] == "fail"
     assert report["gate_reasons"] == ["bullet_marker_headings_present"]
     assert report["bullet_heading_count"] == 1
+    assert report["bullet_heading_gate_source"] == "legacy_markdown"
+    assert report["bullet_heading_classification"] == "markdown_gate"
+    assert report["raw_bullet_heading_count"] == 1
 
 
 @pytest.mark.parametrize(
@@ -3074,12 +3077,12 @@ def test_normalize_final_markdown_for_quality_gate_preserves_placeholder_cleanup
     assert normalized == "This page intentionally left blank Chapter Nine STRATEGIES FOR NGO S"
 
 
-def test_normalize_final_markdown_for_display_hygiene_reporting_keeps_residual_bullet_cleanup_out_of_reporting_path():
+def test_normalize_final_markdown_for_display_hygiene_reporting_applies_residual_bullet_cleanup():
     normalized = document_pipeline_late_phases._normalize_final_markdown_for_display_hygiene_reporting(
         "Посттрибулационисты считают, что Иисус придёт в конце ● скорби."
     )
 
-    assert normalized == "Посттрибулационисты считают, что Иисус придёт в конце ● скорби."
+    assert normalized == "Посттрибулационисты считают, что Иисус придёт в конце скорби."
 
 
 def test_normalize_final_markdown_for_runtime_display_applies_structure_compatibility_cleanup_only():
@@ -3147,14 +3150,15 @@ def test_build_translation_quality_report_exposes_new_residual_quality_metrics_a
     assert report["quality_status"] == "fail"
     assert report["gate_reasons"] == [
         "false_fragment_headings_present",
-        "residual_bullet_glyphs_present",
         "list_fragment_regressions_present",
         "mixed_script_terms_present",
     ]
     assert report["bullet_heading_count"] == 0
     assert report["false_fragment_heading_count"] == 2
     assert report["scripture_reference_heading_count"] == 1
-    assert report["residual_bullet_glyph_count"] == 1
+    assert report["residual_bullet_glyph_count"] == 0
+    assert report["residual_bullet_glyph_classification"] == "display_hygiene"
+    assert report["raw_residual_bullet_glyph_count"] == 1
     assert report["list_fragment_regression_count"] == 1
     mixed_script_term_count = report["mixed_script_term_count"]
     theology_style_issue_count = report["theology_style_deterministic_issue_count"]
@@ -3162,6 +3166,12 @@ def test_build_translation_quality_report_exposes_new_residual_quality_metrics_a
     assert isinstance(theology_style_issue_count, int)
     assert mixed_script_term_count >= 1
     assert theology_style_issue_count >= 2
+    assert report["mixed_script_term_gate_source"] == "legacy_markdown"
+    assert report["mixed_script_term_classification"] == "non_structural_hygiene"
+    assert report["raw_mixed_script_term_count"] == mixed_script_term_count
+    assert report["theology_style_deterministic_issue_source"] == "legacy_markdown"
+    assert report["theology_style_deterministic_issue_classification"] == "domain_style_advisory"
+    assert report["raw_theology_style_deterministic_issue_count"] == theology_style_issue_count
     assert report["translation_domain"] == "theology"
     assert report["worst_unmapped_source_count"] == 0
     assert report["suspicious_heading_repetition_count"] == 0

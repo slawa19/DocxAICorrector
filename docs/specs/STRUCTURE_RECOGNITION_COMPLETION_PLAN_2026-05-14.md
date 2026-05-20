@@ -44,6 +44,7 @@ The current workspace has moved beyond the original baseline in several importan
     - `document_topology_projection_status: built`
     - `document_topology_layout_signals` populated
     - Chapter 11 merge on logical indexes `[221, 222, 223, 224]`
+    - The latest full-book report in the current workspace (`tests/artifacts/real_document_pipeline/lietaer_pdf_full_benchmark_report.json`) explicitly shows `document_map_outline` / `chapter_heading` units for Chapter 8, Chapter 10, and Chapter 11, and a bounded TOC split that preserves `Strategies for NGOs` as a TOC entry. It does NOT by itself justify either of the stronger narratives "Chapter 9 is definitely still missing" or "Chapter 9 is already fully promoted as a chapter heading" without a direct file:line citation from that same report. Stale conversation memory is not acceptable evidence.
 11. Core Workstream C authority/provenance wiring is now aligned across both structural validation and late-phase runtime quality reporting for the touched surfaces:
    - `toc_body_concat_detected` can remain topology-authoritative while `toc_body_concat_markdown_detected` stays advisory;
    - `toc_body_concat_gate_source` is carried together with supporting TOC/topology provenance fields in diagnostics/reporting;
@@ -93,16 +94,20 @@ Reviewer-safe status for the current workspace:
   - persisted `DocumentMap` reuse is stable in the current workspace;
   - the earliest saved divergence boundary is now localized to the pre-projection SDK-native `to_json()` boundary;
   - divergence is already visible after `_call_structure_responses_with_timeout(...)`, before `_project_provider_native_response(...)`, and before `collect_response_text_traversal(...)`.
+  - the current saved Stage 2 triplet is now inspectable and repeatable as one bounded local evidence package: the repo has separate persisted `pre_projection`, `provider_native`, and `raw_window` artifacts, and `scripts/inspect_pre_projection_drift_boundary.py` can copy the latest triplet into `.run/manual_investigations/structure_drift/...` with an explicit confirmed / partially confirmed / unconfirmed summary.
+  - within that saved triplet, the same content survives across the pre-projection serialized SDK-native payload, the projected provider-native text surface, and the raw traversal window text, so the immediate gap is no longer lack of inspectability at the current saved boundary.
   - the current canonical chapter-region structural diagnostic still passes with `toc_entry_count = 9`, `outline_coverage_ratio = 1.0`, and the refreshed tracked fixture trio now records that accepted focused baseline.
 - Partially confirmed:
   - the earliest content-level diff is already visible inside the serialized SDK-native payload produced by `to_json()`;
   - downstream artifacts continue to drift later as well, so later counters and snapshots are not the earliest source.
+  - the current reproducibility package is sufficient to preserve and inspect the current saved boundary, but it still does not attribute that earliest content-level diff to either true upstream wire drift or SDK serialization behavior below `to_json()`.
 - Unconfirmed:
   - true wire-level upstream/provider payload drift;
   - whether the earliest divergence comes from upstream payload variability or from SDK `to_json()` serialization behavior.
 - Caveats:
   - do not claim the projected provider-native artifacts become equal after removing volatile metadata keys; current evidence does not support that narrative because content-level diff remains in `output[0].content[0].text.value`;
   - for the focused chapter-region fixture package, this pre-projection boundary is now accepted as the current baseline limitation; the tracked chapter-region trio is refreshed to the current canonical structural diagnostic payload, but that is not a claim that wire-level or SDK-serialization drift has been resolved;
+  - this package closes the immediate observability gap at the current saved boundary; a deeper transport-closest package below `to_json()` is not the automatic next package and should be taken only if wire-level attribution becomes decision-critical.
   - live structural passthrough and tracked fixture locks remain separate proof surfaces even after that accepted baseline decision.
 
 ## 2. What Is Not Yet Complete
@@ -130,6 +135,37 @@ The parent remediation is not complete. Current status by area:
 - Full-book acceptance: not complete.
 
 The code still uses markdown-side structural normalizers and markdown detectors in runtime paths. That is allowed during migration, but it means the end-state architecture has not yet been reached.
+
+### 2.3 Index region and page-range heading entries
+
+The latest `lietaer-pdf-full-benchmark` report fails `key_headings_preserved` on entries whose source text is page-range markers such as `179–180` and `182, 192–193`. These are not chapter headings; they are entries of the book index / appendix where the heading text is a page-number range.
+
+Current code state:
+
+- `src/docxaicorrector/document/segments.py` contains `_APPENDIX_PATTERN` and `_BIBLIOGRAPHY_PATTERN`, but they are not wired into structure recognition;
+- there is no dedicated index / back-matter authority class in `StructuralUnit.unit_type`;
+- there is no TOC-to-index linker;
+- the Stage 1 prompt does not classify index entries as a distinct authority.
+
+This is a new authority class. It is explicitly OUT OF SCOPE for:
+
+- `TOPOLOGY_FIRST_STRUCTURE_RECOVERY_REMEDIATION_SPEC_2026-05-12.md` (Slices 1-7);
+- `LAYOUT_SIGNAL_EVIDENCE_SLICE_SPEC_2026-05-14.md`;
+- Workstreams A-F in this plan.
+
+Addressing it requires a separate spec (working name: `INDEX_REGION_AUTHORITY_SPEC_YYYY-MM-DD.md`). It must NOT be merged into the topology-first remediation work, and it must NOT be solved by extending Stage 1 prompt scope without that spec.
+
+### 2.4 Residual bullet glyphs
+
+The latest full-book report fails `residual_bullet_glyphs_present` with `residual_bullet_glyph_count: 25` against threshold `0`. The profile `lietaer-pdf-full-benchmark` explicitly requires `require_no_bullet_headings: true` (see `corpus_registry.toml`). This is a blocking gate, not cosmetic noise.
+
+The failure has not been root-caused yet at the fragment level. Before any fix, sample at least 5 of the 25 residual bullets and classify each as one of:
+
+- markdown-only hygiene (a normalizer scope/order bug);
+- authority-level mismatch (paragraph should have been classified `list_entry`, not `body`/`heading`);
+- input-side glyph survival (the bullet character survived earlier extraction or PDF import).
+
+Framing residual bullets as a "minor non-blocker" is a known false direction (see section 11) and is rejected.
 
 ## 3. Final Target
 
@@ -212,6 +248,48 @@ Only after focused chapter-region and gate tests are green:
    - unsupported topology class.
 
 ## 5. Work Plan
+
+### 5.0 Live Failure Inventory
+
+This section is the mandatory source of truth for what the latest real-document run actually fails on. It MUST be updated whenever a new full-book or focused real-document run is performed. Hypotheses, mini-plans, and Workstream tasks below are not allowed to reference "failing" or "missing" behavior that is not represented in this inventory.
+
+Baseline source: latest completed run-scoped report for `lietaer-pdf-full-benchmark`, currently `tests/artifacts/real_document_pipeline/runs/20260519T082926Z_963_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne/lietaer_pdf_full_benchmark_report.json`, as confirmed by `tests/artifacts/real_document_pipeline/lietaer_pdf_full_benchmark_latest.json` after that run moved to `status: "failed"` with `acceptance_passed: false`.
+
+Discovery refresh on 2026-05-19: the failed-check set remains unchanged, but the latest completed run materially worsens Mini-plan B counts (`199` source / `175` target) and expands Mini-plan C from two missing strings to three by adding `"11,12"`. Reviewer-safe interpretation remains: residual bullets stay on the legacy-markdown/display surface; the three unmapped checks still cluster as restore/alignment drift around topology-resolved TOC/chapter/note composites; and `key_headings_preserved` remains a separate non-B package, now including at least one source-heading-inventory anomaly/body marker (`"11,12"`) in addition to the page-range/index-style strings. This still does not reopen late-book chapter narratives.
+
+Format:
+
+| check | actual | threshold | overage | gate_source | root-cause class | mini-plan |
+|---|---|---|---|---|---|---|
+| `formatting_diagnostics_threshold` | 199 | 12 | 16.6× | `topology_unit` count basis | unmapped_alignment (subset of B) | B |
+| `unmapped_source_threshold` | 199 | 12 | 16.6× | `topology_unit` count basis | unmapped_alignment | B |
+| `unmapped_target_threshold` | 175 | 6 | 29.2× | `legacy_paragraph` count basis | unmapped_alignment | B |
+| `residual_bullet_glyphs_present` | 25 | 0 | ∞ | `legacy_markdown` | markdown_hygiene | A |
+| `key_headings_preserved` | missing `["11,12", "179– 180", "182, 192–1 93"]` | n/a | n/a | source heading inventory | new_authority_class | C |
+
+When the table is stale, freeze all implementation work until it is refreshed.
+
+### 5.0.1 Discovery gate (MUST run before any implementation work)
+
+Before any code change targeting failing full-book checks:
+
+1. Refresh section 5.0 from the latest run report.
+2. Sample minimum 5 examples per failing check; record root cause class as one of: `markdown_hygiene` | `structure_authority` | `unmapped_alignment` | `new_authority_class`.
+3. Confirm the inner-loop fixtures (`lietaer-pdf-chapter-region-core`, `lietaer-pdf-first-20-structure-core`) are still green. If green, the scope of work still CANNOT include topology promotion or Stage 1 authority changes unless the latest full-book report itself contains a direct file:line citation proving a remaining late-book authority gap.
+4. Map each failing check to exactly one mini-plan (A/B/C/...) with explicit pre-conditions and inner-loop verification target.
+5. Record the discovery outcome as a short paragraph in section 5.0 above the table.
+
+No implementation step in any Workstream may begin until this gate is satisfied for the check it claims to address.
+
+### 5.0.2 Independent mini-plans for current failing checks
+
+These mini-plans run independently. Do NOT bundle them into one slice. Each is decided strictly by its own discovery outcome.
+
+- **Mini-plan A — residual bullets.** Cheapest, highest relative overage. Discovery: 5 sample glyphs traced from source paragraph to final markdown. If `markdown_hygiene` → normalizer scope/order fix. If `structure_authority` → fix at classifier (list_entry vs body) before any normalizer.
+- **Mini-plan B — unmapped fragments.** Discovery: 5 sample unmapped source fragments and 5 sample unmapped target fragments, each traced through document_map → topology → Stage 2 → final output. Outcome is one or two breakage patterns. Focused fix per pattern; inner-loop fixture per pattern.
+- **Mini-plan C — index / page-range heading authority.** Requires new spec (`INDEX_REGION_AUTHORITY_SPEC_YYYY-MM-DD.md`). Do not start implementation without that spec approved.
+
+If any future failing check does not fit A/B/C, add a new mini-plan letter with its own discovery output. Do not silently extend an existing mini-plan to cover a different root-cause class.
 
 ### Workstream A: Repo hygiene and fixture readiness
 
@@ -422,6 +500,17 @@ F3. Save diagnostic outputs only when needed for fixture updates.
 
 F4. Run full-book checkpoint only after focused surfaces are green and the milestone question is explicit.
 
+Hard rule for full-book runs:
+
+A full-book run is REQUIRED to be preceded by ALL of:
+
+- the Live Failure Inventory (section 5.0) is refreshed and reflects the most recent run;
+- the targeted inner-loop fixtures listed in F1 are green;
+- at least one focused unit test exists per fixed root-cause class covered by the run;
+- the run has an explicit pass criterion stated in advance (which checks must move from FAIL to PASS, and which counts must drop below threshold).
+
+A full-book run without these preconditions is rejected as a tuning loop and its result is not allowed as evidence in plan updates. "Let's run it and see what's left" is explicitly not a valid reason.
+
 Acceptance:
 
 - each real-document profile has tracked fixture expectations where needed;
@@ -432,19 +521,26 @@ Acceptance:
 
 ### Immediate next tasks
 
-1. Continue Workstream D migration on adjacent reporting/passthrough surfaces: keep authoritative counts, gate source/basis, and raw markdown observability separate.
-2. Treat the chapter-region fixture trio as refreshed to the accepted current canonical baseline; unresolved pre-projection drift attribution now belongs to a separate reproducibility/observability package rather than blocking this fixture boundary.
-3. Treat Workstream E as implemented for Slices 1-6; do not reopen fallback hardening unless a concrete protected-unit fragmentation regression is found.
-4. Keep this plan aligned with the current reviewer-safe drift classification and landed slice status.
-5. If reproducibility attribution becomes necessary later, make it a separate explicit package that proves more than this focused baseline decision instead of reopening the refreshed chapter-region fixture boundary by default.
+These tasks are gated on the discovery gate in section 5.0.1. Do NOT skip ahead to implementation.
 
-### Next implementation tasks after hygiene
+1. Refresh section 5.0 "Live Failure Inventory" from the latest `lietaer_pdf_full_benchmark_report.json`. Quote `failed_checks` verbatim; recompute overage ratios.
+2. Run the three inner-loop diagnostics from a clean WSL shell to confirm focused state is still green:
+   - `bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-chapter-region-core`
+   - `bash scripts/run-structural-preparation-diagnostic.sh lietaer-pdf-first-20-structure-core`
+   - `bash scripts/run-structural-preparation-diagnostic.sh end-times-pdf-core` (only when TOC/list/page-artifact behavior is at stake)
+3. Sample 5 residual bullets from the current `failed_checks` evidence; classify each as `markdown_hygiene` or `structure_authority`. Record the outcome in section 5.0.
+4. Sample 5 unmapped source fragments and 5 unmapped target fragments from the current report; trace each through document_map → topology → Stage 2 → final output. Record the dominant breakage pattern(s).
+5. Confirm whether the `key_headings_preserved` failure is index / page-range entries. If yes, open `INDEX_REGION_AUTHORITY_SPEC_YYYY-MM-DD.md` separately; do not merge into Workstreams A-F.
+6. Only after steps 1-5 are complete: choose exactly one mini-plan (A, B, or C) to implement next, in the order suggested by Live Failure Inventory overage and discovery cost.
 
-1. Continue Workstream D only on untouched markdown-normalizer surfaces after the touched `false_fragment_heading` / `list_fragment_regression` runtime-display boundary work; keep authoritative counts, conservative fallback, advisory raw observability, and display/hygiene cleanup explicitly separated.
-2. Keep or tighten tests proving markdown structural signals are advisory when topology/source-backed authority is present.
-3. Leave Workstream E closed unless new diagnostics prove a concrete protected-unit fragmentation or override regression.
-4. Keep the accepted chapter-region fixture baseline in place unless a later reproducibility package produces stronger saved-boundary evidence or a concrete regression.
-5. Perform one milestone full-book diagnostic only after focused surfaces and tracked fixtures are intentionally aligned.
+### Things explicitly not to do next
+
+1. Do not propose "multi-signal Chapter 9 promotion" or any equivalent late-chapter recognition fix on the basis of conversation memory alone. The latest report explicitly shows Chapter 8, Chapter 10, and Chapter 11 as `chapter_heading` units and preserves the bounded TOC split; any stronger claim about Chapter 9 (either "still missing" or "already fully promoted") requires a direct file:line citation from the latest run report, per section 1.1 item 10 and the False Direction Guard.
+2. Do not reopen the just-closed markdown-side quality/reporting cluster unless discovery shows a new ambiguity; any further Workstream D package must target a still-untouched authority boundary rather than the now-explicit hygiene/advisory metrics.
+3. Do not reopen Workstream E unless new diagnostics prove a concrete protected-unit fragmentation or override regression.
+4. Do not run another full-book diagnostic until the hard rule in Workstream F is satisfied.
+5. Do not bundle index / page-range heading work with bullets work or with unmapped-fragments work; these are independent mini-plans with different root-cause classes.
+6. Do not modify Stage 1 prompt, schema, or cache as part of any of these mini-plans. If Stage 1 authority change is needed, that is a separate spec.
 
 ## 7. Verification Matrix
 
@@ -491,6 +587,10 @@ Not part of the normal loop. Use only as explicit milestone evidence.
 6. Do not revert unrelated dirty worktree changes.
 7. Do not treat markdown cleanup as structural proof once topology authority is present.
 8. Do not declare clean CI parity from a dirty worktree.
+9. Do not propose chapter-promotion logic, multi-signal fusion from TOC + body neighborhoods, or Stage 1 authority changes from outside Stage 1 itself. Such work is out of scope for `TOPOLOGY_FIRST_STRUCTURE_RECOVERY_REMEDIATION_SPEC_2026-05-12.md`, `LAYOUT_SIGNAL_EVIDENCE_SLICE_SPEC_2026-05-14.md`, and this plan, and requires a separate approved spec.
+10. Do not classify any check appearing in `failed_checks` as "minor" or "non-blocker". If the check is in `failed_checks`, it is a blocker by definition.
+11. Before claiming a chapter is "missing", a fragment is "lost", or a count is "too high", cite a specific `file:line` in the latest run report or fixture artifact. Claims unsupported by such a citation are rejected.
+12. Do not propose hypotheses or root causes from prior conversation memory or session summaries. Conversation memory may be stale relative to the latest run. Read the latest report first.
 
 ## 9. Definition Of Done
 
@@ -508,8 +608,25 @@ The structure-recognition remediation can be called complete when:
 
 ## 10. Recommended Next Action
 
-The next safest session-sized package is no longer another touched false-fragment/list-fragment runtime/display cleanup slice; that local boundary is now exhausted on the touched pipeline, structural-passthrough, and acceptance/summary surfaces.
+The next safest session-sized package is no longer another touched false-fragment/list-fragment runtime/display cleanup slice, and it is no longer the adjacent markdown-side quality/reporting cluster either; those local boundaries are now exhausted on the touched pipeline, structural-passthrough, and acceptance/summary surfaces.
 
-1. Continue Workstream D only on still-untouched markdown-normalizer or reporting surfaces, keeping authoritative count/source, conservative fallback, advisory raw observability, and display/hygiene cleanup explicitly separated.
+The next safest package is the discovery gate in section 5.0.1 against the current real-document failures: refresh section 5.0, sample failing-check evidence, decide one mini-plan. Anything before that gate is premature.
+
+1. If Workstream D continues, take only a still-untouched authority boundary; do not reopen the now-explicit bullet/residual/mixed/theology reporting surfaces without a new concrete ambiguity.
 2. Do not reopen Workstream E unless a concrete protected-unit fragmentation regression is found.
-3. If no adjacent untouched Workstream D surface is ready, move the next non-micro package to the fixture-baseline / pre-projection drift acceptance boundary instead of reopening the touched runtime/display path.
+3. Keep the accepted chapter-region fixture baseline as-is; the saved pre-projection boundary is now sufficiently explicit for current reviewer-safe work, so the next large package should be a different bounded authority package unless wire-level attribution becomes explicitly necessary.
+
+## 11. False Direction Guard
+
+This section is a hard list of failure modes observed in prior agent sessions when reasoning about structure-recognition work. Any plan, hypothesis, or implementation step matching one of these patterns is rejected without further argument.
+
+1. **Stale "Chapter N is lost" or "Chapter N is already fixed" hypothesis.** Claims that a late-book chapter (commonly Chapter 9 or Chapter 11) is missing, not promoted, or already fully promoted, without citing a fresh run report. The current baseline only supports the narrower statement in section 1.1 item 10; stronger narratives require a direct file:line citation from the latest report.
+2. **Cosmetic framing of failing checks.** Calling any entry in `failed_checks` "minor", "cosmetic", "non-blocker", or "out of scope for now". The threshold-overage ratio in section 5.0 is the only measure that matters; if a check is failing, it is blocking.
+3. **Full-book run as the next step.** Proposing "one final full-book run" or "let's run it and see what's left" without satisfying the Workstream F hard rule. Full-book is a milestone, not a debugging tool.
+4. **Multi-signal promotion from outside Stage 1.** Proposing TOC + body neighborhood + sequence position fusion as a way to add new heading authority. This either changes Stage 1 authority (out of scope without explicit Stage 1 spec) or fakes Stage 1 authority in a later stage (forbidden by guardrail 2).
+5. **"Fix the counter" framing.** Proposing to fix `unmapped_source_count`, `unmapped_target_count`, or `residual_bullet_glyph_count` without first identifying which concrete fragments contribute to the count and where they break. The metric is a symptom; the fragment is the bug.
+6. **Bundling independent failures into one slice.** Treating bullets + unmapped fragments + index region as one problem because they all live in the back of the book. They have different root-cause classes and require independent mini-plans; see section 5.0.2.
+7. **Conversation-memory-driven hypothesis.** Carrying forward problem statements from prior session summaries without re-reading the latest real-document run artifact. Run artifacts override conversation memory.
+8. **Plan-version inconsistency.** Quoting the plan to justify a step while contradicting another section of the plan in the same proposal. The plan must be read as a whole; in particular, Workstream F's deprecation of full-book loops binds all Workstreams.
+
+If a proposed step matches any of these patterns, return to section 5.0.1 discovery gate and produce evidence before continuing.

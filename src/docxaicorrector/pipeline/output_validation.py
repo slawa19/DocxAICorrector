@@ -376,6 +376,8 @@ def _looks_structural_boundary_line(line: str) -> bool:
         return True
     if re.match(r"^\d+[.)]\s+", stripped):
         return True
+    if _looks_index_page_reference_fragment(stripped):
+        return True
     if _STRUCTURAL_INLINE_LABEL_PATTERN.match(stripped):
         return True
     if _has_page_reference_suffix(stripped):
@@ -1866,6 +1868,21 @@ def _is_page_reference_like(text: str) -> bool:
 
 def _has_page_reference_suffix(text: str) -> bool:
     return re.search(r"(?:\.{2,}|\s{2,})\s*[0-9ivxlcdmIVXLCDM]+\s*$", text.strip()) is not None
+
+
+def _looks_index_page_reference_fragment(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+
+    collapsed = re.sub(r"\s+", "", stripped)
+    if not collapsed:
+        return False
+    if re.fullmatch(r"[.·•,;:()\[\]\-–—]+", collapsed):
+        return False
+    if re.fullmatch(r"[0-9ivxlcdmIVXLCDMnN,;:()\[\]\-–—]+", collapsed) is None:
+        return False
+    return any(char.isdigit() for char in collapsed) or bool(re.search(r"[ivxlcdmIVXLCDM]", collapsed))
 
 
 def _is_allowlisted_acronym_or_label_line(text: str) -> bool:

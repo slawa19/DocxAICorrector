@@ -208,13 +208,23 @@ def test_evaluate_lietaer_acceptance_fails_on_translation_quality_report_residua
         "formatting_diagnostics": [],
         "translation_quality_report": {
             "bullet_heading_count": 0,
+            "bullet_heading_gate_source": "legacy_markdown",
+            "bullet_heading_classification": "markdown_gate",
+            "raw_bullet_heading_count": 0,
             "false_fragment_heading_count": 2,
             "residual_bullet_glyph_count": 1,
             "residual_bullet_glyph_gate_source": "legacy_markdown",
+            "residual_bullet_glyph_classification": "display_hygiene",
             "raw_residual_bullet_glyph_count": 1,
             "list_fragment_regression_count": 1,
             "mixed_script_term_count": 1,
+            "mixed_script_term_gate_source": "legacy_markdown",
+            "mixed_script_term_classification": "non_structural_hygiene",
+            "raw_mixed_script_term_count": 1,
             "theology_style_deterministic_issue_count": 3,
+            "theology_style_deterministic_issue_source": "legacy_markdown",
+            "theology_style_deterministic_issue_classification": "domain_style_advisory",
+            "raw_theology_style_deterministic_issue_count": 3,
             "toc_body_concat_detected": True,
             "toc_body_concat_markdown_detected": True,
             "toc_body_concat_structure_detected": False,
@@ -235,7 +245,17 @@ def test_evaluate_lietaer_acceptance_fails_on_translation_quality_report_residua
         "structural_comparison_available",
     ]
     assert by_name["residual_bullet_glyphs_present"]["residual_bullet_glyph_gate_source"] == "legacy_markdown"
+    assert by_name["residual_bullet_glyphs_present"]["residual_bullet_glyph_classification"] == "display_hygiene"
     assert by_name["residual_bullet_glyphs_present"]["raw_residual_bullet_glyph_count"] == 1
+    assert by_name["mixed_script_terms_present"]["mixed_script_term_gate_source"] == "legacy_markdown"
+    assert by_name["mixed_script_terms_present"]["mixed_script_term_classification"] == "non_structural_hygiene"
+    assert by_name["mixed_script_terms_present"]["raw_mixed_script_term_count"] == 1
+    assert by_name["theology_style_deterministic_issues_present"]["theology_style_deterministic_issue_source"] == "legacy_markdown"
+    assert (
+        by_name["theology_style_deterministic_issues_present"]["theology_style_deterministic_issue_classification"]
+        == "domain_style_advisory"
+    )
+    assert by_name["theology_style_deterministic_issues_present"]["raw_theology_style_deterministic_issue_count"] == 3
     assert by_name["toc_body_concatenation_detected"]["toc_body_concat_detected"] is True
     assert by_name["toc_body_concatenation_detected"]["toc_body_concat_markdown_detected"] is True
     assert by_name["toc_body_concatenation_detected"]["toc_body_concat_structure_detected"] is False
@@ -1154,6 +1174,9 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
                     "residual_bullet_glyphs_present",
                 ],
                 "bullet_heading_count": 0,
+                "bullet_heading_gate_source": "legacy_markdown",
+                "bullet_heading_classification": "markdown_gate",
+                "raw_bullet_heading_count": 0,
                 "page_placeholder_heading_concat_count": 0,
                 "page_placeholder_heading_concat_source": "legacy_markdown",
                 "page_placeholder_heading_concat_classification": "display_hygiene",
@@ -1163,11 +1186,19 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
                 "raw_false_fragment_heading_count": 2,
                 "residual_bullet_glyph_count": 1,
                 "residual_bullet_glyph_gate_source": "legacy_markdown",
+                "residual_bullet_glyph_classification": "display_hygiene",
                 "raw_residual_bullet_glyph_count": 1,
                 "list_fragment_regression_count": 0,
                 "list_fragment_regression_gate_source": "topology_projection",
                 "raw_list_fragment_regression_count": 1,
+                "mixed_script_term_count": 2,
+                "mixed_script_term_gate_source": "legacy_markdown",
+                "mixed_script_term_classification": "non_structural_hygiene",
+                "raw_mixed_script_term_count": 2,
                 "theology_style_deterministic_issue_count": 0,
+                "theology_style_deterministic_issue_source": "legacy_markdown",
+                "theology_style_deterministic_issue_classification": "domain_style_advisory",
+                "raw_theology_style_deterministic_issue_count": 0,
                 "toc_body_concat_detected": False,
                 "toc_body_concat_markdown_detected": False,
                 "toc_body_concat_structure_detected": False,
@@ -1389,15 +1420,25 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
     assert '"readiness_status": "blocked_unsafe_best_effort_only"' in summary_text
     assert "translation_quality_status=fail" in summary_text
     assert "translation_quality_gate_reasons=false_fragment_headings_present,residual_bullet_glyphs_present" in summary_text
+    assert "translation_quality_bullet_heading_gate_source=legacy_markdown" in summary_text
+    assert "translation_quality_bullet_heading_classification=markdown_gate" in summary_text
+    assert "translation_quality_raw_bullet_heading_count=0" in summary_text
     assert "translation_quality_page_placeholder_heading_concat_source=legacy_markdown" in summary_text
     assert "translation_quality_page_placeholder_heading_concat_classification=display_hygiene" in summary_text
     assert "translation_quality_raw_page_placeholder_heading_concat_count=1" in summary_text
     assert "translation_quality_false_fragment_heading_gate_source=entry_assembly" in summary_text
     assert "translation_quality_raw_false_fragment_heading_count=2" in summary_text
     assert "translation_quality_residual_bullet_glyph_gate_source=legacy_markdown" in summary_text
+    assert "translation_quality_residual_bullet_glyph_classification=display_hygiene" in summary_text
     assert "translation_quality_raw_residual_bullet_glyph_count=1" in summary_text
     assert "translation_quality_list_fragment_regression_gate_source=topology_projection" in summary_text
     assert "translation_quality_raw_list_fragment_regression_count=1" in summary_text
+    assert "translation_quality_mixed_script_term_gate_source=legacy_markdown" in summary_text
+    assert "translation_quality_mixed_script_term_classification=non_structural_hygiene" in summary_text
+    assert "translation_quality_raw_mixed_script_term_count=2" in summary_text
+    assert "translation_quality_theology_style_deterministic_issue_source=legacy_markdown" in summary_text
+    assert "translation_quality_theology_style_deterministic_issue_classification=domain_style_advisory" in summary_text
+    assert "translation_quality_raw_theology_style_deterministic_issue_count=0" in summary_text
     assert "translation_quality_toc_body_concat_gate_source=legacy_markdown" in summary_text
     assert "source_file" not in report
     assert "runtime_configuration" not in report

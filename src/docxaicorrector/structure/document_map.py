@@ -1208,13 +1208,18 @@ def _recover_missing_chapter_sequence_entries(
             if missing_index is None or missing_index in occupied_indexes:
                 continue
 
+            recovered_confidence = _resolve_chapter_sequence_recovery_confidence(
+                missing_index,
+                logical_to_paragraph=logical_to_paragraph,
+                paragraph_anchors=paragraph_anchors,
+            )
             title = _paragraph_title_candidate(logical_to_paragraph[missing_index])
             recovered_outline.append(
                 DocumentMapOutlineEntry(
                     title=title,
                     level=left_level,
                     logical_index=missing_index,
-                    confidence="medium",
+                    confidence=recovered_confidence,
                     evidence=("chapter_sequence_recovery",),
                 )
             )
@@ -1232,7 +1237,7 @@ def _recover_missing_chapter_sequence_entries(
                         title=toc_title,
                         target_level=left_level,
                         candidate_body_logical_index=missing_index,
-                        confidence="medium",
+                        confidence=recovered_confidence,
                     )
                 )
                 occupied_toc_indexes.add(missing_index)
@@ -1279,6 +1284,28 @@ def _find_chapter_heading_between(
             return logical_index
         return logical_index
     return None
+
+
+def _resolve_chapter_sequence_recovery_confidence(
+    logical_index: int,
+    *,
+    logical_to_paragraph: dict[int, ParagraphUnit],
+    paragraph_anchors: dict[int, DocumentMapAnchor],
+) -> str:
+    paragraph = logical_to_paragraph.get(int(logical_index))
+    if paragraph is None:
+        return "medium"
+
+    anchor = paragraph_anchors.get(int(logical_index))
+    if anchor is not None and anchor.role == "heading":
+        return "high"
+
+    role = str(getattr(paragraph, "role", "") or "").strip().lower()
+    structural_role = str(getattr(paragraph, "structural_role", "") or "").strip().lower()
+    if role == "heading" or structural_role == "heading":
+        return "high"
+
+    return "medium"
 
 
 def _find_nearby_chapter_subtitle(

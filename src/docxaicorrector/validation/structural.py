@@ -16,6 +16,7 @@ from docx.oxml.ns import qn
 import docxaicorrector.processing.processing_runtime as processing_runtime
 from docxaicorrector.core.config import get_client, get_client_for_model_selector, get_provider_client, load_app_config, resolve_model_selector
 from docxaicorrector.pipeline.output_validation import (
+    collect_bullet_heading_samples,
     collect_false_fragment_heading_samples,
     collect_list_fragment_regression_samples,
     collect_mixed_script_samples,
@@ -81,10 +82,13 @@ def _build_markdown_quality_metrics(
     raw_structural_markdown: str,
     translation_domain: str,
 ) -> dict[str, object]:
+    bullet_heading_samples = collect_bullet_heading_samples(latest_markdown)
+    raw_bullet_heading_samples = collect_bullet_heading_samples(raw_markdown)
     false_fragment_heading_samples = collect_false_fragment_heading_samples(raw_structural_markdown)
     page_placeholder_heading_concat_samples = collect_page_placeholder_heading_concat_samples(latest_markdown)
     raw_page_placeholder_heading_concat_samples = collect_page_placeholder_heading_concat_samples(raw_markdown)
     residual_bullet_glyph_samples = collect_residual_bullet_glyph_samples(latest_markdown)
+    raw_residual_bullet_glyph_samples = collect_residual_bullet_glyph_samples(raw_markdown)
     list_fragment_regression_samples = collect_list_fragment_regression_samples(raw_structural_markdown)
     mixed_script_samples = collect_mixed_script_samples(latest_markdown)
     theology_style_samples = (
@@ -103,6 +107,10 @@ def _build_markdown_quality_metrics(
         if str(getattr(sample, "reason", "") or "") == "scripture_reference_heading_present"
     )
     return {
+        "bullet_heading_count": len(bullet_heading_samples),
+        "bullet_heading_gate_source": "legacy_markdown",
+        "bullet_heading_classification": "markdown_gate",
+        "raw_bullet_heading_count": len(raw_bullet_heading_samples),
         "false_fragment_heading_count": len(false_fragment_heading_samples),
         "false_fragment_heading_gate_source": "legacy_markdown",
         "raw_false_fragment_heading_count": len(false_fragment_heading_samples),
@@ -112,12 +120,19 @@ def _build_markdown_quality_metrics(
         "raw_page_placeholder_heading_concat_count": len(raw_page_placeholder_heading_concat_samples),
         "residual_bullet_glyph_count": len(residual_bullet_glyph_samples),
         "residual_bullet_glyph_gate_source": "legacy_markdown",
-        "raw_residual_bullet_glyph_count": len(residual_bullet_glyph_samples),
+        "residual_bullet_glyph_classification": "display_hygiene",
+        "raw_residual_bullet_glyph_count": len(raw_residual_bullet_glyph_samples),
         "list_fragment_regression_count": len(list_fragment_regression_samples),
         "list_fragment_regression_gate_source": "legacy_markdown",
         "raw_list_fragment_regression_count": len(list_fragment_regression_samples),
         "mixed_script_term_count": len(mixed_script_samples),
+        "mixed_script_term_gate_source": "legacy_markdown",
+        "mixed_script_term_classification": "non_structural_hygiene",
+        "raw_mixed_script_term_count": len(mixed_script_samples),
         "theology_style_deterministic_issue_count": len(theology_style_samples),
+        "theology_style_deterministic_issue_source": "legacy_markdown",
+        "theology_style_deterministic_issue_classification": "domain_style_advisory",
+        "raw_theology_style_deterministic_issue_count": len(theology_style_samples),
         "suspicious_heading_repetition_count": suspicious_heading_repetition_count,
         "scripture_reference_heading_count": scripture_reference_heading_count,
     }
@@ -157,6 +172,10 @@ def _merge_translation_quality_report_metrics(
     translation_quality_report: Mapping[str, object],
 ) -> None:
     for key in (
+        "bullet_heading_count",
+        "bullet_heading_gate_source",
+        "bullet_heading_classification",
+        "raw_bullet_heading_count",
         "false_fragment_heading_count",
         "false_fragment_heading_gate_source",
         "raw_false_fragment_heading_count",
@@ -166,12 +185,21 @@ def _merge_translation_quality_report_metrics(
         "raw_page_placeholder_heading_concat_count",
         "residual_bullet_glyph_count",
         "residual_bullet_glyph_gate_source",
+        "residual_bullet_glyph_classification",
         "raw_residual_bullet_glyph_count",
         "scripture_reference_heading_count",
         "suspicious_heading_repetition_count",
         "list_fragment_regression_count",
         "list_fragment_regression_gate_source",
         "raw_list_fragment_regression_count",
+        "mixed_script_term_count",
+        "mixed_script_term_gate_source",
+        "mixed_script_term_classification",
+        "raw_mixed_script_term_count",
+        "theology_style_deterministic_issue_count",
+        "theology_style_deterministic_issue_source",
+        "theology_style_deterministic_issue_classification",
+        "raw_theology_style_deterministic_issue_count",
     ):
         if key in translation_quality_report:
             metrics[key] = translation_quality_report[key]
@@ -528,6 +556,23 @@ def _normalize_registry_text_for_unit_alignment(value: object) -> str:
     return re.sub(r"\s+", " ", " ".join(normalized_lines)).strip().lower()
 
 
+def _normalize_registry_preview_for_unit_alignment(value: object, *, limit: int = 120) -> str:
+    normalized = _normalize_registry_text_for_unit_alignment(value)
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1].rstrip() + "…"
+
+
+def _registry_text_matches_target_preview(target_preview: object, generated_text: object) -> bool:
+    normalized_target_preview = _normalize_registry_text_for_unit_alignment(target_preview)
+    if not normalized_target_preview:
+        return False
+    normalized_generated_text = _normalize_registry_text_for_unit_alignment(generated_text)
+    if normalized_target_preview == normalized_generated_text:
+        return True
+    return normalized_target_preview == _normalize_registry_preview_for_unit_alignment(generated_text)
+
+
 def _registry_entry_unit_keys(
     entry: Mapping[str, object],
     paragraph_unit_keys: Mapping[str, frozenset[str]],
@@ -674,10 +719,11 @@ def _align_target_indexes_to_unit_keys(
             while generated_index < len(generated_entries):
                 generated_entry = generated_entries[generated_index]
                 generated_index += 1
-                generated_preview = _normalize_registry_text_for_unit_alignment(generated_entry.get("text"))
+                generated_text = generated_entry.get("text")
+                generated_preview = _normalize_registry_text_for_unit_alignment(generated_text)
                 if not generated_preview:
                     continue
-                if target_preview and target_preview != generated_preview:
+                if target_preview and not _registry_text_matches_target_preview(target_preview, generated_text):
                     continue
                 _merge_target_alignment_unit_keys(
                     alignments,
@@ -737,39 +783,14 @@ def _derive_unit_aware_unmapped_fields(
     unmapped_source_unit_keys: set[str] = set()
     for paragraph_id in unmapped_source_ids:
         unmapped_source_unit_keys.update(paragraph_unit_keys.get(paragraph_id, frozenset({f"paragraph:{paragraph_id}"})))
-    fields.update(
-        {
-            "structure_unit_total_count": len(all_unit_keys),
-            "structure_unit_unmapped_source_count": len(unmapped_source_unit_keys),
-            "unit_covered_source_fragment_count": max(0, len(all_unit_keys) - len(unmapped_source_unit_keys)),
-            "unmapped_source_count_basis": "topology_unit",
-            "unit_unmapped_source_gate_source": "topology_unit",
-        }
-    )
-    if not unmapped_target_indexes:
-        fields.update(
-            {
-                "structure_unit_unmapped_target_count": 0,
-                "unmapped_target_count_basis": "topology_unit",
-                "unit_unmapped_target_gate_source": "topology_unit",
-            }
-        )
-        return fields
     aligned_target_unit_keys = _align_target_indexes_to_unit_keys(
         formatting_payload,
         generated_paragraph_registry=generated_paragraph_registry,
         paragraph_unit_keys=paragraph_unit_keys,
     )
-    if aligned_target_unit_keys is None:
-        return fields
-    if any(not aligned_target_unit_keys.get(target_index) for target_index in unmapped_target_indexes):
-        return fields
-    unmapped_target_unit_keys: set[str] = set()
-    for target_index in unmapped_target_indexes:
-        unmapped_target_unit_keys.update(aligned_target_unit_keys.get(target_index, frozenset()))
     target_registry = formatting_payload.get("target_registry")
     covered_target_unit_keys: set[str] = set()
-    if isinstance(target_registry, list):
+    if aligned_target_unit_keys is not None and isinstance(target_registry, list):
         for target_entry in target_registry:
             if not isinstance(target_entry, Mapping):
                 continue
@@ -783,10 +804,45 @@ def _derive_unit_aware_unmapped_fields(
             if target_index < 0:
                 continue
             covered_target_unit_keys.update(aligned_target_unit_keys.get(target_index, frozenset()))
+    effective_unmapped_source_unit_keys = set(unmapped_source_unit_keys)
+    if covered_target_unit_keys:
+        effective_unmapped_source_unit_keys.difference_update(covered_target_unit_keys)
     fields.update(
         {
+            "structure_unit_total_count": len(all_unit_keys),
+            "structure_unit_unmapped_source_count": len(effective_unmapped_source_unit_keys),
+            "unit_covered_source_fragment_count": max(0, len(all_unit_keys) - len(effective_unmapped_source_unit_keys)),
+            "unmapped_source_count_basis": "topology_unit",
+            "unit_unmapped_source_gate_source": "topology_unit",
+        }
+    )
+    if not unmapped_target_indexes:
+        fields.update(
+            {
+                "structure_unit_unmapped_target_count": 0,
+                "unit_covered_target_fragment_count": len(covered_target_unit_keys),
+                "unmapped_target_count_basis": "topology_unit",
+                "unit_unmapped_target_gate_source": "topology_unit",
+            }
+        )
+        return fields
+    if aligned_target_unit_keys is None:
+        return fields
+    if any(not aligned_target_unit_keys.get(target_index) for target_index in unmapped_target_indexes):
+        return fields
+    unmapped_target_unit_keys: set[str] = set()
+    for target_index in unmapped_target_indexes:
+        unmapped_target_unit_keys.update(aligned_target_unit_keys.get(target_index, frozenset()))
+    shared_unmapped_unit_keys = effective_unmapped_source_unit_keys & unmapped_target_unit_keys
+    if shared_unmapped_unit_keys:
+        effective_unmapped_source_unit_keys.difference_update(shared_unmapped_unit_keys)
+        unmapped_target_unit_keys.difference_update(shared_unmapped_unit_keys)
+    fields.update(
+        {
+            "structure_unit_unmapped_source_count": len(effective_unmapped_source_unit_keys),
+            "unit_covered_source_fragment_count": max(0, len(all_unit_keys) - len(effective_unmapped_source_unit_keys)),
             "structure_unit_unmapped_target_count": len(unmapped_target_unit_keys),
-            "unit_covered_target_fragment_count": len(covered_target_unit_keys),
+            "unit_covered_target_fragment_count": len(covered_target_unit_keys | shared_unmapped_unit_keys),
             "unmapped_target_count_basis": "topology_unit",
             "unit_unmapped_target_gate_source": "topology_unit",
         }
@@ -799,6 +855,10 @@ def _apply_metric_snapshot_fields(snapshot: dict[str, object], metrics: Mapping[
         "document_map_toc_detected",
         "document_map_toc_region_count",
         "topology_toc_entry_count",
+        "bullet_heading_count",
+        "bullet_heading_gate_source",
+        "bullet_heading_classification",
+        "raw_bullet_heading_count",
         "false_fragment_heading_count",
         "false_fragment_heading_gate_source",
         "raw_false_fragment_heading_count",
@@ -808,10 +868,19 @@ def _apply_metric_snapshot_fields(snapshot: dict[str, object], metrics: Mapping[
         "raw_page_placeholder_heading_concat_count",
         "residual_bullet_glyph_count",
         "residual_bullet_glyph_gate_source",
+        "residual_bullet_glyph_classification",
         "raw_residual_bullet_glyph_count",
         "list_fragment_regression_count",
         "list_fragment_regression_gate_source",
         "raw_list_fragment_regression_count",
+        "mixed_script_term_count",
+        "mixed_script_term_gate_source",
+        "mixed_script_term_classification",
+        "raw_mixed_script_term_count",
+        "theology_style_deterministic_issue_count",
+        "theology_style_deterministic_issue_source",
+        "theology_style_deterministic_issue_classification",
+        "raw_theology_style_deterministic_issue_count",
         "toc_body_concat_detected",
         "toc_body_concat_markdown_detected",
         "toc_body_concat_structure_detected",
@@ -1072,6 +1141,9 @@ def run_structural_passthrough_validation(
             "source_toc_region_count": _relation_count(source_relation_report, "toc_region"),
             "effective_source_toc_region_count": _count_effective_toc_regions_from_source(source_paragraphs),
             "bullet_heading_count": _count_bullet_headings(latest_markdown),
+            "bullet_heading_gate_source": "legacy_markdown",
+            "bullet_heading_classification": "markdown_gate",
+            "raw_bullet_heading_count": _count_bullet_headings(latest_markdown),
             "toc_body_concat_detected": _has_toc_body_concat_markdown(latest_markdown),
             "toc_body_concat_markdown_detected": _has_toc_body_concat_markdown(latest_markdown),
             "require_pdf_conversion_satisfied": source_path.suffix.lower() == ".pdf",

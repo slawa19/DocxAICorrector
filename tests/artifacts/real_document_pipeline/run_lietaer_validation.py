@@ -415,6 +415,10 @@ def _build_translation_quality_summary_lines(
         "toc_body_concat_gate_source",
         "toc_body_concat_markdown_detected",
         "toc_body_concat_structure_detected",
+        "bullet_heading_count",
+        "bullet_heading_gate_source",
+        "bullet_heading_classification",
+        "raw_bullet_heading_count",
         "page_placeholder_heading_concat_count",
         "page_placeholder_heading_concat_source",
         "page_placeholder_heading_concat_classification",
@@ -424,10 +428,19 @@ def _build_translation_quality_summary_lines(
         "raw_false_fragment_heading_count",
         "residual_bullet_glyph_count",
         "residual_bullet_glyph_gate_source",
+        "residual_bullet_glyph_classification",
         "raw_residual_bullet_glyph_count",
         "list_fragment_regression_count",
         "list_fragment_regression_gate_source",
         "raw_list_fragment_regression_count",
+        "mixed_script_term_count",
+        "mixed_script_term_gate_source",
+        "mixed_script_term_classification",
+        "raw_mixed_script_term_count",
+        "theology_style_deterministic_issue_count",
+        "theology_style_deterministic_issue_source",
+        "theology_style_deterministic_issue_classification",
+        "raw_theology_style_deterministic_issue_count",
     ):
         if key in report:
             lines.append(f"translation_quality_{key}={report.get(key)}")
@@ -465,6 +478,18 @@ def _print_terminal_completion_summary(*, report: Mapping[str, object], final_st
                     f"toc_body_concat_gate_source={translation_quality_report.get('toc_body_concat_gate_source')}"
                     if "toc_body_concat_gate_source" in translation_quality_report
                     else "",
+                    f"bullet_heading_count={translation_quality_report.get('bullet_heading_count')}"
+                    if "bullet_heading_count" in translation_quality_report
+                    else "",
+                    f"bullet_heading_gate_source={translation_quality_report.get('bullet_heading_gate_source')}"
+                    if "bullet_heading_gate_source" in translation_quality_report
+                    else "",
+                    f"bullet_heading_classification={translation_quality_report.get('bullet_heading_classification')}"
+                    if "bullet_heading_classification" in translation_quality_report
+                    else "",
+                    f"raw_bullet_heading_count={translation_quality_report.get('raw_bullet_heading_count')}"
+                    if "raw_bullet_heading_count" in translation_quality_report
+                    else "",
                     f"page_placeholder_heading_concat_count={translation_quality_report.get('page_placeholder_heading_concat_count')}"
                     if "page_placeholder_heading_concat_count" in translation_quality_report
                     else "",
@@ -492,6 +517,9 @@ def _print_terminal_completion_summary(*, report: Mapping[str, object], final_st
                     f"residual_bullet_glyph_gate_source={translation_quality_report.get('residual_bullet_glyph_gate_source')}"
                     if "residual_bullet_glyph_gate_source" in translation_quality_report
                     else "",
+                    f"residual_bullet_glyph_classification={translation_quality_report.get('residual_bullet_glyph_classification')}"
+                    if "residual_bullet_glyph_classification" in translation_quality_report
+                    else "",
                     f"raw_residual_bullet_glyph_count={translation_quality_report.get('raw_residual_bullet_glyph_count')}"
                     if "raw_residual_bullet_glyph_count" in translation_quality_report
                     else "",
@@ -503,6 +531,30 @@ def _print_terminal_completion_summary(*, report: Mapping[str, object], final_st
                     else "",
                     f"raw_list_fragment_regression_count={translation_quality_report.get('raw_list_fragment_regression_count')}"
                     if "raw_list_fragment_regression_count" in translation_quality_report
+                    else "",
+                    f"mixed_script_term_count={translation_quality_report.get('mixed_script_term_count')}"
+                    if "mixed_script_term_count" in translation_quality_report
+                    else "",
+                    f"mixed_script_term_gate_source={translation_quality_report.get('mixed_script_term_gate_source')}"
+                    if "mixed_script_term_gate_source" in translation_quality_report
+                    else "",
+                    f"mixed_script_term_classification={translation_quality_report.get('mixed_script_term_classification')}"
+                    if "mixed_script_term_classification" in translation_quality_report
+                    else "",
+                    f"raw_mixed_script_term_count={translation_quality_report.get('raw_mixed_script_term_count')}"
+                    if "raw_mixed_script_term_count" in translation_quality_report
+                    else "",
+                    f"theology_style_deterministic_issue_count={translation_quality_report.get('theology_style_deterministic_issue_count')}"
+                    if "theology_style_deterministic_issue_count" in translation_quality_report
+                    else "",
+                    f"theology_style_deterministic_issue_source={translation_quality_report.get('theology_style_deterministic_issue_source')}"
+                    if "theology_style_deterministic_issue_source" in translation_quality_report
+                    else "",
+                    f"theology_style_deterministic_issue_classification={translation_quality_report.get('theology_style_deterministic_issue_classification')}"
+                    if "theology_style_deterministic_issue_classification" in translation_quality_report
+                    else "",
+                    f"raw_theology_style_deterministic_issue_count={translation_quality_report.get('raw_theology_style_deterministic_issue_count')}"
+                    if "raw_theology_style_deterministic_issue_count" in translation_quality_report
                     else "",
                 )
                 if part
@@ -1921,6 +1973,9 @@ def evaluate_lietaer_acceptance(
             "bullet_marker_headings_present",
             _coerce_int(translation_quality_report.get("bullet_heading_count")) == 0,
             bullet_heading_count=translation_quality_report.get("bullet_heading_count"),
+            bullet_heading_gate_source=translation_quality_report.get("bullet_heading_gate_source"),
+            bullet_heading_classification=translation_quality_report.get("bullet_heading_classification"),
+            raw_bullet_heading_count=translation_quality_report.get("raw_bullet_heading_count"),
         )
         add_check(
             "false_fragment_headings_present",
@@ -1934,6 +1989,7 @@ def evaluate_lietaer_acceptance(
             _coerce_int(translation_quality_report.get("residual_bullet_glyph_count")) == 0,
             residual_bullet_glyph_count=translation_quality_report.get("residual_bullet_glyph_count"),
             residual_bullet_glyph_gate_source=translation_quality_report.get("residual_bullet_glyph_gate_source"),
+            residual_bullet_glyph_classification=translation_quality_report.get("residual_bullet_glyph_classification"),
             raw_residual_bullet_glyph_count=translation_quality_report.get("raw_residual_bullet_glyph_count"),
         )
         add_check(
@@ -1947,11 +2003,21 @@ def evaluate_lietaer_acceptance(
             "mixed_script_terms_present",
             _coerce_int(translation_quality_report.get("mixed_script_term_count")) == 0,
             mixed_script_term_count=translation_quality_report.get("mixed_script_term_count"),
+            mixed_script_term_gate_source=translation_quality_report.get("mixed_script_term_gate_source"),
+            mixed_script_term_classification=translation_quality_report.get("mixed_script_term_classification"),
+            raw_mixed_script_term_count=translation_quality_report.get("raw_mixed_script_term_count"),
         )
         add_check(
             "theology_style_deterministic_issues_present",
             True,
             theology_style_deterministic_issue_count=translation_quality_report.get("theology_style_deterministic_issue_count"),
+            theology_style_deterministic_issue_source=translation_quality_report.get("theology_style_deterministic_issue_source"),
+            theology_style_deterministic_issue_classification=translation_quality_report.get(
+                "theology_style_deterministic_issue_classification"
+            ),
+            raw_theology_style_deterministic_issue_count=translation_quality_report.get(
+                "raw_theology_style_deterministic_issue_count"
+            ),
             failed_reason="advisory_only",
         )
         add_check(

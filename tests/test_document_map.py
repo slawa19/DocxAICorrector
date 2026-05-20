@@ -1048,8 +1048,10 @@ def test_build_document_map_recovers_missing_chapter_sequence_from_heading_gap(m
         "STRATEGIES FOR NGOS",
         "10 Truth and Consequences: Lessons Learned",
     ]
+    assert [entry.confidence for entry in document_map.toc_region.entries] == ["high", "high", "high"]
     assert [entry.title for entry in document_map.outline] == ["Chapter Eight", "Chapter Nine", "Chapter Ten"]
     assert [entry.logical_index for entry in document_map.outline] == [141, 159, 175]
+    assert [entry.confidence for entry in document_map.outline] == ["high", "high", "high"]
 
 
 def test_build_document_map_recovers_compound_toc_entries_and_split_hint_from_bounded_toc_region(monkeypatch):

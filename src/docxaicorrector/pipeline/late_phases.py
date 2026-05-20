@@ -78,6 +78,7 @@ def _normalize_final_markdown_for_quality_gate(text: str) -> str:
 
 def _normalize_final_markdown_for_display_hygiene_reporting(text: str) -> str:
     normalized = normalize_page_placeholder_heading_concats_markdown(text)
+    normalized = normalize_residual_bullet_glyphs_markdown(normalized)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
     if "\n" not in normalized and "\n\n" in text:
         return text
@@ -394,6 +395,7 @@ def _build_translation_quality_report(
     quality_status = "pass"
     gate_reasons: list[str] = []
     bullet_heading_samples = collect_bullet_heading_samples(normalized_quality_markdown)
+    raw_bullet_heading_samples = collect_bullet_heading_samples(final_markdown)
     bullet_heading_count = len(bullet_heading_samples)
     raw_page_placeholder_heading_concat_samples = collect_page_placeholder_heading_concat_samples(final_markdown)
     page_placeholder_heading_concat_samples = collect_page_placeholder_heading_concat_samples(display_hygiene_markdown)
@@ -402,16 +404,19 @@ def _build_translation_quality_report(
     source_backed_entry_authority = _has_source_backed_entry_authority(assembly_entries) and not assembly_uses_fallback
     entry_false_fragment_heading_samples = collect_false_fragment_heading_samples_from_entries(assembly_entries) if assembly_entries else []
     raw_false_fragment_heading_samples = collect_false_fragment_heading_samples(final_markdown)
-    residual_bullet_glyph_samples = collect_residual_bullet_glyph_samples(final_markdown)
+    raw_residual_bullet_glyph_samples = collect_residual_bullet_glyph_samples(final_markdown)
+    residual_bullet_glyph_samples = collect_residual_bullet_glyph_samples(display_hygiene_markdown)
     raw_list_fragment_regression_samples = collect_list_fragment_regression_samples(final_markdown)
-    mixed_script_samples = collect_mixed_script_samples(final_markdown)
+    raw_mixed_script_samples = collect_mixed_script_samples(final_markdown)
+    mixed_script_samples = list(raw_mixed_script_samples)
     recovered_heading_entries = collect_recovered_heading_entries(assembly_entries) if assembly_entries and not assembly_uses_fallback else []
     translation_domain = str(getattr(context, "translation_domain", "") or context.app_config.get("translation_domain", "general") or "general")
-    theology_style_samples = (
+    raw_theology_style_samples = (
         collect_theology_style_issue_samples(normalized_quality_markdown)
         if translation_domain.strip().lower() == "theology"
         else []
     )
+    theology_style_samples = list(raw_theology_style_samples)
     authority_fields = _derive_translation_quality_authority_fields(
         context=context,
         final_markdown=final_markdown,
@@ -557,7 +562,11 @@ def _build_translation_quality_report(
         "accepted_merged_sources_count": len(accepted_merged_sources) if isinstance(accepted_merged_sources, list) else 0,
         "caption_heading_conflicts_count": len(caption_heading_conflicts) if isinstance(caption_heading_conflicts, list) else 0,
         "bullet_heading_count": bullet_heading_count,
+        "bullet_heading_gate_source": "legacy_markdown",
+        "bullet_heading_classification": "markdown_gate",
+        "raw_bullet_heading_count": len(raw_bullet_heading_samples),
         "bullet_heading_samples": _serialize_quality_samples(bullet_heading_samples),
+        "raw_bullet_heading_samples": _serialize_quality_samples(raw_bullet_heading_samples),
         "page_placeholder_heading_concat_count": len(page_placeholder_heading_concat_samples),
         "page_placeholder_heading_concat_samples": _serialize_quality_samples(page_placeholder_heading_concat_samples),
         "page_placeholder_heading_concat_source": "legacy_markdown",
@@ -575,17 +584,27 @@ def _build_translation_quality_report(
         "scripture_reference_heading_samples": _serialize_quality_samples(scripture_reference_heading_samples),
         "residual_bullet_glyph_count": len(residual_bullet_glyph_samples),
         "residual_bullet_glyph_gate_source": "legacy_markdown",
-        "raw_residual_bullet_glyph_count": len(residual_bullet_glyph_samples),
+        "residual_bullet_glyph_classification": "display_hygiene",
+        "raw_residual_bullet_glyph_count": len(raw_residual_bullet_glyph_samples),
         "residual_bullet_glyph_samples": _serialize_quality_samples(residual_bullet_glyph_samples),
+        "raw_residual_bullet_glyph_samples": _serialize_quality_samples(raw_residual_bullet_glyph_samples),
         "list_fragment_regression_count": len(list_fragment_regression_samples),
         "list_fragment_regression_samples": _serialize_quality_samples(list_fragment_regression_samples),
         "list_fragment_regression_gate_source": list_fragment_regression_gate_source,
         "raw_list_fragment_regression_count": len(raw_list_fragment_regression_samples),
         "raw_list_fragment_regression_samples": _serialize_quality_samples(raw_list_fragment_regression_samples),
         "mixed_script_term_count": len(mixed_script_samples),
+        "mixed_script_term_gate_source": "legacy_markdown",
+        "mixed_script_term_classification": "non_structural_hygiene",
+        "raw_mixed_script_term_count": len(raw_mixed_script_samples),
         "mixed_script_term_samples": _serialize_quality_samples(mixed_script_samples),
+        "raw_mixed_script_term_samples": _serialize_quality_samples(raw_mixed_script_samples),
         "theology_style_deterministic_issue_count": len(theology_style_samples),
+        "theology_style_deterministic_issue_source": "legacy_markdown",
+        "theology_style_deterministic_issue_classification": "domain_style_advisory",
+        "raw_theology_style_deterministic_issue_count": len(raw_theology_style_samples),
         "theology_style_deterministic_issue_samples": _serialize_quality_samples(theology_style_samples),
+        "raw_theology_style_deterministic_issue_samples": _serialize_quality_samples(raw_theology_style_samples),
         "toc_body_concat_detected": toc_body_concat_detected,
         "toc_body_concat_markdown_detected": authority_fields.get("toc_body_concat_markdown_detected", False),
         "toc_body_concat_structure_detected": authority_fields.get("toc_body_concat_structure_detected", False),

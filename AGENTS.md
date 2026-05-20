@@ -286,6 +286,30 @@ echo START && powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Users\
 - Для narration-specific анализа используйте `ui_audiobook_artifact_saved`: он указывает точный `tts_text_path`, mode (`standalone` / `postprocess`) и базовые counters (`char_count`, `tag_count`, `excluded_blocks`).
 - Если нужно анализировать качество последнего UI-прогона, сначала ищите `ui_result_artifacts_saved` и соответствующие файлы в `.run/ui_results/`, а уже потом fallback'айтесь к промежуточным diagnostics.
 
+## Real-document failure analysis contract
+
+Когда пользователь сообщает, что full-book или другой real-document validation profile (например `lietaer-pdf-full-benchmark`) падает, действует жёсткий контракт анализа. Эти правила нужны, чтобы агент не строил гипотезы по устаревшей памяти и не пропускал блокирующие checks.
+
+Обязательные шаги до любой гипотезы или плана:
+
+1. Прочитать последний run report из `tests/artifacts/real_document_pipeline/lietaer_pdf_full_benchmark_report.json` или `tests/artifacts/real_document_pipeline/runs/<latest_run_id>/`.
+2. Дословно процитировать массив `failed_checks` и для каждого check записать пару `actual` / `threshold` и overage ratio.
+3. Сопоставить эти числа с разделом `## 5.0 Live Failure Inventory` в `docs/specs/STRUCTURE_RECOGNITION_COMPLETION_PLAN_2026-05-14.md`. Если таблица устарела относительно последнего report — сначала обновить таблицу, потом думать дальше.
+4. Только после этих трёх шагов формулировать гипотезы.
+
+Запрещено:
+
+- Формировать гипотезы или планы из conversation memory / session summaries без свежей цитаты из run report. Память может быть устаревшей относительно последнего прогона.
+- Называть любой check из `failed_checks` "косметикой", "минорной проблемой", "не блокером", "можно отложить" без явного разрешения пользователя проигнорировать его.
+- Утверждать, что глава потеряна, фрагмент потерян, или счётчик завышен, без конкретной ссылки `file:line` в актуальном run report или fixture артефакте.
+- Предлагать изменения Stage 1 prompt / schema / cache, включая "multi-signal chapter promotion from TOC + body neighborhoods", без отдельной утверждённой спеки под `docs/specs/`. Это вне scope `TOPOLOGY_FIRST_STRUCTURE_RECOVERY_REMEDIATION_SPEC_2026-05-12.md` и `LAYOUT_SIGNAL_EVIDENCE_SLICE_SPEC_2026-05-14.md`.
+- Предлагать full-book прогон как очередной шаг отладки. Full-book — это milestone, а не tuning loop; правила в Workstream F continuation plan.
+- Связывать в один slice независимые failing checks с разными root-cause classes (например bullets + unmapped fragments + index region). Каждый класс — отдельный mini-plan.
+
+Если задача попадает на одну из этих ситуаций, агент должен сначала вернуться к discovery gate в разделе 5.0.1 continuation plan и собрать evidence, и только потом продолжать.
+
+Полный список false directions и условия их отклонения — в разделе `## 11. False Direction Guard` continuation plan.
+
 ## Streamlit Layout Contract
 
 - Для проблем с растянутой шириной, отступами и компоновкой сначала используйте нативные примитивы Streamlit: `st.set_page_config`, `st.columns`, `st.container`, `st.sidebar`, `use_container_width`.
