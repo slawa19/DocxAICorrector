@@ -2869,6 +2869,156 @@ def test_derive_unit_aware_unmapped_fields_cancels_note_heading_interval_recover
     assert fields["unit_unmapped_target_gate_source"] == "topology_unit"
 
 
+def test_derive_unit_aware_unmapped_fields_aligns_numbered_ibid_target_preview() -> None:
+    source_paragraphs = [
+        ParagraphUnit(
+            text="America Down? Atlantic Monthly, October 1995.",
+            role="body",
+            paragraph_id="p1371",
+            source_index=1371,
+            logical_index=1371,
+        ),
+        ParagraphUnit(
+            text="Ibid.",
+            role="list",
+            paragraph_id="p1372",
+            source_index=1372,
+            logical_index=1372,
+            list_kind="ordered",
+            list_level=0,
+        ),
+        ParagraphUnit(
+            text="There have been two exceptions.",
+            role="list",
+            paragraph_id="p1373",
+            source_index=1373,
+            logical_index=1373,
+            list_kind="ordered",
+            list_level=0,
+        ),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-numbered-ibid-preview-alignment",
+        projected_units=(
+            StructuralUnit(
+                unit_id="u_elsewhere",
+                unit_type="chapter_heading",
+                logical_indexes=(10, 11),
+                canonical_text="Elsewhere",
+                role="heading",
+                heading_level=1,
+                confidence="high",
+                authority="document_map_outline",
+            ),
+        ),
+    )
+    formatting_payload = {
+        "source_registry": [
+            {"paragraph_id": "p1371", "mapped_target_index": 1254},
+            {"paragraph_id": "p1372", "mapped_target_index": 1370},
+            {"paragraph_id": "p1373", "mapped_target_index": 1256},
+        ],
+        "unmapped_source_ids": [],
+        "unmapped_target_indexes": [1255],
+        "target_registry": [
+            {"target_index": 1254, "mapped": True, "text_preview": "америке становится хуже?"},
+            {"target_index": 1255, "mapped": False, "text_preview": "там же."},
+            {"target_index": 1256, "mapped": True, "text_preview": "существовало два исключения."},
+            {"target_index": 1370, "mapped": True, "text_preview": "11."},
+        ],
+    }
+    generated_paragraph_registry = [
+        {"paragraph_id": "p1372", "text": "11. Там же."},
+    ]
+
+    paragraph_unit_keys, _ = real_document_validation_structural._build_source_paragraph_unit_membership(
+        source_paragraphs,
+        projection,
+    )
+    aligned_target_unit_keys = real_document_validation_structural._align_target_indexes_to_unit_keys(
+        formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+        paragraph_unit_keys=paragraph_unit_keys,
+    )
+    fields = real_document_validation_structural._derive_unit_aware_unmapped_fields(
+        source_paragraphs=source_paragraphs,
+        topology_projection=projection,
+        formatting_payload=formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+    )
+
+    assert aligned_target_unit_keys is not None
+    assert aligned_target_unit_keys[1255] == frozenset({"paragraph:p1372"})
+    assert fields["structure_unit_unmapped_source_count"] == 0
+    assert fields["structure_unit_unmapped_target_count"] == 0
+    assert fields["unmapped_target_count_basis"] == "topology_unit"
+    assert fields["unit_unmapped_target_gate_source"] == "topology_unit"
+
+
+def test_derive_unit_aware_unmapped_fields_does_not_align_numbered_ibid_preview_to_different_text() -> None:
+    source_paragraphs = [
+        ParagraphUnit(
+            text="Ibid.",
+            role="list",
+            paragraph_id="p1372",
+            source_index=1372,
+            logical_index=1372,
+            list_kind="ordered",
+            list_level=0,
+        ),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-numbered-ibid-preview-guard",
+        projected_units=(
+            StructuralUnit(
+                unit_id="u_elsewhere",
+                unit_type="chapter_heading",
+                logical_indexes=(10, 11),
+                canonical_text="Elsewhere",
+                role="heading",
+                heading_level=1,
+                confidence="high",
+                authority="document_map_outline",
+            ),
+        ),
+    )
+    formatting_payload = {
+        "source_registry": [
+            {"paragraph_id": "p1372", "mapped_target_index": 1370},
+        ],
+        "unmapped_source_ids": [],
+        "unmapped_target_indexes": [1255],
+        "target_registry": [
+            {"target_index": 1255, "mapped": False, "text_preview": "там же."},
+            {"target_index": 1370, "mapped": True, "text_preview": "11."},
+        ],
+    }
+    generated_paragraph_registry = [
+        {"paragraph_id": "p1372", "text": "11. См. другой источник."},
+    ]
+
+    aligned_target_unit_keys = real_document_validation_structural._align_target_indexes_to_unit_keys(
+        formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+        paragraph_unit_keys=real_document_validation_structural._build_source_paragraph_unit_membership(
+            source_paragraphs,
+            projection,
+        )[0],
+    )
+    fields = real_document_validation_structural._derive_unit_aware_unmapped_fields(
+        source_paragraphs=source_paragraphs,
+        topology_projection=projection,
+        formatting_payload=formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+    )
+
+    assert aligned_target_unit_keys is not None
+    assert 1255 not in aligned_target_unit_keys
+    assert fields["structure_unit_unmapped_target_count"] == 1
+    assert fields["unmapped_target_count_basis"] == "legacy_paragraph"
+    assert fields["unit_unmapped_target_gate_source"] == "legacy_paragraph"
+
+
 def test_derive_unit_aware_unmapped_fields_infers_single_unmapped_target_from_source_registry_interval() -> None:
     source_paragraphs = [
         ParagraphUnit(text="Intro", role="body", paragraph_id="p-prev", source_index=0, logical_index=9),
@@ -3011,6 +3161,278 @@ def test_derive_unit_aware_unmapped_fields_recovers_multi_target_interval_gap() 
     assert fields["structure_unit_unmapped_target_count"] == 0
     assert fields["unmapped_source_count_basis"] == "topology_unit"
     assert fields["unmapped_target_count_basis"] == "topology_unit"
+
+
+def test_derive_unit_aware_unmapped_fields_cancels_aligned_subset_while_preserving_legacy_target_basis() -> None:
+    source_paragraphs = [
+        ParagraphUnit(
+            text="This page intentionally left blank",
+            role="body",
+            paragraph_id="p0102",
+            source_index=102,
+            logical_index=102,
+        ),
+        ParagraphUnit(text="Chapter One", role="heading", paragraph_id="p0103", source_index=103, logical_index=103),
+        ParagraphUnit(
+            text="The Failure of Money",
+            role="heading",
+            paragraph_id="p0104",
+            source_index=104,
+            logical_index=104,
+        ),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-partial-aligned-unmapped-subset",
+        projected_units=(
+            StructuralUnit(
+                unit_type="chapter_heading",
+                logical_indexes=(103, 104),
+                canonical_text="Chapter One THE FAILURE OF MONEY",
+                role="heading",
+                heading_level=1,
+                confidence="high",
+                authority="document_map_outline",
+            ),
+        ),
+    )
+
+    fields = real_document_validation_structural._derive_unit_aware_unmapped_fields(
+        source_paragraphs=source_paragraphs,
+        topology_projection=projection,
+        formatting_payload={
+            "unmapped_source_ids": ["p0102", "p0103", "p0104"],
+            "unmapped_target_indexes": [88, 89],
+            "target_registry": [
+                {"target_index": 88, "mapped": False, "text_preview": "эта страница намеренно оставлена пустой."},
+                {"target_index": 89, "mapped": False, "text_preview": "глава первая крах денег"},
+            ],
+        },
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0103",
+                "merged_paragraph_ids": ["p0103", "p0104"],
+                "text": "# Глава первая крах денег",
+            },
+        ],
+    )
+
+    assert fields["structure_unit_unmapped_source_count"] == 1
+    assert fields["structure_unit_unmapped_target_count"] == 2
+    assert fields["unmapped_source_count_basis"] == "topology_unit"
+    assert fields["unmapped_target_count_basis"] == "legacy_paragraph"
+    assert fields["unit_unmapped_source_gate_source"] == "topology_unit"
+    assert fields["unit_unmapped_target_gate_source"] == "legacy_paragraph"
+
+
+def test_derive_unit_aware_unmapped_fields_promotes_target_basis_when_all_unmapped_targets_align() -> None:
+    source_paragraphs = [
+        ParagraphUnit(text="Chapter One", role="heading", paragraph_id="p0103", source_index=103, logical_index=103),
+        ParagraphUnit(
+            text="The Failure of Money",
+            role="heading",
+            paragraph_id="p0104",
+            source_index=104,
+            logical_index=104,
+        ),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-fully-aligned-unmapped-subset",
+        projected_units=(
+            StructuralUnit(
+                unit_type="chapter_heading",
+                logical_indexes=(103, 104),
+                canonical_text="Chapter One THE FAILURE OF MONEY",
+                role="heading",
+                heading_level=1,
+                confidence="high",
+                authority="document_map_outline",
+            ),
+        ),
+    )
+
+    fields = real_document_validation_structural._derive_unit_aware_unmapped_fields(
+        source_paragraphs=source_paragraphs,
+        topology_projection=projection,
+        formatting_payload={
+            "unmapped_source_ids": ["p0103", "p0104"],
+            "unmapped_target_indexes": [89],
+            "target_registry": [
+                {"target_index": 89, "mapped": False, "text_preview": "глава первая крах денег"},
+            ],
+        },
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0103",
+                "merged_paragraph_ids": ["p0103", "p0104"],
+                "text": "# Глава первая крах денег",
+            },
+        ],
+    )
+
+    assert fields["structure_unit_unmapped_source_count"] == 0
+    assert fields["structure_unit_unmapped_target_count"] == 0
+    assert fields["unmapped_source_count_basis"] == "topology_unit"
+    assert fields["unmapped_target_count_basis"] == "topology_unit"
+    assert fields["unit_unmapped_source_gate_source"] == "topology_unit"
+    assert fields["unit_unmapped_target_gate_source"] == "topology_unit"
+
+
+def test_derive_unit_aware_unmapped_fields_suppresses_relation_sibling_covered_by_mapped_target_alignment() -> None:
+    source_paragraphs = [
+        ParagraphUnit(
+            text="4 the flying fish: a new perspective on money 57 5 the future has arrived but isn't distributed evenly...",
+            role="body",
+            structural_role="toc_entry",
+            paragraph_id="p0038",
+            source_index=38,
+            logical_index=38,
+        ),
+        ParagraphUnit(
+            text="Yet!",
+            role="body",
+            structural_role="toc_entry",
+            paragraph_id="p0039",
+            source_index=39,
+            logical_index=39,
+        ),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-relation-sibling-suppression",
+        projected_units=(
+            StructuralUnit(
+                unit_type="toc_entry",
+                logical_indexes=(38,),
+                canonical_text="4 The Flying Fish 57 5 The Future Has Arrived But Isn't Distributed Evenly",
+                role="toc_entry",
+                heading_level=None,
+                confidence="high",
+                authority="document_map_toc",
+            ),
+            StructuralUnit(
+                unit_type="toc_entry",
+                logical_indexes=(39,),
+                canonical_text="Yet!",
+                role="toc_entry",
+                heading_level=None,
+                confidence="high",
+                authority="document_map_toc",
+            ),
+        ),
+    )
+
+    fields = real_document_validation_structural._derive_unit_aware_unmapped_fields(
+        source_paragraphs=source_paragraphs,
+        topology_projection=projection,
+        formatting_payload={
+            "source_registry": [
+                {
+                    "paragraph_id": "p0038",
+                    "relation_ids": ["rel_0002"],
+                    "mapped_target_index": None,
+                },
+                {
+                    "paragraph_id": "p0039",
+                    "relation_ids": ["rel_0002"],
+                    "mapped_target_index": 29,
+                },
+            ],
+            "unmapped_source_ids": ["p0038"],
+            "unmapped_target_indexes": [28],
+            "target_registry": [
+                {"target_index": 28, "mapped": False, "text_preview": "4 летучие рыбы: новый взгляд на деньги 57 5 будущее уже наступило"},
+                {"target_index": 29, "mapped": True, "text_preview": "еще нет!"},
+            ],
+        },
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0039", "text": "Еще нет!"},
+        ],
+    )
+
+    assert fields["structure_unit_unmapped_source_count"] == 0
+    assert fields["structure_unit_unmapped_target_count"] == 1
+    assert fields["unmapped_source_count_basis"] == "topology_unit"
+    assert fields["unmapped_target_count_basis"] == "legacy_paragraph"
+    assert fields["unit_unmapped_source_gate_source"] == "topology_unit"
+    assert fields["unit_unmapped_target_gate_source"] == "legacy_paragraph"
+
+
+def test_derive_unit_aware_unmapped_fields_does_not_suppress_adjacent_fragment_without_shared_relation_id() -> None:
+    source_paragraphs = [
+        ParagraphUnit(
+            text="4 the flying fish: a new perspective on money 57 5 the future has arrived but isn't distributed evenly...",
+            role="body",
+            structural_role="toc_entry",
+            paragraph_id="p0038",
+            source_index=38,
+            logical_index=38,
+        ),
+        ParagraphUnit(
+            text="Yet!",
+            role="body",
+            structural_role="toc_entry",
+            paragraph_id="p0039",
+            source_index=39,
+            logical_index=39,
+        ),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-no-relation-sibling-suppression",
+        projected_units=(
+            StructuralUnit(
+                unit_type="toc_entry",
+                logical_indexes=(38,),
+                canonical_text="4 The Flying Fish 57 5 The Future Has Arrived But Isn't Distributed Evenly",
+                role="toc_entry",
+                heading_level=None,
+                confidence="high",
+                authority="document_map_toc",
+            ),
+            StructuralUnit(
+                unit_type="toc_entry",
+                logical_indexes=(39,),
+                canonical_text="Yet!",
+                role="toc_entry",
+                heading_level=None,
+                confidence="high",
+                authority="document_map_toc",
+            ),
+        ),
+    )
+
+    fields = real_document_validation_structural._derive_unit_aware_unmapped_fields(
+        source_paragraphs=source_paragraphs,
+        topology_projection=projection,
+        formatting_payload={
+            "source_registry": [
+                {
+                    "paragraph_id": "p0038",
+                    "relation_ids": [],
+                    "mapped_target_index": None,
+                },
+                {
+                    "paragraph_id": "p0039",
+                    "relation_ids": [],
+                    "mapped_target_index": 29,
+                },
+            ],
+            "unmapped_source_ids": ["p0038"],
+            "unmapped_target_indexes": [28],
+            "target_registry": [
+                {"target_index": 28, "mapped": False, "text_preview": "4 летучие рыбы: новый взгляд на деньги 57 5 будущее уже наступило"},
+                {"target_index": 29, "mapped": True, "text_preview": "еще нет!"},
+            ],
+        },
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0039", "text": "Еще нет!"},
+        ],
+    )
+
+    assert fields["structure_unit_unmapped_source_count"] == 1
+    assert fields["structure_unit_unmapped_target_count"] == 1
+    assert fields["unmapped_source_count_basis"] == "topology_unit"
+    assert fields["unmapped_target_count_basis"] == "legacy_paragraph"
+    assert fields["unit_unmapped_source_gate_source"] == "topology_unit"
+    assert fields["unit_unmapped_target_gate_source"] == "legacy_paragraph"
 
 
 def test_build_structural_checks_prefers_topology_unit_unmapped_counts_when_available() -> None:

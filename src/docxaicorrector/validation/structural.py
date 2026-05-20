@@ -552,6 +552,7 @@ def _normalize_registry_text_for_unit_alignment(value: object) -> str:
         if not stripped:
             continue
         stripped = re.sub(r"^#{1,6}\s+", "", stripped)
+        stripped = re.sub(r"^\(?\d{1,4}[.)]\s+", "", stripped)
         normalized_lines.append(stripped)
     return re.sub(r"\s+", " ", " ".join(normalized_lines)).strip().lower()
 
@@ -590,6 +591,18 @@ def _registry_entry_unit_keys(
     return frozenset(unit_keys)
 
 
+def _registry_entry_relation_ids(entry: Mapping[str, object]) -> tuple[str, ...]:
+    raw_relation_ids = entry.get("relation_ids")
+    if not isinstance(raw_relation_ids, Sequence) or isinstance(raw_relation_ids, (str, bytes, bytearray)):
+        return ()
+    relation_ids: list[str] = []
+    for value in raw_relation_ids:
+        relation_id = str(value).strip()
+        if relation_id and relation_id not in relation_ids:
+            relation_ids.append(relation_id)
+    return tuple(relation_ids)
+
+
 def _merge_target_alignment_unit_keys(
     alignments: dict[int, frozenset[str]],
     *,
@@ -615,12 +628,21 @@ def _build_target_alignments_from_source_registry(
     alignments: dict[int, frozenset[str]] = {}
     source_positions_by_target_index: dict[int, list[int]] = {}
     normalized_source_entries: list[Mapping[str, object]] = []
-    for position, entry in enumerate(source_registry):
+    entry_unit_keys_by_position: list[frozenset[str]] = []
+    relation_unit_keys_by_id: dict[str, set[str]] = {}
+    for entry in source_registry:
         if not isinstance(entry, Mapping):
             continue
         normalized_entry = cast(Mapping[str, object], entry)
         normalized_source_entries.append(normalized_entry)
         unit_keys = _registry_entry_unit_keys(normalized_entry, paragraph_unit_keys)
+        entry_unit_keys_by_position.append(unit_keys)
+        for relation_id in _registry_entry_relation_ids(normalized_entry):
+            relation_unit_keys_by_id.setdefault(relation_id, set()).update(unit_keys)
+    for position, normalized_entry in enumerate(normalized_source_entries):
+        unit_keys = set(entry_unit_keys_by_position[position])
+        for relation_id in _registry_entry_relation_ids(normalized_entry):
+            unit_keys.update(relation_unit_keys_by_id.get(relation_id, set()))
         try:
             raw_target_index = normalized_entry.get("mapped_target_index", -1)
             target_index = int(cast(Any, raw_target_index if raw_target_index is not None else -1))
@@ -723,20 +745,24 @@ def _align_target_indexes_to_unit_keys(
             if target_index < 0:
                 continue
             target_preview = _normalize_registry_text_for_unit_alignment(target_entry.get("text_preview"))
-            while generated_index < len(generated_entries):
-                generated_entry = generated_entries[generated_index]
-                generated_index += 1
+            search_index = generated_index
+            while search_index < len(generated_entries):
+                generated_entry = generated_entries[search_index]
                 generated_text = generated_entry.get("text")
                 generated_preview = _normalize_registry_text_for_unit_alignment(generated_text)
                 if not generated_preview:
+                    search_index += 1
+                    generated_index = search_index
                     continue
                 if target_preview and not _registry_text_matches_target_preview(target_preview, generated_text):
+                    search_index += 1
                     continue
                 _merge_target_alignment_unit_keys(
                     alignments,
                     target_index=target_index,
                     unit_keys=_registry_entry_unit_keys(generated_entry, paragraph_unit_keys),
                 )
+                generated_index = search_index + 1
                 break
     _infer_target_alignment_unit_keys_from_source_intervals(
         formatting_payload,
@@ -835,15 +861,28 @@ def _derive_unit_aware_unmapped_fields(
         return fields
     if aligned_target_unit_keys is None:
         return fields
-    if any(not aligned_target_unit_keys.get(target_index) for target_index in unmapped_target_indexes):
+    aligned_unmapped_target_indexes = [
+        target_index for target_index in unmapped_target_indexes if aligned_target_unit_keys.get(target_index)
+    ]
+    if not aligned_unmapped_target_indexes:
         return fields
     unmapped_target_unit_keys: set[str] = set()
-    for target_index in unmapped_target_indexes:
+    for target_index in aligned_unmapped_target_indexes:
         unmapped_target_unit_keys.update(aligned_target_unit_keys.get(target_index, frozenset()))
+    if covered_target_unit_keys:
+        unmapped_target_unit_keys.difference_update(covered_target_unit_keys)
     shared_unmapped_unit_keys = effective_unmapped_source_unit_keys & unmapped_target_unit_keys
     if shared_unmapped_unit_keys:
         effective_unmapped_source_unit_keys.difference_update(shared_unmapped_unit_keys)
         unmapped_target_unit_keys.difference_update(shared_unmapped_unit_keys)
+        fields.update(
+            {
+                "structure_unit_unmapped_source_count": len(effective_unmapped_source_unit_keys),
+                "unit_covered_source_fragment_count": max(0, len(all_unit_keys) - len(effective_unmapped_source_unit_keys)),
+            }
+        )
+    if len(aligned_unmapped_target_indexes) != len(unmapped_target_indexes):
+        return fields
     fields.update(
         {
             "structure_unit_unmapped_source_count": len(effective_unmapped_source_unit_keys),
