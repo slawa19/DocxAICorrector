@@ -3263,6 +3263,98 @@ def test_collect_target_alignment_preview_trace_replays_saved_target_1372() -> N
     assert aligned_target_unit_keys[1372] == frozenset({"paragraph:p1483"})
 
 
+def test_collect_target_alignment_preview_trace_exposes_expected_fields() -> None:
+    source_paragraphs = [
+        ParagraphUnit(
+            text="America Down? Atlantic Monthly, October 1995.",
+            role="body",
+            paragraph_id="p1371",
+            source_index=1371,
+            logical_index=1371,
+        ),
+        ParagraphUnit(
+            text="Ibid.",
+            role="list",
+            paragraph_id="p1372",
+            source_index=1372,
+            logical_index=1372,
+            list_kind="ordered",
+            list_level=0,
+        ),
+        ParagraphUnit(
+            text="There have been two exceptions.",
+            role="list",
+            paragraph_id="p1373",
+            source_index=1373,
+            logical_index=1373,
+            list_kind="ordered",
+            list_level=0,
+        ),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-preview-trace-expected-fields",
+        projected_units=(
+            StructuralUnit(
+                unit_id="u_elsewhere",
+                unit_type="chapter_heading",
+                logical_indexes=(10, 11),
+                canonical_text="Elsewhere",
+                role="heading",
+                heading_level=1,
+                confidence="high",
+                authority="document_map_outline",
+            ),
+        ),
+    )
+    formatting_payload = {
+        "source_registry": [
+            {"paragraph_id": "p1371", "mapped_target_index": 1273},
+            {"paragraph_id": "p1372", "mapped_target_index": 1373},
+            {"paragraph_id": "p1373", "mapped_target_index": 1275},
+        ],
+        "unmapped_source_ids": [],
+        "unmapped_target_indexes": [1274],
+        "target_registry": [
+            {"target_index": 1273, "mapped": True, "text_preview": "america down? atlantic monthly, october 1995."},
+            {"target_index": 1274, "mapped": False, "text_preview": "там же."},
+            {"target_index": 1275, "mapped": True, "text_preview": "there have been two exceptions: friedrich hayek and maurice allais both"},
+        ],
+    }
+    generated_paragraph_registry = [
+        {"paragraph_id": "p1371", "text": "Америка в упадке?», Atlantic Monthly, октябрь 1995 г."},
+        {"paragraph_id": "p1372", "text": "11. Там же."},
+        {"paragraph_id": "p1373", "text": "12. Было два исключения: Фридрих Хайек и Морис Алле получили Нобелевскую"},
+    ]
+
+    paragraph_unit_keys, _ = real_document_validation_structural._build_source_paragraph_unit_membership(
+        source_paragraphs,
+        projection,
+    )
+    trace = real_document_validation_structural._collect_target_alignment_preview_trace(
+        formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+        paragraph_unit_keys=paragraph_unit_keys,
+        target_indexes=[1274],
+    )
+
+    assert len(trace) == 1
+    trace_entry = trace[0]
+    assert {
+        "target_index",
+        "target_preview",
+        "match_result",
+        "chosen_generated_paragraph_id",
+        "chosen_generated_preview",
+        "unit_keys",
+    }.issubset(trace_entry)
+    assert trace_entry["target_index"] == 1274
+    assert trace_entry["target_preview"] == "там же."
+    assert trace_entry["match_result"] == "matched"
+    assert trace_entry["chosen_generated_paragraph_id"] == "p1372"
+    assert trace_entry["chosen_generated_preview"] == "там же."
+    assert trace_entry["unit_keys"] == ["paragraph:p1372"]
+
+
 def test_derive_unit_aware_unmapped_fields_aligns_empty_source_window_body_target_127_shape() -> None:
     source_paragraphs = [
         ParagraphUnit(

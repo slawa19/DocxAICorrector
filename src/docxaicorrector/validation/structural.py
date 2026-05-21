@@ -34,6 +34,7 @@ from docxaicorrector.document._document import (
     inspect_placeholder_integrity,
     summarize_boundary_normalization_metrics,
 )
+from docxaicorrector.generation.formatting_diagnostics_retention import write_formatting_diagnostics_artifact
 from docxaicorrector.generation.formatting_transfer import preserve_source_paragraph_properties
 from docxaicorrector.generation._generation import convert_markdown_to_docx_bytes, ensure_pandoc_available
 from docxaicorrector.image.reinsertion import reinsert_inline_images
@@ -929,6 +930,102 @@ def _align_target_indexes_to_unit_keys(
     return alignments or None
 
 
+def _truncate_target_alignment_trace_preview(value: object, *, limit: int = 80) -> str | None:
+    normalized = _normalize_registry_text_for_unit_alignment(value)
+    if not normalized:
+        return None
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1].rstrip() + "…"
+
+
+def _serialize_compact_target_alignment_trace_entry(entry: Mapping[str, object]) -> dict[str, object]:
+    unit_keys = entry.get("unit_keys")
+    normalized_unit_keys = [
+        str(value).strip()
+        for value in cast(Sequence[object], unit_keys or ())
+        if str(value).strip()
+    ]
+    return {
+        "target_index": int(cast(Any, entry.get("target_index", -1))),
+        "target_preview": _truncate_target_alignment_trace_preview(entry.get("target_preview")),
+        "match_result": str(entry.get("match_result") or "").strip(),
+        "chosen_generated_paragraph_id": str(entry.get("chosen_generated_paragraph_id") or "").strip() or None,
+        "chosen_generated_preview": _truncate_target_alignment_trace_preview(entry.get("chosen_generated_preview")),
+        "unit_keys": sorted(normalized_unit_keys),
+    }
+
+
+def _emit_target_alignment_trace_artifact(
+    *,
+    source_paragraphs: Sequence[object],
+    topology_projection: object | None,
+    formatting_payload: Mapping[str, object] | None,
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
+) -> None:
+    if formatting_payload is None or not generated_paragraph_registry:
+        return
+
+    raw_unmapped_target_indexes = formatting_payload.get("unmapped_target_indexes")
+    if not isinstance(raw_unmapped_target_indexes, list):
+        return
+
+    unmapped_target_indexes: list[int] = []
+    for value in raw_unmapped_target_indexes:
+        try:
+            unmapped_target_indexes.append(int(cast(Any, value)))
+        except (TypeError, ValueError):
+            continue
+    if not unmapped_target_indexes:
+        return
+
+    paragraph_unit_keys, _ = _build_source_paragraph_unit_membership(source_paragraphs, topology_projection)
+    generated_registry_alignments, _ = _align_target_indexes_from_generated_registry(
+        formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+        paragraph_unit_keys=paragraph_unit_keys,
+        trace_target_indexes=unmapped_target_indexes,
+    )
+    full_alignments = _align_target_indexes_to_unit_keys(
+        formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+        paragraph_unit_keys=paragraph_unit_keys,
+    ) or {}
+    compact_trace = [
+        _serialize_compact_target_alignment_trace_entry(entry)
+        for entry in _collect_target_alignment_preview_trace(
+            formatting_payload,
+            generated_paragraph_registry=generated_paragraph_registry,
+            paragraph_unit_keys=paragraph_unit_keys,
+            target_indexes=unmapped_target_indexes,
+        )
+    ]
+    aligned_target_unit_keys_snapshot = {
+        str(target_index): sorted(full_alignments.get(target_index, frozenset())) or None
+        for target_index in unmapped_target_indexes
+    }
+    aligned_via_generated_registry = sum(
+        1 for target_index in unmapped_target_indexes if generated_registry_alignments.get(target_index)
+    )
+    aligned_via_full_inference = sum(1 for target_index in unmapped_target_indexes if full_alignments.get(target_index))
+
+    write_formatting_diagnostics_artifact(
+        stage="target_alignment_trace",
+        filename_prefix="target_alignment_trace",
+        diagnostics={
+            "unmapped_target_indexes": unmapped_target_indexes,
+            "generated_registry_alignment_trace": compact_trace,
+            "aligned_target_unit_keys_snapshot": aligned_target_unit_keys_snapshot,
+            "alignment_coverage_summary": {
+                "total_unmapped": len(unmapped_target_indexes),
+                "aligned_via_generated_registry": aligned_via_generated_registry,
+                "aligned_via_interval_inference": aligned_via_full_inference,
+                "still_unaligned": max(0, len(unmapped_target_indexes) - aligned_via_full_inference),
+            },
+        },
+    )
+
+
 def _derive_unit_aware_unmapped_fields(
     *,
     source_paragraphs: Sequence[object],
@@ -976,6 +1073,15 @@ def _derive_unit_aware_unmapped_fields(
         generated_paragraph_registry=generated_paragraph_registry,
         paragraph_unit_keys=paragraph_unit_keys,
     )
+    generated_registry_aligned_target_indexes: set[int] = set()
+    if generated_paragraph_registry:
+        generated_registry_aligned_target_indexes = set(
+            _align_target_indexes_from_generated_registry(
+                formatting_payload,
+                generated_paragraph_registry=generated_paragraph_registry,
+                paragraph_unit_keys=paragraph_unit_keys,
+            )[0]
+        )
     target_registry = formatting_payload.get("target_registry")
     covered_target_unit_keys: set[str] = set()
     if aligned_target_unit_keys is not None and isinstance(target_registry, list):
@@ -1022,10 +1128,19 @@ def _derive_unit_aware_unmapped_fields(
     if not aligned_unmapped_target_indexes:
         return fields
     unmapped_target_unit_keys: set[str] = set()
+    preserved_interval_topology_unit_keys: set[str] = set()
     for target_index in aligned_unmapped_target_indexes:
-        unmapped_target_unit_keys.update(aligned_target_unit_keys.get(target_index, frozenset()))
+        target_unit_keys = aligned_target_unit_keys.get(target_index, frozenset())
+        unmapped_target_unit_keys.update(target_unit_keys)
+        if target_index in generated_registry_aligned_target_indexes:
+            continue
+        if unmapped_source_ids:
+            preserved_interval_topology_unit_keys.update(
+                key for key in target_unit_keys if isinstance(key, str) and not key.startswith("paragraph:")
+            )
     if covered_target_unit_keys:
         unmapped_target_unit_keys.difference_update(covered_target_unit_keys)
+        unmapped_target_unit_keys.update(preserved_interval_topology_unit_keys)
     shared_unmapped_unit_keys = effective_unmapped_source_unit_keys & unmapped_target_unit_keys
     if shared_unmapped_unit_keys:
         effective_unmapped_source_unit_keys.difference_update(shared_unmapped_unit_keys)
@@ -1382,6 +1497,12 @@ def run_structural_passthrough_validation(
         metrics,
         prepared,
         source_paragraphs=source_paragraphs,
+        formatting_payload=canonical_formatting_diagnostics,
+        generated_paragraph_registry=cast(Sequence[Mapping[str, object]] | None, generated_paragraph_registry),
+    )
+    _emit_target_alignment_trace_artifact(
+        source_paragraphs=source_paragraphs,
+        topology_projection=getattr(prepared, "document_topology_projection", None),
         formatting_payload=canonical_formatting_diagnostics,
         generated_paragraph_registry=cast(Sequence[Mapping[str, object]] | None, generated_paragraph_registry),
     )
