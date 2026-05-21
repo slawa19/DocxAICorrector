@@ -670,6 +670,77 @@ fidelity diagnostic package from
 `docs/specs/STRUCTURE_RECOGNITION_INPUT_FIDELITY_SPEC_2026-05-21.md` so failures
 can be attributed to missing Stage 1 signals versus late display residue.
 
+## Current Strategic Recommendation
+
+At the current project stage, this package should be treated as a narrow
+late-output hygiene and observability layer, not as the primary roadmap for more
+structure-first complexity.
+
+Recommended priority order:
+
+1. keep detector logic useful for observability and artifact review;
+2. keep cleanup limited to deterministic non-semantic display hygiene;
+3. avoid turning new detector counts into broad full-book blockers too early;
+4. use the outcome of `docs/specs/SIMPLE_READER_FIRST_MVP_SPEC_2026-05-21.md` as
+   the main decision gate for broader rollout.
+
+Reason:
+
+- if the reader-first MVP shows materially better reader-visible artifacts with a
+  simpler pipeline, this spec should support that outcome as shared hygiene
+  infrastructure rather than expand structure-first governance;
+- if the reader-first MVP does **not** materially outperform the current path,
+  then the detector/cleanup layer defined here becomes a stronger candidate for
+  gradual rollout inside the existing structure-first pipeline.
+
+Current recommendation by phase:
+
+- Phase 0 detector-only plumbing: good immediate value;
+- Phase 1 R1 blank-page cleanup: good immediate value if heading inventory stays
+  preserved;
+- Phase 2 R2-narrow inline page furniture cleanup: useful, but keep conservative
+  and diagnostic-heavy;
+- Phase 3 strict profile rollout: defer broad activation until reader-first MVP
+  evidence is reviewed.
+
+## Reader-First Decision Gate
+
+Before enabling strict detector thresholds broadly, compare this package against
+the future outcome of `docs/specs/SIMPLE_READER_FIRST_MVP_SPEC_2026-05-21.md`.
+
+Use the MVP outcome to choose one of these paths:
+
+1. Reader-first wins clearly.
+
+   Then:
+
+   - keep this spec's R1/R2 deterministic cleanup and report artifacts as shared
+     late-output infrastructure;
+   - keep D3/D4/D5 mostly as observability/report signals;
+   - do not expand this package into a new structure-first governance layer.
+
+2. Reader-first and structure-first are mixed, but both benefit from the same
+   deterministic display cleanup.
+
+   Then:
+
+   - promote R1/R2 as shared output hygiene for both paths;
+   - keep thresholds advisory for benchmark/full-book profiles until repeated
+     evidence shows the detector is high-signal and low-noise.
+
+3. Reader-first does not improve the reader-visible result enough to justify a
+   pivot.
+
+   Then:
+
+   - continue with cautious rollout of this spec inside structure-first;
+   - enable thresholds only per profile and only after baseline artifacts are
+     reviewed.
+
+Until that decision gate is resolved, benchmark-only full-book profiles should
+prefer detector metrics and saved samples over new fail-fast policy wherever
+possible.
+
 Cross-spec prerequisite order:
 
 1. Extract the shared page-furniture detection library from the companion input
