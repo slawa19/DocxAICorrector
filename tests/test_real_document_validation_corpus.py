@@ -298,6 +298,49 @@ def test_registry_structural_profiles_and_tolerance_contracts_are_consistent() -
             assert document_profile.default_run_profile == expected_benchmark_profile
 
 
+def test_document_profile_detector_threshold_fields_parse_as_optional_and_serialize() -> None:
+    profile = validation_profiles._build_document_profile(
+        {
+            "id": "test-profile",
+            "source_path": "tests/sources/sample.docx",
+            "output_basename": "sample.out.docx",
+            "default_run_profile": "structural-passthrough-default",
+            "tags": ["test"],
+            "provenance": "unit-test",
+            "max_pdf_blank_page_marker_leakage": 1,
+            "max_inline_page_furniture_leakage": 2,
+            "max_adjacent_h1_without_body": 3,
+            "max_heading_body_concat_detected": 4,
+            "max_h1_epigraph_attribution_pattern": 5,
+        }
+    )
+
+    assert profile.max_pdf_blank_page_marker_leakage == 1
+    assert profile.max_inline_page_furniture_leakage == 2
+    assert profile.max_adjacent_h1_without_body == 3
+    assert profile.max_heading_body_concat_detected == 4
+    assert profile.max_h1_epigraph_attribution_pattern == 5
+
+
+def test_document_profile_detector_threshold_fields_default_to_none() -> None:
+    profile = validation_profiles._build_document_profile(
+        {
+            "id": "test-profile-defaults",
+            "source_path": "tests/sources/sample.docx",
+            "output_basename": "sample-defaults.out.docx",
+            "default_run_profile": "structural-passthrough-default",
+            "tags": ["test"],
+            "provenance": "unit-test",
+        }
+    )
+
+    assert profile.max_pdf_blank_page_marker_leakage is None
+    assert profile.max_inline_page_furniture_leakage is None
+    assert profile.max_adjacent_h1_without_body is None
+    assert profile.max_heading_body_concat_detected is None
+    assert profile.max_h1_epigraph_attribution_pattern is None
+
+
 def test_workflow_doc_describes_benchmark_only_policy_and_current_registered_mappings() -> None:
     workflow_doc_text = WORKFLOW_DOC_PATH.read_text(encoding="utf-8")
 

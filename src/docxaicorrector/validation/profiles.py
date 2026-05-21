@@ -47,6 +47,11 @@ class DocumentProfile:
     require_pdf_conversion: bool = False
     require_no_bullet_headings: bool = False
     require_no_toc_body_concat: bool = False
+    max_pdf_blank_page_marker_leakage: int | None = None
+    max_inline_page_furniture_leakage: int | None = None
+    max_adjacent_h1_without_body: int | None = None
+    max_heading_body_concat_detected: int | None = None
+    max_h1_epigraph_attribution_pattern: int | None = None
     require_translation_domain: str | None = None
     structural_run_profile: str | None = None
     structural_expected_result: str = "pass"
@@ -351,6 +356,11 @@ def _build_document_profile(payload: Any) -> DocumentProfile:
         require_pdf_conversion=_coerce_bool(payload, "require_pdf_conversion", False),
         require_no_bullet_headings=_coerce_bool(payload, "require_no_bullet_headings", False),
         require_no_toc_body_concat=_coerce_bool(payload, "require_no_toc_body_concat", False),
+        max_pdf_blank_page_marker_leakage=_optional_int(payload, "max_pdf_blank_page_marker_leakage"),
+        max_inline_page_furniture_leakage=_optional_int(payload, "max_inline_page_furniture_leakage"),
+        max_adjacent_h1_without_body=_optional_int(payload, "max_adjacent_h1_without_body"),
+        max_heading_body_concat_detected=_optional_int(payload, "max_heading_body_concat_detected"),
+        max_h1_epigraph_attribution_pattern=_optional_int(payload, "max_h1_epigraph_attribution_pattern"),
         require_translation_domain=_optional_str(payload, "require_translation_domain"),
         structural_run_profile=_optional_str(payload, "structural_run_profile"),
         structural_expected_result=structural_expected_result,

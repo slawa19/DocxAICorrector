@@ -6,6 +6,7 @@ import pytest
 
 from docxaicorrector.core.models import DocumentMap, DocumentMapAnchor, DocumentMapOutlineEntry, DocumentMapSplitHint, DocumentMapTocEntry, DocumentMapTocRegion, ParagraphUnit, StructuralUnit
 from docxaicorrector.structure.layout_signals import derive_layout_signals
+from docxaicorrector.structure.page_furniture_detection import detect_page_furniture_hits, page_furniture_phrases
 from docxaicorrector.structure.topology import TOPOLOGY_PROJECTION_SCHEMA_VERSION, apply_document_map_topology, build_document_topology_projection_cache_key, build_document_topology_projection_identity_payload
 
 
@@ -580,6 +581,73 @@ def test_apply_document_map_topology_emits_candidate_page_artifact_split_with_op
     assert with_transition_op.authority == "document_map_outline"
     assert with_transition_op.evidence == ("page_artifact_phrase", "local_heading_neighborhood", "page_break_boundary")
     assert without_transition_op.evidence == ("page_artifact_phrase", "local_heading_neighborhood")
+
+
+def test_shared_page_furniture_detector_preserves_baseline_phrase_coverage_and_offsets() -> None:
+    text = "  This   page intentionally left blank   Chapter Nine  "
+
+    hits = detect_page_furniture_hits(text)
+
+    assert page_furniture_phrases() == (
+        "this page intentionally left blank",
+        "эта страница намеренно оставлена пустой",
+        "page intentionally left blank",
+        "intentionally blank",
+        "intentionally left blank",
+    )
+    assert [(hit.kind, hit.start, hit.end, hit.matched_text) for hit in hits[:3]] == [
+        ("blank_page_marker", 0, 34, "This page intentionally left blank"),
+        ("intentionally_blank_marker", 5, 34, "page intentionally left blank"),
+        ("intentionally_blank_marker", 10, 34, "intentionally left blank"),
+    ]
+
+
+def test_candidate_page_artifact_split_behavior_unchanged_with_shared_detector() -> None:
+    paragraphs = [
+        _paragraph(9, "3", font_size_pt=12.0, page_number=1, is_likely_page_number=True),
+        _paragraph(10, "this page intentionally left blank chapter nine", font_size_pt=18.0, page_number=2, style_cluster_id=7),
+        _paragraph(11, "Body paragraph one.", font_size_pt=12.0, page_number=2),
+        _paragraph(12, "Body paragraph two.", font_size_pt=12.0, page_number=2),
+        _paragraph(13, "Body paragraph three.", font_size_pt=12.0, page_number=2),
+        _paragraph(14, "Body paragraph four.", font_size_pt=12.0, page_number=2),
+        _paragraph(15, "Body paragraph five.", font_size_pt=12.0, page_number=2),
+        _paragraph(16, "Body paragraph six.", font_size_pt=12.0, page_number=2),
+        _paragraph(17, "Body paragraph seven.", font_size_pt=12.0, page_number=2),
+        _paragraph(18, "Body paragraph eight.", font_size_pt=12.0, page_number=2),
+    ]
+    document_map = DocumentMap(
+        body_start_logical_index=10,
+        toc_region=None,
+        outline=(
+            DocumentMapOutlineEntry(
+                title="Chapter Nine",
+                level=1,
+                logical_index=10,
+                confidence="high",
+                evidence=("outline_entry",),
+            ),
+        ),
+        paragraph_anchors={10: DocumentMapAnchor(role="heading", heading_level=1, confidence="high")},
+        review_zones=(),
+        sampled=False,
+        sampled_logical_indexes=(9, 10, 11, 12, 13, 14, 15, 16, 17, 18),
+    )
+
+    projection = apply_document_map_topology(
+        paragraphs,
+        document_map,
+        app_config={"structure_recovery_document_map_preview_chars": 120},
+        document_map_cache_key="doc-map-key",
+        layout_signals=derive_layout_signals(paragraphs),
+    )
+
+    candidate_ops = [operation for operation in projection.operations if operation.op == "candidate_page_artifact_split"]
+    assert len(candidate_ops) == 1
+    assert candidate_ops[0].logical_indexes == (10,)
+    assert candidate_ops[0].canonical_text == "Chapter Nine"
+    assert candidate_ops[0].authority == "document_map_outline"
+    assert candidate_ops[0].confidence == "candidate"
+    assert candidate_ops[0].evidence == ("page_artifact_phrase", "local_heading_neighborhood", "page_break_boundary")
 
 
 def test_apply_document_map_topology_raises_when_emitted_operation_vocab_is_invalid(monkeypatch):

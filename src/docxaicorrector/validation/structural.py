@@ -25,6 +25,7 @@ from docxaicorrector.pipeline.output_validation import (
     collect_theology_style_issue_samples,
     has_toc_body_concat_markdown as _shared_has_toc_body_concat_markdown,
 )
+from docxaicorrector.pipeline.display_hygiene import summarize_structure_quality_detectors
 from docxaicorrector.document._document import (
     build_semantic_blocks,
     build_document_text,
@@ -83,6 +84,7 @@ def _build_markdown_quality_metrics(
     raw_structural_markdown: str,
     translation_domain: str,
 ) -> dict[str, object]:
+    detector_counts, detector_samples = summarize_structure_quality_detectors(latest_markdown)
     bullet_heading_samples = collect_bullet_heading_samples(latest_markdown)
     raw_bullet_heading_samples = collect_bullet_heading_samples(raw_markdown)
     false_fragment_heading_samples = collect_false_fragment_heading_samples(raw_structural_markdown)
@@ -136,6 +138,21 @@ def _build_markdown_quality_metrics(
         "raw_theology_style_deterministic_issue_count": len(theology_style_samples),
         "suspicious_heading_repetition_count": suspicious_heading_repetition_count,
         "scripture_reference_heading_count": scripture_reference_heading_count,
+        "pdf_blank_page_marker_leakage_count": detector_counts.get("pdf_blank_page_marker_leakage", 0),
+        "pdf_blank_page_marker_leakage_threshold": None,
+        "pdf_blank_page_marker_leakage_samples": detector_samples.get("pdf_blank_page_marker_leakage", []),
+        "inline_page_furniture_leakage_count": detector_counts.get("inline_page_furniture_leakage", 0),
+        "inline_page_furniture_leakage_threshold": None,
+        "inline_page_furniture_leakage_samples": detector_samples.get("inline_page_furniture_leakage", []),
+        "adjacent_h1_without_body_count": detector_counts.get("adjacent_h1_without_body", 0),
+        "adjacent_h1_without_body_threshold": None,
+        "adjacent_h1_without_body_samples": detector_samples.get("adjacent_h1_without_body", []),
+        "heading_body_concat_detected_count": detector_counts.get("heading_body_concat_detected", 0),
+        "heading_body_concat_detected_threshold": None,
+        "heading_body_concat_detected_samples": detector_samples.get("heading_body_concat_detected", []),
+        "h1_epigraph_attribution_pattern_count": detector_counts.get("h1_epigraph_attribution_pattern", 0),
+        "h1_epigraph_attribution_pattern_threshold": None,
+        "h1_epigraph_attribution_pattern_samples": detector_samples.get("h1_epigraph_attribution_pattern", []),
     }
 
 
@@ -1214,6 +1231,21 @@ def _apply_metric_snapshot_fields(snapshot: dict[str, object], metrics: Mapping[
         "unmapped_target_count_basis",
         "unit_unmapped_source_gate_source",
         "unit_unmapped_target_gate_source",
+        "pdf_blank_page_marker_leakage_count",
+        "pdf_blank_page_marker_leakage_threshold",
+        "pdf_blank_page_marker_leakage_samples",
+        "inline_page_furniture_leakage_count",
+        "inline_page_furniture_leakage_threshold",
+        "inline_page_furniture_leakage_samples",
+        "adjacent_h1_without_body_count",
+        "adjacent_h1_without_body_threshold",
+        "adjacent_h1_without_body_samples",
+        "heading_body_concat_detected_count",
+        "heading_body_concat_detected_threshold",
+        "heading_body_concat_detected_samples",
+        "h1_epigraph_attribution_pattern_count",
+        "h1_epigraph_attribution_pattern_threshold",
+        "h1_epigraph_attribution_pattern_samples",
     ):
         if key in metrics:
             snapshot[key] = metrics[key]
@@ -1488,6 +1520,11 @@ def run_structural_passthrough_validation(
     translation_quality_report, translation_quality_report_path = _load_translation_quality_report(event_log)
     if translation_quality_report is not None:
         _merge_translation_quality_report_metrics(metrics, translation_quality_report)
+    metrics["pdf_blank_page_marker_leakage_threshold"] = getattr(document_profile, "max_pdf_blank_page_marker_leakage", None)
+    metrics["inline_page_furniture_leakage_threshold"] = getattr(document_profile, "max_inline_page_furniture_leakage", None)
+    metrics["adjacent_h1_without_body_threshold"] = getattr(document_profile, "max_adjacent_h1_without_body", None)
+    metrics["heading_body_concat_detected_threshold"] = getattr(document_profile, "max_heading_body_concat_detected", None)
+    metrics["h1_epigraph_attribution_pattern_threshold"] = getattr(document_profile, "max_h1_epigraph_attribution_pattern", None)
     if translation_quality_report_path:
         metrics["translation_quality_report_path"] = translation_quality_report_path
     generated_paragraph_registry = runtime_state.get("generated_paragraph_registry")
@@ -2625,6 +2662,45 @@ def _build_structural_checks(
                 "passed": str(metrics.get("runtime_translation_domain", "")) == document_profile.require_translation_domain,
                 "actual": metrics.get("runtime_translation_domain"),
                 "required": document_profile.require_translation_domain,
+            }
+        )
+    for check_name, metric_key, threshold in (
+        (
+            "pdf_blank_page_marker_leakage_threshold",
+            "pdf_blank_page_marker_leakage_count",
+                getattr(document_profile, "max_pdf_blank_page_marker_leakage", None),
+        ),
+        (
+            "inline_page_furniture_leakage_threshold",
+            "inline_page_furniture_leakage_count",
+                getattr(document_profile, "max_inline_page_furniture_leakage", None),
+        ),
+        (
+            "adjacent_h1_without_body_threshold",
+            "adjacent_h1_without_body_count",
+                getattr(document_profile, "max_adjacent_h1_without_body", None),
+        ),
+        (
+            "heading_body_concat_detected_threshold",
+            "heading_body_concat_detected_count",
+                getattr(document_profile, "max_heading_body_concat_detected", None),
+        ),
+        (
+            "h1_epigraph_attribution_pattern_threshold",
+            "h1_epigraph_attribution_pattern_count",
+                getattr(document_profile, "max_h1_epigraph_attribution_pattern", None),
+        ),
+    ):
+        if threshold is None:
+            continue
+        checks.append(
+            {
+                "name": check_name,
+                "passed": _as_int(metrics, metric_key) <= threshold,
+                "actual": metrics.get(metric_key),
+                "allowed": threshold,
+                "advisory_only": False,
+                "samples": metrics.get(metric_key.replace("_count", "_samples"), []),
             }
         )
     if _as_int(metrics, "structure_repair_bounded_toc_regions") > 0:

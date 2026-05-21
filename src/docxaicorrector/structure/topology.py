@@ -17,6 +17,7 @@ from docxaicorrector.core.models import (
 )
 from docxaicorrector.structure.layout_signals import LAYOUT_SIGNALS_SCHEMA_VERSION, LayoutSignals
 from docxaicorrector.structure.document_map import DOCUMENT_MAP_OUTLINE_MEMBERSHIP_SCHEMA_VERSION, DOCUMENT_MAP_SPLIT_HINT_SCHEMA_VERSION
+from docxaicorrector.structure.page_furniture_detection import collapse_page_furniture_whitespace, find_candidate_page_artifact_leading_hit
 
 
 TOPOLOGY_PROJECTION_SCHEMA_VERSION = 2
@@ -56,7 +57,6 @@ VALID_TOPOLOGY_OPERATIONS = frozenset(
 _HEADING_CONTINUATION_WINDOW = 3
 _HEADING_PRELUDE_WINDOW = 1
 _TOPOLOGY_TEXT_PREVIEW_CHARS = 120
-_WHITESPACE_PATTERN = re.compile(r"\s+")
 _PUNCT_TRANSLATION = str.maketrans({char: " " for char in ",;:!?()[]{}\"'`"})
 _ROMAN_NUMERAL_TOKENS = frozenset({"i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x", "xi", "xii", "xiii", "xiv", "xv", "xvi", "xvii", "xviii", "xix", "xx"})
 _ENGLISH_NUMBER_TOKENS = frozenset(
@@ -84,13 +84,6 @@ _ENGLISH_NUMBER_TOKENS = frozenset(
     }
 )
 _BINDING_SPLIT_HEADING_NEIGHBORHOOD = 1
-_PAGE_FURNITURE_PHRASES = (
-    "this page intentionally left blank",
-    "эта страница намеренно оставлена пустой",
-    "page intentionally left blank",
-    "intentionally blank",
-    "intentionally left blank",
-)
 
 
 @dataclass(frozen=True)
@@ -503,20 +496,10 @@ def _build_candidate_page_artifact_operations(
         paragraph_text = _collapse_whitespace(str(getattr(paragraph, "text", "") or ""))
         if not paragraph_text:
             continue
-        lowered_text = paragraph_text.casefold()
-        matched_phrase = next(
-            (
-                phrase
-                for phrase in _PAGE_FURNITURE_PHRASES
-                if (match_position := lowered_text[:120].find(phrase)) >= 0
-                and len(lowered_text[match_position + len(phrase) :].strip()) >= 6
-            ),
-            None,
-        )
-        if matched_phrase is None:
+        matched_hit = find_candidate_page_artifact_leading_hit(paragraph_text)
+        if matched_hit is None:
             continue
-        phrase_position = lowered_text[:120].find(matched_phrase)
-        remainder_text = paragraph_text[phrase_position + len(matched_phrase) :].strip()
+        remainder_text = paragraph_text[matched_hit.end :].strip()
         heading_target = _find_candidate_page_artifact_heading_target(
             paragraphs=paragraphs,
             position=position,
@@ -1099,4 +1082,4 @@ def _is_token_prefix(candidate_tokens: list[str], canonical_tokens: list[str]) -
 
 
 def _collapse_whitespace(text: str) -> str:
-    return _WHITESPACE_PATTERN.sub(" ", str(text or "").strip())
+    return collapse_page_furniture_whitespace(text)

@@ -562,8 +562,8 @@ def test_derive_unit_aware_unmapped_fields_exposes_raw_counts_and_explicit_basis
 
     assert fields["raw_unmapped_source_paragraph_count"] == 2
     assert fields["raw_unmapped_target_paragraph_count"] == 2
-    assert fields["structure_unit_unmapped_source_count"] == 1
-    assert fields["structure_unit_unmapped_target_count"] == 1
+    assert fields["structure_unit_unmapped_source_count"] == 0
+    assert fields["structure_unit_unmapped_target_count"] == 0
     assert fields["unmapped_source_count_basis"] == "topology_unit"
     assert fields["unmapped_target_count_basis"] == "topology_unit"
     assert fields["unit_unmapped_source_gate_source"] == "topology_unit"
@@ -615,3 +615,71 @@ def test_build_structural_checks_exposes_explicit_unmapped_count_basis() -> None
     assert by_name["unmapped_target_threshold"]["count_basis"] == "topology_unit"
     assert by_name["unmapped_target_threshold"]["raw_paragraph_actual"] == 2
     assert by_name["unmapped_target_threshold"]["unmapped_gate_source"] == "topology_unit"
+
+
+def test_build_markdown_quality_metrics_collects_detector_advisories_without_failing() -> None:
+    metrics = structural_validation_runtime._build_markdown_quality_metrics(
+        latest_markdown="# One\n# Two\n\nBody this page intentionally left blank Chapter Nine text.\n",
+        raw_markdown="",
+        raw_structural_markdown="",
+        translation_domain="general",
+    )
+
+    assert metrics["pdf_blank_page_marker_leakage_count"] == 1
+    assert metrics["inline_page_furniture_leakage_count"] == 1
+    assert metrics["adjacent_h1_without_body_count"] == 1
+    assert metrics["pdf_blank_page_marker_leakage_threshold"] is None
+    assert metrics["pdf_blank_page_marker_leakage_samples"][0]["reason"] == "blank_page_marker_visible_in_output"
+
+
+def test_build_structural_checks_serializes_strict_detector_threshold_fields_when_configured() -> None:
+    document_profile = SimpleNamespace(
+        max_formatting_diagnostics=5,
+        max_unmapped_source_paragraphs=2,
+        max_unmapped_target_paragraphs=2,
+        max_heading_level_drift=1,
+        min_text_similarity=0.95,
+        require_numbered_lists_preserved=False,
+        require_nonempty_output=False,
+        forbid_heading_only_collapse=False,
+        require_toc_detected=False,
+        require_pdf_conversion=False,
+        require_no_bullet_headings=False,
+        require_no_toc_body_concat=False,
+        require_translation_domain=None,
+        max_pdf_blank_page_marker_leakage=0,
+        max_inline_page_furniture_leakage=1,
+        max_adjacent_h1_without_body=0,
+        max_heading_body_concat_detected=0,
+        max_h1_epigraph_attribution_pattern=0,
+    )
+    checks = structural_validation_runtime._build_structural_checks(
+        document_profile=document_profile,
+        result="succeeded",
+        metrics={
+            "formatting_diagnostics_count": 0,
+            "max_unmapped_source_paragraphs": 0,
+            "max_unmapped_target_paragraphs": 0,
+            "heading_level_drift": 0,
+            "text_similarity": 1.0,
+            "heading_only_output_detected": False,
+            "pdf_blank_page_marker_leakage_count": 1,
+            "pdf_blank_page_marker_leakage_samples": [{"line": 3}],
+            "inline_page_furniture_leakage_count": 1,
+            "inline_page_furniture_leakage_samples": [{"line": 3}],
+            "adjacent_h1_without_body_count": 1,
+            "adjacent_h1_without_body_samples": [{"line": 1}],
+            "heading_body_concat_detected_count": 0,
+            "heading_body_concat_detected_samples": [],
+            "h1_epigraph_attribution_pattern_count": 0,
+            "h1_epigraph_attribution_pattern_samples": [],
+        },
+        output_artifacts={"output_docx_openable": True, "output_visible_text_chars": 100},
+    )
+
+    by_name = {check["name"]: check for check in checks}
+    assert by_name["pdf_blank_page_marker_leakage_threshold"]["passed"] is False
+    assert by_name["pdf_blank_page_marker_leakage_threshold"]["allowed"] == 0
+    assert by_name["pdf_blank_page_marker_leakage_threshold"]["samples"] == [{"line": 3}]
+    assert by_name["inline_page_furniture_leakage_threshold"]["passed"] is True
+    assert by_name["adjacent_h1_without_body_threshold"]["passed"] is False
