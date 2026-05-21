@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from difflib import SequenceMatcher
 from io import BytesIO
@@ -574,6 +574,39 @@ def _registry_text_matches_target_preview(target_preview: object, generated_text
     return normalized_target_preview == _normalize_registry_preview_for_unit_alignment(generated_text)
 
 
+def _build_generated_registry_text_by_paragraph_id(
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
+) -> dict[str, str]:
+    registry_text_by_paragraph_id: dict[str, str] = {}
+    if not generated_paragraph_registry:
+        return registry_text_by_paragraph_id
+    for entry in generated_paragraph_registry:
+        paragraph_id = str(entry.get("paragraph_id") or "").strip()
+        text = entry.get("text")
+        if paragraph_id and isinstance(text, str) and text.strip():
+            registry_text_by_paragraph_id[paragraph_id] = text
+    return registry_text_by_paragraph_id
+
+
+def _generated_paragraph_spans_empty_body_interval_target(
+    *,
+    generated_text: object,
+    previous_target_preview: object,
+    unresolved_target_preview: object,
+) -> bool:
+    normalized_generated_text = _normalize_registry_text_for_unit_alignment(generated_text)
+    normalized_previous_target_preview = _normalize_registry_text_for_unit_alignment(previous_target_preview)
+    normalized_unresolved_target_preview = _normalize_registry_text_for_unit_alignment(unresolved_target_preview)
+    if not normalized_generated_text or not normalized_previous_target_preview or not normalized_unresolved_target_preview:
+        return False
+    if not normalized_generated_text.startswith(normalized_previous_target_preview):
+        return False
+    trailing_generated_text = normalized_generated_text[len(normalized_previous_target_preview) :].strip()
+    if not trailing_generated_text:
+        return False
+    return _registry_text_matches_target_preview(normalized_unresolved_target_preview, trailing_generated_text)
+
+
 def _registry_entry_unit_keys(
     entry: Mapping[str, object],
     paragraph_unit_keys: Mapping[str, frozenset[str]],
@@ -658,6 +691,7 @@ def _build_target_alignments_from_source_registry(
 def _infer_target_alignment_unit_keys_from_source_intervals(
     formatting_payload: Mapping[str, object],
     *,
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
     paragraph_unit_keys: Mapping[str, frozenset[str]],
     alignments: dict[int, frozenset[str]],
     source_positions_by_target_index: Mapping[int, Sequence[int]],
@@ -680,6 +714,18 @@ def _infer_target_alignment_unit_keys_from_source_intervals(
     mapped_target_indexes = sorted(source_positions_by_target_index)
     if len(mapped_target_indexes) < 2:
         return
+    target_registry_by_index: dict[int, Mapping[str, object]] = {}
+    for entry in target_registry:
+        if not isinstance(entry, Mapping):
+            continue
+        try:
+            raw_target_index = entry.get("target_index", -1)
+            target_index = int(cast(Any, raw_target_index if raw_target_index is not None else -1))
+        except (TypeError, ValueError):
+            continue
+        if target_index >= 0:
+            target_registry_by_index[target_index] = cast(Mapping[str, object], entry)
+    generated_registry_text_by_paragraph_id = _build_generated_registry_text_by_paragraph_id(generated_paragraph_registry)
     unresolved_target_set = set(unresolved_target_indexes)
     for target_index in unresolved_target_indexes:
         if alignments.get(target_index):
@@ -711,6 +757,23 @@ def _infer_target_alignment_unit_keys_from_source_intervals(
             if mapped_target_index >= 0:
                 continue
             interval_unit_keys.update(_registry_entry_unit_keys(source_entry, paragraph_unit_keys))
+        if (
+            not interval_unit_keys
+            and next_source_position == previous_source_position + 1
+            and len(unresolved_targets_in_interval) == 1
+            and generated_registry_text_by_paragraph_id
+        ):
+            previous_source_entry = source_registry_entries[previous_source_position]
+            previous_paragraph_id = str(previous_source_entry.get("paragraph_id") or "").strip()
+            previous_generated_text = generated_registry_text_by_paragraph_id.get(previous_paragraph_id, "")
+            previous_target_entry = target_registry_by_index.get(previous_target_index)
+            unresolved_target_entry = target_registry_by_index.get(unresolved_targets_in_interval[0])
+            if previous_target_entry is not None and unresolved_target_entry is not None and _generated_paragraph_spans_empty_body_interval_target(
+                generated_text=previous_generated_text,
+                previous_target_preview=previous_target_entry.get("text_preview"),
+                unresolved_target_preview=unresolved_target_entry.get("text_preview"),
+            ):
+                interval_unit_keys.update(_registry_entry_unit_keys(previous_source_entry, paragraph_unit_keys))
         if not interval_unit_keys:
             continue
         for unresolved_target_index in unresolved_targets_in_interval:
@@ -719,6 +782,116 @@ def _infer_target_alignment_unit_keys_from_source_intervals(
                 target_index=unresolved_target_index,
                 unit_keys=interval_unit_keys,
             )
+
+
+def _align_target_indexes_from_generated_registry(
+    formatting_payload: Mapping[str, object],
+    *,
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
+    paragraph_unit_keys: Mapping[str, frozenset[str]],
+    trace_target_indexes: Collection[int] | None = None,
+) -> tuple[dict[int, frozenset[str]], dict[int, dict[str, object]]]:
+    target_registry = formatting_payload.get("target_registry")
+    if not isinstance(target_registry, list) or not generated_paragraph_registry:
+        return {}, {}
+    generated_entries = [entry for entry in generated_paragraph_registry if isinstance(entry, Mapping)]
+    if not generated_entries:
+        return {}, {}
+
+    requested_trace_indexes: set[int] = set()
+    if trace_target_indexes is not None:
+        for value in trace_target_indexes:
+            try:
+                requested_trace_indexes.add(int(cast(Any, value)))
+            except (TypeError, ValueError):
+                continue
+
+    alignments: dict[int, frozenset[str]] = {}
+    trace_by_target_index: dict[int, dict[str, object]] = {}
+    generated_index = 0
+    for target_entry in target_registry:
+        if not isinstance(target_entry, Mapping):
+            continue
+        raw_target_index = target_entry.get("target_index", -1)
+        target_index = int(cast(Any, raw_target_index if raw_target_index is not None else -1))
+        if target_index < 0:
+            continue
+        target_preview = _normalize_registry_text_for_unit_alignment(target_entry.get("text_preview"))
+        trace_entry: dict[str, object] | None = None
+        if target_index in requested_trace_indexes:
+            trace_entry = {
+                "target_index": target_index,
+                "target_preview": target_preview,
+                "candidate_generated_previews": [],
+                "match_result": "no_match",
+                "chosen_generated_paragraph_id": None,
+                "chosen_generated_preview": None,
+                "unit_keys": [],
+            }
+        search_index = generated_index
+        while search_index < len(generated_entries):
+            generated_entry = generated_entries[search_index]
+            generated_text = generated_entry.get("text")
+            generated_preview = _normalize_registry_text_for_unit_alignment(generated_text)
+            if not generated_preview:
+                search_index += 1
+                generated_index = search_index
+                continue
+            preview_matches = not target_preview or _registry_text_matches_target_preview(target_preview, generated_text)
+            if trace_entry is not None:
+                candidate_previews = cast(list[dict[str, object]], trace_entry["candidate_generated_previews"])
+                candidate_previews.append(
+                    {
+                        "paragraph_id": str(generated_entry.get("paragraph_id") or "").strip() or None,
+                        "generated_preview": generated_preview,
+                        "matches_target_preview": preview_matches,
+                    }
+                )
+            if not preview_matches:
+                search_index += 1
+                continue
+            unit_keys = _registry_entry_unit_keys(generated_entry, paragraph_unit_keys)
+            _merge_target_alignment_unit_keys(
+                alignments,
+                target_index=target_index,
+                unit_keys=unit_keys,
+            )
+            if trace_entry is not None:
+                trace_entry["match_result"] = "matched"
+                trace_entry["chosen_generated_paragraph_id"] = str(generated_entry.get("paragraph_id") or "").strip() or None
+                trace_entry["chosen_generated_preview"] = generated_preview
+                trace_entry["unit_keys"] = sorted(unit_keys)
+            generated_index = search_index + 1
+            break
+        if trace_entry is not None:
+            trace_by_target_index[target_index] = trace_entry
+    return alignments, trace_by_target_index
+
+
+def _collect_target_alignment_preview_trace(
+    formatting_payload: Mapping[str, object],
+    *,
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
+    paragraph_unit_keys: Mapping[str, frozenset[str]],
+    target_indexes: Sequence[int],
+) -> list[dict[str, object]]:
+    if not target_indexes:
+        return []
+    requested_indexes: list[int] = []
+    for value in target_indexes:
+        try:
+            requested_indexes.append(int(cast(Any, value)))
+        except (TypeError, ValueError):
+            continue
+    if not requested_indexes:
+        return []
+    _, trace_by_target_index = _align_target_indexes_from_generated_registry(
+        formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+        paragraph_unit_keys=paragraph_unit_keys,
+        trace_target_indexes=requested_indexes,
+    )
+    return [trace_by_target_index[target_index] for target_index in requested_indexes if target_index in trace_by_target_index]
 
 
 def _align_target_indexes_to_unit_keys(
@@ -734,38 +907,20 @@ def _align_target_indexes_to_unit_keys(
     target_registry = formatting_payload.get("target_registry")
     if not isinstance(target_registry, list):
         return None
-    if generated_paragraph_registry:
-        generated_entries = [entry for entry in generated_paragraph_registry if isinstance(entry, Mapping)]
-        generated_index = 0
-        for target_entry in target_registry:
-            if not isinstance(target_entry, Mapping):
-                continue
-            raw_target_index = target_entry.get("target_index", -1)
-            target_index = int(cast(Any, raw_target_index if raw_target_index is not None else -1))
-            if target_index < 0:
-                continue
-            target_preview = _normalize_registry_text_for_unit_alignment(target_entry.get("text_preview"))
-            search_index = generated_index
-            while search_index < len(generated_entries):
-                generated_entry = generated_entries[search_index]
-                generated_text = generated_entry.get("text")
-                generated_preview = _normalize_registry_text_for_unit_alignment(generated_text)
-                if not generated_preview:
-                    search_index += 1
-                    generated_index = search_index
-                    continue
-                if target_preview and not _registry_text_matches_target_preview(target_preview, generated_text):
-                    search_index += 1
-                    continue
-                _merge_target_alignment_unit_keys(
-                    alignments,
-                    target_index=target_index,
-                    unit_keys=_registry_entry_unit_keys(generated_entry, paragraph_unit_keys),
-                )
-                generated_index = search_index + 1
-                break
+    generated_registry_alignments, _ = _align_target_indexes_from_generated_registry(
+        formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+        paragraph_unit_keys=paragraph_unit_keys,
+    )
+    for target_index, unit_keys in generated_registry_alignments.items():
+        _merge_target_alignment_unit_keys(
+            alignments,
+            target_index=target_index,
+            unit_keys=unit_keys,
+        )
     _infer_target_alignment_unit_keys_from_source_intervals(
         formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
         paragraph_unit_keys=paragraph_unit_keys,
         alignments=alignments,
         source_positions_by_target_index=source_positions_by_target_index,

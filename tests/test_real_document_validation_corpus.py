@@ -3019,6 +3019,500 @@ def test_derive_unit_aware_unmapped_fields_does_not_align_numbered_ibid_preview_
     assert fields["unit_unmapped_target_gate_source"] == "legacy_paragraph"
 
 
+def test_collect_target_alignment_preview_trace_replays_saved_target_1274() -> None:
+    source_paragraphs = [
+        ParagraphUnit(
+            text="America Down? Atlantic Monthly, October 1995.",
+            role="body",
+            paragraph_id="p1371",
+            source_index=1371,
+            logical_index=1371,
+        ),
+        ParagraphUnit(
+            text="Ibid.",
+            role="list",
+            paragraph_id="p1372",
+            source_index=1372,
+            logical_index=1372,
+            list_kind="ordered",
+            list_level=0,
+        ),
+        ParagraphUnit(
+            text="There have been two exceptions.",
+            role="list",
+            paragraph_id="p1373",
+            source_index=1373,
+            logical_index=1373,
+            list_kind="ordered",
+            list_level=0,
+        ),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-preview-trace-1274",
+        projected_units=(
+            StructuralUnit(
+                unit_id="u_elsewhere",
+                unit_type="chapter_heading",
+                logical_indexes=(10, 11),
+                canonical_text="Elsewhere",
+                role="heading",
+                heading_level=1,
+                confidence="high",
+                authority="document_map_outline",
+            ),
+        ),
+    )
+    formatting_payload = {
+        "source_registry": [
+            {"paragraph_id": "p1371", "mapped_target_index": 1273},
+            {"paragraph_id": "p1372", "mapped_target_index": 1373},
+            {"paragraph_id": "p1373", "mapped_target_index": 1275},
+        ],
+        "unmapped_source_ids": [],
+        "unmapped_target_indexes": [1274],
+        "target_registry": [
+            {"target_index": 1273, "mapped": True, "text_preview": "america down? atlantic monthly, october 1995."},
+            {"target_index": 1274, "mapped": False, "text_preview": "там же."},
+            {"target_index": 1275, "mapped": True, "text_preview": "there have been two exceptions: friedrich hayek and maurice allais both"},
+        ],
+    }
+    generated_paragraph_registry = [
+        {"paragraph_id": "p1371", "text": "Америка в упадке?», Atlantic Monthly, октябрь 1995 г."},
+        {"paragraph_id": "p1372", "text": "11. Там же."},
+        {"paragraph_id": "p1373", "text": "12. Было два исключения: Фридрих Хайек и Морис Алле получили Нобелевскую"},
+    ]
+
+    paragraph_unit_keys, _ = real_document_validation_structural._build_source_paragraph_unit_membership(
+        source_paragraphs,
+        projection,
+    )
+    trace = real_document_validation_structural._collect_target_alignment_preview_trace(
+        formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+        paragraph_unit_keys=paragraph_unit_keys,
+        target_indexes=[1274],
+    )
+    aligned_target_unit_keys = real_document_validation_structural._align_target_indexes_to_unit_keys(
+        formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+        paragraph_unit_keys=paragraph_unit_keys,
+    )
+
+    assert trace == [
+        {
+            "target_index": 1274,
+            "target_preview": "там же.",
+            "candidate_generated_previews": [
+                {
+                    "paragraph_id": "p1371",
+                    "generated_preview": "америка в упадке?», atlantic monthly, октябрь 1995 г.",
+                    "matches_target_preview": False,
+                },
+                {
+                    "paragraph_id": "p1372",
+                    "generated_preview": "там же.",
+                    "matches_target_preview": True,
+                }
+            ],
+            "match_result": "matched",
+            "chosen_generated_paragraph_id": "p1372",
+            "chosen_generated_preview": "там же.",
+            "unit_keys": ["paragraph:p1372"],
+        }
+    ]
+    assert aligned_target_unit_keys is not None
+    assert aligned_target_unit_keys[1274] == frozenset({"paragraph:p1372"})
+
+
+def test_collect_target_alignment_preview_trace_replays_saved_target_1372() -> None:
+    source_paragraphs = [
+        ParagraphUnit(
+            text="John Naisbitt, Megatrends (New York: Warner Books, 1982), 183.",
+            role="list",
+            paragraph_id="p1480",
+            source_index=1480,
+            logical_index=1480,
+            list_kind="ordered",
+            list_level=0,
+        ),
+        ParagraphUnit(
+            text="Paul Hawken, Blessed Unrest: How the Largest Movement in the World",
+            role="list",
+            paragraph_id="p1481",
+            source_index=1481,
+            logical_index=1481,
+            list_kind="ordered",
+            list_level=0,
+        ),
+        ParagraphUnit(
+            text="came into being and why no one saw it coming (New York: Viking, 2007), 4.",
+            role="body",
+            paragraph_id="p1482",
+            source_index=1482,
+            logical_index=1482,
+        ),
+        ParagraphUnit(
+            text="Michael Linton, interview with Jacqui Dunne, December 9, 2011.",
+            role="list",
+            paragraph_id="p1483",
+            source_index=1483,
+            logical_index=1483,
+            list_kind="ordered",
+            list_level=0,
+        ),
+        ParagraphUnit(
+            text="Ibid.",
+            role="list",
+            paragraph_id="p1484",
+            source_index=1484,
+            logical_index=1484,
+            list_kind="ordered",
+            list_level=0,
+        ),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-preview-trace-1372",
+        projected_units=(
+            StructuralUnit(
+                unit_id="u_elsewhere",
+                unit_type="chapter_heading",
+                logical_indexes=(10, 11),
+                canonical_text="Elsewhere",
+                role="heading",
+                heading_level=1,
+                confidence="high",
+                authority="document_map_outline",
+            ),
+        ),
+    )
+    formatting_payload = {
+        "source_registry": [
+            {"paragraph_id": "p1480", "mapped_target_index": 1369},
+            {"paragraph_id": "p1481", "mapped_target_index": 1370},
+            {"paragraph_id": "p1482", "mapped_target_index": 1371},
+            {"paragraph_id": "p1483", "mapped_target_index": None},
+            {"paragraph_id": "p1484", "mapped_target_index": None},
+        ],
+        "unmapped_source_ids": ["p1483", "p1484"],
+        "unmapped_target_indexes": [1372],
+        "target_registry": [
+            {"target_index": 1369, "mapped": True, "text_preview": "john naisbitt, megatrends (new york: warner books, 1982), 183."},
+            {"target_index": 1370, "mapped": True, "text_preview": "paul hawken, blessed unrest: how the largest movement in the world"},
+            {"target_index": 1371, "mapped": True, "text_preview": "came into being and why no one saw it coming (new york: viking, 2007), 4."},
+            {"target_index": 1372, "mapped": False, "text_preview": "майкл линтон, интервью с джеки данн, 9 декабря 2011 г."},
+            {"target_index": 1373, "mapped": True, "text_preview": "там же."},
+        ],
+    }
+    generated_paragraph_registry = [
+        {"paragraph_id": "p1480", "text": "1.   Джон Нейсбит, «Мегатренды» (Нью-Йорк: Warner Books, 1982), 183."},
+        {"paragraph_id": "p1481", "text": "2.   Пол Хокен, «Благословенное беспокойство: как возникло крупнейшее в мире"},
+        {"paragraph_id": "p1482", "text": "движение и почему никто этого не предвидел» (Нью-Йорк: Viking, 2007), 4."},
+        {"paragraph_id": "p1483", "text": "3.   Майкл Линтон, интервью с Джеки Данн, 9 декабря 2011 г."},
+        {"paragraph_id": "p1484", "text": "4.   Там же."},
+    ]
+
+    paragraph_unit_keys, _ = real_document_validation_structural._build_source_paragraph_unit_membership(
+        source_paragraphs,
+        projection,
+    )
+    trace = real_document_validation_structural._collect_target_alignment_preview_trace(
+        formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+        paragraph_unit_keys=paragraph_unit_keys,
+        target_indexes=[1372],
+    )
+    aligned_target_unit_keys = real_document_validation_structural._align_target_indexes_to_unit_keys(
+        formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+        paragraph_unit_keys=paragraph_unit_keys,
+    )
+
+    assert trace == [
+        {
+            "target_index": 1372,
+            "target_preview": "майкл линтон, интервью с джеки данн, 9 декабря 2011 г.",
+            "candidate_generated_previews": [
+                {
+                    "paragraph_id": "p1480",
+                    "generated_preview": "джон нейсбит, «мегатренды» (нью-йорк: warner books, 1982), 183.",
+                    "matches_target_preview": False,
+                },
+                {
+                    "paragraph_id": "p1481",
+                    "generated_preview": "пол хокен, «благословенное беспокойство: как возникло крупнейшее в мире",
+                    "matches_target_preview": False,
+                },
+                {
+                    "paragraph_id": "p1482",
+                    "generated_preview": "движение и почему никто этого не предвидел» (нью-йорк: viking, 2007), 4.",
+                    "matches_target_preview": False,
+                },
+                {
+                    "paragraph_id": "p1483",
+                    "generated_preview": "майкл линтон, интервью с джеки данн, 9 декабря 2011 г.",
+                    "matches_target_preview": True,
+                }
+            ],
+            "match_result": "matched",
+            "chosen_generated_paragraph_id": "p1483",
+            "chosen_generated_preview": "майкл линтон, интервью с джеки данн, 9 декабря 2011 г.",
+            "unit_keys": ["paragraph:p1483"],
+        }
+    ]
+    assert aligned_target_unit_keys is not None
+    assert aligned_target_unit_keys[1372] == frozenset({"paragraph:p1483"})
+
+
+def test_derive_unit_aware_unmapped_fields_aligns_empty_source_window_body_target_127_shape() -> None:
+    source_paragraphs = [
+        ParagraphUnit(
+            text="Requiem for a Dream",
+            role="heading",
+            paragraph_id="p0138",
+            source_index=138,
+            logical_index=138,
+            heading_level=2,
+        ),
+        ParagraphUnit(
+            text="He's a proud man.",
+            role="body",
+            paragraph_id="p0139",
+            source_index=139,
+            logical_index=139,
+        ),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-empty-window-body-127",
+        projected_units=(
+            StructuralUnit(
+                unit_id="u_elsewhere",
+                unit_type="chapter_heading",
+                logical_indexes=(10, 11),
+                canonical_text="Elsewhere",
+                role="heading",
+                heading_level=1,
+                confidence="high",
+                authority="document_map_outline",
+            ),
+        ),
+    )
+    formatting_payload = {
+        "source_registry": [
+            {"paragraph_id": "p0138", "mapped_target_index": 126},
+            {"paragraph_id": "p0139", "mapped_target_index": 128},
+        ],
+        "unmapped_source_ids": [],
+        "unmapped_target_indexes": [127],
+        "target_registry": [
+            {"target_index": 126, "mapped": True, "text_preview": "реквием по мечте"},
+            {
+                "target_index": 127,
+                "mapped": False,
+                "text_preview": "поначалу испытываешь настоящий шок, когда видишь фреда, упаковывающего продукты в популярном супермаркете. согбенный, с…",
+            },
+            {
+                "target_index": 128,
+                "mapped": True,
+                "text_preview": "фред — человек гордый; говорит, что пошел на эту работу по настоянию жены, которая хотела, чтобы он хоть чем-то занимал…",
+            },
+        ],
+    }
+    generated_paragraph_registry = [
+        {
+            "paragraph_id": "p0138",
+            "text": "## РЕКВИЕМ ПО МЕЧТЕ\nПоначалу испытываешь настоящий шок, когда видишь Фреда, упаковывающего продукты в популярном супермаркете. Согбенный, с торсом, почти параллельным полу, с узловатыми, изуродованными артритом пальцами, он старательно укладывает тяжелые покупки в двойные пакеты.",
+        },
+        {
+            "paragraph_id": "p0139",
+            "text": "Фред — человек гордый; говорит, что пошел на эту работу по настоянию жены, которая хотела, чтобы он хоть чем-то занимался, а не сидел дома.",
+        },
+    ]
+
+    paragraph_unit_keys, _ = real_document_validation_structural._build_source_paragraph_unit_membership(
+        source_paragraphs,
+        projection,
+    )
+    aligned_target_unit_keys = real_document_validation_structural._align_target_indexes_to_unit_keys(
+        formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+        paragraph_unit_keys=paragraph_unit_keys,
+    )
+    fields = real_document_validation_structural._derive_unit_aware_unmapped_fields(
+        source_paragraphs=source_paragraphs,
+        topology_projection=projection,
+        formatting_payload=formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+    )
+
+    assert aligned_target_unit_keys is not None
+    assert aligned_target_unit_keys[127] == frozenset({"paragraph:p0138"})
+    assert fields["structure_unit_unmapped_target_count"] == 0
+    assert fields["unmapped_target_count_basis"] == "topology_unit"
+    assert fields["unit_unmapped_target_gate_source"] == "topology_unit"
+
+
+def test_derive_unit_aware_unmapped_fields_aligns_empty_source_window_body_target_685_shape() -> None:
+    source_paragraphs = [
+        ParagraphUnit(
+            text="The Hub Network",
+            role="heading",
+            paragraph_id="p0719",
+            source_index=719,
+            logical_index=719,
+            heading_level=3,
+        ),
+        ParagraphUnit(
+            text="10. The Hub is a place for purpose-driven people.",
+            role="body",
+            paragraph_id="p0720",
+            source_index=720,
+            logical_index=720,
+        ),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-empty-window-body-685",
+        projected_units=(
+            StructuralUnit(
+                unit_id="u_elsewhere",
+                unit_type="chapter_heading",
+                logical_indexes=(10, 11),
+                canonical_text="Elsewhere",
+                role="heading",
+                heading_level=1,
+                confidence="high",
+                authority="document_map_outline",
+            ),
+        ),
+    )
+    formatting_payload = {
+        "source_registry": [
+            {"paragraph_id": "p0719", "mapped_target_index": 684},
+            {"paragraph_id": "p0720", "mapped_target_index": 686},
+        ],
+        "unmapped_source_ids": [],
+        "unmapped_target_indexes": [685],
+        "target_registry": [
+            {"target_index": 684, "mapped": True, "text_preview": "сеть the hub"},
+            {
+                "target_index": 685,
+                "mapped": False,
+                "text_preview": "the hub network — это социальное предприятие, работающее более чем в 26 странах мира. их миссия — «вдохновлять и поддер…",
+            },
+            {
+                "target_index": 686,
+                "mapped": True,
+                "text_preview": "10 the hub — это место, где люди, объединенные общей целью, могут общаться и создавать решения для лучшего мира. «участ…",
+            },
+        ],
+    }
+    generated_paragraph_registry = [
+        {
+            "paragraph_id": "p0719",
+            "text": "### СЕТЬ THE HUB\nThe Hub Network — это социальное предприятие, работающее более чем в 26 странах мира. Их миссия — «вдохновлять и поддерживать творческие и предприимчивые инициативы ради лучшего будущего».",
+        },
+        {
+            "paragraph_id": "p0720",
+            "text": "10 The Hub — это место, где люди, объединенные общей целью, могут общаться и создавать решения для лучшего мира. «Участники работают в The Hub».",
+        },
+    ]
+
+    paragraph_unit_keys, _ = real_document_validation_structural._build_source_paragraph_unit_membership(
+        source_paragraphs,
+        projection,
+    )
+    aligned_target_unit_keys = real_document_validation_structural._align_target_indexes_to_unit_keys(
+        formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+        paragraph_unit_keys=paragraph_unit_keys,
+    )
+    fields = real_document_validation_structural._derive_unit_aware_unmapped_fields(
+        source_paragraphs=source_paragraphs,
+        topology_projection=projection,
+        formatting_payload=formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+    )
+
+    assert aligned_target_unit_keys is not None
+    assert aligned_target_unit_keys[685] == frozenset({"paragraph:p0719"})
+    assert fields["structure_unit_unmapped_target_count"] == 0
+    assert fields["unmapped_target_count_basis"] == "topology_unit"
+    assert fields["unit_unmapped_target_gate_source"] == "topology_unit"
+
+
+def test_derive_unit_aware_unmapped_fields_does_not_align_empty_source_window_numbered_ibid_case() -> None:
+    source_paragraphs = [
+        ParagraphUnit(
+            text="America Down? Atlantic Monthly, October 1995.",
+            role="body",
+            paragraph_id="p1371",
+            source_index=1371,
+            logical_index=1371,
+        ),
+        ParagraphUnit(
+            text="There have been two exceptions.",
+            role="list",
+            paragraph_id="p1373",
+            source_index=1373,
+            logical_index=1373,
+            list_kind="ordered",
+            list_level=0,
+        ),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="topology-empty-window-numbered-ibid-guard",
+        projected_units=(
+            StructuralUnit(
+                unit_id="u_elsewhere",
+                unit_type="chapter_heading",
+                logical_indexes=(10, 11),
+                canonical_text="Elsewhere",
+                role="heading",
+                heading_level=1,
+                confidence="high",
+                authority="document_map_outline",
+            ),
+        ),
+    )
+    formatting_payload = {
+        "source_registry": [
+            {"paragraph_id": "p1371", "mapped_target_index": 1254},
+            {"paragraph_id": "p1373", "mapped_target_index": 1256},
+        ],
+        "unmapped_source_ids": [],
+        "unmapped_target_indexes": [1255],
+        "target_registry": [
+            {"target_index": 1254, "mapped": True, "text_preview": "америке становится хуже?"},
+            {"target_index": 1255, "mapped": False, "text_preview": "там же."},
+            {"target_index": 1256, "mapped": True, "text_preview": "существовало два исключения."},
+        ],
+    }
+    generated_paragraph_registry = [
+        {"paragraph_id": "p1371", "text": "Америка в упадке?», Atlantic Monthly, октябрь 1995 г."},
+        {"paragraph_id": "p1373", "text": "12. Было два исключения: Фридрих Хайек и Морис Алле получили Нобелевскую"},
+    ]
+
+    aligned_target_unit_keys = real_document_validation_structural._align_target_indexes_to_unit_keys(
+        formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+        paragraph_unit_keys=real_document_validation_structural._build_source_paragraph_unit_membership(
+            source_paragraphs,
+            projection,
+        )[0],
+    )
+    fields = real_document_validation_structural._derive_unit_aware_unmapped_fields(
+        source_paragraphs=source_paragraphs,
+        topology_projection=projection,
+        formatting_payload=formatting_payload,
+        generated_paragraph_registry=generated_paragraph_registry,
+    )
+
+    assert aligned_target_unit_keys is not None
+    assert 1255 not in aligned_target_unit_keys
+    assert fields["structure_unit_unmapped_target_count"] == 1
+    assert fields["unmapped_target_count_basis"] == "legacy_paragraph"
+    assert fields["unit_unmapped_target_gate_source"] == "legacy_paragraph"
+
+
 def test_derive_unit_aware_unmapped_fields_infers_single_unmapped_target_from_source_registry_interval() -> None:
     source_paragraphs = [
         ParagraphUnit(text="Intro", role="body", paragraph_id="p-prev", source_index=0, logical_index=9),
