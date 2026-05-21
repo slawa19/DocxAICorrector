@@ -257,19 +257,20 @@ Only after focused chapter-region and gate tests are green:
 
 This section is the mandatory source of truth for what the latest real-document run actually fails on. It MUST be updated whenever a new full-book or focused real-document run is performed. Hypotheses, mini-plans, and Workstream tasks below are not allowed to reference "failing" or "missing" behavior that is not represented in this inventory.
 
-Baseline source: latest completed run-scoped report for `lietaer-pdf-full-benchmark`, currently `tests/artifacts/real_document_pipeline/runs/20260521T102310Z_990_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne/lietaer_pdf_full_benchmark_report.json`, as confirmed by `tests/artifacts/real_document_pipeline/lietaer_pdf_full_benchmark_latest.json` after that run moved to `status: "failed"` with `acceptance_passed: false`.
+Baseline source: latest completed run-scoped report for `lietaer-pdf-full-benchmark`, currently `tests/artifacts/real_document_pipeline/runs/20260521T130554Z_963_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne/lietaer_pdf_full_benchmark_report.json`, as confirmed by `tests/artifacts/real_document_pipeline/lietaer_pdf_full_benchmark_latest.json` with `status: "completed"`, `acceptance_passed: true`, and `environment.git_head = "77d5592"`.
 
-Outer milestone refresh on 2026-05-21: compared with the prior official baseline run `20260521T044035Z_962_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne`, the failed-check set did not change, but the only live target-side Mini-plan B failure materially improved. `formatting_diagnostics_threshold` now passes at `6 / 12` with `unmapped_source_count_basis = topology_unit`, and `unmapped_source_threshold` now passes at `6 / 12`. Mini-plan A remains non-live at the acceptance layer (`residual_bullet_glyph_count = 0`, `raw_residual_bullet_glyph_count = 25`), and Mini-plan C remains non-live under the adopted narrow validator contract (`key_headings_preserved` passes with `source_heading_count = 0`). The only live acceptance failure is still target-side Mini-plan B: `unmapped_target_threshold = 144 / 6`, with `raw_unmapped_target_paragraph_count = 144`, `structure_unit_unmapped_target_count = 144`, `unmapped_target_count_basis = legacy_paragraph`, and `unit_unmapped_target_gate_source = legacy_paragraph`. This outer milestone proves the bounded body-interval fix materially reduced the official target-side count without changing the governing basis, and report-level evidence alone still does not justify claiming one new single residual B bottleneck.
+Outer milestone refresh on 2026-05-21: the latest official full-book benchmark now passes all acceptance checks on run `20260521T130554Z_963_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne` from detached baseline `77d5592`. Verbatim `failed_checks` from that report: `[]`. The passing benchmark metrics recorded in the same report are `formatting_diagnostics_threshold actual = 2 / threshold 12` (`artifact_count = 1`, `unmapped_source_count_basis = topology_unit`), `unmapped_source_threshold actual = 2 / allowed 12`, and `unmapped_target_threshold actual = 5 / allowed 6`. `formatting_diagnostics_paths` contains only `.run/formatting_diagnostics/restore_1779370062831.json`. No `target_alignment_trace` artifact was emitted for this passing milestone; that is an observability-only gap, not an acceptance blocker, and it does not by itself authorize a new implementation package.
 
 Format:
 
 | check | actual | threshold | overage | gate_source | root-cause class | mini-plan |
 |---|---|---|---|---|---|---|
-| `unmapped_target_threshold` | 144 | 6 | 24.0× | `legacy_paragraph` count basis | unmapped_alignment | B |
+| _(none)_ | — | — | — | — | — | — |
 
 Milestone-confirmed non-live package outcomes from the same latest run:
 
 - Mini-plan A: `residual_bullet_glyphs_present` now passes with gated `residual_bullet_glyph_count = 0`; `raw_residual_bullet_glyph_count` remains `25`, so the milestone confirms only the gate/display-hygiene layer.
+- Mini-plan B: no longer an active live failure package in the latest full-book milestone. The acceptance layer now passes with `unmapped_source_threshold actual = 2 / 12`, `unmapped_target_threshold actual = 5 / 6`, and `failed_checks = []`. Reopen only if a later run returns unmapped failures to `failed_checks` or directly contradicts the accepted Mini-plan B slices.
 - Mini-plan C: `key_headings_preserved` now passes with `missing = []` and `source_heading_count = 0` under the adopted narrow validator contract; the milestone does not claim broader upstream recognition redesign.
 
 When the table is stale, freeze all implementation work until it is refreshed.
@@ -286,12 +287,12 @@ Before any code change targeting failing full-book checks:
 
 No implementation step in any Workstream may begin until this gate is satisfied for the check it claims to address.
 
-### 5.0.2 Package registry after the 2026-05-20 milestone
+### 5.0.2 Package registry after the 2026-05-21 passing milestone
 
-These packages remain independent. Do NOT bundle them into one slice. Only Mini-plan B is still active in the live failure inventory.
+These packages remain independent. Do NOT bundle them into one slice. In the current latest official full-book milestone, A, B, and C are all non-live at the acceptance layer.
 
 - **Mini-plan A — residual bullets.** No longer an active live failure package in the latest full-book milestone. The acceptance-layer gate now passes with `residual_bullet_glyph_count = 0`, while `raw_residual_bullet_glyph_count = 25` remains observable. Reopen only if a later run returns it to `failed_checks` or if a dedicated raw-phenomenon investigation is explicitly requested.
-- **Mini-plan B — unmapped fragments.** The only active live failure package. Discovery: 5 sample unmapped source fragments and 5 sample unmapped target fragments, each traced through document_map → topology → Stage 2 → final output. Outcome is one or two breakage patterns. Focused fix per pattern; inner-loop fixture per pattern.
+- **Mini-plan B — unmapped fragments.** No longer an active live failure package in the current latest milestone. The passing benchmark records `unmapped_source_threshold actual = 2 / 12`, `unmapped_target_threshold actual = 5 / 6`, and `failed_checks = []`. The missing `target_alignment_trace` artifact in that same passing run is an observability-only gap, not an acceptance blocker, and it does not by itself authorize a new implementation package.
 - **Mini-plan C — index / page-range heading authority.** Separate spec path is now opened at [INDEX_REGION_AUTHORITY_SPEC_2026-05-20.md](./INDEX_REGION_AUTHORITY_SPEC_2026-05-20.md). The adopted narrow validator contract is milestone-confirmed for the old example set (`missing = []`, `source_heading_count = 0` in the latest run), so C is not part of the active live failure inventory. Any broader upstream recognition redesign remains separate and out of scope unless a later run or an explicitly approved package reopens it.
 
 If any future failing check does not fit A/B/C, add a new mini-plan letter with its own discovery output. Do not silently extend an existing mini-plan to cover a different root-cause class.

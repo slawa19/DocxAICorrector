@@ -12,7 +12,7 @@ This spec defines only the problem framing, evidence contract, and future accept
 
 The adopted implementation remained limited to the narrow validator/acceptance contract described here. This document still does not authorize broader upstream recognition redesign, and it does not reopen Mini-plan A, Mini-plan B, or Stage 1 prompt/schema/cache work.
 
-## 2. Baseline Restored on 2026-05-20
+## 2. Baseline Restored on 2026-05-20, Latest Milestone Refreshed on 2026-05-21
 
 The restored source of truth for this package is:
 
@@ -20,13 +20,13 @@ The restored source of truth for this package is:
 2. [STRUCTURE_RECOGNITION_COMPLETION_PLAN_2026-05-14.md](./STRUCTURE_RECOGNITION_COMPLETION_PLAN_2026-05-14.md#L139)
 3. [TOPOLOGY_FIRST_STRUCTURE_RECOVERY_REMEDIATION_SPEC_2026-05-12.md](./TOPOLOGY_FIRST_STRUCTURE_RECOVERY_REMEDIATION_SPEC_2026-05-12.md#L1)
 4. [lietaer_pdf_full_benchmark_latest.json](../../tests/artifacts/real_document_pipeline/lietaer_pdf_full_benchmark_latest.json)
-5. [lietaer_pdf_full_benchmark_report.json](../../tests/artifacts/real_document_pipeline/runs/20260520T111314Z_1196_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne/lietaer_pdf_full_benchmark_report.json#L133922)
+5. [lietaer_pdf_full_benchmark_report.json](../../tests/artifacts/real_document_pipeline/runs/20260521T130554Z_963_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne/lietaer_pdf_full_benchmark_report.json)
 6. [baseline old run report](../../tests/artifacts/real_document_pipeline/runs/20260519T082926Z_963_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne/lietaer_pdf_full_benchmark_report.json#L136131)
 
 Baseline assumptions confirmed from those artifacts:
 
-- The latest manifest now points to completed run `20260520T111314Z_1196_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne` with `status: "failed"`, `result: "succeeded"`, and `acceptance_passed: false`.
-- The latest completed full-book report now leaves only Mini-plan B in `failed_checks`; Mini-plan A and Mini-plan C are no longer active live failures in the refreshed continuation-plan inventory.
+- The latest manifest now points to completed run `20260521T130554Z_963_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne` with `status: "completed"`, `result: "succeeded"`, and `acceptance_passed: true`.
+- The latest completed full-book report now records `environment.git_head = 77d5592` and `failed_checks = []`; Mini-plan A, Mini-plan B, and Mini-plan C are not active live failures in the refreshed continuation-plan inventory.
 - Mini-plan C is no longer blocked on spec creation: the dedicated spec path is opened, the narrow validator contract is implemented, and the latest full-book milestone confirms the old C example set at the validator/acceptance layer only.
 
 ## 3. Why Existing Specs Do Not Already Cover Mini-plan C
@@ -55,7 +55,9 @@ For Mini-plan C, the exact old `key_headings_preserved.missing` set is fixed by 
 - `179– 180` at [lietaer_pdf_full_benchmark_report.json](../../tests/artifacts/real_document_pipeline/runs/20260519T082926Z_963_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne/lietaer_pdf_full_benchmark_report.json#L136276)
 - `182, 192–1 93` at [lietaer_pdf_full_benchmark_report.json](../../tests/artifacts/real_document_pipeline/runs/20260519T082926Z_963_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne/lietaer_pdf_full_benchmark_report.json#L136277)
 
-The latest completed milestone run `20260520T111314Z_1196_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne` now records `failed_checks = ["formatting_diagnostics_threshold", "unmapped_source_threshold", "unmapped_target_threshold"]` at [lietaer_pdf_full_benchmark_report.json](../../tests/artifacts/real_document_pipeline/runs/20260520T111314Z_1196_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne/lietaer_pdf_full_benchmark_report.json#L133922), and `key_headings_preserved` passes with `missing = []` and `source_heading_count = 0` at [lietaer_pdf_full_benchmark_report.json](../../tests/artifacts/real_document_pipeline/runs/20260520T111314Z_1196_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne/lietaer_pdf_full_benchmark_report.json#L134061).
+The latest completed milestone run `20260521T130554Z_963_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne` now records `failed_checks = []`, and `key_headings_preserved` passes with `missing = []` and `source_heading_count = 0` at [lietaer_pdf_full_benchmark_report.json](../../tests/artifacts/real_document_pipeline/runs/20260521T130554Z_963_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne/lietaer_pdf_full_benchmark_report.json#L134863), [lietaer_pdf_full_benchmark_report.json](../../tests/artifacts/real_document_pipeline/runs/20260521T130554Z_963_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne/lietaer_pdf_full_benchmark_report.json#L134865), and [lietaer_pdf_full_benchmark_report.json](../../tests/artifacts/real_document_pipeline/runs/20260521T130554Z_963_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne/lietaer_pdf_full_benchmark_report.json#L134866).
+
+The same latest report references only the restore artifact under `.run/formatting_diagnostics/restore_1779370062831.json`; no `target_alignment_trace` artifact was emitted for that passing milestone. That remains an observability-only gap and does not reopen Mini-plan C or authorize new implementation work.
 
 For this package, the old serialized strings remain authoritative as the motivating baseline examples, and the latest run remains authoritative for the milestone-confirmed pass state.
 
@@ -69,15 +71,18 @@ For this package, the old serialized strings remain authoritative as the motivat
 
 No broader classification claim is authorized here. In particular, this package does not reopen any Chapter 9 or late-book chapter-authority narrative.
 
-### 5.1 Milestone Follow-up on 2026-05-20
+### 5.1 Milestone Follow-up on 2026-05-21
 
 The implemented Mini-plan C change remained narrow: it updated the validator/acceptance contract so standalone numeric/body-marker anomalies and pure page-range index-style tokens are not automatically treated as enforceable key headings.
 
 The latest completed full-book milestone confirms that narrow contract for the original C example set:
 
-- `key_headings_preserved` is no longer in `failed_checks`.
+- `failed_checks = []` for the milestone as a whole.
+- `key_headings_preserved` is not in `failed_checks`.
 - `missing = []`.
 - `source_heading_count = 0`.
+
+Reviewer-safe caveat: the latest passing run did not emit a `target_alignment_trace` artifact. That missing trace is an observability-only note from the continuation plan, not evidence that Mini-plan C should be reopened.
 
 Reviewer-safe boundary: this milestone confirms the adopted validator/acceptance slice only. It does not prove that Stage 1, topology projection, or `StructuralUnit` now carry a broad dedicated index / back-matter authority class.
 
@@ -138,5 +143,5 @@ Any future expansion beyond the current narrow validator contract is accepted on
 
 Reviewer-safe conclusion for this document:
 
-- The current evidence supports a narrow index-region / page-range / back-matter authority package only, and that narrow validator contract is now milestone-confirmed for the original C example set.
+- The current evidence supports a narrow index-region / page-range / back-matter authority package only, and that narrow validator contract is now milestone-confirmed for the original C example set by the passing 2026-05-21 full-book run on detached baseline `77d5592`.
 - This spec does not reopen Mini-plan A, Mini-plan B, Chapter 9 narratives, or Stage 1 redesign.
