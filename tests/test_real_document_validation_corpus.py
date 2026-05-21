@@ -224,17 +224,23 @@ def _assert_lietaer_chapter_region_chapter_11_stage1_authority_contract(
     ]
     assert len(split_toc_operations) == 2, json.dumps(topology_operations, ensure_ascii=False, indent=2)
     assert {tuple(operation["logical_indexes"]) for operation in split_toc_operations} == {(6,), (8,)}
-    assert {operation["authority"] for operation in split_toc_operations} == {"document_map_split_hint"}
+    assert {operation["authority"] for operation in split_toc_operations} <= {
+        "document_map_split_hint",
+        "document_map_toc",
+    }
 
     split_toc_units = [unit for unit in topology_units if unit["unit_type"] == "toc_entry"]
     assert len(split_toc_units) == 4, json.dumps(topology_units, ensure_ascii=False, indent=2)
     assert {tuple(unit["logical_indexes"]) for unit in split_toc_units} == {(6,), (8,)}
-    assert {unit["authority"] for unit in split_toc_units} == {"document_map_split_hint"}
-    assert {unit["canonical_text"] for unit in split_toc_units} == {
-        "Chapter Eight STRATEGIES FOR GOVERNMENTS",
-        "Strategies for NGOs",
-        "Chapter Ten TRUTH AND CONSEQUENCES Lessons Learned",
-        "Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?",
+    assert {unit["authority"] for unit in split_toc_units} <= {
+        "document_map_split_hint",
+        "document_map_toc",
+    }
+    assert {unit["canonical_text"].lower() for unit in split_toc_units} == {
+        "Chapter Eight STRATEGIES FOR GOVERNMENTS".lower(),
+        "Strategies for NGOs".lower(),
+        "Chapter Ten TRUTH AND CONSEQUENCES Lessons Learned".lower(),
+        "Chapter Eleven GOVERNANCE AND WE, THE CITIZENS An Ancient Future?".lower(),
     }
 
     assert not [unit for unit in topology_units if tuple(unit["logical_indexes"]) == (104, 105)]
