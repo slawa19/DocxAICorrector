@@ -257,17 +257,15 @@ Only after focused chapter-region and gate tests are green:
 
 This section is the mandatory source of truth for what the latest real-document run actually fails on. It MUST be updated whenever a new full-book or focused real-document run is performed. Hypotheses, mini-plans, and Workstream tasks below are not allowed to reference "failing" or "missing" behavior that is not represented in this inventory.
 
-Baseline source: latest completed run-scoped report for `lietaer-pdf-full-benchmark`, currently `tests/artifacts/real_document_pipeline/runs/20260520T111314Z_1196_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne/lietaer_pdf_full_benchmark_report.json`, as confirmed by `tests/artifacts/real_document_pipeline/lietaer_pdf_full_benchmark_latest.json` after that run moved to `status: "failed"` with `acceptance_passed: false`.
+Baseline source: latest completed run-scoped report for `lietaer-pdf-full-benchmark`, currently `tests/artifacts/real_document_pipeline/runs/20260521T044035Z_962_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne/lietaer_pdf_full_benchmark_report.json`, as confirmed by `tests/artifacts/real_document_pipeline/lietaer_pdf_full_benchmark_latest.json` after that run moved to `status: "failed"` with `acceptance_passed: false`.
 
-Discovery refresh on 2026-05-20: compared with the prior baseline run `20260519T082926Z_963_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne`, the failed-check set shrank from five items to three. Mini-plan A moved out of live failures at the acceptance layer: `residual_bullet_glyph_count` is now `0`, but `raw_residual_bullet_glyph_count` remains `25`, so this is gate-layer confirmation rather than elimination of the raw phenomenon. Mini-plan C also moved out of live failures under the adopted narrow validator contract: `key_headings_preserved` now passes with `missing = []` and `source_heading_count = 0`, which confirms the validator/acceptance contract for the old C example set without claiming upstream recognition redesign. Mini-plan B remains the only active live failing package, with improved but still failing counts (`172` source / `157` target). This still does not reopen late-book chapter narratives.
+Discovery refresh on 2026-05-21: compared with the prior baseline run `20260520T111314Z_1196_Rethinking-money_-How-new-currencies-turn-scarcity-into-prosperity-Bernard-Lietaer-Jacqui-Dunne`, the failed-check set shrank from three items to one. Mini-plan B source-side gate layers now pass: `formatting_diagnostics_threshold` improved from `172 / 12` to `9 / 12`, and `unmapped_source_threshold` improved from `172 / 12` to `9 / 12`. Mini-plan A remains non-live at the acceptance layer (`residual_bullet_glyph_count = 0`, `raw_residual_bullet_glyph_count = 25`), and Mini-plan C remains non-live under the adopted narrow validator contract (`key_headings_preserved` passes with `missing = []` and `source_heading_count = 0`). The only live acceptance failure is now target-side Mini-plan B: `unmapped_target_threshold = 193 / 6` on `legacy_paragraph` basis. The new official restore snapshot still shows mixed residual shapes, including body-interval fragments, composite chapter-heading splits, and list/bullet continuations, so this milestone does not by itself reveal one new dominant next B family.
 
 Format:
 
 | check | actual | threshold | overage | gate_source | root-cause class | mini-plan |
 |---|---|---|---|---|---|---|
-| `formatting_diagnostics_threshold` | 172 | 12 | 14.3× | `topology_unit` count basis | unmapped_alignment (subset of B) | B |
-| `unmapped_source_threshold` | 172 | 12 | 14.3× | `topology_unit` count basis | unmapped_alignment | B |
-| `unmapped_target_threshold` | 157 | 6 | 26.2× | `legacy_paragraph` count basis | unmapped_alignment | B |
+| `unmapped_target_threshold` | 193 | 6 | 32.2× | `legacy_paragraph` count basis | unmapped_alignment | B |
 
 Milestone-confirmed non-live package outcomes from the same latest run:
 
