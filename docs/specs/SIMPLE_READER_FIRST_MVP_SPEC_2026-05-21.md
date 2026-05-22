@@ -339,6 +339,26 @@ Footnote policy should be conservative:
 For the first MVP, TOC policy is fixed to `keep_toc_as_text = true`. Dropping TOC
 for audiobook or continuous-reading mode remains a later profile option.
 
+## Known MVP Limitations
+
+Current MVP limitations are acceptable unless they block the real-document
+comparison goal:
+
+- cleanup IDs, hashes, and raw sidecar are computed from the exact raw cleanup
+  input, but cleaned output reconstruction may still be block-reconstructive
+  rather than byte-preserving;
+- first and last non-empty blocks may be treated as absolutely protected, even
+  when a softer interpretation might allow certain high-confidence
+  page-furniture heading deletions;
+- footnote-body protection may remain intentionally narrow and deterministic; it
+  is meant to prevent obvious false deletions without claiming full coverage of
+  all footnote layouts;
+- `reader_cleanup_drop_back_matter` may remain unsupported or warning-only in
+  MVP and must not be treated as a proven cleanup-quality lever unless it is
+  explicitly implemented and validated;
+- a `50000` cleanup chunk profile is an optional experiment and does not, by
+  itself, mean that the larger chunk size is a fully unlocked default contract.
+
 ## Fastest MVP On Existing Infrastructure
 
 The fastest version should reuse existing pieces instead of adding new structure
@@ -521,6 +541,12 @@ Chunking strategy:
 - never allow a chunk response to delete a block outside that chunk's editable ID
   set.
 
+A `50000` cleanup chunk profile is an optional comparison experiment only. Its
+presence in the registry does not mean that the repository considers `50000`
+the default or fully unlocked contract path. Use it only after at least one
+smaller-chunk cleanup run returns stable, schema-valid responses and produces
+reviewable artifacts.
+
 Partial failure policy:
 
 - advisory mode: if a cleanup chunk fails schema validation or model execution,
@@ -529,15 +555,101 @@ Partial failure policy:
   artifact;
 - any failed cleanup must log that the raw base result was preserved.
 
+## Priority Rule: Product Value Over Local Green Tests
+
+The primary goal of this MVP is not to maximize cleanup contract strictness or
+test completeness in isolation.
+
+The primary goal is to determine whether reader cleanup improves the
+readability of a real translated document while keeping false deletions
+acceptably low.
+
+Priority order for this MVP:
+
+1. Produce a real-document raw vs cleaned artifact pair that can be reviewed by
+   a human.
+2. Prevent dangerous semantic regressions and protected-block deletions.
+3. Improve cleanup contract, logging, and regression coverage only insofar as
+   they support the first two goals.
+
+Green unit/integration tests alone do not count as proof that the MVP
+succeeded. If the pipeline does not reach cleanup on the target real document,
+the MVP validation question remains unanswered even if all targeted cleanup
+tests pass.
+
+## Anti-Overfitting Rule
+
+Do not keep tightening cleanup heuristics, validation filters, or report detail
+if those changes do not help answer the real-document comparison question.
+
+A change is high-priority only if it does at least one of the following:
+
+- helps cleanup execute on the target real document and produce reviewable
+  artifacts;
+- prevents a meaningful semantic regression or protected-block deletion;
+- materially improves the interpretability of the real-document comparison
+  result.
+
+Changes that only improve local formal correctness, report richness, or
+edge-case coverage without helping real-document validation should be treated as
+secondary work.
+
 ## MVP Validation Plan
 
 Use one problematic real document first. Do not use full-book as a tuning loop
 unless a single milestone run is needed for artifact comparison.
 
+## Validation Run Types
+
+This MVP uses two distinct validation run types:
+
+### Acceptance Validation Run
+
+A normal validation run that keeps the standard document-level quality gate
+behavior. This run answers whether the document is acceptable under the current
+pipeline contract.
+
+### Comparison-Only Validation Run
+
+A dedicated comparison run whose purpose is to produce reviewable raw and
+cleaned artifacts even if the translated output would not pass the normal
+acceptance gate.
+
+Rules for comparison-only runs:
+
+- comparison-only runs must be clearly labeled as non-acceptance evidence;
+- they must not be described as proving production readiness;
+- they exist only to answer whether reader cleanup materially improves the same
+  translated document output;
+- conclusions from a comparison-only run must still be checked against false
+  deletions and protected-block safety.
+
+If the normal acceptance run fails before cleanup executes, a comparison-only
+path may be used to answer the raw-vs-cleaned artifact question without
+claiming that the document is acceptance-ready.
+
+## Quality Gate Interaction
+
+If the normal translation quality gate fails before reader cleanup executes,
+that run does not answer the cleanup usefulness question.
+
+In that case, the team must choose one of two next steps:
+
+1. fix the upstream blockers that prevent cleanup from running on the target
+   document; or
+2. use a clearly labeled comparison-only validation path to generate raw and
+   cleaned artifacts for manual review.
+
+Do not interpret a pre-cleanup quality-gate failure as evidence that reader
+cleanup is ineffective. It only shows that the current run contract did not
+reach the cleanup stage.
+
 Recommended validation sequence:
 
 1. Run existing structure-first profile and keep its latest Markdown/DOCX output.
-2. Run `simple-reader-cleanup` profile on the same source.
+2. Run `simple-reader-cleanup` profile on the same source. If the normal
+   acceptance path fails before cleanup executes, switch to a clearly labeled
+   comparison-only run instead of tuning cleanup blindly.
 3. Compare raw vs cleaned artifacts manually:
    - first 30 pages equivalent;
    - middle chapter region;

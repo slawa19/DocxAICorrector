@@ -23,6 +23,7 @@ from docxaicorrector.core.models import ParagraphUnit
 from docxaicorrector.core.models import StructuralUnit
 from docxaicorrector.document._document import extract_document_content_from_docx
 from docxaicorrector.pipeline.contracts import SegmentSelection
+from docxaicorrector.reader_cleanup_mvp import build_cleanup_blocks
 
 
 PNG_BYTES = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK3cAAAAASUVORK5CYII=")
@@ -1592,6 +1593,357 @@ def test_run_document_processing_preserves_base_result_when_audiobook_postproces
     assert "narration_text" not in artifact_calls["kwargs"]
     warning_events = [event for event in events if event["level"] == logging.WARNING]
     assert any(event["event_id"] == "audiobook_postprocess_failed_base_result_preserved" for event in warning_events)
+
+
+def test_run_document_processing_applies_reader_cleanup_and_saves_raw_markdown_report_artifacts():
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+    artifact_calls = {}
+
+    def generate_markdown_block(**kwargs):
+        if kwargs["system_prompt"].startswith("You are cleaning translated book Markdown"):
+            payload = json.loads(kwargs["target_text"])
+            delete_blocks = []
+            for block in payload["blocks"]:
+                if block["text"] == "Header":
+                    delete_blocks.append(
+                        {
+                            "id": block["id"],
+                            "text_hash": block["text_hash"],
+                            "reason": "repeated_running_header",
+                            "confidence": "high",
+                        }
+                    )
+            return json.dumps({"delete_blocks": delete_blocks, "warnings": []}, ensure_ascii=False)
+        return kwargs["target_text"]
+
+    def write_ui_result_artifacts(**kwargs):
+        artifact_calls["kwargs"] = dict(kwargs)
+        return {
+            "markdown_path": str(Path("/tmp") / "final.result.md"),
+            "docx_path": str(Path("/tmp") / "final.result.docx"),
+        }
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[
+            {"target_text": "Intro", "context_before": "", "context_after": "Header", "target_chars": 5, "context_chars": 6, "narration_include": True},
+            {"target_text": "Header", "context_before": "Intro", "context_after": "Body paragraph", "target_chars": 6, "context_chars": 19, "narration_include": True},
+            {"target_text": "Body paragraph", "context_before": "Header", "context_after": "Header", "target_chars": 14, "context_chars": 12, "narration_include": True},
+            {"target_text": "Header", "context_before": "Body paragraph", "context_after": "Outro", "target_chars": 6, "context_chars": 19, "narration_include": True},
+            {"target_text": "Outro", "context_before": "Header", "context_after": "", "target_chars": 5, "context_chars": 6, "narration_include": True},
+        ],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={
+            "reader_cleanup_enabled": True,
+            "reader_cleanup_policy": "advisory",
+            "reader_cleanup_chunk_size": 50,
+            "reader_cleanup_keep_toc": True,
+            "reader_cleanup_max_delete_block_ratio": 0.8,
+            "reader_cleanup_max_delete_char_ratio": 0.8,
+        },
+        model="gpt-5.4-translate",
+        max_retries=1,
+        processing_operation="translate",
+        source_language="en",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **kwargs: f"system:{kwargs['operation']}",
+        log_event=log_event,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=generate_markdown_block,
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+        write_ui_result_artifacts=write_ui_result_artifacts,
+    )
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_markdown"] == "Intro\n\nBody paragraph\n\nOutro"
+    assert runtime["state"]["latest_docx_bytes"] == b"Intro\n\nBody paragraph\n\nOutro"
+    assert artifact_calls["kwargs"]["markdown_text"] == "Intro\n\nBody paragraph\n\nOutro"
+    info_events = [event for event in events if event["level"] == logging.INFO]
+    saved_event = next(event for event in info_events if event["event_id"] == "ui_result_artifacts_saved")
+    assert "reader_cleanup_raw_markdown_path" in saved_event["context"]["artifact_paths"]
+    assert "reader_cleanup_report_path" in saved_event["context"]["artifact_paths"]
+    cleanup_event = next(event for event in info_events if event["event_id"] == "reader_cleanup_applied")
+    assert cleanup_event["context"]["accepted_delete_block_count"] == 2
+
+
+def test_run_document_processing_reader_cleanup_uses_exact_raw_markdown_for_sidecar_and_hashes(tmp_path: Path):
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+    artifact_calls = {}
+    cleanup_payloads = []
+    noisy_block = "This page intentionally left blank Chapter Nine STRATEGIES FOR NGO S"
+    raw_markdown = f"Intro\n\n{noisy_block}\n\n{noisy_block}\n\nOutro"
+    display_markdown = document_pipeline_late_phases._normalize_final_markdown_for_runtime_display(raw_markdown)
+
+    assert display_markdown != raw_markdown
+    assert len(build_cleanup_blocks(raw_markdown)) == 4
+    assert len(build_cleanup_blocks(display_markdown)) == 6
+
+    def generate_markdown_block(**kwargs):
+        if kwargs["system_prompt"].startswith("You are cleaning translated book Markdown"):
+            payload = json.loads(kwargs["target_text"])
+            cleanup_payloads.append(payload)
+            delete_blocks = []
+            for block in payload["blocks"]:
+                if block["text"] == noisy_block:
+                    delete_blocks.append(
+                        {
+                            "id": block["id"],
+                            "text_hash": block["text_hash"],
+                            "reason": "repeated_running_header",
+                            "confidence": "high",
+                        }
+                    )
+            return json.dumps({"delete_blocks": delete_blocks, "warnings": []}, ensure_ascii=False)
+        return kwargs["target_text"]
+
+    def write_ui_result_artifacts(**kwargs):
+        artifact_calls["kwargs"] = dict(kwargs)
+        return {
+            "markdown_path": str(tmp_path / "final.result.md"),
+            "docx_path": str(tmp_path / "final.result.docx"),
+        }
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[
+            {"target_text": "Intro", "context_before": "", "context_after": noisy_block, "target_chars": 5, "context_chars": len(noisy_block), "narration_include": True},
+            {"target_text": noisy_block, "context_before": "Intro", "context_after": noisy_block, "target_chars": len(noisy_block), "context_chars": 10, "narration_include": True},
+            {"target_text": noisy_block, "context_before": noisy_block, "context_after": "Outro", "target_chars": len(noisy_block), "context_chars": 10, "narration_include": True},
+            {"target_text": "Outro", "context_before": noisy_block, "context_after": "", "target_chars": 5, "context_chars": len(noisy_block), "narration_include": True},
+        ],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={
+            "reader_cleanup_enabled": True,
+            "reader_cleanup_policy": "advisory",
+            "reader_cleanup_chunk_size": 500,
+            "reader_cleanup_keep_toc": True,
+            "reader_cleanup_max_delete_block_ratio": 0.8,
+            "reader_cleanup_max_delete_char_ratio": 0.95,
+        },
+        model="gpt-5.4-translate",
+        max_retries=1,
+        processing_operation="translate",
+        source_language="en",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **kwargs: f"system:{kwargs['operation']}",
+        log_event=log_event,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=generate_markdown_block,
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+        write_ui_result_artifacts=write_ui_result_artifacts,
+    )
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_markdown"] == "Intro\n\nOutro"
+    assert artifact_calls["kwargs"]["markdown_text"] == "Intro\n\nOutro"
+    assert cleanup_payloads
+    assert [block["text"] for block in cleanup_payloads[0]["blocks"]].count(noisy_block) == 2
+
+    raw_sidecar_path = tmp_path / "final.raw.result.md"
+    report_path = tmp_path / "final.reader_cleanup_report.json"
+    assert raw_sidecar_path.read_text(encoding="utf-8") == raw_markdown
+    report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+    expected_hashes = {block.text_hash for block in build_cleanup_blocks(raw_markdown) if block.text == noisy_block}
+    accepted_hashes = {entry["text_hash"] for entry in report_payload["accepted_delete_blocks"]}
+    assert report_payload["stats"]["accepted_delete_block_count"] == 2
+    assert accepted_hashes == expected_hashes
+
+    info_events = [event for event in events if event["level"] == logging.INFO]
+    cleanup_event = next(event for event in info_events if event["event_id"] == "reader_cleanup_applied")
+    assert cleanup_event["context"]["proposed_delete_block_count"] == 2
+
+
+def test_run_document_processing_preserves_base_result_when_reader_cleanup_fails():
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+    artifact_calls = {}
+
+    def generate_markdown_block(**kwargs):
+        if kwargs["system_prompt"].startswith("You are cleaning translated book Markdown"):
+            raise RuntimeError("cleanup exploded")
+        return kwargs["target_text"]
+
+    def write_ui_result_artifacts(**kwargs):
+        artifact_calls["kwargs"] = dict(kwargs)
+        return {"markdown_path": "/tmp/report.result.md", "docx_path": "/tmp/report.result.docx"}
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0, "narration_include": True}],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={"reader_cleanup_enabled": True, "reader_cleanup_policy": "advisory"},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="translate",
+        source_language="en",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **kwargs: f"system:{kwargs['operation']}",
+        log_event=log_event,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=generate_markdown_block,
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+        write_ui_result_artifacts=write_ui_result_artifacts,
+    )
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_markdown"] == "block"
+    assert runtime["state"]["latest_docx_bytes"] == b"block"
+    assert artifact_calls["kwargs"]["markdown_text"] == "block"
+    info_events = [event for event in events if event["level"] == logging.INFO]
+    noop_event = next(event for event in info_events if event["event_id"] == "reader_cleanup_noop")
+    assert any("reader_cleanup_chunk_failed" in warning for warning in noop_event["context"]["warnings"])
+
+
+def test_run_document_processing_reader_cleanup_rebuild_preserves_images():
+    reinsert_calls = []
+
+    class FakeImageAsset:
+        image_id = "img-1"
+
+        def update_pipeline_metadata(self, **values):
+            return None
+
+    def reinsert_inline_images(docx_bytes, image_assets):
+        reinsert_calls.append([asset.image_id for asset in image_assets])
+        return docx_bytes + f"|images={len(image_assets)}".encode("utf-8")
+
+    rebuilt = document_pipeline_late_phases._rebuild_docx_for_markdown(
+        markdown_text="Intro\n\nBody\n\nOutro",
+        context=SimpleNamespace(source_paragraphs=[]),
+        dependencies=SimpleNamespace(
+            convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
+            preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+            reinsert_inline_images=reinsert_inline_images,
+        ),
+        state=SimpleNamespace(generated_paragraph_registry=[]),
+        processed_image_assets=[FakeImageAsset()],
+    )
+
+    assert rebuilt == b"Intro\n\nBody\n\nOutro|images=1"
+    assert reinsert_calls
+    assert reinsert_calls[-1] == ["img-1"]
+
+
+def test_run_document_processing_reader_cleanup_strict_failure_preserves_base_result(tmp_path: Path):
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+    artifact_calls = {}
+
+    def generate_markdown_block(**kwargs):
+        if kwargs["system_prompt"].startswith("You are cleaning translated book Markdown"):
+            raise RuntimeError("cleanup exploded")
+        return kwargs["target_text"]
+
+    def write_ui_result_artifacts(**kwargs):
+        artifact_calls["kwargs"] = dict(kwargs)
+        return {
+            "markdown_path": str(tmp_path / "report.result.md"),
+            "docx_path": str(tmp_path / "report.result.docx"),
+        }
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[{"target_text": "block", "context_before": "", "context_after": "", "target_chars": 5, "context_chars": 0, "narration_include": True}],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={"reader_cleanup_enabled": True, "reader_cleanup_policy": "strict"},
+        model="gpt-5.4",
+        max_retries=1,
+        processing_operation="translate",
+        source_language="en",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **kwargs: f"system:{kwargs['operation']}",
+        log_event=log_event,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=generate_markdown_block,
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+        write_ui_result_artifacts=write_ui_result_artifacts,
+    )
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_markdown"] == "block"
+    assert artifact_calls["kwargs"]["markdown_text"] == "block"
+    assert runtime["state"]["latest_result_notice"] == {
+        "level": "warning",
+        "message": "Reader cleanup strict stage failed; preserved the raw translated result without cleanup.",
+    }
+    warning_events = [event for event in events if event["level"] == logging.WARNING]
+    assert any(event["event_id"] == "reader_cleanup_strict_failed_base_result_preserved" for event in warning_events)
+    raw_sidecar_path = tmp_path / "report.raw.result.md"
+    report_path = tmp_path / "report.reader_cleanup_report.json"
+    assert raw_sidecar_path.read_text(encoding="utf-8") == "block"
+    report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report_payload["stage_status"] == "failed_preserved_base_result"
+    assert report_payload["failure"]["kind"] == "chunk_failed"
 
 
 def test_run_document_processing_fails_standalone_audiobook_with_invalid_narration_artifact():

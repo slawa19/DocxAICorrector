@@ -39,6 +39,13 @@ from docxaicorrector.pipeline.reassembly import (
     load_segment_result_records,
 )
 from docxaicorrector.processing.preparation import humanize_quality_gate_reasons
+from docxaicorrector.reader_cleanup_mvp import (
+    build_reader_cleanup_system_prompt,
+    ReaderCleanupStageError,
+    resolve_reader_cleanup_config,
+    run_reader_cleanup,
+    write_reader_cleanup_diagnostics,
+)
 
 
 PipelineResult = Literal["succeeded", "failed", "stopped"]
@@ -112,6 +119,226 @@ def _resolve_runtime_display_markdown(*, docx_phase: Mapping[str, object], fallb
         return runtime_display_markdown
 
     return _normalize_final_markdown_for_runtime_display(fallback_markdown)
+
+
+def _should_run_reader_cleanup(*, context: Any) -> bool:
+    return context.processing_operation == "translate" and bool(
+        context.app_config.get("reader_cleanup_enabled", False)
+    )
+
+
+def _rebuild_docx_for_markdown(
+    *,
+    markdown_text: str,
+    context: Any,
+    dependencies: Any,
+    state: Any,
+    processed_image_assets: Sequence[Any],
+) -> bytes:
+    docx_bytes = dependencies.convert_markdown_to_docx_bytes(markdown_text)
+    if context.source_paragraphs:
+        docx_bytes = dependencies.preserve_source_paragraph_properties(
+            docx_bytes,
+            context.source_paragraphs,
+            state.generated_paragraph_registry or None,
+        )
+    if processed_image_assets:
+        docx_bytes = dependencies.reinsert_inline_images(docx_bytes, processed_image_assets)
+    return docx_bytes
+
+
+def _run_reader_cleanup_postprocess(
+    *,
+    context: Any,
+    dependencies: Any,
+    emitters: Any,
+    state: Any,
+    cleanup_input_markdown: str,
+    runtime_display_markdown: str,
+    base_docx_bytes: bytes,
+    job_count: int,
+    processed_image_assets: Sequence[Any],
+) -> tuple[str, bytes, dict[str, object] | None, str | None, dict[str, str] | None]:
+    if not _should_run_reader_cleanup(context=context):
+        return runtime_display_markdown, base_docx_bytes, None, None, None
+
+    config = resolve_reader_cleanup_config(app_config=context.app_config, fallback_model=context.model)
+    if not config.enabled:
+        return runtime_display_markdown, base_docx_bytes, None, None, None
+    if config.drop_back_matter:
+        dependencies.log_event(
+            logging.WARNING,
+            "reader_cleanup_drop_back_matter_unsupported",
+            "Reader cleanup drop_back_matter is currently unsupported; proceeding without semantic back-matter deletion.",
+            filename=context.uploaded_filename,
+            policy=config.policy,
+            model=config.model,
+        )
+
+    system_prompt = build_reader_cleanup_system_prompt()
+    fallback_client = None
+    if not callable(getattr(dependencies, "resolve_model_selector", None)) or not callable(
+        getattr(dependencies, "get_client_for_model_selector", None)
+    ):
+        fallback_client = dependencies.get_client()
+    client, model_id, model_selector, model_provider = _resolve_text_call_target(
+        selector=config.model,
+        context=context,
+        dependencies=dependencies,
+        fallback_client=fallback_client,
+    )
+
+    emitters.emit_activity(context.runtime, "Запущен reader cleanup post-pass для итогового Markdown.")
+
+    def _operation_provider(request_payload: Mapping[str, object], chunk_index: int, chunk_count: int) -> str:
+        target_text = json.dumps(request_payload, ensure_ascii=False, indent=2)
+        context_before = str(request_payload.get("context_before_preview", "") or "")
+        context_after = str(request_payload.get("context_after_preview", "") or "")
+        started_at = time.perf_counter()
+        dependencies.log_event(
+            logging.INFO,
+            "reader_cleanup_chunk_started",
+            "Запущен reader cleanup post-pass для cleanup chunk.",
+            filename=context.uploaded_filename,
+            operation="translate",
+            **{"pass": "reader_cleanup"},
+            model=config.model,
+            model_selector=model_selector,
+            model_provider=model_provider,
+            model_id=model_id,
+            chunk_index=chunk_index,
+            chunk_count=chunk_count,
+            target_chars=len(target_text),
+            context_before_chars=len(context_before),
+            context_after_chars=len(context_after),
+        )
+        response = dependencies.generate_markdown_block(
+            client=client,
+            model=model_id,
+            system_prompt=system_prompt,
+            target_text=target_text,
+            context_before=context_before,
+            context_after=context_after,
+            max_retries=context.max_retries,
+            expected_paragraph_ids=None,
+            marker_mode=False,
+        )
+        dependencies.log_event(
+            logging.INFO,
+            "reader_cleanup_chunk_completed",
+            "Reader cleanup post-pass для cleanup chunk завершён.",
+            filename=context.uploaded_filename,
+            operation="translate",
+            **{"pass": "reader_cleanup"},
+            model=config.model,
+            model_selector=model_selector,
+            model_provider=model_provider,
+            model_id=model_id,
+            chunk_index=chunk_index,
+            chunk_count=chunk_count,
+            output_chars=len(response),
+            elapsed_ms=round((time.perf_counter() - started_at) * 1000, 3),
+        )
+        return response
+
+    try:
+        cleanup_result = run_reader_cleanup(
+            markdown_text=cleanup_input_markdown,
+            config=config,
+            operation_provider=_operation_provider,
+        )
+        if not cleanup_result.changed:
+            stats = cast(Mapping[str, object], cleanup_result.report_payload.get("stats") or {})
+            dependencies.log_event(
+                logging.INFO,
+                "reader_cleanup_noop",
+                "Reader cleanup post-pass завершён без принятых удалений.",
+                filename=context.uploaded_filename,
+                policy=config.policy,
+                model=config.model,
+                warnings=list(cleanup_result.report_payload.get("warnings", []) or []),
+                cleanup_chunk_count=stats.get("cleanup_chunk_count"),
+                failed_chunk_count=stats.get("failed_chunk_count"),
+                proposed_delete_block_count=stats.get("proposed_delete_block_count"),
+                ignored_delete_block_count=stats.get("ignored_delete_block_count"),
+            )
+            return runtime_display_markdown, base_docx_bytes, cleanup_result.report_payload, cleanup_result.raw_markdown, None
+
+        cleaned_runtime_display_markdown = _normalize_final_markdown_for_runtime_display(cleanup_result.cleaned_markdown)
+        cleaned_docx_bytes = _rebuild_docx_for_markdown(
+            markdown_text=cleaned_runtime_display_markdown,
+            context=context,
+            dependencies=dependencies,
+            state=state,
+            processed_image_assets=processed_image_assets,
+        )
+        emitters.emit_state(
+            context.runtime,
+            latest_markdown=cleaned_runtime_display_markdown,
+            latest_docx_bytes=cleaned_docx_bytes,
+        )
+        stats = cast(Mapping[str, object], cleanup_result.report_payload.get("stats") or {})
+        dependencies.log_event(
+            logging.INFO,
+            "reader_cleanup_applied",
+            "Reader cleanup post-pass применил block-level deletions к итоговому Markdown.",
+            filename=context.uploaded_filename,
+            policy=config.policy,
+            model=config.model,
+            accepted_delete_block_count=len(cleanup_result.accepted_delete_block_ids),
+            ignored_delete_block_count=stats.get("ignored_delete_block_count"),
+            proposed_delete_block_count=stats.get("proposed_delete_block_count"),
+            cleanup_chunk_count=stats.get("cleanup_chunk_count"),
+            failed_chunk_count=stats.get("failed_chunk_count"),
+            cleaned_markdown_chars=len(cleaned_runtime_display_markdown),
+            raw_markdown_chars=len(cleanup_result.raw_markdown),
+        )
+        return cleaned_runtime_display_markdown, cleaned_docx_bytes, cleanup_result.report_payload, cleanup_result.raw_markdown, None
+    except Exception as exc:
+        error_message = dependencies.present_error(
+            "reader_cleanup_failed",
+            exc,
+            "Ошибка reader cleanup post-pass",
+            filename=context.uploaded_filename,
+            processing_operation=context.processing_operation,
+        )
+        strict_report = exc.report_payload if isinstance(exc, ReaderCleanupStageError) else None
+        strict_raw_markdown = exc.raw_markdown if isinstance(exc, ReaderCleanupStageError) else cleanup_input_markdown
+        result_notice: dict[str, str] | None = None
+        if config.policy == "strict":
+            result_notice = {
+                "level": "warning",
+                "message": "Reader cleanup strict stage failed; preserved the raw translated result without cleanup.",
+            }
+            dependencies.log_event(
+                logging.WARNING,
+                "reader_cleanup_strict_failed_base_result_preserved",
+                "Reader cleanup strict stage failed; base DOCX/Markdown result is preserved.",
+                filename=context.uploaded_filename,
+                processing_operation=context.processing_operation,
+                policy=config.policy,
+                error_message=str(exc),
+                report_stage_status=(strict_report or {}).get("stage_status") if isinstance(strict_report, Mapping) else None,
+            )
+        else:
+            dependencies.log_event(
+                logging.WARNING,
+                "reader_cleanup_failed_base_result_preserved",
+                "Reader cleanup post-pass failed; base DOCX/Markdown result is preserved.",
+                filename=context.uploaded_filename,
+                processing_operation=context.processing_operation,
+                policy=config.policy,
+                error_message=str(exc),
+            )
+        emitters.emit_state(
+            context.runtime,
+            latest_docx_bytes=base_docx_bytes,
+            latest_markdown=runtime_display_markdown,
+            latest_narration_text=None,
+            latest_result_notice=result_notice,
+            last_error=error_message,
+        )
+        return runtime_display_markdown, base_docx_bytes, cast(dict[str, object] | None, strict_report), strict_raw_markdown, result_notice
 
 
 def _serialize_assembly_decisions(decisions: Sequence[object], *, limit: int = 20) -> list[dict[str, object]]:
@@ -1366,6 +1593,7 @@ def run_docx_build_phase(
         "formatting_diagnostics_artifacts": list(formatting_diagnostics_artifacts),
         "assembly_entries": list(assembly_result.entries),
         "result_manifest": result_manifest,
+        "processed_image_assets": list(cast(Sequence[Any], image_phase.get("processed_image_assets") or [])),
     }
 
 
@@ -1462,6 +1690,31 @@ def finalize_processing_success(
             log_details=error_message,
         )
     narration_error_message = ""
+    reader_cleanup_report: dict[str, object] | None = None
+    reader_cleanup_raw_markdown: str | None = None
+    reader_cleanup_result_notice: dict[str, str] | None = None
+    runtime_display_markdown, final_docx_bytes, reader_cleanup_report, reader_cleanup_raw_markdown, reader_cleanup_result_notice = _run_reader_cleanup_postprocess(
+        context=context,
+        dependencies=dependencies,
+        emitters=emitters,
+        state=state,
+        cleanup_input_markdown=gate_input_markdown,
+        runtime_display_markdown=runtime_display_markdown,
+        base_docx_bytes=cast(bytes, docx_phase["docx_bytes"]),
+        job_count=job_count,
+        processed_image_assets=cast(Sequence[Any], docx_phase.get("processed_image_assets") or []),
+    )
+    if final_docx_bytes != docx_phase["docx_bytes"] or runtime_display_markdown != _resolve_runtime_display_markdown(
+        docx_phase=docx_phase,
+        fallback_markdown=gate_input_markdown,
+    ):
+        docx_phase = dict(docx_phase)
+        docx_phase["docx_bytes"] = final_docx_bytes
+        docx_phase["runtime_display_markdown"] = runtime_display_markdown
+    if reader_cleanup_result_notice is not None:
+        docx_phase = dict(docx_phase)
+        docx_phase["latest_result_notice"] = reader_cleanup_result_notice
+
     try:
         narration_text = _build_narration_text(
             context=context,
@@ -1613,6 +1866,14 @@ def finalize_processing_success(
         result_artifact_paths = dict(
             dependencies.write_ui_result_artifacts(**artifact_writer_kwargs)
         )
+        if reader_cleanup_report is not None:
+            result_artifact_paths.update(
+                write_reader_cleanup_diagnostics(
+                    cleaned_artifact_paths=result_artifact_paths,
+                    raw_markdown=reader_cleanup_raw_markdown or gate_input_markdown,
+                    report_payload=reader_cleanup_report,
+                )
+            )
     except OSError as exc:
         dependencies.log_event(
             logging.WARNING,
@@ -1693,6 +1954,7 @@ def finalize_processing_success(
         elapsed_seconds=round(time.perf_counter() - state.started_at, 2),
         translation_second_pass_enabled=_is_translation_second_pass_effectively_enabled(context=context),
         audiobook_postprocess_enabled=_should_run_audiobook_postprocess(context=context),
+        reader_cleanup_enabled=_should_run_reader_cleanup(context=context),
     )
     emitters.emit_log(
         context.runtime,

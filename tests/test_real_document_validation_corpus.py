@@ -850,6 +850,96 @@ def test_runtime_resolution_applies_translation_quality_gate_policy_override() -
     assert applied_config["translation_output_quality_gate_policy"] == "advisory"
 
 
+def test_runtime_resolution_applies_reader_cleanup_overrides() -> None:
+    app_config = SimpleNamespace(
+        models=SimpleNamespace(
+            text=SimpleNamespace(
+                default="gpt-5.4-mini",
+                options=("gpt-5.4-mini",),
+            )
+        ),
+        to_dict=lambda: {
+            "models": SimpleNamespace(
+                text=SimpleNamespace(
+                    default="gpt-5.4-mini",
+                    options=("gpt-5.4-mini",),
+                )
+            ),
+            "model": "gpt-5.4",
+            "chunk_size": 6000,
+            "max_retries": 3,
+            "image_mode_default": "safe",
+            "processing_operation_default": "edit",
+            "source_language_default": "en",
+            "target_language_default": "ru",
+            "translation_domain_default": "general",
+            "audiobook_postprocess_default": False,
+            "reader_cleanup_default": False,
+            "enable_paragraph_markers": True,
+            "keep_all_image_variants": False,
+            "structure_recognition_mode": "off",
+            "structure_recognition_enabled": False,
+        },
+        model="gpt-5.4",
+        chunk_size=6000,
+        max_retries=3,
+        image_mode_default="safe",
+        processing_operation_default="edit",
+        source_language_default="en",
+        target_language_default="ru",
+        translation_domain_default="general",
+        audiobook_postprocess_default=False,
+        reader_cleanup_default=False,
+        enable_paragraph_markers=True,
+        keep_all_image_variants=False,
+        structure_recognition_mode="off",
+        structure_recognition_enabled=False,
+    )
+    run_profile = validation_profiles.RunProfile(
+        id="simple-reader-cleanup",
+        processing_operation="translate",
+        reader_cleanup_enabled=True,
+        reader_cleanup_model="gpt-5.4-mini",
+        reader_cleanup_chunk_size=30000,
+        reader_cleanup_global_plan_enabled=True,
+        reader_cleanup_keep_toc=True,
+        reader_cleanup_policy="advisory",
+    )
+
+    resolution = validation_profiles.resolve_runtime_resolution(app_config, run_profile)
+    applied_config = validation_profiles.apply_runtime_resolution_to_app_config(app_config, resolution)
+
+    assert resolution.effective.reader_cleanup_enabled is True
+    assert resolution.overrides["reader_cleanup_enabled"] is True
+    assert resolution.overrides["reader_cleanup_model"] == "gpt-5.4-mini"
+    assert resolution.app_config_overrides["reader_cleanup_chunk_size"] == 30000
+    assert applied_config["reader_cleanup_enabled"] is True
+    assert applied_config["reader_cleanup_model"] == "gpt-5.4-mini"
+    assert applied_config["reader_cleanup_keep_toc"] is True
+
+
+def test_validation_registry_declares_reader_cleanup_validation_profiles() -> None:
+    validation_profiles.load_validation_registry.cache_clear()
+    registry = validation_profiles.load_validation_registry()
+
+    baseline = registry.get_run_profile("ui-parity-translate-simple-reader-cleanup")
+    # Wide-chunk stays as an optional experiment profile; it is not a stronger repository contract.
+    wide_chunk = registry.get_run_profile("ui-parity-translate-simple-reader-cleanup-wide-chunk")
+
+    assert baseline.processing_operation == "translate"
+    assert baseline.structure_recognition_mode == "off"
+    assert baseline.reader_cleanup_enabled is True
+    assert baseline.reader_cleanup_policy == "advisory"
+    assert baseline.reader_cleanup_keep_toc is True
+    assert baseline.reader_cleanup_drop_back_matter is False
+    assert baseline.reader_cleanup_chunk_size == 30000
+
+    assert wide_chunk.processing_operation == "translate"
+    assert wide_chunk.reader_cleanup_enabled is True
+    assert wide_chunk.reader_cleanup_policy == "advisory"
+    assert wide_chunk.reader_cleanup_chunk_size == 50000
+
+
 def test_runtime_resolution_applies_topology_projection_override() -> None:
     app_config = SimpleNamespace(
         models=SimpleNamespace(

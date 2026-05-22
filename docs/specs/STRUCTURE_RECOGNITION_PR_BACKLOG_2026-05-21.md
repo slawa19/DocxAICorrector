@@ -136,7 +136,7 @@ detectors / acceptance plumbing without changing Markdown or topology behavior.
 ### Tests Required
 
 - shared detector preserves existing baseline phrase coverage and offsets;
-- topology regression: `candidate_page_artifact_split` behavior unchanged;
+ё- topology regression: `candidate_page_artifact_split` behavior unchanged;
 - detector tests for all five output detectors;
 - advisory profiles collect metrics without failing;
 - strict profile fields serialize and report correctly when configured.

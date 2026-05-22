@@ -364,3 +364,39 @@ audiobook_postprocess_enabled = false
 enable_paragraph_markers = true
 structure_recognition_mode = "off"
 repeat_count = 1
+
+[[run_profiles]]
+id = "ui-parity-translate-simple-reader-cleanup"
+tier = "full"
+mode = "regression"
+processing_operation = "translate"
+source_language = "auto"
+target_language = "ru"
+audiobook_postprocess_enabled = false
+reader_cleanup_enabled = true
+reader_cleanup_global_plan_enabled = true
+reader_cleanup_policy = "advisory"
+reader_cleanup_keep_toc = true
+reader_cleanup_drop_back_matter = false
+reader_cleanup_chunk_size = 30000
+enable_paragraph_markers = true
+structure_recognition_mode = "off"
+repeat_count = 1
+
+[[run_profiles]]
+id = "ui-parity-translate-simple-reader-cleanup-wide-chunk"
+tier = "full"
+mode = "regression"
+processing_operation = "translate"
+source_language = "auto"
+target_language = "ru"
+audiobook_postprocess_enabled = false
+reader_cleanup_enabled = true
+reader_cleanup_global_plan_enabled = true
+reader_cleanup_policy = "advisory"
+reader_cleanup_keep_toc = true
+reader_cleanup_drop_back_matter = false
+reader_cleanup_chunk_size = 50000
+enable_paragraph_markers = true
+structure_recognition_mode = "off"
+repeat_count = 1

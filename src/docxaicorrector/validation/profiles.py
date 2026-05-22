@@ -81,6 +81,17 @@ class RunProfile:
     target_language: str | None = None
     translation_domain: str | None = None
     audiobook_postprocess_enabled: bool | None = None
+    reader_cleanup_enabled: bool | None = None
+    reader_cleanup_model: str | None = None
+    reader_cleanup_chunk_size: int | None = None
+    reader_cleanup_global_plan_enabled: bool | None = None
+    reader_cleanup_keep_toc: bool | None = None
+    reader_cleanup_drop_back_matter: bool | None = None
+    reader_cleanup_max_delete_block_ratio: float | None = None
+    reader_cleanup_max_delete_char_ratio: float | None = None
+    reader_cleanup_max_consecutive_deleted_blocks: int | None = None
+    reader_cleanup_max_deleted_block_chars: int | None = None
+    reader_cleanup_policy: str | None = None
     enable_paragraph_markers: bool | None = None
     keep_all_image_variants: bool | None = None
     structure_recognition_mode: str | None = None
@@ -128,6 +139,7 @@ class ResolvedRuntimeConfig:
     target_language: str
     translation_domain: str
     audiobook_postprocess_enabled: bool
+    reader_cleanup_enabled: bool
     enable_paragraph_markers: bool
     keep_all_image_variants: bool
     structure_recognition_mode: str
@@ -144,6 +156,7 @@ class ResolvedRuntimeConfig:
             "target_language": self.target_language,
             "translation_domain": self.translation_domain,
             "audiobook_postprocess_enabled": self.audiobook_postprocess_enabled,
+            "reader_cleanup_enabled": self.reader_cleanup_enabled,
             "enable_paragraph_markers": self.enable_paragraph_markers,
             "keep_all_image_variants": self.keep_all_image_variants,
             "structure_recognition_mode": self.structure_recognition_mode,
@@ -191,6 +204,7 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         target_language=str(getattr(app_config, "target_language_default", "ru") or "ru"),
         translation_domain=str(getattr(app_config, "translation_domain_default", "general") or "general"),
         audiobook_postprocess_enabled=bool(getattr(app_config, "audiobook_postprocess_default", False)),
+        reader_cleanup_enabled=bool(getattr(app_config, "reader_cleanup_default", False)),
         enable_paragraph_markers=bool(app_config.enable_paragraph_markers),
         keep_all_image_variants=bool(app_config.keep_all_image_variants),
         structure_recognition_mode=ui_default_mode,
@@ -220,6 +234,12 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
                 ui_defaults.audiobook_postprocess_enabled,
             )
         ),
+        reader_cleanup_enabled=bool(
+            _resolve_run_profile_field(
+                run_profile.reader_cleanup_enabled,
+                ui_defaults.reader_cleanup_enabled,
+            )
+        ),
         enable_paragraph_markers=(
             run_profile.enable_paragraph_markers
             if run_profile.enable_paragraph_markers is not None
@@ -243,6 +263,17 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         "target_language": run_profile.target_language,
         "translation_domain": run_profile.translation_domain,
         "audiobook_postprocess_enabled": run_profile.audiobook_postprocess_enabled,
+        "reader_cleanup_enabled": run_profile.reader_cleanup_enabled,
+        "reader_cleanup_model": run_profile.reader_cleanup_model,
+        "reader_cleanup_chunk_size": run_profile.reader_cleanup_chunk_size,
+        "reader_cleanup_global_plan_enabled": run_profile.reader_cleanup_global_plan_enabled,
+        "reader_cleanup_keep_toc": run_profile.reader_cleanup_keep_toc,
+        "reader_cleanup_drop_back_matter": run_profile.reader_cleanup_drop_back_matter,
+        "reader_cleanup_max_delete_block_ratio": run_profile.reader_cleanup_max_delete_block_ratio,
+        "reader_cleanup_max_delete_char_ratio": run_profile.reader_cleanup_max_delete_char_ratio,
+        "reader_cleanup_max_consecutive_deleted_blocks": run_profile.reader_cleanup_max_consecutive_deleted_blocks,
+        "reader_cleanup_max_deleted_block_chars": run_profile.reader_cleanup_max_deleted_block_chars,
+        "reader_cleanup_policy": run_profile.reader_cleanup_policy,
         "enable_paragraph_markers": run_profile.enable_paragraph_markers,
         "keep_all_image_variants": run_profile.keep_all_image_variants,
         "structure_recognition_mode": run_profile.structure_recognition_mode,
@@ -291,6 +322,30 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
     if run_profile.translation_output_quality_gate_policy is not None:
         app_config_overrides["translation_output_quality_gate_policy"] = run_profile.translation_output_quality_gate_policy
         overrides["translation_output_quality_gate_policy"] = run_profile.translation_output_quality_gate_policy
+    if run_profile.reader_cleanup_enabled is not None:
+        app_config_overrides["reader_cleanup_enabled"] = run_profile.reader_cleanup_enabled
+    if run_profile.reader_cleanup_model is not None:
+        app_config_overrides["reader_cleanup_model"] = run_profile.reader_cleanup_model
+    if run_profile.reader_cleanup_chunk_size is not None:
+        app_config_overrides["reader_cleanup_chunk_size"] = run_profile.reader_cleanup_chunk_size
+    if run_profile.reader_cleanup_global_plan_enabled is not None:
+        app_config_overrides["reader_cleanup_global_plan_enabled"] = run_profile.reader_cleanup_global_plan_enabled
+    if run_profile.reader_cleanup_keep_toc is not None:
+        app_config_overrides["reader_cleanup_keep_toc"] = run_profile.reader_cleanup_keep_toc
+    if run_profile.reader_cleanup_drop_back_matter is not None:
+        app_config_overrides["reader_cleanup_drop_back_matter"] = run_profile.reader_cleanup_drop_back_matter
+    if run_profile.reader_cleanup_max_delete_block_ratio is not None:
+        app_config_overrides["reader_cleanup_max_delete_block_ratio"] = run_profile.reader_cleanup_max_delete_block_ratio
+    if run_profile.reader_cleanup_max_delete_char_ratio is not None:
+        app_config_overrides["reader_cleanup_max_delete_char_ratio"] = run_profile.reader_cleanup_max_delete_char_ratio
+    if run_profile.reader_cleanup_max_consecutive_deleted_blocks is not None:
+        app_config_overrides[
+            "reader_cleanup_max_consecutive_deleted_blocks"
+        ] = run_profile.reader_cleanup_max_consecutive_deleted_blocks
+    if run_profile.reader_cleanup_max_deleted_block_chars is not None:
+        app_config_overrides["reader_cleanup_max_deleted_block_chars"] = run_profile.reader_cleanup_max_deleted_block_chars
+    if run_profile.reader_cleanup_policy is not None:
+        app_config_overrides["reader_cleanup_policy"] = run_profile.reader_cleanup_policy
     for key, default_value in ui_defaults.to_dict().items():
         effective_value = effective.to_dict()[key]
         if effective_value != default_value:
@@ -308,6 +363,7 @@ def apply_runtime_resolution_to_app_config(app_config, resolution: RuntimeResolu
     app_config_dict.update(resolution.effective.to_dict())
     app_config_dict["translation_domain_default"] = resolution.effective.translation_domain
     app_config_dict["audiobook_postprocess_enabled"] = resolution.effective.audiobook_postprocess_enabled
+    app_config_dict["reader_cleanup_enabled"] = resolution.effective.reader_cleanup_enabled
     app_config_dict["keep_all_image_variants"] = resolution.effective.keep_all_image_variants
     app_config_dict["enable_paragraph_markers"] = resolution.effective.enable_paragraph_markers
     app_config_dict.update(resolution.app_config_overrides)
@@ -419,6 +475,17 @@ def _build_run_profile(payload: Any) -> RunProfile:
         target_language=_optional_str(payload, "target_language"),
         translation_domain=_optional_str(payload, "translation_domain"),
         audiobook_postprocess_enabled=_optional_bool(payload, "audiobook_postprocess_enabled"),
+        reader_cleanup_enabled=_optional_bool(payload, "reader_cleanup_enabled"),
+        reader_cleanup_model=_optional_str(payload, "reader_cleanup_model"),
+        reader_cleanup_chunk_size=_optional_int(payload, "reader_cleanup_chunk_size"),
+        reader_cleanup_global_plan_enabled=_optional_bool(payload, "reader_cleanup_global_plan_enabled"),
+        reader_cleanup_keep_toc=_optional_bool(payload, "reader_cleanup_keep_toc"),
+        reader_cleanup_drop_back_matter=_optional_bool(payload, "reader_cleanup_drop_back_matter"),
+        reader_cleanup_max_delete_block_ratio=_optional_float(payload, "reader_cleanup_max_delete_block_ratio"),
+        reader_cleanup_max_delete_char_ratio=_optional_float(payload, "reader_cleanup_max_delete_char_ratio"),
+        reader_cleanup_max_consecutive_deleted_blocks=_optional_int(payload, "reader_cleanup_max_consecutive_deleted_blocks"),
+        reader_cleanup_max_deleted_block_chars=_optional_int(payload, "reader_cleanup_max_deleted_block_chars"),
+        reader_cleanup_policy=_optional_reader_cleanup_policy(payload, "reader_cleanup_policy"),
         enable_paragraph_markers=_optional_bool(payload, "enable_paragraph_markers"),
         keep_all_image_variants=_optional_bool(payload, "keep_all_image_variants"),
         structure_recognition_mode=_optional_structure_recognition_mode(payload, "structure_recognition_mode"),
@@ -469,6 +536,15 @@ def _optional_int(payload: dict[str, Any], key: str) -> int | None:
     return value
 
 
+def _optional_float(payload: dict[str, Any], key: str) -> float | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, (int, float)):
+        raise RuntimeError(f"Registry field {key} must be numeric when provided")
+    return float(value)
+
+
 def _coerce_float(payload: dict[str, Any], key: str, default: float) -> float:
     value = payload.get(key, default)
     if not isinstance(value, (int, float)):
@@ -507,6 +583,15 @@ def _optional_processing_operation(payload: dict[str, Any], key: str) -> str | N
         return None
     if not isinstance(value, str) or value.strip() not in {"edit", "translate", "audiobook"}:
         raise RuntimeError(f"Registry field {key} must be one of: audiobook, edit, translate")
+    return value.strip()
+
+
+def _optional_reader_cleanup_policy(payload: dict[str, Any], key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or value.strip() not in {"off", "advisory", "strict"}:
+        raise RuntimeError(f"Registry field {key} must be one of: advisory, off, strict")
     return value.strip()
 
 
