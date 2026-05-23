@@ -1279,8 +1279,6 @@ def _merge_reader_verifier_missing_pre_audit_issues(
     pre_audit_issues: Sequence[Mapping[str, str]],
 ) -> tuple[list[dict[str, str]], bool]:
     merged = [dict(issue) for issue in existing_issues]
-    existing_counts = Counter(str(issue.get("category") or "").strip() for issue in merged)
-    required_counts = Counter(str(issue.get("category") or "").strip() for issue in pre_audit_issues)
     seen = {
         (
             str(issue.get("category") or ""),
@@ -1292,8 +1290,6 @@ def _merge_reader_verifier_missing_pre_audit_issues(
     added = False
     for issue in pre_audit_issues:
         category = str(issue.get("category") or "").strip()
-        if existing_counts.get(category, 0) >= required_counts.get(category, 0):
-            continue
         key = (
             category,
             str(issue.get("line_ref") or ""),
@@ -1303,7 +1299,6 @@ def _merge_reader_verifier_missing_pre_audit_issues(
             continue
         seen.add(key)
         merged.append(dict(issue))
-        existing_counts[category] += 1
         added = True
     return merged, added
 

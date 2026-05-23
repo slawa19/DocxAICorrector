@@ -504,6 +504,39 @@ def test_run_reader_cleanup_removes_inline_page_furniture_from_exact_substring()
     assert "Через призму дополнительных валют" in result.cleaned_markdown
 
 
+def test_run_reader_cleanup_rejects_ambiguous_inline_noise_substring() -> None:
+    target = "В 4 городах выпускались жетоны, и 4 использовались в качестве page marker."
+    markdown = f"Intro\n\n{target}\n\nOutro"
+
+    def provider(payload: dict[str, object], chunk_index: int, chunk_count: int) -> str:
+        block = next(block for block in payload["blocks"] if block["text"] == target)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "remove_inline_noise",
+                        "reason": "page_furniture_inline",
+                        "confidence": "high",
+                        "evidence_before": "A bare numeric page marker appears inside a paragraph.",
+                        "expected_after_preview": "Only the inline page marker should be removed.",
+                        "safety_note": "The substring is ambiguous because the same marker text appears in semantic prose.",
+                        "noise_substring": "4 ",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    assert result.report_payload["ignored_delete_blocks"][0]["ignored_reason"] == "remove_inline_noise_substring_ambiguous"
+
+
 def test_run_reader_cleanup_joins_fragmented_paragraph_after_caption_boundary() -> None:
     markdown = (
         "Intro\n\n"
@@ -675,7 +708,7 @@ def test_run_reader_cleanup_rejects_non_delete_operation_missing_required_eviden
     )
 
 
-def test_run_reader_cleanup_preserves_already_good_list_formatting_during_polish() -> None:
+def test_run_reader_cleanup_preserves_already_good_list_formatting_without_operations() -> None:
     markdown = "Intro\n\n- первый пункт\n\n- второй пункт\n\nOutro"
 
     result = run_reader_cleanup(
@@ -688,7 +721,7 @@ def test_run_reader_cleanup_preserves_already_good_list_formatting_during_polish
     assert result.cleaned_markdown == markdown
 
 
-def test_run_reader_cleanup_preserves_legitimate_plain_text_heading_like_paragraph() -> None:
+def test_run_reader_cleanup_preserves_legitimate_plain_text_heading_like_paragraph_without_operations() -> None:
     markdown = (
         "Intro\n\n"
         "12 ФАКТОРОВ УСПЕХА Экономика устойчивого роста требует терпения, дисциплины и долгого горизонта планирования.\n\n"
@@ -703,7 +736,6 @@ def test_run_reader_cleanup_preserves_legitimate_plain_text_heading_like_paragra
 
     assert result.cleaned_markdown == markdown
     assert result.changed is False
-    assert "reader_cleanup_polish_inline_page_furniture_stripped" not in result.report_payload["warnings"]
 
 
 def test_run_reader_cleanup_strict_failure_raises_with_reviewable_report() -> None:

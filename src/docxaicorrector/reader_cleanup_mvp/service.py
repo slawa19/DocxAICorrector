@@ -8,7 +8,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 
 CleanupPolicy = Literal["off", "advisory", "strict"]
@@ -65,36 +65,12 @@ _EXTRACTION_ARTIFACT_PATTERN = re.compile(
     r"^(?:\[\[DOCX_[A-Za-z0-9_]+\]\]|\[\[IMAGE_[A-Za-z0-9_]+\]\]|<\/?placeholder>|---+|===+)$",
     re.IGNORECASE,
 )
-_BANJAR_LIST_CONTINUATION_PATTERN = re.compile(
-    r"(?m)^(?P<marker>[-*])\s+Банджар:(?P<body>[^\n]*)\n\n(?P<continuation>социальные аспекты жизни общины)\s*$"
-)
-_INLINE_PAGE_FURNITURE_PATTERN = re.compile(
-    r"^(?P<furniture>(?:\d{1,4}\s+){1,2}(?:[A-ZА-ЯЁ][A-ZА-ЯЁ-]{2,}(?:\s+|$)){1,5})(?P<body>(?=[^\n]*[A-Za-zА-ЯЁа-яё])[^\n].*)$"
-)
-_INLINE_PAGE_FURNITURE_LABEL_PATTERN = re.compile(r"(?:\d{1,4}\s+){1,2}(?P<label>(?:[A-ZА-ЯЁ][A-ZА-ЯЁ-]{2,})(?:\s+[A-ZА-ЯЁ][A-ZА-ЯЁ-]{2,}){0,4})\s*$")
 _SAFE_INLINE_NOISE_PATTERN = re.compile(
     r"^\s*(?:"
     r"(?:\(?\d{1,4}\)?|[Pp]age\s+\d{1,4}|стр\.\s*\d{1,4})"
     r"|(?:\[\d{1,3}\]|\(\d{1,3}\)|\d{1,3})"
     r"|(?:\d{1,4}\s+){1,2}(?:[A-ZА-ЯЁ][A-ZА-ЯЁ-]{2,}(?:\s+[A-ZА-ЯЁ][A-ZА-ЯЁ-]{2,}){0,4})"
     r")\s*$"
-)
-_GLOBAL_REFERENCE_HEADING_SPLIT_PATTERN = re.compile(
-    r"^(?P<prefix>.*?\bосознание\s+необходимости)\s+Глобальная эталонная валюта\s+(?P<rest>в\s+глобальной\s+валюте.*)$",
-    re.DOTALL,
-)
-_MULTINATIONAL_HEADING_SPLIT_PATTERN = re.compile(
-    r"^(?P<prefix>Стало очевидно:\s+)Три мультинациональные валюты\s+(?P<rest>региональная\s+экономическая\s+интеграция.*)$",
-    re.DOTALL,
-)
-_CURRENCY_MENU_BULLETS = (
-    "глобальную расчетную валюту",
-    "три основные мультинациональные валюты",
-    "частные международные расчетные средства (скрипы)",
-    "множество национальных валют",
-    "десятки региональных валют",
-    "массу местных кооперативных валют",
-    "широкий спектр функциональных валют",
 )
 
 
@@ -207,7 +183,7 @@ def resolve_reader_cleanup_config(*, app_config: Mapping[str, object], fallback_
             default=300,
             minimum=1,
         ),
-        policy=policy,
+        policy=cast(CleanupPolicy, policy),
     )
 
 
@@ -316,7 +292,8 @@ def run_reader_cleanup(
     )
     chunks = _build_cleanup_chunks(blocks=blocks, chunk_size=config.chunk_size)
     all_operations: list[CleanupOperation] = []
-    warnings: list[str] = list(global_plan.get("warnings", [])) if isinstance(global_plan.get("warnings"), list) else []
+    raw_global_warnings = global_plan.get("warnings")
+    warnings: list[str] = [str(item) for item in raw_global_warnings] if isinstance(raw_global_warnings, list) else []
     ignored_delete_blocks: list[dict[str, object]] = []
     chunk_results: list[dict[str, object]] = []
 
@@ -413,7 +390,7 @@ def run_reader_cleanup(
     accepted_counts_by_chunk: Counter[int] = Counter()
     for block_id, entry in accepted_ids.items():
         block = _block_by_id(blocks, block_id)
-        chunk_index = int(entry["chunk_index"])
+        chunk_index = _coerce_int(entry.get("chunk_index"), default=0, minimum=0)
         accepted_delete_blocks.append(
             {
                 **_serialize_delete_block(block=block, reason=str(entry["reason"]), confidence=str(entry["confidence"])),
@@ -616,12 +593,12 @@ def _build_global_plan(
         warnings.extend(str(item) for item in ai_warnings if str(item).strip())
 
     return {
-        "repeated_noise_patterns": list(ai_plan.get("repeated_noise_patterns") or []) + repeated_noise_patterns,
+        "repeated_noise_patterns": _coerce_string_list(ai_plan.get("repeated_noise_patterns")) + repeated_noise_patterns,
         "candidate_block_ids": candidate_block_ids,
-        "document_specific_running_headers": list(ai_plan.get("document_specific_running_headers") or []),
-        "examples_do_not_delete": list(ai_plan.get("examples_do_not_delete") or []),
-        "likely_heading_body_patterns": list(ai_plan.get("likely_heading_body_patterns") or []),
-        "likely_fragmentation_patterns": list(ai_plan.get("likely_fragmentation_patterns") or []),
+        "document_specific_running_headers": _coerce_string_list(ai_plan.get("document_specific_running_headers")),
+        "examples_do_not_delete": _coerce_string_list(ai_plan.get("examples_do_not_delete")),
+        "likely_heading_body_patterns": _coerce_string_list(ai_plan.get("likely_heading_body_patterns")),
+        "likely_fragmentation_patterns": _coerce_string_list(ai_plan.get("likely_fragmentation_patterns")),
         "warnings": warnings,
     }
 
@@ -719,10 +696,14 @@ def _build_reader_cleanup_report_payload(
     total_non_whitespace_chars = sum(block.non_whitespace_char_count for block in blocks)
     failed_chunk_count = sum(1 for entry in chunk_results if entry.get("status") == "failed")
     proposed_delete_block_count = sum(
-        int(entry.get("proposed_delete_block_count", 0) or 0) for entry in chunk_results
+        _coerce_int(entry.get("proposed_delete_block_count"), default=0, minimum=0) for entry in chunk_results
     )
     proposed_cleanup_operation_count = sum(
-        int(entry.get("proposed_cleanup_operation_count", entry.get("proposed_delete_block_count", 0)) or 0)
+        _coerce_int(
+            entry.get("proposed_cleanup_operation_count", entry.get("proposed_delete_block_count")),
+            default=0,
+            minimum=0,
+        )
         for entry in chunk_results
     )
     report_payload = {
@@ -739,7 +720,7 @@ def _build_reader_cleanup_report_payload(
             "failed_chunk_count": failed_chunk_count,
             "proposed_cleanup_operation_count": proposed_cleanup_operation_count,
             "proposed_delete_block_count": sum(
-                int(entry.get("proposed_delete_block_count", 0) or 0)
+                _coerce_int(entry.get("proposed_delete_block_count"), default=0, minimum=0)
                 for entry in chunk_results
             ),
             "accepted_cleanup_operation_count": len(accepted_cleanup_operations),
@@ -837,21 +818,22 @@ def _parse_cleanup_response(
                     raise RuntimeError(f"reader_cleanup_operation_missing_required_field:{block_id}:{required_field}")
 
         seen_ids.add(block_id)
+        split_substrings = normalized_item.get("split_substrings")
         operations.append(
             CleanupOperation(
                 block_id=block_id,
                 text_hash=text_hash,
                 operation=operation_name,
                 reason=reason,
-                confidence=confidence,
+                confidence=cast(CleanupConfidence, confidence),
                 chunk_index=chunk_index,
                 evidence_before=str(normalized_item.get("evidence_before") or "").strip(),
                 expected_after_preview=str(normalized_item.get("expected_after_preview") or "").strip(),
                 safety_note=str(normalized_item.get("safety_note") or "").strip(),
                 split_substrings=tuple(
-                    str(part).strip() for part in normalized_item.get("split_substrings", []) if str(part).strip()
+                    str(part).strip() for part in split_substrings if str(part).strip()
                 )
-                if isinstance(normalized_item.get("split_substrings"), list)
+                if isinstance(split_substrings, list)
                 else (),
                 noise_substring=str(normalized_item.get("noise_substring") or ""),
                 next_id=str(normalized_item.get("next_id") or "").strip(),
@@ -970,7 +952,7 @@ def _apply_cleanup_operations(
             block = _block_by_id(blocks, block_id)
             ignored.append(
                 {
-                    **_serialize_delete_block(block=block, reason=metadata["reason"], confidence=metadata["confidence"]),
+                    **_serialize_delete_block(block=block, reason=str(metadata["reason"]), confidence=str(metadata["confidence"])),
                     "chunk_index": metadata["chunk_index"],
                     "ignored_reason": "global_safety_limit_exceeded",
                 }
@@ -1015,6 +997,8 @@ def _apply_single_operation_to_blocks(
             return False, "", "noise_substring_not_found"
         if not _is_safe_inline_noise_substring(noise):
             return False, "", "remove_inline_noise_not_exact_noise_pattern"
+        if current_text.count(noise) != 1:
+            return False, "", "remove_inline_noise_substring_ambiguous"
         replacement = re.sub(r"\s{2,}", " ", current_text.replace(noise, "", 1)).strip()
         if not replacement or len(re.sub(r"\s+", "", replacement)) < 20:
             return False, "", "remove_inline_noise_would_drop_semantic_body"
@@ -1056,140 +1040,11 @@ def _apply_single_operation_to_blocks(
     return False, "", "unsupported_operation"
 
 
-def _apply_reader_facing_markdown_polish(markdown_text: str) -> tuple[str, list[str]]:
-    cleaned = str(markdown_text or "")
-    warnings: list[str] = []
-
-    cleaned, page_furniture_changed = _strip_inline_page_furniture_blocks(cleaned)
-    if page_furniture_changed:
-        warnings.append("reader_cleanup_polish_inline_page_furniture_stripped")
-
-    cleaned, heading_split_changed = _split_fused_heading_body_blocks(cleaned)
-    if heading_split_changed:
-        warnings.append("reader_cleanup_polish_fused_heading_body_split")
-
-    cleaned, banjar_changed = _normalize_banjar_list_block(cleaned)
-    if banjar_changed:
-        warnings.append("reader_cleanup_polish_banjar_list_item_wrapped")
-
-    cleaned, currency_changed = _emphasize_currency_menu_bullets(cleaned)
-    if currency_changed:
-        warnings.append("reader_cleanup_polish_currency_menu_emphasis")
-
-    return cleaned, warnings
-
-
-def _rewrite_markdown_blocks(markdown_text: str, transform: Callable[[str], str]) -> tuple[str, bool]:
-    if not markdown_text:
-        return markdown_text, False
-
-    parts = re.split(r"(\n\s*\n+)", markdown_text)
-    changed = False
-    rewritten_parts: list[str] = []
-    for index, part in enumerate(parts):
-        if index % 2 == 0 and part.strip():
-            rewritten = transform(part)
-            changed = changed or rewritten != part
-            rewritten_parts.append(rewritten)
-            continue
-        rewritten_parts.append(part)
-    return "".join(rewritten_parts), changed
-
-
-def _strip_inline_page_furniture_blocks(markdown_text: str) -> tuple[str, bool]:
-    if not markdown_text:
-        return markdown_text, False
-
-    parts = re.split(r"(\n\s*\n+)", markdown_text)
-    extracted_labels: list[str] = []
-    for index, part in enumerate(parts):
-        if index % 2 != 0 or not part.strip() or part.startswith(("#", "- ", "* ", ">")):
-            continue
-        match = _INLINE_PAGE_FURNITURE_PATTERN.match(part)
-        if match is None:
-            continue
-        label_match = _INLINE_PAGE_FURNITURE_LABEL_PATTERN.search(match.group("furniture"))
-        if label_match is None:
-            continue
-        extracted_labels.append(label_match.group("label").strip())
-
-    repeated_labels = {label for label, count in Counter(extracted_labels).items() if count >= 2}
-    if not repeated_labels:
-        return markdown_text, False
-
-    changed = False
-    rewritten_parts: list[str] = []
-    for index, part in enumerate(parts):
-        if index % 2 != 0 or not part.strip() or part.startswith(("#", "- ", "* ", ">")):
-            rewritten_parts.append(part)
-            continue
-        match = _INLINE_PAGE_FURNITURE_PATTERN.match(part)
-        if match is None:
-            rewritten_parts.append(part)
-            continue
-        label_match = _INLINE_PAGE_FURNITURE_LABEL_PATTERN.search(match.group("furniture"))
-        label = label_match.group("label").strip() if label_match is not None else ""
-        if label not in repeated_labels:
-            rewritten_parts.append(part)
-            continue
-        rewritten_parts.append(match.group("body").lstrip())
-        changed = True
-
-    return "".join(rewritten_parts), changed
-
-
-def _split_fused_heading_body_blocks(markdown_text: str) -> tuple[str, bool]:
-    def _transform(block: str) -> str:
-        rewritten = _GLOBAL_REFERENCE_HEADING_SPLIT_PATTERN.sub(
-            lambda match: (
-                "Глобальная эталонная валюта\n\n"
-                f"{match.group('prefix')} {match.group('rest')}"
-            ),
-            block,
-            count=1,
-        )
-        rewritten = _MULTINATIONAL_HEADING_SPLIT_PATTERN.sub(
-            lambda match: (
-                "Три мультинациональные валюты\n\n"
-                f"{match.group('prefix')}{match.group('rest')}"
-            ),
-            rewritten,
-            count=1,
-        )
-        return rewritten
-
-    return _rewrite_markdown_blocks(markdown_text, _transform)
-
-
-def _normalize_banjar_list_block(markdown_text: str) -> tuple[str, bool]:
-    def _replace(match: re.Match[str]) -> str:
-        marker = match.group("marker")
-        body = match.group("body").rstrip()
-        continuation = match.group("continuation").strip()
-        return f"{marker} Банджар:{body} {continuation}"
-
-    normalized = _BANJAR_LIST_CONTINUATION_PATTERN.sub(_replace, markdown_text, count=1)
-    return normalized, normalized != markdown_text
-
-
 def _is_safe_inline_noise_substring(noise: str) -> bool:
     normalized_noise = str(noise or "").strip()
     if not normalized_noise:
         return False
     return _SAFE_INLINE_NOISE_PATTERN.fullmatch(normalized_noise) is not None
-
-
-def _emphasize_currency_menu_bullets(markdown_text: str) -> tuple[str, bool]:
-    normalized = markdown_text
-    changed = False
-    for bullet_text in _CURRENCY_MENU_BULLETS:
-        for suffix in (";", "."):
-            plain_line = f"- {bullet_text}{suffix}"
-            bold_line = f"- **{bullet_text}**{suffix}"
-            if plain_line in normalized:
-                normalized = normalized.replace(plain_line, bold_line)
-                changed = True
-    return normalized, changed
 
 
 def _violates_global_safety(
@@ -1387,15 +1242,21 @@ def _block_by_id(blocks: Sequence[CleanupBlock], block_id: str) -> CleanupBlock:
     raise KeyError(block_id)
 
 
+def _coerce_string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
+
+
 def _coerce_int(value: object, *, default: int, minimum: int) -> int:
     try:
-        return max(int(value), minimum)
+        return max(int(cast(Any, value)), minimum)
     except (TypeError, ValueError):
         return default
 
 
 def _coerce_float(value: object, *, default: float) -> float:
     try:
-        return float(value)
+        return float(cast(Any, value))
     except (TypeError, ValueError):
         return default

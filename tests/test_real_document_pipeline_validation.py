@@ -2201,8 +2201,12 @@ def test_parse_reader_verifier_completed_review_accepts_structured_payload(tmp_p
     assert review["overall_verdict"] == "cleaned_better"
     assert review["cleaned_audit_verdict"] == "improved_but_has_remaining_issues"
     assert review["pre_audit_issue_counts"]["broken_list_marker"] == 1
-    assert review["issue_summary_by_category"]["broken_list_marker"] == 1
+    assert review["issue_summary_by_category"]["broken_list_marker"] == 2
     assert review["remaining_issues"][0]["category"] == "broken_list_marker"
+    assert any(
+        issue["snippet"] == "Synthetic broken_list_marker finding 1 remains in cleaned output."
+        for issue in review["remaining_issues"]
+    )
     assert "current review confidence" in review["simple_user_summary"]
     assert "still remain in the cleaned output" in review["simple_user_summary"]
     assert "Review confidence is medium" in review["simple_user_risk_statement"]
@@ -2643,6 +2647,78 @@ def test_parse_reader_verifier_completed_review_restores_missing_pre_audit_targe
     assert review["issue_summary_by_category"]["fragmented_paragraph"] == 1
     assert any(issue["category"] == "fragmented_paragraph" for issue in review["remaining_issues"])
     assert sum(1 for anchor in review["evidence_anchors"] if anchor["kind"] == "remaining_issue") >= 3
+
+
+def test_parse_reader_verifier_completed_review_restores_missing_pre_audit_targets_with_equal_category_count(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    evidence_path = tmp_path / "reader_quality_evidence.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+
+    review = validation._parse_reader_verifier_completed_review(
+        raw_response=_reader_verifier_test_response(
+            cleaned_audit_verdict="improved_but_has_remaining_issues",
+            remaining_issues=[
+                {
+                    "category": "heading_fused_with_body",
+                    "severity": "high",
+                    "artifact": "cleaned_markdown",
+                    "line_ref": "cleaned_markdown:12",
+                    "snippet": "Synthetic heading_fused_with_body finding 1 remains in cleaned output.",
+                    "why_reader_hurts": "The first fused heading/body defect remains.",
+                    "recommended_fix_type": "split_heading",
+                },
+                {
+                    "category": "heading_fused_with_body",
+                    "severity": "high",
+                    "artifact": "cleaned_markdown",
+                    "line_ref": "cleaned_markdown:99",
+                    "snippet": "LLM-only heading_fused_with_body finding outside mandatory targets.",
+                    "why_reader_hurts": "The verifier found another fused heading/body defect.",
+                    "recommended_fix_type": "split_heading",
+                },
+            ],
+            evidence_anchors=[
+                {
+                    "kind": "improvement_seen",
+                    "artifact": "comparison",
+                    "line_ref": "comparison:1",
+                    "snippet": "Repeated running header removed.",
+                    "note": "One readability improvement is confirmed.",
+                },
+                {
+                    "kind": "remaining_issue",
+                    "artifact": "cleaned_markdown",
+                    "line_ref": "cleaned_markdown:12",
+                    "snippet": "Synthetic heading_fused_with_body finding 1 remains in cleaned output.",
+                    "note": "The first mandatory issue remains.",
+                },
+                {
+                    "kind": "remaining_issue",
+                    "artifact": "cleaned_markdown",
+                    "line_ref": "cleaned_markdown:99",
+                    "snippet": "LLM-only heading_fused_with_body finding outside mandatory targets.",
+                    "note": "The verifier found another same-category issue.",
+                },
+            ],
+        ),
+        run_id="run-1",
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        requested_selector="openrouter:google/gemini-3-flash-preview",
+        canonical_selector="openrouter:google/gemini-3-flash-preview",
+        provider="openrouter",
+        model_id="google/gemini-3-flash-preview",
+        evidence_path=evidence_path,
+        evidence_payload=_reader_verifier_test_evidence_payload(pre_audit_issue_counts={"heading_fused_with_body": 2}),
+    )
+
+    assert review["issue_summary_by_category"]["heading_fused_with_body"] == 3
+    assert any(
+        issue["line_ref"] == "cleaned_markdown:13"
+        and issue["snippet"] == "Synthetic heading_fused_with_body finding 2 remains in cleaned output."
+        for issue in review["remaining_issues"]
+    )
 
 
 def test_run_reader_verifier_marks_model_resolution_failure_without_fallback(tmp_path, monkeypatch) -> None:
