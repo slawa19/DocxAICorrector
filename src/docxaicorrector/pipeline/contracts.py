@@ -302,6 +302,7 @@ class DocxBuildPhaseResult:
     formatting_diagnostics_artifacts: list[str] = field(default_factory=list)
     assembly_entries: list[Mapping[str, object]] = field(default_factory=list)
     result_manifest: Mapping[str, object] | None = None
+    processed_image_assets: list[ImageAssetLike] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

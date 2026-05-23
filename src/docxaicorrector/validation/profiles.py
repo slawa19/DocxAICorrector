@@ -72,6 +72,7 @@ class RunProfile:
     id: str
     tier: str = "full"
     mode: str = "regression"
+    comparison_only_validation: bool = False
     model: str | None = None
     chunk_size: int | None = None
     max_retries: int | None = None
@@ -466,6 +467,7 @@ def _build_run_profile(payload: Any) -> RunProfile:
         id=_require_str(payload, "id"),
         tier=tier,
         mode=_require_str(payload, "mode", default="regression"),
+        comparison_only_validation=_coerce_bool(payload, "comparison_only_validation", False),
         model=_optional_str(payload, "model"),
         chunk_size=_optional_int(payload, "chunk_size"),
         max_retries=_optional_int(payload, "max_retries"),

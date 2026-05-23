@@ -917,6 +917,7 @@ def _run_docx_build_phase(
         formatting_diagnostics_artifacts=list(phase_result.get("formatting_diagnostics_artifacts") or []),
         assembly_entries=list(phase_result.get("assembly_entries") or []),
         result_manifest=cast(Mapping[str, object] | None, phase_result.get("result_manifest")),
+        processed_image_assets=list(cast(Sequence[ImageAssetLike], phase_result.get("processed_image_assets") or [])),
     )
 
 
@@ -941,6 +942,7 @@ def _finalize_processing_success(
             "formatting_diagnostics_artifacts": list(docx_phase.formatting_diagnostics_artifacts),
             "assembly_entries": list(docx_phase.assembly_entries),
             "result_manifest": docx_phase.result_manifest,
+            "processed_image_assets": list(docx_phase.processed_image_assets),
         },
         job_count=job_count,
         current_markdown_fn=_current_markdown,

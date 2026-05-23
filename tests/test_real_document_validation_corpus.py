@@ -923,6 +923,7 @@ def test_validation_registry_declares_reader_cleanup_validation_profiles() -> No
     registry = validation_profiles.load_validation_registry()
 
     baseline = registry.get_run_profile("ui-parity-translate-simple-reader-cleanup")
+    comparison_only = registry.get_run_profile("ui-parity-translate-simple-reader-cleanup-comparison-only")
     # Wide-chunk stays as an optional experiment profile; it is not a stronger repository contract.
     wide_chunk = registry.get_run_profile("ui-parity-translate-simple-reader-cleanup-wide-chunk")
 
@@ -933,11 +934,35 @@ def test_validation_registry_declares_reader_cleanup_validation_profiles() -> No
     assert baseline.reader_cleanup_keep_toc is True
     assert baseline.reader_cleanup_drop_back_matter is False
     assert baseline.reader_cleanup_chunk_size == 30000
+    assert baseline.comparison_only_validation is False
+
+    assert comparison_only.processing_operation == "translate"
+    assert comparison_only.structure_recognition_mode == "off"
+    assert comparison_only.reader_cleanup_enabled is True
+    assert comparison_only.reader_cleanup_policy == "advisory"
+    assert comparison_only.reader_cleanup_keep_toc is True
+    assert comparison_only.reader_cleanup_drop_back_matter is False
+    assert comparison_only.reader_cleanup_chunk_size == 30000
+    assert comparison_only.translation_output_quality_gate_policy == "advisory"
+    assert comparison_only.comparison_only_validation is True
 
     assert wide_chunk.processing_operation == "translate"
     assert wide_chunk.reader_cleanup_enabled is True
     assert wide_chunk.reader_cleanup_policy == "advisory"
     assert wide_chunk.reader_cleanup_chunk_size == 50000
+
+
+def test_reader_cleanup_comparison_only_target_document_is_chapter_region_pdf() -> None:
+    validation_profiles.load_validation_registry.cache_clear()
+    registry = validation_profiles.load_validation_registry()
+
+    document_profile = registry.get_document_profile("lietaer-pdf-chapter-region-core")
+    resolved_source = document_profile.resolved_source_path(project_root=Path(__file__).resolve().parents[1])
+
+    assert document_profile.id == "lietaer-pdf-chapter-region-core"
+    assert resolved_source.as_posix().endswith(
+        "tests/sources/Rethinking-money-chapter-region-pages-10-11-and-156-217.pdf"
+    )
 
 
 def test_runtime_resolution_applies_topology_projection_override() -> None:

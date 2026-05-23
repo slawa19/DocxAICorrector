@@ -619,14 +619,21 @@ def test_build_structural_checks_exposes_explicit_unmapped_count_basis() -> None
 
 def test_build_markdown_quality_metrics_collects_detector_advisories_without_failing() -> None:
     metrics = structural_validation_runtime._build_markdown_quality_metrics(
-        latest_markdown="# One\n# Two\n\nBody this page intentionally left blank Chapter Nine text.\n",
+        latest_markdown=(
+            "# Chapter One\n"
+            "# Chapter Two\n\n"
+            "This page intentionally left blank\n\n"
+            "Introduction 12\n"
+            "Introduction 13\n"
+            "Introduction 14\n"
+        ),
         raw_markdown="",
         raw_structural_markdown="",
         translation_domain="general",
     )
 
     assert metrics["pdf_blank_page_marker_leakage_count"] == 1
-    assert metrics["inline_page_furniture_leakage_count"] == 1
+    assert metrics["inline_page_furniture_leakage_count"] == 3
     assert metrics["adjacent_h1_without_body_count"] == 1
     assert metrics["pdf_blank_page_marker_leakage_threshold"] is None
     assert metrics["pdf_blank_page_marker_leakage_samples"][0]["reason"] == "blank_page_marker_visible_in_output"
@@ -678,8 +685,8 @@ def test_build_structural_checks_serializes_strict_detector_threshold_fields_whe
     )
 
     by_name = {check["name"]: check for check in checks}
-    assert by_name["pdf_blank_page_marker_leakage_threshold"]["passed"] is False
-    assert by_name["pdf_blank_page_marker_leakage_threshold"]["allowed"] == 0
-    assert by_name["pdf_blank_page_marker_leakage_threshold"]["samples"] == [{"line": 3}]
-    assert by_name["inline_page_furniture_leakage_threshold"]["passed"] is True
-    assert by_name["adjacent_h1_without_body_threshold"]["passed"] is False
+    assert by_name["pdf_blank_page_marker_leakage"]["passed"] is False
+    assert by_name["pdf_blank_page_marker_leakage"]["allowed"] == 0
+    assert by_name["pdf_blank_page_marker_leakage"]["samples"] == [{"line": 3}]
+    assert by_name["inline_page_furniture_leakage"]["passed"] is True
+    assert by_name["adjacent_h1_without_body"]["passed"] is False

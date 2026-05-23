@@ -871,6 +871,107 @@ def test_evaluate_lietaer_acceptance_emits_explicit_unmapped_threshold_checks() 
     assert "structural_comparison_available" not in by_name
 
 
+def test_evaluate_lietaer_acceptance_discounts_payload_backed_benign_unmapped_source_merges() -> None:
+    validation = _load_validation_module()
+
+    source_doc = Document()
+    source_doc.add_paragraph("Один абзац")
+    output_doc = Document()
+    output_doc.add_paragraph("Один абзац")
+
+    report = {
+        "result": "succeeded",
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [
+            {
+                "unmapped_source_ids": ["p0000", "p0002", "p0005", "p0006"],
+                "unmapped_target_indexes": [],
+                "source_registry": [
+                    {
+                        "paragraph_id": "p0000",
+                        "source_index": 0,
+                        "role": "body",
+                        "structural_role": "body",
+                        "mapped_target_index": None,
+                        "text_preview": "глава 1",
+                    },
+                    {
+                        "paragraph_id": "p0001",
+                        "source_index": 1,
+                        "role": "heading",
+                        "structural_role": "heading",
+                        "mapped_target_index": 0,
+                        "text_preview": "что такое богатство?",
+                    },
+                    {
+                        "paragraph_id": "p0002",
+                        "source_index": 2,
+                        "role": "image",
+                        "structural_role": "image",
+                        "asset_id": "img_001",
+                        "mapped_target_index": None,
+                        "text_preview": "[[docx_image_img_001]]",
+                    },
+                    {
+                        "paragraph_id": "p0003",
+                        "source_index": 3,
+                        "role": "body",
+                        "structural_role": "body",
+                        "attached_to_asset_id": "img_001",
+                        "mapped_target_index": 1,
+                        "text_preview": "рисунок 1.1. Подпись к рисунку",
+                    },
+                    {
+                        "paragraph_id": "p0004",
+                        "source_index": 4,
+                        "role": "body",
+                        "structural_role": "body",
+                        "mapped_target_index": 2,
+                        "text_preview": "Предыдущий абзац без терминальной точки",
+                    },
+                    {
+                        "paragraph_id": "p0005",
+                        "source_index": 5,
+                        "role": "body",
+                        "structural_role": "body",
+                        "mapped_target_index": None,
+                        "text_preview": ", и эти усилия продолжаются в следующей строке.",
+                    },
+                    {
+                        "paragraph_id": "p0006",
+                        "source_index": 6,
+                        "role": "body",
+                        "structural_role": "body",
+                        "mapped_target_index": None,
+                        "text_preview": "эпиктет",
+                    },
+                ],
+            }
+        ],
+        "translation_quality_report": {
+            "worst_unmapped_source_count": 4,
+            "unmapped_target_count": 0,
+            "toc_body_concat_detected": False,
+        },
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+        mismatch_threshold=1,
+    )
+
+    by_name = {check["name"]: check for check in acceptance["checks"]}
+    assert by_name["formatting_diagnostics_threshold"]["passed"] is True
+    assert by_name["formatting_diagnostics_threshold"]["actual"] == 1
+    assert by_name["unmapped_source_threshold"]["passed"] is True
+    assert by_name["unmapped_source_threshold"]["actual"] == 1
+
+
 def test_evaluate_lietaer_acceptance_prefers_structure_unit_unmapped_basis_over_raw_formatting_counts() -> None:
     validation = _load_validation_module()
 
@@ -1172,6 +1273,129 @@ def test_summarize_repeat_runs_detects_intermittent_failures() -> None:
     assert acceptance["passed"] is False
     assert acceptance["failed_checks"] == ["all_repeat_runs_succeeded", "all_repeat_runs_acceptance_passed"]
     assert failure_classification == "intermittent_failure"
+
+
+def test_build_validation_mode_payload_marks_comparison_only_runs() -> None:
+    validation = _load_validation_module()
+
+    comparison_only = validation._build_validation_mode_payload(
+        validation.load_validation_registry().get_run_profile(
+            "ui-parity-translate-simple-reader-cleanup-comparison-only"
+        )
+    )
+    acceptance = validation._build_validation_mode_payload(
+        validation.load_validation_registry().get_run_profile("ui-parity-default")
+    )
+
+    assert comparison_only == {
+        "comparison_only_validation": True,
+        "validation_run_type": "comparison_only",
+        "acceptance_contract_active": False,
+        "evidence_label": "comparison_only_non_acceptance",
+        "success_criterion": "pipeline_result_and_artifacts",
+    }
+    assert acceptance == {
+        "comparison_only_validation": False,
+        "validation_run_type": "acceptance",
+        "acceptance_contract_active": True,
+        "evidence_label": "acceptance_contract",
+        "success_criterion": "acceptance_passed",
+    }
+
+
+def test_resolve_validation_final_status_uses_comparison_only_success_criterion() -> None:
+    validation = _load_validation_module()
+
+    comparison_only = validation._build_validation_mode_payload(
+        validation.load_validation_registry().get_run_profile(
+            "ui-parity-translate-simple-reader-cleanup-comparison-only"
+        )
+    )
+    acceptance = validation._build_validation_mode_payload(
+        validation.load_validation_registry().get_run_profile("ui-parity-default")
+    )
+
+    assert (
+        validation._resolve_validation_final_status(
+            result="succeeded",
+            acceptance_passed=False,
+            validation_mode=comparison_only,
+        )
+        == "completed"
+    )
+    assert (
+        validation._resolve_validation_final_status(
+            result="succeeded",
+            acceptance_passed=False,
+            validation_mode=acceptance,
+        )
+        == "failed"
+    )
+
+
+def test_load_reader_cleanup_evidence_extracts_artifacts_and_delete_stats(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    cleanup_report_path = tmp_path / "ui_results" / "chapter.reader_cleanup_report.json"
+    cleanup_report_path.parent.mkdir(parents=True, exist_ok=True)
+    cleanup_report_path.write_text(
+        json.dumps(
+            {
+                "stage_status": "completed",
+                "changed": True,
+                "stats": {
+                    "proposed_delete_block_count": 3,
+                    "accepted_delete_block_count": 1,
+                    "ignored_delete_block_count": 2,
+                    "failed_chunk_count": 0,
+                },
+                "accepted_delete_blocks": [
+                    {
+                        "id": "b_000001",
+                        "reason": "repeated_running_header",
+                        "confidence": "high",
+                        "raw_text_preview": "chapter eight",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    event_log = [
+        {
+            "event_id": "ui_result_artifacts_saved",
+            "context": {
+                "artifact_paths": {
+                    "markdown_path": str(tmp_path / "ui_results" / "chapter.result.md"),
+                    "docx_path": str(tmp_path / "ui_results" / "chapter.result.docx"),
+                    "reader_cleanup_raw_markdown_path": str(tmp_path / "ui_results" / "chapter.raw.result.md"),
+                    "reader_cleanup_report_path": str(cleanup_report_path),
+                }
+            },
+        }
+    ]
+
+    evidence = validation._load_reader_cleanup_evidence(event_log)
+
+    assert evidence["cleaned_markdown_path"] == str(tmp_path / "ui_results" / "chapter.result.md")
+    assert evidence["cleaned_docx_path"] == str(tmp_path / "ui_results" / "chapter.result.docx")
+    assert evidence["raw_markdown_path"] == str(tmp_path / "ui_results" / "chapter.raw.result.md")
+    assert evidence["reader_cleanup_report_path"] == str(cleanup_report_path)
+    assert evidence["stage_status"] == "completed"
+    assert evidence["changed"] is True
+    assert evidence["accepted_delete_block_count"] == 1
+    assert evidence["ignored_delete_block_count"] == 2
+    assert evidence["rejected_delete_block_count"] == 0
+    assert evidence["deleted_block_previews"] == [
+        {
+            "id": "b_000001",
+            "reason": "repeated_running_header",
+            "confidence": "high",
+            "raw_text_preview": "chapter eight",
+        }
+    ]
 
 
 def test_apply_repeat_count_override_ignores_invalid_value() -> None:
@@ -1602,6 +1826,943 @@ def test_main_uses_processing_service_facade_and_runtime_config_only(tmp_path, m
     assert "translation_quality_toc_body_concat_gate_source=legacy_markdown" in summary_text
     assert "source_file" not in report
     assert "runtime_configuration" not in report
+
+
+def test_main_comparison_only_reader_cleanup_reports_non_acceptance_artifacts_for_chapter_region(tmp_path, monkeypatch) -> None:
+    validation = _load_validation_module()
+    from docxaicorrector.core.models import ParagraphUnit
+
+    source_path = tmp_path / "Rethinking-money-chapter-region-pages-10-11-and-156-217.pdf"
+    source_path.write_bytes(b"%PDF-1.4 chapter-region")
+    ui_results_dir = tmp_path / ".run" / "ui_results"
+    ui_results_dir.mkdir(parents=True, exist_ok=True)
+    cleaned_markdown_path = ui_results_dir / "chapter_region.result.md"
+    cleaned_docx_path = ui_results_dir / "chapter_region.result.docx"
+    raw_markdown_path = ui_results_dir / "chapter_region.raw.result.md"
+    cleanup_report_path = ui_results_dir / "chapter_region.reader_cleanup_report.json"
+
+    cleaned_markdown_path.write_text("Cleaned markdown", encoding="utf-8")
+    cleaned_docx_path.write_bytes(_docx_bytes(Document()))
+    raw_markdown_path.write_text("Raw markdown", encoding="utf-8")
+    cleanup_report_path.write_text(
+        json.dumps(
+            {
+                "stage_status": "completed",
+                "changed": True,
+                "stats": {
+                    "proposed_delete_block_count": 2,
+                    "accepted_delete_block_count": 1,
+                    "ignored_delete_block_count": 1,
+                    "failed_chunk_count": 0,
+                },
+                "accepted_delete_blocks": [
+                    {
+                        "id": "b_000007",
+                        "reason": "repeated_running_header",
+                        "confidence": "high",
+                        "raw_text_preview": "rethinking money",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    def _resolution_payload(**values):
+        return SimpleNamespace(**values, to_dict=lambda: dict(values))
+
+    document_profile = SimpleNamespace(
+        id="lietaer-pdf-chapter-region-core",
+        artifact_prefix="lietaer_pdf_chapter_region",
+        output_basename="Rethinking_money_chapter_region",
+        max_unmapped_source_paragraphs=12,
+        max_unmapped_target_paragraphs=6,
+        require_no_toc_body_concat=True,
+        resolved_source_path=lambda project_root=None: source_path,
+    )
+    run_profile = SimpleNamespace(
+        id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        tier="full",
+        repeat_count=1,
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=False,
+        model="gpt-5.4",
+        max_retries=1,
+        comparison_only_validation=True,
+    )
+    registry = SimpleNamespace(
+        get_document_profile=lambda profile_id: document_profile,
+        resolve_run_profile=lambda profile, requested_run_profile_id: run_profile,
+    )
+
+    prepared_paragraphs = [
+        ParagraphUnit(text="Chapter 8", role="heading", structural_role="heading", heading_level=1, source_index=0)
+    ]
+
+    class _ValidationServiceStub:
+        def __init__(self, log_event_fn):
+            self.log_event_fn = log_event_fn
+
+        def run_prepared_background_document(self, **kwargs):
+            self.log_event_fn(
+                20,
+                "ui_result_artifacts_saved",
+                "Сохранены итоговые UI-артефакты обработки.",
+                filename="chapter-region.pdf",
+                artifact_paths={
+                    "markdown_path": str(cleaned_markdown_path),
+                    "docx_path": str(cleaned_docx_path),
+                    "reader_cleanup_raw_markdown_path": str(raw_markdown_path),
+                    "reader_cleanup_report_path": str(cleanup_report_path),
+                },
+            )
+            kwargs["runtime"].emit(
+                validation.SetStateEvent(
+                    values={
+                        "latest_markdown": "Cleaned markdown",
+                        "latest_docx_bytes": _docx_bytes(Document()),
+                    }
+                )
+            )
+            return "succeeded", SimpleNamespace(
+                uploaded_filename="chapter-region.pdf",
+                uploaded_file_bytes=b"%PDF-1.4 chapter-region",
+                paragraphs=prepared_paragraphs,
+                image_assets=[],
+                jobs=[{"job_kind": "block"}],
+                source_text="Source chapter region text",
+                preparation_cached=False,
+                preparation_elapsed_seconds=0.1,
+                ai_classified_count=0,
+                ai_heading_count=0,
+                ai_role_change_count=0,
+                ai_heading_promotion_count=0,
+                ai_heading_demotion_count=0,
+                ai_structural_role_change_count=0,
+                structure_repair_report=None,
+                uploaded_file_token="token-1",
+            )
+
+    monkeypatch.setattr(validation, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(validation, "REAL_DOCUMENT_ARTIFACT_ROOT", tmp_path / "artifacts")
+    monkeypatch.setattr(validation, "load_validation_registry", lambda: registry)
+    monkeypatch.setattr(validation, "load_app_config", lambda: object())
+    monkeypatch.setattr(
+        validation,
+        "resolve_runtime_resolution",
+        lambda app_config, run_profile: SimpleNamespace(
+            effective=_resolution_payload(
+                chunk_size=6000,
+                image_mode="safe",
+                keep_all_image_variants=False,
+                model="gpt-5.4",
+                max_retries=1,
+                processing_operation="translate",
+                source_language="auto",
+                target_language="ru",
+            ),
+            ui_defaults=_resolution_payload(
+                chunk_size=6000,
+                image_mode="safe",
+                keep_all_image_variants=False,
+                model="gpt-5.4",
+                max_retries=1,
+                processing_operation="translate",
+                source_language="auto",
+                target_language="ru",
+            ),
+            overrides={
+                "reader_cleanup_enabled": True,
+                "reader_cleanup_policy": "advisory",
+                "structure_recognition_mode": "off",
+            },
+        ),
+    )
+    monkeypatch.setattr(validation, "apply_runtime_resolution_to_app_config", lambda app_config, resolution: {"x": 1})
+    monkeypatch.setattr(
+        validation,
+        "evaluate_lietaer_acceptance",
+        lambda report, **kwargs: {"passed": False, "failed_checks": ["false_fragment_headings_present"], "checks": []},
+    )
+    monkeypatch.setattr(validation, "_snapshot_formatting_diagnostics_paths", lambda: set())
+    monkeypatch.setattr(validation, "_collect_new_formatting_diagnostics_paths", lambda before, after: [])
+    monkeypatch.setattr(validation, "_extract_run_formatting_diagnostics_paths", lambda event_log: [])
+    monkeypatch.setattr(validation, "_load_recent_formatting_diagnostics", lambda started_at: ([], []))
+    monkeypatch.setattr(validation, "_load_formatting_diagnostics_payloads", lambda paths: [])
+    monkeypatch.setattr(validation, "_load_translation_quality_report", lambda event_log: (None, None))
+    monkeypatch.setattr(validation, "_print_terminal_completion_summary", lambda **kwargs: None)
+    monkeypatch.setattr(
+        validation.processing_service,
+        "clone_processing_service",
+        lambda **kwargs: _ValidationServiceStub(kwargs["log_event_fn"]),
+    )
+
+    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_PROFILE", "lietaer-pdf-chapter-region-core")
+    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_RUN_PROFILE", "ui-parity-translate-simple-reader-cleanup-comparison-only")
+    monkeypatch.delenv("DOCXAI_REAL_DOCUMENT_REPEAT_COUNT_OVERRIDE", raising=False)
+    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_FORCED_RUN_ID", "run-compare")
+
+    validation.main()
+
+    report_path = tmp_path / "artifacts" / "runs" / "run-compare" / "lietaer_pdf_chapter_region_report.json"
+    summary_path = tmp_path / "artifacts" / "runs" / "run-compare" / "lietaer_pdf_chapter_region_summary.txt"
+    latest_manifest_path = tmp_path / "artifacts" / "lietaer_pdf_chapter_region_latest.json"
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    summary_text = summary_path.read_text(encoding="utf-8")
+    latest_manifest = json.loads(latest_manifest_path.read_text(encoding="utf-8"))
+
+    assert report["document_profile_id"] == "lietaer-pdf-chapter-region-core"
+    assert report["run_profile_id"] == "ui-parity-translate-simple-reader-cleanup-comparison-only"
+    assert report["validation_mode"]["evidence_label"] == "comparison_only_non_acceptance"
+    assert report["validation_mode"]["success_criterion"] == "pipeline_result_and_artifacts"
+    assert report["acceptance"]["passed"] is False
+    assert report["reader_cleanup_evidence"] == {
+        "artifacts_present": True,
+        "cleaned_markdown_path": str(cleaned_markdown_path),
+        "cleaned_docx_path": str(cleaned_docx_path),
+        "raw_markdown_path": str(raw_markdown_path),
+        "reader_cleanup_report_path": str(cleanup_report_path),
+        "stage_status": "completed",
+        "changed": True,
+        "accepted_delete_block_count": 1,
+        "ignored_delete_block_count": 1,
+        "rejected_delete_block_count": 0,
+        "failed_chunk_count": 0,
+        "deleted_block_previews": [
+            {
+                "id": "b_000007",
+                "reason": "repeated_running_header",
+                "confidence": "high",
+                "raw_text_preview": "rethinking money",
+            }
+        ],
+    }
+    assert report["output_artifacts"]["cleaned_markdown_path"] == str(cleaned_markdown_path)
+    assert report["output_artifacts"]["cleaned_docx_path"] == str(cleaned_docx_path)
+    assert report["output_artifacts"]["reader_cleanup_raw_markdown_path"] == str(raw_markdown_path)
+    assert report["output_artifacts"]["reader_cleanup_report_path"] == str(cleanup_report_path)
+
+    assert latest_manifest["status"] == "completed"
+    assert latest_manifest["acceptance_passed"] is False
+    assert "validation_evidence_label=comparison_only_non_acceptance" in summary_text
+    assert "comparison_only_acceptance_diagnostic_only=True" in summary_text
+    assert f"cleaned_markdown_path={cleaned_markdown_path}" in summary_text
+    assert f"cleaned_docx_path={cleaned_docx_path}" in summary_text
+    assert f"reader_cleanup_raw_markdown_path={raw_markdown_path}" in summary_text
+    assert f"reader_cleanup_report_path={cleanup_report_path}" in summary_text
+    assert "reader_cleanup_accepted_delete_block_count=1" in summary_text
+    assert "reader_cleanup_ignored_delete_block_count=1" in summary_text
+    assert 'reader_cleanup_deleted_block_previews=[{"id": "b_000007", "reason": "repeated_running_header", "confidence": "high", "raw_text_preview": "rethinking money"}]' in summary_text
+
+
+def test_parse_reader_verifier_completed_review_accepts_structured_payload(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    evidence_path = tmp_path / "reader_quality_evidence.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+    evidence_payload = {
+        "artifact_paths": {
+            "raw_markdown": "runs/run-1/raw.md",
+            "cleaned_markdown": "runs/run-1/cleaned.md",
+            "cleaned_docx": "runs/run-1/cleaned.docx",
+            "reader_cleanup_report": "runs/run-1/cleanup.json",
+        }
+    }
+    raw_response = json.dumps(
+        {
+            "overall_verdict": "cleaned_better",
+            "reader_quality_score_raw": 4,
+            "reader_quality_score_cleaned": 7,
+            "confidence": "medium",
+            "noise_removed": ["Repeated running headers are gone."],
+            "possible_false_deletions": [],
+            "readability_regressions": ["Some list spacing still looks uneven."],
+            "recommended_next_changes": [
+                {
+                    "change_type": "deterministic_cleanup",
+                    "recommendation": "Remove standalone blank-page markers before verifier review.",
+                    "why": "These artifacts remain obvious reader-visible noise.",
+                }
+            ],
+            "summary_for_human": "Cleaned output is easier to read and no major text loss was observed.",
+            "simple_user_summary": "The cleaned version is easier to read than the raw translation.",
+            "simple_user_risk_statement": "No major text loss was detected at current review confidence.",
+            "simple_user_next_step": "Add one more deterministic cleanup rule for blank-page markers.",
+        },
+        ensure_ascii=False,
+    )
+
+    review = validation._parse_reader_verifier_completed_review(
+        raw_response=raw_response,
+        run_id="run-1",
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        requested_selector="openrouter:google/gemini-3-flash-preview",
+        canonical_selector="openrouter:google/gemini-3-flash-preview",
+        provider="openrouter",
+        model_id="google/gemini-3-flash-preview",
+        evidence_path=evidence_path,
+        evidence_payload=evidence_payload,
+    )
+
+    assert review["review_mode"] == "development_only_non_acceptance"
+    assert review["verifier_status"] == "completed"
+    assert review["verifier_requested_selector"] == "openrouter:google/gemini-3-flash-preview"
+    assert review["verifier_canonical_selector"] == "openrouter:google/gemini-3-flash-preview"
+    assert review["verifier_provider"] == "openrouter"
+    assert review["verifier_model_id"] == "google/gemini-3-flash-preview"
+    assert review["overall_verdict"] == "cleaned_better"
+    assert "current review confidence" in review["simple_user_summary"]
+    assert "Review confidence is medium" in review["simple_user_risk_statement"]
+
+
+def test_parse_reader_verifier_completed_review_normalizes_object_findings_to_strings(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    evidence_path = tmp_path / "reader_quality_evidence.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+    evidence_payload = {
+        "artifact_paths": {
+            "raw_markdown": "runs/run-1/raw.md",
+            "cleaned_markdown": "runs/run-1/cleaned.md",
+            "cleaned_docx": "runs/run-1/cleaned.docx",
+            "reader_cleanup_report": "runs/run-1/cleanup.json",
+        }
+    }
+    raw_response = json.dumps(
+        {
+            "overall_verdict": "mixed",
+            "reader_quality_score_raw": 5,
+            "reader_quality_score_cleaned": 6,
+            "confidence": "low",
+            "noise_removed": [{"text": "Repeated header removed."}],
+            "possible_false_deletions": [{"issue": "One short paragraph may be too aggressive."}],
+            "readability_regressions": [{"description": "Some spacing drift remains."}],
+            "recommended_next_changes": [
+                {
+                    "change_type": "prompt",
+                    "recommendation": "Ask for flatter finding lists.",
+                    "why": "The reviewer currently drifts toward object-shaped findings.",
+                }
+            ],
+            "summary_for_human": "The cleanup helps, but the evidence is still mixed.",
+            "simple_user_summary": "The cleanup pass improved some noisy sections, but it also introduced enough risk or regression that the result is not clearly better yet.",
+            "simple_user_risk_statement": "One short paragraph may be too aggressive.",
+            "simple_user_next_step": "Tighten the prompt before the next comparison-only run.",
+        },
+        ensure_ascii=False,
+    )
+
+    review = validation._parse_reader_verifier_completed_review(
+        raw_response=raw_response,
+        run_id="run-1",
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        requested_selector="openrouter:google/gemini-3-flash-preview",
+        canonical_selector="openrouter:google/gemini-3-flash-preview",
+        provider="openrouter",
+        model_id="google/gemini-3-flash-preview",
+        evidence_path=evidence_path,
+        evidence_payload=evidence_payload,
+    )
+
+    assert review["noise_removed"] == ["Repeated header removed."]
+    assert review["possible_false_deletions"] == ["One short paragraph may be too aggressive."]
+    assert review["readability_regressions"] == ["Some spacing drift remains."]
+
+
+def test_parse_reader_verifier_completed_review_hardens_overconfident_simple_language(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    evidence_path = tmp_path / "reader_quality_evidence.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+    evidence_payload = {
+        "artifact_paths": {
+            "raw_markdown": "runs/run-1/raw.md",
+            "cleaned_markdown": "runs/run-1/cleaned.md",
+            "cleaned_docx": "runs/run-1/cleaned.docx",
+            "reader_cleanup_report": "runs/run-1/cleanup.json",
+        }
+    }
+    raw_response = json.dumps(
+        {
+            "overall_verdict": "cleaned_better",
+            "reader_quality_score_raw": 4,
+            "reader_quality_score_cleaned": 7,
+            "confidence": "medium",
+            "noise_removed": ["Repeated running headers are gone."],
+            "possible_false_deletions": [],
+            "readability_regressions": ["Some list spacing still looks uneven."],
+            "recommended_next_changes": [
+                {
+                    "change_type": "minimal_formatting",
+                    "recommendation": "Apply one narrow list-formatting follow-up.",
+                    "why": "The current slice still has a reader-visible formatting inconsistency.",
+                }
+            ],
+            "summary_for_human": "Cleaned output is easier to read and no major text loss was observed.",
+            "simple_user_summary": "The cleaned text is much easier to read and no actual story content was lost.",
+            "simple_user_risk_statement": "The risk is very low.",
+            "simple_user_next_step": "This is ready for production.",
+        },
+        ensure_ascii=False,
+    )
+
+    review = validation._parse_reader_verifier_completed_review(
+        raw_response=raw_response,
+        run_id="run-1",
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        requested_selector="openrouter:google/gemini-3-flash-preview",
+        canonical_selector="openrouter:google/gemini-3-flash-preview",
+        provider="openrouter",
+        model_id="google/gemini-3-flash-preview",
+        evidence_path=evidence_path,
+        evidence_payload=evidence_payload,
+    )
+
+    assert "story content" not in review["simple_user_summary"].lower()
+    assert "no major content loss was detected at current review confidence" in review["simple_user_summary"].lower()
+    assert "current review confidence" in review["simple_user_summary"].lower()
+    assert "Review confidence is medium" in review["simple_user_risk_statement"]
+    assert review["simple_user_next_step"] == "Use this as development-only comparison evidence and apply one narrow follow-up change before rerunning the same profile."
+
+
+def test_run_reader_verifier_marks_model_resolution_failure_without_fallback(tmp_path, monkeypatch) -> None:
+    validation = _load_validation_module()
+
+    evidence_path = tmp_path / "reader_quality_evidence.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+    evidence_payload = {
+        "base_artifacts_present": True,
+        "artifact_paths": {
+            "raw_markdown": "runs/run-1/raw.md",
+            "cleaned_markdown": "runs/run-1/cleaned.md",
+            "cleaned_docx": "runs/run-1/cleaned.docx",
+            "reader_cleanup_report": "runs/run-1/cleanup.json",
+        },
+    }
+
+    monkeypatch.setattr(
+        validation,
+        "describe_provider_availability",
+        lambda selector, app_config=None: SimpleNamespace(
+            enabled=True,
+            has_api_key=True,
+            error_message=None,
+            selector=SimpleNamespace(
+                canonical_selector="openrouter:google/gemini-3-flash-preview",
+                provider="openrouter",
+                model_id="google/gemini-3-flash-preview",
+            ),
+        ),
+    )
+    monkeypatch.setattr(validation, "resolve_model_selector", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("resolution boom")))
+    monkeypatch.setattr(validation, "get_client_for_model_selector", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not fallback to another client")))
+
+    review = validation._run_reader_verifier(
+        run_id="run-1",
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        app_config=object(),
+        runtime_app_config={},
+        validation_mode={"comparison_only_validation": True},
+        evidence_payload=evidence_payload,
+        evidence_path=evidence_path,
+        max_retries=1,
+    )
+
+    assert review["verifier_status"] == "not_run"
+    assert review["verifier_reason"] == "model_resolution_failed"
+    assert review["overall_verdict"] == "unclear"
+    assert review["verifier_canonical_selector"] is None
+
+
+def test_main_comparison_only_reader_verifier_writes_artifacts_and_metadata(tmp_path, monkeypatch) -> None:
+    validation = _load_validation_module()
+    from docxaicorrector.core.models import ParagraphUnit
+
+    source_path = tmp_path / "Rethinking-money-chapter-region-pages-10-11-and-156-217.pdf"
+    source_path.write_bytes(b"%PDF-1.4 chapter-region")
+    ui_results_dir = tmp_path / ".run" / "ui_results"
+    ui_results_dir.mkdir(parents=True, exist_ok=True)
+    cleaned_markdown_path = ui_results_dir / "chapter_region.result.md"
+    cleaned_docx_path = ui_results_dir / "chapter_region.result.docx"
+    raw_markdown_path = ui_results_dir / "chapter_region.raw.result.md"
+    cleanup_report_path = ui_results_dir / "chapter_region.reader_cleanup_report.json"
+
+    cleaned_markdown_path.write_text("Cleaned markdown", encoding="utf-8")
+    cleaned_docx_path.write_bytes(_docx_bytes(Document()))
+    raw_markdown_path.write_text("Header\n\nBody paragraph\n\nFooter", encoding="utf-8")
+    cleanup_report_path.write_text(
+        json.dumps(
+            {
+                "stage_status": "completed",
+                "changed": True,
+                "stats": {
+                    "proposed_delete_block_count": 1,
+                    "accepted_delete_block_count": 1,
+                    "ignored_delete_block_count": 0,
+                    "failed_chunk_count": 0,
+                    "cleanup_chunk_count": 1,
+                },
+                "accepted_delete_blocks": [
+                    {
+                        "id": "b_000000",
+                        "text_hash": "abc",
+                        "reason": "repeated_running_header",
+                        "confidence": "high",
+                        "raw_text_preview": "Header",
+                        "char_count": 6,
+                        "kind": "heading",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    def _resolution_payload(**values):
+        return SimpleNamespace(**values, to_dict=lambda: dict(values))
+
+    document_profile = SimpleNamespace(
+        id="lietaer-pdf-chapter-region-core",
+        artifact_prefix="lietaer_pdf_chapter_region",
+        output_basename="Rethinking_money_chapter_region",
+        max_unmapped_source_paragraphs=12,
+        max_unmapped_target_paragraphs=6,
+        require_no_toc_body_concat=True,
+        resolved_source_path=lambda project_root=None: source_path,
+    )
+    run_profile = SimpleNamespace(
+        id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        tier="full",
+        repeat_count=1,
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=False,
+        model="gpt-5.4",
+        max_retries=1,
+        comparison_only_validation=True,
+    )
+    registry = SimpleNamespace(
+        get_document_profile=lambda profile_id: document_profile,
+        resolve_run_profile=lambda profile, requested_run_profile_id: run_profile,
+    )
+    prepared_paragraphs = [
+        ParagraphUnit(text="Chapter 8", role="heading", structural_role="heading", heading_level=1, source_index=0)
+    ]
+
+    class _ValidationServiceStub:
+        def __init__(self, log_event_fn):
+            self.log_event_fn = log_event_fn
+
+        def run_prepared_background_document(self, **kwargs):
+            self.log_event_fn(
+                20,
+                "ui_result_artifacts_saved",
+                "Сохранены итоговые UI-артефакты обработки.",
+                filename="chapter-region.pdf",
+                artifact_paths={
+                    "markdown_path": str(cleaned_markdown_path),
+                    "docx_path": str(cleaned_docx_path),
+                    "reader_cleanup_raw_markdown_path": str(raw_markdown_path),
+                    "reader_cleanup_report_path": str(cleanup_report_path),
+                },
+            )
+            kwargs["runtime"].emit(
+                validation.SetStateEvent(
+                    values={
+                        "latest_markdown": "Cleaned markdown",
+                        "latest_docx_bytes": _docx_bytes(Document()),
+                    }
+                )
+            )
+            return "succeeded", SimpleNamespace(
+                uploaded_filename="chapter-region.pdf",
+                uploaded_file_bytes=b"%PDF-1.4 chapter-region",
+                paragraphs=prepared_paragraphs,
+                image_assets=[],
+                jobs=[{"job_kind": "block"}],
+                source_text="Source chapter region text.",
+                preparation_cached=False,
+                preparation_elapsed_seconds=0.1,
+                ai_classified_count=0,
+                ai_heading_count=0,
+                ai_role_change_count=0,
+                ai_heading_promotion_count=0,
+                ai_heading_demotion_count=0,
+                ai_structural_role_change_count=0,
+                structure_repair_report=None,
+                uploaded_file_token="token-1",
+            )
+
+    monkeypatch.setattr(validation, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(validation, "REAL_DOCUMENT_ARTIFACT_ROOT", tmp_path / "artifacts")
+    monkeypatch.setattr(validation, "load_validation_registry", lambda: registry)
+    monkeypatch.setattr(validation, "load_app_config", lambda: object())
+    monkeypatch.setattr(
+        validation,
+        "resolve_runtime_resolution",
+        lambda app_config, run_profile: SimpleNamespace(
+            effective=_resolution_payload(
+                chunk_size=6000,
+                image_mode="safe",
+                keep_all_image_variants=False,
+                model="gpt-5.4",
+                max_retries=1,
+                processing_operation="translate",
+                source_language="auto",
+                target_language="ru",
+            ),
+            ui_defaults=_resolution_payload(
+                chunk_size=6000,
+                image_mode="safe",
+                keep_all_image_variants=False,
+                model="gpt-5.4",
+                max_retries=1,
+                processing_operation="translate",
+                source_language="auto",
+                target_language="ru",
+            ),
+            overrides={
+                "reader_cleanup_enabled": True,
+                "reader_cleanup_policy": "advisory",
+                "structure_recognition_mode": "off",
+            },
+        ),
+    )
+    monkeypatch.setattr(validation, "apply_runtime_resolution_to_app_config", lambda app_config, resolution: {})
+    monkeypatch.setattr(
+        validation,
+        "evaluate_lietaer_acceptance",
+        lambda report, **kwargs: {"passed": False, "failed_checks": ["false_fragment_headings_present"], "checks": []},
+    )
+    monkeypatch.setattr(validation, "_snapshot_formatting_diagnostics_paths", lambda: set())
+    monkeypatch.setattr(validation, "_collect_new_formatting_diagnostics_paths", lambda before, after: [])
+    monkeypatch.setattr(validation, "_extract_run_formatting_diagnostics_paths", lambda event_log: [])
+    monkeypatch.setattr(validation, "_load_recent_formatting_diagnostics", lambda started_at: ([], []))
+    monkeypatch.setattr(validation, "_load_formatting_diagnostics_payloads", lambda paths: [])
+    monkeypatch.setattr(validation, "_load_translation_quality_report", lambda event_log: (None, None))
+    monkeypatch.setattr(validation, "_print_terminal_completion_summary", lambda **kwargs: None)
+    monkeypatch.setattr(
+        validation.processing_service,
+        "clone_processing_service",
+        lambda **kwargs: _ValidationServiceStub(kwargs["log_event_fn"]),
+    )
+    selector_payload = SimpleNamespace(
+        canonical_selector="openrouter:google/gemini-3-flash-preview",
+        provider="openrouter",
+        model_id="google/gemini-3-flash-preview",
+    )
+    monkeypatch.setattr(
+        validation,
+        "describe_provider_availability",
+        lambda selector, app_config=None: SimpleNamespace(
+            enabled=True,
+            has_api_key=True,
+            error_message=None,
+            selector=selector_payload,
+        ),
+    )
+    monkeypatch.setattr(validation, "resolve_model_selector", lambda *args, **kwargs: selector_payload)
+    monkeypatch.setattr(validation, "get_client_for_model_selector", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        validation,
+        "generate_markdown_block",
+        lambda **kwargs: json.dumps(
+            {
+                "overall_verdict": "cleaned_better",
+                "reader_quality_score_raw": 4,
+                "reader_quality_score_cleaned": 7,
+                "confidence": "high",
+                "noise_removed": ["Repeated running header removed."],
+                "possible_false_deletions": [],
+                "readability_regressions": ["Footnote markers still feel noisy in places."],
+                "recommended_next_changes": [
+                    {
+                        "change_type": "prompt",
+                        "recommendation": "Tell the cleanup verifier to focus more on leftover orphan markers.",
+                        "why": "The cleaned sample still has minor reader-visible noise.",
+                    }
+                ],
+                "summary_for_human": "Cleaned output is easier to read than raw output for this slice.",
+                "simple_user_summary": "The cleaned version is easier to read than the raw translation. Most of the benefit comes from removing repeated reader-visible noise, and no major text loss was detected at current review confidence.",
+                "simple_user_risk_statement": "Some minor reader-visible noise remains, but no major semantic loss was identified.",
+                "simple_user_next_step": "Tighten the cleanup prompt for leftover orphan markers.",
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_PROFILE", "lietaer-pdf-chapter-region-core")
+    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_RUN_PROFILE", "ui-parity-translate-simple-reader-cleanup-comparison-only")
+    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_FORCED_RUN_ID", "run-verifier")
+
+    validation.main()
+
+    run_dir = tmp_path / "artifacts" / "runs" / "run-verifier"
+    report_path = run_dir / "lietaer_pdf_chapter_region_report.json"
+    summary_path = run_dir / "lietaer_pdf_chapter_region_summary.txt"
+    evidence_path = run_dir / "lietaer_pdf_chapter_region_reader_quality_evidence.json"
+    review_json_path = run_dir / "lietaer_pdf_chapter_region_reader_quality_review.json"
+    review_md_path = run_dir / "lietaer_pdf_chapter_region_reader_quality_review.md"
+    latest_manifest_path = tmp_path / "artifacts" / "lietaer_pdf_chapter_region_latest.json"
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    summary_text = summary_path.read_text(encoding="utf-8")
+    review = json.loads(review_json_path.read_text(encoding="utf-8"))
+    review_md = review_md_path.read_text(encoding="utf-8")
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    latest_manifest = json.loads(latest_manifest_path.read_text(encoding="utf-8"))
+
+    assert evidence["evidence_mode"] == "full_selected_slice"
+    assert evidence["base_artifacts_present"] is True
+    assert review["review_mode"] == "development_only_non_acceptance"
+    assert review["verifier_status"] == "completed"
+    assert review["verifier_requested_selector"] == "openrouter:google/gemini-3-flash-preview"
+    assert review["verifier_canonical_selector"] == "openrouter:google/gemini-3-flash-preview"
+    assert review["verifier_provider"] == "openrouter"
+    assert review["verifier_model_id"] == "google/gemini-3-flash-preview"
+    assert review["overall_verdict"] == "cleaned_better"
+    assert review["simple_user_summary"].startswith("The cleaned version is easier to read")
+    assert report["reader_verifier_evidence"]["artifact_paths"]["source_evidence_json"] == "artifacts/runs/run-verifier/lietaer_pdf_chapter_region_reader_quality_evidence.json"
+    assert report["reader_verifier_evidence"]["artifact_paths"]["review_json"] == "artifacts/runs/run-verifier/lietaer_pdf_chapter_region_reader_quality_review.json"
+    assert report["reader_verifier_evidence"]["artifact_paths"]["review_md"] == "artifacts/runs/run-verifier/lietaer_pdf_chapter_region_reader_quality_review.md"
+    assert latest_manifest["status"] == "completed"
+    assert latest_manifest["reader_verifier_status"] == "completed"
+    assert latest_manifest["reader_verifier_model_selector"] == "openrouter:google/gemini-3-flash-preview"
+    assert latest_manifest["reader_verifier_model_id"] == "google/gemini-3-flash-preview"
+    assert "reader_verifier_status=completed" in summary_text
+    assert "reader_verifier_overall_verdict=cleaned_better" in summary_text
+    assert "reader_verifier_evidence_json=artifacts/runs/run-verifier/lietaer_pdf_chapter_region_reader_quality_evidence.json" in summary_text
+    assert "reader_verifier_review_json=artifacts/runs/run-verifier/lietaer_pdf_chapter_region_reader_quality_review.json" in summary_text
+    assert "reader_verifier_simple_user_next_step=Tighten the cleanup prompt for leftover orphan markers." in summary_text
+    assert "# Verdict" in review_md
+    assert "# Verifier Metadata" in review_md
+
+
+def test_main_comparison_only_reader_verifier_failure_is_non_blocking(tmp_path, monkeypatch) -> None:
+    validation = _load_validation_module()
+    from docxaicorrector.core.models import ParagraphUnit
+
+    source_path = tmp_path / "Rethinking-money-chapter-region-pages-10-11-and-156-217.pdf"
+    source_path.write_bytes(b"%PDF-1.4 chapter-region")
+    ui_results_dir = tmp_path / ".run" / "ui_results"
+    ui_results_dir.mkdir(parents=True, exist_ok=True)
+    cleaned_markdown_path = ui_results_dir / "chapter_region.result.md"
+    cleaned_docx_path = ui_results_dir / "chapter_region.result.docx"
+    raw_markdown_path = ui_results_dir / "chapter_region.raw.result.md"
+    cleanup_report_path = ui_results_dir / "chapter_region.reader_cleanup_report.json"
+
+    cleaned_markdown_path.write_text("Cleaned markdown", encoding="utf-8")
+    cleaned_docx_path.write_bytes(_docx_bytes(Document()))
+    raw_markdown_path.write_text("Header\n\nBody paragraph", encoding="utf-8")
+    cleanup_report_path.write_text(
+        json.dumps(
+            {
+                "stage_status": "completed",
+                "changed": True,
+                "stats": {
+                    "proposed_delete_block_count": 1,
+                    "accepted_delete_block_count": 1,
+                    "ignored_delete_block_count": 0,
+                    "failed_chunk_count": 0,
+                    "cleanup_chunk_count": 1,
+                },
+                "accepted_delete_blocks": [
+                    {
+                        "id": "b_000000",
+                        "text_hash": "abc",
+                        "reason": "repeated_running_header",
+                        "confidence": "high",
+                        "raw_text_preview": "Header",
+                        "char_count": 6,
+                        "kind": "heading",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    def _resolution_payload(**values):
+        return SimpleNamespace(**values, to_dict=lambda: dict(values))
+
+    document_profile = SimpleNamespace(
+        id="lietaer-pdf-chapter-region-core",
+        artifact_prefix="lietaer_pdf_chapter_region",
+        output_basename="Rethinking_money_chapter_region",
+        max_unmapped_source_paragraphs=12,
+        max_unmapped_target_paragraphs=6,
+        require_no_toc_body_concat=True,
+        resolved_source_path=lambda project_root=None: source_path,
+    )
+    run_profile = SimpleNamespace(
+        id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        tier="full",
+        repeat_count=1,
+        chunk_size=6000,
+        image_mode="safe",
+        keep_all_image_variants=False,
+        model="gpt-5.4",
+        max_retries=1,
+        comparison_only_validation=True,
+    )
+    registry = SimpleNamespace(
+        get_document_profile=lambda profile_id: document_profile,
+        resolve_run_profile=lambda profile, requested_run_profile_id: run_profile,
+    )
+    prepared_paragraphs = [
+        ParagraphUnit(text="Chapter 8", role="heading", structural_role="heading", heading_level=1, source_index=0)
+    ]
+
+    class _ValidationServiceStub:
+        def __init__(self, log_event_fn):
+            self.log_event_fn = log_event_fn
+
+        def run_prepared_background_document(self, **kwargs):
+            self.log_event_fn(
+                20,
+                "ui_result_artifacts_saved",
+                "Сохранены итоговые UI-артефакты обработки.",
+                filename="chapter-region.pdf",
+                artifact_paths={
+                    "markdown_path": str(cleaned_markdown_path),
+                    "docx_path": str(cleaned_docx_path),
+                    "reader_cleanup_raw_markdown_path": str(raw_markdown_path),
+                    "reader_cleanup_report_path": str(cleanup_report_path),
+                },
+            )
+            kwargs["runtime"].emit(
+                validation.SetStateEvent(
+                    values={
+                        "latest_markdown": "Cleaned markdown",
+                        "latest_docx_bytes": _docx_bytes(Document()),
+                    }
+                )
+            )
+            return "succeeded", SimpleNamespace(
+                uploaded_filename="chapter-region.pdf",
+                uploaded_file_bytes=b"%PDF-1.4 chapter-region",
+                paragraphs=prepared_paragraphs,
+                image_assets=[],
+                jobs=[{"job_kind": "block"}],
+                source_text="Source chapter region text.",
+                preparation_cached=False,
+                preparation_elapsed_seconds=0.1,
+                ai_classified_count=0,
+                ai_heading_count=0,
+                ai_role_change_count=0,
+                ai_heading_promotion_count=0,
+                ai_heading_demotion_count=0,
+                ai_structural_role_change_count=0,
+                structure_repair_report=None,
+                uploaded_file_token="token-1",
+            )
+
+    monkeypatch.setattr(validation, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(validation, "REAL_DOCUMENT_ARTIFACT_ROOT", tmp_path / "artifacts")
+    monkeypatch.setattr(validation, "load_validation_registry", lambda: registry)
+    monkeypatch.setattr(validation, "load_app_config", lambda: object())
+    monkeypatch.setattr(
+        validation,
+        "resolve_runtime_resolution",
+        lambda app_config, run_profile: SimpleNamespace(
+            effective=_resolution_payload(
+                chunk_size=6000,
+                image_mode="safe",
+                keep_all_image_variants=False,
+                model="gpt-5.4",
+                max_retries=1,
+                processing_operation="translate",
+                source_language="auto",
+                target_language="ru",
+            ),
+            ui_defaults=_resolution_payload(
+                chunk_size=6000,
+                image_mode="safe",
+                keep_all_image_variants=False,
+                model="gpt-5.4",
+                max_retries=1,
+                processing_operation="translate",
+                source_language="auto",
+                target_language="ru",
+            ),
+            overrides={
+                "reader_cleanup_enabled": True,
+                "reader_cleanup_policy": "advisory",
+                "structure_recognition_mode": "off",
+            },
+        ),
+    )
+    monkeypatch.setattr(validation, "apply_runtime_resolution_to_app_config", lambda app_config, resolution: {})
+    monkeypatch.setattr(
+        validation,
+        "evaluate_lietaer_acceptance",
+        lambda report, **kwargs: {"passed": False, "failed_checks": ["false_fragment_headings_present"], "checks": []},
+    )
+    monkeypatch.setattr(validation, "_snapshot_formatting_diagnostics_paths", lambda: set())
+    monkeypatch.setattr(validation, "_collect_new_formatting_diagnostics_paths", lambda before, after: [])
+    monkeypatch.setattr(validation, "_extract_run_formatting_diagnostics_paths", lambda event_log: [])
+    monkeypatch.setattr(validation, "_load_recent_formatting_diagnostics", lambda started_at: ([], []))
+    monkeypatch.setattr(validation, "_load_formatting_diagnostics_payloads", lambda paths: [])
+    monkeypatch.setattr(validation, "_load_translation_quality_report", lambda event_log: (None, None))
+    monkeypatch.setattr(validation, "_print_terminal_completion_summary", lambda **kwargs: None)
+    monkeypatch.setattr(
+        validation.processing_service,
+        "clone_processing_service",
+        lambda **kwargs: _ValidationServiceStub(kwargs["log_event_fn"]),
+    )
+    selector_payload = SimpleNamespace(
+        canonical_selector="openrouter:google/gemini-3-flash-preview",
+        provider="openrouter",
+        model_id="google/gemini-3-flash-preview",
+    )
+    monkeypatch.setattr(
+        validation,
+        "describe_provider_availability",
+        lambda selector, app_config=None: SimpleNamespace(
+            enabled=True,
+            has_api_key=True,
+            error_message=None,
+            selector=selector_payload,
+        ),
+    )
+    monkeypatch.setattr(validation, "resolve_model_selector", lambda *args, **kwargs: selector_payload)
+    monkeypatch.setattr(validation, "get_client_for_model_selector", lambda *args, **kwargs: object())
+    monkeypatch.setattr(validation, "generate_markdown_block", lambda **kwargs: "not json at all")
+
+    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_PROFILE", "lietaer-pdf-chapter-region-core")
+    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_RUN_PROFILE", "ui-parity-translate-simple-reader-cleanup-comparison-only")
+    monkeypatch.setenv("DOCXAI_REAL_DOCUMENT_FORCED_RUN_ID", "run-verifier-failed")
+
+    validation.main()
+
+    run_dir = tmp_path / "artifacts" / "runs" / "run-verifier-failed"
+    report_path = run_dir / "lietaer_pdf_chapter_region_report.json"
+    review_json_path = run_dir / "lietaer_pdf_chapter_region_reader_quality_review.json"
+    latest_manifest_path = tmp_path / "artifacts" / "lietaer_pdf_chapter_region_latest.json"
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    review = json.loads(review_json_path.read_text(encoding="utf-8"))
+    latest_manifest = json.loads(latest_manifest_path.read_text(encoding="utf-8"))
+
+    assert report["acceptance"]["passed"] is False
+    assert report["reader_verifier_evidence"]["verifier_status"] == "failed"
+    assert report["reader_verifier_evidence"]["verifier_reason"] == "execution_failed"
+    assert report["reader_verifier_evidence"]["overall_verdict"] == "unclear"
+    assert review["verifier_status"] == "failed"
+    assert review["overall_verdict"] == "unclear"
+    assert latest_manifest["status"] == "completed"
+    assert latest_manifest["reader_verifier_status"] == "failed"
 
 
 def test_main_falls_back_to_prepared_snapshot_statuses_when_event_log_lacks_structure_outcome(tmp_path, monkeypatch):

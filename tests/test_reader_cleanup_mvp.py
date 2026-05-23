@@ -67,6 +67,67 @@ def test_run_reader_cleanup_rejects_invalid_schema_in_advisory_mode() -> None:
     assert any("reader_cleanup_chunk_failed" in warning for warning in result.report_payload["warnings"])
 
 
+def test_run_reader_cleanup_infers_missing_confidence_for_safe_extraction_artifact_delete() -> None:
+    markdown = "Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph\n\nOutro"
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(
+            enabled=True,
+            max_delete_block_ratio=0.8,
+            max_delete_char_ratio=0.8,
+        ),
+        operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
+            {
+                "delete_blocks": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "reason": "extraction_artifact",
+                    }
+                    for block in payload["blocks"]
+                    if block["text"] == "[[DOCX_IMAGE_img_001]]"
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    assert result.changed is True
+    assert result.cleaned_markdown == "Intro\n\nBody paragraph\n\nOutro"
+    assert "reader_cleanup_missing_confidence_inferred:b_000001:high" in result.report_payload["warnings"]
+    assert result.report_payload["stats"]["accepted_delete_block_count"] == 1
+
+
+def test_run_reader_cleanup_does_not_infer_missing_confidence_for_heading_delete() -> None:
+    markdown = "Intro\n\n# Chapter 1\n\nBody paragraph\n\nOutro"
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True),
+        operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
+            {
+                "delete_blocks": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "reason": "page_furniture_heading",
+                    }
+                    for block in payload["blocks"]
+                    if block["text"] == "# Chapter 1"
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    assert any("reader_cleanup_chunk_failed:1:reader_cleanup_missing_field:confidence" in warning for warning in result.report_payload["warnings"])
+
+
 def test_run_reader_cleanup_protects_first_last_and_headings() -> None:
     markdown = "# Chapter 1\n\nBody paragraph\n\n10"
     blocks = build_cleanup_blocks(markdown)
@@ -300,6 +361,52 @@ def test_run_reader_cleanup_reports_chunk_metrics_and_unsupported_drop_back_matt
     assert stats["ignored_delete_block_count"] == 0
     assert all("elapsed_ms" in entry for entry in result.report_payload["chunk_results"])
     assert all("accepted_delete_block_count" in entry for entry in result.report_payload["chunk_results"])
+
+
+def test_run_reader_cleanup_polishes_wrapped_banjar_list_item_without_delete_operations() -> None:
+    markdown = (
+        "Intro\n\n"
+        "Сообщество в целом организовано в три основные сети:\n\n"
+        "- Банджар: важнейшая гражданская организация, отвечающая за\n\n"
+        "социальные аспекты жизни общины\n\n"
+        "- Пемаксан: группа, координирующая религиозные ритуалы\n\n"
+        "- Субак: кооперативы по ирригации воды для производства риса"
+    )
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True),
+        operation_provider=lambda payload, chunk_index, chunk_count: '{"delete_blocks": [], "warnings": []}',
+    )
+
+    assert result.changed is True
+    assert "- Банджар: важнейшая гражданская организация, отвечающая за социальные аспекты жизни общины" in result.cleaned_markdown
+    assert "reader_cleanup_polish_banjar_list_item_wrapped" in result.report_payload["warnings"]
+    assert result.report_payload["stats"]["accepted_delete_block_count"] == 0
+
+
+def test_run_reader_cleanup_applies_minimal_emphasis_to_currency_menu_bullets() -> None:
+    markdown = (
+        "Как могли бы выглядеть элементы зрелой монетарной экосистемы через поколение? Например, многоуровневая денежная система могла бы включать:\n\n"
+        "- глобальную расчетную валюту;\n\n"
+        "- три основные мультинациональные валюты;\n\n"
+        "- частные международные расчетные средства (скрипы);\n\n"
+        "- множество национальных валют;\n\n"
+        "- десятки региональных валют;\n\n"
+        "- массу местных кооперативных валют;\n\n"
+        "- широкий спектр функциональных валют."
+    )
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True),
+        operation_provider=lambda payload, chunk_index, chunk_count: '{"delete_blocks": [], "warnings": []}',
+    )
+
+    assert result.changed is True
+    assert "- **глобальную расчетную валюту**;" in result.cleaned_markdown
+    assert "- **широкий спектр функциональных валют**." in result.cleaned_markdown
+    assert "reader_cleanup_polish_currency_menu_emphasis" in result.report_payload["warnings"]
 
 
 def test_run_reader_cleanup_strict_failure_raises_with_reviewable_report() -> None:

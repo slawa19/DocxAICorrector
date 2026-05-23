@@ -78,6 +78,7 @@ _PAGE_PLACEHOLDER_CHAPTER_CONCAT_PATTERN = re.compile(
     r"^(?P<indent>\s*)(?:(?P<marker>#{1,6})\s+)?(?P<placeholder>this page intentionally left blank)\s+(?P<heading>(?:chapter|глава)\b.+)$",
     re.IGNORECASE,
 )
+_CHAPTER_MARKER_LINE_PATTERN = re.compile(r"^(?:#{1,6}\s+)?(?:chapter|глава)\s+(?:\d+|[ivxlcdm]+)\b[ .:-]*$", re.IGNORECASE)
 _INLINE_HEADING_FRAGMENT_MAX_WORDS = 6
 _INLINE_PARAGRAPH_FRAGMENT_MAX_WORDS = 12
 _INLINE_PARAGRAPH_FRAGMENT_MAX_CHARS = 100
@@ -366,6 +367,19 @@ def _looks_title_like_heading_text(text: str) -> bool:
         return False
     words = [token for token in re.split(r"\s+", stripped) if token]
     return 0 < len(words) <= _INLINE_HEADING_FRAGMENT_MAX_WORDS
+
+
+def _is_chapter_marker_line(line: str) -> bool:
+    return _CHAPTER_MARKER_LINE_PATTERN.match(_strip_blockquote_content(line).strip()) is not None
+
+
+def _is_opening_chapter_heading_pair(*, previous_line: str, heading_text: str, is_document_opening_pair: bool) -> bool:
+    if not is_document_opening_pair:
+        return False
+    if not _is_chapter_marker_line(previous_line):
+        return False
+    normalized_heading_text = heading_text.rstrip("?!").rstrip()
+    return _looks_title_like_heading_text(normalized_heading_text)
 
 
 def _looks_structural_boundary_line(line: str) -> bool:
@@ -1334,6 +1348,14 @@ def collect_false_fragment_heading_samples_from_entries(entries: Sequence[FinalA
             heading_occurrences.append((position_index, line_number, heading_text, normalized_heading))
             continue
 
+        if _is_opening_chapter_heading_pair(
+            previous_line=previous_line,
+            heading_text=heading_text,
+            is_document_opening_pair=position_index == 1,
+        ):
+            heading_occurrences.append((position_index, line_number, heading_text, normalized_heading))
+            continue
+
         if _entry_looks_major_section_heading(entry) and not continuation_prev and next_line and not continuation_next:
             heading_occurrences.append((position_index, line_number, heading_text, normalized_heading))
             continue
@@ -1425,6 +1447,7 @@ def _build_quality_sample(*, line: int, text: str, reason: str) -> QualityIssueS
 def collect_false_fragment_heading_samples(text: str) -> list[QualityIssueSample]:
     lines = iter_markdown_lines_with_numbers(text)
     toc_heading_registry = _collect_toc_heading_registry(text)
+    first_nonempty_index = next((index for index, (_, raw_line) in enumerate(lines) if raw_line.strip()), None)
     heading_occurrences: list[tuple[int, str, str]] = []
     samples: list[QualityIssueSample] = []
 
@@ -1437,11 +1460,13 @@ def collect_false_fragment_heading_samples(text: str) -> list[QualityIssueSample
         normalized_heading = _normalize_heading_text(heading_text)
         previous_line = ""
         next_line = ""
+        previous_nonempty_index: int | None = None
 
         for previous_index in range(index - 1, -1, -1):
             candidate = lines[previous_index][1].strip()
             if candidate:
                 previous_line = candidate
+                previous_nonempty_index = previous_index
                 break
 
         for next_index in range(index + 1, len(lines)):
@@ -1468,6 +1493,16 @@ def collect_false_fragment_heading_samples(text: str) -> list[QualityIssueSample
             continue
 
         if _is_canonical_judgment_heading_text(heading_text):
+            heading_occurrences.append((line_number, heading_text, normalized_heading))
+            continue
+
+        if _is_opening_chapter_heading_pair(
+            previous_line=previous_line,
+            heading_text=heading_text,
+            is_document_opening_pair=(
+                previous_nonempty_index is not None and previous_nonempty_index == first_nonempty_index
+            ),
+        ):
             heading_occurrences.append((line_number, heading_text, normalized_heading))
             continue
 

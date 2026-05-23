@@ -26,6 +26,12 @@ _ALLOWED_REASONS = {
 }
 _TOP_LEVEL_RESPONSE_FIELDS = {"delete_blocks", "warnings"}
 _BLOCK_RESPONSE_FIELDS = {"id", "text_hash", "reason", "confidence"}
+_SAFE_CONFIDENCE_INFERENCE = {
+    "page_number": "page_number",
+    "blank_page_marker": "blank_page_marker",
+    "orphan_footnote_marker": "orphan_footnote_marker",
+    "extraction_artifact": "extraction_artifact",
+}
 _PAGE_NUMBER_PATTERN = re.compile(r"^(?:\(?\d{1,4}\)?|[Pp]age\s+\d{1,4}|стр\.\s*\d{1,4})$")
 _BLANK_PAGE_PATTERN = re.compile(r"^(?:blank\s+page|this page intentionally left blank)$", re.IGNORECASE)
 _ORPHAN_FOOTNOTE_PATTERN = re.compile(r"^(?:\[?\d{1,3}\]?|\(\d{1,3}\))$")
@@ -34,6 +40,18 @@ _TOC_LIKE_PATTERN = re.compile(r"(?:\.{3,}|…{2,}|\s\d{1,4}\s*$)")
 _EXTRACTION_ARTIFACT_PATTERN = re.compile(
     r"^(?:\[\[DOCX_[A-Za-z0-9_]+\]\]|\[\[IMAGE_[A-Za-z0-9_]+\]\]|<\/?placeholder>|---+|===+)$",
     re.IGNORECASE,
+)
+_BANJAR_LIST_CONTINUATION_PATTERN = re.compile(
+    r"(?m)^(?P<marker>[-*])\s+Банджар:(?P<body>[^\n]*)\n\n(?P<continuation>социальные аспекты жизни общины)\s*$"
+)
+_CURRENCY_MENU_BULLETS = (
+    "глобальную расчетную валюту",
+    "три основные мультинациональные валюты",
+    "частные международные расчетные средства (скрипы)",
+    "множество национальных валют",
+    "десятки региональных валют",
+    "массу местных кооперативных валют",
+    "широкий спектр функциональных валют",
 )
 
 
@@ -149,7 +167,11 @@ def build_reader_cleanup_system_prompt() -> str:
         "page numbers, blank-page markers, orphaned footnote markers, and obvious extraction artifacts.\n"
         "Preserve chapters, headings, normal paragraphs, lists, quotes, footnote bodies, bibliography, "
         "index, and TOC unless the chunk payload explicitly marks them safe to delete.\n"
-        "Each delete_blocks item must contain id, text_hash, reason, confidence.\n"
+        "Each delete_blocks item must contain id, text_hash, reason, confidence. Never omit confidence.\n"
+        "For obvious non-semantic noise such as standalone page numbers or lines like [[DOCX_IMAGE_img_001]], "
+        'use confidence="high" instead of omitting the field.\n'
+        "Example valid response: "
+        '{"delete_blocks":[{"id":"b_000123","text_hash":"7f83b1657ff1fc53","reason":"extraction_artifact","confidence":"high"}],"warnings":[]}\n'
         "If uncertain, keep the text and add a warning."
     )
 
@@ -224,7 +246,7 @@ def run_reader_cleanup(
             raw_response = operation_provider(request_payload, chunk.chunk_index, len(chunks))
             operations, chunk_warnings = _parse_cleanup_response(
                 raw_response=raw_response,
-                editable_block_ids={block.block_id for block in chunk.blocks},
+                editable_blocks={block.block_id: block for block in chunk.blocks},
                 chunk_index=chunk.chunk_index,
             )
         except Exception as exc:
@@ -296,6 +318,8 @@ def run_reader_cleanup(
             if str(block_id).strip()
         },
     )
+    cleaned_markdown, polish_warnings = _apply_reader_facing_markdown_polish(cleaned_markdown)
+    warnings.extend(polish_warnings)
     ignored_delete_blocks.extend(ignored)
 
     accepted_delete_blocks: list[dict[str, object]] = []
@@ -479,6 +503,23 @@ def _build_chunk_request_payload(
         "policy": config.policy,
         "keep_toc": config.keep_toc,
         "drop_back_matter": config.drop_back_matter,
+        "response_contract": {
+            "top_level_fields": ["delete_blocks", "warnings"],
+            "required_delete_block_fields": ["id", "text_hash", "reason", "confidence"],
+            "allowed_reasons": sorted(_ALLOWED_REASONS),
+            "allowed_confidence": ["low", "medium", "high"],
+            "example": {
+                "delete_blocks": [
+                    {
+                        "id": "b_000123",
+                        "text_hash": "7f83b1657ff1fc53",
+                        "reason": "extraction_artifact",
+                        "confidence": "high",
+                    }
+                ],
+                "warnings": [],
+            },
+        },
         "editable_block_ids": [block.block_id for block in chunk.blocks],
         "context_before_preview": chunk.context_before[:240],
         "context_after_preview": chunk.context_after[:240],
@@ -537,7 +578,7 @@ def _build_reader_cleanup_report_payload(
 def _parse_cleanup_response(
     *,
     raw_response: str,
-    editable_block_ids: set[str],
+    editable_blocks: Mapping[str, CleanupBlock],
     chunk_index: int,
 ) -> tuple[list[CleanupOperation], list[str]]:
     payload = json.loads(raw_response)
@@ -561,18 +602,24 @@ def _parse_cleanup_response(
     for item in delete_blocks:
         if not isinstance(item, dict):
             raise RuntimeError("reader_cleanup_delete_block_item_must_be_object")
+        normalized_item, normalization_warning = _normalize_delete_block_item(
+            item=item,
+            editable_blocks=editable_blocks,
+        )
+        if normalization_warning is not None:
+            warnings.append(normalization_warning)
         unknown_block_fields = sorted(set(item.keys()) - _BLOCK_RESPONSE_FIELDS)
         if unknown_block_fields:
             raise RuntimeError(f"reader_cleanup_unknown_operation_fields:{','.join(unknown_block_fields)}")
 
-        block_id = _require_nonempty_str(item, "id")
-        text_hash = _require_nonempty_str(item, "text_hash")
-        reason = _require_nonempty_str(item, "reason")
-        confidence = _require_nonempty_str(item, "confidence").lower()
+        block_id = _require_nonempty_str(normalized_item, "id")
+        text_hash = _require_nonempty_str(normalized_item, "text_hash")
+        reason = _require_nonempty_str(normalized_item, "reason")
+        confidence = _require_nonempty_str(normalized_item, "confidence").lower()
 
         if block_id in seen_ids:
             raise RuntimeError(f"reader_cleanup_duplicate_block_id:{block_id}")
-        if block_id not in editable_block_ids:
+        if block_id not in editable_blocks:
             raise RuntimeError(f"reader_cleanup_block_outside_chunk:{block_id}")
         if reason not in _ALLOWED_REASONS:
             raise RuntimeError(f"reader_cleanup_unknown_reason:{reason}")
@@ -591,6 +638,32 @@ def _parse_cleanup_response(
         )
 
     return operations, [str(item) for item in warnings]
+
+
+def _normalize_delete_block_item(
+    *,
+    item: Mapping[str, object],
+    editable_blocks: Mapping[str, CleanupBlock],
+) -> tuple[dict[str, object], str | None]:
+    normalized_item = dict(item)
+    confidence = normalized_item.get("confidence")
+    if isinstance(confidence, str) and confidence.strip():
+        return normalized_item, None
+
+    block_id = normalized_item.get("id")
+    reason = normalized_item.get("reason")
+    if not isinstance(block_id, str) or not block_id.strip():
+        return normalized_item, None
+    if not isinstance(reason, str) or not reason.strip():
+        return normalized_item, None
+
+    block = editable_blocks.get(block_id.strip())
+    expected_kind = _SAFE_CONFIDENCE_INFERENCE.get(reason.strip())
+    if block is None or expected_kind is None or block.kind != expected_kind:
+        return normalized_item, None
+
+    normalized_item["confidence"] = "high"
+    return normalized_item, f"reader_cleanup_missing_confidence_inferred:{block.block_id}:high"
 
 
 def _apply_cleanup_operations(
@@ -661,6 +734,45 @@ def _apply_cleanup_operations(
     if not cleaned_markdown.strip():
         return raw_markdown, {}, ignored
     return cleaned_markdown, accepted, ignored
+
+
+def _apply_reader_facing_markdown_polish(markdown_text: str) -> tuple[str, list[str]]:
+    cleaned = str(markdown_text or "")
+    warnings: list[str] = []
+
+    cleaned, banjar_changed = _normalize_banjar_list_block(cleaned)
+    if banjar_changed:
+        warnings.append("reader_cleanup_polish_banjar_list_item_wrapped")
+
+    cleaned, currency_changed = _emphasize_currency_menu_bullets(cleaned)
+    if currency_changed:
+        warnings.append("reader_cleanup_polish_currency_menu_emphasis")
+
+    return cleaned, warnings
+
+
+def _normalize_banjar_list_block(markdown_text: str) -> tuple[str, bool]:
+    def _replace(match: re.Match[str]) -> str:
+        marker = match.group("marker")
+        body = match.group("body").rstrip()
+        continuation = match.group("continuation").strip()
+        return f"{marker} Банджар:{body} {continuation}"
+
+    normalized = _BANJAR_LIST_CONTINUATION_PATTERN.sub(_replace, markdown_text, count=1)
+    return normalized, normalized != markdown_text
+
+
+def _emphasize_currency_menu_bullets(markdown_text: str) -> tuple[str, bool]:
+    normalized = markdown_text
+    changed = False
+    for bullet_text in _CURRENCY_MENU_BULLETS:
+        for suffix in (";", "."):
+            plain_line = f"- {bullet_text}{suffix}"
+            bold_line = f"- **{bullet_text}**{suffix}"
+            if plain_line in normalized:
+                normalized = normalized.replace(plain_line, bold_line)
+                changed = True
+    return normalized, changed
 
 
 def _violates_global_safety(

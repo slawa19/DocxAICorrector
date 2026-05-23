@@ -2666,27 +2666,27 @@ def _build_structural_checks(
         )
     for check_name, metric_key, threshold in (
         (
-            "pdf_blank_page_marker_leakage_threshold",
+            "pdf_blank_page_marker_leakage",
             "pdf_blank_page_marker_leakage_count",
                 getattr(document_profile, "max_pdf_blank_page_marker_leakage", None),
         ),
         (
-            "inline_page_furniture_leakage_threshold",
+            "inline_page_furniture_leakage",
             "inline_page_furniture_leakage_count",
                 getattr(document_profile, "max_inline_page_furniture_leakage", None),
         ),
         (
-            "adjacent_h1_without_body_threshold",
+            "adjacent_h1_without_body",
             "adjacent_h1_without_body_count",
                 getattr(document_profile, "max_adjacent_h1_without_body", None),
         ),
         (
-            "heading_body_concat_detected_threshold",
+            "heading_body_concat_detected",
             "heading_body_concat_detected_count",
                 getattr(document_profile, "max_heading_body_concat_detected", None),
         ),
         (
-            "h1_epigraph_attribution_pattern_threshold",
+            "h1_epigraph_attribution_pattern",
             "h1_epigraph_attribution_pattern_count",
                 getattr(document_profile, "max_h1_epigraph_attribution_pattern", None),
         ),

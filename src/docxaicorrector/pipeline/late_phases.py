@@ -40,6 +40,7 @@ from docxaicorrector.pipeline.reassembly import (
 )
 from docxaicorrector.processing.preparation import humanize_quality_gate_reasons
 from docxaicorrector.reader_cleanup_mvp import (
+    build_cleanup_blocks,
     build_reader_cleanup_system_prompt,
     ReaderCleanupStageError,
     resolve_reader_cleanup_config,
@@ -65,6 +66,7 @@ QUALITY_REPORTS_DIR = Path(".run") / "quality_reports"
 QUALITY_REPORTS_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 QUALITY_REPORTS_MAX_COUNT = 100
 _BULLET_MARKDOWN_HEADING_PATTERN = re.compile(r"(?m)^\s{0,3}#{1,6}\s*[\u2022\u25cf\u25e6\u2023*\-]\s*$")
+_DOCX_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"^\[\[DOCX_IMAGE_[A-Za-z0-9_]+\]\]$")
 
 
 def _format_translation_quality_gate_failure_message(gate_reasons: Sequence[str]) -> str:
@@ -145,6 +147,37 @@ def _rebuild_docx_for_markdown(
     if processed_image_assets:
         docx_bytes = dependencies.reinsert_inline_images(docx_bytes, processed_image_assets)
     return docx_bytes
+
+
+def _build_docx_rebuild_markdown_after_reader_cleanup(
+    *,
+    raw_markdown: str,
+    cleaned_markdown: str,
+    accepted_delete_block_ids: Sequence[str],
+) -> str:
+    accepted_delete_ids = {str(block_id) for block_id in accepted_delete_block_ids if str(block_id).strip()}
+    if not accepted_delete_ids:
+        return cleaned_markdown
+
+    raw_blocks = build_cleanup_blocks(raw_markdown)
+    if not raw_blocks:
+        return cleaned_markdown
+
+    deleted_docx_image_placeholder_ids = {
+        block.block_id
+        for block in raw_blocks
+        if block.block_id in accepted_delete_ids and _DOCX_IMAGE_PLACEHOLDER_PATTERN.fullmatch(block.normalized_text)
+    }
+    if not deleted_docx_image_placeholder_ids:
+        return cleaned_markdown
+
+    rebuilt_blocks = [
+        block.text
+        for block in raw_blocks
+        if block.block_id not in accepted_delete_ids or block.block_id in deleted_docx_image_placeholder_ids
+    ]
+    rebuilt_markdown = "\n\n".join(rebuilt_blocks)
+    return rebuilt_markdown if rebuilt_markdown.strip() else cleaned_markdown
 
 
 def _run_reader_cleanup_postprocess(
@@ -265,8 +298,13 @@ def _run_reader_cleanup_postprocess(
             return runtime_display_markdown, base_docx_bytes, cleanup_result.report_payload, cleanup_result.raw_markdown, None
 
         cleaned_runtime_display_markdown = _normalize_final_markdown_for_runtime_display(cleanup_result.cleaned_markdown)
+        docx_rebuild_markdown = _build_docx_rebuild_markdown_after_reader_cleanup(
+            raw_markdown=cleanup_result.raw_markdown,
+            cleaned_markdown=cleaned_runtime_display_markdown,
+            accepted_delete_block_ids=cleanup_result.accepted_delete_block_ids,
+        )
         cleaned_docx_bytes = _rebuild_docx_for_markdown(
-            markdown_text=cleaned_runtime_display_markdown,
+            markdown_text=docx_rebuild_markdown,
             context=context,
             dependencies=dependencies,
             state=state,

@@ -41,21 +41,31 @@ from docx import Document
 from docx.document import Document as DocxDocument
 from docx.oxml.ns import qn
 
-import docxaicorrector.ui.application_flow as application_flow
-import docxaicorrector.pipeline._pipeline as document_pipeline
 import docxaicorrector.core.logger as app_logger
 import docxaicorrector.processing.processing_runtime as processing_runtime
 import docxaicorrector.processing.processing_service as processing_service
-from docxaicorrector.core.config import get_client, load_app_config, load_system_prompt
+import docxaicorrector.pipeline._pipeline as document_pipeline
+import docxaicorrector.ui.application_flow as application_flow
+from docxaicorrector.core.config import (
+    describe_provider_availability,
+    get_client,
+    get_client_for_model_selector,
+    load_app_config,
+    load_system_prompt,
+    resolve_model_selector,
+)
 from docxaicorrector.document._document import (
     ORDERED_LIST_FORMATS,
     extract_document_content_from_docx,
 )
-from docxaicorrector.pipeline.output_validation import collect_page_placeholder_heading_concat_samples
 from docxaicorrector.generation._generation import (
     convert_markdown_to_docx_bytes,
     ensure_pandoc_available,
+    generate_markdown_block,
 )
+from docxaicorrector.image.shared import parse_json_object
+from docxaicorrector.pipeline.output_validation import collect_page_placeholder_heading_concat_samples
+from docxaicorrector.reader_cleanup_mvp import build_cleanup_blocks
 from docxaicorrector.validation.common import build_validation_event_logger, build_validation_runtime_config
 from docxaicorrector.validation.structural import (
     _apply_prepared_snapshot_fields,
@@ -80,6 +90,28 @@ from docxaicorrector.runtime.events import (
 REAL_DOCUMENT_ARTIFACT_ROOT = PROJECT_ROOT / "tests" / "artifacts" / "real_document_pipeline"
 FORMATTING_DIAGNOSTICS_DIR = PROJECT_ROOT / ".run" / "formatting_diagnostics"
 HEARTBEAT_INTERVAL_SECONDS = 15.0
+READER_VERIFIER_DEFAULT_SELECTOR = "openrouter:google/gemini-3-flash-preview"
+READER_VERIFIER_TARGET_DOCUMENT_PROFILE_ID = "lietaer-pdf-chapter-region-core"
+READER_VERIFIER_TARGET_RUN_PROFILE_ID = "ui-parity-translate-simple-reader-cleanup-comparison-only"
+_ALLOWED_READER_VERIFIER_VERDICTS = frozenset({"cleaned_better", "raw_better", "mixed", "unclear"})
+_ALLOWED_READER_VERIFIER_CONFIDENCE = frozenset({"low", "medium", "high"})
+_ALLOWED_READER_VERIFIER_CHANGE_TYPES = frozenset({"prompt", "minimal_formatting", "deterministic_cleanup"})
+_READER_VERIFIER_MODEL_FIELDS = frozenset(
+    {
+        "overall_verdict",
+        "reader_quality_score_raw",
+        "reader_quality_score_cleaned",
+        "confidence",
+        "noise_removed",
+        "possible_false_deletions",
+        "readability_regressions",
+        "recommended_next_changes",
+        "summary_for_human",
+        "simple_user_summary",
+        "simple_user_risk_statement",
+        "simple_user_next_step",
+    }
+)
 
 
 class UploadedFileStub:
@@ -140,6 +172,44 @@ def _coerce_int(value: object, default: int = 0) -> int:
     return default
 
 
+def _coerce_bool(value: object, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _coerce_float(value: object, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return default
+        try:
+            return float(stripped)
+        except ValueError:
+            return default
+    return default
+
+
+def _get_config_value(config_like: object | None, key: str) -> object | None:
+    if config_like is None:
+        return None
+    if isinstance(config_like, Mapping):
+        return config_like.get(key)
+    return getattr(config_like, key, None)
+
+
 def _max_payload_list_length(
     formatting_diagnostics: Sequence[Mapping[str, object]],
     key: str,
@@ -150,6 +220,136 @@ def _max_payload_list_length(
         if isinstance(values, Sequence) and not isinstance(values, (str, bytes, bytearray)):
             max_length = max(max_length, len(values))
     return max_length
+
+
+_CHAPTER_MARKER_TEXT_PATTERN = re.compile(r"^(?:chapter|глава)\s+(?:\d+|[ivxlcdm]+)\b[ .:-]*$", re.IGNORECASE)
+_IMAGE_PLACEHOLDER_TEXT_PATTERN = re.compile(r"\[\[docx_image_[^\]]+\]\]", re.IGNORECASE)
+_LEADING_CONTINUATION_FRAGMENT_PATTERN = re.compile(r"^[,.;:!?…)\]»]\s*\S")
+
+
+def _coerce_mapping_sequence(value: object) -> list[Mapping[str, object]]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return [item for item in value if isinstance(item, Mapping)]
+
+
+def _coerce_string_list(value: object) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _entry_has_target_mapping(entry: Mapping[str, object] | None) -> bool:
+    if entry is None:
+        return False
+    return entry.get("mapped_target_index") is not None
+
+
+def _is_benign_opening_chapter_marker_merge(
+    entry: Mapping[str, object],
+    next_entry: Mapping[str, object] | None,
+) -> bool:
+    source_index = _coerce_int(entry.get("source_index"), default=-1)
+    if source_index > 0:
+        return False
+    text_preview = _normalize_structural_text(str(entry.get("text_preview") or ""))
+    if _CHAPTER_MARKER_TEXT_PATTERN.match(text_preview) is None:
+        return False
+    if not _entry_has_target_mapping(next_entry):
+        return False
+    next_role = str((next_entry or {}).get("role") or (next_entry or {}).get("structural_role") or "").strip().lower()
+    return next_role == "heading"
+
+
+def _is_benign_image_attachment_merge(
+    entry: Mapping[str, object],
+    previous_entry: Mapping[str, object] | None,
+    next_entry: Mapping[str, object] | None,
+) -> bool:
+    role = str(entry.get("role") or entry.get("structural_role") or "").strip().lower()
+    asset_id = str(entry.get("asset_id") or "").strip()
+    text_preview = str(entry.get("text_preview") or "")
+
+    if role == "image" and asset_id and _entry_has_target_mapping(next_entry):
+        attached_asset_id = str((next_entry or {}).get("attached_to_asset_id") or "").strip()
+        if attached_asset_id == asset_id:
+            return True
+
+    if _IMAGE_PLACEHOLDER_TEXT_PATTERN.search(text_preview) is None:
+        return False
+    if _entry_has_target_mapping(next_entry):
+        next_preview = _normalize_structural_text(str((next_entry or {}).get("text_preview") or ""))
+        if next_preview.startswith("рисунок ") or next_preview.startswith("figure "):
+            return True
+    if _entry_has_target_mapping(previous_entry):
+        previous_preview = str((previous_entry or {}).get("text_preview") or "")
+        if _IMAGE_PLACEHOLDER_TEXT_PATTERN.search(previous_preview) is not None:
+            return True
+    return False
+
+
+def _is_benign_punctuation_continuation_merge(
+    entry: Mapping[str, object],
+    previous_entry: Mapping[str, object] | None,
+) -> bool:
+    role = str(entry.get("role") or entry.get("structural_role") or "").strip().lower()
+    if role != "body" or not _entry_has_target_mapping(previous_entry):
+        return False
+    previous_role = str((previous_entry or {}).get("role") or (previous_entry or {}).get("structural_role") or "").strip().lower()
+    if previous_role != "body":
+        return False
+    text_preview = str(entry.get("text_preview") or "").lstrip()
+    return _LEADING_CONTINUATION_FRAGMENT_PATTERN.match(text_preview) is not None
+
+
+def _filter_benign_unmapped_source_ids(payload: Mapping[str, object]) -> list[str]:
+    unmapped_source_ids = _coerce_string_list(payload.get("unmapped_source_ids"))
+    if not unmapped_source_ids:
+        return []
+
+    source_registry = _coerce_mapping_sequence(payload.get("source_registry"))
+    if not source_registry:
+        return unmapped_source_ids
+
+    entry_positions = {
+        str(entry.get("paragraph_id") or "").strip(): index
+        for index, entry in enumerate(source_registry)
+        if str(entry.get("paragraph_id") or "").strip()
+    }
+
+    filtered_ids: list[str] = []
+    for paragraph_id in unmapped_source_ids:
+        position = entry_positions.get(paragraph_id)
+        if position is None:
+            filtered_ids.append(paragraph_id)
+            continue
+        entry = source_registry[position]
+        previous_entry = source_registry[position - 1] if position > 0 else None
+        next_entry = source_registry[position + 1] if position + 1 < len(source_registry) else None
+
+        if _is_benign_opening_chapter_marker_merge(entry, next_entry):
+            continue
+        if _is_benign_image_attachment_merge(entry, previous_entry, next_entry):
+            continue
+        if _is_benign_punctuation_continuation_merge(entry, previous_entry):
+            continue
+        filtered_ids.append(paragraph_id)
+
+    return filtered_ids
+
+
+def _resolve_filtered_formatting_unmapped_source_count(
+    formatting_diagnostics: Sequence[Mapping[str, object]],
+) -> tuple[int, bool]:
+    max_count = 0
+    benign_reduction_applied = False
+    for payload in formatting_diagnostics:
+        raw_ids = _coerce_string_list(payload.get("unmapped_source_ids"))
+        filtered_ids = _filter_benign_unmapped_source_ids(payload)
+        if len(filtered_ids) != len(raw_ids):
+            benign_reduction_applied = True
+        max_count = max(max_count, len(filtered_ids))
+    return max_count, benign_reduction_applied
 
 
 def _resolve_acceptance_unmapped_source_count(
@@ -174,7 +374,9 @@ def _resolve_acceptance_unmapped_source_count(
             translation_quality_report.get("unmapped_source_count"),
         )
     )
-    formatting_count = _max_payload_list_length(formatting_diagnostics, "unmapped_source_ids")
+    formatting_count, benign_reduction_applied = _resolve_filtered_formatting_unmapped_source_count(formatting_diagnostics)
+    if benign_reduction_applied:
+        return formatting_count
     return max(quality_count, formatting_count)
 
 
@@ -403,6 +605,29 @@ def _as_float_or_none(value: object) -> float | None:
     return None
 
 
+def _build_validation_mode_payload(run_profile) -> dict[str, object]:
+    comparison_only = bool(getattr(run_profile, "comparison_only_validation", False))
+    validation_run_type = "comparison_only" if comparison_only else "acceptance"
+    return {
+        "comparison_only_validation": comparison_only,
+        "validation_run_type": validation_run_type,
+        "acceptance_contract_active": not comparison_only,
+        "evidence_label": "comparison_only_non_acceptance" if comparison_only else "acceptance_contract",
+        "success_criterion": "pipeline_result_and_artifacts" if comparison_only else "acceptance_passed",
+    }
+
+
+def _resolve_validation_final_status(
+    *,
+    result: str,
+    acceptance_passed: bool,
+    validation_mode: Mapping[str, object],
+) -> str:
+    if bool(validation_mode.get("comparison_only_validation")):
+        return "completed" if result == "succeeded" else "failed"
+    return "completed" if result == "succeeded" and acceptance_passed else "failed"
+
+
 def _build_translation_quality_summary_lines(
     translation_quality_report: Mapping[str, object] | None,
 ) -> list[str]:
@@ -450,12 +675,14 @@ def _build_translation_quality_summary_lines(
 def _print_terminal_completion_summary(*, report: Mapping[str, object], final_status: str) -> None:
     output_artifacts = cast(Mapping[str, object], report.get("output_artifacts") or {})
     acceptance = cast(Mapping[str, object], report.get("acceptance") or {})
+    validation_mode = cast(Mapping[str, object], report.get("validation_mode") or {})
     failed_checks = _as_string_list(acceptance.get("failed_checks"))
     translation_quality_report = cast(Mapping[str, object], report.get("translation_quality_report") or {})
     print(
         "[summary] "
         f"status={final_status} "
         f"result={report.get('result')} "
+        f"validation_run_type={validation_mode.get('validation_run_type')} "
         f"acceptance_passed={acceptance.get('passed')} "
         f"run_id={cast(Mapping[str, object], report.get('run') or {}).get('run_id')}",
         flush=True,
@@ -573,6 +800,8 @@ class ValidationProgressTracker:
         document_profile_id: str | None = None,
         run_profile_id: str | None = None,
         validation_tier: str | None = None,
+        validation_run_type: str | None = None,
+        comparison_only_validation: bool | None = None,
         source_path: Path,
         run_dir: Path,
         artifact_root: Path,
@@ -602,6 +831,8 @@ class ValidationProgressTracker:
             "document_profile_id": document_profile_id,
             "run_profile_id": run_profile_id,
             "validation_tier": validation_tier,
+            "validation_run_type": validation_run_type,
+            "comparison_only_validation": comparison_only_validation,
             "status": "in_progress",
             "source_document_path": _path_for_report(source_path),
             "run_dir": _path_for_report(run_dir),
@@ -745,6 +976,9 @@ class ValidationProgressTracker:
             "document_profile_id": self.state.get("document_profile_id"),
             "run_profile_id": self.state.get("run_profile_id"),
             "validation_tier": self.state.get("validation_tier"),
+            "validation_run_type": self.state.get("validation_run_type"),
+            "comparison_only_validation": self.state.get("comparison_only_validation"),
+            "validation_mode": self.state.get("validation_mode"),
             "status": self.state.get("status"),
             "source_document_path": self.state.get("source_document_path"),
             "run_dir": self.state.get("run_dir"),
@@ -771,6 +1005,20 @@ class ValidationProgressTracker:
             "last_error": self.state.get("last_error"),
             "runtime_config": self.state.get("runtime_config"),
             "runtime_overrides": self.state.get("runtime_overrides"),
+            "reader_verifier_status": self.state.get("reader_verifier_status"),
+            "reader_verifier_reason": self.state.get("reader_verifier_reason"),
+            "reader_verifier_model_selector": self.state.get("reader_verifier_model_selector"),
+            "reader_verifier_canonical_selector": self.state.get("reader_verifier_canonical_selector"),
+            "reader_verifier_provider": self.state.get("reader_verifier_provider"),
+            "reader_verifier_model_id": self.state.get("reader_verifier_model_id"),
+            "reader_verifier_overall_verdict": self.state.get("reader_verifier_overall_verdict"),
+            "reader_verifier_confidence": self.state.get("reader_verifier_confidence"),
+            "reader_verifier_simple_user_summary": self.state.get("reader_verifier_simple_user_summary"),
+            "reader_verifier_simple_user_risk_statement": self.state.get("reader_verifier_simple_user_risk_statement"),
+            "reader_verifier_simple_user_next_step": self.state.get("reader_verifier_simple_user_next_step"),
+            "reader_verifier_review_json": self.state.get("reader_verifier_review_json"),
+            "reader_verifier_review_md": self.state.get("reader_verifier_review_md"),
+            "reader_verifier_evidence_json": self.state.get("reader_verifier_evidence_json"),
             "latest_report": self.state.get("latest_report_json"),
             "latest_summary": self.state.get("latest_summary_txt"),
             "latest_markdown": self.state.get("latest_markdown_path"),
@@ -843,6 +1091,752 @@ def _write_latest_alias_artifacts(
         }
     )
     _write_json_atomic(latest_manifest_path, latest_manifest)
+
+
+def _preview_text(text: str | None, *, limit: int = 240) -> str:
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 3].rstrip() + "..."
+
+
+def _resolve_reported_path(path_value: object) -> Path | None:
+    if not isinstance(path_value, str) or not path_value.strip():
+        return None
+    candidate = Path(path_value.strip())
+    if candidate.is_absolute():
+        return candidate
+    return (PROJECT_ROOT / candidate).resolve()
+
+
+def _load_text_artifact(path_value: object) -> tuple[str, str | None, str | None]:
+    artifact_path = _resolve_reported_path(path_value)
+    if artifact_path is None:
+        return "", None, "artifact_path_missing"
+    try:
+        return artifact_path.read_text(encoding="utf-8"), _path_for_report(artifact_path), None
+    except OSError:
+        return "", _path_for_report(artifact_path), "artifact_unreadable"
+
+
+def _load_optional_json_artifact(path_value: object) -> tuple[dict[str, object] | None, str | None, str | None]:
+    artifact_path = _resolve_reported_path(path_value)
+    if artifact_path is None:
+        return None, None, "artifact_path_missing"
+    try:
+        payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, _path_for_report(artifact_path), "artifact_unreadable"
+    if not isinstance(payload, dict):
+        return None, _path_for_report(artifact_path), "artifact_not_object"
+    return payload, _path_for_report(artifact_path), None
+
+
+def _resolve_reader_verifier_config(
+    *,
+    validation_mode: Mapping[str, object],
+    document_profile_id: str,
+    run_profile_id: str,
+    app_config: object | None,
+    runtime_app_config: Mapping[str, object],
+) -> dict[str, object]:
+    default_enabled = bool(validation_mode.get("comparison_only_validation")) and (
+        document_profile_id == READER_VERIFIER_TARGET_DOCUMENT_PROFILE_ID
+        and run_profile_id == READER_VERIFIER_TARGET_RUN_PROFILE_ID
+    )
+    enabled_value = _get_config_value(runtime_app_config, "reader_verifier_enabled")
+    if enabled_value is None:
+        enabled_value = _get_config_value(app_config, "reader_verifier_enabled")
+    model_value = _get_config_value(runtime_app_config, "reader_verifier_model")
+    if model_value is None:
+        model_value = _get_config_value(app_config, "reader_verifier_model")
+    emit_summary_value = _get_config_value(runtime_app_config, "reader_verifier_emit_summary")
+    if emit_summary_value is None:
+        emit_summary_value = _get_config_value(app_config, "reader_verifier_emit_summary")
+    model_selector = str(model_value or READER_VERIFIER_DEFAULT_SELECTOR).strip()
+    return {
+        "enabled": _coerce_bool(enabled_value, default=default_enabled),
+        "model": model_selector,
+        "emit_summary": _coerce_bool(emit_summary_value, default=True),
+    }
+
+
+def _build_reader_verifier_deleted_block_context(
+    *,
+    raw_markdown: str,
+    cleanup_report_payload: Mapping[str, object] | None,
+) -> list[dict[str, object]]:
+    if not raw_markdown.strip() or cleanup_report_payload is None:
+        return []
+    blocks = build_cleanup_blocks(raw_markdown)
+    blocks_by_id = {block.block_id: block for block in blocks}
+    previews: list[dict[str, object]] = []
+    for entry in _coerce_mapping_sequence(cleanup_report_payload.get("accepted_delete_blocks")):
+        block_id = str(entry.get("id") or "").strip()
+        block = blocks_by_id.get(block_id)
+        if block is None:
+            continue
+        previous_block = blocks[block.index - 1] if block.index > 0 else None
+        next_block = blocks[block.index + 1] if (block.index + 1) < len(blocks) else None
+        previews.append(
+            {
+                "id": block.block_id,
+                "text_hash": block.text_hash,
+                "reason": entry.get("reason"),
+                "confidence": entry.get("confidence"),
+                "char_count": entry.get("char_count"),
+                "kind": entry.get("kind"),
+                "raw_text_preview": entry.get("raw_text_preview"),
+                "previous_block_preview": _preview_text(previous_block.text if previous_block is not None else ""),
+                "next_block_preview": _preview_text(next_block.text if next_block is not None else ""),
+            }
+        )
+    return previews
+
+
+def _build_reader_verifier_evidence_payload(
+    *,
+    run_id: str,
+    document_profile_id: str,
+    run_profile_id: str,
+    source_document_path: Path,
+    source_text: str,
+    reader_cleanup_evidence: Mapping[str, object],
+) -> dict[str, object]:
+    raw_markdown, raw_markdown_report_path, raw_markdown_warning = _load_text_artifact(
+        reader_cleanup_evidence.get("raw_markdown_path")
+    )
+    cleaned_markdown, cleaned_markdown_report_path, cleaned_markdown_warning = _load_text_artifact(
+        reader_cleanup_evidence.get("cleaned_markdown_path")
+    )
+    cleanup_report_payload, cleanup_report_report_path, cleanup_report_warning = _load_optional_json_artifact(
+        reader_cleanup_evidence.get("reader_cleanup_report_path")
+    )
+    cleaned_docx_report_path = _path_for_report(_resolve_reported_path(reader_cleanup_evidence.get("cleaned_docx_path")))
+    load_warnings = [
+        warning
+        for warning in (
+            raw_markdown_warning,
+            cleaned_markdown_warning,
+            cleanup_report_warning,
+        )
+        if warning is not None
+    ]
+    cleanup_stats = cast(Mapping[str, object], (cleanup_report_payload or {}).get("stats") or {})
+    deleted_block_previews = _build_reader_verifier_deleted_block_context(
+        raw_markdown=raw_markdown,
+        cleanup_report_payload=cleanup_report_payload,
+    )
+    return {
+        "run_id": run_id,
+        "document_profile_id": document_profile_id,
+        "run_profile_id": run_profile_id,
+        "source_document_path": _path_for_report(source_document_path),
+        "evidence_mode": "full_selected_slice",
+        "review_mode": "development_only_non_acceptance",
+        "base_artifacts_present": bool(
+            raw_markdown_report_path
+            and cleaned_markdown_report_path
+            and cleaned_docx_report_path
+            and cleanup_report_report_path
+        ),
+        "source_text": source_text,
+        "raw_markdown": raw_markdown,
+        "cleaned_markdown": cleaned_markdown,
+        "cleanup_report_summary": {
+            "stage_status": reader_cleanup_evidence.get("stage_status"),
+            "changed": reader_cleanup_evidence.get("changed"),
+            "accepted_delete_block_count": reader_cleanup_evidence.get("accepted_delete_block_count"),
+            "ignored_delete_block_count": reader_cleanup_evidence.get("ignored_delete_block_count"),
+            "rejected_delete_block_count": reader_cleanup_evidence.get("rejected_delete_block_count"),
+            "failed_chunk_count": reader_cleanup_evidence.get("failed_chunk_count"),
+            "cleanup_chunk_count": cleanup_stats.get("cleanup_chunk_count"),
+            "warnings": list((cleanup_report_payload or {}).get("warnings") or []),
+        },
+        "deleted_block_previews": deleted_block_previews,
+        "artifact_paths": {
+            "raw_markdown": raw_markdown_report_path,
+            "cleaned_markdown": cleaned_markdown_report_path,
+            "cleaned_docx": cleaned_docx_report_path,
+            "reader_cleanup_report": cleanup_report_report_path,
+        },
+        "load_warnings": load_warnings,
+    }
+
+
+def _build_reader_verifier_system_prompt() -> str:
+    return (
+        "You are reviewing a comparison-only translated book slice for reader quality.\n"
+        "This is development-only non-acceptance evidence.\n"
+        "Compare the raw translated Markdown against the cleaned Markdown using the source text and cleanup report.\n"
+        "Do not optimize for acceptance checks, structural authority, topology, DocumentMap, or production readiness.\n"
+        "Answer only whether the cleaned result is easier to read than the raw one, whether meaningful text appears lost, and the next narrow change category.\n"
+        "Return JSON only with exactly these top-level fields: overall_verdict, reader_quality_score_raw, reader_quality_score_cleaned, confidence, noise_removed, possible_false_deletions, readability_regressions, recommended_next_changes, summary_for_human, simple_user_summary, simple_user_risk_statement, simple_user_next_step.\n"
+        "Allowed overall_verdict values: cleaned_better, raw_better, mixed, unclear.\n"
+        "Allowed confidence values: low, medium, high.\n"
+        "noise_removed, possible_false_deletions, and readability_regressions must be arrays of short strings, not objects.\n"
+        "recommended_next_changes must be a list of objects with exactly change_type, recommendation, why.\n"
+        "Allowed change_type values: prompt, minimal_formatting, deterministic_cleanup.\n"
+        "simple_user_summary and simple_user_risk_statement must stay cautious: avoid absolute claims that no content was lost, avoid domain-specific phrases such as story content, avoid production-ready language, and explicitly mention current review confidence when it is low or medium.\n"
+        "Do not recommend acceptance-threshold tuning, structure-recognition expansion, or broad validation rewrites.\n"
+        "If the evidence is insufficient, set overall_verdict to unclear and explain why."
+    )
+
+
+def _build_reader_verifier_non_success_review(
+    *,
+    run_id: str,
+    document_profile_id: str,
+    run_profile_id: str,
+    requested_selector: str,
+    canonical_selector: str | None,
+    provider: str | None,
+    model_id: str | None,
+    verifier_status: str,
+    verifier_reason: str,
+    verifier_detail: str,
+    evidence_path: Path,
+    evidence_payload: Mapping[str, object],
+) -> dict[str, object]:
+    reason_text = verifier_detail.strip() or verifier_reason
+    return {
+        "run_id": run_id,
+        "document_profile_id": document_profile_id,
+        "run_profile_id": run_profile_id,
+        "review_mode": "development_only_non_acceptance",
+        "verifier_requested_selector": requested_selector,
+        "verifier_canonical_selector": canonical_selector,
+        "verifier_provider": provider,
+        "verifier_model_id": model_id,
+        "verifier_status": verifier_status,
+        "verifier_reason": verifier_reason,
+        "verifier_detail": reason_text,
+        "artifact_paths": {
+            "source_evidence_json": _path_for_report(evidence_path),
+            "raw_markdown": cast(Mapping[str, object], evidence_payload.get("artifact_paths") or {}).get("raw_markdown"),
+            "cleaned_markdown": cast(Mapping[str, object], evidence_payload.get("artifact_paths") or {}).get("cleaned_markdown"),
+            "cleaned_docx": cast(Mapping[str, object], evidence_payload.get("artifact_paths") or {}).get("cleaned_docx"),
+            "reader_cleanup_report": cast(Mapping[str, object], evidence_payload.get("artifact_paths") or {}).get("reader_cleanup_report"),
+        },
+        "overall_verdict": "unclear",
+        "reader_quality_score_raw": 0.0,
+        "reader_quality_score_cleaned": 0.0,
+        "confidence": "low",
+        "noise_removed": [],
+        "possible_false_deletions": [],
+        "readability_regressions": [],
+        "recommended_next_changes": [],
+        "summary_for_human": f"Verifier did not produce a review conclusion: {reason_text}.",
+        "simple_user_summary": "The current run does not provide enough reliable verifier evidence to say whether cleaned output is better than raw output.",
+        "simple_user_risk_statement": (
+            "Raw and cleaned comparison artifacts were preserved, but the verifier did not produce a reliable review conclusion. "
+            f"Reason: {reason_text}."
+        ),
+        "simple_user_next_step": "Fix the verifier precondition or runtime failure, then rerun the same comparison-only profile.",
+    }
+
+
+def _normalize_recommendation_list(value: object) -> list[dict[str, str]]:
+    recommendations: list[dict[str, str]] = []
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        raise RuntimeError("reader_verifier_recommended_next_changes_must_be_list")
+    for item in value:
+        if not isinstance(item, Mapping):
+            raise RuntimeError("reader_verifier_recommended_next_change_item_must_be_object")
+        unknown_fields = sorted(set(item.keys()) - {"change_type", "recommendation", "why"})
+        if unknown_fields:
+            raise RuntimeError(
+                f"reader_verifier_unknown_recommended_next_change_fields:{','.join(str(field) for field in unknown_fields)}"
+            )
+        change_type = str(item.get("change_type") or "").strip()
+        recommendation = str(item.get("recommendation") or "").strip()
+        why = str(item.get("why") or "").strip()
+        if change_type not in _ALLOWED_READER_VERIFIER_CHANGE_TYPES:
+            raise RuntimeError(f"reader_verifier_unknown_change_type:{change_type}")
+        if not recommendation or not why:
+            raise RuntimeError("reader_verifier_recommended_next_change_missing_text")
+        recommendations.append(
+            {
+                "change_type": change_type,
+                "recommendation": recommendation,
+                "why": why,
+            }
+        )
+    return recommendations
+
+
+def _normalize_string_list_item(item: object, *, key: str) -> str:
+    if isinstance(item, str):
+        normalized = item.strip()
+        if normalized:
+            return normalized
+        raise RuntimeError(f"reader_verifier_{key}_must_be_string_list")
+    if isinstance(item, Mapping):
+        for candidate_key in ("text", "item", "summary", "description", "finding", "issue", "reason", "value"):
+            candidate = item.get(candidate_key)
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+    raise RuntimeError(f"reader_verifier_{key}_must_be_string_list")
+
+
+def _require_string_list(payload: Mapping[str, object], key: str) -> list[str]:
+    value = payload.get(key)
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        raise RuntimeError(f"reader_verifier_{key}_must_be_string_list")
+    result = []
+    for item in value:
+        normalized = _normalize_string_list_item(item, key=key)
+        if normalized:
+            result.append(normalized)
+    return result
+
+
+def _contains_uncertainty_marker(text: str) -> bool:
+    return bool(re.search(r"\b(?:appears?|seems?|may|might|provisional|currently|current review confidence|not clearly|unclear|mixed)\b", text, re.IGNORECASE))
+
+
+def _contains_explicit_confidence_level(text: str, confidence: str) -> bool:
+    return bool(re.search(rf"\bconfidence\s+is\s+{re.escape(confidence)}\b", text, re.IGNORECASE))
+
+
+def _normalize_reader_verifier_user_text(text: str) -> str:
+    normalized = re.sub(r"\bstory content\b", "content", text, flags=re.IGNORECASE)
+    normalized = re.sub(
+        r"\b(?:no|without)\s+(?:actual\s+|meaningful\s+|semantic\s+|major\s+)?(?:story\s+)?content\s+was\s+lost\b",
+        "no major content loss was detected at current review confidence",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(
+        r"\b(?:safe|ready)\s+for\s+production\b|\bproduction-?ready\b",
+        "development-only comparison evidence",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
+
+
+def _normalize_reader_verifier_simple_language(
+    *,
+    overall_verdict: str,
+    confidence: str,
+    simple_user_summary: str,
+    simple_user_risk_statement: str,
+    simple_user_next_step: str,
+    possible_false_deletions: Sequence[str],
+    readability_regressions: Sequence[str],
+    recommended_next_changes: Sequence[Mapping[str, str]],
+) -> tuple[str, str, str]:
+    raw_next_step = simple_user_next_step
+    summary = _normalize_reader_verifier_user_text(simple_user_summary)
+    risk_statement = _normalize_reader_verifier_user_text(simple_user_risk_statement)
+    next_step = _normalize_reader_verifier_user_text(simple_user_next_step)
+
+    if confidence in {"low", "medium"} and not _contains_uncertainty_marker(summary):
+        summary = f"{summary} This remains provisional at current review confidence."
+
+    if re.search(r"\b(?:the\s+)?risk\s+is\s+very\s+low\b|\bno\s+risk\b", risk_statement, re.IGNORECASE):
+        risk_statement = "No major content loss was detected at current review confidence."
+
+    if confidence in {"low", "medium"} and not _contains_explicit_confidence_level(risk_statement, confidence):
+        risk_statement = f"{risk_statement} Review confidence is {confidence}, so this comparison should be treated as provisional."
+
+    if re.search(r"\b(?:safe|ready)\s+for\s+production\b|\bproduction-?ready\b", raw_next_step, re.IGNORECASE):
+        next_step = "Use this as development-only comparison evidence and apply one narrow follow-up change before rerunning the same profile."
+
+    if not next_step:
+        if recommended_next_changes:
+            next_step = str(recommended_next_changes[0].get("recommendation") or "").strip()
+        elif overall_verdict == "unclear":
+            next_step = "Gather clearer comparison evidence before changing the profile."
+        else:
+            next_step = "Apply one narrow follow-up change and rerun the same comparison-only profile."
+
+    return summary.strip(), risk_statement.strip(), next_step.strip()
+
+
+def _parse_reader_verifier_completed_review(
+    *,
+    raw_response: str,
+    run_id: str,
+    document_profile_id: str,
+    run_profile_id: str,
+    requested_selector: str,
+    canonical_selector: str,
+    provider: str,
+    model_id: str,
+    evidence_path: Path,
+    evidence_payload: Mapping[str, object],
+) -> dict[str, object]:
+    payload = parse_json_object(
+        raw_response,
+        empty_message="Reader verifier returned empty output.",
+        no_json_message="Reader verifier did not return JSON.",
+    )
+    unknown_fields = sorted(set(payload.keys()) - _READER_VERIFIER_MODEL_FIELDS)
+    if unknown_fields:
+        raise RuntimeError(f"reader_verifier_unknown_top_level_fields:{','.join(unknown_fields)}")
+    missing_fields = sorted(field for field in _READER_VERIFIER_MODEL_FIELDS if field not in payload)
+    if missing_fields:
+        raise RuntimeError(f"reader_verifier_missing_top_level_fields:{','.join(missing_fields)}")
+
+    overall_verdict = str(payload.get("overall_verdict") or "").strip()
+    confidence = str(payload.get("confidence") or "").strip().lower()
+    if overall_verdict not in _ALLOWED_READER_VERIFIER_VERDICTS:
+        raise RuntimeError(f"reader_verifier_unknown_overall_verdict:{overall_verdict}")
+    if confidence not in _ALLOWED_READER_VERIFIER_CONFIDENCE:
+        raise RuntimeError(f"reader_verifier_unknown_confidence:{confidence}")
+
+    simple_user_summary = str(payload.get("simple_user_summary") or "").strip()
+    simple_user_risk_statement = str(payload.get("simple_user_risk_statement") or "").strip()
+    simple_user_next_step = str(payload.get("simple_user_next_step") or "").strip()
+    summary_for_human = str(payload.get("summary_for_human") or "").strip()
+    if not simple_user_summary or not simple_user_risk_statement or not simple_user_next_step or not summary_for_human:
+        raise RuntimeError("reader_verifier_missing_summary_text")
+
+    possible_false_deletions = _require_string_list(payload, "possible_false_deletions")
+    readability_regressions = _require_string_list(payload, "readability_regressions")
+    recommended_next_changes = _normalize_recommendation_list(payload.get("recommended_next_changes"))
+    simple_user_summary, simple_user_risk_statement, simple_user_next_step = _normalize_reader_verifier_simple_language(
+        overall_verdict=overall_verdict,
+        confidence=confidence,
+        simple_user_summary=simple_user_summary,
+        simple_user_risk_statement=simple_user_risk_statement,
+        simple_user_next_step=simple_user_next_step,
+        possible_false_deletions=possible_false_deletions,
+        readability_regressions=readability_regressions,
+        recommended_next_changes=recommended_next_changes,
+    )
+
+    review_payload = {
+        "run_id": run_id,
+        "document_profile_id": document_profile_id,
+        "run_profile_id": run_profile_id,
+        "review_mode": "development_only_non_acceptance",
+        "verifier_requested_selector": requested_selector,
+        "verifier_canonical_selector": canonical_selector,
+        "verifier_provider": provider,
+        "verifier_model_id": model_id,
+        "verifier_status": "completed",
+        "verifier_reason": "",
+        "artifact_paths": {
+            "source_evidence_json": _path_for_report(evidence_path),
+            "raw_markdown": cast(Mapping[str, object], evidence_payload.get("artifact_paths") or {}).get("raw_markdown"),
+            "cleaned_markdown": cast(Mapping[str, object], evidence_payload.get("artifact_paths") or {}).get("cleaned_markdown"),
+            "cleaned_docx": cast(Mapping[str, object], evidence_payload.get("artifact_paths") or {}).get("cleaned_docx"),
+            "reader_cleanup_report": cast(Mapping[str, object], evidence_payload.get("artifact_paths") or {}).get("reader_cleanup_report"),
+        },
+        "overall_verdict": overall_verdict,
+        "reader_quality_score_raw": round(_coerce_float(payload.get("reader_quality_score_raw"), default=0.0), 3),
+        "reader_quality_score_cleaned": round(_coerce_float(payload.get("reader_quality_score_cleaned"), default=0.0), 3),
+        "confidence": confidence,
+        "noise_removed": _require_string_list(payload, "noise_removed"),
+        "possible_false_deletions": possible_false_deletions,
+        "readability_regressions": readability_regressions,
+        "recommended_next_changes": recommended_next_changes,
+        "summary_for_human": summary_for_human,
+        "simple_user_summary": simple_user_summary,
+        "simple_user_risk_statement": simple_user_risk_statement,
+        "simple_user_next_step": simple_user_next_step,
+    }
+    return review_payload
+
+
+def _render_reader_verifier_markdown_summary(review_payload: Mapping[str, object]) -> str:
+    improvements = _coerce_string_list(review_payload.get("noise_removed"))
+    risks = _coerce_string_list(review_payload.get("possible_false_deletions")) + _coerce_string_list(
+        review_payload.get("readability_regressions")
+    )
+    recommendations = cast(Sequence[Mapping[str, object]], review_payload.get("recommended_next_changes") or [])
+    lines = [
+        "# Verdict",
+        "",
+        str(review_payload.get("overall_verdict") or "unclear"),
+        "",
+        "# In Plain Words",
+        "",
+        str(review_payload.get("simple_user_summary") or ""),
+        "",
+        "# Improvements Seen",
+        "",
+    ]
+    if improvements:
+        lines.extend(f"- {item}" for item in improvements)
+    else:
+        lines.append("- No verified readability improvements were recorded.")
+    lines.extend(["", "# Risks Seen", ""])
+    if risks:
+        lines.extend(f"- {item}" for item in risks)
+    else:
+        lines.append(f"- {str(review_payload.get('simple_user_risk_statement') or 'No additional reader-facing risks were recorded.')}")
+    lines.extend(["", "# Recommended Next Changes", ""])
+    if recommendations:
+        for item in recommendations:
+            change_type = str(item.get("change_type") or "").strip()
+            recommendation = str(item.get("recommendation") or "").strip()
+            why = str(item.get("why") or "").strip()
+            lines.append(f"- {change_type}: {recommendation} ({why})")
+    else:
+        lines.append(f"- {str(review_payload.get('simple_user_next_step') or 'No verifier recommendation was produced.')}")
+    lines.extend(
+        [
+            "",
+            "# Verifier Metadata",
+            "",
+            f"- review_mode: {review_payload.get('review_mode')}",
+            f"- verifier_status: {review_payload.get('verifier_status')}",
+            f"- verifier_reason: {review_payload.get('verifier_reason')}",
+            f"- verifier_requested_selector: {review_payload.get('verifier_requested_selector')}",
+            f"- verifier_canonical_selector: {review_payload.get('verifier_canonical_selector')}",
+            f"- verifier_provider: {review_payload.get('verifier_provider')}",
+            f"- verifier_model_id: {review_payload.get('verifier_model_id')}",
+            f"- confidence: {review_payload.get('confidence')}",
+            f"- source_evidence_json: {cast(Mapping[str, object], review_payload.get('artifact_paths') or {}).get('source_evidence_json')}",
+        ]
+    )
+    return "\n".join(lines).strip() + "\n"
+
+
+def _classify_reader_verifier_runtime_failure(exc: Exception) -> str:
+    message = str(exc).strip().lower()
+    if "model" in message and ("not found" in message or "unavailable" in message or "unknown" in message):
+        return "model_unavailable"
+    return "execution_failed"
+
+
+def _run_reader_verifier(
+    *,
+    run_id: str,
+    document_profile_id: str,
+    run_profile_id: str,
+    app_config: object | None,
+    runtime_app_config: Mapping[str, object],
+    validation_mode: Mapping[str, object],
+    evidence_payload: Mapping[str, object],
+    evidence_path: Path,
+    max_retries: int,
+) -> dict[str, object]:
+    config = _resolve_reader_verifier_config(
+        validation_mode=validation_mode,
+        document_profile_id=document_profile_id,
+        run_profile_id=run_profile_id,
+        app_config=app_config,
+        runtime_app_config=runtime_app_config,
+    )
+    requested_selector = str(config.get("model") or "").strip()
+    if not bool(config.get("enabled")):
+        return _build_reader_verifier_non_success_review(
+            run_id=run_id,
+            document_profile_id=document_profile_id,
+            run_profile_id=run_profile_id,
+            requested_selector=requested_selector or READER_VERIFIER_DEFAULT_SELECTOR,
+            canonical_selector=None,
+            provider=None,
+            model_id=None,
+            verifier_status="not_run",
+            verifier_reason="verifier_disabled",
+            verifier_detail="Reader verifier is disabled for this run.",
+            evidence_path=evidence_path,
+            evidence_payload=evidence_payload,
+        )
+    if not requested_selector:
+        return _build_reader_verifier_non_success_review(
+            run_id=run_id,
+            document_profile_id=document_profile_id,
+            run_profile_id=run_profile_id,
+            requested_selector="",
+            canonical_selector=None,
+            provider=None,
+            model_id=None,
+            verifier_status="not_run",
+            verifier_reason="model_selector_unconfigured",
+            verifier_detail="Reader verifier model selector is not configured.",
+            evidence_path=evidence_path,
+            evidence_payload=evidence_payload,
+        )
+    if not bool(evidence_payload.get("base_artifacts_present")):
+        return _build_reader_verifier_non_success_review(
+            run_id=run_id,
+            document_profile_id=document_profile_id,
+            run_profile_id=run_profile_id,
+            requested_selector=requested_selector,
+            canonical_selector=None,
+            provider=None,
+            model_id=None,
+            verifier_status="not_run",
+            verifier_reason="base_artifacts_missing",
+            verifier_detail="Base comparison artifacts are missing, so verifier review cannot run.",
+            evidence_path=evidence_path,
+            evidence_payload=evidence_payload,
+        )
+    try:
+        availability = describe_provider_availability(requested_selector, app_config=app_config)
+    except Exception as exc:
+        return _build_reader_verifier_non_success_review(
+            run_id=run_id,
+            document_profile_id=document_profile_id,
+            run_profile_id=run_profile_id,
+            requested_selector=requested_selector,
+            canonical_selector=None,
+            provider=None,
+            model_id=None,
+            verifier_status="not_run",
+            verifier_reason="model_resolution_failed",
+            verifier_detail=str(exc),
+            evidence_path=evidence_path,
+            evidence_payload=evidence_payload,
+        )
+    if not availability.enabled:
+        return _build_reader_verifier_non_success_review(
+            run_id=run_id,
+            document_profile_id=document_profile_id,
+            run_profile_id=run_profile_id,
+            requested_selector=requested_selector,
+            canonical_selector=availability.selector.canonical_selector,
+            provider=availability.selector.provider,
+            model_id=availability.selector.model_id,
+            verifier_status="not_run",
+            verifier_reason="provider_disabled",
+            verifier_detail=availability.error_message or "Requested verifier provider is disabled.",
+            evidence_path=evidence_path,
+            evidence_payload=evidence_payload,
+        )
+    if not availability.has_api_key:
+        return _build_reader_verifier_non_success_review(
+            run_id=run_id,
+            document_profile_id=document_profile_id,
+            run_profile_id=run_profile_id,
+            requested_selector=requested_selector,
+            canonical_selector=availability.selector.canonical_selector,
+            provider=availability.selector.provider,
+            model_id=availability.selector.model_id,
+            verifier_status="not_run",
+            verifier_reason="api_key_missing",
+            verifier_detail=availability.error_message or "Required verifier API key is missing.",
+            evidence_path=evidence_path,
+            evidence_payload=evidence_payload,
+        )
+    try:
+        resolved_selector = resolve_model_selector(
+            requested_selector,
+            "responses_text",
+            config_like=app_config,
+            source_name="reader verifier model selector",
+        )
+    except Exception as exc:
+        return _build_reader_verifier_non_success_review(
+            run_id=run_id,
+            document_profile_id=document_profile_id,
+            run_profile_id=run_profile_id,
+            requested_selector=requested_selector,
+            canonical_selector=None,
+            provider=None,
+            model_id=None,
+            verifier_status="not_run",
+            verifier_reason="model_resolution_failed",
+            verifier_detail=str(exc),
+            evidence_path=evidence_path,
+            evidence_payload=evidence_payload,
+        )
+    try:
+        client = get_client_for_model_selector(
+            requested_selector,
+            "responses_text",
+            config_like=app_config,
+        )
+        raw_response = generate_markdown_block(
+            client=client,
+            model=resolved_selector.model_id,
+            system_prompt=_build_reader_verifier_system_prompt(),
+            target_text=json.dumps(evidence_payload, ensure_ascii=False, indent=2),
+            context_before="",
+            context_after="",
+            max_retries=max(1, max_retries),
+            expected_paragraph_ids=None,
+            marker_mode=False,
+        )
+        return _parse_reader_verifier_completed_review(
+            raw_response=raw_response,
+            run_id=run_id,
+            document_profile_id=document_profile_id,
+            run_profile_id=run_profile_id,
+            requested_selector=requested_selector,
+            canonical_selector=resolved_selector.canonical_selector,
+            provider=resolved_selector.provider,
+            model_id=resolved_selector.model_id,
+            evidence_path=evidence_path,
+            evidence_payload=evidence_payload,
+        )
+    except Exception as exc:
+        return _build_reader_verifier_non_success_review(
+            run_id=run_id,
+            document_profile_id=document_profile_id,
+            run_profile_id=run_profile_id,
+            requested_selector=requested_selector,
+            canonical_selector=resolved_selector.canonical_selector,
+            provider=resolved_selector.provider,
+            model_id=resolved_selector.model_id,
+            verifier_status="failed",
+            verifier_reason=_classify_reader_verifier_runtime_failure(exc),
+            verifier_detail=str(exc),
+            evidence_path=evidence_path,
+            evidence_payload=evidence_payload,
+        )
+
+
+def _write_reader_verifier_artifacts(
+    *,
+    run_id: str,
+    document_profile_id: str,
+    run_profile_id: str,
+    artifact_prefix: str,
+    artifact_dir: Path,
+    source_document_path: Path,
+    source_text: str,
+    reader_cleanup_evidence: Mapping[str, object],
+    app_config: object | None,
+    runtime_app_config: Mapping[str, object],
+    validation_mode: Mapping[str, object],
+    max_retries: int,
+) -> dict[str, object]:
+    evidence_path = artifact_dir / f"{artifact_prefix}_reader_quality_evidence.json"
+    review_json_path = artifact_dir / f"{artifact_prefix}_reader_quality_review.json"
+    review_md_path = artifact_dir / f"{artifact_prefix}_reader_quality_review.md"
+    evidence_payload = _build_reader_verifier_evidence_payload(
+        run_id=run_id,
+        document_profile_id=document_profile_id,
+        run_profile_id=run_profile_id,
+        source_document_path=source_document_path,
+        source_text=source_text,
+        reader_cleanup_evidence=reader_cleanup_evidence,
+    )
+    _write_json_atomic(evidence_path, cast(Mapping[str, object], sanitize_for_json(evidence_payload)))
+    review_payload = _run_reader_verifier(
+        run_id=run_id,
+        document_profile_id=document_profile_id,
+        run_profile_id=run_profile_id,
+        app_config=app_config,
+        runtime_app_config=runtime_app_config,
+        validation_mode=validation_mode,
+        evidence_payload=evidence_payload,
+        evidence_path=evidence_path,
+        max_retries=max_retries,
+    )
+    review_json_path.write_text(
+        json.dumps(sanitize_for_json(review_payload), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    review_md_path.write_text(_render_reader_verifier_markdown_summary(review_payload), encoding="utf-8")
+    return {
+        **review_payload,
+        "artifact_paths": {
+            **cast(dict[str, object], review_payload.get("artifact_paths") or {}),
+            "source_evidence_json": _path_for_report(evidence_path),
+            "review_json": _path_for_report(review_json_path),
+            "review_md": _path_for_report(review_md_path),
+        },
+    }
 
 
 def _load_json_file(path: Path) -> dict[str, object]:
@@ -978,6 +1972,7 @@ def _run_repeat_validation(
     artifact_root: Path,
     requested_run_profile_id: str | None,
 ) -> None:
+    validation_mode = _build_validation_mode_payload(run_profile)
     artifact_root.mkdir(parents=True, exist_ok=True)
     parent_run_id = _build_run_id(source_path)
     artifact_dir = artifact_root / "runs" / parent_run_id
@@ -1006,6 +2001,8 @@ def _run_repeat_validation(
         document_profile_id=document_profile.id,
         run_profile_id=run_profile.id,
         validation_tier=run_profile.tier,
+        validation_run_type=str(validation_mode["validation_run_type"]),
+        comparison_only_validation=bool(validation_mode["comparison_only_validation"]),
         source_path=source_path,
         run_dir=artifact_dir,
         artifact_root=artifact_root,
@@ -1037,6 +2034,7 @@ def _run_repeat_validation(
     tracker.set_manifest_context(
         runtime_config=runtime_resolution.effective.to_dict(),
         runtime_overrides=runtime_resolution.overrides,
+        validation_mode=validation_mode,
     )
 
     repeat_runs: list[dict[str, object]] = []
@@ -1142,6 +2140,7 @@ def _run_repeat_validation(
                 "document_profile_id": document_profile.id,
                 "run_profile_id": run_profile.id,
                 "validation_tier": run_profile.tier,
+                "validation_mode": validation_mode,
                 "repeat_count": run_profile.repeat_count,
                 "artifact_root": _path_for_report(artifact_root),
                 "artifact_dir": _path_for_report(artifact_dir),
@@ -1150,6 +2149,7 @@ def _run_repeat_validation(
             "document_profile_id": document_profile.id,
             "run_profile_id": run_profile.id,
             "validation_tier": run_profile.tier,
+            "validation_mode": validation_mode,
             "source_document_path": _path_for_report(source_path),
             "artifact_dir": _path_for_report(artifact_dir),
             "progress_path": _path_for_report(progress_path),
@@ -1179,13 +2179,22 @@ def _run_repeat_validation(
             },
         }
         sanitized_report = sanitize_for_json(report)
-        final_status = "completed" if acceptance["passed"] else "failed"
+        final_status = _resolve_validation_final_status(
+            result=result,
+            acceptance_passed=bool(acceptance["passed"]),
+            validation_mode=validation_mode,
+        )
 
         summary_lines = [
             f"run_id={parent_run_id}",
             f"document_profile_id={document_profile.id}",
             f"run_profile_id={run_profile.id}",
             f"validation_tier={run_profile.tier}",
+            f"validation_run_type={validation_mode['validation_run_type']}",
+            f"comparison_only_validation={validation_mode['comparison_only_validation']}",
+            f"acceptance_contract_active={validation_mode['acceptance_contract_active']}",
+            f"validation_evidence_label={validation_mode['evidence_label']}",
+            f"validation_success_criterion={validation_mode['success_criterion']}",
             f"status={final_status}",
             f"run_started_at_utc={run_started_at_utc.isoformat()}",
             f"run_finished_at_utc={run_finished_at_utc.isoformat()}",
@@ -1237,12 +2246,14 @@ def _run_repeat_validation(
             acceptance_passed=bool(acceptance["passed"]),
             failure_classification=failure_classification,
             last_error="",
-            detail=(
-                f"Acceptance={'passed' if acceptance['passed'] else 'failed'}; report={_path_for_report(report_path)}"
+            detail=_build_validation_completion_detail(
+                validation_mode=validation_mode,
+                acceptance_passed=bool(acceptance["passed"]),
+                report_path=report_path,
             ),
         )
         _print_terminal_completion_summary(report=cast(Mapping[str, object], report), final_status=final_status)
-        if not bool(acceptance["passed"]):
+        if final_status != "completed":
             raise SystemExit(1)
     finally:
         tracker.stop()
@@ -1854,6 +2865,153 @@ def _load_translation_quality_report(event_log: Sequence[Mapping[str, object]]) 
     return payload, _path_for_report(candidate)
 
 
+def _extract_ui_result_artifact_paths(event_log: Sequence[Mapping[str, object]]) -> dict[str, str]:
+    for event in reversed(event_log):
+        if str(event.get("event_id") or "") != "ui_result_artifacts_saved":
+            continue
+        context = event.get("context") or {}
+        if not isinstance(context, Mapping):
+            continue
+        artifact_paths = context.get("artifact_paths") or {}
+        if not isinstance(artifact_paths, Mapping):
+            continue
+        return {
+            str(key): str(value)
+            for key, value in artifact_paths.items()
+            if isinstance(key, str) and isinstance(value, str) and value.strip()
+        }
+    return {}
+
+
+def _load_reader_cleanup_evidence(event_log: Sequence[Mapping[str, object]]) -> dict[str, object]:
+    artifact_paths = _extract_ui_result_artifact_paths(event_log)
+    evidence: dict[str, object] = {
+        "artifacts_present": bool(artifact_paths),
+        "cleaned_markdown_path": artifact_paths.get("markdown_path"),
+        "cleaned_docx_path": artifact_paths.get("docx_path"),
+        "raw_markdown_path": artifact_paths.get("reader_cleanup_raw_markdown_path"),
+        "reader_cleanup_report_path": artifact_paths.get("reader_cleanup_report_path"),
+        "stage_status": None,
+        "changed": None,
+        "accepted_delete_block_count": 0,
+        "ignored_delete_block_count": 0,
+        "rejected_delete_block_count": 0,
+        "failed_chunk_count": 0,
+        "deleted_block_previews": [],
+    }
+    report_path = artifact_paths.get("reader_cleanup_report_path")
+    if not report_path:
+        return evidence
+
+    report_file = Path(report_path)
+    if not report_file.is_absolute():
+        report_file = PROJECT_ROOT / report_file
+    if not report_file.exists():
+        evidence["load_warning"] = "reader_cleanup_report_missing"
+        return evidence
+
+    try:
+        report_payload = _load_json_file(report_file)
+    except (OSError, json.JSONDecodeError):
+        evidence["load_warning"] = "reader_cleanup_report_unreadable"
+        return evidence
+
+    stats = cast(Mapping[str, object], report_payload.get("stats") or {})
+    accepted_delete_block_count = _coerce_int(stats.get("accepted_delete_block_count"))
+    ignored_delete_block_count = _coerce_int(stats.get("ignored_delete_block_count"))
+    proposed_delete_block_count = _coerce_int(stats.get("proposed_delete_block_count"))
+    failed_chunk_count = _coerce_int(stats.get("failed_chunk_count"))
+    accepted_delete_blocks = _as_object_list(report_payload.get("accepted_delete_blocks"))
+    deleted_block_previews: list[dict[str, object]] = []
+    for entry in accepted_delete_blocks[:5]:
+        if not isinstance(entry, Mapping):
+            continue
+        deleted_block_previews.append(
+            {
+                "id": entry.get("id"),
+                "reason": entry.get("reason"),
+                "confidence": entry.get("confidence"),
+                "raw_text_preview": entry.get("raw_text_preview"),
+            }
+        )
+
+    evidence.update(
+        {
+            "stage_status": report_payload.get("stage_status"),
+            "changed": report_payload.get("changed"),
+            "accepted_delete_block_count": accepted_delete_block_count,
+            "ignored_delete_block_count": ignored_delete_block_count,
+            "rejected_delete_block_count": max(
+                0,
+                proposed_delete_block_count - accepted_delete_block_count - ignored_delete_block_count,
+            ),
+            "failed_chunk_count": failed_chunk_count,
+            "deleted_block_previews": deleted_block_previews,
+        }
+    )
+    return evidence
+
+
+def _merge_reader_cleanup_artifact_paths(
+    output_artifacts: dict[str, object],
+    reader_cleanup_evidence: Mapping[str, object],
+) -> None:
+    cleaned_markdown_path = reader_cleanup_evidence.get("cleaned_markdown_path")
+    cleaned_docx_path = reader_cleanup_evidence.get("cleaned_docx_path")
+    raw_markdown_path = reader_cleanup_evidence.get("raw_markdown_path")
+    reader_cleanup_report_path = reader_cleanup_evidence.get("reader_cleanup_report_path")
+    if isinstance(cleaned_markdown_path, str) and cleaned_markdown_path:
+        output_artifacts["cleaned_markdown_path"] = cleaned_markdown_path
+    if isinstance(cleaned_docx_path, str) and cleaned_docx_path:
+        output_artifacts["cleaned_docx_path"] = cleaned_docx_path
+    if isinstance(raw_markdown_path, str) and raw_markdown_path:
+        output_artifacts["reader_cleanup_raw_markdown_path"] = raw_markdown_path
+    if isinstance(reader_cleanup_report_path, str) and reader_cleanup_report_path:
+        output_artifacts["reader_cleanup_report_path"] = reader_cleanup_report_path
+
+
+def _build_validation_completion_detail(
+    *,
+    validation_mode: Mapping[str, object],
+    acceptance_passed: bool,
+    report_path: Path,
+    reader_cleanup_evidence: Mapping[str, object] | None = None,
+    reader_verifier_evidence: Mapping[str, object] | None = None,
+) -> str:
+    if not bool(validation_mode.get("comparison_only_validation")):
+        return f"Acceptance={'passed' if acceptance_passed else 'failed'}; report={_path_for_report(report_path)}"
+
+    evidence = reader_cleanup_evidence or {}
+    detail_parts = [
+        "Comparison-only non-acceptance evidence completed",
+        f"report={_path_for_report(report_path)}",
+    ]
+    raw_markdown_path = evidence.get("raw_markdown_path")
+    cleaned_markdown_path = evidence.get("cleaned_markdown_path")
+    cleaned_docx_path = evidence.get("cleaned_docx_path")
+    cleanup_report_path = evidence.get("reader_cleanup_report_path")
+    if isinstance(raw_markdown_path, str) and raw_markdown_path:
+        detail_parts.append(f"raw_markdown={raw_markdown_path}")
+    if isinstance(cleaned_markdown_path, str) and cleaned_markdown_path:
+        detail_parts.append(f"cleaned_markdown={cleaned_markdown_path}")
+    if isinstance(cleaned_docx_path, str) and cleaned_docx_path:
+        detail_parts.append(f"cleaned_docx={cleaned_docx_path}")
+    if isinstance(cleanup_report_path, str) and cleanup_report_path:
+        detail_parts.append(f"reader_cleanup_report={cleanup_report_path}")
+    verifier = reader_verifier_evidence or {}
+    review_json_path = cast(Mapping[str, object], verifier.get("artifact_paths") or {}).get("review_json")
+    verifier_status = verifier.get("verifier_status")
+    overall_verdict = verifier.get("overall_verdict")
+    if verifier_status is not None:
+        detail_parts.append(f"reader_verifier_status={verifier_status}")
+    if overall_verdict is not None:
+        detail_parts.append(f"reader_verifier_verdict={overall_verdict}")
+    if isinstance(review_json_path, str) and review_json_path:
+        detail_parts.append(f"reader_verifier_review={review_json_path}")
+    detail_parts.append(f"acceptance_diagnostic={'passed' if acceptance_passed else 'failed'}")
+    return "; ".join(detail_parts)
+
+
 def evaluate_lietaer_acceptance(
     report: Mapping[str, object],
     *,
@@ -2233,6 +3391,7 @@ def main() -> None:
     run_profile = registry.resolve_run_profile(document_profile, requested_run_profile_id)
     repeat_count_override = os.environ.get("DOCXAI_REAL_DOCUMENT_REPEAT_COUNT_OVERRIDE", "").strip()
     run_profile = _apply_repeat_count_override(run_profile, repeat_count_override)
+    validation_mode = _build_validation_mode_payload(run_profile)
     source_path = document_profile.resolved_source_path(PROJECT_ROOT)
     artifact_root = REAL_DOCUMENT_ARTIFACT_ROOT
     if run_profile.repeat_count > 1 and not repeat_count_override:
@@ -2278,6 +3437,8 @@ def main() -> None:
         document_profile_id=document_profile.id,
         run_profile_id=run_profile.id,
         validation_tier=run_profile.tier,
+        validation_run_type=str(validation_mode["validation_run_type"]),
+        comparison_only_validation=bool(validation_mode["comparison_only_validation"]),
         source_path=source_path,
         run_dir=artifact_dir,
         artifact_root=artifact_root,
@@ -2460,6 +3621,7 @@ def main() -> None:
         tracker.set_manifest_context(
             runtime_config=runtime_resolution.effective.to_dict(),
             runtime_overrides=runtime_resolution.overrides,
+            validation_mode=validation_mode,
         )
         tracker.emit(
             event_type="config",
@@ -2649,6 +3811,7 @@ def main() -> None:
             "document_profile_id": document_profile.id,
             "run_profile_id": run_profile.id,
             "validation_tier": run_profile.tier,
+            "validation_mode": validation_mode,
             "repeat_count": run_profile.repeat_count,
             "artifact_root": _path_for_report(artifact_root),
             "artifact_dir": _path_for_report(artifact_dir),
@@ -2657,6 +3820,7 @@ def main() -> None:
         "document_profile_id": document_profile.id,
         "run_profile_id": run_profile.id,
         "validation_tier": run_profile.tier,
+        "validation_mode": validation_mode,
         "source_document_path": _path_for_report(source_path),
         "artifact_dir": _path_for_report(artifact_dir),
         "progress_path": _path_for_report(progress_path),
@@ -2722,14 +3886,62 @@ def main() -> None:
         unmapped_target_threshold=document_profile.max_unmapped_target_paragraphs,
         require_no_toc_body_concat=document_profile.require_no_toc_body_concat,
     )
+    reader_cleanup_evidence = _load_reader_cleanup_evidence(event_log)
+    report["reader_cleanup_evidence"] = reader_cleanup_evidence
+    _merge_reader_cleanup_artifact_paths(
+        cast(dict[str, object], report["output_artifacts"]),
+        reader_cleanup_evidence,
+    )
+    reader_verifier_evidence: dict[str, object] | None = None
+    if bool(validation_mode.get("comparison_only_validation")):
+        reader_verifier_evidence = _write_reader_verifier_artifacts(
+            run_id=run_id,
+            document_profile_id=document_profile.id,
+            run_profile_id=run_profile.id,
+            artifact_prefix=artifact_prefix,
+            artifact_dir=artifact_dir,
+            source_document_path=source_path,
+            source_text=prepared.source_text if prepared is not None else "",
+            reader_cleanup_evidence=reader_cleanup_evidence,
+            app_config=app_config,
+            runtime_app_config=app_config_dict,
+            validation_mode=validation_mode,
+            max_retries=int(runtime_resolution.effective.max_retries) if runtime_resolution is not None else 1,
+        )
+        report["reader_verifier_evidence"] = reader_verifier_evidence
+        tracker.set_manifest_context(
+            reader_verifier_status=reader_verifier_evidence.get("verifier_status"),
+            reader_verifier_reason=reader_verifier_evidence.get("verifier_reason"),
+            reader_verifier_model_selector=reader_verifier_evidence.get("verifier_requested_selector"),
+            reader_verifier_canonical_selector=reader_verifier_evidence.get("verifier_canonical_selector"),
+            reader_verifier_provider=reader_verifier_evidence.get("verifier_provider"),
+            reader_verifier_model_id=reader_verifier_evidence.get("verifier_model_id"),
+            reader_verifier_overall_verdict=reader_verifier_evidence.get("overall_verdict"),
+            reader_verifier_confidence=reader_verifier_evidence.get("confidence"),
+            reader_verifier_simple_user_summary=reader_verifier_evidence.get("simple_user_summary"),
+            reader_verifier_simple_user_risk_statement=reader_verifier_evidence.get("simple_user_risk_statement"),
+            reader_verifier_simple_user_next_step=reader_verifier_evidence.get("simple_user_next_step"),
+            reader_verifier_review_json=cast(Mapping[str, object], reader_verifier_evidence.get("artifact_paths") or {}).get("review_json"),
+            reader_verifier_review_md=cast(Mapping[str, object], reader_verifier_evidence.get("artifact_paths") or {}).get("review_md"),
+            reader_verifier_evidence_json=cast(Mapping[str, object], reader_verifier_evidence.get("artifact_paths") or {}).get("source_evidence_json"),
+        )
     sanitized_report = sanitize_for_json(report)
-    final_status = "completed" if bool(report["acceptance"]["passed"]) and result == "succeeded" else "failed"
+    final_status = _resolve_validation_final_status(
+        result=result,
+        acceptance_passed=bool(report["acceptance"]["passed"]),
+        validation_mode=validation_mode,
+    )
 
     summary_lines = [
         f"run_id={run_id}",
         f"document_profile_id={document_profile.id}",
         f"run_profile_id={run_profile.id}",
         f"validation_tier={run_profile.tier}",
+        f"validation_run_type={validation_mode['validation_run_type']}",
+        f"comparison_only_validation={validation_mode['comparison_only_validation']}",
+        f"acceptance_contract_active={validation_mode['acceptance_contract_active']}",
+        f"validation_evidence_label={validation_mode['evidence_label']}",
+        f"validation_success_criterion={validation_mode['success_criterion']}",
         f"status={final_status}",
         f"run_started_at_utc={run_started_at_utc.isoformat()}",
         f"run_finished_at_utc={run_finished_at_utc.isoformat()}",
@@ -2767,9 +3979,35 @@ def main() -> None:
         f"translation_quality_report_path={report['translation_quality_report_path']}",
         f"acceptance_passed={report['acceptance']['passed']}",
         f"acceptance_failed_checks={','.join(_as_string_list(cast(Mapping[str, object], report['acceptance']).get('failed_checks')))}",
+        f"comparison_only_acceptance_diagnostic_only={bool(validation_mode['comparison_only_validation'])}",
         f"last_error={last_error}",
         f"markdown_path={report['output_artifacts']['markdown_path']}",
         f"docx_path={report['output_artifacts']['docx_path']}",
+        f"cleaned_markdown_path={report['output_artifacts'].get('cleaned_markdown_path')}",
+        f"cleaned_docx_path={report['output_artifacts'].get('cleaned_docx_path')}",
+        f"reader_cleanup_raw_markdown_path={report['output_artifacts'].get('reader_cleanup_raw_markdown_path')}",
+        f"reader_cleanup_report_path={report['output_artifacts'].get('reader_cleanup_report_path')}",
+        f"reader_cleanup_stage_status={report['reader_cleanup_evidence'].get('stage_status')}",
+        f"reader_cleanup_changed={report['reader_cleanup_evidence'].get('changed')}",
+        f"reader_cleanup_accepted_delete_block_count={report['reader_cleanup_evidence'].get('accepted_delete_block_count')}",
+        f"reader_cleanup_ignored_delete_block_count={report['reader_cleanup_evidence'].get('ignored_delete_block_count')}",
+        f"reader_cleanup_rejected_delete_block_count={report['reader_cleanup_evidence'].get('rejected_delete_block_count')}",
+        f"reader_cleanup_failed_chunk_count={report['reader_cleanup_evidence'].get('failed_chunk_count')}",
+        f"reader_cleanup_deleted_block_previews={json.dumps(report['reader_cleanup_evidence'].get('deleted_block_previews') or [], ensure_ascii=False)}",
+        f"reader_verifier_status={cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('verifier_status')}",
+        f"reader_verifier_reason={cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('verifier_reason')}",
+        f"reader_verifier_requested_selector={cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('verifier_requested_selector')}",
+        f"reader_verifier_canonical_selector={cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('verifier_canonical_selector')}",
+        f"reader_verifier_provider={cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('verifier_provider')}",
+        f"reader_verifier_model_id={cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('verifier_model_id')}",
+        f"reader_verifier_overall_verdict={cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('overall_verdict')}",
+        f"reader_verifier_confidence={cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('confidence')}",
+        f"reader_verifier_simple_user_summary={cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('simple_user_summary')}",
+        f"reader_verifier_simple_user_risk_statement={cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('simple_user_risk_statement')}",
+        f"reader_verifier_simple_user_next_step={cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('simple_user_next_step')}",
+        f"reader_verifier_review_json={cast(Mapping[str, object], cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('artifact_paths') or {}).get('review_json')}",
+        f"reader_verifier_review_md={cast(Mapping[str, object], cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('artifact_paths') or {}).get('review_md')}",
+        f"reader_verifier_evidence_json={cast(Mapping[str, object], cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('artifact_paths') or {}).get('source_evidence_json')}",
         f"tts_text_path={report['output_artifacts']['tts_text_path']}",
         f"latest_manifest_json={report['output_artifacts']['latest_manifest_json']}",
         f"python_executable={report['run']['environment']['python_executable']}",
@@ -2812,13 +4050,17 @@ def main() -> None:
         acceptance_passed=bool(report["acceptance"]["passed"]),
         failure_classification=cast(str | None, report["failure_classification"]),
         last_error=last_error,
-        detail=(
-            f"Acceptance={'passed' if report['acceptance']['passed'] else 'failed'}; report={_path_for_report(report_path)}"
+        detail=_build_validation_completion_detail(
+            validation_mode=validation_mode,
+            acceptance_passed=bool(report["acceptance"]["passed"]),
+            report_path=report_path,
+            reader_cleanup_evidence=cast(Mapping[str, object], report.get("reader_cleanup_evidence") or {}),
+            reader_verifier_evidence=cast(Mapping[str, object], report.get("reader_verifier_evidence") or {}),
         ),
     )
     tracker.stop()
     _print_terminal_completion_summary(report=cast(Mapping[str, object], report), final_status=final_status)
-    if not bool(report["acceptance"]["passed"]):
+    if final_status != "completed":
         raise SystemExit(1)
 
 

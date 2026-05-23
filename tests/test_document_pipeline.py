@@ -1877,6 +1877,94 @@ def test_run_document_processing_reader_cleanup_rebuild_preserves_images():
     assert reinsert_calls[-1] == ["img-1"]
 
 
+def test_run_document_processing_reader_cleanup_preserves_docx_image_anchor_when_markdown_cleanup_deletes_placeholder():
+    runtime = _build_runtime_capture()
+    artifact_calls = {}
+    converted_markdown_inputs = []
+
+    class FakeImageAsset:
+        image_id = "img-1"
+
+        def update_pipeline_metadata(self, **values):
+            return None
+
+    def generate_markdown_block(**kwargs):
+        if kwargs["system_prompt"].startswith("You are cleaning translated book Markdown"):
+            payload = json.loads(kwargs["target_text"])
+            delete_blocks = [
+                {
+                    "id": block["id"],
+                    "text_hash": block["text_hash"],
+                    "reason": "extraction_artifact",
+                    "confidence": "high",
+                }
+                for block in payload["blocks"]
+                if block["text"] == "[[DOCX_IMAGE_img_001]]"
+            ]
+            return json.dumps({"delete_blocks": delete_blocks, "warnings": []}, ensure_ascii=False)
+        return kwargs["target_text"]
+
+    def convert_markdown_to_docx_bytes(markdown_text):
+        converted_markdown_inputs.append(markdown_text)
+        return markdown_text.encode("utf-8")
+
+    def write_ui_result_artifacts(**kwargs):
+        artifact_calls["kwargs"] = dict(kwargs)
+        return {"markdown_path": "/tmp/report.result.md", "docx_path": "/tmp/report.result.docx"}
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[
+            {"target_text": "Intro", "context_before": "", "context_after": "[[DOCX_IMAGE_img_001]]", "target_chars": 5, "context_chars": 22, "narration_include": True},
+            {"target_text": "[[DOCX_IMAGE_img_001]]", "context_before": "Intro", "context_after": "Body paragraph", "target_chars": 22, "context_chars": 19, "narration_include": True},
+            {"target_text": "Body paragraph", "context_before": "[[DOCX_IMAGE_img_001]]", "context_after": "Outro", "target_chars": 14, "context_chars": 27, "narration_include": True},
+            {"target_text": "Outro", "context_before": "Body paragraph", "context_after": "", "target_chars": 5, "context_chars": 14, "narration_include": True},
+        ],
+        source_paragraphs=[],
+        image_assets=[FakeImageAsset()],
+        image_mode="safe",
+        app_config={
+            "reader_cleanup_enabled": True,
+            "reader_cleanup_policy": "advisory",
+            "reader_cleanup_chunk_size": 500,
+            "reader_cleanup_max_delete_block_ratio": 0.8,
+            "reader_cleanup_max_delete_char_ratio": 0.8,
+        },
+        model="gpt-5.4-translate",
+        max_retries=1,
+        processing_operation="translate",
+        source_language="en",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **kwargs: f"system:{kwargs['operation']}",
+        log_event=lambda *args, **kwargs: None,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=generate_markdown_block,
+        process_document_images=lambda **kwargs: [FakeImageAsset()],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=convert_markdown_to_docx_bytes,
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes + f"|images={len(image_assets)}".encode("utf-8"),
+        write_ui_result_artifacts=write_ui_result_artifacts,
+    )
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_markdown"] == "Intro\n\nBody paragraph\n\nOutro"
+    assert artifact_calls["kwargs"]["markdown_text"] == "Intro\n\nBody paragraph\n\nOutro"
+    assert converted_markdown_inputs[-1] == "Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph\n\nOutro"
+    assert runtime["state"]["latest_docx_bytes"] == b"Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph\n\nOutro|images=1"
+
+
 def test_run_document_processing_reader_cleanup_strict_failure_preserves_base_result(tmp_path: Path):
     runtime = _build_runtime_capture()
     events, log_event = _capture_log_events()
@@ -3672,6 +3760,29 @@ def test_build_translation_quality_report_flags_raw_false_fragment_without_entry
     ]
 
 
+def test_build_translation_quality_report_allows_opening_chapter_marker_followed_by_title_heading():
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+        ),
+        final_markdown=(
+            "ГЛАВА 1\n\n"
+            "## Что такое богатство?\n\n"
+            "Первый абзац главы начинается здесь."
+        ),
+        formatting_diagnostics_artifacts=[],
+    )
+
+    assert report["quality_status"] == "pass"
+    assert report["gate_reasons"] == []
+    assert report["false_fragment_heading_count"] == 0
+    assert report["raw_false_fragment_heading_count"] == 0
+    assert report["false_fragment_heading_samples"] == []
+
+
 def test_build_translation_quality_report_flags_scripture_reference_false_heading_without_normalizer_override():
     report = document_pipeline_late_phases._build_translation_quality_report(
         context=SimpleNamespace(
@@ -3780,6 +3891,43 @@ def test_collect_false_fragment_heading_samples_from_entries_preserves_source_ba
         ),
         document_pipeline_output_validation.FinalAssemblyEntry(
             text="Этот раздел открывается полноценным абзацем.",
+            block_index=3,
+            paragraph_id="p3",
+            source_index=2,
+            role="body",
+            structural_role="body",
+            from_registry=True,
+        ),
+    )
+
+    samples = document_pipeline_output_validation.collect_false_fragment_heading_samples_from_entries(entries)
+
+    assert samples == []
+
+
+def test_collect_false_fragment_heading_samples_from_entries_allows_opening_chapter_marker_pair():
+    entries = (
+        document_pipeline_output_validation.FinalAssemblyEntry(
+            text="ГЛАВА 1",
+            block_index=1,
+            paragraph_id="p1",
+            source_index=0,
+            role="body",
+            structural_role="body",
+            from_registry=True,
+        ),
+        document_pipeline_output_validation.FinalAssemblyEntry(
+            text="## Что такое богатство?",
+            block_index=2,
+            paragraph_id="p2",
+            source_index=1,
+            role="heading",
+            structural_role="heading",
+            heading_level=2,
+            from_registry=True,
+        ),
+        document_pipeline_output_validation.FinalAssemblyEntry(
+            text="Первый абзац главы начинается здесь.",
             block_index=3,
             paragraph_id="p3",
             source_index=2,
