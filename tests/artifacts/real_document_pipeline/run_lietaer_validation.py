@@ -67,7 +67,13 @@ from docxaicorrector.generation._generation import (
 )
 from docxaicorrector.image.shared import parse_json_object
 from docxaicorrector.pipeline.output_validation import collect_page_placeholder_heading_concat_samples
-from docxaicorrector.reader_cleanup_mvp import build_cleanup_blocks
+from docxaicorrector.reader_cleanup_mvp import (
+    build_cleanup_blocks,
+    build_reader_cleanup_schema_repair_system_prompt,
+    build_reader_cleanup_system_prompt,
+    resolve_reader_cleanup_config,
+    run_reader_cleanup_anchor_repair,
+)
 from docxaicorrector.validation.common import build_validation_event_logger, build_validation_runtime_config
 from docxaicorrector.validation.structural import (
     _apply_prepared_snapshot_fields,
@@ -121,6 +127,9 @@ _ALLOWED_READER_VERIFIER_FIX_TYPES = frozenset(
     {"delete_noise", "split_heading", "merge_paragraph", "normalize_list", "format_quote", "other"}
 )
 _ALLOWED_READER_VERIFIER_ANCHOR_KINDS = frozenset({"improvement_seen", "remaining_issue", "possible_false_deletion"})
+_ALLOWED_READER_CLEANUP_ANCHOR_REPAIR_CATEGORIES = frozenset(
+    {"heading_fused_with_body", "page_furniture_inline", "fragmented_paragraph"}
+)
 _READER_VERIFIER_CATEGORY_KEYWORDS = {
     "page_furniture_inline": ("page number", "page numbers", "running header", "running headers", "page furniture", "header/footer"),
     "heading_fused_with_body": ("heading fused", "heading/body", "heading glued", "heading merged"),
@@ -710,6 +719,278 @@ def _build_translation_quality_summary_lines(
     return lines
 
 
+def _format_signed_score_delta(value: float) -> str:
+    text = f"{value:+.3f}".rstrip("0")
+    if text.endswith("."):
+        text += "0"
+    return text
+
+
+def _resolve_reader_mvp_status_language(report: Mapping[str, object]) -> str:
+    runtime_config = cast(Mapping[str, object], report.get("runtime_config") or {})
+    overrides = cast(Mapping[str, object], runtime_config.get("overrides") or {})
+    effective = cast(Mapping[str, object], runtime_config.get("effective") or {})
+    ui_defaults = cast(Mapping[str, object], runtime_config.get("ui_defaults") or {})
+    language = str(
+        overrides.get("target_language")
+        or runtime_config.get("target_language")
+        or effective.get("target_language")
+        or ui_defaults.get("target_language")
+        or ""
+    ).strip().lower()
+    return language or "en"
+
+
+def _build_reader_mvp_status_payload(report: Mapping[str, object]) -> dict[str, object]:
+    validation_mode = cast(Mapping[str, object], report.get("validation_mode") or {})
+    acceptance = cast(Mapping[str, object], report.get("acceptance") or {})
+    reader_cleanup_evidence = cast(Mapping[str, object], report.get("reader_cleanup_evidence") or {})
+    reader_verifier = cast(Mapping[str, object], report.get("reader_verifier_evidence") or {})
+    translation_quality_report = cast(Mapping[str, object], report.get("translation_quality_report") or {})
+
+    comparison_only_validation = bool(validation_mode.get("comparison_only_validation"))
+    acceptance_contract_active = bool(validation_mode.get("acceptance_contract_active"))
+    comparison_only_acceptance_diagnostic = comparison_only_validation and not acceptance_contract_active
+
+    remaining_issues = _coerce_mapping_sequence(reader_verifier.get("remaining_issues"))
+    issue_summary = cast(Mapping[str, object], reader_verifier.get("issue_summary_by_category") or {})
+    possible_false_deletions = _coerce_string_list(reader_verifier.get("possible_false_deletions"))
+    readability_regressions = _coerce_string_list(reader_verifier.get("readability_regressions"))
+    failed_checks = _as_string_list(acceptance.get("failed_checks"))
+
+    raw_score = round(_coerce_float(reader_verifier.get("reader_quality_score_raw"), default=0.0), 3)
+    cleaned_score = round(_coerce_float(reader_verifier.get("reader_quality_score_cleaned"), default=0.0), 3)
+    cleanup_score_delta = round(cleaned_score - raw_score, 3)
+    cleanup_score_delta_display = _format_signed_score_delta(cleanup_score_delta)
+    remaining_issue_count = len(remaining_issues)
+    high_severity_issue_count = _count_reader_verifier_high_severity_issues(remaining_issues)
+    top_issue_categories = _select_reader_verifier_top_categories(issue_summary)
+    top_issue_categories_text = ", ".join(top_issue_categories)
+
+    cleanup_contract_blockers: list[str] = []
+    cleanup_stage_status = str(reader_cleanup_evidence.get("stage_status") or "").strip()
+    failed_chunk_count = _coerce_int(reader_cleanup_evidence.get("failed_chunk_count"))
+    if cleanup_stage_status and cleanup_stage_status.lower() != "completed":
+        cleanup_contract_blockers.append(f"cleanup_stage_status={cleanup_stage_status}")
+    if failed_chunk_count > 0:
+        cleanup_contract_blockers.append(f"cleanup_chunk_failures={failed_chunk_count}")
+
+    reader_visible_cleanup_defects = [
+        f"{category}={count}"
+        for category, count in sorted(
+            (
+                (str(category), _coerce_int(count))
+                for category, count in issue_summary.items()
+                if str(category).strip()
+            ),
+            key=lambda item: (-item[1], item[0]),
+        )
+        if count > 0
+    ]
+
+    mapping_quality_gate_diagnostics: list[str] = []
+    quality_status = str(translation_quality_report.get("quality_status") or "").strip()
+    gate_reasons = _as_string_list(translation_quality_report.get("gate_reasons"))
+    if quality_status:
+        mapping_quality_gate_diagnostics.append(f"translation_quality_status={quality_status}")
+    if gate_reasons:
+        mapping_quality_gate_diagnostics.append(
+            f"translation_quality_gate_reasons={','.join(gate_reasons)}"
+        )
+    diagnostic_failed_checks = [
+        check
+        for check in failed_checks
+        if "unmapped" in check or "formatting" in check or "fragment" in check or "quality" in check
+    ]
+    if diagnostic_failed_checks:
+        mapping_quality_gate_diagnostics.append(
+            f"acceptance_diagnostic_checks={','.join(diagnostic_failed_checks)}"
+        )
+
+    no_false_deletions_reported = not possible_false_deletions
+    no_readability_regressions_reported = not readability_regressions
+    overall_verdict = str(reader_verifier.get("overall_verdict") or "unclear").strip() or "unclear"
+    result = str(report.get("result") or "").strip().lower()
+    if result != "succeeded":
+        status_label = "pipeline_failed"
+    elif overall_verdict == "cleaned_better" and remaining_issue_count > 0:
+        status_label = "readable_draft_not_acceptance_ready"
+    elif overall_verdict == "cleaned_better":
+        status_label = "cleaned_better_diagnostic_evidence"
+    elif overall_verdict in {"cleaned_worse", "raw_better"}:
+        status_label = "cleanup_regressed"
+    else:
+        status_label = "mixed_or_unclear"
+
+    language = _resolve_reader_mvp_status_language(report)
+    if language == "ru":
+        pipeline_summary = "Пайплайн завершился успешно и собрал reviewable raw/cleaned артефакты."
+        cleanup_summary = (
+            f"Cleanup дал verdict {overall_verdict}: score {raw_score:.1f} -> {cleaned_score:.1f} "
+            f"({cleanup_score_delta_display})."
+        )
+        acceptance_summary = (
+            "Acceptance failure здесь диагностический и не считается падением пайплайна для comparison-only прогона."
+            if comparison_only_acceptance_diagnostic
+            else f"Acceptance passed={bool(acceptance.get('passed'))}."
+        )
+        remaining_risk_summary = (
+            f"Остаются {remaining_issue_count} reader-visible issues, из них {high_severity_issue_count} high severity; "
+            f"top categories: {top_issue_categories_text or 'нет'}."
+        )
+        positive_safety_signals = [
+            "Verifier не сообщил о false deletions."
+            if no_false_deletions_reported
+            else f"Verifier сообщил о possible false deletions: {len(possible_false_deletions)}.",
+            "Verifier не сообщил о readability regressions."
+            if no_readability_regressions_reported
+            else f"Verifier сообщил о readability regressions: {len(readability_regressions)}.",
+        ]
+        user_summary = (
+            f"Стало лучше: cleaned output читается легче, но это ещё не acceptance-ready результат. "
+            f"{acceptance_summary} {remaining_risk_summary}"
+        )
+        risk_summary = (
+            f"Главный остаточный риск сейчас reader-visible, а не runtime: {remaining_risk_summary}"
+        )
+    else:
+        pipeline_summary = "The pipeline succeeded and produced reviewable raw/cleaned artifacts."
+        cleanup_summary = (
+            f"Cleanup verdict is {overall_verdict}: score {raw_score:.1f} -> {cleaned_score:.1f} "
+            f"({cleanup_score_delta_display})."
+        )
+        acceptance_summary = (
+            "Acceptance failure is diagnostic only for this comparison-only run and does not mean the pipeline failed."
+            if comparison_only_acceptance_diagnostic
+            else f"Acceptance passed={bool(acceptance.get('passed'))}."
+        )
+        remaining_risk_summary = (
+            f"{remaining_issue_count} reader-visible issues remain, with {high_severity_issue_count} high severity; "
+            f"top categories: {top_issue_categories_text or 'none'}."
+        )
+        positive_safety_signals = [
+            "The verifier reported no false deletions."
+            if no_false_deletions_reported
+            else f"The verifier reported possible false deletions: {len(possible_false_deletions)}.",
+            "The verifier reported no readability regressions."
+            if no_readability_regressions_reported
+            else f"The verifier reported readability regressions: {len(readability_regressions)}.",
+        ]
+        user_summary = (
+            f"The cleaned output is easier to read, but it is not acceptance-ready yet. "
+            f"{acceptance_summary} {remaining_risk_summary}"
+        )
+        risk_summary = f"The remaining risk is reader-visible rather than runtime: {remaining_risk_summary}"
+
+    return {
+        "status_label": status_label,
+        "language": language,
+        "pipeline_summary": pipeline_summary,
+        "cleanup_summary": cleanup_summary,
+        "acceptance_summary": acceptance_summary,
+        "remaining_risk_summary": remaining_risk_summary,
+        "user_summary": user_summary,
+        "risk_summary": risk_summary,
+        "cleanup_score_delta": cleanup_score_delta,
+        "cleanup_score_delta_display": cleanup_score_delta_display,
+        "remaining_issue_count": remaining_issue_count,
+        "high_severity_issue_count": high_severity_issue_count,
+        "top_issue_categories": top_issue_categories,
+        "no_false_deletions_reported": no_false_deletions_reported,
+        "no_readability_regressions_reported": no_readability_regressions_reported,
+        "comparison_only_acceptance_diagnostic": comparison_only_acceptance_diagnostic,
+        "positive_safety_signals": positive_safety_signals,
+        "blocker_groups": {
+            "cleanup_contract": cleanup_contract_blockers,
+            "reader_visible_cleanup_defects": reader_visible_cleanup_defects,
+            "mapping_quality_gate_diagnostics": mapping_quality_gate_diagnostics,
+        },
+    }
+
+
+def _render_reader_mvp_status_markdown(status_payload: Mapping[str, object]) -> str:
+    language = str(status_payload.get("language") or "en").strip().lower()
+    blocker_groups = cast(Mapping[str, object], status_payload.get("blocker_groups") or {})
+    cleanup_contract = _coerce_string_list(blocker_groups.get("cleanup_contract"))
+    reader_visible = _coerce_string_list(blocker_groups.get("reader_visible_cleanup_defects"))
+    quality_gate = _coerce_string_list(blocker_groups.get("mapping_quality_gate_diagnostics"))
+    positive_safety_signals = _coerce_string_list(status_payload.get("positive_safety_signals"))
+
+    if language == "ru":
+        lines = [
+            "# Статус MVP",
+            "",
+            f"- Итоговый статус: {status_payload.get('status_label')}",
+            f"- Для оператора: {status_payload.get('user_summary')}",
+            f"- Риск: {status_payload.get('risk_summary')}",
+            "",
+            "# Разделение сигналов",
+            "",
+            f"- Pipeline success: {status_payload.get('pipeline_summary')}",
+            f"- Cleanup improvement: {status_payload.get('cleanup_summary')}",
+            f"- Acceptance diagnostic: {status_payload.get('acceptance_summary')}",
+            f"- Remaining reader-visible risk: {status_payload.get('remaining_risk_summary')}",
+            "",
+            "# Позитивные сигналы",
+            "",
+        ]
+        lines.extend(f"- {item}" for item in positive_safety_signals)
+        lines.extend(["", "# Группы блокеров", "", "## Cleanup Contract", ""])
+        lines.extend(f"- {item}" for item in cleanup_contract or ["Нет cleanup-contract blockers."])
+        lines.extend(["", "## Reader-Visible Cleanup Defects", ""])
+        lines.extend(f"- {item}" for item in reader_visible or ["Нет reader-visible cleanup blockers."])
+        lines.extend(["", "## Mapping / Quality-Gate Diagnostics", ""])
+        lines.extend(f"- {item}" for item in quality_gate or ["Нет mapping/quality-gate diagnostics blockers."])
+        return "\n".join(lines).strip() + "\n"
+
+    lines = [
+        "# MVP Status",
+        "",
+        f"- Status label: {status_payload.get('status_label')}",
+        f"- User summary: {status_payload.get('user_summary')}",
+        f"- Risk summary: {status_payload.get('risk_summary')}",
+        "",
+        "# Signal Split",
+        "",
+        f"- Pipeline success: {status_payload.get('pipeline_summary')}",
+        f"- Cleanup improvement: {status_payload.get('cleanup_summary')}",
+        f"- Acceptance diagnostic: {status_payload.get('acceptance_summary')}",
+        f"- Remaining reader-visible risk: {status_payload.get('remaining_risk_summary')}",
+        "",
+        "# Positive Safety Signals",
+        "",
+    ]
+    lines.extend(f"- {item}" for item in positive_safety_signals)
+    lines.extend(["", "# Blocker Groups", "", "## Cleanup Contract", ""])
+    lines.extend(f"- {item}" for item in cleanup_contract or ["No cleanup-contract blockers recorded."])
+    lines.extend(["", "## Reader-Visible Cleanup Defects", ""])
+    lines.extend(f"- {item}" for item in reader_visible or ["No reader-visible cleanup blockers recorded."])
+    lines.extend(["", "## Mapping / Quality-Gate Diagnostics", ""])
+    lines.extend(f"- {item}" for item in quality_gate or ["No mapping/quality-gate blockers recorded."])
+    return "\n".join(lines).strip() + "\n"
+
+
+def _build_reader_mvp_status_summary_lines(status_payload: Mapping[str, object]) -> list[str]:
+    blocker_groups = cast(Mapping[str, object], status_payload.get("blocker_groups") or {})
+    return [
+        f"reader_mvp_status_label={status_payload.get('status_label')}",
+        f"reader_mvp_status_user_summary={status_payload.get('user_summary')}",
+        f"reader_mvp_status_risk_summary={status_payload.get('risk_summary')}",
+        f"reader_mvp_status_cleanup_score_delta={status_payload.get('cleanup_score_delta')}",
+        f"reader_mvp_status_acceptance_diagnostic_only={status_payload.get('comparison_only_acceptance_diagnostic')}",
+        "reader_mvp_status_false_deletion_status="
+        + ("none_reported" if bool(status_payload.get("no_false_deletions_reported")) else "reported"),
+        "reader_mvp_status_readability_regression_status="
+        + ("none_reported" if bool(status_payload.get("no_readability_regressions_reported")) else "reported"),
+        "reader_mvp_status_blocker_group_cleanup_contract="
+        + "|".join(_coerce_string_list(blocker_groups.get("cleanup_contract")) or ["none"]),
+        "reader_mvp_status_blocker_group_reader_visible="
+        + "|".join(_coerce_string_list(blocker_groups.get("reader_visible_cleanup_defects")) or ["none"]),
+        "reader_mvp_status_blocker_group_quality_gate="
+        + "|".join(_coerce_string_list(blocker_groups.get("mapping_quality_gate_diagnostics")) or ["none"]),
+    ]
+
+
 def _print_terminal_completion_summary(*, report: Mapping[str, object], final_status: str) -> None:
     output_artifacts = cast(Mapping[str, object], report.get("output_artifacts") or {})
     acceptance = cast(Mapping[str, object], report.get("acceptance") or {})
@@ -1061,6 +1342,14 @@ class ValidationProgressTracker:
             "reader_verifier_review_json": self.state.get("reader_verifier_review_json"),
             "reader_verifier_review_md": self.state.get("reader_verifier_review_md"),
             "reader_verifier_evidence_json": self.state.get("reader_verifier_evidence_json"),
+            "reader_mvp_status_label": self.state.get("reader_mvp_status_label"),
+            "reader_mvp_status_user_summary": self.state.get("reader_mvp_status_user_summary"),
+            "reader_mvp_status_risk_summary": self.state.get("reader_mvp_status_risk_summary"),
+            "reader_mvp_status_cleanup_score_delta": self.state.get("reader_mvp_status_cleanup_score_delta"),
+            "reader_mvp_status_acceptance_diagnostic_only": self.state.get("reader_mvp_status_acceptance_diagnostic_only"),
+            "reader_mvp_status_false_deletion_status": self.state.get("reader_mvp_status_false_deletion_status"),
+            "reader_mvp_status_readability_regression_status": self.state.get("reader_mvp_status_readability_regression_status"),
+            "reader_mvp_status_md": self.state.get("reader_mvp_status_md"),
             "latest_report": self.state.get("latest_report_json"),
             "latest_summary": self.state.get("latest_summary_txt"),
             "latest_markdown": self.state.get("latest_markdown_path"),
@@ -2479,6 +2768,38 @@ def _write_reader_verifier_artifacts(
         evidence_path=evidence_path,
         max_retries=max_retries,
     )
+    if _should_run_reader_cleanup_anchor_repair(
+        validation_mode=validation_mode,
+        runtime_app_config=runtime_app_config,
+    ):
+        updated_reader_cleanup_evidence, anchor_repair_attempted, _ = _run_reader_cleanup_anchor_repair_validation_pass(
+            review_payload=review_payload,
+            reader_cleanup_evidence=reader_cleanup_evidence,
+            runtime_app_config=runtime_app_config,
+            max_retries=max_retries,
+        )
+        if anchor_repair_attempted:
+            reader_cleanup_evidence = updated_reader_cleanup_evidence
+            evidence_payload = _build_reader_verifier_evidence_payload(
+                run_id=run_id,
+                document_profile_id=document_profile_id,
+                run_profile_id=run_profile_id,
+                source_document_path=source_document_path,
+                source_text=source_text,
+                reader_cleanup_evidence=reader_cleanup_evidence,
+            )
+            _write_json_atomic(evidence_path, cast(Mapping[str, object], sanitize_for_json(evidence_payload)))
+            review_payload = _run_reader_verifier(
+                run_id=run_id,
+                document_profile_id=document_profile_id,
+                run_profile_id=run_profile_id,
+                app_config=app_config,
+                runtime_app_config=runtime_app_config,
+                validation_mode=validation_mode,
+                evidence_payload=evidence_payload,
+                evidence_path=evidence_path,
+                max_retries=max_retries,
+            )
     review_json_path.write_text(
         json.dumps(sanitize_for_json(review_payload), ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -2492,6 +2813,7 @@ def _write_reader_verifier_artifacts(
             "review_json": _path_for_report(review_json_path),
             "review_md": _path_for_report(review_md_path),
         },
+        "updated_reader_cleanup_evidence": dict(reader_cleanup_evidence),
     }
 
 
@@ -3541,6 +3863,10 @@ def _extract_ui_result_artifact_paths(event_log: Sequence[Mapping[str, object]])
 
 def _load_reader_cleanup_evidence(event_log: Sequence[Mapping[str, object]]) -> dict[str, object]:
     artifact_paths = _extract_ui_result_artifact_paths(event_log)
+    return _build_reader_cleanup_evidence_from_artifact_paths(artifact_paths)
+
+
+def _build_reader_cleanup_evidence_from_artifact_paths(artifact_paths: Mapping[str, str]) -> dict[str, object]:
     evidence: dict[str, object] = {
         "artifacts_present": bool(artifact_paths),
         "cleaned_markdown_path": artifact_paths.get("markdown_path"),
@@ -3606,6 +3932,240 @@ def _load_reader_cleanup_evidence(event_log: Sequence[Mapping[str, object]]) -> 
         }
     )
     return evidence
+
+
+def _parse_reader_verifier_cleaned_line_number(line_ref: str, artifact: str) -> int | None:
+    if artifact and artifact != "cleaned_markdown":
+        return None
+    candidate = str(line_ref or "").strip()
+    if not candidate:
+        return None
+    if ":" in candidate:
+        prefix, _, suffix = candidate.partition(":")
+        if prefix and prefix != "cleaned_markdown":
+            return None
+        candidate = suffix.strip()
+    if not candidate.isdigit():
+        return None
+    line_number = int(candidate)
+    return line_number if line_number > 0 else None
+
+
+def _build_cleanup_block_line_spans(markdown_text: str) -> list[dict[str, object]]:
+    normalized_markdown = str(markdown_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized_markdown:
+        return []
+    blocks = build_cleanup_blocks(normalized_markdown)
+    if not blocks:
+        return []
+
+    spans: list[dict[str, object]] = []
+    current_lines: list[str] = []
+    block_start_line = 1
+    block_index = 0
+    for line_number, raw_line in enumerate(normalized_markdown.split("\n") + [""], start=1):
+        if raw_line.strip():
+            if not current_lines:
+                block_start_line = line_number
+            current_lines.append(raw_line)
+            continue
+        if not current_lines:
+            continue
+        if block_index >= len(blocks):
+            break
+        block = blocks[block_index]
+        block_index += 1
+        spans.append(
+            {
+                "block_id": block.block_id,
+                "text": block.text,
+                "start_line": block_start_line,
+                "end_line": line_number - 1,
+            }
+        )
+        current_lines = []
+    return spans
+
+
+def _resolve_reader_cleanup_anchor_block_id(
+    issue: Mapping[str, object],
+    *,
+    block_spans: Sequence[Mapping[str, object]],
+) -> str | None:
+    artifact = str(issue.get("artifact") or "cleaned_markdown").strip() or "cleaned_markdown"
+    line_ref = str(issue.get("line_ref") or "").strip()
+    snippet = str(issue.get("snippet") or "").strip()
+    line_number = _parse_reader_verifier_cleaned_line_number(line_ref, artifact)
+    if line_number is not None:
+        line_matches = [
+            span
+            for span in block_spans
+            if _coerce_int(span.get("start_line"), default=0) <= line_number <= _coerce_int(span.get("end_line"), default=0)
+        ]
+        if len(line_matches) == 1:
+            return str(line_matches[0].get("block_id") or "") or None
+    if snippet:
+        snippet_matches = [span for span in block_spans if snippet in str(span.get("text") or "")]
+        if len(snippet_matches) == 1:
+            return str(snippet_matches[0].get("block_id") or "") or None
+    return None
+
+
+def _build_reader_cleanup_anchor_targets(
+    *,
+    review_payload: Mapping[str, object],
+    cleaned_markdown: str,
+) -> list[dict[str, str]]:
+    block_spans = _build_cleanup_block_line_spans(cleaned_markdown)
+    if not block_spans:
+        return []
+
+    remaining_issues = _coerce_mapping_sequence(review_payload.get("remaining_issues"))
+    anchor_targets: list[dict[str, str]] = []
+    seen_identity_keys: set[str] = set()
+    for issue in remaining_issues:
+        category = str(issue.get("category") or "").strip()
+        if category not in _ALLOWED_READER_CLEANUP_ANCHOR_REPAIR_CATEGORIES:
+            continue
+        block_id = _resolve_reader_cleanup_anchor_block_id(issue, block_spans=block_spans)
+        if not block_id:
+            continue
+        line_ref = str(issue.get("line_ref") or "").strip()
+        snippet = _preview_text(str(issue.get("snippet") or "").strip())
+        identity_key = f"{category}|{line_ref}|{snippet}"
+        if identity_key in seen_identity_keys:
+            continue
+        seen_identity_keys.add(identity_key)
+        anchor_targets.append(
+            {
+                "anchor_id": hashlib.sha256(identity_key.encode("utf-8")).hexdigest()[:16],
+                "category": category,
+                "block_id": block_id,
+                "line_ref": line_ref,
+                "snippet": snippet,
+            }
+        )
+    return anchor_targets
+
+
+def _should_run_reader_cleanup_anchor_repair(
+    *,
+    validation_mode: Mapping[str, object],
+    runtime_app_config: Mapping[str, object],
+) -> bool:
+    if not bool(validation_mode.get("comparison_only_validation")):
+        return False
+    enabled_value = _get_config_value(runtime_app_config, "reader_cleanup_anchor_repair_enabled")
+    if enabled_value is None:
+        return bool(_get_config_value(runtime_app_config, "reader_cleanup_enabled"))
+    return bool(enabled_value)
+
+
+def _run_reader_cleanup_anchor_repair_validation_pass(
+    *,
+    review_payload: Mapping[str, object],
+    reader_cleanup_evidence: Mapping[str, object],
+    runtime_app_config: Mapping[str, object],
+    max_retries: int,
+) -> tuple[dict[str, object], bool, bool]:
+    artifact_paths = {
+        "markdown_path": str(reader_cleanup_evidence.get("cleaned_markdown_path") or "").strip(),
+        "docx_path": str(reader_cleanup_evidence.get("cleaned_docx_path") or "").strip(),
+        "reader_cleanup_raw_markdown_path": str(reader_cleanup_evidence.get("raw_markdown_path") or "").strip(),
+        "reader_cleanup_report_path": str(reader_cleanup_evidence.get("reader_cleanup_report_path") or "").strip(),
+    }
+    cleaned_markdown, _, cleaned_markdown_warning = _load_text_artifact(artifact_paths["markdown_path"])
+    cleanup_report_payload, _, cleanup_report_warning = _load_optional_json_artifact(artifact_paths["reader_cleanup_report_path"])
+    if cleaned_markdown_warning is not None or cleanup_report_warning is not None or cleanup_report_payload is None:
+        return dict(reader_cleanup_evidence), False, False
+
+    anchor_targets = _build_reader_cleanup_anchor_targets(review_payload=review_payload, cleaned_markdown=cleaned_markdown)
+    if not anchor_targets:
+        return dict(reader_cleanup_evidence), False, False
+
+    fallback_model = str(_get_config_value(runtime_app_config, "model") or READER_VERIFIER_DEFAULT_SELECTOR).strip()
+    config = resolve_reader_cleanup_config(app_config=runtime_app_config, fallback_model=fallback_model)
+    if not config.enabled:
+        return dict(reader_cleanup_evidence), False, False
+
+    cleanup_report_file = _resolve_reported_path(artifact_paths["reader_cleanup_report_path"])
+    cleaned_markdown_file = _resolve_reported_path(artifact_paths["markdown_path"])
+    cleaned_docx_file = _resolve_reported_path(artifact_paths["docx_path"])
+
+    try:
+        resolved_selector = resolve_model_selector(
+            config.model,
+            "responses_text",
+            config_like=runtime_app_config,
+            source_name="reader cleanup anchor repair model selector",
+        )
+        client = get_client_for_model_selector(
+            config.model,
+            "responses_text",
+            config_like=runtime_app_config,
+        )
+        cleanup_system_prompt = build_reader_cleanup_system_prompt()
+        cleanup_schema_repair_system_prompt = build_reader_cleanup_schema_repair_system_prompt()
+
+        def _anchor_operation_provider(request_payload: Mapping[str, object], chunk_index: int, chunk_count: int) -> str:
+            return generate_markdown_block(
+                client=client,
+                model=resolved_selector.model_id,
+                system_prompt=cleanup_system_prompt,
+                target_text=json.dumps(request_payload, ensure_ascii=False, indent=2),
+                context_before=str(request_payload.get("context_before_preview") or ""),
+                context_after=str(request_payload.get("context_after_preview") or ""),
+                max_retries=max(1, max_retries),
+                expected_paragraph_ids=None,
+                marker_mode=False,
+            )
+
+        def _repair_provider(request_payload: Mapping[str, object], chunk_index: int, chunk_count: int) -> str:
+            return generate_markdown_block(
+                client=client,
+                model=resolved_selector.model_id,
+                system_prompt=cleanup_schema_repair_system_prompt,
+                target_text=json.dumps(request_payload, ensure_ascii=False, indent=2),
+                context_before="",
+                context_after="",
+                max_retries=max(1, max_retries),
+                expected_paragraph_ids=None,
+                marker_mode=False,
+            )
+
+        cleanup_result = run_reader_cleanup_anchor_repair(
+            markdown_text=cleaned_markdown,
+            config=config,
+            base_report_payload=cleanup_report_payload,
+            anchor_targets=anchor_targets,
+            operation_provider=_anchor_operation_provider,
+            repair_provider=_repair_provider,
+            model_resolution={
+                "requested_selector": config.model,
+                "canonical_selector": resolved_selector.canonical_selector,
+                "provider": resolved_selector.provider,
+                "model_id": resolved_selector.model_id,
+            },
+        )
+    except Exception as exc:
+        if cleanup_report_file is not None:
+            updated_report = dict(cleanup_report_payload)
+            updated_warnings = [str(item) for item in cast(Sequence[object], updated_report.get("warnings") or [])]
+            updated_warnings.append(f"reader_cleanup_anchor_repair_failed:{exc}")
+            updated_report["warnings"] = updated_warnings
+            _write_json_atomic(cleanup_report_file, cast(Mapping[str, object], sanitize_for_json(updated_report)))
+        return _build_reader_cleanup_evidence_from_artifact_paths(artifact_paths), True, False
+
+    if cleaned_markdown_file is not None and cleanup_result.changed:
+        cleaned_markdown_file.write_text(cleanup_result.cleaned_markdown, encoding="utf-8")
+    if cleaned_docx_file is not None and cleanup_result.changed:
+        cleaned_docx_file.write_bytes(convert_markdown_to_docx_bytes(cleanup_result.cleaned_markdown))
+    if cleanup_report_file is not None:
+        _write_json_atomic(
+            cleanup_report_file,
+            cast(Mapping[str, object], sanitize_for_json(cleanup_result.report_payload)),
+        )
+    return _build_reader_cleanup_evidence_from_artifact_paths(artifact_paths), True, cleanup_result.changed
 
 
 def _merge_reader_cleanup_artifact_paths(
@@ -4567,9 +5127,34 @@ def main() -> None:
             validation_mode=validation_mode,
             max_retries=int(runtime_resolution.effective.max_retries) if runtime_resolution is not None else 1,
         )
+        updated_reader_cleanup_evidence = reader_verifier_evidence.pop("updated_reader_cleanup_evidence", None)
+        if isinstance(updated_reader_cleanup_evidence, Mapping):
+            reader_cleanup_evidence = dict(updated_reader_cleanup_evidence)
+            report["reader_cleanup_evidence"] = reader_cleanup_evidence
+            _merge_reader_cleanup_artifact_paths(
+                cast(dict[str, object], report["output_artifacts"]),
+                reader_cleanup_evidence,
+            )
         report["reader_verifier_evidence"] = reader_verifier_evidence
         remaining_issues = _coerce_mapping_sequence(reader_verifier_evidence.get("remaining_issues"))
         issue_summary = cast(Mapping[str, object], reader_verifier_evidence.get("issue_summary_by_category") or {})
+        reader_mvp_status_path = artifact_dir / f"{artifact_prefix}_reader_mvp_status.md"
+        reader_mvp_status = _build_reader_mvp_status_payload(report)
+        reader_mvp_status_with_artifacts = {
+            **reader_mvp_status,
+            "artifact_paths": {"status_md": _path_for_report(reader_mvp_status_path)},
+        }
+        reader_mvp_status_path.write_text(
+            _render_reader_mvp_status_markdown(reader_mvp_status_with_artifacts),
+            encoding="utf-8",
+        )
+        report["reader_mvp_status"] = reader_mvp_status_with_artifacts
+        cast(dict[str, object], report["output_artifacts"])["reader_mvp_status_md"] = _path_for_report(reader_mvp_status_path)
+        reader_verifier_artifact_paths = dict(
+            cast(Mapping[str, object], reader_verifier_evidence.get("artifact_paths") or {})
+        )
+        reader_verifier_artifact_paths["mvp_status_md"] = _path_for_report(reader_mvp_status_path)
+        reader_verifier_evidence["artifact_paths"] = reader_verifier_artifact_paths
         tracker.set_manifest_context(
             reader_verifier_status=reader_verifier_evidence.get("verifier_status"),
             reader_verifier_reason=reader_verifier_evidence.get("verifier_reason"),
@@ -4589,6 +5174,22 @@ def main() -> None:
             reader_verifier_review_json=cast(Mapping[str, object], reader_verifier_evidence.get("artifact_paths") or {}).get("review_json"),
             reader_verifier_review_md=cast(Mapping[str, object], reader_verifier_evidence.get("artifact_paths") or {}).get("review_md"),
             reader_verifier_evidence_json=cast(Mapping[str, object], reader_verifier_evidence.get("artifact_paths") or {}).get("source_evidence_json"),
+            reader_mvp_status_label=reader_mvp_status_with_artifacts.get("status_label"),
+            reader_mvp_status_user_summary=reader_mvp_status_with_artifacts.get("user_summary"),
+            reader_mvp_status_risk_summary=reader_mvp_status_with_artifacts.get("risk_summary"),
+            reader_mvp_status_cleanup_score_delta=reader_mvp_status_with_artifacts.get("cleanup_score_delta"),
+            reader_mvp_status_acceptance_diagnostic_only=reader_mvp_status_with_artifacts.get("comparison_only_acceptance_diagnostic"),
+            reader_mvp_status_false_deletion_status=(
+                "none_reported"
+                if bool(reader_mvp_status_with_artifacts.get("no_false_deletions_reported"))
+                else "reported"
+            ),
+            reader_mvp_status_readability_regression_status=(
+                "none_reported"
+                if bool(reader_mvp_status_with_artifacts.get("no_readability_regressions_reported"))
+                else "reported"
+            ),
+            reader_mvp_status_md=cast(Mapping[str, object], reader_mvp_status_with_artifacts.get("artifact_paths") or {}).get("status_md"),
         )
     sanitized_report = sanitize_for_json(report)
     final_status = _resolve_validation_final_status(
@@ -4677,6 +5278,7 @@ def main() -> None:
         f"reader_verifier_review_json={cast(Mapping[str, object], cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('artifact_paths') or {}).get('review_json')}",
         f"reader_verifier_review_md={cast(Mapping[str, object], cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('artifact_paths') or {}).get('review_md')}",
         f"reader_verifier_evidence_json={cast(Mapping[str, object], cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('artifact_paths') or {}).get('source_evidence_json')}",
+        f"reader_mvp_status_md={cast(Mapping[str, object], report.get('output_artifacts') or {}).get('reader_mvp_status_md')}",
         f"tts_text_path={report['output_artifacts']['tts_text_path']}",
         f"latest_manifest_json={report['output_artifacts']['latest_manifest_json']}",
         f"python_executable={report['run']['environment']['python_executable']}",
@@ -4688,6 +5290,12 @@ def main() -> None:
         f"is_wsl={report['run']['environment']['is_wsl']}",
         f"git_head={report['run']['environment']['git_head']}",
     ]
+    if isinstance(report.get("reader_mvp_status"), Mapping):
+        summary_lines.extend(
+            _build_reader_mvp_status_summary_lines(
+                cast(Mapping[str, object], report.get("reader_mvp_status") or {}),
+            )
+        )
     summary_lines.extend(
         _build_translation_quality_summary_lines(
             cast(Mapping[str, object], report["translation_quality_report"] or {}),

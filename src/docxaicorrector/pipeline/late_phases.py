@@ -42,6 +42,7 @@ from docxaicorrector.processing.preparation import humanize_quality_gate_reasons
 from docxaicorrector.reader_cleanup_mvp import (
     build_cleanup_blocks,
     build_reader_cleanup_global_plan_system_prompt,
+    build_reader_cleanup_schema_repair_system_prompt,
     build_reader_cleanup_system_prompt,
     ReaderCleanupStageError,
     resolve_reader_cleanup_config,
@@ -210,6 +211,7 @@ def _run_reader_cleanup_postprocess(
         )
 
     system_prompt = build_reader_cleanup_system_prompt()
+    schema_repair_system_prompt = build_reader_cleanup_schema_repair_system_prompt()
     global_plan_system_prompt = build_reader_cleanup_global_plan_system_prompt()
     fallback_client = None
     if not callable(getattr(dependencies, "resolve_model_selector", None)) or not callable(
@@ -319,11 +321,59 @@ def _run_reader_cleanup_postprocess(
         )
         return response
 
+    def _repair_provider(request_payload: Mapping[str, object], chunk_index: int, chunk_count: int) -> str:
+        target_text = json.dumps(request_payload, ensure_ascii=False, indent=2)
+        started_at = time.perf_counter()
+        dependencies.log_event(
+            logging.INFO,
+            "reader_cleanup_schema_repair_started",
+            "Запущен schema-repair retry для cleanup chunk.",
+            filename=context.uploaded_filename,
+            operation="translate",
+            **{"pass": "reader_cleanup_schema_repair"},
+            model=config.model,
+            model_selector=model_selector,
+            model_provider=model_provider,
+            model_id=model_id,
+            chunk_index=chunk_index,
+            chunk_count=chunk_count,
+            target_chars=len(target_text),
+        )
+        response = dependencies.generate_markdown_block(
+            client=client,
+            model=model_id,
+            system_prompt=schema_repair_system_prompt,
+            target_text=target_text,
+            context_before="",
+            context_after="",
+            max_retries=context.max_retries,
+            expected_paragraph_ids=None,
+            marker_mode=False,
+        )
+        dependencies.log_event(
+            logging.INFO,
+            "reader_cleanup_schema_repair_completed",
+            "Schema-repair retry для cleanup chunk завершён.",
+            filename=context.uploaded_filename,
+            operation="translate",
+            **{"pass": "reader_cleanup_schema_repair"},
+            model=config.model,
+            model_selector=model_selector,
+            model_provider=model_provider,
+            model_id=model_id,
+            chunk_index=chunk_index,
+            chunk_count=chunk_count,
+            output_chars=len(response),
+            elapsed_ms=round((time.perf_counter() - started_at) * 1000, 3),
+        )
+        return response
+
     try:
         cleanup_result = run_reader_cleanup(
             markdown_text=cleanup_input_markdown,
             config=config,
             operation_provider=_operation_provider,
+            repair_provider=_repair_provider,
             global_plan_provider=_global_plan_provider,
             model_resolution={
                 "requested_selector": config.model,

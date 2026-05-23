@@ -3,10 +3,12 @@ from .service import (
     ReaderCleanupResult,
     ReaderCleanupStageError,
     build_reader_cleanup_global_plan_system_prompt,
+    build_reader_cleanup_schema_repair_system_prompt,
     build_reader_cleanup_system_prompt,
     build_cleanup_blocks,
     resolve_reader_cleanup_config,
     run_reader_cleanup,
+    run_reader_cleanup_anchor_repair,
     write_reader_cleanup_diagnostics,
 )
 
@@ -15,9 +17,11 @@ __all__ = [
     "ReaderCleanupResult",
     "ReaderCleanupStageError",
     "build_reader_cleanup_global_plan_system_prompt",
+    "build_reader_cleanup_schema_repair_system_prompt",
     "build_reader_cleanup_system_prompt",
     "build_cleanup_blocks",
     "resolve_reader_cleanup_config",
     "run_reader_cleanup",
+    "run_reader_cleanup_anchor_repair",
     "write_reader_cleanup_diagnostics",
 ]
