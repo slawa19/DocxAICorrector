@@ -41,6 +41,7 @@ from docxaicorrector.pipeline.reassembly import (
 from docxaicorrector.processing.preparation import humanize_quality_gate_reasons
 from docxaicorrector.reader_cleanup_mvp import (
     build_cleanup_blocks,
+    build_reader_cleanup_global_plan_system_prompt,
     build_reader_cleanup_system_prompt,
     ReaderCleanupStageError,
     resolve_reader_cleanup_config,
@@ -209,6 +210,7 @@ def _run_reader_cleanup_postprocess(
         )
 
     system_prompt = build_reader_cleanup_system_prompt()
+    global_plan_system_prompt = build_reader_cleanup_global_plan_system_prompt()
     fallback_client = None
     if not callable(getattr(dependencies, "resolve_model_selector", None)) or not callable(
         getattr(dependencies, "get_client_for_model_selector", None)
@@ -222,6 +224,49 @@ def _run_reader_cleanup_postprocess(
     )
 
     emitters.emit_activity(context.runtime, "Запущен reader cleanup post-pass для итогового Markdown.")
+
+    def _global_plan_provider(request_payload: Mapping[str, object]) -> str:
+        target_text = json.dumps(request_payload, ensure_ascii=False, indent=2)
+        started_at = time.perf_counter()
+        dependencies.log_event(
+            logging.INFO,
+            "reader_cleanup_global_plan_started",
+            "Запущен advisory global reader cleanup plan для полного raw Markdown.",
+            filename=context.uploaded_filename,
+            operation="translate",
+            **{"pass": "reader_cleanup_global_plan"},
+            model=config.model,
+            model_selector=model_selector,
+            model_provider=model_provider,
+            model_id=model_id,
+            target_chars=len(target_text),
+        )
+        response = dependencies.generate_markdown_block(
+            client=client,
+            model=model_id,
+            system_prompt=global_plan_system_prompt,
+            target_text=target_text,
+            context_before="",
+            context_after="",
+            max_retries=context.max_retries,
+            expected_paragraph_ids=None,
+            marker_mode=False,
+        )
+        dependencies.log_event(
+            logging.INFO,
+            "reader_cleanup_global_plan_completed",
+            "Advisory global reader cleanup plan завершён.",
+            filename=context.uploaded_filename,
+            operation="translate",
+            **{"pass": "reader_cleanup_global_plan"},
+            model=config.model,
+            model_selector=model_selector,
+            model_provider=model_provider,
+            model_id=model_id,
+            output_chars=len(response),
+            elapsed_ms=round((time.perf_counter() - started_at) * 1000, 3),
+        )
+        return response
 
     def _operation_provider(request_payload: Mapping[str, object], chunk_index: int, chunk_count: int) -> str:
         target_text = json.dumps(request_payload, ensure_ascii=False, indent=2)
@@ -279,6 +324,13 @@ def _run_reader_cleanup_postprocess(
             markdown_text=cleanup_input_markdown,
             config=config,
             operation_provider=_operation_provider,
+            global_plan_provider=_global_plan_provider,
+            model_resolution={
+                "requested_selector": config.model,
+                "canonical_selector": model_selector,
+                "provider": model_provider,
+                "model_id": model_id,
+            },
         )
         if not cleanup_result.changed:
             stats = cast(Mapping[str, object], cleanup_result.report_payload.get("stats") or {})
@@ -319,13 +371,19 @@ def _run_reader_cleanup_postprocess(
         dependencies.log_event(
             logging.INFO,
             "reader_cleanup_applied",
-            "Reader cleanup post-pass применил block-level deletions к итоговому Markdown.",
+            "Reader cleanup post-pass применил bounded cleanup operations к итоговому Markdown.",
             filename=context.uploaded_filename,
             policy=config.policy,
             model=config.model,
+            model_selector=model_selector,
+            model_provider=model_provider,
+            model_id=model_id,
             accepted_delete_block_count=len(cleanup_result.accepted_delete_block_ids),
+            accepted_cleanup_operation_count=stats.get("accepted_cleanup_operation_count"),
             ignored_delete_block_count=stats.get("ignored_delete_block_count"),
+            ignored_cleanup_operation_count=stats.get("ignored_cleanup_operation_count"),
             proposed_delete_block_count=stats.get("proposed_delete_block_count"),
+            proposed_cleanup_operation_count=stats.get("proposed_cleanup_operation_count"),
             cleanup_chunk_count=stats.get("cleanup_chunk_count"),
             failed_chunk_count=stats.get("failed_chunk_count"),
             cleaned_markdown_chars=len(cleaned_runtime_display_markdown),

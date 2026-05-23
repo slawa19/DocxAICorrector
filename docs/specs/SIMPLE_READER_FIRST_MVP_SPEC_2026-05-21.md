@@ -52,8 +52,9 @@ Simple reader-first режим должен проверить альтерна�
 3. перевода крупными, устойчивыми chunks с базовой Markdown/DOCX разметкой;
 4. whole-document cleanup planning после перевода, который видит всю книгу, но
    возвращает только компактные pattern/operation hints;
-5. второго AI post-pass после перевода, который не форматирует документ заново,
-   а предлагает только cleanup operations над блоками;
+5. второго AI post-pass после перевода, который является главным reasoner для
+  reader-visible cleanup и предлагает bounded cleanup operations над блоками и
+  точными фрагментами;
 6. сохранения raw и cleaned artifacts для ручного сравнения.
 
 The MVP should not translate or rewrite a full book in a single model response.
@@ -61,6 +62,51 @@ Whole-document context is useful for analysis and cleanup planning because those
 stages return small outputs. Full-book translation as one response is not an MVP
 target because output-size limits, truncation risk, retry cost, and alignment loss
 make it a fragile proof path.
+
+## AI-First Cleanup Authority Contract
+
+This MVP is explicitly AI-first for cleanup and verification. Agents must not
+turn it into a second deterministic structure-recovery pipeline made of
+document-specific regex rules.
+
+Authority split:
+
+- AI owns document-specific judgement: what is page furniture in this book,
+  where a heading is fused with prose, where a paragraph was fragmented by a
+  page boundary, and which cleanup operation best improves readability.
+- Code owns safety and auditability: block IDs, text hashes, schema validation,
+  exact-match application, protected-block rules, deletion/edit budgets,
+  artifact paths, and failure reporting.
+- Deterministic detectors are allowed only as input signals, safety guards,
+  exact-match applicators, and verifier pre-audit candidates. They are not the
+  primary cleanup strategy.
+
+Forbidden default path:
+
+- do not add source-document-specific phrase lists, heading literals, page
+  header strings, or one-off regexes as the main way to improve a new document;
+- do not make the comparison-only run greener by expanding deterministic
+  cleanup rules around the current sample;
+- do not solve fused heading/body, inline page furniture, or fragmented
+  paragraphs by hardcoding Lietaer-specific Russian or English phrases;
+- do not recommend structure-recognition expansion, Stage 1/2 tuning, or
+  acceptance-threshold tuning as the primary response to reader-facing cleanup
+  defects unless the AI-first cleanup evidence proves the defect cannot be
+  safely handled late.
+
+Preferred path:
+
+1. improve the cleanup and verifier prompts;
+2. use a stronger configured cleanup/verifier model when available;
+3. expand the AI operation contract in small bounded ways;
+4. keep deterministic code as a safety layer that can reject unsafe AI proposals;
+5. rerun the same comparison-only profile and inspect raw vs cleaned artifacts.
+
+Any proposed deterministic cleanup change must state which role it plays:
+`signal_only`, `safety_guard`, `exact_match_application`, or
+`last_resort_document_agnostic_cleanup`. `last_resort_document_agnostic_cleanup`
+requires cross-document rationale and tests; it must not be the first response
+to a single failed book slice.
 
 ## Whole-Document Awareness Strategy
 
@@ -251,14 +297,14 @@ Translation second pass можно оставить выключенным дл�
 
 ### Post-Translation AI Reader Cleanup
 
-Второй проход должен быть AI, но ограниченный контрактом operations-only. Модель
-не должна возвращать весь переписанный Markdown как единственный источник истины.
+Второй проход должен быть AI-first, но ограниченный контрактом bounded
+operations. Модель не должна возвращать весь переписанный Markdown как
+единственный источник истины.
 
-MVP cleanup is block-level first. Inline deletions are disabled for AI output in
-Slice 1-2 because translated page-furniture strings may no longer exact-match the
-source text and can be glued to semantic text. Inline cleanup may be added later
-only for code-owned regex categories such as pure page numbers, explicit
-blank-page markers, or exact repeated header lines.
+The initial delete-only contract is now considered insufficient for real
+reader-facing defects because it cannot fix heading/body fusion, inline page
+furniture glued to prose, or fragmented paragraphs. The MVP cleanup contract
+therefore supports bounded edit operations while preserving code-owned safety.
 
 Stable block identity contract:
 
@@ -274,30 +320,65 @@ Recommended MVP model contract:
 
 ```json
 {
-  "delete_blocks": [
+  "cleanup_operations": [
     {
+      "operation": "delete_block",
       "id": "b_000142",
       "text_hash": "7f83b1657ff1fc53",
       "reason": "repeated_running_header",
-      "confidence": "high"
+      "confidence": "high",
+      "evidence_before": "The same running header appears repeatedly near page boundaries.",
+      "expected_after_preview": "",
+      "safety_note": "Non-semantic repeated page furniture only."
     }
   ],
   "warnings": []
 }
 ```
 
-Any response that contains rewritten Markdown, unknown top-level fields, unknown
-operation fields, duplicate block IDs, hash mismatches, or non-JSON prose must be
-rejected or treated as no-op in advisory mode.
+Allowed operation types:
+
+- `delete_block`: remove an entire block that is non-semantic noise.
+- `split_block`: split one block into two or three blocks using exact substrings
+  from the original block; useful for fused heading/body text.
+- `remove_inline_noise`: remove an exact substring from a block when that
+  substring is page furniture, a page number island, or a running header and the
+  remaining text is semantic prose.
+- `join_fragmented_paragraph`: join adjacent blocks when the model provides
+  evidence that they are one paragraph broken by extraction/page boundary noise.
+- `normalize_heading_boundary`: separate a heading-like prefix from following
+  prose without changing the words.
+
+Required fields for every operation:
+
+- `operation`
+- `id`
+- `text_hash`
+- `reason`
+- `confidence`
+- `evidence_before`
+- `expected_after_preview`
+- `safety_note`
+
+Additional fields are allowed only when required by the operation type, for
+example exact split substrings or exact inline substring to remove. The model may
+propose these operations, but the code applies them only when the operation can
+be verified against the raw cleanup input by exact IDs, hashes, adjacency, and
+substring matching.
+
+Any response that contains full rewritten Markdown, unknown top-level fields,
+unknown operation fields, duplicate incompatible edits for the same block, hash
+mismatches, non-JSON prose, or non-exact edit targets must be rejected or treated
+as no-op in advisory mode.
 
 The code applies only allowed operations. The model is not allowed to:
 
 - rewrite paragraphs for style;
 - translate again;
 - reorder blocks;
-- change heading levels;
-- create new headings;
-- merge or split headings;
+- change heading levels beyond separating an already present heading-like text
+  from prose;
+- create new headings from words that are not already present;
 - reconstruct TOC;
 - delete low-confidence semantic text.
 
@@ -519,26 +600,39 @@ Suggested checks:
 
 ## Prompt Contract
 
-The reader cleanup prompt should be intentionally narrow:
+The reader cleanup prompt should be intentionally narrow but not delete-only:
 
 ```text
 You are cleaning a translated book Markdown for reading.
-Do not translate, rewrite, polish, summarize, reorder, or reformat the book.
-Return JSON cleanup operations only.
-Delete only non-semantic PDF/OCR/layout noise: repeated running headers,
-footers, page numbers, blank-page markers, orphaned footnote markers, and obvious
-extraction artifacts.
+Do not translate, polish, summarize, reorder, or globally reformat the book.
+Return JSON cleanup_operations only.
+You may propose bounded operations only: delete_block, split_block,
+remove_inline_noise, join_fragmented_paragraph, normalize_heading_boundary.
+Fix reader-visible PDF/OCR/layout damage: repeated running headers, footers,
+page numbers, blank-page markers, orphaned footnote markers, obvious extraction
+artifacts, headings fused with body prose, inline page furniture glued to prose,
+and paragraphs fragmented by page boundaries.
 Preserve chapters, headings, normal paragraphs, lists, quotes, footnote bodies,
 bibliography, index, and TOC unless the profile explicitly allows dropping them.
+Every edit must cite exact block id, text_hash, reason, confidence,
+evidence_before, expected_after_preview, and safety_note.
+For split/remove/join operations, provide only exact substrings or adjacent block
+IDs needed for the operation. Never return a full rewritten document.
 If uncertain, keep the text and add a warning.
 ```
 
 For MVP, avoid asking the model to decide broad structural questions. It is a
-garbage-removal reviewer, not a structure recognizer.
+reader cleanup editor with bounded tools, not a structure recognizer and not a
+free-form rewrite engine.
 
 Prompt instructions are not considered sufficient safety. Code-side schema
 validation and operation filtering are required before any model-proposed cleanup
 is applied.
+
+Prompt iteration is the preferred first response when a new document exposes a
+new class of reader-visible cleanup failure. Deterministic rules should be added
+only after prompt/model/operation-contract improvements are insufficient or when
+the rule is clearly document-agnostic and belongs to safety/application logic.
 
 ## Chunking And Failure Policy
 
@@ -604,13 +698,23 @@ tests pass.
 Do not keep tightening cleanup heuristics, validation filters, or report detail
 if those changes do not help answer the real-document comparison question.
 
+This rule is especially strict for deterministic cleanup. New deterministic
+rules must not become the default mechanism for adapting to each new document.
+For reader-visible defects, prefer this order:
+
+1. improve the AI prompt;
+2. use a stronger configured cleanup/verifier model;
+3. add or refine a bounded AI operation type;
+4. improve code-side safety/application for AI proposals;
+5. only then add a document-agnostic deterministic cleanup rule.
+
 A change is high-priority only if it does at least one of the following:
 
 - helps cleanup execute on the target real document and produce reviewable
   artifacts;
 - prevents a meaningful semantic regression or protected-block deletion;
-- materially improves the interpretability of the real-document comparison
-  result.
+- materially improves the AI cleanup/verifier prompt contract or the
+  interpretability of the real-document comparison result.
 
 Changes that only improve local formal correctness, report richness, or
 edge-case coverage without helping real-document validation should be treated as
@@ -621,6 +725,8 @@ cleaned artifact production or clearly correspond to reader-visible harm:
 
 - tuning acceptance-only thresholds to make a comparison-only run look greener;
 - expanding structural validation logic as the primary iteration loop;
+- adding document-specific deterministic cleanup patterns when a prompt or
+  bounded AI operation would address the same defect class;
 - spending cycles on non-blocking `failed_checks` that do not change the human
   reading experience of the cleaned artifact.
 
@@ -717,9 +823,14 @@ Purpose:
   human reviewer on every iteration;
 - assess whether cleaned output is more readable than raw output on the selected
   document slice;
+- produce a maximally detailed engineering-facing list of remaining reader
+  problems in the cleaned artifact so later cleanup / formatting-recovery /
+  structure-recognition work is guided by concrete evidence instead of broad
+  impressions;
 - identify likely false deletions, major readability regressions, and remaining
   reader-visible noise;
-- suggest only prompt, minimal-formatting, or deterministic-cleanup changes.
+- suggest primarily prompt, model/operation-contract, or minimal safety changes;
+  deterministic cleanup may be suggested only as a document-agnostic last resort.
 
 The verifier is not:
 
@@ -786,6 +897,11 @@ reader_verifier_emit_summary: bool = true
 For the first implementation slice, these may be wired only through the
 comparison-only validation harness instead of broad UI/config plumbing.
 
+To avoid overengineering, MVP keeps a single verifier model selector and a
+single verifier execution step. The added strictness comes from the review
+contract and evidence preparation, not from introducing a second independent AI
+service or a large new config surface.
+
 ### Execution Order And Non-Blocking Semantics
 
 Required order:
@@ -807,6 +923,68 @@ Rules:
   `completed` even when verifier status is `not_run` or `failed`;
 - verifier failure must never be reported as fake success;
 - verifier absence must be visible in artifacts and summaries, not hidden.
+
+### Dual Output Contract
+
+The verifier must answer two different questions in one review artifact:
+
+1. `comparison verdict`: is cleaned easier to read than raw?
+2. `cleaned audit verdict`: what reader-visible problems still remain in the
+   cleaned artifact itself?
+
+These questions must not be collapsed into one optimistic summary.
+
+Required rule:
+
+- `overall_verdict = cleaned_better` is allowed even when the cleaned artifact
+  still has remaining problems;
+- therefore the review must also emit a separate
+  `cleaned_audit_verdict = clean|improved_but_has_remaining_issues|unsafe_or_regressed|unclear`;
+- a positive comparison verdict must never be used as shorthand for
+  `cleaned is now clean`.
+
+The engineering target of this verifier slice is the detailed problem list, not
+just the top-line verdict.
+
+### Deterministic Pre-Audit
+
+Before calling the verifier model, the code must run a narrow deterministic
+pre-audit over the cleaned Markdown and include the findings in the verifier
+evidence packet.
+
+This pre-audit is intentionally lightweight and code-owned. It is not a second
+pipeline or a structure-recognition system.
+
+Minimum required candidate detectors:
+
+- repeated inline page furniture such as page numbers plus running headers;
+- heading/body fusion where a heading-like phrase is glued into a prose line;
+- broken list markers such as `•` that should be normalized to Markdown list
+  markers;
+- fragmented paragraphs around likely page-boundary joins;
+- obvious duplicate fragments caused by page-boundary carryover.
+
+The verifier model must treat these candidates as mandatory review targets. It
+may disagree with a candidate classification, but it must not silently ignore
+the candidate set.
+
+### Mandatory Defect Taxonomy
+
+The verifier must classify remaining issues using a stable, limited taxonomy.
+MVP does not need a large ontology; the following categories are sufficient for
+the first implementation slice:
+
+- `page_furniture_inline`
+- `heading_fused_with_body`
+- `broken_list_marker`
+- `fragmented_paragraph`
+- `duplicate_fragment`
+- `orphan_caption`
+- `mixed_language_leak`
+- `quote_not_block_formatted`
+
+If the verifier finds no issue in one of these categories, it should record that
+explicitly in category summary fields instead of omitting the category entirely.
 
 ### Evidence Input Contract
 
@@ -842,6 +1020,8 @@ Required evidence packet contents:
   packetized mode is used;
 - cleaned Markdown for the reviewed slice, or explicit cleaned packets when
   packetized mode is used;
+- deterministic pre-audit findings for the cleaned Markdown, including matched
+  candidate snippets and line references where available;
 - cleanup report summary, including accepted/ignored/rejected operations;
 - deleted block previews with neighboring context when deletions exist;
 - paths to the raw/cleaned artifacts used in review.
@@ -910,15 +1090,56 @@ Minimum required review artifact shape:
     "reader_cleanup_report": "..."
   },
   "overall_verdict": "cleaned_better|raw_better|mixed|unclear",
+  "cleaned_audit_verdict": "clean|improved_but_has_remaining_issues|unsafe_or_regressed|unclear",
   "reader_quality_score_raw": 0,
   "reader_quality_score_cleaned": 0,
   "confidence": "low|medium|high",
+  "pre_audit_issue_counts": {
+    "page_furniture_inline": 0,
+    "heading_fused_with_body": 0,
+    "broken_list_marker": 0,
+    "fragmented_paragraph": 0,
+    "duplicate_fragment": 0,
+    "orphan_caption": 0,
+    "mixed_language_leak": 0,
+    "quote_not_block_formatted": 0
+  },
+  "remaining_issues": [
+    {
+      "category": "page_furniture_inline",
+      "severity": "high|medium|low",
+      "artifact": "cleaned_markdown|raw_markdown|comparison",
+      "line_ref": "cleaned_markdown:121",
+      "snippet": "...",
+      "why_reader_hurts": "...",
+      "recommended_fix_type": "delete_noise|split_heading|merge_paragraph|normalize_list|format_quote|other"
+    }
+  ],
+  "issue_summary_by_category": {
+    "page_furniture_inline": 0,
+    "heading_fused_with_body": 0,
+    "broken_list_marker": 0,
+    "fragmented_paragraph": 0,
+    "duplicate_fragment": 0,
+    "orphan_caption": 0,
+    "mixed_language_leak": 0,
+    "quote_not_block_formatted": 0
+  },
+  "evidence_anchors": [
+    {
+      "kind": "improvement_seen|remaining_issue|possible_false_deletion",
+      "artifact": "cleaned_markdown|raw_markdown|comparison",
+      "line_ref": "cleaned_markdown:121",
+      "snippet": "...",
+      "note": "..."
+    }
+  ],
   "noise_removed": [],
   "possible_false_deletions": [],
   "readability_regressions": [],
   "recommended_next_changes": [
     {
-      "change_type": "prompt|minimal_formatting|deterministic_cleanup",
+      "change_type": "prompt|model_selection|operation_contract|safety_application|deterministic_last_resort",
       "recommendation": "...",
       "why": "..."
     }
@@ -934,13 +1155,43 @@ Rules:
 
 - `overall_verdict` is a product-facing comparison result, not an acceptance
   result;
-- `recommended_next_changes` are restricted to `prompt`,
-  `minimal_formatting`, or `deterministic_cleanup`;
+- `cleaned_audit_verdict` is the engineering-facing state of the cleaned
+  artifact itself;
+- `recommended_next_changes` should prefer `prompt`, `model_selection`,
+  `operation_contract`, or `safety_application`; `deterministic_last_resort` is
+  allowed only when the recommendation is document-agnostic and cannot be
+  expressed as a bounded AI operation;
 - if `verifier_status != "completed"`, then `overall_verdict` must be `unclear`
   and the summary fields must explain why the verifier produced no conclusion;
+- if `verifier_status != "completed"`, then `cleaned_audit_verdict` must also be
+  `unclear`;
+- if `remaining_issues` is non-empty, `cleaned_audit_verdict` must not be
+  `clean`;
+- if deterministic pre-audit found unresolved candidates in a category, the
+  verifier must not claim that the category was fully removed without explaining
+  why those candidates were rejected;
+- the verifier must not say `no evidence of lost content` unless it also states
+  whether reader-visible structural defects still remain in the cleaned output;
+- every high-severity remaining issue must include an exact snippet and line
+  reference;
 - no verifier output may recommend structure-recognition expansion,
   acceptance-threshold tuning as the primary next step, or broad validation
   framework rewrites.
+
+### Verifier Claim Discipline
+
+The verifier must be evidence-anchored.
+
+Minimum evidence discipline:
+
+- no positive review may be emitted without at least one concrete improvement
+  anchor and one concrete remaining-issue or no-issue justification;
+- if the review says a class of noise was removed, but the cleaned artifact still
+  contains unresolved examples from that same class, the review must explicitly
+  say that the cleanup improved the class but did not finish it;
+- the verifier may conclude `cleaned_better` while also concluding
+  `improved_but_has_remaining_issues`; this is the expected non-contradictory
+  state for early MVP iterations.
 
 ### Markdown Summary Contract
 
@@ -948,11 +1199,13 @@ The Markdown review artifact must be short, skimmable, and stable. Required
 sections:
 
 1. `Verdict`
-2. `In Plain Words`
-3. `Improvements Seen`
-4. `Risks Seen`
-5. `Recommended Next Changes`
-6. `Verifier Metadata`
+2. `Audit Verdict`
+3. `In Plain Words`
+4. `Improvements Seen`
+5. `Remaining Issues`
+6. `Risks Seen`
+7. `Recommended Next Changes`
+8. `Verifier Metadata`
 
 If the verifier did not run or failed, the Markdown summary must still be
 written and must explicitly say:
@@ -971,10 +1224,17 @@ Required user-facing semantics:
 
 - avoid acceptance-first wording;
 - avoid structural jargon unless it directly explains visible reading harm;
-- separate `what improved`, `what is still risky`, and `what should change next`;
+- separate `what improved`, `what is still broken`, `what is still risky`, and
+  `what should change next`;
 - state uncertainty explicitly when confidence is low;
 - do not claim production readiness;
 - do not claim semantic preservation unless the review evidence supports it.
+
+The user-facing explanation must make the following distinction explicit:
+
+- `better than raw` does not mean `already clean`;
+- a run may succeed as comparison evidence while still exposing a useful backlog
+  of remaining cleanup defects.
 
 Required simple-language verdict mapping:
 
@@ -996,9 +1256,11 @@ The user-facing explanation derived from verifier artifacts should answer three
 simple questions in order:
 
 1. Is the cleaned result easier to read than the raw one?
-2. Did cleanup appear to remove important text or only obvious noise?
-3. What is the next narrow improvement category: `prompt`,
-   `minimal_formatting`, or `deterministic_cleanup`?
+2. What obvious reader-facing problems still remain in the cleaned result?
+3. Did cleanup appear to remove important text or only obvious noise?
+4. What is the next narrow improvement category: `prompt`, `model_selection`,
+   `operation_contract`, `safety_application`, or only as a last resort
+   `deterministic_last_resort`?
 
 ### Comparison-Only Report And Summary Semantics
 
@@ -1013,7 +1275,11 @@ The run summary should include, at minimum:
 - `reader_verifier_model_selector`
 - `reader_verifier_model_id`
 - `reader_verifier_overall_verdict`
+- `reader_verifier_cleaned_audit_verdict`
 - `reader_verifier_confidence`
+- `reader_verifier_remaining_issue_count`
+- `reader_verifier_high_severity_issue_count`
+- `reader_verifier_top_issue_categories`
 - `reader_verifier_simple_user_summary`
 - `reader_verifier_review_json`
 - `reader_verifier_review_md`
@@ -1031,10 +1297,13 @@ the full run report first.
    can be reviewed.
 3. Inspect cleanup report for false deletions and protected-block safety.
 4. Persist the verifier evidence packet.
-5. Run the AI reader verifier over source/raw/cleaned evidence.
-6. Inspect verifier status, verdict, confidence, and simple-language summary.
-7. Use the verifier output to guide only prompt, minimal-formatting, and
-   deterministic-cleanup changes.
+5. Run the AI reader verifier over source/raw/cleaned evidence and deterministic
+  pre-audit findings.
+6. Inspect verifier status, comparison verdict, cleaned audit verdict,
+  confidence, and the remaining-issues inventory.
+7. Use the verifier output to guide prompt, model-selection, bounded operation
+   contract, and safety-application changes first. Add deterministic cleanup only
+   when it is document-agnostic and clearly belongs outside AI judgement.
 8. Keep at least one automated regression that proves protected blocks are not
    deleted: chapter heading sample, first/last narrative paragraph sample, normal
    list item sample, and footnote-body sample if present.
@@ -1072,8 +1341,11 @@ Minimal success criteria:
 
 - Add `reader_cleanup.py` with block splitting, fake/model-injected operations,
   operation application, and report generation.
-- Add unit tests for stable block IDs, text hashes, operation application,
-  schema rejection, protected-block behavior, and safety checks.
+- Add unit tests for stable block IDs, text hashes, bounded operation
+  application, schema rejection, protected-block behavior, and safety checks.
+- Include tests for `split_block`, `remove_inline_noise`,
+  `join_fragmented_paragraph`, and `normalize_heading_boundary` with fake
+  model-injected operations.
 - No UI wiring.
 - No profile schema expansion unless needed.
 
@@ -1081,7 +1353,11 @@ Minimal success criteria:
 
 - Add AI call using existing model/client resolution pattern.
 - Use grouped chunks similar to audiobook postprocess.
-- Enforce operations-only JSON schema and partial failure policy.
+- Enforce bounded `cleanup_operations` JSON schema and partial failure policy.
+- Prefer a stronger configured cleanup model for this stage over the
+  cost-optimized translation baseline. Record requested/canonical/provider/model
+  metadata and fail visibly rather than silently falling back to a weaker or
+  unrelated model.
 - Log cost/latency metrics for the cleanup stage.
 - Save raw and cleaned Markdown artifacts plus cleanup report.
 - Keep cleaned DOCX optional if artifact plumbing slows down the first test.
@@ -1099,11 +1375,15 @@ Minimal success criteria:
 
 - Add a development-only verifier step after comparison-only artifact
   production.
+- Add a lightweight deterministic pre-audit over the cleaned Markdown before the
+  model review and persist its findings into the verifier evidence packet.
 - Feed persisted source/raw/cleaned evidence plus cleanup report into the fixed
   verifier model `openrouter:google/gemini-3-flash-preview`.
 - Resolve and record `verifier_requested_selector`,
   `verifier_canonical_selector`, `verifier_provider`, and
   `verifier_model_id` through the existing provider-aware selector contract.
+- Keep one verifier model call, but require dual outputs in one review artifact:
+  comparison verdict plus strict cleaned-artifact issue inventory.
 - Persist run-scoped evidence and review artifacts in the validation run
   directory.
 - Surface verifier metadata into the run report, summary, and latest manifest.
@@ -1111,6 +1391,9 @@ Minimal success criteria:
   evidence.
 - Emit simple-language conclusion fields that can later be shown to the user
   without reinterpreting raw reviewer prose.
+- Require evidence-anchored issue records with snippets, line references, and
+  narrow recommended fix types so the next cleanup iteration is driven by a real
+  defect inventory rather than general impressions.
 
 ### Slice 5: UI Toggle Later
 

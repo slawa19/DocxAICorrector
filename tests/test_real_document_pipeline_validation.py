@@ -8,6 +8,7 @@ from pathlib import Path
 from contextlib import redirect_stdout
 from types import SimpleNamespace
 
+import pytest
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
@@ -1841,7 +1842,12 @@ def test_main_comparison_only_reader_cleanup_reports_non_acceptance_artifacts_fo
     raw_markdown_path = ui_results_dir / "chapter_region.raw.result.md"
     cleanup_report_path = ui_results_dir / "chapter_region.reader_cleanup_report.json"
 
-    cleaned_markdown_path.write_text("Cleaned markdown", encoding="utf-8")
+    cleaned_markdown_path.write_text(
+        "12 CHAPTER HEADER\n\n• Currency menu entry\n\nPhoto: market square\n\nlowercase carryover after caption\n\n"
+        "Repeated body fragment that is intentionally long enough to trigger duplicate detection.\n\n"
+        "Repeated body fragment that is intentionally long enough to trigger duplicate detection.",
+        encoding="utf-8",
+    )
     cleaned_docx_path.write_bytes(_docx_bytes(Document()))
     raw_markdown_path.write_text("Raw markdown", encoding="utf-8")
     cleanup_report_path.write_text(
@@ -2058,41 +2064,119 @@ def test_main_comparison_only_reader_cleanup_reports_non_acceptance_artifacts_fo
     assert 'reader_cleanup_deleted_block_previews=[{"id": "b_000007", "reason": "repeated_running_header", "confidence": "high", "raw_text_preview": "rethinking money"}]' in summary_text
 
 
-def test_parse_reader_verifier_completed_review_accepts_structured_payload(tmp_path) -> None:
-    validation = _load_validation_module()
-
-    evidence_path = tmp_path / "reader_quality_evidence.json"
-    evidence_path.write_text("{}", encoding="utf-8")
-    evidence_payload = {
+def _reader_verifier_test_evidence_payload(*, pre_audit_issue_counts: dict[str, int] | None = None) -> dict[str, object]:
+    counts = {
+        "page_furniture_inline": 0,
+        "heading_fused_with_body": 0,
+        "broken_list_marker": 0,
+        "fragmented_paragraph": 0,
+        "duplicate_fragment": 0,
+        "orphan_caption": 0,
+        "mixed_language_leak": 0,
+        "quote_not_block_formatted": 0,
+    }
+    if pre_audit_issue_counts:
+        counts.update(pre_audit_issue_counts)
+    findings = []
+    if pre_audit_issue_counts:
+        for category, count in pre_audit_issue_counts.items():
+            if count <= 0:
+                continue
+            for index in range(count):
+                findings.append(
+                    {
+                        "category": category,
+                        "artifact": "cleaned_markdown",
+                        "line_ref": f"cleaned_markdown:{12 + index}",
+                        "snippet": f"Synthetic {category} finding {index + 1} remains in cleaned output.",
+                        "note": f"Deterministic pre-audit found {category} #{index + 1}.",
+                    }
+                )
+    return {
         "artifact_paths": {
             "raw_markdown": "runs/run-1/raw.md",
             "cleaned_markdown": "runs/run-1/cleaned.md",
             "cleaned_docx": "runs/run-1/cleaned.docx",
             "reader_cleanup_report": "runs/run-1/cleanup.json",
-        }
-    }
-    raw_response = json.dumps(
-        {
-            "overall_verdict": "cleaned_better",
-            "reader_quality_score_raw": 4,
-            "reader_quality_score_cleaned": 7,
-            "confidence": "medium",
-            "noise_removed": ["Repeated running headers are gone."],
-            "possible_false_deletions": [],
-            "readability_regressions": ["Some list spacing still looks uneven."],
-            "recommended_next_changes": [
-                {
-                    "change_type": "deterministic_cleanup",
-                    "recommendation": "Remove standalone blank-page markers before verifier review.",
-                    "why": "These artifacts remain obvious reader-visible noise.",
-                }
-            ],
-            "summary_for_human": "Cleaned output is easier to read and no major text loss was observed.",
-            "simple_user_summary": "The cleaned version is easier to read than the raw translation.",
-            "simple_user_risk_statement": "No major text loss was detected at current review confidence.",
-            "simple_user_next_step": "Add one more deterministic cleanup rule for blank-page markers.",
         },
-        ensure_ascii=False,
+        "pre_audit_issue_counts": counts,
+        "pre_audit_findings": findings,
+        "mandatory_review_targets": findings,
+    }
+
+
+def _reader_verifier_test_response(**overrides: object) -> str:
+    payload: dict[str, object] = {
+        "overall_verdict": "cleaned_better",
+        "cleaned_audit_verdict": "clean",
+        "reader_quality_score_raw": 4,
+        "reader_quality_score_cleaned": 7,
+        "confidence": "medium",
+        "noise_removed": ["Repeated running headers are gone."],
+        "possible_false_deletions": [],
+        "readability_regressions": [],
+        "remaining_issues": [],
+        "evidence_anchors": [
+            {
+                "kind": "improvement_seen",
+                "artifact": "comparison",
+                "line_ref": "comparison:1",
+                "snippet": "Header noise was removed from the cleaned artifact.",
+                "note": "Concrete readability improvement anchor.",
+            }
+        ],
+        "recommended_next_changes": [
+            {
+                "change_type": "ai_operation_contract",
+                "recommendation": "Ask the cleanup operation contract to remove standalone blank-page markers before verifier review.",
+                "why": "These artifacts remain obvious reader-visible noise.",
+            }
+        ],
+        "summary_for_human": "Cleaned output is easier to read and no major text loss was observed.",
+        "simple_user_summary": "The cleaned version is easier to read than the raw translation.",
+        "simple_user_risk_statement": "No major text loss was detected at current review confidence.",
+        "simple_user_next_step": "Add one more deterministic cleanup rule for blank-page markers.",
+    }
+    payload.update(overrides)
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def test_parse_reader_verifier_completed_review_accepts_structured_payload(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    evidence_path = tmp_path / "reader_quality_evidence.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+    evidence_payload = _reader_verifier_test_evidence_payload(pre_audit_issue_counts={"broken_list_marker": 1})
+    raw_response = _reader_verifier_test_response(
+        cleaned_audit_verdict="improved_but_has_remaining_issues",
+        readability_regressions=["Some list spacing still looks uneven."],
+        remaining_issues=[
+            {
+                "category": "broken_list_marker",
+                "severity": "medium",
+                "artifact": "cleaned_markdown",
+                "line_ref": "cleaned_markdown:12",
+                "snippet": "• Currency menu entry remains unnormalized.",
+                "why_reader_hurts": "The residual bullet character breaks markdown list readability.",
+                "recommended_fix_type": "normalize_list",
+            }
+        ],
+        evidence_anchors=[
+            {
+                "kind": "improvement_seen",
+                "artifact": "comparison",
+                "line_ref": "comparison:1",
+                "snippet": "Repeated running header removed in cleaned markdown.",
+                "note": "Header noise no longer interrupts reading.",
+            },
+            {
+                "kind": "remaining_issue",
+                "artifact": "cleaned_markdown",
+                "line_ref": "cleaned_markdown:12",
+                "snippet": "• Currency menu entry remains unnormalized.",
+                "note": "The list marker still looks raw in the cleaned artifact.",
+            },
+        ],
     )
 
     review = validation._parse_reader_verifier_completed_review(
@@ -2115,7 +2199,12 @@ def test_parse_reader_verifier_completed_review_accepts_structured_payload(tmp_p
     assert review["verifier_provider"] == "openrouter"
     assert review["verifier_model_id"] == "google/gemini-3-flash-preview"
     assert review["overall_verdict"] == "cleaned_better"
+    assert review["cleaned_audit_verdict"] == "improved_but_has_remaining_issues"
+    assert review["pre_audit_issue_counts"]["broken_list_marker"] == 1
+    assert review["issue_summary_by_category"]["broken_list_marker"] == 1
+    assert review["remaining_issues"][0]["category"] == "broken_list_marker"
     assert "current review confidence" in review["simple_user_summary"]
+    assert "still remain in the cleaned output" in review["simple_user_summary"]
     assert "Review confidence is medium" in review["simple_user_risk_statement"]
 
 
@@ -2124,36 +2213,43 @@ def test_parse_reader_verifier_completed_review_normalizes_object_findings_to_st
 
     evidence_path = tmp_path / "reader_quality_evidence.json"
     evidence_path.write_text("{}", encoding="utf-8")
-    evidence_payload = {
-        "artifact_paths": {
-            "raw_markdown": "runs/run-1/raw.md",
-            "cleaned_markdown": "runs/run-1/cleaned.md",
-            "cleaned_docx": "runs/run-1/cleaned.docx",
-            "reader_cleanup_report": "runs/run-1/cleanup.json",
-        }
-    }
-    raw_response = json.dumps(
-        {
-            "overall_verdict": "mixed",
-            "reader_quality_score_raw": 5,
-            "reader_quality_score_cleaned": 6,
-            "confidence": "low",
-            "noise_removed": [{"text": "Repeated header removed."}],
-            "possible_false_deletions": [{"issue": "One short paragraph may be too aggressive."}],
-            "readability_regressions": [{"description": "Some spacing drift remains."}],
-            "recommended_next_changes": [
-                {
-                    "change_type": "prompt",
-                    "recommendation": "Ask for flatter finding lists.",
-                    "why": "The reviewer currently drifts toward object-shaped findings.",
-                }
-            ],
-            "summary_for_human": "The cleanup helps, but the evidence is still mixed.",
-            "simple_user_summary": "The cleanup pass improved some noisy sections, but it also introduced enough risk or regression that the result is not clearly better yet.",
-            "simple_user_risk_statement": "One short paragraph may be too aggressive.",
-            "simple_user_next_step": "Tighten the prompt before the next comparison-only run.",
-        },
-        ensure_ascii=False,
+    evidence_payload = _reader_verifier_test_evidence_payload()
+    raw_response = _reader_verifier_test_response(
+        overall_verdict="mixed",
+        cleaned_audit_verdict="unsafe_or_regressed",
+        reader_quality_score_raw=5,
+        reader_quality_score_cleaned=6,
+        confidence="low",
+        noise_removed=[{"text": "Repeated header removed."}],
+        possible_false_deletions=[{"issue": "One short paragraph may be too aggressive."}],
+        readability_regressions=[{"description": "Some spacing drift remains."}],
+        recommended_next_changes=[
+            {
+                "change_type": "prompt",
+                "recommendation": "Ask for flatter finding lists.",
+                "why": "The reviewer currently drifts toward object-shaped findings.",
+            }
+        ],
+        summary_for_human="The cleanup helps, but the evidence is still mixed.",
+        simple_user_summary="The cleanup pass improved some noisy sections, but it also introduced enough risk or regression that the result is not clearly better yet.",
+        simple_user_risk_statement="One short paragraph may be too aggressive.",
+        simple_user_next_step="Tighten the prompt before the next comparison-only run.",
+        evidence_anchors=[
+            {
+                "kind": "improvement_seen",
+                "artifact": "comparison",
+                "line_ref": "comparison:3",
+                "snippet": "Repeated header removed.",
+                "note": "Reader-visible header noise was reduced.",
+            },
+            {
+                "kind": "possible_false_deletion",
+                "artifact": "comparison",
+                "line_ref": "comparison:5",
+                "snippet": "One short paragraph may be too aggressive.",
+                "note": "Possible deletion still needs review.",
+            },
+        ],
     )
 
     review = validation._parse_reader_verifier_completed_review(
@@ -2179,36 +2275,47 @@ def test_parse_reader_verifier_completed_review_hardens_overconfident_simple_lan
 
     evidence_path = tmp_path / "reader_quality_evidence.json"
     evidence_path.write_text("{}", encoding="utf-8")
-    evidence_payload = {
-        "artifact_paths": {
-            "raw_markdown": "runs/run-1/raw.md",
-            "cleaned_markdown": "runs/run-1/cleaned.md",
-            "cleaned_docx": "runs/run-1/cleaned.docx",
-            "reader_cleanup_report": "runs/run-1/cleanup.json",
-        }
-    }
-    raw_response = json.dumps(
-        {
-            "overall_verdict": "cleaned_better",
-            "reader_quality_score_raw": 4,
-            "reader_quality_score_cleaned": 7,
-            "confidence": "medium",
-            "noise_removed": ["Repeated running headers are gone."],
-            "possible_false_deletions": [],
-            "readability_regressions": ["Some list spacing still looks uneven."],
-            "recommended_next_changes": [
-                {
-                    "change_type": "minimal_formatting",
-                    "recommendation": "Apply one narrow list-formatting follow-up.",
-                    "why": "The current slice still has a reader-visible formatting inconsistency.",
-                }
-            ],
-            "summary_for_human": "Cleaned output is easier to read and no major text loss was observed.",
-            "simple_user_summary": "The cleaned text is much easier to read and no actual story content was lost.",
-            "simple_user_risk_statement": "The risk is very low.",
-            "simple_user_next_step": "This is ready for production.",
-        },
-        ensure_ascii=False,
+    evidence_payload = _reader_verifier_test_evidence_payload(pre_audit_issue_counts={"broken_list_marker": 1})
+    raw_response = _reader_verifier_test_response(
+        cleaned_audit_verdict="improved_but_has_remaining_issues",
+        readability_regressions=["Some list spacing still looks uneven."],
+        remaining_issues=[
+            {
+                "category": "broken_list_marker",
+                "severity": "medium",
+                "artifact": "cleaned_markdown",
+                "line_ref": "cleaned_markdown:15",
+                "snippet": "• Currency glossary item is still not normalized.",
+                "why_reader_hurts": "The raw bullet character interrupts the cleaned reading flow.",
+                "recommended_fix_type": "normalize_list",
+            }
+        ],
+        evidence_anchors=[
+            {
+                "kind": "improvement_seen",
+                "artifact": "comparison",
+                "line_ref": "comparison:1",
+                "snippet": "Repeated running headers are gone.",
+                "note": "The cleaned version removes repeated header noise.",
+            },
+            {
+                "kind": "remaining_issue",
+                "artifact": "cleaned_markdown",
+                "line_ref": "cleaned_markdown:15",
+                "snippet": "• Currency glossary item is still not normalized.",
+                "note": "A broken list marker remains in the cleaned output.",
+            },
+        ],
+        recommended_next_changes=[
+            {
+                "change_type": "cleanup_core",
+                "recommendation": "Apply one narrow list-formatting follow-up through the cleanup operation applicator.",
+                "why": "The current slice still has a reader-visible formatting inconsistency.",
+            }
+        ],
+        simple_user_summary="The cleaned text is much easier to read and no actual story content was lost.",
+        simple_user_risk_statement="The risk is very low.",
+        simple_user_next_step="This is ready for production.",
     )
 
     review = validation._parse_reader_verifier_completed_review(
@@ -2225,10 +2332,317 @@ def test_parse_reader_verifier_completed_review_hardens_overconfident_simple_lan
     )
 
     assert "story content" not in review["simple_user_summary"].lower()
-    assert "no major content loss was detected at current review confidence" in review["simple_user_summary"].lower()
+    assert "no major text loss was detected at current review confidence" in review["simple_user_summary"].lower()
     assert "current review confidence" in review["simple_user_summary"].lower()
+    assert "still remain in the cleaned output" in review["simple_user_summary"]
     assert "Review confidence is medium" in review["simple_user_risk_statement"]
     assert review["simple_user_next_step"] == "Use this as development-only comparison evidence and apply one narrow follow-up change before rerunning the same profile."
+
+
+def test_parse_reader_verifier_completed_review_hardens_high_confidence_final_wording(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    evidence_path = tmp_path / "reader_quality_evidence.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+    evidence_payload = _reader_verifier_test_evidence_payload()
+    raw_response = _reader_verifier_test_response(
+        cleaned_audit_verdict="clean",
+        reader_quality_score_raw=3,
+        reader_quality_score_cleaned=5,
+        confidence="high",
+        noise_removed=["Removed distracting page numbers and headers."],
+        recommended_next_changes=[
+            {
+                "change_type": "cleanup_core",
+                "recommendation": "Standardize bullet point characters through cleanup-core safety checks.",
+                "why": "The text still mixes bullet characters across sections.",
+            }
+        ],
+        summary_for_human="The cleaned version significantly improves readability for this slice.",
+        simple_user_summary="The cleaned version is easier to read because it removes stray numbers and page artifacts that were scattered throughout the text. No actual information was lost during this process.",
+        simple_user_risk_statement="The risk of missing information is very low; only isolated page numbers and redundant markers were removed. The core text and all translated concepts remain fully intact.",
+        simple_user_next_step="No further cleanup is required for this block; the text is ready for reading or further translation review.",
+    )
+
+    review = validation._parse_reader_verifier_completed_review(
+        raw_response=raw_response,
+        run_id="run-1",
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        requested_selector="openrouter:google/gemini-3-flash-preview",
+        canonical_selector="openrouter:google/gemini-3-flash-preview",
+        provider="openrouter",
+        model_id="google/gemini-3-flash-preview",
+        evidence_path=evidence_path,
+        evidence_payload=evidence_payload,
+    )
+
+    assert review["simple_user_summary"] == (
+        "The cleaned version is easier to read because it removes stray numbers and page artifacts that were "
+        "scattered throughout the text. No major text loss was detected at current review confidence."
+    )
+    assert review["simple_user_risk_statement"] == (
+        "No major text loss was detected at current review confidence. "
+        "This remains development-only comparison evidence, not an acceptance result."
+    )
+    assert review["simple_user_next_step"] == (
+        "Use this as development-only comparison evidence. Next, apply one narrow cleanup_core change: "
+        "Standardize bullet point characters through cleanup-core safety checks."
+    )
+
+
+def test_parse_reader_verifier_completed_review_rejects_clean_audit_with_remaining_issues(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    evidence_path = tmp_path / "reader_quality_evidence.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="reader_verifier_remaining_issues_forbid_cleaned_audit_clean"):
+        validation._parse_reader_verifier_completed_review(
+            raw_response=_reader_verifier_test_response(
+                cleaned_audit_verdict="clean",
+                remaining_issues=[
+                    {
+                        "category": "page_furniture_inline",
+                        "severity": "high",
+                        "artifact": "cleaned_markdown",
+                        "line_ref": "cleaned_markdown:3",
+                        "snippet": "151 CHAPTER TITLE",
+                        "why_reader_hurts": "The reader still sees page furniture inside the body flow.",
+                        "recommended_fix_type": "delete_noise",
+                    }
+                ],
+                evidence_anchors=[
+                    {
+                        "kind": "improvement_seen",
+                        "artifact": "comparison",
+                        "line_ref": "comparison:1",
+                        "snippet": "Some running headers were removed.",
+                        "note": "One noise class improved.",
+                    },
+                    {
+                        "kind": "remaining_issue",
+                        "artifact": "cleaned_markdown",
+                        "line_ref": "cleaned_markdown:3",
+                        "snippet": "151 CHAPTER TITLE",
+                        "note": "Inline page furniture still remains.",
+                    },
+                ],
+            ),
+            run_id="run-1",
+            document_profile_id="lietaer-pdf-chapter-region-core",
+            run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+            requested_selector="openrouter:google/gemini-3-flash-preview",
+            canonical_selector="openrouter:google/gemini-3-flash-preview",
+            provider="openrouter",
+            model_id="google/gemini-3-flash-preview",
+            evidence_path=evidence_path,
+            evidence_payload=_reader_verifier_test_evidence_payload(pre_audit_issue_counts={"page_furniture_inline": 1}),
+        )
+
+
+def test_parse_reader_verifier_completed_review_allows_raw_better_without_improvement_anchor(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    evidence_path = tmp_path / "reader_quality_evidence.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+
+    review = validation._parse_reader_verifier_completed_review(
+        raw_response=_reader_verifier_test_response(
+            overall_verdict="raw_better",
+            cleaned_audit_verdict="unsafe_or_regressed",
+            noise_removed=[],
+            possible_false_deletions=["Cleanup appears to have removed meaningful text."],
+            readability_regressions=["A heading was fused into body prose in the cleaned output."],
+            remaining_issues=[
+                {
+                    "category": "heading_fused_with_body",
+                    "severity": "high",
+                    "artifact": "cleaned_markdown",
+                    "line_ref": "cleaned_markdown:14",
+                    "snippet": "200 ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ Наконец-то пришло осознание необходимости...",
+                    "why_reader_hurts": "The cleaned artifact still contains a heading glued into running prose.",
+                    "recommended_fix_type": "split_heading",
+                }
+            ],
+            evidence_anchors=[
+                {
+                    "kind": "remaining_issue",
+                    "artifact": "cleaned_markdown",
+                    "line_ref": "cleaned_markdown:14",
+                    "snippet": "200 ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ Наконец-то пришло осознание необходимости...",
+                    "note": "The cleaned artifact still contains a fused heading/body defect.",
+                },
+                {
+                    "kind": "possible_false_deletion",
+                    "artifact": "comparison",
+                    "line_ref": "comparison:9",
+                    "snippet": "One body sentence is missing in cleaned output.",
+                    "note": "The raw output appears safer than the cleaned output for this region.",
+                },
+            ],
+            summary_for_human="The cleaned output is not safer than the raw output for this slice.",
+            simple_user_summary="The cleanup pass removed or damaged meaningful text more than it improved readability. The raw version is safer to keep until cleanup rules are fixed.",
+            simple_user_risk_statement="The cleaned output still contains reader-visible defects and may have removed meaningful text.",
+            simple_user_next_step="Tighten the cleanup rules for heading/body splits before rerunning the same comparison-only profile.",
+        ),
+        run_id="run-1",
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        requested_selector="openrouter:google/gemini-3-flash-preview",
+        canonical_selector="openrouter:google/gemini-3-flash-preview",
+        provider="openrouter",
+        model_id="google/gemini-3-flash-preview",
+        evidence_path=evidence_path,
+        evidence_payload=_reader_verifier_test_evidence_payload(pre_audit_issue_counts={"heading_fused_with_body": 1}),
+    )
+
+    assert review["overall_verdict"] == "raw_better"
+    assert review["cleaned_audit_verdict"] == "unsafe_or_regressed"
+    assert review["remaining_issues"][0]["category"] == "heading_fused_with_body"
+
+
+def test_parse_reader_verifier_completed_review_downgrades_contradictory_removed_claim(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    evidence_path = tmp_path / "reader_quality_evidence.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+
+    review = validation._parse_reader_verifier_completed_review(
+        raw_response=_reader_verifier_test_response(
+            cleaned_audit_verdict="improved_but_has_remaining_issues",
+            noise_removed=["Broken list markers were removed from the cleaned output."],
+            remaining_issues=[
+                {
+                    "category": "broken_list_marker",
+                    "severity": "medium",
+                    "artifact": "cleaned_markdown",
+                    "line_ref": "cleaned_markdown:8",
+                    "snippet": "• Residual list marker remains.",
+                    "why_reader_hurts": "The bullet still looks raw to the reader.",
+                    "recommended_fix_type": "normalize_list",
+                }
+            ],
+            evidence_anchors=[
+                {
+                    "kind": "improvement_seen",
+                    "artifact": "comparison",
+                    "line_ref": "comparison:1",
+                    "snippet": "Some list markers were normalized.",
+                    "note": "The cleanup improved list readability in several places.",
+                },
+                {
+                    "kind": "remaining_issue",
+                    "artifact": "cleaned_markdown",
+                    "line_ref": "cleaned_markdown:8",
+                    "snippet": "• Residual list marker remains.",
+                    "note": "The same defect class still remains in the cleaned artifact.",
+                },
+            ],
+        ),
+        run_id="run-1",
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        requested_selector="openrouter:google/gemini-3-flash-preview",
+        canonical_selector="openrouter:google/gemini-3-flash-preview",
+        provider="openrouter",
+        model_id="google/gemini-3-flash-preview",
+        evidence_path=evidence_path,
+        evidence_payload=_reader_verifier_test_evidence_payload(pre_audit_issue_counts={"broken_list_marker": 1}),
+    )
+
+    assert "broken_list_marker still has remaining review targets" in review["noise_removed"][0]
+
+
+def test_parse_reader_verifier_completed_review_surfaces_empty_llm_issues_from_pre_audit(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    evidence_path = tmp_path / "reader_quality_evidence.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+
+    review = validation._parse_reader_verifier_completed_review(
+        raw_response=_reader_verifier_test_response(
+            overall_verdict="unclear",
+            cleaned_audit_verdict="unclear",
+            noise_removed=[],
+            remaining_issues=[],
+            evidence_anchors=[],
+            summary_for_human="The verifier could not confidently classify the slice.",
+            simple_user_summary="The evidence is unclear.",
+            simple_user_risk_statement="The risk is unclear.",
+            simple_user_next_step="Gather clearer comparison evidence before changing the profile.",
+        ),
+        run_id="run-1",
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        requested_selector="openrouter:google/gemini-3-flash-preview",
+        canonical_selector="openrouter:google/gemini-3-flash-preview",
+        provider="openrouter",
+        model_id="google/gemini-3-flash-preview",
+        evidence_path=evidence_path,
+        evidence_payload=_reader_verifier_test_evidence_payload(pre_audit_issue_counts={"page_furniture_inline": 1}),
+    )
+
+    assert review["overall_verdict"] == "unclear"
+    assert review["remaining_issues"][0]["category"] == "page_furniture_inline"
+    assert review["issue_summary_by_category"]["page_furniture_inline"] == 1
+    assert review["evidence_anchors"][0]["kind"] == "remaining_issue"
+
+
+def test_parse_reader_verifier_completed_review_restores_missing_pre_audit_targets_when_llm_returns_partial_list(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    evidence_path = tmp_path / "reader_quality_evidence.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+
+    review = validation._parse_reader_verifier_completed_review(
+        raw_response=_reader_verifier_test_response(
+            cleaned_audit_verdict="improved_but_has_remaining_issues",
+            remaining_issues=[
+                {
+                    "category": "heading_fused_with_body",
+                    "severity": "high",
+                    "artifact": "cleaned_markdown",
+                    "line_ref": "cleaned_markdown:14",
+                    "snippet": "200 ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ Наконец-то пришло осознание необходимости...",
+                    "why_reader_hurts": "The cleaned artifact still contains a fused heading/body defect.",
+                    "recommended_fix_type": "split_heading",
+                }
+            ],
+            evidence_anchors=[
+                {
+                    "kind": "improvement_seen",
+                    "artifact": "comparison",
+                    "line_ref": "comparison:1",
+                    "snippet": "Repeated running header removed.",
+                    "note": "One readability improvement is confirmed.",
+                },
+                {
+                    "kind": "remaining_issue",
+                    "artifact": "cleaned_markdown",
+                    "line_ref": "cleaned_markdown:14",
+                    "snippet": "200 ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ Наконец-то пришло осознание необходимости...",
+                    "note": "One fused heading/body issue is still present.",
+                },
+            ],
+        ),
+        run_id="run-1",
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        requested_selector="openrouter:google/gemini-3-flash-preview",
+        canonical_selector="openrouter:google/gemini-3-flash-preview",
+        provider="openrouter",
+        model_id="google/gemini-3-flash-preview",
+        evidence_path=evidence_path,
+        evidence_payload=_reader_verifier_test_evidence_payload(
+            pre_audit_issue_counts={"heading_fused_with_body": 2, "fragmented_paragraph": 1}
+        ),
+    )
+
+    assert review["issue_summary_by_category"]["heading_fused_with_body"] >= 2
+    assert review["issue_summary_by_category"]["fragmented_paragraph"] == 1
+    assert any(issue["category"] == "fragmented_paragraph" for issue in review["remaining_issues"])
+    assert sum(1 for anchor in review["evidence_anchors"] if anchor["kind"] == "remaining_issue") >= 3
 
 
 def test_run_reader_verifier_marks_model_resolution_failure_without_fallback(tmp_path, monkeypatch) -> None:
@@ -2281,6 +2695,61 @@ def test_run_reader_verifier_marks_model_resolution_failure_without_fallback(tmp
     assert review["verifier_canonical_selector"] is None
 
 
+def test_run_reader_verifier_failure_surfaces_pre_audit_remaining_issues(tmp_path, monkeypatch) -> None:
+    validation = _load_validation_module()
+
+    evidence_path = tmp_path / "reader_quality_evidence.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+    evidence_payload = {
+        **_reader_verifier_test_evidence_payload(pre_audit_issue_counts={"page_furniture_inline": 1}),
+        "base_artifacts_present": True,
+    }
+
+    monkeypatch.setattr(
+        validation,
+        "describe_provider_availability",
+        lambda selector, app_config=None: SimpleNamespace(
+            enabled=True,
+            has_api_key=True,
+            error_message=None,
+            selector=SimpleNamespace(
+                canonical_selector="openrouter:google/gemini-3-flash-preview",
+                provider="openrouter",
+                model_id="google/gemini-3-flash-preview",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        validation,
+        "resolve_model_selector",
+        lambda *args, **kwargs: SimpleNamespace(
+            canonical_selector="openrouter:google/gemini-3-flash-preview",
+            provider="openrouter",
+            model_id="google/gemini-3-flash-preview",
+        ),
+    )
+    monkeypatch.setattr(validation, "get_client_for_model_selector", lambda *args, **kwargs: object())
+    monkeypatch.setattr(validation, "generate_markdown_block", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("llm boom")))
+
+    review = validation._run_reader_verifier(
+        run_id="run-1",
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        app_config=object(),
+        runtime_app_config={},
+        validation_mode={"comparison_only_validation": True},
+        evidence_payload=evidence_payload,
+        evidence_path=evidence_path,
+        max_retries=1,
+    )
+
+    assert review["verifier_status"] == "failed"
+    assert review["verifier_reason"] == "execution_failed"
+    assert review["remaining_issues"][0]["category"] == "page_furniture_inline"
+    assert review["issue_summary_by_category"]["page_furniture_inline"] == 1
+    assert review["verifier_canonical_selector"] == "openrouter:google/gemini-3-flash-preview"
+
+
 def test_main_comparison_only_reader_verifier_writes_artifacts_and_metadata(tmp_path, monkeypatch) -> None:
     validation = _load_validation_module()
     from docxaicorrector.core.models import ParagraphUnit
@@ -2294,7 +2763,12 @@ def test_main_comparison_only_reader_verifier_writes_artifacts_and_metadata(tmp_
     raw_markdown_path = ui_results_dir / "chapter_region.raw.result.md"
     cleanup_report_path = ui_results_dir / "chapter_region.reader_cleanup_report.json"
 
-    cleaned_markdown_path.write_text("Cleaned markdown", encoding="utf-8")
+    cleaned_markdown_path.write_text(
+        "12 CHAPTER HEADER\n\n• Currency menu entry\n\nPhoto: market square\n\nlowercase carryover after caption\n\n"
+        "Repeated body fragment that is intentionally long enough to trigger duplicate detection.\n\n"
+        "Repeated body fragment that is intentionally long enough to trigger duplicate detection.",
+        encoding="utf-8",
+    )
     cleaned_docx_path.write_bytes(_docx_bytes(Document()))
     raw_markdown_path.write_text("Header\n\nBody paragraph\n\nFooter", encoding="utf-8")
     cleanup_report_path.write_text(
@@ -2478,12 +2952,40 @@ def test_main_comparison_only_reader_verifier_writes_artifacts_and_metadata(tmp_
         lambda **kwargs: json.dumps(
             {
                 "overall_verdict": "cleaned_better",
+                "cleaned_audit_verdict": "improved_but_has_remaining_issues",
                 "reader_quality_score_raw": 4,
                 "reader_quality_score_cleaned": 7,
                 "confidence": "high",
                 "noise_removed": ["Repeated running header removed."],
                 "possible_false_deletions": [],
                 "readability_regressions": ["Footnote markers still feel noisy in places."],
+                "remaining_issues": [
+                    {
+                        "category": "broken_list_marker",
+                        "severity": "medium",
+                        "artifact": "cleaned_markdown",
+                        "line_ref": "cleaned_markdown:3",
+                        "snippet": "• Currency menu entry",
+                        "why_reader_hurts": "The raw bullet marker still looks unfinished to the reader.",
+                        "recommended_fix_type": "normalize_list",
+                    }
+                ],
+                "evidence_anchors": [
+                    {
+                        "kind": "improvement_seen",
+                        "artifact": "comparison",
+                        "line_ref": "comparison:1",
+                        "snippet": "Repeated running header removed.",
+                        "note": "The cleaned artifact removes repeated page furniture.",
+                    },
+                    {
+                        "kind": "remaining_issue",
+                        "artifact": "cleaned_markdown",
+                        "line_ref": "cleaned_markdown:3",
+                        "snippet": "• Currency menu entry",
+                        "note": "A broken list marker still remains in the cleaned markdown.",
+                    },
+                ],
                 "recommended_next_changes": [
                     {
                         "change_type": "prompt",
@@ -2523,6 +3025,11 @@ def test_main_comparison_only_reader_verifier_writes_artifacts_and_metadata(tmp_
 
     assert evidence["evidence_mode"] == "full_selected_slice"
     assert evidence["base_artifacts_present"] is True
+    assert evidence["pre_audit_issue_counts"]["page_furniture_inline"] >= 1
+    assert evidence["pre_audit_issue_counts"]["broken_list_marker"] >= 1
+    assert evidence["pre_audit_issue_counts"]["fragmented_paragraph"] >= 1
+    assert evidence["pre_audit_issue_counts"]["duplicate_fragment"] >= 1
+    assert evidence["pre_audit_findings"]
     assert review["review_mode"] == "development_only_non_acceptance"
     assert review["verifier_status"] == "completed"
     assert review["verifier_requested_selector"] == "openrouter:google/gemini-3-flash-preview"
@@ -2530,6 +3037,12 @@ def test_main_comparison_only_reader_verifier_writes_artifacts_and_metadata(tmp_
     assert review["verifier_provider"] == "openrouter"
     assert review["verifier_model_id"] == "google/gemini-3-flash-preview"
     assert review["overall_verdict"] == "cleaned_better"
+    assert review["cleaned_audit_verdict"] == "improved_but_has_remaining_issues"
+    assert review["pre_audit_issue_counts"]["broken_list_marker"] >= 1
+    assert review["issue_summary_by_category"]["broken_list_marker"] == 1
+    assert review["issue_summary_by_category"]["page_furniture_inline"] >= 1
+    assert review["issue_summary_by_category"]["fragmented_paragraph"] >= 1
+    assert review["issue_summary_by_category"]["duplicate_fragment"] >= 1
     assert review["simple_user_summary"].startswith("The cleaned version is easier to read")
     assert report["reader_verifier_evidence"]["artifact_paths"]["source_evidence_json"] == "artifacts/runs/run-verifier/lietaer_pdf_chapter_region_reader_quality_evidence.json"
     assert report["reader_verifier_evidence"]["artifact_paths"]["review_json"] == "artifacts/runs/run-verifier/lietaer_pdf_chapter_region_reader_quality_review.json"
@@ -2538,12 +3051,26 @@ def test_main_comparison_only_reader_verifier_writes_artifacts_and_metadata(tmp_
     assert latest_manifest["reader_verifier_status"] == "completed"
     assert latest_manifest["reader_verifier_model_selector"] == "openrouter:google/gemini-3-flash-preview"
     assert latest_manifest["reader_verifier_model_id"] == "google/gemini-3-flash-preview"
+    assert latest_manifest["reader_verifier_cleaned_audit_verdict"] == "improved_but_has_remaining_issues"
+    assert latest_manifest["reader_verifier_remaining_issue_count"] == 4
+    assert latest_manifest["reader_verifier_high_severity_issue_count"] == 2
+    assert latest_manifest["reader_verifier_top_issue_categories"] == [
+        "broken_list_marker",
+        "duplicate_fragment",
+        "fragmented_paragraph",
+    ]
     assert "reader_verifier_status=completed" in summary_text
     assert "reader_verifier_overall_verdict=cleaned_better" in summary_text
+    assert "reader_verifier_cleaned_audit_verdict=improved_but_has_remaining_issues" in summary_text
+    assert "reader_verifier_remaining_issue_count=4" in summary_text
+    assert "reader_verifier_high_severity_issue_count=2" in summary_text
+    assert "reader_verifier_top_issue_categories=broken_list_marker,duplicate_fragment,fragmented_paragraph" in summary_text
     assert "reader_verifier_evidence_json=artifacts/runs/run-verifier/lietaer_pdf_chapter_region_reader_quality_evidence.json" in summary_text
     assert "reader_verifier_review_json=artifacts/runs/run-verifier/lietaer_pdf_chapter_region_reader_quality_review.json" in summary_text
     assert "reader_verifier_simple_user_next_step=Tighten the cleanup prompt for leftover orphan markers." in summary_text
     assert "# Verdict" in review_md
+    assert "# Audit Verdict" in review_md
+    assert "# Remaining Issues" in review_md
     assert "# Verifier Metadata" in review_md
 
 
