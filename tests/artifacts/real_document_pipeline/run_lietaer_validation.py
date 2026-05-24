@@ -106,10 +106,14 @@ _ALLOWED_READER_VERIFIER_AUDIT_VERDICTS = frozenset(
     {"clean", "improved_but_has_remaining_issues", "unsafe_or_regressed", "unclear"}
 )
 _ALLOWED_READER_VERIFIER_CONFIDENCE = frozenset({"low", "medium", "high"})
-_ALLOWED_READER_VERIFIER_CHANGE_TYPES = frozenset({"prompt", "cleanup_core", "ai_operation_contract"})
+_ALLOWED_READER_VERIFIER_CHANGE_TYPES = frozenset(
+    {"prompt", "model_selection", "operation_contract", "safety_application", "deterministic_last_resort"}
+)
 _LEGACY_READER_VERIFIER_CHANGE_TYPE_MAP = {
-    "deterministic_cleanup": "ai_operation_contract",
-    "minimal_formatting": "cleanup_core",
+    "ai_operation_contract": "operation_contract",
+    "cleanup_core": "safety_application",
+    "deterministic_cleanup": "deterministic_last_resort",
+    "minimal_formatting": "safety_application",
 }
 _READER_VERIFIER_DEFECT_CATEGORIES = (
     "page_furniture_inline",
@@ -770,10 +774,14 @@ def _build_reader_mvp_status_payload(report: Mapping[str, object]) -> dict[str, 
     cleanup_contract_blockers: list[str] = []
     cleanup_stage_status = str(reader_cleanup_evidence.get("stage_status") or "").strip()
     failed_chunk_count = _coerce_int(reader_cleanup_evidence.get("failed_chunk_count"))
+    anchor_repair_status = str(reader_cleanup_evidence.get("anchor_repair_status") or "").strip() or "unknown"
+    recommended_anchor_target_count = _coerce_int(reader_cleanup_evidence.get("recommended_anchor_target_count"))
     if cleanup_stage_status and cleanup_stage_status.lower() != "completed":
         cleanup_contract_blockers.append(f"cleanup_stage_status={cleanup_stage_status}")
     if failed_chunk_count > 0:
         cleanup_contract_blockers.append(f"cleanup_chunk_failures={failed_chunk_count}")
+    if anchor_repair_status not in {"not_needed", "not_reported", "unknown"}:
+        cleanup_contract_blockers.append(f"anchor_repair_status={anchor_repair_status}")
 
     reader_visible_cleanup_defects = [
         f"{category}={count}"
@@ -896,6 +904,8 @@ def _build_reader_mvp_status_payload(report: Mapping[str, object]) -> dict[str, 
         "remaining_issue_count": remaining_issue_count,
         "high_severity_issue_count": high_severity_issue_count,
         "top_issue_categories": top_issue_categories,
+        "anchor_repair_status": anchor_repair_status,
+        "recommended_anchor_target_count": recommended_anchor_target_count,
         "no_false_deletions_reported": no_false_deletions_reported,
         "no_readability_regressions_reported": no_readability_regressions_reported,
         "comparison_only_acceptance_diagnostic": comparison_only_acceptance_diagnostic,
@@ -978,6 +988,7 @@ def _build_reader_mvp_status_summary_lines(status_payload: Mapping[str, object])
         f"reader_mvp_status_risk_summary={status_payload.get('risk_summary')}",
         f"reader_mvp_status_cleanup_score_delta={status_payload.get('cleanup_score_delta')}",
         f"reader_mvp_status_acceptance_diagnostic_only={status_payload.get('comparison_only_acceptance_diagnostic')}",
+        f"reader_mvp_status_anchor_repair_status={status_payload.get('anchor_repair_status')}",
         "reader_mvp_status_false_deletion_status="
         + ("none_reported" if bool(status_payload.get("no_false_deletions_reported")) else "reported"),
         "reader_mvp_status_readability_regression_status="
@@ -2035,8 +2046,8 @@ def _build_reader_verifier_system_prompt() -> str:
         "Do not claim a defect class was fully removed when the cleaned artifact still contains unresolved examples from that same class.\n"
         "A positive comparison verdict must never be used as shorthand for the cleaned artifact being clean.\n"
         "recommended_next_changes must be a list of objects with exactly change_type, recommendation, why.\n"
-        "Allowed change_type values: prompt, cleanup_core, ai_operation_contract.\n"
-        "Do not recommend document-specific deterministic cleanup rules, regex packs, or hardcoded book-specific fixes; recommend prompt hardening, cleanup-core safety/application changes, or bounded AI operation-contract improvements instead.\n"
+        "Allowed change_type values: prompt, model_selection, operation_contract, safety_application, deterministic_last_resort.\n"
+        "Do not recommend document-specific deterministic cleanup rules, regex packs, or hardcoded book-specific fixes; recommend prompt hardening, model selection changes, bounded operation-contract improvements, safety/application changes, or a document-agnostic deterministic last resort instead.\n"
         "simple_user_summary and simple_user_risk_statement must stay cautious: avoid absolute claims that no content was lost, avoid domain-specific phrases such as story content, avoid production-ready language, and explicitly state whether reader-visible structural or readability defects still remain.\n"
         "Do not recommend acceptance-threshold tuning, structure-recognition expansion, or broad validation rewrites.\n"
         "If the evidence is insufficient, set overall_verdict to unclear and explain why."
@@ -2768,38 +2779,30 @@ def _write_reader_verifier_artifacts(
         evidence_path=evidence_path,
         max_retries=max_retries,
     )
-    if _should_run_reader_cleanup_anchor_repair(
-        validation_mode=validation_mode,
-        runtime_app_config=runtime_app_config,
-    ):
-        updated_reader_cleanup_evidence, anchor_repair_attempted, _ = _run_reader_cleanup_anchor_repair_validation_pass(
-            review_payload=review_payload,
-            reader_cleanup_evidence=reader_cleanup_evidence,
-            runtime_app_config=runtime_app_config,
-            max_retries=max_retries,
-        )
-        if anchor_repair_attempted:
-            reader_cleanup_evidence = updated_reader_cleanup_evidence
-            evidence_payload = _build_reader_verifier_evidence_payload(
-                run_id=run_id,
-                document_profile_id=document_profile_id,
-                run_profile_id=run_profile_id,
-                source_document_path=source_document_path,
-                source_text=source_text,
-                reader_cleanup_evidence=reader_cleanup_evidence,
-            )
-            _write_json_atomic(evidence_path, cast(Mapping[str, object], sanitize_for_json(evidence_payload)))
-            review_payload = _run_reader_verifier(
-                run_id=run_id,
-                document_profile_id=document_profile_id,
-                run_profile_id=run_profile_id,
-                app_config=app_config,
-                runtime_app_config=runtime_app_config,
-                validation_mode=validation_mode,
-                evidence_payload=evidence_payload,
-                evidence_path=evidence_path,
-                max_retries=max_retries,
-            )
+    anchor_diagnostics = _build_reader_verifier_anchor_repair_diagnostics(
+        review_payload=review_payload,
+        cleaned_markdown=str(evidence_payload.get("cleaned_markdown") or ""),
+        reader_cleanup_evidence=reader_cleanup_evidence,
+    )
+    reader_cleanup_evidence = {
+        **dict(reader_cleanup_evidence),
+        "anchor_repair_status": anchor_diagnostics["anchor_repair_status"],
+        "recommended_anchor_targets": anchor_diagnostics["recommended_anchor_targets"],
+        "recommended_anchor_target_count": anchor_diagnostics["recommended_anchor_target_count"],
+    }
+    evidence_payload = {
+        **evidence_payload,
+        "anchor_repair_status": anchor_diagnostics["anchor_repair_status"],
+        "recommended_anchor_targets": anchor_diagnostics["recommended_anchor_targets"],
+        "recommended_anchor_target_count": anchor_diagnostics["recommended_anchor_target_count"],
+    }
+    _write_json_atomic(evidence_path, cast(Mapping[str, object], sanitize_for_json(evidence_payload)))
+    review_payload = {
+        **review_payload,
+        "anchor_repair_status": anchor_diagnostics["anchor_repair_status"],
+        "recommended_anchor_targets": anchor_diagnostics["recommended_anchor_targets"],
+        "recommended_anchor_target_count": anchor_diagnostics["recommended_anchor_target_count"],
+    }
     review_json_path.write_text(
         json.dumps(sanitize_for_json(review_payload), ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -3879,6 +3882,9 @@ def _build_reader_cleanup_evidence_from_artifact_paths(artifact_paths: Mapping[s
         "ignored_delete_block_count": 0,
         "rejected_delete_block_count": 0,
         "failed_chunk_count": 0,
+        "anchor_repair_status": "unknown",
+        "recommended_anchor_targets": [],
+        "recommended_anchor_target_count": 0,
         "deleted_block_previews": [],
     }
     report_path = artifact_paths.get("reader_cleanup_report_path")
@@ -3904,6 +3910,10 @@ def _build_reader_cleanup_evidence_from_artifact_paths(artifact_paths: Mapping[s
     proposed_delete_block_count = _coerce_int(stats.get("proposed_delete_block_count"))
     failed_chunk_count = _coerce_int(stats.get("failed_chunk_count"))
     accepted_delete_blocks = _as_object_list(report_payload.get("accepted_delete_blocks"))
+    passes = cast(Mapping[str, object], report_payload.get("passes") or {})
+    anchor_repair_pass = cast(Mapping[str, object], passes.get("anchor_repair_pass") or {})
+    runtime_anchor_selected_count = _coerce_int(anchor_repair_pass.get("selected_anchor_count"))
+    runtime_anchor_applied = bool(anchor_repair_pass)
     deleted_block_previews: list[dict[str, object]] = []
     for entry in accepted_delete_blocks[:5]:
         if not isinstance(entry, Mapping):
@@ -3928,10 +3938,37 @@ def _build_reader_cleanup_evidence_from_artifact_paths(artifact_paths: Mapping[s
                 proposed_delete_block_count - accepted_delete_block_count - ignored_delete_block_count,
             ),
             "failed_chunk_count": failed_chunk_count,
+            "anchor_repair_status": "applied_in_runtime" if runtime_anchor_applied else "not_reported",
+            "recommended_anchor_targets": list(cast(Sequence[object], anchor_repair_pass.get("selected_anchors") or [])),
+            "recommended_anchor_target_count": runtime_anchor_selected_count,
             "deleted_block_previews": deleted_block_previews,
         }
     )
     return evidence
+
+
+def _build_reader_verifier_anchor_repair_diagnostics(
+    *,
+    review_payload: Mapping[str, object],
+    cleaned_markdown: str,
+    reader_cleanup_evidence: Mapping[str, object],
+) -> dict[str, object]:
+    existing_status = str(reader_cleanup_evidence.get("anchor_repair_status") or "").strip()
+    recommended_anchor_targets = _build_reader_cleanup_anchor_targets(
+        review_payload=review_payload,
+        cleaned_markdown=cleaned_markdown,
+    )
+    if existing_status == "applied_in_runtime":
+        anchor_repair_status = existing_status
+    elif recommended_anchor_targets:
+        anchor_repair_status = "diagnostic_only_not_applied"
+    else:
+        anchor_repair_status = existing_status or "not_needed"
+    return {
+        "anchor_repair_status": anchor_repair_status,
+        "recommended_anchor_targets": recommended_anchor_targets,
+        "recommended_anchor_target_count": len(recommended_anchor_targets),
+    }
 
 
 def _parse_reader_verifier_cleaned_line_number(line_ref: str, artifact: str) -> int | None:

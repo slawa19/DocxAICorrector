@@ -36,6 +36,8 @@ benchmark может быть зелёным на acceptance уровне, но 
 - остаются номера страниц и blank-page markers;
 - часть PDF/OCR-мусора переводится как обычный текст;
 - TOC, index, reference tail и сноски могут мешать continuous reading;
+- исходные номера страниц в TOC после перевода становятся устаревшими и не
+  являются пользовательской ценностью для reader-first результата;
 - попытки идеально распознать структуру создают длинный tuning loop.
 
 Simple reader-first режим должен проверить альтернативу: не распознавать сложную
@@ -205,9 +207,14 @@ The plan is advisory. Actual cleanup remains block-level, validated by `id` +
 - Не добавлять новые structure signals, topology rules или prompt schema для
   DocumentMap.
 - Не делать новый универсальный Markdown structural postprocessor.
-- Не восстанавливать настоящий Word TOC, footnote objects, page numbers или
-  сложный book layout.
-- Не обещать 1:1 сохранение исходного PDF/DOCX оформления.
+- Не восстанавливать настоящий Word TOC, корректные номера страниц TOC,
+  footnote objects, source page numbers или сложный book layout. В переведенном
+  документе исходные номера страниц устаревают; их можно удалять, если они
+  мешают чтению.
+- Не обещать 1:1 сохранение исходного PDF/DOCX оформления. При этом дальнейшие
+  repair PR должны целенаправленно восстанавливать пользовательски важные
+  стили: bold, italic, emphasis/highlight, heading/subheading styles и list
+  styles.
 
 ## Desired Output Quality
 
@@ -218,6 +225,12 @@ MVP считается полезным, если cleaned artifact:
   в Markdown;
 - заметно уменьшает reader-visible мусор: колонтитулы, номера страниц,
   blank-page markers, повторяющиеся running headers, висячие footnote markers;
+- не оставляет абзацы прилипшими к заголовкам и не оставляет page furniture
+  внутри обычных абзацев;
+- в последующих repair PR восстанавливает важное форматирование: жирный,
+  курсив, выделение, стили заголовков/подзаголовков и списков;
+- в отдельном image PR восстанавливает картинки или документирует точный слой,
+  где PDF-origin image handoff ломается;
 - не удаляет главы или смысловые блоки без явного report evidence;
 - сохраняет raw artifact рядом с cleaned artifact для сравнения.
 
@@ -384,7 +397,10 @@ The code applies only allowed operations. The model is not allowed to:
 
 ## What Formatting Remains
 
-The MVP preserves formatting only through existing Markdown semantics.
+The initial MVP preserves formatting only through existing Markdown semantics.
+The follow-up repair plan must not spend effort on correct TOC reconstruction;
+it must focus on user-visible formatting that matters in the translated book:
+bold, italic, emphasis/highlight, heading/subheading styles, and list styles.
 
 Expected to remain:
 
@@ -397,7 +413,7 @@ Expected to remain:
 Not expected in MVP:
 
 - true Word TOC fields;
-- source page numbers;
+- source page numbers or correct translated TOC page numbers;
 - original headers / footers;
 - true Word footnote objects;
 - exact PDF layout;
@@ -405,8 +421,10 @@ Not expected in MVP:
 
 TOC policy should be explicit per profile:
 
-- `keep_toc_as_text`: preserve TOC as ordinary translated text/list;
+- `keep_toc_as_text`: preserve TOC as ordinary translated text/list, without
+  requiring correct page numbers;
 - `drop_toc_for_reading`: remove TOC in continuous reader/audio mode;
+- `drop_toc_page_numbers`: remove stale TOC page numbers when TOC text is kept;
 - no AI TOC repair in MVP.
 
 Footnote policy should be conservative:
@@ -417,8 +435,10 @@ Footnote policy should be conservative:
 - remove bibliography / index / reference tail only in an explicit
   `drop_back_matter_for_reading` profile option.
 
-For the first MVP, TOC policy is fixed to `keep_toc_as_text = true`. Dropping TOC
-for audiobook or continuous-reading mode remains a later profile option.
+For the first MVP, TOC policy is fixed to `keep_toc_as_text = true`, but correct
+TOC reconstruction and source page-number preservation are not success criteria.
+Dropping TOC or TOC page numbers for audiobook / continuous-reading / translated
+reader mode remains a profile option and is preferred over rebuilding TOC.
 
 ## Known MVP Limitations
 
@@ -613,7 +633,9 @@ page numbers, blank-page markers, orphaned footnote markers, obvious extraction
 artifacts, headings fused with body prose, inline page furniture glued to prose,
 and paragraphs fragmented by page boundaries.
 Preserve chapters, headings, normal paragraphs, lists, quotes, footnote bodies,
-bibliography, index, and TOC unless the profile explicitly allows dropping them.
+bibliography, and index unless the profile explicitly allows dropping them. TOC
+may be kept as ordinary text or dropped by profile, but do not reconstruct TOC
+or preserve stale TOC page numbers.
 Every edit must cite exact block id, text_hash, reason, confidence,
 evidence_before, expected_after_preview, and safety_note.
 For split/remove/join operations, provide only exact substrings or adjacent block
@@ -1426,7 +1448,10 @@ The first verifier-enabled MVP uses the following fixed decisions to avoid
 ambiguity:
 
 - TOC policy stays `keep_toc_as_text = true` for the reader-first MVP. TOC
-  dropping remains a later explicit mode, not part of this verifier slice.
+  dropping remains a later explicit mode, not part of this verifier slice. TOC
+  page-number correctness is not a goal; source page numbers may be removed in
+  translated reader output because they become stale after translation/layout
+  changes.
 - Bibliography / index / reference-tail removal remains off by default and is a
   separate explicit future mode, not part of the first verifier slice.
 - Cleanup safety thresholds stay locked at the current initial defaults (`3%`

@@ -2037,6 +2037,9 @@ def test_main_comparison_only_reader_cleanup_reports_non_acceptance_artifacts_fo
         "ignored_delete_block_count": 1,
         "rejected_delete_block_count": 0,
         "failed_chunk_count": 0,
+        "anchor_repair_status": "diagnostic_only_not_applied",
+        "recommended_anchor_targets": report["reader_cleanup_evidence"]["recommended_anchor_targets"],
+        "recommended_anchor_target_count": report["reader_cleanup_evidence"]["recommended_anchor_target_count"],
         "deleted_block_previews": [
             {
                 "id": "b_000007",
@@ -2046,6 +2049,10 @@ def test_main_comparison_only_reader_cleanup_reports_non_acceptance_artifacts_fo
             }
         ],
     }
+    assert report["reader_cleanup_evidence"]["recommended_anchor_target_count"] == len(
+        report["reader_cleanup_evidence"]["recommended_anchor_targets"]
+    )
+    assert report["reader_cleanup_evidence"]["recommended_anchor_target_count"] >= 1
     assert report["output_artifacts"]["cleaned_markdown_path"] == str(cleaned_markdown_path)
     assert report["output_artifacts"]["cleaned_docx_path"] == str(cleaned_docx_path)
     assert report["output_artifacts"]["reader_cleanup_raw_markdown_path"] == str(raw_markdown_path)
@@ -2061,6 +2068,7 @@ def test_main_comparison_only_reader_cleanup_reports_non_acceptance_artifacts_fo
     assert f"reader_cleanup_report_path={cleanup_report_path}" in summary_text
     assert "reader_cleanup_accepted_delete_block_count=1" in summary_text
     assert "reader_cleanup_ignored_delete_block_count=1" in summary_text
+    assert "reader_mvp_status_anchor_repair_status=diagnostic_only_not_applied" in summary_text
     assert 'reader_cleanup_deleted_block_previews=[{"id": "b_000007", "reason": "repeated_running_header", "confidence": "high", "raw_text_preview": "rethinking money"}]' in summary_text
 
 
@@ -2389,8 +2397,16 @@ def test_parse_reader_verifier_completed_review_hardens_high_confidence_final_wo
         "No major text loss was detected at current review confidence. "
         "This remains development-only comparison evidence, not an acceptance result."
     )
+    assert review["recommended_next_changes"] == [
+        {
+            "change_type": "safety_application",
+            "recommendation": "Use the AI cleanup operation contract rather than a deterministic rule for this follow-up: Standardize bullet point characters through cleanup-core safety checks.",
+            "why": "Legacy verifier change_type 'cleanup_core' was normalized to 'safety_application'. The text still mixes bullet characters across sections.",
+        }
+    ]
     assert review["simple_user_next_step"] == (
-        "Use this as development-only comparison evidence. Next, apply one narrow cleanup_core change: "
+        "Use this as development-only comparison evidence. Next, apply one narrow safety_application change: "
+        "Use the AI cleanup operation contract rather than a deterministic rule for this follow-up: "
         "Standardize bullet point characters through cleanup-core safety checks."
     )
 
@@ -3258,7 +3274,7 @@ def test_build_reader_mvp_status_payload_groups_blockers_and_positive_signals() 
     assert "reader_mvp_status_readability_regression_status=none_reported" in summary_lines
 
 
-def test_write_reader_verifier_artifacts_runs_anchor_repair_pass_and_reruns_verifier(tmp_path, monkeypatch) -> None:
+def test_write_reader_verifier_artifacts_keeps_anchor_repair_diagnostic_only(tmp_path, monkeypatch) -> None:
     validation = _load_validation_module()
 
     artifact_dir = tmp_path / "artifacts" / "runs" / "run-anchor"
@@ -3340,10 +3356,8 @@ def test_write_reader_verifier_artifacts_runs_anchor_repair_pass_and_reruns_veri
         provider="openrouter",
         model_id="google/gemini-3-flash-preview",
     )
-    call_counts = {"verifier": 0, "cleanup": 0}
-    expected_cleaned_markdown = (
-        "Intro\n\nPreface\n\nКАК ЭТО РАБОТАЕТ:\n\nМестные органы власти могут помочь.\n\nTail\n\nOutro"
-    )
+    original_docx_bytes = cleaned_docx_path.read_bytes()
+    call_counts = {"verifier": 0}
 
     monkeypatch.setattr(
         validation,
@@ -3357,71 +3371,8 @@ def test_write_reader_verifier_artifacts_runs_anchor_repair_pass_and_reruns_veri
     )
     monkeypatch.setattr(validation, "resolve_model_selector", lambda *args, **kwargs: selector_payload)
     monkeypatch.setattr(validation, "get_client_for_model_selector", lambda *args, **kwargs: object())
-    monkeypatch.setattr(validation, "convert_markdown_to_docx_bytes", lambda markdown_text: _docx_bytes(Document()))
-
     def _fake_generate_markdown_block(**kwargs):
-        system_prompt = kwargs["system_prompt"]
-        target_text = kwargs["target_text"]
-        if "You are cleaning translated book Markdown for reading." in system_prompt:
-            call_counts["cleanup"] += 1
-            payload = json.loads(target_text)
-            assert payload["pass_name"] == "anchor_repair"
-            assert len(payload["blocks"]) < len(validation.build_cleanup_blocks(initial_cleaned_markdown))
-            block = next(block for block in payload["blocks"] if "КАК ЭТО РАБОТАЕТ:" in block["text"])
-            return json.dumps(
-                {
-                    "cleanup_operations": [
-                        {
-                            "id": block["id"],
-                            "text_hash": block["text_hash"],
-                            "operation": "normalize_heading_boundary",
-                            "reason": "page_furniture_heading",
-                            "confidence": "high",
-                            "evidence_before": block["text"],
-                            "expected_after_preview": "КАК ЭТО РАБОТАЕТ:\n\nМестные органы власти могут помочь.",
-                            "safety_note": "Split the heading from the first body sentence using the exact boundary.",
-                            "heading_substring": "КАК ЭТО РАБОТАЕТ:",
-                            "body_substring": "Местные органы власти могут помочь.",
-                        }
-                    ],
-                    "warnings": [],
-                },
-                ensure_ascii=False,
-            )
-
         call_counts["verifier"] += 1
-        evidence_payload = json.loads(target_text)
-        cleaned_markdown = evidence_payload["cleaned_markdown"]
-        if cleaned_markdown == expected_cleaned_markdown:
-            return json.dumps(
-                {
-                    "overall_verdict": "cleaned_better",
-                    "cleaned_audit_verdict": "clean",
-                    "reader_quality_score_raw": 4,
-                    "reader_quality_score_cleaned": 8,
-                    "confidence": "high",
-                    "noise_removed": ["The heading/body boundary was repaired in the cleaned artifact."],
-                    "possible_false_deletions": [],
-                    "readability_regressions": [],
-                    "remaining_issues": [],
-                    "evidence_anchors": [
-                        {
-                            "kind": "improvement_seen",
-                            "artifact": "comparison",
-                            "line_ref": "comparison:1",
-                            "snippet": "КАК ЭТО РАБОТАЕТ:",
-                            "note": "The anchor repair pass split the fused heading from the body.",
-                        }
-                    ],
-                    "recommended_next_changes": [],
-                    "summary_for_human": "The cleaned output is easier to read after the bounded heading repair.",
-                    "simple_user_summary": "The cleaned version is easier to read than the raw translation.",
-                    "simple_user_risk_statement": "No major text loss was detected at current review confidence.",
-                    "simple_user_next_step": "No additional cleanup changes are required for this synthetic case.",
-                },
-                ensure_ascii=False,
-            )
-
         return json.dumps(
             {
                 "overall_verdict": "cleaned_better",
@@ -3461,7 +3412,7 @@ def test_write_reader_verifier_artifacts_runs_anchor_repair_pass_and_reruns_veri
                 ],
                 "recommended_next_changes": [
                     {
-                        "change_type": "ai_operation_contract",
+                        "change_type": "operation_contract",
                         "recommendation": "Apply a bounded heading boundary repair to the remaining fused title.",
                         "why": "The exact heading/body split is still reader-visible.",
                     }
@@ -3516,14 +3467,29 @@ def test_write_reader_verifier_artifacts_runs_anchor_repair_pass_and_reruns_veri
 
     updated_cleanup_report = json.loads(cleanup_report_path.read_text(encoding="utf-8"))
     updated_evidence = review["updated_reader_cleanup_evidence"]
+    persisted_review = json.loads(
+        (artifact_dir / "lietaer_pdf_chapter_region_reader_quality_review.json").read_text(encoding="utf-8")
+    )
+    persisted_evidence = json.loads(
+        (artifact_dir / "lietaer_pdf_chapter_region_reader_quality_evidence.json").read_text(encoding="utf-8")
+    )
 
-    assert call_counts == {"verifier": 2, "cleanup": 1}
-    assert cleaned_markdown_path.read_text(encoding="utf-8") == expected_cleaned_markdown
-    assert updated_cleanup_report["passes"]["anchor_repair_pass"]["stats"]["accepted_cleanup_operation_count"] == 1
-    assert updated_cleanup_report["passes"]["anchor_repair_pass"]["selected_anchor_count"] == 2
+    assert call_counts == {"verifier": 1}
+    assert cleaned_markdown_path.read_text(encoding="utf-8") == initial_cleaned_markdown
+    assert cleaned_docx_path.read_bytes() == original_docx_bytes
+    assert "passes" not in updated_cleanup_report
     assert updated_evidence["reader_cleanup_report_path"] == str(cleanup_report_path)
-    assert review["cleaned_audit_verdict"] == "clean"
-    assert review["remaining_issues"] == []
+    assert updated_evidence["anchor_repair_status"] == "diagnostic_only_not_applied"
+    assert updated_evidence["recommended_anchor_target_count"] == len(updated_evidence["recommended_anchor_targets"])
+    assert updated_evidence["recommended_anchor_target_count"] >= 1
+    assert review["cleaned_audit_verdict"] == "improved_but_has_remaining_issues"
+    assert review["anchor_repair_status"] == "diagnostic_only_not_applied"
+    assert review["recommended_anchor_target_count"] == len(review["recommended_anchor_targets"])
+    assert any(target["category"] == "heading_fused_with_body" for target in review["recommended_anchor_targets"])
+    assert persisted_review["anchor_repair_status"] == "diagnostic_only_not_applied"
+    assert persisted_review["recommended_anchor_target_count"] == len(persisted_review["recommended_anchor_targets"])
+    assert persisted_evidence["anchor_repair_status"] == "diagnostic_only_not_applied"
+    assert persisted_evidence["recommended_anchor_target_count"] == len(persisted_evidence["recommended_anchor_targets"])
 
 
 def test_main_comparison_only_reader_verifier_failure_is_non_blocking(tmp_path, monkeypatch) -> None:
