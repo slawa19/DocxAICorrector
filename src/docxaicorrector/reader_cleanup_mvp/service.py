@@ -19,6 +19,7 @@ _ALLOWED_POLICIES = {"off", "advisory", "strict"}
 _ALLOWED_CONFIDENCE = {"low", "medium", "high"}
 _ALLOWED_DELETE_REASONS = {
     "blank_page_marker",
+    "duplicate_fragment",
     "extraction_artifact",
     "orphan_footnote_marker",
     "page_furniture_heading",
@@ -78,8 +79,10 @@ _SAFE_INLINE_NOISE_PATTERN = re.compile(
     r")\s*$"
 )
 _NUMERIC_UPPERCASE_RUNNING_HEADER_PATTERN = re.compile(
-    r"^\s*\d{1,4}\s+(?:[A-ZА-ЯЁ][A-ZА-ЯЁ-]{2,})(?:\s+[A-ZА-ЯЁ][A-ZА-ЯЁ-]{2,}){1,5}\s*$"
+    r"^\s*(?:\d{1,4}\s+){1,2}(?:[A-ZА-ЯЁ][A-ZА-ЯЁ-]{2,})(?:\s+[A-ZА-ЯЁ][A-ZА-ЯЁ-]{2,}){0,5}\s*$"
 )
+_RUNNING_HEADER_TRAILING_PUNCTUATION = ".,:;!?\"'«»“”„‟"
+_NUMERIC_UPPERCASE_MAX_TOKENS_WITHOUT_GENERIC_HEADER = 2
 _HEADER_CONNECTOR_WORDS = {
     "a",
     "an",
@@ -134,6 +137,7 @@ _ALLOWED_ANCHOR_REPAIR_CATEGORIES = {
     "page_furniture_inline",
     "fragmented_paragraph",
 }
+_DUPLICATE_FRAGMENT_MIN_NON_WHITESPACE_CHARS = 24
 
 
 @dataclass(frozen=True)
@@ -294,12 +298,19 @@ def build_reader_cleanup_system_prompt() -> str:
         "Each cleanup_operations item must contain id, text_hash, operation, reason, confidence, evidence_before, expected_after_preview, and safety_note. Never omit confidence.\n"
         "split_block must include split_substrings; remove_inline_noise must include noise_substring; join_fragmented_paragraph must include next_id and next_text_hash; normalize_heading_boundary must include heading_substring and body_substring.\n"
         "For normalize_heading_boundary, heading_substring must identify one exact heading candidate from the original block, and body_substring must point to the full semantic body remainder after that heading, not just a short teaser.\n"
+        "Use normalize_heading_boundary when the heading is an exact prefix and body_substring is the exact remainder start inside the same block.\n"
+        "If a block starts with page number plus running-header prefix plus prose, always propose remove_inline_noise for the exact non-semantic prefix first.\n"
+        "Do not use normalize_heading_boundary to remove a numeric running-header prefix; use it only after exact prefix cleanup has already isolated the heading/body boundary.\n"
+        "If body_substring is not copied verbatim from the current block text, do not propose normalize_heading_boundary.\n"
+        "If a numeric prefix is followed by a semantic heading and body, do not widen remove_inline_noise to consume the semantic heading; keep prefix removal and heading/body normalization as separate exact operations.\n"
+        "If one block has multiple bounded operations, keep them separate; code applies them in canonical order remove_inline_noise, split_block, post-split remove_inline_noise, normalize_heading_boundary, then join_fragmented_paragraph.\n"
         "Examples for heading/body cleanup:\n"
         "- Uppercase heading plus prose: use normalize_heading_boundary with heading_substring='СТРАТЕГИИ ДЛЯ ГОСУДАРСТВ' and body_substring starting at the first prose sentence after it.\n"
         "- Leading page number or running header plus uppercase heading plus prose: first use remove_inline_noise for the exact non-semantic prefix, then normalize_heading_boundary for the remaining heading/body boundary when both exact previews are safe.\n"
         "- Chapter heading plus epigraph in the same block: use split_block into exact substrings for chapter heading, epigraph, and body.\n"
         "- Section heading plus first sentence: use normalize_heading_boundary only if the heading comes first and the body remainder is exact.\n"
         "- Part title after a preceding quote: use split_block, not normalize_heading_boundary, because text exists before the heading.\n"
+        "- Duplicate tail carryover as its own block: use delete_block with reason duplicate_fragment only when that full block is already preserved nearby as exact repeated text.\n"
         "For fragmented paragraph anchors, use neighbor context to decide whether a page or caption boundary split one paragraph across adjacent blocks, and use join_fragmented_paragraph only when the exact adjacent hashes match that evidence.\n"
         "A leading or inline number may be removed only when it is exact non-semantic page furniture; if the number is semantic content inside a sentence, date, quantity, title, or citation, keep it.\n"
         "For obvious non-semantic noise such as standalone page numbers or lines like [[DOCX_IMAGE_img_001]], "
@@ -324,7 +335,10 @@ def build_reader_cleanup_schema_repair_system_prompt() -> str:
         "If pass_name is anchor_repair, keep the repaired response limited to anchor_targets, anchor_window_block_ids, editable_block_ids, and exact evidence already present in the request.\n"
         "You may fill missing audit fields only from exact block text, context previews, anchor_targets, and the original response; do not fabricate rewritten prose.\n"
         "Each cleanup_operations item must contain id, text_hash, operation, reason, confidence, evidence_before, expected_after_preview, and safety_note.\n"
+        "duplicate_fragment is an allowed delete_block reason only for exact nearby repeated carryover text that is already preserved elsewhere nearby.\n"
+        "If a duplicate_fragment candidate is only similar to nearby prose but not an exact normalized nearby preserved block, drop it and add a warning instead of widening the deletion.\n"
         "For remove_inline_noise, page_furniture_inline, page_furniture_heading, page_number, and repeated_running_header are the preferred bounded audit reasons.\n"
+        "Do not widen remove_inline_noise to consume a semantic heading after a numeric running-header prefix; keep exact prefix removal separate from normalize_heading_boundary.\n"
         "split_block must include split_substrings; remove_inline_noise must include noise_substring; join_fragmented_paragraph must include next_id and next_text_hash; normalize_heading_boundary must include heading_substring and body_substring.\n"
         "If one block needs composed cleanup, keep each operation separate and fully populated instead of merging them into rewritten Markdown.\n"
         "If an operation cannot be repaired safely, drop it and add a warning instead of inventing content."
@@ -370,6 +384,18 @@ def build_cleanup_blocks(markdown_text: str) -> list[CleanupBlock]:
     return blocks
 
 
+def _select_cleanup_blocks(*, blocks: Sequence[CleanupBlock], keep_toc: bool) -> tuple[list[CleanupBlock], list[str]]:
+    if keep_toc:
+        return list(blocks), []
+
+    filtered_blocks = [block for block in blocks if not block.is_toc_like]
+    ignored_toc_count = len(blocks) - len(filtered_blocks)
+    warnings: list[str] = []
+    if ignored_toc_count > 0:
+        warnings.append(f"reader_cleanup_toc_blocks_ignored:{ignored_toc_count}")
+    return filtered_blocks, warnings
+
+
 def run_reader_cleanup(
     *,
     markdown_text: str,
@@ -382,6 +408,7 @@ def run_reader_cleanup(
     model_resolution: Mapping[str, object] | None = None,
 ) -> ReaderCleanupResult:
     blocks = build_cleanup_blocks(markdown_text)
+    cleanup_blocks, selection_warnings = _select_cleanup_blocks(blocks=blocks, keep_toc=config.keep_toc)
     raw_markdown = str(markdown_text or "")
     if not blocks:
         report_payload = {
@@ -405,15 +432,17 @@ def run_reader_cleanup(
         )
 
     global_plan = _build_global_plan(
-        blocks=blocks,
+        blocks=cleanup_blocks,
         raw_markdown=raw_markdown,
         config=config,
         global_plan_provider=global_plan_provider,
     )
-    chunks = _build_cleanup_chunks(blocks=blocks, chunk_size=config.chunk_size)
+    chunks = _build_cleanup_chunks(blocks=cleanup_blocks, chunk_size=config.chunk_size)
     all_operations: list[CleanupOperation] = []
     raw_global_warnings = global_plan.get("warnings")
-    warnings: list[str] = [str(item) for item in raw_global_warnings] if isinstance(raw_global_warnings, list) else []
+    warnings: list[str] = list(selection_warnings)
+    if isinstance(raw_global_warnings, list):
+        warnings.extend(str(item) for item in raw_global_warnings)
     ignored_delete_blocks: list[dict[str, object]] = []
     chunk_results: list[dict[str, object]] = []
 
@@ -638,7 +667,15 @@ def run_reader_cleanup_anchor_repair(
     blocks = build_cleanup_blocks(raw_markdown)
     if not blocks:
         merged_report = dict(base_report_payload)
-        merged_report.setdefault("warnings", []).append("reader_cleanup_anchor_repair_skipped_empty_markdown")
+        existing_warnings = merged_report.get("warnings")
+        if isinstance(existing_warnings, list):
+            warnings_list: list[str] = [str(item) for item in existing_warnings]
+        else:
+            warnings_list = []
+        merged_report["warnings"] = [
+            *warnings_list,
+            "reader_cleanup_anchor_repair_skipped_empty_markdown",
+        ]
         return ReaderCleanupResult(
             changed=False,
             raw_markdown=raw_markdown,
@@ -1635,19 +1672,9 @@ def _apply_cleanup_operations(
     same_block_operation_history: dict[str, list[str]] = {}
     same_block_applied_history: dict[str, list[str]] = {}
     rewritten_blocks: list[str | None] = [block.text for block in blocks]
-    operations_by_index = sorted(
-        (
-            (
-                _block_by_id(blocks, operation.block_id).index,
-                operation_index,
-                operation,
-            )
-            for operation_index, operation in enumerate(operations)
-        ),
-        key=lambda item: (item[0], item[1]),
-    )
+    operations_by_index = _canonicalize_cleanup_operation_sequence(blocks=blocks, operations=operations)
 
-    for _, _, operation in operations_by_index:
+    for _, _, _, operation, sequence_decision in operations_by_index:
         block = _block_by_id(blocks, operation.block_id)
         previous_encountered = same_block_operation_history.get(block.block_id, [])
         previous_applied = same_block_applied_history.get(block.block_id, [])
@@ -1663,6 +1690,7 @@ def _apply_cleanup_operations(
                     **_serialize_cleanup_operation(operation=operation, block=block),
                     "chunk_index": operation.chunk_index,
                     "ignored_reason": sequence_ignore_reason,
+                    **({"sequence_decision": sequence_decision} if sequence_decision else {}),
                 }
             )
             continue
@@ -1679,6 +1707,7 @@ def _apply_cleanup_operations(
                     **_serialize_cleanup_operation(operation=operation, block=block),
                     "chunk_index": operation.chunk_index,
                     "ignored_reason": ignore_reason,
+                    **({"sequence_decision": sequence_decision} if sequence_decision else {}),
                 }
             )
             continue
@@ -1695,6 +1724,7 @@ def _apply_cleanup_operations(
                     **_serialize_cleanup_operation(operation=operation, block=block),
                     "chunk_index": operation.chunk_index,
                     "ignored_reason": apply_ignore_reason or "operation_not_applicable_exact_match",
+                    **({"sequence_decision": sequence_decision} if sequence_decision else {}),
                 }
             )
             continue
@@ -1709,6 +1739,7 @@ def _apply_cleanup_operations(
                 **_serialize_cleanup_operation(operation=operation, block=block),
                 "chunk_index": operation.chunk_index,
                 "after_state": after_state,
+                **({"sequence_decision": sequence_decision} if sequence_decision else {}),
             }
         )
         same_block_applied_history.setdefault(block.block_id, []).append(operation.operation)
@@ -1750,6 +1781,15 @@ def _apply_single_operation_to_blocks(
     if current_text is None:
         return False, "", "block_already_removed"
     if operation.operation == "delete_block":
+        if operation.reason == "duplicate_fragment":
+            duplicate_fragment_ignore_reason = _validate_duplicate_fragment_delete(
+                blocks=blocks,
+                rewritten_blocks=rewritten_blocks,
+                block=block,
+                current_text=current_text,
+            )
+            if duplicate_fragment_ignore_reason is not None:
+                return False, "", duplicate_fragment_ignore_reason
         rewritten_blocks[block.index] = None
         return True, "deleted", None
     if operation.operation == "split_block":
@@ -1839,7 +1879,11 @@ def _is_safe_inline_noise_substring(*, noise: str, current_text: str, reason: st
 
 def _looks_like_numeric_uppercase_running_header_noise(*, normalized_noise: str, current_text: str) -> bool:
     candidate = normalized_noise.strip()
-    if not candidate or _NUMERIC_UPPERCASE_RUNNING_HEADER_PATTERN.fullmatch(candidate) is None:
+    if not candidate:
+        return False
+
+    shape_candidate = candidate.rstrip(_RUNNING_HEADER_TRAILING_PUNCTUATION).rstrip()
+    if not shape_candidate or _NUMERIC_UPPERCASE_RUNNING_HEADER_PATTERN.fullmatch(shape_candidate) is None:
         return False
 
     noise_index = current_text.find(candidate)
@@ -1851,14 +1895,23 @@ def _looks_like_numeric_uppercase_running_header_noise(*, normalized_noise: str,
     if noise_end_index < len(current_text) and current_text[noise_end_index].isalnum():
         return False
 
-    tokens = [token.strip("()[]{}\"'.,:;!?«»") for token in candidate.split() if token.strip()]
-    if len(tokens) < 3 or not tokens[0].isdigit():
+    tokens = [token.strip("()[]{}\"'.,:;!?«»") for token in shape_candidate.split() if token.strip()]
+    number_tokens: list[str] = []
+    while tokens and tokens[0].isdigit():
+        number_tokens.append(tokens.pop(0))
+    if not number_tokens or not tokens:
+        return False
+    if len(number_tokens) > 2:
         return False
 
-    phrase_tokens = [token.lower() for token in tokens[1:] if token]
-    if not any(token in _GENERIC_RUNNING_HEADER_TOKENS for token in phrase_tokens):
+    phrase_tokens = [token.lower() for token in tokens if token]
+    has_generic_header_token = any(token in _GENERIC_RUNNING_HEADER_TOKENS for token in phrase_tokens)
+    has_page_number_shape = any(len(token) >= 3 for token in number_tokens)
+    if not has_generic_header_token and not has_page_number_shape:
         return False
-    return all(token.isupper() for token in tokens[1:])
+    if not has_generic_header_token and len(tokens) > _NUMERIC_UPPERCASE_MAX_TOKENS_WITHOUT_GENERIC_HEADER:
+        return False
+    return all(token.isupper() for token in tokens)
 
 
 def _looks_like_title_case_running_header_noise(*, normalized_noise: str, current_text: str) -> bool:
@@ -2021,9 +2074,153 @@ def _validate_same_block_operation_sequence(
     if list(previous_encountered) != list(previous_applied):
         return "prior_same_block_operation_not_applied"
     candidate_sequence = tuple(previous_applied) + (operation.operation,)
-    if candidate_sequence == ("remove_inline_noise", "normalize_heading_boundary"):
-        return None
-    return "duplicate_operation_incompatible"
+    if "delete_block" in candidate_sequence and len(candidate_sequence) > 1:
+        return "duplicate_operation_incompatible"
+
+    seen_split = False
+    seen_split_count = 0
+    seen_normalize_count = 0
+    seen_join_count = 0
+    previous_phase = 0
+    previous_operation = ""
+    for operation_name in candidate_sequence:
+        phase = _same_block_operation_phase(operation_name=operation_name, seen_split=seen_split)
+        if phase < previous_phase:
+            return "duplicate_operation_incompatible"
+        if phase == previous_phase and operation_name != "remove_inline_noise":
+            return "duplicate_operation_incompatible"
+        if operation_name == "split_block":
+            seen_split_count += 1
+            if seen_split_count > 1:
+                return "duplicate_operation_incompatible"
+            seen_split = True
+        elif operation_name == "normalize_heading_boundary":
+            seen_normalize_count += 1
+            if seen_normalize_count > 1:
+                return "duplicate_operation_incompatible"
+        elif operation_name == "join_fragmented_paragraph":
+            seen_join_count += 1
+            if seen_join_count > 1:
+                return "duplicate_operation_incompatible"
+        if previous_operation == "join_fragmented_paragraph":
+            return "duplicate_operation_incompatible"
+        previous_phase = phase
+        previous_operation = operation_name
+    return None
+
+
+def _same_block_operation_phase(*, operation_name: str, seen_split: bool) -> int:
+    if operation_name == "remove_inline_noise":
+        return 3 if seen_split else 1
+    if operation_name == "split_block":
+        return 2
+    if operation_name == "normalize_heading_boundary":
+        return 4
+    if operation_name == "join_fragmented_paragraph":
+        return 5
+    if operation_name == "delete_block":
+        return 6
+    return 99
+
+
+def _canonicalize_cleanup_operation_sequence(
+    *,
+    blocks: Sequence[CleanupBlock],
+    operations: Sequence[CleanupOperation],
+) -> list[tuple[int, int, int, CleanupOperation, str | None]]:
+    block_index_by_id = {block.block_id: block.index for block in blocks}
+    split_index_by_block_id: dict[str, int] = {}
+    original_indexes_by_block_id: dict[str, list[int]] = {}
+    mixed_delete_block_ids: set[str] = set()
+    for operation_index, operation in enumerate(operations):
+        original_indexes_by_block_id.setdefault(operation.block_id, []).append(operation_index)
+        if operation.operation == "split_block" and operation.block_id not in split_index_by_block_id:
+            split_index_by_block_id[operation.block_id] = operation_index
+
+    sequenced_entries: list[tuple[int, int, int, CleanupOperation, str | None]] = []
+    reordered_block_ids: set[str] = set()
+    per_block_entries: dict[str, list[tuple[int, int, CleanupOperation]]] = {}
+    for operation_index, operation in enumerate(operations):
+        phase = _same_block_original_phase(
+            operation=operation,
+            operation_index=operation_index,
+            split_index_by_block_id=split_index_by_block_id,
+        )
+        per_block_entries.setdefault(operation.block_id, []).append((phase, operation_index, operation))
+
+    for block_id, entries in per_block_entries.items():
+        operation_names = {operation.operation for _, _, operation in entries}
+        if "delete_block" in operation_names and len(operation_names) > 1:
+            mixed_delete_block_ids.add(block_id)
+            continue
+        original_order = [operation_index for _, operation_index, _ in entries]
+        canonical_order = [
+            operation_index
+            for _, operation_index, _ in sorted(entries, key=lambda item: (item[0], item[1]))
+        ]
+        if canonical_order != original_order:
+            reordered_block_ids.add(block_id)
+
+    for operation_index, operation in enumerate(operations):
+        if operation.block_id in mixed_delete_block_ids:
+            phase = 0 if operation.operation == "delete_block" else 1
+        else:
+            phase = _same_block_original_phase(
+                operation=operation,
+                operation_index=operation_index,
+                split_index_by_block_id=split_index_by_block_id,
+            )
+        block_index = block_index_by_id[operation.block_id]
+        sequence_decision = "operation_sequence_reordered" if operation.block_id in reordered_block_ids else None
+        sequenced_entries.append((block_index, phase, operation_index, operation, sequence_decision))
+
+    return sorted(sequenced_entries, key=lambda item: (item[0], item[1], item[2]))
+
+
+def _same_block_original_phase(
+    *,
+    operation: CleanupOperation,
+    operation_index: int,
+    split_index_by_block_id: Mapping[str, int],
+) -> int:
+    split_index = split_index_by_block_id.get(operation.block_id)
+    if operation.operation == "remove_inline_noise" and split_index is not None and operation_index > split_index:
+        return 3
+    return _same_block_operation_phase(operation_name=operation.operation, seen_split=False)
+
+
+def _validate_duplicate_fragment_delete(
+    *,
+    blocks: Sequence[CleanupBlock],
+    rewritten_blocks: Sequence[str | None],
+    block: CleanupBlock,
+    current_text: str,
+) -> str | None:
+    candidate = _normalize_block_text(current_text)
+    candidate_non_whitespace = len(re.sub(r"\s+", "", candidate))
+    if candidate_non_whitespace < _DUPLICATE_FRAGMENT_MIN_NON_WHITESPACE_CHARS:
+        return "duplicate_fragment_too_short"
+
+    nearby_matches = 0
+    for other_block in blocks:
+        if other_block.block_id == block.block_id:
+            continue
+        if abs(other_block.index - block.index) > 2:
+            continue
+        other_text = rewritten_blocks[other_block.index]
+        if other_text is None:
+            continue
+        other_normalized = _normalize_block_text(other_text)
+        if not other_normalized:
+            continue
+        if candidate == other_normalized or candidate in other_normalized or other_normalized.endswith(candidate):
+            nearby_matches += 1
+            if nearby_matches > 1:
+                return "duplicate_fragment_ambiguous_neighbor_match"
+
+    if nearby_matches != 1:
+        return "duplicate_fragment_unique_continuation"
+    return None
 
 
 def _detect_block_kind(text: str) -> str:

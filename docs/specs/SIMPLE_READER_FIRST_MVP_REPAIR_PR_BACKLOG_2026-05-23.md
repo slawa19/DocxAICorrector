@@ -28,6 +28,14 @@ document-specific deterministic fixes. It is a request to improve bounded AI
 cleanup operations on the remaining reader-visible defects while preserving the
 code-owned safety and verifier evidence contracts.
 
+AI-first priority is the controlling rule for all remaining work. When a real
+run gets worse, first inspect whether the AI proposed valid bounded operations
+that code rejected too narrowly, or whether the prompt/model produced non-exact
+operations. Do not respond by adding regex-repair that independently finds and
+rewrites document text. Regex may support safety acceptance for AI-proposed exact
+substrings, pre-audit evidence, or reporting; it must not become a hidden second
+cleanup engine.
+
 ## User-Facing Summary
 
 The MVP works as a draft-quality comparison tool: it creates output and makes
@@ -47,6 +55,10 @@ comparison-only profile.
 - Do not expand the shared page-furniture phrase library for this document.
 - Do not use deterministic Markdown rewrites to split headings, merge
   paragraphs, or remove document-specific running headers.
+- Do not implement verifier-suggested `deterministic_last_resort` as regex
+   repair unless the backlog is updated with cross-document evidence that
+   prompt/model/operation-contract/safety-application paths cannot solve the
+   defect without violating exact-match cleanup.
 - Do not tune Stage 1, Stage 2, topology, or structure-recognition windows for
   these reader-cleanup defects.
 - Do not tighten or relax acceptance thresholds to make the comparison-only run
@@ -127,6 +139,27 @@ Work must be split by owner:
 Future implementation slices must name exactly one of these scopes unless this
 backlog is updated first. If a slice discovers a defect belongs to a different
 owner, it must record the evidence and stop instead of broadening the PR.
+
+### Remaining PRs In Plain Words
+
+- **Finish PR-H first.** Continue PR-H while the output still has old page
+   furniture, fused headings, duplicate fragments, or broken paragraphs that can
+   be handled by AI-proposed bounded cleanup operations. Start with prompt/model
+   discipline and safety acceptance for exact AI proposals; do not move to PR-I
+   just because formatting is imperfect.
+- **Start PR-I after PR-H is stable.** PR-I begins when comparison-only runs
+   consistently produce readable text with no false deletions/readability
+   regressions, and the main remaining pain is book-like formatting: bold,
+   italic, emphasis, heading/subheading styles, list styling, and DOCX style
+   preservation.
+- **Start PR-J independently when image loss matters.** PR-J begins when the
+   desired output must preserve PDF-origin images and evidence shows images,
+   placeholders, or inline shapes disappear in import/handoff/reinsertion. Do not
+   wait for PR-I if images are a release blocker, but do not solve images through
+   reader cleanup.
+- **Do not reopen PR-G unless validation mutates artifacts again.** Validator
+   work is only supporting evidence now: it may report, filter out-of-scope TOC
+   findings, and explain ignored cleanup reasons, but it must not repair output.
 
 ## Latest Evidence To Preserve
 
@@ -901,6 +934,8 @@ true:
 
 - PR-A requires changing the cleanup operation contract beyond schema repair;
 - a proposed fix needs document-specific deterministic cleanup logic;
+- a proposed fix uses regex-repair as the main cleanup mechanism instead of
+   AI-proposed bounded operations plus code-owned safety/application;
 - a change would modify structure-recognition authority boundaries;
 - real-document evidence shows false deletions or readability regressions;
 - comparison-only artifacts stop being produced.

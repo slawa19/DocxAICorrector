@@ -242,7 +242,6 @@ def test_evaluate_lietaer_acceptance_fails_on_translation_quality_report_residua
         "residual_bullet_glyphs_present",
         "list_fragment_regressions_present",
         "mixed_script_terms_present",
-        "toc_body_concatenation_detected",
         "structural_comparison_available",
     ]
     assert by_name["residual_bullet_glyphs_present"]["residual_bullet_glyph_gate_source"] == "legacy_markdown"
@@ -257,10 +256,7 @@ def test_evaluate_lietaer_acceptance_fails_on_translation_quality_report_residua
         == "domain_style_advisory"
     )
     assert by_name["theology_style_deterministic_issues_present"]["raw_theology_style_deterministic_issue_count"] == 3
-    assert by_name["toc_body_concatenation_detected"]["toc_body_concat_detected"] is True
-    assert by_name["toc_body_concatenation_detected"]["toc_body_concat_markdown_detected"] is True
-    assert by_name["toc_body_concatenation_detected"]["toc_body_concat_structure_detected"] is False
-    assert by_name["toc_body_concatenation_detected"]["toc_body_concat_gate_source"] == "legacy_markdown"
+    assert "toc_body_concatenation_detected" not in by_name
 
 
 def test_evaluate_lietaer_acceptance_uses_authoritative_structural_markdown_counts() -> None:
@@ -2040,6 +2036,10 @@ def test_main_comparison_only_reader_cleanup_reports_non_acceptance_artifacts_fo
         "anchor_repair_status": "diagnostic_only_not_applied",
         "recommended_anchor_targets": report["reader_cleanup_evidence"]["recommended_anchor_targets"],
         "recommended_anchor_target_count": report["reader_cleanup_evidence"]["recommended_anchor_target_count"],
+        "verifier_recommended_anchor_targets": report["reader_cleanup_evidence"]["verifier_recommended_anchor_targets"],
+        "verifier_recommended_anchor_target_count": report["reader_cleanup_evidence"][
+            "verifier_recommended_anchor_target_count"
+        ],
         "deleted_block_previews": [
             {
                 "id": "b_000007",
@@ -2053,6 +2053,10 @@ def test_main_comparison_only_reader_cleanup_reports_non_acceptance_artifacts_fo
         report["reader_cleanup_evidence"]["recommended_anchor_targets"]
     )
     assert report["reader_cleanup_evidence"]["recommended_anchor_target_count"] >= 1
+    assert report["reader_cleanup_evidence"]["verifier_recommended_anchor_target_count"] == len(
+        report["reader_cleanup_evidence"]["verifier_recommended_anchor_targets"]
+    )
+    assert report["reader_cleanup_evidence"]["verifier_recommended_anchor_target_count"] >= 1
     assert report["output_artifacts"]["cleaned_markdown_path"] == str(cleaned_markdown_path)
     assert report["output_artifacts"]["cleaned_docx_path"] == str(cleaned_docx_path)
     assert report["output_artifacts"]["reader_cleanup_raw_markdown_path"] == str(raw_markdown_path)
@@ -2107,9 +2111,28 @@ def _reader_verifier_test_evidence_payload(*, pre_audit_issue_counts: dict[str, 
             "cleaned_docx": "runs/run-1/cleaned.docx",
             "reader_cleanup_report": "runs/run-1/cleanup.json",
         },
+        "validator_boundary": {
+            "observer_only": True,
+            "runs_cleanup_repair": False,
+            "runs_anchor_repair": False,
+            "mutates_cleaned_markdown": False,
+            "mutates_cleaned_docx": False,
+            "rebuilds_docx": False,
+        },
         "pre_audit_issue_counts": counts,
         "pre_audit_findings": findings,
         "mandatory_review_targets": findings,
+        "toc_filtering_policy": {
+            "mode": "evidence_only",
+            "toc_out_of_review_scope": False,
+            "policy_source": "toc_in_review_scope",
+            "artifact_repair_applied": False,
+        },
+        "evidence_filtering_note": (
+            "TOC-like review targets may be filtered from verifier evidence when profile policy marks TOC out of scope; "
+            "this is evidence filtering only and does not repair, rewrite, or rebuild output artifacts."
+        ),
+        "filtered_toc_issue_count": 0,
     }
 
 
@@ -2147,6 +2170,299 @@ def _reader_verifier_test_response(**overrides: object) -> str:
     }
     payload.update(overrides)
     return json.dumps(payload, ensure_ascii=False)
+
+
+def test_build_reader_verifier_evidence_payload_excludes_toc_like_pre_audit_findings(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    raw_markdown_path = tmp_path / "raw.md"
+    cleaned_markdown_path = tmp_path / "cleaned.md"
+    cleanup_report_path = tmp_path / "cleanup.json"
+    cleaned_docx_path = tmp_path / "cleaned.docx"
+    source_document_path = tmp_path / "source.docx"
+
+    cleaned_markdown_path.write_text(
+        "СОДЕРЖАНИЕ Предисловие ix Введение: от дефицита к процветанию 1\n\n"
+        "КАК ЭТО РАБОТАЕТ. Местные органы власти могут ежегодно запрашивать гражданский взнос.",
+        encoding="utf-8",
+    )
+    raw_markdown_path.write_text(cleaned_markdown_path.read_text(encoding="utf-8"), encoding="utf-8")
+    cleanup_report_path.write_text(json.dumps({"warnings": []}, ensure_ascii=False), encoding="utf-8")
+    cleaned_docx_path.write_bytes(b"PK")
+    source_document_path.write_bytes(b"PK")
+
+    evidence = validation._build_reader_verifier_evidence_payload(
+        run_id="run-toc-filter",
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        source_document_path=source_document_path,
+        source_text="source",
+        reader_cleanup_evidence={
+            "raw_markdown_path": str(raw_markdown_path),
+            "cleaned_markdown_path": str(cleaned_markdown_path),
+            "reader_cleanup_report_path": str(cleanup_report_path),
+            "cleaned_docx_path": str(cleaned_docx_path),
+            "stage_status": "completed",
+            "changed": True,
+        },
+        runtime_app_config={"reader_cleanup_keep_toc": False},
+    )
+
+    assert evidence["toc_filtering_policy"]["toc_out_of_review_scope"] is True
+    assert evidence["toc_filtering_policy"]["artifact_repair_applied"] is False
+    assert evidence["filtered_toc_issue_count"] == 1
+    assert evidence["filtered_toc_pre_audit_count"] == 1
+    assert evidence["raw_pre_audit_issue_counts"]["heading_fused_with_body"] == 2
+    assert evidence["pre_audit_issue_counts"]["heading_fused_with_body"] == 1
+    assert evidence["validator_boundary"]["observer_only"] is True
+    assert evidence["validator_boundary"]["rebuilds_docx"] is False
+    assert evidence["filtered_toc_issue_previews"] == [
+        {
+            "source": "pre_audit",
+            "category": "heading_fused_with_body",
+            "artifact": "cleaned_markdown",
+            "line_ref": "cleaned_markdown:1",
+            "snippet": "СОДЕРЖАНИЕ Предисловие ix Введение: от дефицита к процветанию 1",
+        }
+    ]
+    assert all("СОДЕРЖАНИЕ" not in finding["snippet"] for finding in evidence["pre_audit_findings"])
+    assert all("СОДЕРЖАНИЕ" not in finding["snippet"] for finding in evidence["mandatory_review_targets"])
+    assert len(evidence["mandatory_review_targets"]) == 1
+    assert "КАК ЭТО РАБОТАЕТ" in evidence["mandatory_review_targets"][0]["snippet"]
+
+
+def test_build_reader_verifier_evidence_payload_keeps_toc_like_pre_audit_findings_when_toc_in_scope(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    raw_markdown_path = tmp_path / "raw.md"
+    cleaned_markdown_path = tmp_path / "cleaned.md"
+    cleanup_report_path = tmp_path / "cleanup.json"
+    cleaned_docx_path = tmp_path / "cleaned.docx"
+    source_document_path = tmp_path / "source.docx"
+
+    cleaned_markdown_path.write_text(
+        "СОДЕРЖАНИЕ Предисловие ix Введение: от дефицита к процветанию 1\n\n"
+        "КАК ЭТО РАБОТАЕТ. Местные органы власти могут ежегодно запрашивать гражданский взнос.",
+        encoding="utf-8",
+    )
+    raw_markdown_path.write_text(cleaned_markdown_path.read_text(encoding="utf-8"), encoding="utf-8")
+    cleanup_report_path.write_text(json.dumps({"warnings": []}, ensure_ascii=False), encoding="utf-8")
+    cleaned_docx_path.write_bytes(b"PK")
+    source_document_path.write_bytes(b"PK")
+
+    evidence = validation._build_reader_verifier_evidence_payload(
+        run_id="run-toc-in-scope",
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        source_document_path=source_document_path,
+        source_text="source",
+        reader_cleanup_evidence={
+            "raw_markdown_path": str(raw_markdown_path),
+            "cleaned_markdown_path": str(cleaned_markdown_path),
+            "reader_cleanup_report_path": str(cleanup_report_path),
+            "cleaned_docx_path": str(cleaned_docx_path),
+            "stage_status": "completed",
+            "changed": True,
+        },
+        runtime_app_config={"reader_cleanup_keep_toc": True},
+    )
+
+    assert evidence["toc_filtering_policy"]["toc_out_of_review_scope"] is False
+    assert evidence["filtered_toc_issue_count"] == 0
+    assert evidence["pre_audit_issue_counts"]["heading_fused_with_body"] == 2
+    assert any("СОДЕРЖАНИЕ" in finding["snippet"] for finding in evidence["mandatory_review_targets"])
+
+
+def test_parse_reader_verifier_completed_review_filters_toc_like_remaining_issues(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    evidence_payload = _reader_verifier_test_evidence_payload()
+    evidence_payload["toc_filtering_policy"] = {
+        "mode": "evidence_only",
+        "toc_out_of_review_scope": True,
+        "policy_source": "reader_cleanup_keep_toc_false",
+        "artifact_repair_applied": False,
+    }
+    evidence_payload["cleaned_markdown"] = (
+        "СОДЕРЖАНИЕ Предисловие ix Введение: от дефицита к процветанию 1\n\n"
+        "КАК ЭТО РАБОТАЕТ. Местные органы власти могут ежегодно запрашивать гражданский взнос."
+    )
+    raw_response = _reader_verifier_test_response(
+        cleaned_audit_verdict="improved_but_has_remaining_issues",
+        remaining_issues=[
+            {
+                "category": "heading_fused_with_body",
+                "severity": "high",
+                "artifact": "cleaned_markdown",
+                "line_ref": "cleaned_markdown:1",
+                "snippet": "СОДЕРЖАНИЕ Предисловие ix Введение: от дефицита к процветанию 1",
+                "why_reader_hurts": "TOC-like opening text is out of scope for the review.",
+                "recommended_fix_type": "split_heading",
+            },
+            {
+                "category": "heading_fused_with_body",
+                "severity": "high",
+                "artifact": "cleaned_markdown",
+                "line_ref": "cleaned_markdown:3",
+                "snippet": "КАК ЭТО РАБОТАЕТ. Местные органы власти могут ежегодно запрашивать гражданский взнос.",
+                "why_reader_hurts": "The section heading is fused into body text.",
+                "recommended_fix_type": "split_heading",
+            },
+        ],
+        evidence_anchors=[
+            {
+                "kind": "improvement_seen",
+                "artifact": "comparison",
+                "line_ref": "comparison:1",
+                "snippet": "Header noise was removed from the cleaned artifact.",
+                "note": "Concrete readability improvement anchor.",
+            },
+            {
+                "kind": "remaining_issue",
+                "artifact": "cleaned_markdown",
+                "line_ref": "cleaned_markdown:1",
+                "snippet": "СОДЕРЖАНИЕ Предисловие ix Введение: от дефицита к процветанию 1",
+                "note": "TOC-like issue.",
+            },
+            {
+                "kind": "remaining_issue",
+                "artifact": "cleaned_markdown",
+                "line_ref": "cleaned_markdown:3",
+                "snippet": "КАК ЭТО РАБОТАЕТ. Местные органы власти могут ежегодно запрашивать гражданский взнос.",
+                "note": "Real remaining issue.",
+            },
+        ],
+    )
+
+    review = validation._parse_reader_verifier_completed_review(
+        raw_response=raw_response,
+        requested_selector="openrouter:google/gemini-3-flash-preview",
+        canonical_selector="openrouter:google/gemini-3-flash-preview",
+        provider="openrouter",
+        model_id="google/gemini-3-flash-preview",
+        evidence_path=tmp_path / "evidence.json",
+        evidence_payload=evidence_payload,
+        run_id="run-toc-filter",
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+    )
+
+    assert review["issue_summary_by_category"]["heading_fused_with_body"] == 1
+    assert review["filtered_toc_issue_count"] == 1
+    assert review["filtered_toc_pre_audit_count"] == 0
+    assert review["filtered_toc_verifier_issue_count"] == 1
+    assert review["filtered_toc_evidence_anchor_count"] == 1
+    assert len(review["remaining_issues"]) == 1
+    assert review["filtered_toc_issue_previews"] == [
+        {
+            "source": "verifier_remaining_issue",
+            "category": "heading_fused_with_body",
+            "artifact": "cleaned_markdown",
+            "line_ref": "cleaned_markdown:1",
+            "snippet": "СОДЕРЖАНИЕ Предисловие ix Введение: от дефицита к процветанию 1",
+        }
+    ]
+    assert "СОДЕРЖАНИЕ" not in review["remaining_issues"][0]["snippet"]
+    assert all("СОДЕРЖАНИЕ" not in anchor["snippet"] for anchor in review["evidence_anchors"])
+    assert review["toc_filtering_policy"]["artifact_repair_applied"] is False
+    assert "evidence filtering only" in review["evidence_filtering_note"]
+    assert review["validator_boundary"]["observer_only"] is True
+
+
+def test_build_reader_verifier_evidence_payload_emits_cleanup_ignored_reason_summary(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    raw_markdown_path = tmp_path / "raw.md"
+    cleaned_markdown_path = tmp_path / "cleaned.md"
+    cleanup_report_path = tmp_path / "cleanup.json"
+    cleaned_docx_path = tmp_path / "cleaned.docx"
+    source_document_path = tmp_path / "source.docx"
+
+    cleaned_markdown_path.write_text("Intro\n\nBody paragraph\n\nOutro", encoding="utf-8")
+    raw_markdown_path.write_text(cleaned_markdown_path.read_text(encoding="utf-8"), encoding="utf-8")
+    cleanup_report_path.write_text(
+        json.dumps(
+            {
+                "warnings": [],
+                "accepted_cleanup_operations": [
+                    {
+                        "operation": "remove_inline_noise",
+                        "reason": "repeated_running_header",
+                        "chunk_index": 1,
+                    }
+                ],
+                "ignored_delete_blocks": [
+                    {
+                        "operation": "remove_inline_noise",
+                        "reason": "repeated_running_header",
+                        "ignored_reason": "prior_same_block_operation_not_applied",
+                        "chunk_index": 1,
+                        "raw_text_preview": "10",
+                    },
+                    {
+                        "operation": "normalize_heading_boundary",
+                        "reason": "heading_body_fusion",
+                        "ignored_reason": "heading_boundary_unaccounted_text",
+                        "chunk_index": 1,
+                        "raw_text_preview": "HEADING Body text continues",
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    cleaned_docx_path.write_bytes(b"PK")
+    source_document_path.write_bytes(b"PK")
+
+    evidence = validation._build_reader_verifier_evidence_payload(
+        run_id="run-cleanup-diagnostics",
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        source_document_path=source_document_path,
+        source_text="source",
+        reader_cleanup_evidence={
+            "raw_markdown_path": str(raw_markdown_path),
+            "cleaned_markdown_path": str(cleaned_markdown_path),
+            "reader_cleanup_report_path": str(cleanup_report_path),
+            "cleaned_docx_path": str(cleaned_docx_path),
+            "stage_status": "completed",
+            "changed": True,
+        },
+        runtime_app_config={"reader_cleanup_keep_toc": False},
+    )
+
+    assert evidence["cleanup_diagnostics"]["accepted_operation_counts"] == {"remove_inline_noise": 1}
+    assert evidence["cleanup_diagnostics"]["ignored_reason_counts"]["prior_same_block_operation_not_applied"] == 1
+    assert evidence["cleanup_diagnostics"]["ignored_reason_counts"]["heading_boundary_unaccounted_text"] == 1
+    assert evidence["cleanup_diagnostics"]["top_ignored_reasons"] == [
+        {
+            "ignored_reason": "prior_same_block_operation_not_applied",
+            "count": 1,
+            "examples": [
+                {
+                    "operation": "remove_inline_noise",
+                    "reason": "repeated_running_header",
+                    "chunk_index": 1,
+                    "text_preview": "10",
+                    "sequence_decision": "",
+                }
+            ],
+        },
+        {
+            "ignored_reason": "heading_boundary_unaccounted_text",
+            "count": 1,
+            "examples": [
+                {
+                    "operation": "normalize_heading_boundary",
+                    "reason": "heading_body_fusion",
+                    "chunk_index": 1,
+                    "text_preview": "HEADING Body text continues",
+                    "sequence_decision": "",
+                }
+            ],
+        },
+    ]
 
 
 def test_parse_reader_verifier_completed_review_accepts_structured_payload(tmp_path) -> None:
@@ -2886,6 +3202,15 @@ def test_main_comparison_only_reader_verifier_writes_artifacts_and_metadata(tmp_
                         "kind": "heading",
                     }
                 ],
+                "ignored_delete_blocks": [
+                    {
+                        "operation": "remove_inline_noise",
+                        "reason": "repeated_running_header",
+                        "ignored_reason": "prior_same_block_operation_not_applied",
+                        "chunk_index": 1,
+                        "raw_text_preview": "12 CHAPTER HEADER",
+                    }
+                ],
                 "warnings": [],
             },
             ensure_ascii=False,
@@ -3148,14 +3473,27 @@ def test_main_comparison_only_reader_verifier_writes_artifacts_and_metadata(tmp_
     assert report["reader_mvp_status"]["cleanup_score_delta"] == 3.0
     assert report["reader_mvp_status"]["no_false_deletions_reported"] is True
     assert report["reader_mvp_status"]["no_readability_regressions_reported"] is False
+    assert report["reader_verifier_evidence"]["cleanup_diagnostics"]["ignored_reason_counts"]["prior_same_block_operation_not_applied"] == 1
+    assert report["reader_verifier_evidence"]["validator_boundary"]["observer_only"] is True
     assert report["reader_mvp_status"]["blocker_groups"]["mapping_quality_gate_diagnostics"] == [
         "acceptance_diagnostic_checks=false_fragment_headings_present"
+    ]
+    assert report["reader_mvp_status"]["blocker_groups"]["cleanup_application_diagnostics"] == [
+        "prior_same_block_operation_not_applied=1"
     ]
     assert latest_manifest["status"] == "completed"
     assert latest_manifest["reader_verifier_status"] == "completed"
     assert latest_manifest["reader_verifier_model_selector"] == "openrouter:google/gemini-3-flash-preview"
     assert latest_manifest["reader_verifier_model_id"] == "google/gemini-3-flash-preview"
     assert latest_manifest["reader_verifier_cleaned_audit_verdict"] == "improved_but_has_remaining_issues"
+    assert latest_manifest["reader_verifier_cleanup_ignored_reason_counts"] == {
+        "duplicate_operation_incompatible": 0,
+        "heading_boundary_substrings_not_found": 0,
+        "heading_boundary_unaccounted_text": 0,
+        "noise_substring_not_found": 0,
+        "prior_same_block_operation_not_applied": 1,
+        "remove_inline_noise_not_exact_noise_pattern": 0,
+    }
     assert latest_manifest["reader_verifier_remaining_issue_count"] == 4
     assert latest_manifest["reader_verifier_high_severity_issue_count"] == 2
     assert latest_manifest["reader_verifier_top_issue_categories"] == [
@@ -3175,6 +3513,7 @@ def test_main_comparison_only_reader_verifier_writes_artifacts_and_metadata(tmp_
     assert "reader_verifier_remaining_issue_count=4" in summary_text
     assert "reader_verifier_high_severity_issue_count=2" in summary_text
     assert "reader_verifier_top_issue_categories=broken_list_marker,duplicate_fragment,fragmented_paragraph" in summary_text
+    assert "reader_verifier_cleanup_ignored_reason_counts={\"duplicate_operation_incompatible\": 0, \"heading_boundary_substrings_not_found\": 0, \"heading_boundary_unaccounted_text\": 0, \"noise_substring_not_found\": 0, \"prior_same_block_operation_not_applied\": 1, \"remove_inline_noise_not_exact_noise_pattern\": 0}" in summary_text
     assert "reader_verifier_evidence_json=artifacts/runs/run-verifier/lietaer_pdf_chapter_region_reader_quality_evidence.json" in summary_text
     assert "reader_verifier_review_json=artifacts/runs/run-verifier/lietaer_pdf_chapter_region_reader_quality_review.json" in summary_text
     assert "reader_verifier_simple_user_next_step=Tighten the cleanup prompt for leftover orphan markers." in summary_text
@@ -3183,12 +3522,18 @@ def test_main_comparison_only_reader_verifier_writes_artifacts_and_metadata(tmp_
     assert "reader_mvp_status_cleanup_score_delta=3.0" in summary_text
     assert "reader_mvp_status_false_deletion_status=none_reported" in summary_text
     assert "reader_mvp_status_readability_regression_status=reported" in summary_text
+    assert "reader_mvp_status_blocker_group_cleanup_application=prior_same_block_operation_not_applied=1" in summary_text
     assert "reader_mvp_status_blocker_group_quality_gate=acceptance_diagnostic_checks=false_fragment_headings_present" in summary_text
     assert "# Verdict" in review_md
+    assert "# Out-of-Scope Filtered TOC Issues" in review_md
+    assert "# Cleanup Application Diagnostics" in review_md
     assert "# Audit Verdict" in review_md
     assert "# Remaining Issues" in review_md
     assert "# Verifier Metadata" in review_md
     assert "# Статус MVP" in status_md
+    assert "# Result Layers" in status_md
+    assert "## Cleanup Application Diagnostics" in status_md
+    assert "# Cleanup Diagnostic Examples" in status_md
     assert "comparison-only прогона" in status_md
     assert "Verifier не сообщил о false deletions." in status_md
     assert "Verifier сообщил о readability regressions: 1." in status_md
@@ -3236,6 +3581,28 @@ def test_build_reader_mvp_status_payload_groups_blockers_and_positive_signals() 
                 },
                 "possible_false_deletions": [],
                 "readability_regressions": [],
+                "filtered_toc_issue_count": 2,
+                "filtered_toc_pre_audit_count": 1,
+                "filtered_toc_verifier_issue_count": 1,
+                "filtered_toc_evidence_anchor_count": 0,
+                "cleanup_diagnostics": {
+                    "ignored_reason_counts": {
+                        "prior_same_block_operation_not_applied": 2,
+                    },
+                    "top_ignored_reasons": [
+                        {
+                            "ignored_reason": "prior_same_block_operation_not_applied",
+                            "count": 2,
+                            "examples": [
+                                {
+                                    "operation": "remove_inline_noise",
+                                    "reason": "repeated_running_header",
+                                    "text_preview": "10",
+                                }
+                            ],
+                        }
+                    ],
+                },
             },
             "translation_quality_report": {
                 "quality_status": "warn",
@@ -3249,11 +3616,22 @@ def test_build_reader_mvp_status_payload_groups_blockers_and_positive_signals() 
     assert status["cleanup_score_delta"] == 2.0
     assert status["no_false_deletions_reported"] is True
     assert status["no_readability_regressions_reported"] is True
+    assert status["signal_layers"]["comparison_only_validation_status"] == "observer_only"
+    assert status["signal_layers"]["cleaned_audit_verdict"] == "unclear"
+    assert status["filtered_issue_counts"] == {
+        "toc_total": 2,
+        "toc_pre_audit": 1,
+        "toc_verifier_issue": 1,
+        "toc_evidence_anchor": 0,
+    }
     assert status["blocker_groups"]["cleanup_contract"] == ["cleanup_chunk_failures=1"]
     assert status["blocker_groups"]["reader_visible_cleanup_defects"] == [
         "heading_fused_with_body=8",
         "fragmented_paragraph=2",
         "page_furniture_inline=1",
+    ]
+    assert status["blocker_groups"]["cleanup_application_diagnostics"] == [
+        "prior_same_block_operation_not_applied=2"
     ]
     assert status["blocker_groups"]["mapping_quality_gate_diagnostics"] == [
         "translation_quality_status=warn",
@@ -3265,13 +3643,228 @@ def test_build_reader_mvp_status_payload_groups_blockers_and_positive_signals() 
     summary_lines = validation._build_reader_mvp_status_summary_lines(status)
 
     assert "# Статус MVP" in status_md
-    assert "Стало лучше" in status_md
+    assert "Есть полезное улучшение читабельности" in status_md
+    assert "observer_only" in status_md
+    assert "Out-of-scope filtered issue counts: total=2, pre_audit=1, verifier=1, anchors=0" in status_md
     assert "Verifier не сообщил о false deletions." in status_md
     assert "Verifier не сообщил о readability regressions." in status_md
+    assert "prior_same_block_operation_not_applied=2" in status_md
     assert "reader_mvp_status_acceptance_diagnostic_only=True" in summary_lines
     assert "reader_mvp_status_cleanup_score_delta=2.0" in summary_lines
     assert "reader_mvp_status_false_deletion_status=none_reported" in summary_lines
     assert "reader_mvp_status_readability_regression_status=none_reported" in summary_lines
+    assert 'reader_mvp_status_filtered_issue_counts={"toc_evidence_anchor": 0, "toc_pre_audit": 1, "toc_total": 2, "toc_verifier_issue": 1}' in summary_lines
+    assert "reader_mvp_status_blocker_group_cleanup_application=prior_same_block_operation_not_applied=2" in summary_lines
+
+
+def test_build_reader_mvp_status_payload_does_not_treat_diagnostic_anchor_targets_as_cleanup_contract_blocker() -> None:
+    validation = _load_validation_module()
+
+    status = validation._build_reader_mvp_status_payload(
+        {
+            "result": "succeeded",
+            "validation_mode": {
+                "comparison_only_validation": True,
+                "acceptance_contract_active": False,
+            },
+            "reader_cleanup_evidence": {
+                "stage_status": "completed",
+                "failed_chunk_count": 0,
+                "anchor_repair_status": "diagnostic_only_not_applied",
+                "recommended_anchor_target_count": 2,
+                "recommended_anchor_targets": [
+                    {
+                        "anchor_id": "diag-anchor-1",
+                        "category": "heading_fused_with_body",
+                        "block_id": "block-2",
+                        "line_ref": "cleaned_markdown:3",
+                        "snippet": "КАК ЭТО РАБОТАЕТ",
+                    }
+                ],
+            },
+            "reader_verifier_evidence": {
+                "overall_verdict": "cleaned_better",
+                "cleaned_audit_verdict": "improved_but_has_remaining_issues",
+                "reader_quality_score_raw": 3,
+                "reader_quality_score_cleaned": 5,
+                "remaining_issues": [{"severity": "medium"}],
+                "issue_summary_by_category": {"heading_fused_with_body": 1},
+                "possible_false_deletions": [],
+                "readability_regressions": [],
+            },
+            "acceptance": {"passed": False, "failed_checks": []},
+        }
+    )
+
+    assert status["anchor_repair_status"] == "diagnostic_only_not_applied"
+    assert status["recommended_anchor_target_count"] == 2
+    assert "anchor_repair_status=diagnostic_only_not_applied" not in status["blocker_groups"]["cleanup_contract"]
+
+
+def test_build_reader_mvp_status_payload_avoids_success_wording_for_raw_better_or_unclear() -> None:
+    validation = _load_validation_module()
+
+    raw_better_status = validation._build_reader_mvp_status_payload(
+        {
+            "result": "succeeded",
+            "runtime_config": {
+                "target_language": "ru",
+                "overrides": {"target_language": "ru"},
+            },
+            "reader_verifier_evidence": {
+                "overall_verdict": "raw_better",
+                "cleaned_audit_verdict": "improved_but_has_remaining_issues",
+                "reader_quality_score_raw": 6,
+                "reader_quality_score_cleaned": 4,
+                "remaining_issues": [],
+                "issue_summary_by_category": {},
+                "possible_false_deletions": [],
+                "readability_regressions": [],
+            },
+            "acceptance": {"passed": True, "failed_checks": []},
+        }
+    )
+    mixed_status = validation._build_reader_mvp_status_payload(
+        {
+            "result": "succeeded",
+            "runtime_config": {
+                "target_language": "en",
+                "overrides": {"target_language": "en"},
+            },
+            "reader_verifier_evidence": {
+                "overall_verdict": "mixed",
+                "cleaned_audit_verdict": "unclear",
+                "reader_quality_score_raw": 4,
+                "reader_quality_score_cleaned": 4,
+                "remaining_issues": [],
+                "issue_summary_by_category": {},
+                "possible_false_deletions": [],
+                "readability_regressions": [],
+            },
+            "acceptance": {"passed": True, "failed_checks": []},
+        }
+    )
+
+    assert raw_better_status["status_label"] == "cleanup_regressed"
+    assert raw_better_status["status_label"] != "cleaned_better_diagnostic_evidence"
+    assert "Стало лучше" not in raw_better_status["user_summary"]
+    assert "cleaned output is easier" not in raw_better_status["user_summary"]
+    assert "cleaned output is easier to read" not in raw_better_status["user_summary"]
+
+    assert mixed_status["status_label"] == "mixed_or_unclear"
+    assert mixed_status["status_label"] != "cleaned_better_diagnostic_evidence"
+    assert "mixed or unclear" in mixed_status["user_summary"]
+    assert "Стало лучше" not in mixed_status["user_summary"]
+    assert "cleaned output is easier" not in mixed_status["user_summary"]
+    assert "cleaned output is easier to read" not in mixed_status["user_summary"]
+
+
+def test_build_reader_mvp_status_payload_avoids_success_wording_for_pipeline_failed() -> None:
+    validation = _load_validation_module()
+
+    status = validation._build_reader_mvp_status_payload(
+        {
+            "result": "failed",
+            "runtime_config": {
+                "target_language": "en",
+                "overrides": {"target_language": "en"},
+            },
+            "reader_verifier_evidence": {
+                "overall_verdict": "cleaned_better",
+                "cleaned_audit_verdict": "clean",
+                "reader_quality_score_raw": 3,
+                "reader_quality_score_cleaned": 6,
+                "remaining_issues": [],
+                "issue_summary_by_category": {},
+                "possible_false_deletions": [],
+                "readability_regressions": [],
+            },
+            "acceptance": {"passed": False, "failed_checks": []},
+        }
+    )
+
+    assert status["status_label"] == "pipeline_failed"
+    assert "pipeline did not succeed" in status["pipeline_summary"]
+    assert "pipeline did not succeed" in status["user_summary"]
+    assert "cleaned output is easier" not in status["user_summary"]
+    assert "cleaned output is easier to read" not in status["user_summary"]
+    assert "cleanup quality" in status["risk_summary"]
+
+
+def test_build_reader_mvp_status_payload_treats_false_deletions_or_readability_regressions_as_non_success() -> None:
+    validation = _load_validation_module()
+
+    status = validation._build_reader_mvp_status_payload(
+        {
+            "result": "succeeded",
+            "runtime_config": {
+                "target_language": "en",
+                "overrides": {"target_language": "en"},
+            },
+            "reader_verifier_evidence": {
+                "overall_verdict": "cleaned_better",
+                "cleaned_audit_verdict": "improved_but_has_remaining_issues",
+                "reader_quality_score_raw": 3,
+                "reader_quality_score_cleaned": 6,
+                "remaining_issues": [],
+                "issue_summary_by_category": {},
+                "possible_false_deletions": ["The verifier suspects one paragraph may have been removed."],
+                "readability_regressions": ["One list is still harder to scan after cleanup."],
+            },
+            "acceptance": {"passed": True, "failed_checks": []},
+        }
+    )
+
+    assert status["status_label"] == "readable_draft_not_acceptance_ready"
+    assert status["status_label"] != "cleaned_better_diagnostic_evidence"
+    assert status["no_false_deletions_reported"] is False
+    assert status["no_readability_regressions_reported"] is False
+    assert "not acceptance-ready" in status["user_summary"]
+    assert "false deletions=1" in status["risk_summary"]
+    assert "readability regressions=1" in status["risk_summary"]
+
+
+def test_build_reader_cleanup_anchor_targets_ignores_raw_and_comparison_issues() -> None:
+    validation = _load_validation_module()
+
+    cleaned_markdown = "Intro\n\nКАК ЭТО РАБОТАЕТ: Местные органы власти могут помочь.\n\nTail"
+    raw_or_comparison_targets = validation._build_reader_cleanup_anchor_targets(
+        review_payload={
+            "remaining_issues": [
+                {
+                    "category": "heading_fused_with_body",
+                    "artifact": "raw_markdown",
+                    "line_ref": "raw_markdown:3",
+                    "snippet": "КАК ЭТО РАБОТАЕТ: Местные органы власти могут помочь.",
+                },
+                {
+                    "category": "heading_fused_with_body",
+                    "artifact": "comparison",
+                    "line_ref": "comparison:8",
+                    "snippet": "КАК ЭТО РАБОТАЕТ: Местные органы власти могут помочь.",
+                },
+            ]
+        },
+        cleaned_markdown=cleaned_markdown,
+    )
+    cleaned_targets = validation._build_reader_cleanup_anchor_targets(
+        review_payload={
+            "remaining_issues": [
+                {
+                    "category": "heading_fused_with_body",
+                    "artifact": "cleaned_markdown",
+                    "line_ref": "cleaned_markdown:3",
+                    "snippet": "КАК ЭТО РАБОТАЕТ: Местные органы власти могут помочь.",
+                }
+            ]
+        },
+        cleaned_markdown=cleaned_markdown,
+    )
+
+    assert raw_or_comparison_targets == []
+    assert len(cleaned_targets) == 1
+    assert cleaned_targets[0]["category"] == "heading_fused_with_body"
+    assert cleaned_targets[0]["line_ref"] == "cleaned_markdown:3"
 
 
 def test_write_reader_verifier_artifacts_keeps_anchor_repair_diagnostic_only(tmp_path, monkeypatch) -> None:
@@ -3485,11 +4078,231 @@ def test_write_reader_verifier_artifacts_keeps_anchor_repair_diagnostic_only(tmp
     assert review["cleaned_audit_verdict"] == "improved_but_has_remaining_issues"
     assert review["anchor_repair_status"] == "diagnostic_only_not_applied"
     assert review["recommended_anchor_target_count"] == len(review["recommended_anchor_targets"])
+    assert review["validator_boundary"]["observer_only"] is True
+    assert review["validator_boundary"]["runs_anchor_repair"] is False
     assert any(target["category"] == "heading_fused_with_body" for target in review["recommended_anchor_targets"])
     assert persisted_review["anchor_repair_status"] == "diagnostic_only_not_applied"
     assert persisted_review["recommended_anchor_target_count"] == len(persisted_review["recommended_anchor_targets"])
+    assert persisted_review["validator_boundary"]["mutates_cleaned_markdown"] is False
+    assert persisted_review["validator_boundary"]["rebuilds_docx"] is False
     assert persisted_evidence["anchor_repair_status"] == "diagnostic_only_not_applied"
     assert persisted_evidence["recommended_anchor_target_count"] == len(persisted_evidence["recommended_anchor_targets"])
+    assert persisted_evidence["validator_boundary"]["mutates_cleaned_docx"] is False
+
+
+def test_write_reader_verifier_artifacts_preserves_runtime_applied_anchor_targets(tmp_path, monkeypatch) -> None:
+    validation = _load_validation_module()
+
+    artifact_dir = tmp_path / "artifacts" / "runs" / "run-anchor-runtime"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    ui_results_dir = tmp_path / ".run" / "ui_results"
+    ui_results_dir.mkdir(parents=True, exist_ok=True)
+    source_path = tmp_path / "chapter-region-runtime.pdf"
+    source_path.write_bytes(b"%PDF-1.4 runtime-anchor")
+
+    initial_cleaned_markdown = (
+        "Runtime intro\n\nКАК ЭТО РАБОТАЕТ: Местные органы власти могут помочь.\n\nTail block"
+    )
+    cleaned_markdown_path = ui_results_dir / "chapter_region_runtime.result.md"
+    cleaned_docx_path = ui_results_dir / "chapter_region_runtime.result.docx"
+    raw_markdown_path = ui_results_dir / "chapter_region_runtime.raw.result.md"
+    cleanup_report_path = ui_results_dir / "chapter_region_runtime.reader_cleanup_report.json"
+    cleaned_markdown_path.write_text(initial_cleaned_markdown, encoding="utf-8")
+    cleaned_docx_path.write_bytes(_docx_bytes(Document()))
+    raw_markdown_path.write_text("Raw runtime\n\nBody", encoding="utf-8")
+    cleanup_report_path.write_text(
+        json.dumps(
+            {
+                "stage_status": "completed",
+                "changed": True,
+                "warnings": [],
+                "global_plan": {
+                    "repeated_noise_patterns": [],
+                    "candidate_block_ids": [],
+                    "document_specific_running_headers": [],
+                    "examples_do_not_delete": [],
+                    "likely_heading_body_patterns": [],
+                    "likely_fragmentation_patterns": [],
+                    "warnings": [],
+                },
+                "stats": {
+                    "raw_block_count": 3,
+                    "raw_char_count": len(initial_cleaned_markdown),
+                    "cleanup_chunk_count": 1,
+                    "failed_chunk_count": 0,
+                    "proposed_cleanup_operation_count": 1,
+                    "proposed_delete_block_count": 0,
+                    "accepted_cleanup_operation_count": 1,
+                    "accepted_delete_block_count": 0,
+                    "ignored_cleanup_operation_count": 0,
+                    "ignored_delete_block_count": 0,
+                    "deleted_non_whitespace_char_count": 0,
+                    "deleted_char_ratio": 0.0,
+                },
+                "accepted_cleanup_operations": [],
+                "accepted_delete_blocks": [],
+                "ignored_delete_blocks": [],
+                "chunk_results": [
+                    {
+                        "chunk_index": 1,
+                        "status": "completed",
+                        "target_block_count": 3,
+                        "target_chars": len(initial_cleaned_markdown),
+                        "elapsed_ms": 1.0,
+                        "proposed_cleanup_operation_count": 1,
+                        "proposed_delete_block_count": 0,
+                        "accepted_cleanup_operation_count": 1,
+                        "accepted_delete_block_count": 0,
+                        "ignored_cleanup_operation_count": 0,
+                        "ignored_delete_block_count": 0,
+                        "repair_attempted": True,
+                        "repair_status": "applied",
+                        "schema_validation_error": "",
+                        "repair_error": "",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    selector_payload = SimpleNamespace(
+        canonical_selector="openrouter:google/gemini-3-flash-preview",
+        provider="openrouter",
+        model_id="google/gemini-3-flash-preview",
+    )
+    runtime_anchor_target = {
+        "anchor_id": "runtime-anchor-1",
+        "category": "page_furniture_inline",
+        "block_id": "block_000001",
+        "line_ref": "cleaned_markdown:1",
+        "snippet": "Runtime intro",
+    }
+
+    monkeypatch.setattr(
+        validation,
+        "describe_provider_availability",
+        lambda selector, app_config=None: SimpleNamespace(
+            enabled=True,
+            has_api_key=True,
+            error_message=None,
+            selector=selector_payload,
+        ),
+    )
+    monkeypatch.setattr(validation, "resolve_model_selector", lambda *args, **kwargs: selector_payload)
+    monkeypatch.setattr(validation, "get_client_for_model_selector", lambda *args, **kwargs: object())
+
+    def _fake_generate_markdown_block(**kwargs):
+        return json.dumps(
+            {
+                "overall_verdict": "cleaned_better",
+                "cleaned_audit_verdict": "improved_but_has_remaining_issues",
+                "reader_quality_score_raw": 4,
+                "reader_quality_score_cleaned": 6,
+                "confidence": "high",
+                "noise_removed": ["The runtime pass already applied one safe anchor repair."],
+                "possible_false_deletions": [],
+                "readability_regressions": [],
+                "remaining_issues": [
+                    {
+                        "category": "heading_fused_with_body",
+                        "severity": "high",
+                        "artifact": "cleaned_markdown",
+                        "line_ref": "cleaned_markdown:3",
+                        "snippet": "КАК ЭТО РАБОТАЕТ: Местные органы власти могут помочь.",
+                        "why_reader_hurts": "The heading remains fused with body text.",
+                        "recommended_fix_type": "split_heading",
+                    }
+                ],
+                "evidence_anchors": [
+                    {
+                        "kind": "remaining_issue",
+                        "artifact": "cleaned_markdown",
+                        "line_ref": "cleaned_markdown:3",
+                        "snippet": "КАК ЭТО РАБОТАЕТ: Местные органы власти могут помочь.",
+                        "note": "A verifier-only diagnostic anchor still exists.",
+                    }
+                ],
+                "recommended_next_changes": [
+                    {
+                        "change_type": "operation_contract",
+                        "recommendation": "Keep the runtime-repaired anchor and inspect the remaining fused heading separately.",
+                        "why": "Runtime repair evidence should remain intact while diagnostics stay observer-only.",
+                    }
+                ],
+                "summary_for_human": "One remaining verifier-only heading issue is still visible.",
+                "simple_user_summary": "The cleaned version is easier to read than the raw translation.",
+                "simple_user_risk_statement": "One verifier-only heading issue remains visible.",
+                "simple_user_next_step": "Inspect the remaining fused heading without mutating the cleaned artifact.",
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(validation, "generate_markdown_block", _fake_generate_markdown_block)
+
+    reader_cleanup_evidence = {
+        "artifacts_present": True,
+        "cleaned_markdown_path": str(cleaned_markdown_path),
+        "cleaned_docx_path": str(cleaned_docx_path),
+        "raw_markdown_path": str(raw_markdown_path),
+        "reader_cleanup_report_path": str(cleanup_report_path),
+        "stage_status": "completed",
+        "changed": True,
+        "accepted_delete_block_count": 0,
+        "ignored_delete_block_count": 0,
+        "rejected_delete_block_count": 0,
+        "failed_chunk_count": 0,
+        "deleted_block_previews": [],
+        "anchor_repair_status": "applied_in_runtime",
+        "recommended_anchor_targets": [runtime_anchor_target],
+        "recommended_anchor_target_count": 1,
+    }
+
+    review = validation._write_reader_verifier_artifacts(
+        run_id="run-anchor-runtime",
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        artifact_prefix="lietaer_pdf_chapter_region_runtime",
+        artifact_dir=artifact_dir,
+        source_document_path=source_path,
+        source_text="Synthetic source text.",
+        reader_cleanup_evidence=reader_cleanup_evidence,
+        app_config=object(),
+        runtime_app_config={
+            "reader_cleanup_enabled": True,
+            "reader_cleanup_anchor_repair_enabled": True,
+            "reader_cleanup_policy": "advisory",
+            "model": "gpt-5.4",
+        },
+        validation_mode={
+            "comparison_only_validation": True,
+            "validation_run_type": "comparison_only",
+        },
+        max_retries=1,
+    )
+
+    updated_evidence = review["updated_reader_cleanup_evidence"]
+    persisted_review = json.loads(
+        (artifact_dir / "lietaer_pdf_chapter_region_runtime_reader_quality_review.json").read_text(encoding="utf-8")
+    )
+    persisted_evidence = json.loads(
+        (artifact_dir / "lietaer_pdf_chapter_region_runtime_reader_quality_evidence.json").read_text(encoding="utf-8")
+    )
+
+    assert updated_evidence["anchor_repair_status"] == "applied_in_runtime"
+    assert updated_evidence["recommended_anchor_targets"] == [runtime_anchor_target]
+    assert updated_evidence["recommended_anchor_target_count"] == 1
+    assert review["anchor_repair_status"] == "applied_in_runtime"
+    assert review["recommended_anchor_targets"] == [runtime_anchor_target]
+    assert review["recommended_anchor_target_count"] == 1
+    assert updated_evidence["verifier_recommended_anchor_target_count"] == 1
+    assert updated_evidence["verifier_recommended_anchor_targets"][0]["category"] == "heading_fused_with_body"
+    assert updated_evidence["verifier_recommended_anchor_targets"] != [runtime_anchor_target]
+    assert persisted_review["recommended_anchor_targets"] == [runtime_anchor_target]
+    assert persisted_review["verifier_recommended_anchor_target_count"] == 1
+    assert persisted_evidence["recommended_anchor_targets"] == [runtime_anchor_target]
+    assert persisted_evidence["verifier_recommended_anchor_target_count"] == 1
 
 
 def test_main_comparison_only_reader_verifier_failure_is_non_blocking(tmp_path, monkeypatch) -> None:

@@ -82,6 +82,10 @@ Authority split:
 - Deterministic detectors are allowed only as input signals, safety guards,
   exact-match applicators, and verifier pre-audit candidates. They are not the
   primary cleanup strategy.
+- Regex-based repair is not an acceptable shortcut when it replaces AI
+  judgement. Regexes may validate that an AI-proposed exact substring is safe,
+  normalize schema-level evidence, or produce review evidence, but they must not
+  independently decide document-specific cleanup.
 
 Forbidden default path:
 
@@ -91,6 +95,10 @@ Forbidden default path:
   cleanup rules around the current sample;
 - do not solve fused heading/body, inline page furniture, or fragmented
   paragraphs by hardcoding Lietaer-specific Russian or English phrases;
+- do not convert verifier recommendations such as `deterministic_last_resort`
+  into a production regex-repair pass unless all AI-first paths below have been
+  exhausted and the proposed rule is document-agnostic, bounded, and separately
+  justified;
 - do not recommend structure-recognition expansion, Stage 1/2 tuning, or
   acceptance-threshold tuning as the primary response to reader-facing cleanup
   defects unless the AI-first cleanup evidence proves the defect cannot be
@@ -102,7 +110,9 @@ Preferred path:
 2. use a stronger configured cleanup/verifier model when available;
 3. expand the AI operation contract in small bounded ways;
 4. keep deterministic code as a safety layer that can reject unsafe AI proposals;
-5. rerun the same comparison-only profile and inspect raw vs cleaned artifacts.
+5. improve exact-match application for AI-proposed operations when safety
+  evidence shows the operation was valid but rejected too narrowly;
+6. rerun the same comparison-only profile and inspect raw vs cleaned artifacts.
 
 Any proposed deterministic cleanup change must state which role it plays:
 `signal_only`, `safety_guard`, `exact_match_application`, or
@@ -730,6 +740,14 @@ For reader-visible defects, prefer this order:
 4. improve code-side safety/application for AI proposals;
 5. only then add a document-agnostic deterministic cleanup rule.
 
+If a verifier suggests `deterministic_last_resort`, treat that as a diagnostic
+signal, not implementation approval. Before coding any regex-repair pass, first
+ask whether the same defect can be solved by prompt discipline, model choice,
+bounded operation fields, or safer exact-match acceptance of an AI-proposed
+substring. A regex is acceptable in this MVP only when it keeps the AI proposal
+as the authority and the code acts as a safety gate; a regex that finds and
+repairs book-specific text on its own violates the experiment.
+
 A change is high-priority only if it does at least one of the following:
 
 - helps cleanup execute on the target real document and produce reviewable
@@ -1183,6 +1201,10 @@ Rules:
   `operation_contract`, or `safety_application`; `deterministic_last_resort` is
   allowed only when the recommendation is document-agnostic and cannot be
   expressed as a bounded AI operation;
+- `deterministic_last_resort` recommendations are never implementation
+  authority by themselves. They must identify why prompt/model/operation/safety
+  paths are insufficient, and they must not recommend regex-repair for
+  document-specific page headers, headings, names, or phrases;
 - if `verifier_status != "completed"`, then `overall_verdict` must be `unclear`
   and the summary fields must explain why the verifier produced no conclusion;
 - if `verifier_status != "completed"`, then `cleaned_audit_verdict` must also be

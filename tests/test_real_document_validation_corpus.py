@@ -931,7 +931,7 @@ def test_validation_registry_declares_reader_cleanup_validation_profiles() -> No
     assert baseline.structure_recognition_mode == "off"
     assert baseline.reader_cleanup_enabled is True
     assert baseline.reader_cleanup_policy == "advisory"
-    assert baseline.reader_cleanup_keep_toc is True
+    assert baseline.reader_cleanup_keep_toc is False
     assert baseline.reader_cleanup_drop_back_matter is False
     assert baseline.reader_cleanup_chunk_size == 30000
     assert baseline.comparison_only_validation is False
@@ -940,7 +940,7 @@ def test_validation_registry_declares_reader_cleanup_validation_profiles() -> No
     assert comparison_only.structure_recognition_mode == "off"
     assert comparison_only.reader_cleanup_enabled is True
     assert comparison_only.reader_cleanup_policy == "advisory"
-    assert comparison_only.reader_cleanup_keep_toc is True
+    assert comparison_only.reader_cleanup_keep_toc is False
     assert comparison_only.reader_cleanup_drop_back_matter is False
     assert comparison_only.reader_cleanup_chunk_size == 30000
     assert comparison_only.translation_output_quality_gate_policy == "advisory"
@@ -949,6 +949,7 @@ def test_validation_registry_declares_reader_cleanup_validation_profiles() -> No
     assert wide_chunk.processing_operation == "translate"
     assert wide_chunk.reader_cleanup_enabled is True
     assert wide_chunk.reader_cleanup_policy == "advisory"
+    assert wide_chunk.reader_cleanup_keep_toc is False
     assert wide_chunk.reader_cleanup_chunk_size == 50000
 
 

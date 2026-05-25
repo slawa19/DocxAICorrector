@@ -61,18 +61,12 @@ from docxaicorrector.document._document import (
     extract_document_content_from_docx,
 )
 from docxaicorrector.generation._generation import (
-    convert_markdown_to_docx_bytes,
-    ensure_pandoc_available,
     generate_markdown_block,
 )
 from docxaicorrector.image.shared import parse_json_object
 from docxaicorrector.pipeline.output_validation import collect_page_placeholder_heading_concat_samples
 from docxaicorrector.reader_cleanup_mvp import (
     build_cleanup_blocks,
-    build_reader_cleanup_schema_repair_system_prompt,
-    build_reader_cleanup_system_prompt,
-    resolve_reader_cleanup_config,
-    run_reader_cleanup_anchor_repair,
 )
 from docxaicorrector.validation.common import build_validation_event_logger, build_validation_runtime_config
 from docxaicorrector.validation.structural import (
@@ -124,6 +118,14 @@ _READER_VERIFIER_DEFECT_CATEGORIES = (
     "orphan_caption",
     "mixed_language_leak",
     "quote_not_block_formatted",
+)
+_TRACKED_READER_CLEANUP_IGNORED_REASONS = (
+    "prior_same_block_operation_not_applied",
+    "heading_boundary_unaccounted_text",
+    "heading_boundary_substrings_not_found",
+    "remove_inline_noise_not_exact_noise_pattern",
+    "noise_substring_not_found",
+    "duplicate_operation_incompatible",
 )
 _ALLOWED_READER_VERIFIER_SEVERITY = frozenset({"high", "medium", "low"})
 _ALLOWED_READER_VERIFIER_ISSUE_ARTIFACTS = frozenset({"cleaned_markdown", "raw_markdown", "comparison"})
@@ -780,7 +782,9 @@ def _build_reader_mvp_status_payload(report: Mapping[str, object]) -> dict[str, 
         cleanup_contract_blockers.append(f"cleanup_stage_status={cleanup_stage_status}")
     if failed_chunk_count > 0:
         cleanup_contract_blockers.append(f"cleanup_chunk_failures={failed_chunk_count}")
-    if anchor_repair_status not in {"not_needed", "not_reported", "unknown"}:
+    if anchor_repair_status not in {"not_needed", "not_reported", "unknown"} and not (
+        comparison_only_validation and anchor_repair_status == "diagnostic_only_not_applied"
+    ):
         cleanup_contract_blockers.append(f"anchor_repair_status={anchor_repair_status}")
 
     reader_visible_cleanup_defects = [
@@ -818,21 +822,55 @@ def _build_reader_mvp_status_payload(report: Mapping[str, object]) -> dict[str, 
     no_false_deletions_reported = not possible_false_deletions
     no_readability_regressions_reported = not readability_regressions
     overall_verdict = str(reader_verifier.get("overall_verdict") or "unclear").strip() or "unclear"
+    cleaned_audit_verdict = str(reader_verifier.get("cleaned_audit_verdict") or "unclear").strip() or "unclear"
+    filtered_issue_counts = {
+        "toc_total": max(0, _coerce_int(reader_verifier.get("filtered_toc_issue_count"), default=0)),
+        "toc_pre_audit": max(0, _coerce_int(reader_verifier.get("filtered_toc_pre_audit_count"), default=0)),
+        "toc_verifier_issue": max(0, _coerce_int(reader_verifier.get("filtered_toc_verifier_issue_count"), default=0)),
+        "toc_evidence_anchor": max(0, _coerce_int(reader_verifier.get("filtered_toc_evidence_anchor_count"), default=0)),
+    }
+    cleanup_diagnostics = cast(Mapping[str, object], reader_verifier.get("cleanup_diagnostics") or {})
+    cleanup_ignored_reason_counts = cast(Mapping[str, object], cleanup_diagnostics.get("ignored_reason_counts") or {})
+    cleanup_application_diagnostics = [
+        f"{reason}={max(0, _coerce_int(cleanup_ignored_reason_counts.get(reason), default=0))}"
+        for reason in _TRACKED_READER_CLEANUP_IGNORED_REASONS
+        if max(0, _coerce_int(cleanup_ignored_reason_counts.get(reason), default=0)) > 0
+    ]
+    cleanup_diagnostic_examples: list[str] = []
+    for entry in _coerce_mapping_sequence(cleanup_diagnostics.get("top_ignored_reasons")):
+        ignored_reason = str(entry.get("ignored_reason") or "").strip()
+        for example in _coerce_mapping_sequence(entry.get("examples"))[:2]:
+            operation_name = str(example.get("operation") or "unknown").strip() or "unknown"
+            operation_reason = str(example.get("reason") or "").strip()
+            preview = str(example.get("text_preview") or "").strip()
+            line = f"{ignored_reason}: {operation_name}"
+            if operation_reason:
+                line += f"/{operation_reason}"
+            if preview:
+                line += f" -> {preview}"
+            cleanup_diagnostic_examples.append(line)
+        if len(cleanup_diagnostic_examples) >= 4:
+            break
     result = str(report.get("result") or "").strip().lower()
+    has_safety_risks = bool(possible_false_deletions or readability_regressions)
     if result != "succeeded":
         status_label = "pipeline_failed"
-    elif overall_verdict == "cleaned_better" and remaining_issue_count > 0:
+    elif overall_verdict in {"cleaned_worse", "raw_better"} or cleaned_audit_verdict == "unsafe_or_regressed":
+        status_label = "cleanup_regressed"
+    elif overall_verdict == "cleaned_better" and (remaining_issue_count > 0 or has_safety_risks):
         status_label = "readable_draft_not_acceptance_ready"
     elif overall_verdict == "cleaned_better":
         status_label = "cleaned_better_diagnostic_evidence"
-    elif overall_verdict in {"cleaned_worse", "raw_better"}:
-        status_label = "cleanup_regressed"
     else:
         status_label = "mixed_or_unclear"
 
     language = _resolve_reader_mvp_status_language(report)
     if language == "ru":
-        pipeline_summary = "Пайплайн завершился успешно и собрал reviewable raw/cleaned артефакты."
+        pipeline_summary = (
+            "Пайплайн не завершился успешно; reader-first результат нельзя считать доказанным."
+            if status_label == "pipeline_failed"
+            else "Пайплайн завершился успешно и собрал reviewable raw/cleaned артефакты."
+        )
         cleanup_summary = (
             f"Cleanup дал verdict {overall_verdict}: score {raw_score:.1f} -> {cleaned_score:.1f} "
             f"({cleanup_score_delta_display})."
@@ -854,15 +892,60 @@ def _build_reader_mvp_status_payload(report: Mapping[str, object]) -> dict[str, 
             if no_readability_regressions_reported
             else f"Verifier сообщил о readability regressions: {len(readability_regressions)}.",
         ]
-        user_summary = (
-            f"Стало лучше: cleaned output читается легче, но это ещё не acceptance-ready результат. "
-            f"{acceptance_summary} {remaining_risk_summary}"
-        )
-        risk_summary = (
-            f"Главный остаточный риск сейчас reader-visible, а не runtime: {remaining_risk_summary}"
-        )
+        if status_label == "pipeline_failed":
+            user_summary = (
+                "Пайплайн не завершился успешно, поэтому нельзя утверждать, что cleaned output стал лучше raw. "
+                f"{acceptance_summary} {remaining_risk_summary}"
+            )
+            risk_summary = (
+                "Главный риск сейчас runtime/pipeline failure, а не доказанное качество cleanup: "
+                f"false deletions={len(possible_false_deletions)}, readability regressions={len(readability_regressions)}. "
+                f"{remaining_risk_summary}"
+            )
+        elif status_label == "cleanup_regressed":
+            user_summary = (
+                "Очистка ухудшила результат или сделала его небезопасным для принятия: "
+                "cleaned output нельзя считать лучше raw. "
+                f"{acceptance_summary} {remaining_risk_summary}"
+            )
+            risk_summary = (
+                "Главный риск сейчас в регрессии очистки или небезопасном результате: "
+                f"false deletions={len(possible_false_deletions)}, readability regressions={len(readability_regressions)}. "
+                f"{remaining_risk_summary}"
+            )
+        elif status_label == "mixed_or_unclear":
+            user_summary = (
+                "Доказательства смешанные или неясные: нельзя утверждать, что cleaned output стал лучше raw. "
+                f"{acceptance_summary} {remaining_risk_summary}"
+            )
+            risk_summary = (
+                "Главный риск сейчас в неясном результате проверки: "
+                f"false deletions={len(possible_false_deletions)}, readability regressions={len(readability_regressions)}. "
+                f"{remaining_risk_summary}"
+            )
+        elif status_label == "readable_draft_not_acceptance_ready":
+            user_summary = (
+                "Есть полезное улучшение читабельности, но результат ещё не acceptance-ready. "
+                f"{acceptance_summary} {remaining_risk_summary}"
+            )
+            risk_summary = (
+                "Главный остаточный риск сейчас reader-visible, а не runtime: "
+                f"false deletions={len(possible_false_deletions)}, readability regressions={len(readability_regressions)}. "
+                f"{remaining_risk_summary}"
+            )
+        else:
+            user_summary = (
+                f"Стало лучше: cleaned output читается легче. {acceptance_summary} {remaining_risk_summary}"
+            )
+            risk_summary = (
+                f"Главный остаточный риск сейчас reader-visible, а не runtime: {remaining_risk_summary}"
+            )
     else:
-        pipeline_summary = "The pipeline succeeded and produced reviewable raw/cleaned artifacts."
+        pipeline_summary = (
+            "The pipeline did not succeed, so the reader-first result is not proven."
+            if status_label == "pipeline_failed"
+            else "The pipeline succeeded and produced reviewable raw/cleaned artifacts."
+        )
         cleanup_summary = (
             f"Cleanup verdict is {overall_verdict}: score {raw_score:.1f} -> {cleaned_score:.1f} "
             f"({cleanup_score_delta_display})."
@@ -884,11 +967,70 @@ def _build_reader_mvp_status_payload(report: Mapping[str, object]) -> dict[str, 
             if no_readability_regressions_reported
             else f"The verifier reported readability regressions: {len(readability_regressions)}.",
         ]
-        user_summary = (
-            f"The cleaned output is easier to read, but it is not acceptance-ready yet. "
-            f"{acceptance_summary} {remaining_risk_summary}"
-        )
-        risk_summary = f"The remaining risk is reader-visible rather than runtime: {remaining_risk_summary}"
+        if status_label == "pipeline_failed":
+            user_summary = (
+                "The pipeline did not succeed, so the cleaned output should not be described as easier or better than raw. "
+                f"{acceptance_summary} {remaining_risk_summary}"
+            )
+            risk_summary = (
+                "The current risk is runtime/pipeline failure rather than proven cleanup quality: "
+                f"false deletions={len(possible_false_deletions)}, readability regressions={len(readability_regressions)}. "
+                f"{remaining_risk_summary}"
+            )
+        elif status_label == "cleanup_regressed":
+            user_summary = (
+                "Cleanup regressed or made the result unsafe: the cleaned output should not be treated as better than raw. "
+                f"{acceptance_summary} {remaining_risk_summary}"
+            )
+            risk_summary = (
+                "The current risk is cleanup regression or unsafe output: "
+                f"false deletions={len(possible_false_deletions)}, readability regressions={len(readability_regressions)}. "
+                f"{remaining_risk_summary}"
+            )
+        elif status_label == "mixed_or_unclear":
+            user_summary = (
+                "The evidence is mixed or unclear, so the cleaned output should not be described as easier or better yet. "
+                f"{acceptance_summary} {remaining_risk_summary}"
+            )
+            risk_summary = (
+                "The current risk is an unclear validation result: "
+                f"false deletions={len(possible_false_deletions)}, readability regressions={len(readability_regressions)}. "
+                f"{remaining_risk_summary}"
+            )
+        elif status_label == "readable_draft_not_acceptance_ready":
+            user_summary = (
+                "There is some readability improvement, but the result is not acceptance-ready. "
+                f"{acceptance_summary} {remaining_risk_summary}"
+            )
+            risk_summary = (
+                "The remaining risk is reader-visible rather than runtime: "
+                f"false deletions={len(possible_false_deletions)}, readability regressions={len(readability_regressions)}. "
+                f"{remaining_risk_summary}"
+            )
+        else:
+            user_summary = (
+                f"The cleaned output is easier to read. {acceptance_summary} {remaining_risk_summary}"
+            )
+            risk_summary = f"The remaining risk is reader-visible rather than runtime: {remaining_risk_summary}"
+
+    signal_layers = {
+        "pipeline_result_status": result or "unknown",
+        "comparison_only_validation_status": "observer_only" if comparison_only_validation else "acceptance_bound",
+        "acceptance_diagnostic_status": (
+            "diagnostic_only_failed"
+            if comparison_only_acceptance_diagnostic and failed_checks
+            else "diagnostic_only_passed"
+            if comparison_only_acceptance_diagnostic
+            else "acceptance_passed"
+            if bool(acceptance.get("passed"))
+            else "acceptance_failed"
+        ),
+        "acceptance_diagnostic_failed_checks": failed_checks,
+        "reader_verifier_verdict": overall_verdict,
+        "cleaned_audit_verdict": cleaned_audit_verdict,
+        "remaining_reader_visible_issue_count": remaining_issue_count,
+        "out_of_scope_filtered_issue_counts": filtered_issue_counts,
+    }
 
     return {
         "status_label": status_label,
@@ -910,9 +1052,13 @@ def _build_reader_mvp_status_payload(report: Mapping[str, object]) -> dict[str, 
         "no_readability_regressions_reported": no_readability_regressions_reported,
         "comparison_only_acceptance_diagnostic": comparison_only_acceptance_diagnostic,
         "positive_safety_signals": positive_safety_signals,
+        "signal_layers": signal_layers,
+        "filtered_issue_counts": filtered_issue_counts,
+        "cleanup_diagnostic_examples": cleanup_diagnostic_examples,
         "blocker_groups": {
             "cleanup_contract": cleanup_contract_blockers,
             "reader_visible_cleanup_defects": reader_visible_cleanup_defects,
+            "cleanup_application_diagnostics": cleanup_application_diagnostics,
             "mapping_quality_gate_diagnostics": mapping_quality_gate_diagnostics,
         },
     }
@@ -923,8 +1069,12 @@ def _render_reader_mvp_status_markdown(status_payload: Mapping[str, object]) -> 
     blocker_groups = cast(Mapping[str, object], status_payload.get("blocker_groups") or {})
     cleanup_contract = _coerce_string_list(blocker_groups.get("cleanup_contract"))
     reader_visible = _coerce_string_list(blocker_groups.get("reader_visible_cleanup_defects"))
+    cleanup_application = _coerce_string_list(blocker_groups.get("cleanup_application_diagnostics"))
     quality_gate = _coerce_string_list(blocker_groups.get("mapping_quality_gate_diagnostics"))
     positive_safety_signals = _coerce_string_list(status_payload.get("positive_safety_signals"))
+    signal_layers = cast(Mapping[str, object], status_payload.get("signal_layers") or {})
+    filtered_issue_counts = cast(Mapping[str, object], status_payload.get("filtered_issue_counts") or {})
+    cleanup_diagnostic_examples = _coerce_string_list(status_payload.get("cleanup_diagnostic_examples"))
 
     if language == "ru":
         lines = [
@@ -941,6 +1091,23 @@ def _render_reader_mvp_status_markdown(status_payload: Mapping[str, object]) -> 
             f"- Acceptance diagnostic: {status_payload.get('acceptance_summary')}",
             f"- Remaining reader-visible risk: {status_payload.get('remaining_risk_summary')}",
             "",
+            "# Result Layers",
+            "",
+            f"- Pipeline result status: {signal_layers.get('pipeline_result_status')}",
+            f"- Comparison-only validation status: {signal_layers.get('comparison_only_validation_status')}",
+            f"- Acceptance diagnostic status: {signal_layers.get('acceptance_diagnostic_status')}",
+            f"- Acceptance diagnostic failed checks: {','.join(_coerce_string_list(signal_layers.get('acceptance_diagnostic_failed_checks'))) or 'none'}",
+            f"- Reader verifier verdict: {signal_layers.get('reader_verifier_verdict')}",
+            f"- Cleaned audit verdict: {signal_layers.get('cleaned_audit_verdict')}",
+            f"- Remaining reader-visible issue count: {signal_layers.get('remaining_reader_visible_issue_count')}",
+            (
+                "- Out-of-scope filtered issue counts: "
+                f"total={filtered_issue_counts.get('toc_total')}, "
+                f"pre_audit={filtered_issue_counts.get('toc_pre_audit')}, "
+                f"verifier={filtered_issue_counts.get('toc_verifier_issue')}, "
+                f"anchors={filtered_issue_counts.get('toc_evidence_anchor')}"
+            ),
+            "",
             "# Позитивные сигналы",
             "",
         ]
@@ -949,8 +1116,12 @@ def _render_reader_mvp_status_markdown(status_payload: Mapping[str, object]) -> 
         lines.extend(f"- {item}" for item in cleanup_contract or ["Нет cleanup-contract blockers."])
         lines.extend(["", "## Reader-Visible Cleanup Defects", ""])
         lines.extend(f"- {item}" for item in reader_visible or ["Нет reader-visible cleanup blockers."])
+        lines.extend(["", "## Cleanup Application Diagnostics", ""])
+        lines.extend(f"- {item}" for item in cleanup_application or ["Нет cleanup-application diagnostics blockers."])
         lines.extend(["", "## Mapping / Quality-Gate Diagnostics", ""])
         lines.extend(f"- {item}" for item in quality_gate or ["Нет mapping/quality-gate diagnostics blockers."])
+        lines.extend(["", "# Cleanup Diagnostic Examples", ""])
+        lines.extend(f"- {item}" for item in cleanup_diagnostic_examples or ["Нет примеров ignored cleanup reasons."])
         return "\n".join(lines).strip() + "\n"
 
     lines = [
@@ -967,6 +1138,23 @@ def _render_reader_mvp_status_markdown(status_payload: Mapping[str, object]) -> 
         f"- Acceptance diagnostic: {status_payload.get('acceptance_summary')}",
         f"- Remaining reader-visible risk: {status_payload.get('remaining_risk_summary')}",
         "",
+        "# Result Layers",
+        "",
+        f"- Pipeline result status: {signal_layers.get('pipeline_result_status')}",
+        f"- Comparison-only validation status: {signal_layers.get('comparison_only_validation_status')}",
+        f"- Acceptance diagnostic status: {signal_layers.get('acceptance_diagnostic_status')}",
+        f"- Acceptance diagnostic failed checks: {','.join(_coerce_string_list(signal_layers.get('acceptance_diagnostic_failed_checks'))) or 'none'}",
+        f"- Reader verifier verdict: {signal_layers.get('reader_verifier_verdict')}",
+        f"- Cleaned audit verdict: {signal_layers.get('cleaned_audit_verdict')}",
+        f"- Remaining reader-visible issue count: {signal_layers.get('remaining_reader_visible_issue_count')}",
+        (
+            "- Out-of-scope filtered issue counts: "
+            f"total={filtered_issue_counts.get('toc_total')}, "
+            f"pre_audit={filtered_issue_counts.get('toc_pre_audit')}, "
+            f"verifier={filtered_issue_counts.get('toc_verifier_issue')}, "
+            f"anchors={filtered_issue_counts.get('toc_evidence_anchor')}"
+        ),
+        "",
         "# Positive Safety Signals",
         "",
     ]
@@ -975,19 +1163,29 @@ def _render_reader_mvp_status_markdown(status_payload: Mapping[str, object]) -> 
     lines.extend(f"- {item}" for item in cleanup_contract or ["No cleanup-contract blockers recorded."])
     lines.extend(["", "## Reader-Visible Cleanup Defects", ""])
     lines.extend(f"- {item}" for item in reader_visible or ["No reader-visible cleanup blockers recorded."])
+    lines.extend(["", "## Cleanup Application Diagnostics", ""])
+    lines.extend(f"- {item}" for item in cleanup_application or ["No cleanup-application diagnostics blockers recorded."])
     lines.extend(["", "## Mapping / Quality-Gate Diagnostics", ""])
     lines.extend(f"- {item}" for item in quality_gate or ["No mapping/quality-gate blockers recorded."])
+    lines.extend(["", "# Cleanup Diagnostic Examples", ""])
+    lines.extend(f"- {item}" for item in cleanup_diagnostic_examples or ["No ignored cleanup reason examples recorded."])
     return "\n".join(lines).strip() + "\n"
 
 
 def _build_reader_mvp_status_summary_lines(status_payload: Mapping[str, object]) -> list[str]:
     blocker_groups = cast(Mapping[str, object], status_payload.get("blocker_groups") or {})
+    signal_layers = cast(Mapping[str, object], status_payload.get("signal_layers") or {})
     return [
         f"reader_mvp_status_label={status_payload.get('status_label')}",
         f"reader_mvp_status_user_summary={status_payload.get('user_summary')}",
         f"reader_mvp_status_risk_summary={status_payload.get('risk_summary')}",
         f"reader_mvp_status_cleanup_score_delta={status_payload.get('cleanup_score_delta')}",
         f"reader_mvp_status_acceptance_diagnostic_only={status_payload.get('comparison_only_acceptance_diagnostic')}",
+        f"reader_mvp_status_pipeline_result_status={signal_layers.get('pipeline_result_status')}",
+        f"reader_mvp_status_comparison_only_validation_status={signal_layers.get('comparison_only_validation_status')}",
+        f"reader_mvp_status_acceptance_diagnostic_status={signal_layers.get('acceptance_diagnostic_status')}",
+        "reader_mvp_status_filtered_issue_counts="
+        + json.dumps(cast(Mapping[str, object], status_payload.get("filtered_issue_counts") or {}), ensure_ascii=False, sort_keys=True),
         f"reader_mvp_status_anchor_repair_status={status_payload.get('anchor_repair_status')}",
         "reader_mvp_status_false_deletion_status="
         + ("none_reported" if bool(status_payload.get("no_false_deletions_reported")) else "reported"),
@@ -997,8 +1195,12 @@ def _build_reader_mvp_status_summary_lines(status_payload: Mapping[str, object])
         + "|".join(_coerce_string_list(blocker_groups.get("cleanup_contract")) or ["none"]),
         "reader_mvp_status_blocker_group_reader_visible="
         + "|".join(_coerce_string_list(blocker_groups.get("reader_visible_cleanup_defects")) or ["none"]),
+        "reader_mvp_status_blocker_group_cleanup_application="
+        + "|".join(_coerce_string_list(blocker_groups.get("cleanup_application_diagnostics")) or ["none"]),
         "reader_mvp_status_blocker_group_quality_gate="
         + "|".join(_coerce_string_list(blocker_groups.get("mapping_quality_gate_diagnostics")) or ["none"]),
+        "reader_mvp_status_cleanup_diagnostic_examples="
+        + "|".join(_coerce_string_list(status_payload.get("cleanup_diagnostic_examples")) or ["none"]),
     ]
 
 
@@ -1347,6 +1549,10 @@ class ValidationProgressTracker:
             "reader_verifier_remaining_issue_count": self.state.get("reader_verifier_remaining_issue_count"),
             "reader_verifier_high_severity_issue_count": self.state.get("reader_verifier_high_severity_issue_count"),
             "reader_verifier_top_issue_categories": self.state.get("reader_verifier_top_issue_categories"),
+            "reader_verifier_filtered_toc_issue_count": self.state.get("reader_verifier_filtered_toc_issue_count"),
+            "reader_verifier_filtered_toc_pre_audit_count": self.state.get("reader_verifier_filtered_toc_pre_audit_count"),
+            "reader_verifier_filtered_toc_verifier_issue_count": self.state.get("reader_verifier_filtered_toc_verifier_issue_count"),
+            "reader_verifier_cleanup_ignored_reason_counts": self.state.get("reader_verifier_cleanup_ignored_reason_counts"),
             "reader_verifier_simple_user_summary": self.state.get("reader_verifier_simple_user_summary"),
             "reader_verifier_simple_user_risk_statement": self.state.get("reader_verifier_simple_user_risk_statement"),
             "reader_verifier_simple_user_next_step": self.state.get("reader_verifier_simple_user_next_step"),
@@ -1959,6 +2165,7 @@ def _build_reader_verifier_evidence_payload(
     source_document_path: Path,
     source_text: str,
     reader_cleanup_evidence: Mapping[str, object],
+    runtime_app_config: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     raw_markdown, raw_markdown_report_path, raw_markdown_warning = _load_text_artifact(
         reader_cleanup_evidence.get("raw_markdown_path")
@@ -1980,11 +2187,32 @@ def _build_reader_verifier_evidence_payload(
         if warning is not None
     ]
     cleanup_stats = cast(Mapping[str, object], (cleanup_report_payload or {}).get("stats") or {})
+    cleanup_diagnostics = _build_reader_cleanup_diagnostics(cleanup_report_payload)
     deleted_block_previews = _build_reader_verifier_deleted_block_context(
         raw_markdown=raw_markdown,
         cleanup_report_payload=cleanup_report_payload,
     )
+    block_spans = _build_cleanup_block_line_spans(cleaned_markdown)
     pre_audit_payload = _run_reader_verifier_pre_audit(cleaned_markdown)
+    raw_pre_audit_findings = cast(Sequence[Mapping[str, str]], pre_audit_payload["findings"])
+    toc_out_of_review_scope = _reader_verifier_toc_out_of_review_scope_from_config(runtime_app_config or {})
+    filtered_pre_audit_findings, filtered_toc_pre_audit_findings = _filter_reader_verifier_items_excluding_toc(
+        raw_pre_audit_findings,
+        block_spans=block_spans,
+        toc_out_of_review_scope=toc_out_of_review_scope,
+    )
+    filtered_toc_issue_previews = _build_filtered_toc_issue_previews(
+        filtered_toc_pre_audit_findings,
+        source="pre_audit",
+    )
+    validator_boundary = {
+        "observer_only": True,
+        "runs_cleanup_repair": False,
+        "runs_anchor_repair": False,
+        "mutates_cleaned_markdown": False,
+        "mutates_cleaned_docx": False,
+        "rebuilds_docx": False,
+    }
     return {
         "run_id": run_id,
         "document_profile_id": document_profile_id,
@@ -2001,6 +2229,17 @@ def _build_reader_verifier_evidence_payload(
         "source_text": source_text,
         "raw_markdown": raw_markdown,
         "cleaned_markdown": cleaned_markdown,
+        "validator_boundary": validator_boundary,
+        "toc_filtering_policy": {
+            "mode": "evidence_only",
+            "toc_out_of_review_scope": toc_out_of_review_scope,
+            "policy_source": "reader_cleanup_keep_toc_false" if toc_out_of_review_scope else "toc_in_review_scope",
+            "artifact_repair_applied": False,
+        },
+        "evidence_filtering_note": (
+            "TOC-like review targets may be filtered from verifier evidence when profile policy marks TOC out of scope; "
+            "this is evidence filtering only and does not repair, rewrite, or rebuild output artifacts."
+        ),
         "cleanup_report_summary": {
             "stage_status": reader_cleanup_evidence.get("stage_status"),
             "changed": reader_cleanup_evidence.get("changed"),
@@ -2011,9 +2250,17 @@ def _build_reader_verifier_evidence_payload(
             "cleanup_chunk_count": cleanup_stats.get("cleanup_chunk_count"),
             "warnings": _coerce_string_list((cleanup_report_payload or {}).get("warnings")),
         },
-        "pre_audit_issue_counts": pre_audit_payload["issue_counts"],
-        "pre_audit_findings": pre_audit_payload["findings"],
-        "mandatory_review_targets": pre_audit_payload["mandatory_review_targets"],
+        "cleanup_diagnostics": cleanup_diagnostics,
+        "raw_pre_audit_issue_counts": pre_audit_payload["issue_counts"],
+        "raw_pre_audit_findings": list(raw_pre_audit_findings),
+        "filtered_toc_issue_count": len(filtered_toc_pre_audit_findings),
+        "filtered_toc_pre_audit_count": len(filtered_toc_pre_audit_findings),
+        "filtered_toc_verifier_issue_count": 0,
+        "filtered_toc_evidence_anchor_count": 0,
+        "filtered_toc_issue_previews": filtered_toc_issue_previews,
+        "pre_audit_issue_counts": _count_reader_verifier_categories(filtered_pre_audit_findings),
+        "pre_audit_findings": filtered_pre_audit_findings,
+        "mandatory_review_targets": filtered_pre_audit_findings,
         "deleted_block_previews": deleted_block_previews,
         "artifact_paths": {
             "raw_markdown": raw_markdown_report_path,
@@ -2033,6 +2280,7 @@ def _build_reader_verifier_system_prompt() -> str:
         "Do not optimize for acceptance checks, structural authority, topology, DocumentMap, or production readiness.\n"
         "You must answer two questions separately: whether cleaned is easier to read than raw, and whether the cleaned artifact itself still has reader-visible defects.\n"
         "Treat every deterministic pre-audit finding in mandatory_review_targets as a required review target. You may disagree with a candidate classification, but you must not silently ignore the candidate set.\n"
+        "Respect toc_filtering_policy: if toc_out_of_review_scope is true, TOC-like table-of-contents blocks are out-of-scope evidence only and must not be reported as remaining issues; otherwise review them normally.\n"
         "Return JSON only with exactly these top-level fields: overall_verdict, cleaned_audit_verdict, reader_quality_score_raw, reader_quality_score_cleaned, confidence, noise_removed, possible_false_deletions, readability_regressions, remaining_issues, evidence_anchors, recommended_next_changes, summary_for_human, simple_user_summary, simple_user_risk_statement, simple_user_next_step.\n"
         "Allowed overall_verdict values: cleaned_better, raw_better, mixed, unclear.\n"
         "Allowed cleaned_audit_verdict values: clean, improved_but_has_remaining_issues, unsafe_or_regressed, unclear.\n"
@@ -2070,6 +2318,8 @@ def _build_reader_verifier_non_success_review(
     evidence_payload: Mapping[str, object],
 ) -> dict[str, object]:
     reason_text = verifier_detail.strip() or verifier_reason
+    block_spans = _build_cleanup_block_line_spans(str(evidence_payload.get("cleaned_markdown") or ""))
+    toc_out_of_review_scope = _reader_verifier_toc_out_of_review_scope_from_evidence(evidence_payload)
     pre_audit_issue_counts = {
         category: max(
             0,
@@ -2077,9 +2327,24 @@ def _build_reader_verifier_non_success_review(
         )
         for category in _READER_VERIFIER_DEFECT_CATEGORIES
     }
-    pre_audit_remaining_issues = _reader_verifier_pre_audit_findings_as_remaining_issues(evidence_payload)
+    pre_audit_remaining_issues, filtered_toc_pre_audit_issues = _filter_reader_verifier_items_excluding_toc(
+        _reader_verifier_pre_audit_findings_as_remaining_issues(evidence_payload),
+        block_spans=block_spans,
+        toc_out_of_review_scope=toc_out_of_review_scope,
+    )
     pre_audit_evidence_anchors = _reader_verifier_remaining_issue_anchors(pre_audit_remaining_issues)
     issue_summary_by_category = _count_reader_verifier_categories(pre_audit_remaining_issues)
+    base_filtered_toc_pre_audit_count = max(
+        0,
+        _coerce_int(
+            evidence_payload.get("filtered_toc_pre_audit_count", evidence_payload.get("filtered_toc_issue_count")),
+            default=0,
+        ),
+    )
+    filtered_toc_issue_previews = _merge_filtered_toc_issue_previews(
+        _coerce_mapping_sequence(evidence_payload.get("filtered_toc_issue_previews")),
+        _build_filtered_toc_issue_previews(filtered_toc_pre_audit_issues, source="pre_audit"),
+    )
     return {
         "run_id": run_id,
         "document_profile_id": document_profile_id,
@@ -2104,6 +2369,15 @@ def _build_reader_verifier_non_success_review(
         "reader_quality_score_raw": 0.0,
         "reader_quality_score_cleaned": 0.0,
         "confidence": "low",
+        "validator_boundary": dict(cast(Mapping[str, object], evidence_payload.get("validator_boundary") or {})),
+        "toc_filtering_policy": dict(cast(Mapping[str, object], evidence_payload.get("toc_filtering_policy") or {})),
+        "evidence_filtering_note": str(evidence_payload.get("evidence_filtering_note") or ""),
+        "cleanup_diagnostics": dict(cast(Mapping[str, object], evidence_payload.get("cleanup_diagnostics") or {})),
+        "filtered_toc_issue_count": base_filtered_toc_pre_audit_count + len(filtered_toc_pre_audit_issues),
+        "filtered_toc_pre_audit_count": base_filtered_toc_pre_audit_count + len(filtered_toc_pre_audit_issues),
+        "filtered_toc_verifier_issue_count": 0,
+        "filtered_toc_evidence_anchor_count": 0,
+        "filtered_toc_issue_previews": filtered_toc_issue_previews,
         "pre_audit_issue_counts": pre_audit_issue_counts,
         "remaining_issues": pre_audit_remaining_issues,
         "issue_summary_by_category": issue_summary_by_category,
@@ -2374,10 +2648,38 @@ def _parse_reader_verifier_completed_review(
     if not simple_user_summary or not simple_user_risk_statement or not simple_user_next_step or not summary_for_human:
         raise RuntimeError("reader_verifier_missing_summary_text")
 
-    remaining_issues = _normalize_reader_verifier_remaining_issues(payload.get("remaining_issues"))
+    block_spans = _build_cleanup_block_line_spans(str(evidence_payload.get("cleaned_markdown") or ""))
+    toc_out_of_review_scope = _reader_verifier_toc_out_of_review_scope_from_evidence(evidence_payload)
+    remaining_issues, filtered_toc_remaining_issues = _filter_reader_verifier_items_excluding_toc(
+        _normalize_reader_verifier_remaining_issues(payload.get("remaining_issues")),
+        block_spans=block_spans,
+        toc_out_of_review_scope=toc_out_of_review_scope,
+    )
     payload_remaining_issues = list(remaining_issues)
-    evidence_anchors = _normalize_reader_verifier_evidence_anchors(payload.get("evidence_anchors"))
-    pre_audit_remaining_issues = _reader_verifier_pre_audit_findings_as_remaining_issues(evidence_payload)
+    evidence_anchors, filtered_toc_evidence_anchors = _filter_reader_verifier_items_excluding_toc(
+        _normalize_reader_verifier_evidence_anchors(payload.get("evidence_anchors")),
+        block_spans=block_spans,
+        toc_out_of_review_scope=toc_out_of_review_scope,
+    )
+    pre_audit_remaining_issues, filtered_toc_pre_audit_issues = _filter_reader_verifier_items_excluding_toc(
+        _reader_verifier_pre_audit_findings_as_remaining_issues(evidence_payload),
+        block_spans=block_spans,
+        toc_out_of_review_scope=toc_out_of_review_scope,
+    )
+    base_filtered_toc_pre_audit_count = max(
+        0,
+        _coerce_int(
+            evidence_payload.get("filtered_toc_pre_audit_count", evidence_payload.get("filtered_toc_issue_count")),
+            default=0,
+        ),
+    )
+    filtered_toc_issue_previews = _merge_filtered_toc_issue_previews(
+        _coerce_mapping_sequence(evidence_payload.get("filtered_toc_issue_previews")),
+        _build_filtered_toc_issue_previews(filtered_toc_pre_audit_issues, source="pre_audit"),
+        _build_filtered_toc_issue_previews(filtered_toc_remaining_issues, source="verifier_remaining_issue"),
+    )
+    filtered_toc_pre_audit_count = base_filtered_toc_pre_audit_count + len(filtered_toc_pre_audit_issues)
+    filtered_toc_verifier_issue_count = len(filtered_toc_remaining_issues)
     merged_pre_audit_issue = False
     if pre_audit_remaining_issues:
         remaining_issues, merged_pre_audit_issue = _merge_reader_verifier_missing_pre_audit_issues(
@@ -2407,13 +2709,7 @@ def _parse_reader_verifier_completed_review(
         raise RuntimeError("reader_verifier_missing_improvement_anchor")
     if remaining_issues and not any(anchor.get("kind") == "remaining_issue" for anchor in evidence_anchors):
         raise RuntimeError("reader_verifier_missing_remaining_issue_anchor")
-    pre_audit_issue_counts = {
-        category: max(
-            0,
-            _coerce_int(cast(Mapping[str, object], evidence_payload.get("pre_audit_issue_counts") or {}).get(category), default=0),
-        )
-        for category in _READER_VERIFIER_DEFECT_CATEGORIES
-    }
+    pre_audit_issue_counts = _count_reader_verifier_categories(pre_audit_remaining_issues)
     issue_summary_by_category = _count_reader_verifier_categories(remaining_issues)
     simple_user_summary, simple_user_risk_statement, simple_user_next_step = _normalize_reader_verifier_simple_language(
         overall_verdict=overall_verdict,
@@ -2451,6 +2747,15 @@ def _parse_reader_verifier_completed_review(
         "reader_quality_score_raw": round(_coerce_float(payload.get("reader_quality_score_raw"), default=0.0), 3),
         "reader_quality_score_cleaned": round(_coerce_float(payload.get("reader_quality_score_cleaned"), default=0.0), 3),
         "confidence": confidence,
+        "validator_boundary": dict(cast(Mapping[str, object], evidence_payload.get("validator_boundary") or {})),
+        "toc_filtering_policy": dict(cast(Mapping[str, object], evidence_payload.get("toc_filtering_policy") or {})),
+        "evidence_filtering_note": str(evidence_payload.get("evidence_filtering_note") or ""),
+        "cleanup_diagnostics": dict(cast(Mapping[str, object], evidence_payload.get("cleanup_diagnostics") or {})),
+        "filtered_toc_issue_count": filtered_toc_pre_audit_count + filtered_toc_verifier_issue_count,
+        "filtered_toc_pre_audit_count": filtered_toc_pre_audit_count,
+        "filtered_toc_verifier_issue_count": filtered_toc_verifier_issue_count,
+        "filtered_toc_evidence_anchor_count": len(filtered_toc_evidence_anchors),
+        "filtered_toc_issue_previews": filtered_toc_issue_previews,
         "pre_audit_issue_counts": pre_audit_issue_counts,
         "remaining_issues": remaining_issues,
         "issue_summary_by_category": issue_summary_by_category,
@@ -2474,6 +2779,11 @@ def _render_reader_verifier_markdown_summary(review_payload: Mapping[str, object
         review_payload.get("readability_regressions")
     )
     recommendations = cast(Sequence[Mapping[str, object]], review_payload.get("recommended_next_changes") or [])
+    filtered_toc_issue_previews = _coerce_mapping_sequence(review_payload.get("filtered_toc_issue_previews"))
+    cleanup_diagnostics = cast(Mapping[str, object], review_payload.get("cleanup_diagnostics") or {})
+    top_ignored_reasons = _coerce_mapping_sequence(cleanup_diagnostics.get("top_ignored_reasons"))
+    accepted_operation_counts = cast(Mapping[str, object], cleanup_diagnostics.get("accepted_operation_counts") or {})
+    validator_boundary = cast(Mapping[str, object], review_payload.get("validator_boundary") or {})
     lines = [
         "# Verdict",
         "",
@@ -2515,6 +2825,56 @@ def _render_reader_verifier_markdown_summary(review_payload: Mapping[str, object
         lines.extend(f"- {item}" for item in risks)
     else:
         lines.append(f"- {str(review_payload.get('simple_user_risk_statement') or 'No additional reader-facing risks were recorded.')}")
+    lines.extend(["", "# Out-of-Scope Filtered TOC Issues", ""])
+    lines.append(
+        "- TOC-like findings were filtered as out-of-scope evidence only. No cleaned Markdown/DOCX was repaired, overwritten, or rebuilt by validation."
+    )
+    lines.append(f"- filtered_toc_issue_count: {review_payload.get('filtered_toc_issue_count')}")
+    lines.append(f"- filtered_toc_pre_audit_count: {review_payload.get('filtered_toc_pre_audit_count')}")
+    lines.append(f"- filtered_toc_verifier_issue_count: {review_payload.get('filtered_toc_verifier_issue_count')}")
+    lines.append(f"- filtered_toc_evidence_anchor_count: {review_payload.get('filtered_toc_evidence_anchor_count')}")
+    if filtered_toc_issue_previews:
+        for preview in filtered_toc_issue_previews:
+            lines.append(
+                "- [{source}] {category} at {artifact} {line_ref}: {snippet}".format(
+                    source=str(preview.get("source") or "unknown"),
+                    category=str(preview.get("category") or "uncategorized"),
+                    artifact=str(preview.get("artifact") or "cleaned_markdown"),
+                    line_ref=str(preview.get("line_ref") or ""),
+                    snippet=str(preview.get("snippet") or ""),
+                )
+            )
+    else:
+        lines.append("- No TOC-like issue previews were filtered.")
+    lines.extend(["", "# Cleanup Application Diagnostics", ""])
+    if accepted_operation_counts:
+        lines.append(
+            "- accepted_operation_counts: "
+            + ", ".join(
+                f"{key}={max(0, _coerce_int(value, default=0))}"
+                for key, value in sorted(accepted_operation_counts.items())
+            )
+        )
+    else:
+        lines.append("- accepted_operation_counts: none")
+    if top_ignored_reasons:
+        for entry in top_ignored_reasons:
+            ignored_reason = str(entry.get("ignored_reason") or "").strip()
+            count = max(0, _coerce_int(entry.get("count"), default=0))
+            lines.append(f"- {ignored_reason}: {count}")
+            for example in _coerce_mapping_sequence(entry.get("examples")):
+                example_operation = str(example.get("operation") or "unknown").strip() or "unknown"
+                example_reason = str(example.get("reason") or "").strip()
+                example_preview = str(example.get("text_preview") or "").strip()
+                example_chunk = max(0, _coerce_int(example.get("chunk_index"), default=0))
+                example_text = f"- example chunk={example_chunk} operation={example_operation}"
+                if example_reason:
+                    example_text += f" reason={example_reason}"
+                if example_preview:
+                    example_text += f" preview={example_preview}"
+                lines.append(example_text)
+    else:
+        lines.append("- No tracked ignored cleanup reasons were recorded.")
     lines.extend(["", "# Recommended Next Changes", ""])
     if recommendations:
         for item in recommendations:
@@ -2541,6 +2901,17 @@ def _render_reader_verifier_markdown_summary(review_payload: Mapping[str, object
             f"- remaining_issue_count: {len(remaining_issues)}",
             f"- high_severity_issue_count: {_count_reader_verifier_high_severity_issues(remaining_issues)}",
             f"- top_issue_categories: {','.join(_select_reader_verifier_top_categories(cast(Mapping[str, object], review_payload.get('issue_summary_by_category') or {})))}",
+            f"- evidence_filtering_note: {review_payload.get('evidence_filtering_note')}",
+            f"- filtered_toc_issue_count: {review_payload.get('filtered_toc_issue_count')}",
+            f"- filtered_toc_pre_audit_count: {review_payload.get('filtered_toc_pre_audit_count')}",
+            f"- filtered_toc_verifier_issue_count: {review_payload.get('filtered_toc_verifier_issue_count')}",
+            f"- artifact_repair_applied: {cast(Mapping[str, object], review_payload.get('toc_filtering_policy') or {}).get('artifact_repair_applied')}",
+            f"- validator_observer_only: {validator_boundary.get('observer_only')}",
+            f"- validator_runs_cleanup_repair: {validator_boundary.get('runs_cleanup_repair')}",
+            f"- validator_runs_anchor_repair: {validator_boundary.get('runs_anchor_repair')}",
+            f"- validator_mutates_cleaned_markdown: {validator_boundary.get('mutates_cleaned_markdown')}",
+            f"- validator_mutates_cleaned_docx: {validator_boundary.get('mutates_cleaned_docx')}",
+            f"- validator_rebuilds_docx: {validator_boundary.get('rebuilds_docx')}",
             f"- source_evidence_json: {cast(Mapping[str, object], review_payload.get('artifact_paths') or {}).get('source_evidence_json')}",
         ]
     )
@@ -2766,6 +3137,7 @@ def _write_reader_verifier_artifacts(
         source_document_path=source_document_path,
         source_text=source_text,
         reader_cleanup_evidence=reader_cleanup_evidence,
+        runtime_app_config=runtime_app_config,
     )
     _write_json_atomic(evidence_path, cast(Mapping[str, object], sanitize_for_json(evidence_payload)))
     review_payload = _run_reader_verifier(
@@ -2784,17 +3156,29 @@ def _write_reader_verifier_artifacts(
         cleaned_markdown=str(evidence_payload.get("cleaned_markdown") or ""),
         reader_cleanup_evidence=reader_cleanup_evidence,
     )
-    reader_cleanup_evidence = {
-        **dict(reader_cleanup_evidence),
-        "anchor_repair_status": anchor_diagnostics["anchor_repair_status"],
-        "recommended_anchor_targets": anchor_diagnostics["recommended_anchor_targets"],
-        "recommended_anchor_target_count": anchor_diagnostics["recommended_anchor_target_count"],
-    }
+    existing_anchor_status = str(reader_cleanup_evidence.get("anchor_repair_status") or "").strip()
+    preserve_runtime_anchor_targets = existing_anchor_status == "applied_in_runtime"
+    updated_reader_cleanup_evidence = dict(reader_cleanup_evidence)
+    updated_reader_cleanup_evidence["anchor_repair_status"] = anchor_diagnostics["anchor_repair_status"]
+    updated_reader_cleanup_evidence["verifier_recommended_anchor_targets"] = anchor_diagnostics[
+        "verifier_recommended_anchor_targets"
+    ]
+    updated_reader_cleanup_evidence["verifier_recommended_anchor_target_count"] = anchor_diagnostics[
+        "verifier_recommended_anchor_target_count"
+    ]
+    if not preserve_runtime_anchor_targets:
+        updated_reader_cleanup_evidence["recommended_anchor_targets"] = anchor_diagnostics["recommended_anchor_targets"]
+        updated_reader_cleanup_evidence["recommended_anchor_target_count"] = anchor_diagnostics[
+            "recommended_anchor_target_count"
+        ]
+    reader_cleanup_evidence = updated_reader_cleanup_evidence
     evidence_payload = {
         **evidence_payload,
         "anchor_repair_status": anchor_diagnostics["anchor_repair_status"],
         "recommended_anchor_targets": anchor_diagnostics["recommended_anchor_targets"],
         "recommended_anchor_target_count": anchor_diagnostics["recommended_anchor_target_count"],
+        "verifier_recommended_anchor_targets": anchor_diagnostics["verifier_recommended_anchor_targets"],
+        "verifier_recommended_anchor_target_count": anchor_diagnostics["verifier_recommended_anchor_target_count"],
     }
     _write_json_atomic(evidence_path, cast(Mapping[str, object], sanitize_for_json(evidence_payload)))
     review_payload = {
@@ -2802,6 +3186,8 @@ def _write_reader_verifier_artifacts(
         "anchor_repair_status": anchor_diagnostics["anchor_repair_status"],
         "recommended_anchor_targets": anchor_diagnostics["recommended_anchor_targets"],
         "recommended_anchor_target_count": anchor_diagnostics["recommended_anchor_target_count"],
+        "verifier_recommended_anchor_targets": anchor_diagnostics["verifier_recommended_anchor_targets"],
+        "verifier_recommended_anchor_target_count": anchor_diagnostics["verifier_recommended_anchor_target_count"],
     }
     review_json_path.write_text(
         json.dumps(sanitize_for_json(review_payload), ensure_ascii=False, indent=2),
@@ -3954,20 +4340,33 @@ def _build_reader_verifier_anchor_repair_diagnostics(
     reader_cleanup_evidence: Mapping[str, object],
 ) -> dict[str, object]:
     existing_status = str(reader_cleanup_evidence.get("anchor_repair_status") or "").strip()
-    recommended_anchor_targets = _build_reader_cleanup_anchor_targets(
+    verifier_recommended_anchor_targets = _build_reader_cleanup_anchor_targets(
         review_payload=review_payload,
         cleaned_markdown=cleaned_markdown,
     )
     if existing_status == "applied_in_runtime":
         anchor_repair_status = existing_status
-    elif recommended_anchor_targets:
+        recommended_anchor_targets = list(
+            cast(Sequence[object], reader_cleanup_evidence.get("recommended_anchor_targets") or [])
+        )
+        recommended_anchor_target_count = _coerce_int(
+            reader_cleanup_evidence.get("recommended_anchor_target_count"),
+            default=len(recommended_anchor_targets),
+        )
+    elif verifier_recommended_anchor_targets:
         anchor_repair_status = "diagnostic_only_not_applied"
+        recommended_anchor_targets = verifier_recommended_anchor_targets
+        recommended_anchor_target_count = len(verifier_recommended_anchor_targets)
     else:
         anchor_repair_status = existing_status or "not_needed"
+        recommended_anchor_targets = verifier_recommended_anchor_targets
+        recommended_anchor_target_count = len(verifier_recommended_anchor_targets)
     return {
         "anchor_repair_status": anchor_repair_status,
         "recommended_anchor_targets": recommended_anchor_targets,
-        "recommended_anchor_target_count": len(recommended_anchor_targets),
+        "recommended_anchor_target_count": recommended_anchor_target_count,
+        "verifier_recommended_anchor_targets": verifier_recommended_anchor_targets,
+        "verifier_recommended_anchor_target_count": len(verifier_recommended_anchor_targets),
     }
 
 
@@ -4018,10 +4417,191 @@ def _build_cleanup_block_line_spans(markdown_text: str) -> list[dict[str, object
                 "text": block.text,
                 "start_line": block_start_line,
                 "end_line": line_number - 1,
+                "is_toc_like": block.is_toc_like,
             }
         )
         current_lines = []
     return spans
+
+
+def _is_reader_verifier_issue_in_toc_block(
+    issue: Mapping[str, object],
+    *,
+    block_spans: Sequence[Mapping[str, object]],
+) -> bool:
+    if not block_spans:
+        return False
+
+    artifact = str(issue.get("artifact") or "cleaned_markdown").strip() or "cleaned_markdown"
+    line_ref = str(issue.get("line_ref") or "").strip()
+    snippet = str(issue.get("snippet") or "").strip()
+    line_number = _parse_reader_verifier_cleaned_line_number(line_ref, artifact)
+    if line_number is not None:
+        for span in block_spans:
+            start_line = _coerce_int(span.get("start_line"), default=0)
+            end_line = _coerce_int(span.get("end_line"), default=0)
+            if start_line <= line_number <= end_line:
+                return bool(span.get("is_toc_like"))
+    if snippet:
+        snippet_matches = [span for span in block_spans if snippet in str(span.get("text") or "")]
+        if len(snippet_matches) == 1:
+            return bool(snippet_matches[0].get("is_toc_like"))
+    return False
+
+
+def _build_filtered_toc_issue_previews(
+    items: Sequence[Mapping[str, object]],
+    *,
+    source: str,
+) -> list[dict[str, str]]:
+    previews: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+    for item in items:
+        artifact = str(item.get("artifact") or "cleaned_markdown").strip() or "cleaned_markdown"
+        line_ref = str(item.get("line_ref") or "").strip()
+        snippet = _preview_text(str(item.get("snippet") or "").strip())
+        category = str(item.get("category") or "").strip() or "uncategorized"
+        if not line_ref or not snippet:
+            continue
+        key = (source, category, artifact, line_ref, snippet)
+        if key in seen:
+            continue
+        seen.add(key)
+        previews.append(
+            {
+                "source": source,
+                "category": category,
+                "artifact": artifact,
+                "line_ref": line_ref,
+                "snippet": snippet,
+            }
+        )
+    return previews
+
+
+def _merge_filtered_toc_issue_previews(
+    *preview_groups: Sequence[Mapping[str, object]],
+) -> list[dict[str, str]]:
+    merged: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+    for group in preview_groups:
+        for item in group:
+            source = str(item.get("source") or "").strip() or "unknown"
+            category = str(item.get("category") or "").strip() or "uncategorized"
+            artifact = str(item.get("artifact") or "cleaned_markdown").strip() or "cleaned_markdown"
+            line_ref = str(item.get("line_ref") or "").strip()
+            snippet = _preview_text(str(item.get("snippet") or "").strip())
+            if not line_ref or not snippet:
+                continue
+            key = (source, category, artifact, line_ref, snippet)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(
+                {
+                    "source": source,
+                    "category": category,
+                    "artifact": artifact,
+                    "line_ref": line_ref,
+                    "snippet": snippet,
+                }
+            )
+    return merged
+
+
+def _filter_reader_verifier_items_excluding_toc(
+    items: Sequence[Mapping[str, object]],
+    *,
+    block_spans: Sequence[Mapping[str, object]],
+    toc_out_of_review_scope: bool,
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    filtered: list[dict[str, str]] = []
+    excluded: list[dict[str, str]] = []
+    for item in items:
+        normalized_item = {str(key): str(value) for key, value in item.items()}
+        if toc_out_of_review_scope and _is_reader_verifier_issue_in_toc_block(normalized_item, block_spans=block_spans):
+            excluded.append(normalized_item)
+            continue
+        filtered.append(normalized_item)
+    return filtered, excluded
+
+
+def _reader_verifier_toc_out_of_review_scope_from_config(runtime_app_config: Mapping[str, object]) -> bool:
+    keep_toc_value = _get_config_value(runtime_app_config, "reader_cleanup_keep_toc")
+    return keep_toc_value is not None and not _coerce_bool(keep_toc_value, default=True)
+
+
+def _reader_verifier_toc_out_of_review_scope_from_evidence(evidence_payload: Mapping[str, object]) -> bool:
+    policy = evidence_payload.get("toc_filtering_policy")
+    if not isinstance(policy, Mapping):
+        return False
+    return bool(policy.get("toc_out_of_review_scope"))
+
+
+def _build_reader_cleanup_diagnostics(cleanup_report_payload: Mapping[str, object] | None) -> dict[str, object]:
+    ignored_reason_counts = {reason: 0 for reason in _TRACKED_READER_CLEANUP_IGNORED_REASONS}
+    examples_by_reason: dict[str, list[dict[str, object]]] = {
+        reason: [] for reason in _TRACKED_READER_CLEANUP_IGNORED_REASONS
+    }
+    accepted_operation_counts: Counter[str] = Counter()
+    if cleanup_report_payload is None:
+        return {
+            "tracked_ignored_reasons": list(_TRACKED_READER_CLEANUP_IGNORED_REASONS),
+            "ignored_reason_counts": ignored_reason_counts,
+            "top_ignored_reasons": [],
+            "accepted_operation_counts": {},
+        }
+
+    accepted_entries = _coerce_mapping_sequence(cleanup_report_payload.get("accepted_cleanup_operations"))
+    if accepted_entries:
+        for entry in accepted_entries:
+            operation_name = str(entry.get("operation") or "").strip() or "unknown"
+            accepted_operation_counts[operation_name] += 1
+    else:
+        for _ in _coerce_mapping_sequence(cleanup_report_payload.get("accepted_delete_blocks")):
+            accepted_operation_counts["delete_block"] += 1
+
+    for entry in _coerce_mapping_sequence(cleanup_report_payload.get("ignored_delete_blocks")):
+        ignored_reason = str(entry.get("ignored_reason") or "").strip()
+        if ignored_reason not in ignored_reason_counts:
+            continue
+        ignored_reason_counts[ignored_reason] += 1
+        examples = examples_by_reason[ignored_reason]
+        if len(examples) >= 3:
+            continue
+        preview_text = _preview_text(
+            str(
+                entry.get("raw_text_preview")
+                or entry.get("expected_after_preview")
+                or entry.get("noise_substring")
+                or ""
+            ).strip()
+        )
+        examples.append(
+            {
+                "operation": str(entry.get("operation") or "").strip() or "unknown",
+                "reason": str(entry.get("reason") or "").strip(),
+                "chunk_index": max(0, _coerce_int(entry.get("chunk_index"), default=0)),
+                "text_preview": preview_text,
+                "sequence_decision": str(entry.get("sequence_decision") or "").strip(),
+            }
+        )
+
+    top_ignored_reasons = [
+        {
+            "ignored_reason": reason,
+            "count": ignored_reason_counts[reason],
+            "examples": list(examples_by_reason[reason]),
+        }
+        for reason in _TRACKED_READER_CLEANUP_IGNORED_REASONS
+        if ignored_reason_counts[reason] > 0
+    ]
+    return {
+        "tracked_ignored_reasons": list(_TRACKED_READER_CLEANUP_IGNORED_REASONS),
+        "ignored_reason_counts": ignored_reason_counts,
+        "top_ignored_reasons": top_ignored_reasons,
+        "accepted_operation_counts": dict(sorted(accepted_operation_counts.items())),
+    }
 
 
 def _resolve_reader_cleanup_anchor_block_id(
@@ -4030,6 +4610,8 @@ def _resolve_reader_cleanup_anchor_block_id(
     block_spans: Sequence[Mapping[str, object]],
 ) -> str | None:
     artifact = str(issue.get("artifact") or "cleaned_markdown").strip() or "cleaned_markdown"
+    if artifact != "cleaned_markdown":
+        return None
     line_ref = str(issue.get("line_ref") or "").strip()
     snippet = str(issue.get("snippet") or "").strip()
     line_number = _parse_reader_verifier_cleaned_line_number(line_ref, artifact)
@@ -4064,6 +4646,9 @@ def _build_reader_cleanup_anchor_targets(
         category = str(issue.get("category") or "").strip()
         if category not in _ALLOWED_READER_CLEANUP_ANCHOR_REPAIR_CATEGORIES:
             continue
+        artifact = str(issue.get("artifact") or "cleaned_markdown").strip() or "cleaned_markdown"
+        if artifact != "cleaned_markdown":
+            continue
         block_id = _resolve_reader_cleanup_anchor_block_id(issue, block_spans=block_spans)
         if not block_id:
             continue
@@ -4083,126 +4668,6 @@ def _build_reader_cleanup_anchor_targets(
             }
         )
     return anchor_targets
-
-
-def _should_run_reader_cleanup_anchor_repair(
-    *,
-    validation_mode: Mapping[str, object],
-    runtime_app_config: Mapping[str, object],
-) -> bool:
-    if not bool(validation_mode.get("comparison_only_validation")):
-        return False
-    enabled_value = _get_config_value(runtime_app_config, "reader_cleanup_anchor_repair_enabled")
-    if enabled_value is None:
-        return bool(_get_config_value(runtime_app_config, "reader_cleanup_enabled"))
-    return bool(enabled_value)
-
-
-def _run_reader_cleanup_anchor_repair_validation_pass(
-    *,
-    review_payload: Mapping[str, object],
-    reader_cleanup_evidence: Mapping[str, object],
-    runtime_app_config: Mapping[str, object],
-    max_retries: int,
-) -> tuple[dict[str, object], bool, bool]:
-    artifact_paths = {
-        "markdown_path": str(reader_cleanup_evidence.get("cleaned_markdown_path") or "").strip(),
-        "docx_path": str(reader_cleanup_evidence.get("cleaned_docx_path") or "").strip(),
-        "reader_cleanup_raw_markdown_path": str(reader_cleanup_evidence.get("raw_markdown_path") or "").strip(),
-        "reader_cleanup_report_path": str(reader_cleanup_evidence.get("reader_cleanup_report_path") or "").strip(),
-    }
-    cleaned_markdown, _, cleaned_markdown_warning = _load_text_artifact(artifact_paths["markdown_path"])
-    cleanup_report_payload, _, cleanup_report_warning = _load_optional_json_artifact(artifact_paths["reader_cleanup_report_path"])
-    if cleaned_markdown_warning is not None or cleanup_report_warning is not None or cleanup_report_payload is None:
-        return dict(reader_cleanup_evidence), False, False
-
-    anchor_targets = _build_reader_cleanup_anchor_targets(review_payload=review_payload, cleaned_markdown=cleaned_markdown)
-    if not anchor_targets:
-        return dict(reader_cleanup_evidence), False, False
-
-    fallback_model = str(_get_config_value(runtime_app_config, "model") or READER_VERIFIER_DEFAULT_SELECTOR).strip()
-    config = resolve_reader_cleanup_config(app_config=runtime_app_config, fallback_model=fallback_model)
-    if not config.enabled:
-        return dict(reader_cleanup_evidence), False, False
-
-    cleanup_report_file = _resolve_reported_path(artifact_paths["reader_cleanup_report_path"])
-    cleaned_markdown_file = _resolve_reported_path(artifact_paths["markdown_path"])
-    cleaned_docx_file = _resolve_reported_path(artifact_paths["docx_path"])
-
-    try:
-        resolved_selector = resolve_model_selector(
-            config.model,
-            "responses_text",
-            config_like=runtime_app_config,
-            source_name="reader cleanup anchor repair model selector",
-        )
-        client = get_client_for_model_selector(
-            config.model,
-            "responses_text",
-            config_like=runtime_app_config,
-        )
-        cleanup_system_prompt = build_reader_cleanup_system_prompt()
-        cleanup_schema_repair_system_prompt = build_reader_cleanup_schema_repair_system_prompt()
-
-        def _anchor_operation_provider(request_payload: Mapping[str, object], chunk_index: int, chunk_count: int) -> str:
-            return generate_markdown_block(
-                client=client,
-                model=resolved_selector.model_id,
-                system_prompt=cleanup_system_prompt,
-                target_text=json.dumps(request_payload, ensure_ascii=False, indent=2),
-                context_before=str(request_payload.get("context_before_preview") or ""),
-                context_after=str(request_payload.get("context_after_preview") or ""),
-                max_retries=max(1, max_retries),
-                expected_paragraph_ids=None,
-                marker_mode=False,
-            )
-
-        def _repair_provider(request_payload: Mapping[str, object], chunk_index: int, chunk_count: int) -> str:
-            return generate_markdown_block(
-                client=client,
-                model=resolved_selector.model_id,
-                system_prompt=cleanup_schema_repair_system_prompt,
-                target_text=json.dumps(request_payload, ensure_ascii=False, indent=2),
-                context_before="",
-                context_after="",
-                max_retries=max(1, max_retries),
-                expected_paragraph_ids=None,
-                marker_mode=False,
-            )
-
-        cleanup_result = run_reader_cleanup_anchor_repair(
-            markdown_text=cleaned_markdown,
-            config=config,
-            base_report_payload=cleanup_report_payload,
-            anchor_targets=anchor_targets,
-            operation_provider=_anchor_operation_provider,
-            repair_provider=_repair_provider,
-            model_resolution={
-                "requested_selector": config.model,
-                "canonical_selector": resolved_selector.canonical_selector,
-                "provider": resolved_selector.provider,
-                "model_id": resolved_selector.model_id,
-            },
-        )
-    except Exception as exc:
-        if cleanup_report_file is not None:
-            updated_report = dict(cleanup_report_payload)
-            updated_warnings = [str(item) for item in cast(Sequence[object], updated_report.get("warnings") or [])]
-            updated_warnings.append(f"reader_cleanup_anchor_repair_failed:{exc}")
-            updated_report["warnings"] = updated_warnings
-            _write_json_atomic(cleanup_report_file, cast(Mapping[str, object], sanitize_for_json(updated_report)))
-        return _build_reader_cleanup_evidence_from_artifact_paths(artifact_paths), True, False
-
-    if cleaned_markdown_file is not None and cleanup_result.changed:
-        cleaned_markdown_file.write_text(cleanup_result.cleaned_markdown, encoding="utf-8")
-    if cleaned_docx_file is not None and cleanup_result.changed:
-        cleaned_docx_file.write_bytes(convert_markdown_to_docx_bytes(cleanup_result.cleaned_markdown))
-    if cleanup_report_file is not None:
-        _write_json_atomic(
-            cleanup_report_file,
-            cast(Mapping[str, object], sanitize_for_json(cleanup_result.report_payload)),
-        )
-    return _build_reader_cleanup_evidence_from_artifact_paths(artifact_paths), True, cleanup_result.changed
 
 
 def _merge_reader_cleanup_artifact_paths(
@@ -4448,13 +4913,6 @@ def evaluate_lietaer_acceptance(
                 "raw_theology_style_deterministic_issue_count"
             ),
             failed_reason="advisory_only",
-        )
-        add_check(
-            "toc_body_concatenation_detected",
-            not bool(translation_quality_report.get("toc_body_concat_detected")),
-            **_build_toc_body_concat_provenance_details(
-                translation_quality_report=translation_quality_report,
-            ),
         )
     if require_no_toc_body_concat:
         toc_body_concat_check = _build_acceptance_toc_body_concat_check(
@@ -5205,6 +5663,13 @@ def main() -> None:
             reader_verifier_remaining_issue_count=len(remaining_issues),
             reader_verifier_high_severity_issue_count=_count_reader_verifier_high_severity_issues(remaining_issues),
             reader_verifier_top_issue_categories=_select_reader_verifier_top_categories(issue_summary),
+            reader_verifier_filtered_toc_issue_count=reader_verifier_evidence.get("filtered_toc_issue_count"),
+            reader_verifier_filtered_toc_pre_audit_count=reader_verifier_evidence.get("filtered_toc_pre_audit_count"),
+            reader_verifier_filtered_toc_verifier_issue_count=reader_verifier_evidence.get("filtered_toc_verifier_issue_count"),
+            reader_verifier_cleanup_ignored_reason_counts=cast(
+                Mapping[str, object],
+                cast(Mapping[str, object], reader_verifier_evidence.get("cleanup_diagnostics") or {}).get("ignored_reason_counts") or {},
+            ),
             reader_verifier_simple_user_summary=reader_verifier_evidence.get("simple_user_summary"),
             reader_verifier_simple_user_risk_statement=reader_verifier_evidence.get("simple_user_risk_statement"),
             reader_verifier_simple_user_next_step=reader_verifier_evidence.get("simple_user_next_step"),
@@ -5309,6 +5774,18 @@ def main() -> None:
         f"reader_verifier_remaining_issue_count={len(_coerce_mapping_sequence(cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('remaining_issues')))}",
         f"reader_verifier_high_severity_issue_count={_count_reader_verifier_high_severity_issues(_coerce_mapping_sequence(cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('remaining_issues')))}",
         f"reader_verifier_top_issue_categories={','.join(_select_reader_verifier_top_categories(cast(Mapping[str, object], cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('issue_summary_by_category') or {})))}",
+        f"reader_verifier_filtered_toc_issue_count={cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('filtered_toc_issue_count')}",
+        f"reader_verifier_filtered_toc_pre_audit_count={cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('filtered_toc_pre_audit_count')}",
+        f"reader_verifier_filtered_toc_verifier_issue_count={cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('filtered_toc_verifier_issue_count')}",
+        f"reader_verifier_filtered_toc_evidence_anchor_count={cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('filtered_toc_evidence_anchor_count')}",
+        "reader_verifier_filtered_toc_issue_previews="
+        + json.dumps(cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('filtered_toc_issue_previews') or [], ensure_ascii=False),
+        "reader_verifier_cleanup_ignored_reason_counts="
+        + json.dumps(
+            cast(Mapping[str, object], cast(Mapping[str, object], cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('cleanup_diagnostics') or {}).get('ignored_reason_counts') or {}),
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
         f"reader_verifier_simple_user_summary={cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('simple_user_summary')}",
         f"reader_verifier_simple_user_risk_statement={cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('simple_user_risk_statement')}",
         f"reader_verifier_simple_user_next_step={cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('simple_user_next_step')}",
