@@ -228,12 +228,14 @@ def extract_document_content_with_normalization_reports(
         cleanup_min_repeat_count,
         cleanup_max_repeated_text_chars,
         cleanup_save_debug_artifacts,
+        cleanup_mode,
     ) = _resolve_layout_artifact_cleanup_settings(app_config=app_config)
     paragraphs, cleanup_report = clean_paragraph_layout_artifacts(
         paragraphs,
         enabled=cleanup_enabled,
         min_repeat_count=cleanup_min_repeat_count,
         max_repeated_text_chars=cleanup_max_repeated_text_chars,
+        cleanup_mode=cleanup_mode,
         structure_recovery_enabled=structure_recovery_enabled,
         structure_recovery_mode=structure_recovery_mode,
     )
@@ -309,12 +311,14 @@ def extract_document_content_with_normalization_reports(
             enabled_relation_kinds=enabled_relation_kinds,
             report=relation_report,
         )
+    cleanup_report_path = None
     if cleanup_save_debug_artifacts:
-        _write_layout_cleanup_report_artifact(
+        cleanup_report_path = _write_layout_cleanup_report_artifact(
             source_name=resolve_uploaded_filename(uploaded_file),
             source_bytes=source_bytes,
             report=cleanup_report,
         )
+    cleanup_report.artifact_path = cleanup_report_path
     return paragraphs, image_assets, boundary_report, relations, relation_report, cleanup_report, structure_repair_report
 
 
@@ -913,7 +917,7 @@ def _resolve_relation_normalization_settings() -> tuple[bool, str, tuple[str, ..
     return _resolve_relation_normalization_settings_impl()
 
 
-def _resolve_layout_artifact_cleanup_settings(*, app_config: Mapping[str, object] | None = None) -> tuple[bool, int, int, bool]:
+def _resolve_layout_artifact_cleanup_settings(*, app_config: Mapping[str, object] | None = None) -> tuple[bool, int, int, bool, str]:
     from docxaicorrector.core.config import load_app_config
 
     if app_config is None:
@@ -923,6 +927,7 @@ def _resolve_layout_artifact_cleanup_settings(*, app_config: Mapping[str, object
         _coerce_int_config_value_impl(app_config.get("layout_artifact_cleanup_min_repeat_count", 3), 3),
         _coerce_int_config_value_impl(app_config.get("layout_artifact_cleanup_max_repeated_text_chars", 80), 80),
         bool(app_config.get("layout_artifact_cleanup_save_debug_artifacts", True)),
+        str(app_config.get("layout_artifact_cleanup_mode", "flag") or "flag").strip().lower() or "flag",
     )
 
 

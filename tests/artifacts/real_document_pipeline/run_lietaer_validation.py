@@ -207,6 +207,63 @@ def _path_for_report(path: Path | None) -> str | None:
         return str(path).replace("\\", "/")
 
 
+def _build_source_cleanup_evidence(cleanup_report: object | None) -> dict[str, object] | None:
+    if cleanup_report is None:
+        return None
+
+    cleanup_mode = str(getattr(cleanup_report, "cleanup_mode", "remove") or "remove").strip().lower() or "remove"
+    removed_samples: list[dict[str, object]] = []
+    flagged_samples: list[dict[str, object]] = []
+    kept_uncertain_samples: list[dict[str, object]] = []
+    reason_counts: Counter[str] = Counter()
+    decision_counts: Counter[str] = Counter()
+
+    for decision in list(getattr(cleanup_report, "decisions", []) or []):
+        action = str(getattr(decision, "action", "") or "keep").strip().lower() or "keep"
+        reason = str(getattr(decision, "reason", "") or "keep").strip().lower() or "keep"
+        decision_counts[action] += 1
+        reason_counts[reason] += 1
+        serialized = {
+            "action": action,
+            "reason": reason,
+            "confidence": str(getattr(decision, "confidence", "") or ""),
+            "text_preview": str(getattr(decision, "text_preview", "") or ""),
+            "original_source_index": getattr(decision, "original_source_index", None),
+            "origin_raw_indexes": list(getattr(decision, "origin_raw_indexes", ()) or ()),
+            "page_number": getattr(decision, "page_number", None),
+            "layout_origin": str(getattr(decision, "layout_origin", "") or ""),
+            "repeat_count": getattr(decision, "repeat_count", None),
+        }
+        if action == "remove" and len(removed_samples) < 8:
+            removed_samples.append(serialized)
+        elif action == "flag" and len(flagged_samples) < 8:
+            flagged_samples.append(serialized)
+        elif reason == "uncertain_repeated_artifact" and len(kept_uncertain_samples) < 8:
+            kept_uncertain_samples.append(serialized)
+
+    return {
+        "cleanup_applied": bool(getattr(cleanup_report, "cleanup_applied", False)),
+        "cleanup_mode": cleanup_mode,
+        "skipped_reason": getattr(cleanup_report, "skipped_reason", None),
+        "error_code": getattr(cleanup_report, "error_code", None),
+        "artifact_path": _path_for_report(_resolve_reported_path(getattr(cleanup_report, "artifact_path", None))),
+        "original_paragraph_count": int(getattr(cleanup_report, "original_paragraph_count", 0) or 0),
+        "cleaned_paragraph_count": int(getattr(cleanup_report, "cleaned_paragraph_count", 0) or 0),
+        "removed_paragraph_count": int(getattr(cleanup_report, "removed_paragraph_count", 0) or 0),
+        "removed_page_number_count": int(getattr(cleanup_report, "removed_page_number_count", 0) or 0),
+        "removed_repeated_artifact_count": int(getattr(cleanup_report, "removed_repeated_artifact_count", 0) or 0),
+        "removed_empty_or_whitespace_count": int(getattr(cleanup_report, "removed_empty_or_whitespace_count", 0) or 0),
+        "flagged_page_number_count": int(getattr(cleanup_report, "flagged_page_number_count", 0) or 0),
+        "flagged_repeated_artifact_count": int(getattr(cleanup_report, "flagged_repeated_artifact_count", 0) or 0),
+        "flagged_empty_or_whitespace_count": int(getattr(cleanup_report, "flagged_empty_or_whitespace_count", 0) or 0),
+        "decision_counts": dict(sorted(decision_counts.items())),
+        "reason_counts": dict(sorted(reason_counts.items())),
+        "removed_samples": removed_samples,
+        "flagged_samples": flagged_samples,
+        "kept_uncertain_samples": kept_uncertain_samples,
+    }
+
+
 def _coerce_int(value: object, default: int = 0) -> int:
     if isinstance(value, bool):
         return int(value)
@@ -5542,6 +5599,7 @@ def main() -> None:
         "runtime_config": build_validation_runtime_config(runtime_resolution),
         "preparation": preparation_payload,
         "preparation_diagnostic_snapshot": preparation_diagnostic_snapshot,
+        "source_cleanup_evidence": _build_source_cleanup_evidence(getattr(prepared, "cleanup_report", None)),
         "runtime": runtime_snapshot,
         "image_forensics": _build_image_forensics_report(prepared, runtime_snapshot),
         "last_error": last_error,

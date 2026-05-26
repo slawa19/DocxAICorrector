@@ -918,12 +918,76 @@ def test_runtime_resolution_applies_reader_cleanup_overrides() -> None:
     assert applied_config["reader_cleanup_keep_toc"] is True
 
 
+def test_runtime_resolution_applies_layout_cleanup_mode_override() -> None:
+    app_config = SimpleNamespace(
+        models=SimpleNamespace(
+            text=SimpleNamespace(
+                default="gpt-5.4-mini",
+                options=("gpt-5.4-mini",),
+            )
+        ),
+        to_dict=lambda: {
+            "models": SimpleNamespace(
+                text=SimpleNamespace(
+                    default="gpt-5.4-mini",
+                    options=("gpt-5.4-mini",),
+                )
+            ),
+            "model": "gpt-5.4",
+            "chunk_size": 6000,
+            "max_retries": 3,
+            "image_mode_default": "safe",
+            "processing_operation_default": "edit",
+            "source_language_default": "en",
+            "target_language_default": "ru",
+            "translation_domain_default": "general",
+            "audiobook_postprocess_default": False,
+            "reader_cleanup_default": False,
+            "enable_paragraph_markers": True,
+            "keep_all_image_variants": False,
+            "structure_recognition_mode": "off",
+            "structure_recognition_enabled": False,
+        },
+        model="gpt-5.4",
+        chunk_size=6000,
+        max_retries=3,
+        image_mode_default="safe",
+        processing_operation_default="edit",
+        source_language_default="en",
+        target_language_default="ru",
+        translation_domain_default="general",
+        audiobook_postprocess_default=False,
+        reader_cleanup_default=False,
+        enable_paragraph_markers=True,
+        keep_all_image_variants=False,
+        structure_recognition_mode="off",
+        structure_recognition_enabled=False,
+    )
+    run_profile = validation_profiles.RunProfile(
+        id="source-cleanup-remove",
+        processing_operation="translate",
+        layout_artifact_cleanup_mode="remove",
+        reader_verifier_enabled=True,
+    )
+
+    resolution = validation_profiles.resolve_runtime_resolution(app_config, run_profile)
+    applied_config = validation_profiles.apply_runtime_resolution_to_app_config(app_config, resolution)
+
+    assert resolution.overrides["layout_artifact_cleanup_mode"] == "remove"
+    assert resolution.app_config_overrides["layout_artifact_cleanup_mode"] == "remove"
+    assert applied_config["layout_artifact_cleanup_mode"] == "remove"
+    assert resolution.overrides["reader_verifier_enabled"] is True
+    assert resolution.app_config_overrides["reader_verifier_enabled"] is True
+    assert applied_config["reader_verifier_enabled"] is True
+
+
 def test_validation_registry_declares_reader_cleanup_validation_profiles() -> None:
     validation_profiles.load_validation_registry.cache_clear()
     registry = validation_profiles.load_validation_registry()
 
     baseline = registry.get_run_profile("ui-parity-translate-simple-reader-cleanup")
     comparison_only = registry.get_run_profile("ui-parity-translate-simple-reader-cleanup-comparison-only")
+    source_cleanup_remove = registry.get_run_profile("ui-parity-translate-simple-reader-cleanup-source-cleanup-remove")
     # Wide-chunk stays as an optional experiment profile; it is not a stronger repository contract.
     wide_chunk = registry.get_run_profile("ui-parity-translate-simple-reader-cleanup-wide-chunk")
 
@@ -945,6 +1009,13 @@ def test_validation_registry_declares_reader_cleanup_validation_profiles() -> No
     assert comparison_only.reader_cleanup_chunk_size == 30000
     assert comparison_only.translation_output_quality_gate_policy == "advisory"
     assert comparison_only.comparison_only_validation is True
+
+    assert source_cleanup_remove.processing_operation == "translate"
+    assert source_cleanup_remove.reader_cleanup_enabled is True
+    assert source_cleanup_remove.reader_verifier_enabled is True
+    assert source_cleanup_remove.translation_output_quality_gate_policy == "advisory"
+    assert source_cleanup_remove.layout_artifact_cleanup_mode == "remove"
+    assert source_cleanup_remove.comparison_only_validation is True
 
     assert wide_chunk.processing_operation == "translate"
     assert wide_chunk.reader_cleanup_enabled is True

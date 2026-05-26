@@ -2289,7 +2289,8 @@ def _resolve_layout_cleanup_cache_key(app_config: Mapping[str, Any]) -> str:
         return "off"
     min_repeat_count = max(2, int(app_config.get("layout_artifact_cleanup_min_repeat_count", 3) or 3))
     max_repeated_text_chars = max(1, int(app_config.get("layout_artifact_cleanup_max_repeated_text_chars", 80) or 80))
-    return f"1:{min_repeat_count}:{max_repeated_text_chars}"
+    cleanup_mode = str(app_config.get("layout_artifact_cleanup_mode", "flag") or "flag").strip().lower() or "flag"
+    return f"1:{min_repeat_count}:{max_repeated_text_chars}:{cleanup_mode}"
 
 
 def _run_structure_validation(

@@ -13,6 +13,7 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docxaicorrector.core.models import LayoutArtifactCleanupDecision, LayoutArtifactCleanupReport
 from docxaicorrector.core.models import ParagraphUnit
 
 
@@ -257,6 +258,62 @@ def test_evaluate_lietaer_acceptance_fails_on_translation_quality_report_residua
     )
     assert by_name["theology_style_deterministic_issues_present"]["raw_theology_style_deterministic_issue_count"] == 3
     assert "toc_body_concatenation_detected" not in by_name
+
+
+def test_build_source_cleanup_evidence_reports_artifact_summary(tmp_path) -> None:
+    validation = _load_validation_module()
+    artifact_path = tmp_path / "layout_cleanup.json"
+    artifact_path.write_text("{}", encoding="utf-8")
+    cleanup_report = LayoutArtifactCleanupReport(
+        original_paragraph_count=6,
+        cleaned_paragraph_count=3,
+        removed_paragraph_count=3,
+        removed_page_number_count=1,
+        removed_repeated_artifact_count=2,
+        removed_empty_or_whitespace_count=0,
+        decisions=[
+            LayoutArtifactCleanupDecision(
+                original_source_index=0,
+                original_paragraph_id="p0000",
+                origin_raw_indexes=(0,),
+                text_preview="1",
+                action="remove",
+                reason="page_number_pattern",
+                confidence="high",
+                normalized_text="1",
+                repeat_count=1,
+                page_number=1,
+                layout_origin="paragraph",
+            ),
+            LayoutArtifactCleanupDecision(
+                original_source_index=1,
+                original_paragraph_id="p0001",
+                origin_raw_indexes=(1,),
+                text_preview="Introduction",
+                action="keep",
+                reason="uncertain_repeated_artifact",
+                confidence="low",
+                normalized_text="introduction",
+                repeat_count=2,
+                page_number=None,
+                layout_origin="paragraph",
+            ),
+        ],
+        cleanup_applied=True,
+        cleanup_mode="remove",
+        artifact_path=str(artifact_path),
+    )
+
+    evidence = validation._build_source_cleanup_evidence(cleanup_report)
+
+    assert evidence is not None
+    assert evidence["cleanup_mode"] == "remove"
+    assert evidence["artifact_path"] == str(artifact_path).replace("\\", "/")
+    assert evidence["removed_paragraph_count"] == 3
+    assert evidence["reason_counts"]["page_number_pattern"] == 1
+    assert evidence["reason_counts"]["uncertain_repeated_artifact"] == 1
+    assert evidence["removed_samples"][0]["page_number"] == 1
+    assert evidence["kept_uncertain_samples"][0]["reason"] == "uncertain_repeated_artifact"
 
 
 def test_evaluate_lietaer_acceptance_uses_authoritative_structural_markdown_counts() -> None:

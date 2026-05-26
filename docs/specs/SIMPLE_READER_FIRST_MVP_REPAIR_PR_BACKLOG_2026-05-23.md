@@ -44,8 +44,19 @@ page numbers, fused headings, and paragraph breaks remain.
 
 The main reason is now product-quality, not validator architecture: cleanup
 successfully runs, but the remaining reader-visible defects are still too common
-for final output. The next work should target PR-H and rerun the same
-comparison-only profile.
+for final output. Earlier backlog slices targeted PR-H directly; the current
+next move is to test whether cleaner source input makes PR-H stable instead of
+adding more post-translation runtime guards.
+
+May 26 replay experiments changed the preferred next move. Frozen cleanup replay
+showed that runtime safety is not the dominant remaining problem: valid exact
+cleanup operations are accepted, broad heading-eating `remove_inline_noise`
+proposals are rejected, and prompt variants only partially improve stability.
+The bigger instability comes from the translated raw Markdown changing shape
+between runs. Therefore the next useful iteration should test a two-stage
+cleanup strategy: remove only obvious source-side page furniture before
+translation, then keep the existing post-translation AI reader cleanup as the
+reader polish pass.
 
 ## Non-Negotiable Architecture Rules
 
@@ -55,6 +66,9 @@ comparison-only profile.
 - Do not expand the shared page-furniture phrase library for this document.
 - Do not use deterministic Markdown rewrites to split headings, merge
   paragraphs, or remove document-specific running headers.
+- Do not turn source cleanup into a broad pre-translation rewrite pass. It may
+   remove only obvious non-semantic source artifacts with reliable page-boundary,
+   repetition, or extraction evidence, and it must report every removal.
 - Do not implement verifier-suggested `deterministic_last_resort` as regex
    repair unless the backlog is updated with cross-document evidence that
    prompt/model/operation-contract/safety-application paths cannot solve the
@@ -79,6 +93,7 @@ Use this map to decide where a defect belongs before writing code:
 | Defect | Owning layer | Allowed mechanism | Not allowed |
 | --- | --- | --- | --- |
 | Old page numbers, running headers, footers | `reader_cleanup_mvp` | AI-selected bounded operations: `delete_block` for standalone furniture, `remove_inline_noise` for exact inline furniture | Global number deletion, document-specific phrases, regexes for this book |
+| Obvious source-side page furniture before translation | extraction/preparation or a dedicated audited source-cleanup step | Remove only standalone page numbers, blank-page markers, technical placeholders, or repeated page-boundary headers with reliable source evidence and a removal report | Source prose rewriting, unique heading deletion, document-specific phrase lists, source-level AI rewriting, or anything difficult to audit |
 | Heading fused with body text | `reader_cleanup_mvp` | `normalize_heading_boundary`, `split_block`, or composed exact operations after removing page furniture | Deterministic heading detection, invented heading/body text, unaccounted source text |
 | TOC page numbers / generated TOC fidelity | not a target for this reader-first repair backlog | Delete or ignore TOC page numbers when they harm reader output; optionally drop TOC as text in an explicit reader profile | Rebuilding a correct translated TOC, preserving original page numbers, or treating TOC reconstruction as acceptance-critical |
 | Footnote markers/footnote blocks | `reader_cleanup_mvp` only after explicit MVP policy | `delete_block` or `remove_inline_noise` with exact evidence and a `drop_footnotes`/equivalent policy | Silent deletion of semantic numbers, numbered lists, citations needed by the selected mode |
@@ -116,6 +131,10 @@ Work must be split by owner:
    - Fix old page numbers, running headers/footers, page-furniture glued into
       prose, heading/body fusion, fragmented paragraphs, and reader-visible list
       marker cleanup.
+   - Current May 26 evidence suggests no further runtime safety expansion should
+      be made before testing source-side cleanup. Keep PR-H runtime stable while
+      the next iteration measures whether pre-translation source cleanup reduces
+      the raw translated noise that PR-H currently has to repair.
    - TOC reconstruction is out of scope. Only remove/ignore TOC page numbers or
       drop TOC as ordinary text when an explicit reader profile allows it.
    - Do not touch image reinsertion, bold/italic/style preservation, or verifier
@@ -142,11 +161,16 @@ owner, it must record the evidence and stop instead of broadening the PR.
 
 ### Remaining PRs In Plain Words
 
-- **Finish PR-H first.** Continue PR-H while the output still has old page
-   furniture, fused headings, duplicate fragments, or broken paragraphs that can
-   be handled by AI-proposed bounded cleanup operations. Start with prompt/model
-   discipline and safety acceptance for exact AI proposals; do not move to PR-I
-   just because formatting is imperfect.
+- **Stabilize input before widening PR-H.** Continue PR-H only where AI-proposed
+   bounded cleanup operations are valid but rejected too narrowly. The next
+   planned iteration should instead test whether obvious source-side page
+   furniture can be removed before translation so the post-translation cleanup
+   receives less noisy raw Markdown. Do not keep adding runtime guards to chase
+   translated forms that should not have reached translation.
+- **Finish PR-H after source cleanup evidence.** If pre-translation cleanup does
+   not reduce reader-visible noise, return to prompt/model discipline for PR-H.
+   If it helps, keep PR-H as the post-translation polish layer and avoid turning
+   it into a source-noise recovery engine.
 - **Start PR-I after PR-H is stable.** PR-I begins when comparison-only runs
    consistently produce readable text with no false deletions/readability
    regressions, and the main remaining pain is book-like formatting: bold,
@@ -162,6 +186,79 @@ owner, it must record the evidence and stop instead of broadening the PR.
    findings, and explain ignored cleanup reasons, but it must not repair output.
 
 ## Latest Evidence To Preserve
+
+### May 26 Cleanup Replay Evidence
+
+Use these numbers as the comparison baseline for the next iteration:
+
+- best full comparison-only baseline remains `20260525T140558Z_1207` with
+   `reader_verifier_remaining_issue_count=16` and no false deletion/readability
+   regression reports;
+- later full repeats after PR-H safety work were worse but safe:
+   `20260525T154237Z_1231` had 25 remaining issues and
+   `20260525T154728Z_1745` had 22 remaining issues, both with false deletion and
+   readability regression statuses `none_reported`;
+- frozen cleanup replay on `20260525_185154...raw.result.md` showed current
+   prompt values `29/32/32`, mean `31.0`, and repeated the same broad unsafe
+   `remove_inline_noise` proposal in all 3 repeats;
+- `decomposition_first` replay values were `26/33/26`, mean `28.333`, with
+   broad unsafe `remove_inline_noise` count `0/0/0`; it is promising but not
+   stable enough for production;
+- `anchor_focused` replay values were `26/32/32`, mean `30.0`, with heading
+   issues `10/10/11`, but mixed-language leaks and broad unsafe proposals still
+   appeared;
+- current replay controls on different frozen translated inputs were
+   `164842 -> 34` and `184704 -> 28`, which indicates that translated raw input
+   shape is a major driver of output quality.
+
+Interpretation: do not ship a prompt-only production switch yet, and do not add
+more runtime safety relaxations. The next evidence-producing slice should test
+whether removing obvious source-side page furniture before translation makes the
+translated raw Markdown more consistent and easier for the existing reader
+cleanup pass to polish.
+
+### Next Iteration: Audited Source Cleanup Before Translation
+
+Goal: reduce translated layout noise before it becomes unstable Russian text,
+without broad source rewriting and without weakening post-translation cleanup
+safety.
+
+Required experiment shape:
+
+1. Add or use a diagnostic path that runs the selected chapter-region profile
+    with an audited source-cleanup step before translation.
+2. Source cleanup may remove only high-confidence non-semantic artifacts:
+    standalone page numbers, blank-page markers, extraction placeholders, and
+    repeated running headers/footers when reliable source page-boundary or
+    repetition evidence exists.
+3. Source cleanup must write a report with removed items and kept-uncertain
+    items. Examples like `2. 19` must be kept unless the source evidence makes
+    them clearly non-semantic.
+4. Run the normal translation path and the existing post-translation AI reader
+    cleanup after that source cleanup.
+5. Compare the new artifacts with the preserved baselines above. Do not judge by
+    one metric only; inspect raw translated Markdown, cleaned Markdown, cleanup
+    reports, and verifier summaries.
+
+Success criteria for this iteration:
+
+- no false deletions and no readability regressions;
+- source cleanup report is reviewable and contains no unique heading/prose
+   deletion;
+- translated raw Markdown has fewer page headers/page numbers embedded in prose
+   than the `154237` and `154728` runs;
+- final cleaned output is at least competitive with the best baseline:
+   target `remaining_issue_count <= 16`, or a clear qualitative improvement with
+   fewer high-severity reader-visible blockers if a few minor issues remain;
+- `mixed_language_leak=0` or clearly reduced versus the fresh repeats;
+- `page_furniture_inline` and `heading_fused_with_body` do not regress versus
+   the best full baseline;
+- post-translation cleanup still rejects broad heading-eating
+   `remove_inline_noise` proposals.
+
+Stop and do not promote the approach if source cleanup deletes unique semantic
+text, requires document-specific phrase lists, hides cleanup inside validation,
+or only improves numbers by making verifier evidence less complete.
 
 Latest comparison-only run:
 

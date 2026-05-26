@@ -15,6 +15,7 @@ _SUPPORTED_STRUCTURAL_MODES = {"strict", "tolerant"}
 _STRUCTURE_RECOGNITION_MODES = {"off", "auto", "always"}
 _STRUCTURAL_EXPECTATION_VALUES = {"pass", "fail"}
 _TRANSLATION_QUALITY_GATE_POLICIES = {"strict", "advisory"}
+_LAYOUT_ARTIFACT_CLEANUP_MODES = {"flag", "remove"}
 
 
 @dataclass(frozen=True)
@@ -83,6 +84,7 @@ class RunProfile:
     translation_domain: str | None = None
     audiobook_postprocess_enabled: bool | None = None
     reader_cleanup_enabled: bool | None = None
+    reader_verifier_enabled: bool | None = None
     reader_cleanup_model: str | None = None
     reader_cleanup_chunk_size: int | None = None
     reader_cleanup_global_plan_enabled: bool | None = None
@@ -101,6 +103,7 @@ class RunProfile:
     structure_recovery_topology_projection_layout_signals_enabled: bool | None = None
     structure_recovery_topology_projection_binding_splits_enabled: bool | None = None
     translation_output_quality_gate_policy: str | None = None
+    layout_artifact_cleanup_mode: str | None = None
     repeat_count: int = 1
 
 
@@ -265,6 +268,7 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         "translation_domain": run_profile.translation_domain,
         "audiobook_postprocess_enabled": run_profile.audiobook_postprocess_enabled,
         "reader_cleanup_enabled": run_profile.reader_cleanup_enabled,
+        "reader_verifier_enabled": run_profile.reader_verifier_enabled,
         "reader_cleanup_model": run_profile.reader_cleanup_model,
         "reader_cleanup_chunk_size": run_profile.reader_cleanup_chunk_size,
         "reader_cleanup_global_plan_enabled": run_profile.reader_cleanup_global_plan_enabled,
@@ -323,8 +327,13 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
     if run_profile.translation_output_quality_gate_policy is not None:
         app_config_overrides["translation_output_quality_gate_policy"] = run_profile.translation_output_quality_gate_policy
         overrides["translation_output_quality_gate_policy"] = run_profile.translation_output_quality_gate_policy
+    if run_profile.layout_artifact_cleanup_mode is not None:
+        app_config_overrides["layout_artifact_cleanup_mode"] = run_profile.layout_artifact_cleanup_mode
+        overrides["layout_artifact_cleanup_mode"] = run_profile.layout_artifact_cleanup_mode
     if run_profile.reader_cleanup_enabled is not None:
         app_config_overrides["reader_cleanup_enabled"] = run_profile.reader_cleanup_enabled
+    if run_profile.reader_verifier_enabled is not None:
+        app_config_overrides["reader_verifier_enabled"] = run_profile.reader_verifier_enabled
     if run_profile.reader_cleanup_model is not None:
         app_config_overrides["reader_cleanup_model"] = run_profile.reader_cleanup_model
     if run_profile.reader_cleanup_chunk_size is not None:
@@ -463,6 +472,12 @@ def _build_run_profile(payload: Any) -> RunProfile:
             "Unsupported translation_output_quality_gate_policy: "
             f"{translation_output_quality_gate_policy}"
         )
+    layout_artifact_cleanup_mode = _optional_str(payload, "layout_artifact_cleanup_mode")
+    if layout_artifact_cleanup_mode is not None and layout_artifact_cleanup_mode not in _LAYOUT_ARTIFACT_CLEANUP_MODES:
+        raise RuntimeError(
+            "Unsupported layout_artifact_cleanup_mode: "
+            f"{layout_artifact_cleanup_mode}"
+        )
     return RunProfile(
         id=_require_str(payload, "id"),
         tier=tier,
@@ -478,6 +493,7 @@ def _build_run_profile(payload: Any) -> RunProfile:
         translation_domain=_optional_str(payload, "translation_domain"),
         audiobook_postprocess_enabled=_optional_bool(payload, "audiobook_postprocess_enabled"),
         reader_cleanup_enabled=_optional_bool(payload, "reader_cleanup_enabled"),
+        reader_verifier_enabled=_optional_bool(payload, "reader_verifier_enabled"),
         reader_cleanup_model=_optional_str(payload, "reader_cleanup_model"),
         reader_cleanup_chunk_size=_optional_int(payload, "reader_cleanup_chunk_size"),
         reader_cleanup_global_plan_enabled=_optional_bool(payload, "reader_cleanup_global_plan_enabled"),
@@ -502,6 +518,7 @@ def _build_run_profile(payload: Any) -> RunProfile:
             "structure_recovery_topology_projection_binding_splits_enabled",
         ),
         translation_output_quality_gate_policy=translation_output_quality_gate_policy,
+        layout_artifact_cleanup_mode=layout_artifact_cleanup_mode,
         repeat_count=repeat_count,
     )
 

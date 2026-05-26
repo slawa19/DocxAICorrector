@@ -137,6 +137,58 @@ def test_ai_first_signal_mode_flags_repeated_artifacts_without_removal():
     assert {decision.action for decision in report.decisions[1:]} == {"flag"}
 
 
+def test_remove_mode_removes_high_confidence_source_artifacts_and_preserves_semantic_text():
+    paragraphs = [
+        _paragraph("1", source_index=0),
+        _paragraph("This page intentionally left blank", source_index=1),
+        _paragraph("[[DOCX_IMAGE_img_001]]", source_index=2),
+        _paragraph("Real body paragraph.", source_index=3),
+        _paragraph("Introduction", source_index=4),
+        _paragraph("Introduction", source_index=5),
+    ]
+
+    cleaned, report = clean_paragraph_layout_artifacts(
+        paragraphs,
+        cleanup_mode="remove",
+        min_repeat_count=3,
+    )
+
+    assert [paragraph.text for paragraph in cleaned] == [
+        "Real body paragraph.",
+        "Introduction",
+        "Introduction",
+    ]
+    assert report.cleanup_mode == "remove"
+    assert report.removed_page_number_count == 1
+    assert report.removed_repeated_artifact_count == 2
+    assert report.removed_paragraph_count == 3
+    removed_reasons = {decision.reason for decision in report.decisions if decision.action == "remove"}
+    assert removed_reasons == {"page_number_pattern", "blank_page_marker", "extraction_artifact"}
+
+
+def test_keeps_uncertain_repeated_artifact_examples_for_review():
+    paragraphs = [
+        _paragraph("Introduction", source_index=0),
+        _paragraph("Introduction", source_index=1),
+        _paragraph("Real body paragraph.", source_index=2),
+    ]
+
+    cleaned, report = clean_paragraph_layout_artifacts(
+        paragraphs,
+        cleanup_mode="remove",
+        min_repeat_count=3,
+    )
+
+    assert [paragraph.text for paragraph in cleaned] == [
+        "Introduction",
+        "Introduction",
+        "Real body paragraph.",
+    ]
+    uncertain = [decision for decision in report.decisions if decision.reason == "uncertain_repeated_artifact"]
+    assert len(uncertain) == 2
+    assert {decision.confidence for decision in uncertain} == {"low"}
+
+
 def test_disabled_mode_returns_original_list_and_report():
     paragraphs = [_paragraph("1")]
 

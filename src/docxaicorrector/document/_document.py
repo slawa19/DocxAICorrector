@@ -98,7 +98,7 @@ EXTRACTION_COMPATIBILITY_OVERRIDE_TARGETS = (
 )
 
 
-def _resolve_layout_artifact_cleanup_settings(*, app_config=None) -> tuple[bool, int, int, bool]:
+def _resolve_layout_artifact_cleanup_settings(*, app_config=None) -> tuple[bool, int, int, bool, str]:
     return _document_extraction._resolve_layout_artifact_cleanup_settings(app_config=app_config)
 
 

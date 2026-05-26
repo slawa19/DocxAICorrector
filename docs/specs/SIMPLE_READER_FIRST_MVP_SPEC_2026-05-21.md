@@ -112,7 +112,9 @@ Preferred path:
 4. keep deterministic code as a safety layer that can reject unsafe AI proposals;
 5. improve exact-match application for AI-proposed operations when safety
   evidence shows the operation was valid but rejected too narrowly;
-6. rerun the same comparison-only profile and inspect raw vs cleaned artifacts.
+6. reduce obvious source-side page furniture before translation when reliable
+  source evidence exists, so the translation model receives less layout noise;
+7. rerun the same comparison-only profile and inspect raw vs cleaned artifacts.
 
 Any proposed deterministic cleanup change must state which role it plays:
 `signal_only`, `safety_guard`, `exact_match_application`, or
@@ -281,7 +283,16 @@ source PDF/DOCX
 
 ### Pre-Translation Cleanup
 
-До перевода MVP должен использовать только безопасную deterministic-чистку.
+До перевода MVP должен использовать только безопасную, audited source cleanup.
+Its purpose is not to repair reading order, reconstruct chapters, or make the
+source look polished. Its purpose is to prevent obvious extraction/page-layout
+noise from being translated into harder-to-recognize target-language text.
+
+This stage is deliberately stricter than post-translation reader cleanup. It may
+remove or isolate only source-side material with strong non-semantic evidence,
+such as repeated page-boundary furniture or standalone extraction artifacts. If
+the evidence is ambiguous, keep the text and let post-translation cleanup handle
+it later.
 
 Allowed:
 
@@ -289,11 +300,22 @@ Allowed:
 - очевидные page numbers;
 - явные PDF blank-page markers;
 - технические placeholders и extraction artifacts.
+- repeated running headers / footers only when the source preparation or
+  extraction layer exposes reliable page-boundary/repetition evidence for that
+  exact source path;
+- diagnostic-only source cleanup reports that list every removed item, retained
+  uncertain item, reason, and evidence.
 
 Repeated running headers / footers are not a generic Markdown-level pre-cleanup
 promise in MVP because page boundaries are usually unavailable after extraction.
 They may be removed before translation only if the existing extraction layer
 already exposes reliable page-boundary evidence for that exact source path.
+
+The source cleanup report must be reviewable. A minimal record for each removed
+item should include the original text, source position/page evidence if known,
+reason, and why the item is non-semantic. A minimal record for retained uncertain
+items should explain why it was not safe to remove, for example because `2.` may
+be either a real list marker or page residue.
 
 Forbidden in MVP:
 
@@ -302,7 +324,27 @@ Forbidden in MVP:
 - распознавание chapter structure;
 - merge/split heading fragments;
 - TOC reconstruction;
-- любые source-level операции, которые трудно откатить после удаления.
+- любые source-level операции, которые трудно откатить после удаления;
+- deleting unique headings, captions, list items, quotes, or prose because they
+  look inconvenient for translation;
+- using document-specific phrase lists or regexes as the main source-cleanup
+  mechanism.
+
+The recommended experiment path for the next quality slice is:
+
+```text
+source PDF/DOCX
+  -> extraction/preparation with page-boundary evidence where available
+  -> audited source cleanup for obvious page furniture only
+  -> translation
+  -> post-translation AI reader cleanup
+  -> raw/cleaned comparison against previous runs
+```
+
+Success is not defined as zero remaining issues. It is defined as a more
+consistent readable artifact: fewer translated page headers inside prose, fewer
+heading/body fusions caused by translated running headers, no false deletions,
+and a cleaner raw input for the existing post-translation cleanup pass.
 
 ### Translation
 
@@ -734,11 +776,19 @@ This rule is especially strict for deterministic cleanup. New deterministic
 rules must not become the default mechanism for adapting to each new document.
 For reader-visible defects, prefer this order:
 
-1. improve the AI prompt;
-2. use a stronger configured cleanup/verifier model;
-3. add or refine a bounded AI operation type;
-4. improve code-side safety/application for AI proposals;
-5. only then add a document-agnostic deterministic cleanup rule.
+1. remove or isolate obvious source-side page furniture before translation when
+  reliable source evidence exists;
+2. improve the AI prompt;
+3. use a stronger configured cleanup/verifier model;
+4. add or refine a bounded AI operation type;
+5. improve code-side safety/application for AI proposals;
+6. only then add a document-agnostic deterministic cleanup rule.
+
+Do not treat post-translation cleanup as the only place where all layout noise
+must be fixed. Once a repeated header or page number has been translated, it may
+change wording and punctuation between runs, which makes later cleanup less
+stable. Prefer removing only high-confidence source-side noise before
+translation, then let the AI reader cleanup pass polish the translated artifact.
 
 If a verifier suggests `deterministic_last_resort`, treat that as a diagnostic
 signal, not implementation approval. Before coding any regex-repair pass, first

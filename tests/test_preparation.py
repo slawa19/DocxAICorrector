@@ -222,7 +222,7 @@ def test_prepare_document_for_processing_normalizes_layout_cleanup_cache_key(mon
 
     assert calls["count"] == 1
     assert first.prepared_source_key == second.prepared_source_key
-    assert first.prepared_source_key.endswith(":lc=1:2:80:sr=off:srec=0:ai_first:c1")
+    assert first.prepared_source_key.endswith(":lc=1:2:80:flag:sr=off:srec=0:ai_first:c1")
 
 
 def test_prepare_document_for_processing_passes_app_config_to_extraction(monkeypatch):
@@ -632,9 +632,50 @@ def test_run_document_topology_projection_stage_builds_and_threads_layout_signal
     )
     artifact_dir = tmp_path / "document_topology"
     fake_layout_signals = SimpleNamespace(
+        schema_version=1,
         body_baseline_pt=12.0,
-        tiers=(SimpleNamespace(is_heading_candidate=False), SimpleNamespace(is_heading_candidate=True)),
+        body_baseline_tolerance_pt=0.5,
+        tiers=(
+            SimpleNamespace(
+                tier_id="body",
+                representative_pt=12.0,
+                member_logical_indexes=(11,),
+                is_body_baseline=True,
+                is_heading_candidate=False,
+            ),
+            SimpleNamespace(
+                tier_id="heading",
+                representative_pt=18.0,
+                member_logical_indexes=(10,),
+                is_body_baseline=False,
+                is_heading_candidate=True,
+            ),
+        ),
         heading_ratio=1.2,
+        records_by_logical_index={
+            10: SimpleNamespace(
+                tier_id="heading",
+                is_heading_tier=True,
+                is_body_tier=False,
+                font_size_pt=18.0,
+                page_number=1,
+                vertical_gap_before_pt=0.0,
+                is_first_on_page=True,
+                is_short_line=True,
+                is_above_baseline=True,
+            ),
+            11: SimpleNamespace(
+                tier_id="body",
+                is_heading_tier=False,
+                is_body_tier=True,
+                font_size_pt=12.0,
+                page_number=1,
+                vertical_gap_before_pt=4.0,
+                is_first_on_page=False,
+                is_short_line=False,
+                is_above_baseline=False,
+            ),
+        },
     )
     captured_apply_kwargs: dict[str, object] = {}
     captured_events: list[tuple[str, dict[str, object]]] = []
@@ -1661,8 +1702,8 @@ def test_prepare_document_for_processing_cache_key_changes_with_ai_review_mode(m
 
     assert calls["count"] == 2
     assert list(session_state["preparation_cache"].keys()) == [
-        "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=off:srec=0:ai_first:c1",
-        "report.docx:10:hash:6000:high_only:review_only:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=off:srec=0:ai_first:c1",
+        "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:flag:sr=off:srec=0:ai_first:c1",
+        "report.docx:10:hash:6000:high_only:review_only:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:flag:sr=off:srec=0:ai_first:c1",
     ]
 
 
@@ -1709,7 +1750,7 @@ def test_prepare_document_for_processing_jobs_include_narration_metadata_without
 
     assert [job["narration_include"] for job in prepared.jobs] == [False, True]
     assert list(session_state["preparation_cache"].keys()) == [
-        "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:sr=off:srec=0:ai_first:c1"
+        "report.docx:10:hash:6000:high_only:off:phase2_default:epigraph_attribution,image_caption,table_caption,toc_region:lc=1:3:80:flag:sr=off:srec=0:ai_first:c1"
     ]
 
 
@@ -2783,7 +2824,7 @@ def test_prepare_document_for_processing_passes_document_map_into_structure_reco
         ),
     )
 
-    def _fake_build_structure_map(paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, topology_projection=None, preview_chars, target_input_tokens, timeout_retry_multiplier, timeout_retry_max_seconds, split_fallback_max_depth, split_fallback_max_expansions, progress_callback):
+    def _fake_build_structure_map(paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, topology_projection=None, preview_chars, target_input_tokens, timeout_retry_multiplier, timeout_retry_max_seconds, split_fallback_max_depth, split_fallback_max_expansions, progress_callback, save_debug_artifacts=True, artifact_cache_key=None):
         captured["document_map"] = document_map
         captured["preview_chars"] = preview_chars
         captured["target_input_tokens"] = target_input_tokens
@@ -2850,7 +2891,7 @@ def test_prepare_document_for_processing_uses_anchored_window_profile_when_docum
         ),
     )
 
-    def _fake_build_structure_map(paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, topology_projection=None, preview_chars, target_input_tokens, timeout_retry_multiplier, timeout_retry_max_seconds, split_fallback_max_depth, split_fallback_max_expansions, progress_callback):
+    def _fake_build_structure_map(paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, topology_projection=None, preview_chars, target_input_tokens, timeout_retry_multiplier, timeout_retry_max_seconds, split_fallback_max_depth, split_fallback_max_expansions, progress_callback, save_debug_artifacts=True, artifact_cache_key=None):
         captured["max_window_paragraphs"] = max_window_paragraphs
         captured["overlap_paragraphs"] = overlap_paragraphs
         captured["preview_chars"] = preview_chars
@@ -2931,7 +2972,7 @@ def test_prepare_document_for_processing_uses_anchored_min_confidence_when_docum
     monkeypatch.setattr(
         preparation,
         "build_structure_map",
-        lambda paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, topology_projection=None, preview_chars, target_input_tokens, timeout_retry_multiplier, timeout_retry_max_seconds, split_fallback_max_depth, split_fallback_max_expansions, progress_callback: StructureMap(
+        lambda paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, topology_projection=None, preview_chars, target_input_tokens, timeout_retry_multiplier, timeout_retry_max_seconds, split_fallback_max_depth, split_fallback_max_expansions, progress_callback, save_debug_artifacts=True, artifact_cache_key=None: StructureMap(
             classifications={0: ParagraphClassification(index=0, role="heading", heading_level=1, confidence="high")},
             model_used=model,
             total_tokens_used=12,
@@ -3003,7 +3044,7 @@ def test_prepare_document_for_processing_reconciles_high_confidence_document_map
     monkeypatch.setattr(
         preparation,
         "build_structure_map",
-        lambda paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, topology_projection=None, preview_chars, target_input_tokens, timeout_retry_multiplier, timeout_retry_max_seconds, split_fallback_max_depth, split_fallback_max_expansions, progress_callback: StructureMap(
+        lambda paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, topology_projection=None, preview_chars, target_input_tokens, timeout_retry_multiplier, timeout_retry_max_seconds, split_fallback_max_depth, split_fallback_max_expansions, progress_callback, save_debug_artifacts=True, artifact_cache_key=None: StructureMap(
             classifications={10: ParagraphClassification(index=10, role="body", heading_level=None, confidence="high")},
             model_used=model,
             total_tokens_used=12,
@@ -3074,7 +3115,7 @@ def test_prepare_document_for_processing_invokes_targeted_reconciliation_when_ga
     monkeypatch.setattr(
         preparation,
         "build_structure_map",
-        lambda paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, topology_projection=None, preview_chars, target_input_tokens, timeout_retry_multiplier, timeout_retry_max_seconds, split_fallback_max_depth, split_fallback_max_expansions, progress_callback: StructureMap(
+        lambda paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, topology_projection=None, preview_chars, target_input_tokens, timeout_retry_multiplier, timeout_retry_max_seconds, split_fallback_max_depth, split_fallback_max_expansions, progress_callback, save_debug_artifacts=True, artifact_cache_key=None: StructureMap(
             classifications={
                 10: ParagraphClassification(index=10, role="body", heading_level=None, confidence="high"),
                 11: ParagraphClassification(index=11, role="body", heading_level=None, confidence="high"),
@@ -3210,7 +3251,7 @@ def test_run_structure_recognition_applies_final_reconciled_map_after_targeted_r
     monkeypatch.setattr(
         preparation,
         "build_structure_map",
-        lambda paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, topology_projection=None, preview_chars, target_input_tokens, timeout_retry_multiplier, timeout_retry_max_seconds, split_fallback_max_depth, split_fallback_max_expansions, progress_callback: initial_structure_map,
+        lambda paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, topology_projection=None, preview_chars, target_input_tokens, timeout_retry_multiplier, timeout_retry_max_seconds, split_fallback_max_depth, split_fallback_max_expansions, progress_callback, save_debug_artifacts=True, artifact_cache_key=None: initial_structure_map,
     )
 
     def _fake_reconcile(paragraphs, document_map, structure_map, topology_projection=None):
@@ -3332,6 +3373,8 @@ def test_run_structure_recognition_emits_neutral_split_progress_detail_and_metri
         split_fallback_max_depth,
         split_fallback_max_expansions,
         progress_callback,
+        save_debug_artifacts=True,
+        artifact_cache_key=None,
     ):
         progress_callback(
             recognition_module.StructureRecognitionProgress(
@@ -5174,6 +5217,8 @@ def test_prepare_document_for_processing_falls_back_to_legacy_non_anchored_stage
         split_fallback_max_depth,
         split_fallback_max_expansions,
         progress_callback,
+        save_debug_artifacts=True,
+        artifact_cache_key=None,
     ):
         captured["document_map"] = document_map
         captured["max_window_paragraphs"] = max_window_paragraphs
@@ -5714,7 +5759,7 @@ def test_prepare_document_for_processing_compact_ai_first_integration_uses_post_
     monkeypatch.setattr(
         preparation,
         "build_structure_map",
-        lambda paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, topology_projection=None, preview_chars, target_input_tokens, timeout_retry_multiplier, timeout_retry_max_seconds, split_fallback_max_depth, split_fallback_max_expansions, progress_callback: StructureMap(
+        lambda paragraphs, *, client, model, max_window_paragraphs, overlap_paragraphs, timeout, document_map, topology_projection=None, preview_chars, target_input_tokens, timeout_retry_multiplier, timeout_retry_max_seconds, split_fallback_max_depth, split_fallback_max_expansions, progress_callback, save_debug_artifacts=True, artifact_cache_key=None: StructureMap(
             classifications={
                 3: ParagraphClassification(index=3, role="body", heading_level=None, confidence="high"),
                 4: ParagraphClassification(index=4, role="body", heading_level=None, confidence="high"),

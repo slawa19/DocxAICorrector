@@ -178,6 +178,8 @@ class LayoutArtifactCleanupDecision:
     confidence: str
     normalized_text: str
     repeat_count: int = 1
+    page_number: int | None = None
+    layout_origin: str = "paragraph"
 
 
 @dataclass
@@ -196,6 +198,7 @@ class LayoutArtifactCleanupReport:
     flagged_page_number_count: int = 0
     flagged_repeated_artifact_count: int = 0
     flagged_empty_or_whitespace_count: int = 0
+    artifact_path: str | None = None
 
 
 @dataclass(frozen=True)

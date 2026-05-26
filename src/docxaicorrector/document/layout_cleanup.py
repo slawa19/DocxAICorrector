@@ -10,6 +10,7 @@ from pathlib import Path
 from docxaicorrector.core.logger import log_event
 from docxaicorrector.core.models import LayoutArtifactCleanupDecision, LayoutArtifactCleanupReport, ParagraphUnit
 from docxaicorrector.runtime.artifact_retention import prune_artifact_dir
+from docxaicorrector.structure.page_furniture_detection import detect_page_furniture_hits
 
 
 DEFAULT_MIN_REPEAT_COUNT = 3
@@ -42,6 +43,11 @@ BOILERPLATE_TOKENS = {
 PROTECTED_ROLES = {"heading", "caption", "list", "table", "image"}
 PROTECTED_STRUCTURAL_ROLES = {"toc_header", "toc_entry", "epigraph", "attribution", "dedication"}
 TERMINAL_PUNCTUATION = (".", "!", "?", "\u2026")
+_EXTRACTION_ARTIFACT_PATTERN = re.compile(
+    r"^(?:\[\[DOCX_[A-Za-z0-9_]+\]\]|\[\[IMAGE_[A-Za-z0-9_]+\]\]|\[\[DOCX_IMAGE_[A-Za-z0-9_]+\]\]|</?placeholder>|---+|===+)$",
+    re.IGNORECASE,
+)
+_SUPPORTED_CLEANUP_MODES = {"flag", "remove"}
 
 
 def clean_paragraph_layout_artifacts(
@@ -50,20 +56,25 @@ def clean_paragraph_layout_artifacts(
     enabled: bool = True,
     min_repeat_count: int = DEFAULT_MIN_REPEAT_COUNT,
     max_repeated_text_chars: int = DEFAULT_MAX_REPEATED_TEXT_CHARS,
+    cleanup_mode: str = "flag",
     structure_recovery_enabled: bool = False,
     structure_recovery_mode: str = "legacy",
 ) -> tuple[list[ParagraphUnit], LayoutArtifactCleanupReport]:
+    resolved_mode = str(cleanup_mode or "flag").strip().lower() or "flag"
+    if resolved_mode not in _SUPPORTED_CLEANUP_MODES:
+        resolved_mode = "flag"
     if not enabled:
         report = _empty_report(
             paragraphs,
             cleanup_applied=False,
             skipped_reason="disabled",
+            cleanup_mode=resolved_mode,
         )
         _log_cleanup_outcome(report)
         return paragraphs, report
 
     try:
-        signal_only = True
+        signal_only = resolved_mode != "remove"
         return _clean_paragraph_layout_artifacts(
             paragraphs,
             min_repeat_count=max(2, int(min_repeat_count or DEFAULT_MIN_REPEAT_COUNT)),
@@ -76,6 +87,7 @@ def clean_paragraph_layout_artifacts(
             cleanup_applied=False,
             skipped_reason="cleanup_failed",
             error_code="unexpected_paragraph_shape",
+            cleanup_mode=resolved_mode,
         )
         _log_cleanup_outcome(report, error_message=str(exc))
         return paragraphs, report
@@ -85,6 +97,7 @@ def clean_paragraph_layout_artifacts(
             cleanup_applied=False,
             skipped_reason="cleanup_failed",
             error_code="cleanup_runtime_error",
+            cleanup_mode=resolved_mode,
         )
         _log_cleanup_outcome(report, error_message=str(exc))
         return paragraphs, report
@@ -141,6 +154,20 @@ def _clean_paragraph_layout_artifacts(
                 flagged_empty += 1
             else:
                 removed_empty += 1
+        elif _is_blank_page_marker_artifact(paragraph):
+            action = "flag" if signal_only else "remove"
+            reason = "blank_page_marker"
+            if signal_only:
+                flagged_repeated += 1
+            else:
+                removed_repeated += 1
+        elif _is_extraction_artifact(paragraph):
+            action = "flag" if signal_only else "remove"
+            reason = "extraction_artifact"
+            if signal_only:
+                flagged_repeated += 1
+            else:
+                removed_repeated += 1
         elif _is_page_number_artifact(paragraph):
             action = "flag" if signal_only else "remove"
             reason = "page_number_pattern"
@@ -164,6 +191,8 @@ def _clean_paragraph_layout_artifacts(
                     flagged_repeated += 1
                 else:
                     removed_repeated += 1
+        elif index in candidate_indexes and repeat_count > 1:
+            reason = "uncertain_repeated_artifact"
 
         decisions.append(
             _build_decision(
@@ -221,6 +250,30 @@ def _is_page_number_artifact(paragraph: ParagraphUnit) -> bool:
     if _has_list_metadata(paragraph):
         return False
     return any(pattern.match(text) for pattern in PAGE_NUMBER_PATTERNS)
+
+
+def _is_blank_page_marker_artifact(paragraph: ParagraphUnit) -> bool:
+    text = str(paragraph.text or "").strip()
+    if not text or _is_protected(paragraph):
+        return False
+    hits = detect_page_furniture_hits(text)
+    if not hits:
+        return False
+    return any(
+        hit.kind in {"blank_page_marker", "intentionally_blank_marker"}
+        and hit.start == 0
+        and hit.end == len(hit.normalized_text)
+        for hit in hits
+    )
+
+
+def _is_extraction_artifact(paragraph: ParagraphUnit) -> bool:
+    text = str(paragraph.text or "").strip()
+    if not text or _is_protected(paragraph):
+        return False
+    if len(text) > DEFAULT_MAX_REPEATED_TEXT_CHARS:
+        return False
+    return _EXTRACTION_ARTIFACT_PATTERN.fullmatch(text) is not None
 
 
 def _is_repeated_artifact_candidate(
@@ -323,10 +376,14 @@ def _build_decision(
         confidence=_decision_confidence(action=action, reason=reason),
         normalized_text=normalized_text,
         repeat_count=repeat_count,
+        page_number=getattr(paragraph, "page_number", None),
+        layout_origin=str(getattr(paragraph, "layout_origin", "paragraph") or "paragraph"),
     )
 
 
 def _decision_confidence(*, action: str, reason: str) -> str:
+    if reason == "uncertain_repeated_artifact":
+        return "low"
     if action not in {"remove", "flag"}:
         return "medium"
     if reason in {"repeated_title_header", "repeated_running_header"}:
@@ -340,6 +397,7 @@ def _empty_report(
     cleanup_applied: bool,
     skipped_reason: str | None,
     error_code: str | None = None,
+    cleanup_mode: str = "remove",
 ) -> LayoutArtifactCleanupReport:
     return LayoutArtifactCleanupReport(
         original_paragraph_count=len(paragraphs),
@@ -352,7 +410,7 @@ def _empty_report(
         cleanup_applied=cleanup_applied,
         skipped_reason=skipped_reason,
         error_code=error_code,
-        cleanup_mode="remove",
+        cleanup_mode=cleanup_mode,
     )
 
 
