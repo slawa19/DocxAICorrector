@@ -246,6 +246,31 @@ MVP считается полезным, если cleaned artifact:
 - не удаляет главы или смысловые блоки без явного report evidence;
 - сохраняет raw artifact рядом с cleaned artifact для сравнения.
 
+MVP does not require zero remaining reader-visible issues. It is allowed to
+ship as a `readable_draft_not_acceptance_ready` result when the cleaned artifact
+is clearly easier to read than raw output, the remaining issues are reported,
+and the no-harm invariants hold.
+
+Hard no-harm invariants for MVP proof:
+
+- no verifier-reported false deletions;
+- no verifier-reported readability regressions;
+- no validation-owned repair or mutation of cleaned Markdown/DOCX;
+- no document-specific production regexes, phrase lists, or hidden deterministic
+  cleanup engines;
+- no failed reader-cleanup chunks in the comparison run used as proof.
+
+Reader-visible issue counts are comparison signals, not polish-to-zero targets.
+For the same document and run profile, top blocker categories should not grow
+between proof runs unless the run is explicitly classified as non-comparable
+because cleanup did not complete, the verifier did not run, or external provider
+failure prevented stable artifacts.
+
+The reader-first MVP can be closed for this phase after repeatable evidence on
+the selected proof document, plus at least one additional representative real
+document when available, shows `cleaned_better` or better, no-harm invariants,
+and no document-specific cleanup logic or acceptance-threshold tuning.
+
 ## Pre-Implementation Discovery Gate
 
 Before writing `reader_cleanup.py`, prove that the simplified base path is
@@ -876,7 +901,11 @@ Rules for comparison-only runs:
 - acceptance checks may still be recorded for diagnostics, but they are not the
   optimization target of this MVP loop;
 - conclusions from a comparison-only run must still be checked against false
-  deletions and protected-block safety.
+  deletions and protected-block safety;
+- a comparison-only run with failed reader-cleanup chunks is not a stable proof
+  run, even when the verifier can still produce an aggregate `cleaned_better`
+  verdict. Failed chunks must be fixed or the run must be classified as
+  non-comparable for per-category cleanup conclusions.
 
 If the normal acceptance run fails before cleanup executes, a comparison-only
 path may be used to answer the raw-vs-cleaned artifact question without
@@ -1523,7 +1552,9 @@ ambiguity:
   dropping remains a later explicit mode, not part of this verifier slice. TOC
   page-number correctness is not a goal; source page numbers may be removed in
   translated reader output because they become stale after translation/layout
-  changes.
+  changes. Verifier evidence may ignore TOC-only defects when TOC is explicitly
+  out of scope, but source cleanup must not delete TOC as a broad
+  pre-translation rewrite.
 - Bibliography / index / reference-tail removal remains off by default and is a
   separate explicit future mode, not part of the first verifier slice.
 - Cleanup safety thresholds stay locked at the current initial defaults (`3%`

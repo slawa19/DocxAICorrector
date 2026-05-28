@@ -2593,6 +2593,75 @@ def test_parse_reader_verifier_completed_review_accepts_structured_payload(tmp_p
     assert "Review confidence is medium" in review["simple_user_risk_statement"]
 
 
+def test_parse_reader_verifier_completed_review_dedupes_matching_pre_audit_issue(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    evidence_path = tmp_path / "reader_quality_evidence.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+    evidence_payload = _reader_verifier_test_evidence_payload()
+    evidence_payload["pre_audit_issue_counts"] = {
+        **evidence_payload["pre_audit_issue_counts"],
+        "heading_fused_with_body": 1,
+    }
+    evidence_payload["pre_audit_findings"] = [
+        {
+            "category": "heading_fused_with_body",
+            "artifact": "cleaned_markdown",
+            "line_ref": "cleaned_markdown:25",
+            "snippet": "СТРАТЕГИИ ДЛЯ ГОСУДАРСТВ Деньги — это рычаг власти.",
+            "note": "Detected heading-like uppercase text fused into running body prose.",
+        }
+    ]
+    evidence_payload["mandatory_review_targets"] = list(evidence_payload["pre_audit_findings"])
+    raw_response = _reader_verifier_test_response(
+        cleaned_audit_verdict="improved_but_has_remaining_issues",
+        remaining_issues=[
+            {
+                "category": "heading_fused_with_body",
+                "severity": "medium",
+                "artifact": "cleaned_markdown",
+                "line_ref": "25",
+                "snippet": "СТРАТЕГИИ ДЛЯ ГОСУДАРСТВ Деньги — это рычаг власти.",
+                "why_reader_hurts": "The chapter title is fused with the epigraph.",
+                "recommended_fix_type": "split_heading",
+            }
+        ],
+        evidence_anchors=[
+            {
+                "kind": "improvement_seen",
+                "artifact": "comparison",
+                "line_ref": "comparison:1",
+                "snippet": "Repeated running headers were removed.",
+                "note": "Concrete readability improvement anchor.",
+            },
+            {
+                "kind": "remaining_issue",
+                "artifact": "cleaned_markdown",
+                "line_ref": "25",
+                "snippet": "СТРАТЕГИИ ДЛЯ ГОСУДАРСТВ Деньги — это рычаг власти.",
+                "note": "The heading remains fused with body text.",
+            },
+        ],
+    )
+
+    review = validation._parse_reader_verifier_completed_review(
+        raw_response=raw_response,
+        run_id="run-1",
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        requested_selector="openrouter:google/gemini-3-flash-preview",
+        canonical_selector="openrouter:google/gemini-3-flash-preview",
+        provider="openrouter",
+        model_id="google/gemini-3-flash-preview",
+        evidence_path=evidence_path,
+        evidence_payload=evidence_payload,
+    )
+
+    assert len(review["remaining_issues"]) == 1
+    assert review["issue_summary_by_category"]["heading_fused_with_body"] == 1
+    assert review["pre_audit_issue_counts"]["heading_fused_with_body"] == 1
+
+
 def test_parse_reader_verifier_completed_review_normalizes_object_findings_to_strings(tmp_path) -> None:
     validation = _load_validation_module()
 
@@ -2893,6 +2962,169 @@ def test_parse_reader_verifier_completed_review_allows_raw_better_without_improv
     assert review["overall_verdict"] == "raw_better"
     assert review["cleaned_audit_verdict"] == "unsafe_or_regressed"
     assert review["remaining_issues"][0]["category"] == "heading_fused_with_body"
+
+
+def test_parse_reader_verifier_completed_review_ignores_malformed_improvement_anchor(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    evidence_path = tmp_path / "reader_quality_evidence.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+
+    review = validation._parse_reader_verifier_completed_review(
+        raw_response=_reader_verifier_test_response(
+            overall_verdict="cleaned_better",
+            cleaned_audit_verdict="clean",
+            noise_removed=["Repeated running headers are gone."],
+            remaining_issues=[],
+            evidence_anchors=[
+                {
+                    "kind": "improvement_seen",
+                    "artifact": "comparison",
+                    "line_ref": "",
+                    "snippet": "",
+                    "note": "",
+                }
+            ],
+        ),
+        run_id="run-1",
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        requested_selector="openrouter:google/gemini-3-flash-preview",
+        canonical_selector="openrouter:google/gemini-3-flash-preview",
+        provider="openrouter",
+        model_id="google/gemini-3-flash-preview",
+        evidence_path=evidence_path,
+        evidence_payload=_reader_verifier_test_evidence_payload(),
+    )
+
+    diagnostics = review["evidence_anchor_diagnostics"]
+    assert review["overall_verdict"] == "cleaned_better"
+    assert diagnostics["ignored_anchor_count"] == 1
+    assert diagnostics["ignored_kind_counts"]["improvement_seen"] == 1
+    assert diagnostics["repaired_anchor_counts"]["improvement_seen"] == 1
+    assert diagnostics["warnings"] == [
+        "reader_verifier_evidence_anchor_ignored_missing_required_text:index=0:kind=improvement_seen:artifact=comparison"
+    ]
+    assert any(anchor["kind"] == "improvement_seen" for anchor in review["evidence_anchors"])
+
+
+def test_parse_reader_verifier_completed_review_ignores_malformed_remaining_issue_anchor_and_restores_targets(
+    tmp_path,
+) -> None:
+    validation = _load_validation_module()
+
+    evidence_path = tmp_path / "reader_quality_evidence.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+
+    review = validation._parse_reader_verifier_completed_review(
+        raw_response=_reader_verifier_test_response(
+            overall_verdict="cleaned_better",
+            cleaned_audit_verdict="improved_but_has_remaining_issues",
+            remaining_issues=[
+                {
+                    "category": "heading_fused_with_body",
+                    "severity": "high",
+                    "artifact": "cleaned_markdown",
+                    "line_ref": "cleaned_markdown:14",
+                    "snippet": "200 ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ Наконец-то пришло осознание необходимости...",
+                    "why_reader_hurts": "The cleaned artifact still contains a heading glued into running prose.",
+                    "recommended_fix_type": "split_heading",
+                }
+            ],
+            evidence_anchors=[
+                {
+                    "kind": "improvement_seen",
+                    "artifact": "comparison",
+                    "line_ref": "comparison:1",
+                    "snippet": "Repeated running header removed.",
+                    "note": "One readability improvement is confirmed.",
+                },
+                {
+                    "kind": "remaining_issue",
+                    "artifact": "cleaned_markdown",
+                    "line_ref": "",
+                    "snippet": "",
+                    "note": "",
+                },
+            ],
+        ),
+        run_id="run-1",
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        requested_selector="openrouter:google/gemini-3-flash-preview",
+        canonical_selector="openrouter:google/gemini-3-flash-preview",
+        provider="openrouter",
+        model_id="google/gemini-3-flash-preview",
+        evidence_path=evidence_path,
+        evidence_payload=_reader_verifier_test_evidence_payload(pre_audit_issue_counts={"fragmented_paragraph": 1}),
+    )
+
+    diagnostics = review["evidence_anchor_diagnostics"]
+    assert review["overall_verdict"] == "cleaned_better"
+    assert diagnostics["ignored_anchor_count"] == 1
+    assert diagnostics["ignored_kind_counts"]["remaining_issue"] == 1
+    assert any(issue["category"] == "heading_fused_with_body" for issue in review["remaining_issues"])
+    assert any(issue["category"] == "fragmented_paragraph" for issue in review["remaining_issues"])
+    assert any(anchor["kind"] == "remaining_issue" for anchor in review["evidence_anchors"])
+
+
+def test_parse_reader_verifier_completed_review_ignores_unknown_remaining_issue_note_field(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    evidence_path = tmp_path / "reader_quality_evidence.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+
+    review = validation._parse_reader_verifier_completed_review(
+        raw_response=_reader_verifier_test_response(
+            overall_verdict="cleaned_better",
+            cleaned_audit_verdict="improved_but_has_remaining_issues",
+            remaining_issues=[
+                {
+                    "category": "heading_fused_with_body",
+                    "severity": "high",
+                    "artifact": "cleaned_markdown",
+                    "line_ref": "cleaned_markdown:93",
+                    "snippet": "КАК ЭТО РАБОТАЕТ. Местные органы власти ежегодно запрашивают...",
+                    "why_reader_hurts": "The cleaned artifact still contains a heading glued into running prose.",
+                    "recommended_fix_type": "split_heading",
+                    "note": "Useful verifier explanation that is outside the strict issue schema.",
+                }
+            ],
+            evidence_anchors=[
+                {
+                    "kind": "improvement_seen",
+                    "artifact": "comparison",
+                    "line_ref": "comparison:1",
+                    "snippet": "Repeated running header removed.",
+                    "note": "One readability improvement is confirmed.",
+                },
+                {
+                    "kind": "remaining_issue",
+                    "artifact": "cleaned_markdown",
+                    "line_ref": "cleaned_markdown:93",
+                    "snippet": "КАК ЭТО РАБОТАЕТ. Местные органы власти ежегодно запрашивают...",
+                    "note": "The heading/body boundary still needs cleanup.",
+                },
+            ],
+        ),
+        run_id="run-1",
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        requested_selector="openrouter:google/gemini-3-flash-preview",
+        canonical_selector="openrouter:google/gemini-3-flash-preview",
+        provider="openrouter",
+        model_id="google/gemini-3-flash-preview",
+        evidence_path=evidence_path,
+        evidence_payload=_reader_verifier_test_evidence_payload(),
+    )
+
+    diagnostics = review["remaining_issue_diagnostics"]
+    assert review["overall_verdict"] == "cleaned_better"
+    assert review["cleaned_audit_verdict"] == "improved_but_has_remaining_issues"
+    assert review["remaining_issues"][0]["category"] == "heading_fused_with_body"
+    assert "note" not in review["remaining_issues"][0]
+    assert diagnostics["ignored_unknown_field_counts"] == {"note": 1}
+    assert diagnostics["warnings"] == ["reader_verifier_remaining_issue_ignored_unknown_fields:index=0:fields=note"]
 
 
 def test_parse_reader_verifier_completed_review_downgrades_contradictory_removed_claim(tmp_path) -> None:

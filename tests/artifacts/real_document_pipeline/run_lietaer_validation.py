@@ -1836,6 +1836,41 @@ def _reader_verifier_remaining_issue_anchors(
     return anchors
 
 
+def _reader_verifier_improvement_anchors(
+    improvements: Sequence[str],
+    *,
+    existing_anchors: Sequence[Mapping[str, str]] = (),
+) -> list[dict[str, str]]:
+    anchors = [dict(anchor) for anchor in existing_anchors]
+    seen = {
+        (
+            str(anchor.get("kind") or ""),
+            str(anchor.get("line_ref") or ""),
+            str(anchor.get("snippet") or ""),
+        )
+        for anchor in anchors
+    }
+    for improvement in improvements:
+        snippet = _preview_text(str(improvement).strip())
+        if not snippet:
+            continue
+        key = ("improvement_seen", "comparison:diagnostic", snippet)
+        if key in seen:
+            continue
+        seen.add(key)
+        anchors.append(
+            {
+                "kind": "improvement_seen",
+                "artifact": "comparison",
+                "line_ref": "comparison:diagnostic",
+                "snippet": snippet,
+                "note": "Recovered improvement anchor from validated noise_removed text after dropping a malformed verifier anchor.",
+            }
+        )
+        break
+    return anchors
+
+
 def _merge_reader_verifier_missing_pre_audit_issues(
     *,
     existing_issues: Sequence[Mapping[str, str]],
@@ -1843,27 +1878,61 @@ def _merge_reader_verifier_missing_pre_audit_issues(
 ) -> tuple[list[dict[str, str]], bool]:
     merged = [dict(issue) for issue in existing_issues]
     seen = {
-        (
-            str(issue.get("category") or ""),
-            str(issue.get("line_ref") or ""),
-            str(issue.get("snippet") or ""),
-        )
+        _reader_verifier_issue_identity(issue)
         for issue in merged
     }
     added = False
     for issue in pre_audit_issues:
-        category = str(issue.get("category") or "").strip()
-        key = (
-            category,
-            str(issue.get("line_ref") or ""),
-            str(issue.get("snippet") or ""),
-        )
+        key = _reader_verifier_issue_identity(issue)
         if key in seen:
+            continue
+        if any(_reader_verifier_issues_overlap(existing, issue) for existing in merged):
             continue
         seen.add(key)
         merged.append(dict(issue))
         added = True
     return merged, added
+
+
+def _reader_verifier_issue_identity(issue: Mapping[str, object]) -> tuple[str, str, str, str]:
+    return (
+        str(issue.get("category") or "").strip(),
+        str(issue.get("artifact") or "cleaned_markdown").strip() or "cleaned_markdown",
+        _normalize_reader_verifier_line_ref(issue.get("line_ref")),
+        _normalize_reader_verifier_snippet_key(issue.get("snippet")),
+    )
+
+
+def _reader_verifier_issues_overlap(
+    existing_issue: Mapping[str, object],
+    candidate_issue: Mapping[str, object],
+) -> bool:
+    existing_category, existing_artifact, existing_line_ref, existing_snippet = _reader_verifier_issue_identity(
+        existing_issue
+    )
+    candidate_category, candidate_artifact, candidate_line_ref, candidate_snippet = _reader_verifier_issue_identity(
+        candidate_issue
+    )
+    if (
+        existing_category != candidate_category
+        or existing_artifact != candidate_artifact
+        or existing_line_ref != candidate_line_ref
+        or not existing_snippet
+        or not candidate_snippet
+    ):
+        return False
+    return existing_snippet in candidate_snippet or candidate_snippet in existing_snippet
+
+
+def _normalize_reader_verifier_line_ref(value: object) -> str:
+    line_ref = str(value or "").strip()
+    if ":" in line_ref:
+        line_ref = line_ref.rsplit(":", 1)[-1].strip()
+    return line_ref
+
+
+def _normalize_reader_verifier_snippet_key(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
 
 
 def _append_reader_verifier_pre_audit_finding(
@@ -1997,11 +2066,13 @@ def _run_reader_verifier_pre_audit(cleaned_markdown: str) -> dict[str, object]:
     }
 
 
-def _normalize_reader_verifier_remaining_issues(value: object) -> list[dict[str, str]]:
+def _normalize_reader_verifier_remaining_issues(value: object) -> tuple[list[dict[str, str]], dict[str, object]]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         raise RuntimeError("reader_verifier_remaining_issues_must_be_list")
     normalized_issues: list[dict[str, str]] = []
-    for item in value:
+    warnings: list[str] = []
+    ignored_field_counts: dict[str, int] = {}
+    for index, item in enumerate(value):
         if not isinstance(item, Mapping):
             raise RuntimeError("reader_verifier_remaining_issue_item_must_be_object")
         unknown_fields = sorted(
@@ -2009,8 +2080,12 @@ def _normalize_reader_verifier_remaining_issues(value: object) -> list[dict[str,
             - {"category", "severity", "artifact", "line_ref", "snippet", "why_reader_hurts", "recommended_fix_type"}
         )
         if unknown_fields:
-            raise RuntimeError(
-                f"reader_verifier_unknown_remaining_issue_fields:{','.join(str(field) for field in unknown_fields)}"
+            normalized_unknown_fields = [str(field) for field in unknown_fields]
+            for field in normalized_unknown_fields:
+                ignored_field_counts[field] = ignored_field_counts.get(field, 0) + 1
+            warnings.append(
+                "reader_verifier_remaining_issue_ignored_unknown_fields:"
+                f"index={index}:fields={','.join(normalized_unknown_fields)}"
             )
         category = str(item.get("category") or "").strip()
         severity = str(item.get("severity") or "").strip().lower()
@@ -2040,14 +2115,21 @@ def _normalize_reader_verifier_remaining_issues(value: object) -> list[dict[str,
                 "recommended_fix_type": recommended_fix_type,
             }
         )
-    return normalized_issues
+    return normalized_issues, {
+        "input_issue_count": len(value),
+        "ignored_unknown_field_count": sum(ignored_field_counts.values()),
+        "ignored_unknown_field_counts": ignored_field_counts,
+        "warnings": warnings,
+    }
 
 
-def _normalize_reader_verifier_evidence_anchors(value: object) -> list[dict[str, str]]:
+def _normalize_reader_verifier_evidence_anchors(value: object) -> tuple[list[dict[str, str]], dict[str, object]]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         raise RuntimeError("reader_verifier_evidence_anchors_must_be_list")
     anchors: list[dict[str, str]] = []
-    for item in value:
+    warnings: list[str] = []
+    ignored_kind_counts = {kind: 0 for kind in sorted(_ALLOWED_READER_VERIFIER_ANCHOR_KINDS)}
+    for index, item in enumerate(value):
         if not isinstance(item, Mapping):
             raise RuntimeError("reader_verifier_evidence_anchor_item_must_be_object")
         unknown_fields = sorted(set(item.keys()) - {"kind", "artifact", "line_ref", "snippet", "note"})
@@ -2065,7 +2147,12 @@ def _normalize_reader_verifier_evidence_anchors(value: object) -> list[dict[str,
         if artifact not in _ALLOWED_READER_VERIFIER_ISSUE_ARTIFACTS:
             raise RuntimeError(f"reader_verifier_unknown_evidence_anchor_artifact:{artifact}")
         if not line_ref or not snippet or not note:
-            raise RuntimeError("reader_verifier_evidence_anchor_missing_required_text")
+            ignored_kind_counts[kind] = ignored_kind_counts.get(kind, 0) + 1
+            warnings.append(
+                "reader_verifier_evidence_anchor_ignored_missing_required_text:"
+                f"index={index}:kind={kind}:artifact={artifact}"
+            )
+            continue
         anchors.append(
             {
                 "kind": kind,
@@ -2075,7 +2162,13 @@ def _normalize_reader_verifier_evidence_anchors(value: object) -> list[dict[str,
                 "note": note,
             }
         )
-    return anchors
+    return anchors, {
+        "input_anchor_count": len(value),
+        "ignored_anchor_count": len(warnings),
+        "ignored_kind_counts": ignored_kind_counts,
+        "repaired_anchor_counts": {"improvement_seen": 0, "remaining_issue": 0},
+        "warnings": warnings,
+    }
 
 
 def _detect_reader_verifier_contradictory_removed_claim(
@@ -2707,14 +2800,20 @@ def _parse_reader_verifier_completed_review(
 
     block_spans = _build_cleanup_block_line_spans(str(evidence_payload.get("cleaned_markdown") or ""))
     toc_out_of_review_scope = _reader_verifier_toc_out_of_review_scope_from_evidence(evidence_payload)
+    normalized_remaining_issues, remaining_issue_diagnostics = _normalize_reader_verifier_remaining_issues(
+        payload.get("remaining_issues")
+    )
     remaining_issues, filtered_toc_remaining_issues = _filter_reader_verifier_items_excluding_toc(
-        _normalize_reader_verifier_remaining_issues(payload.get("remaining_issues")),
+        normalized_remaining_issues,
         block_spans=block_spans,
         toc_out_of_review_scope=toc_out_of_review_scope,
     )
     payload_remaining_issues = list(remaining_issues)
+    evidence_anchors, evidence_anchor_diagnostics = _normalize_reader_verifier_evidence_anchors(
+        payload.get("evidence_anchors")
+    )
     evidence_anchors, filtered_toc_evidence_anchors = _filter_reader_verifier_items_excluding_toc(
-        _normalize_reader_verifier_evidence_anchors(payload.get("evidence_anchors")),
+        evidence_anchors,
         block_spans=block_spans,
         toc_out_of_review_scope=toc_out_of_review_scope,
     )
@@ -2754,6 +2853,30 @@ def _parse_reader_verifier_completed_review(
     possible_false_deletions = _require_string_list(payload, "possible_false_deletions")
     readability_regressions = _require_string_list(payload, "readability_regressions")
     recommended_next_changes = _normalize_recommendation_list(payload.get("recommended_next_changes"))
+    ignored_anchor_kind_counts = cast(
+        Mapping[str, object], evidence_anchor_diagnostics.get("ignored_kind_counts") or {}
+    )
+    repaired_anchor_counts = {
+        str(key): max(0, _coerce_int(value, default=0))
+        for key, value in cast(Mapping[str, object], evidence_anchor_diagnostics.get("repaired_anchor_counts") or {}).items()
+    }
+    if (
+        remaining_issues
+        and not any(anchor.get("kind") == "remaining_issue" for anchor in evidence_anchors)
+        and _coerce_int(ignored_anchor_kind_counts.get("remaining_issue"), default=0) > 0
+    ):
+        existing_count = len(evidence_anchors)
+        evidence_anchors = _reader_verifier_remaining_issue_anchors(remaining_issues, existing_anchors=evidence_anchors)
+        repaired_anchor_counts["remaining_issue"] = max(0, len(evidence_anchors) - existing_count)
+    if (
+        overall_verdict == "cleaned_better"
+        and not any(anchor.get("kind") == "improvement_seen" for anchor in evidence_anchors)
+        and _coerce_int(ignored_anchor_kind_counts.get("improvement_seen"), default=0) > 0
+    ):
+        existing_count = len(evidence_anchors)
+        evidence_anchors = _reader_verifier_improvement_anchors(noise_removed, existing_anchors=evidence_anchors)
+        repaired_anchor_counts["improvement_seen"] = max(0, len(evidence_anchors) - existing_count)
+    evidence_anchor_diagnostics["repaired_anchor_counts"] = repaired_anchor_counts
     if remaining_issues and cleaned_audit_verdict == "clean":
         raise RuntimeError("reader_verifier_remaining_issues_forbid_cleaned_audit_clean")
     if cleaned_audit_verdict == "improved_but_has_remaining_issues" and not remaining_issues:
@@ -2815,8 +2938,10 @@ def _parse_reader_verifier_completed_review(
         "filtered_toc_issue_previews": filtered_toc_issue_previews,
         "pre_audit_issue_counts": pre_audit_issue_counts,
         "remaining_issues": remaining_issues,
+        "remaining_issue_diagnostics": remaining_issue_diagnostics,
         "issue_summary_by_category": issue_summary_by_category,
         "evidence_anchors": evidence_anchors,
+        "evidence_anchor_diagnostics": evidence_anchor_diagnostics,
         "noise_removed": noise_removed,
         "possible_false_deletions": possible_false_deletions,
         "readability_regressions": readability_regressions,
@@ -2838,6 +2963,10 @@ def _render_reader_verifier_markdown_summary(review_payload: Mapping[str, object
     recommendations = cast(Sequence[Mapping[str, object]], review_payload.get("recommended_next_changes") or [])
     filtered_toc_issue_previews = _coerce_mapping_sequence(review_payload.get("filtered_toc_issue_previews"))
     cleanup_diagnostics = cast(Mapping[str, object], review_payload.get("cleanup_diagnostics") or {})
+    remaining_issue_diagnostics = cast(Mapping[str, object], review_payload.get("remaining_issue_diagnostics") or {})
+    remaining_issue_warnings = _coerce_string_list(remaining_issue_diagnostics.get("warnings"))
+    evidence_anchor_diagnostics = cast(Mapping[str, object], review_payload.get("evidence_anchor_diagnostics") or {})
+    evidence_anchor_warnings = _coerce_string_list(evidence_anchor_diagnostics.get("warnings"))
     top_ignored_reasons = _coerce_mapping_sequence(cleanup_diagnostics.get("top_ignored_reasons"))
     accepted_operation_counts = cast(Mapping[str, object], cleanup_diagnostics.get("accepted_operation_counts") or {})
     validator_boundary = cast(Mapping[str, object], review_payload.get("validator_boundary") or {})
@@ -2876,6 +3005,16 @@ def _render_reader_verifier_markdown_summary(review_payload: Mapping[str, object
             )
     else:
         lines.append("- No remaining reader-visible issues were recorded.")
+    lines.extend(["", "# Remaining Issue Diagnostics", ""])
+    if remaining_issue_warnings:
+        lines.extend(f"- {item}" for item in remaining_issue_warnings)
+    else:
+        lines.append("- No remaining-issue normalization warnings were recorded.")
+    lines.extend(["", "# Evidence Anchor Diagnostics", ""])
+    if evidence_anchor_warnings:
+        lines.extend(f"- {item}" for item in evidence_anchor_warnings)
+    else:
+        lines.append("- No evidence-anchor normalization warnings were recorded.")
     lines.extend(["", "# Risks Seen", ""])
     if risks:
         lines.append(f"- {str(review_payload.get('simple_user_risk_statement') or '')}")
@@ -4618,7 +4757,10 @@ def _build_reader_cleanup_diagnostics(cleanup_report_payload: Mapping[str, objec
         for _ in _coerce_mapping_sequence(cleanup_report_payload.get("accepted_delete_blocks")):
             accepted_operation_counts["delete_block"] += 1
 
-    for entry in _coerce_mapping_sequence(cleanup_report_payload.get("ignored_delete_blocks")):
+    ignored_entries = _coerce_mapping_sequence(
+        cleanup_report_payload.get("ignored_cleanup_operations") or cleanup_report_payload.get("ignored_delete_blocks")
+    )
+    for entry in ignored_entries:
         ignored_reason = str(entry.get("ignored_reason") or "").strip()
         if ignored_reason not in ignored_reason_counts:
             continue
@@ -5836,6 +5978,13 @@ def main() -> None:
         f"reader_verifier_filtered_toc_pre_audit_count={cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('filtered_toc_pre_audit_count')}",
         f"reader_verifier_filtered_toc_verifier_issue_count={cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('filtered_toc_verifier_issue_count')}",
         f"reader_verifier_filtered_toc_evidence_anchor_count={cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('filtered_toc_evidence_anchor_count')}",
+        f"reader_verifier_ignored_evidence_anchor_count={cast(Mapping[str, object], cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('evidence_anchor_diagnostics') or {}).get('ignored_anchor_count')}",
+        "reader_verifier_ignored_evidence_anchor_kind_counts="
+        + json.dumps(
+            cast(Mapping[str, object], cast(Mapping[str, object], cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('evidence_anchor_diagnostics') or {}).get('ignored_kind_counts') or {}),
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
         "reader_verifier_filtered_toc_issue_previews="
         + json.dumps(cast(Mapping[str, object], report.get('reader_verifier_evidence') or {}).get('filtered_toc_issue_previews') or [], ensure_ascii=False),
         "reader_verifier_cleanup_ignored_reason_counts="

@@ -18,10 +18,10 @@ Convert the latest Simple Reader-First MVP findings into a small, ordered PR
 backlog that preserves the agreed AI-first cleanup architecture.
 
 The current MVP run proved that the pipeline can produce reviewable raw and
-cleaned artifacts, and that cleanup improves readability. The cleanup contract
-now runs without failed chunks, so the next bottleneck is product-visible output
-quality: page furniture still appears inside prose, headings are still fused
-with body text, and fragmented paragraphs remain.
+cleaned artifacts, and that cleanup improves readability. The next bottleneck is
+stable product-visible cleanup proof: failed cleanup chunks must be eliminated
+before per-category changes are trusted, and the remaining reader-visible
+defects must be reduced without turning the backlog into polish-to-zero work.
 
 This backlog is not a request to make the comparison-only run green by adding
 document-specific deterministic fixes. It is a request to improve bounded AI
@@ -41,6 +41,11 @@ cleanup engine.
 The MVP works as a draft-quality comparison tool: it creates output and makes
 the text more readable. It is not yet final-quality because many page headers,
 page numbers, fused headings, and paragraph breaks remain.
+
+The target status for this loop is a truthful readable draft, not a perfect
+book. `readable_draft_not_acceptance_ready` is an acceptable MVP result when the
+run completes, cleanup/verifier evidence is stable, no-harm invariants hold, and
+remaining issues are visible in the report.
 
 The main reason is now product-quality, not validator architecture: cleanup
 successfully runs, but the remaining reader-visible defects are still too common
@@ -77,6 +82,13 @@ reader polish pass.
   these reader-cleanup defects.
 - Do not tighten or relax acceptance thresholds to make the comparison-only run
   look better.
+- Do not treat absolute remaining-issue counts as polish targets. Use them as
+   comparison signals on the same document/profile, and prefer relative movement
+   in top blocker categories plus qualitative review over numeric perfection.
+- Treat `reader_cleanup_failed_chunk_count = 0` as a hard proof gate for this
+   backlog. A run with failed cleanup chunks may still be useful runtime evidence,
+   but it must not be used to conclude that a PR improved or regressed a defect
+   category.
 - Validation must remain observational: it may run profiles, read artifacts,
    score results, build evidence, and report findings, but it must not implement
    production repair behavior or mutate final Markdown/DOCX artifacts.
@@ -95,7 +107,7 @@ Use this map to decide where a defect belongs before writing code:
 | Old page numbers, running headers, footers | `reader_cleanup_mvp` | AI-selected bounded operations: `delete_block` for standalone furniture, `remove_inline_noise` for exact inline furniture | Global number deletion, document-specific phrases, regexes for this book |
 | Obvious source-side page furniture before translation | extraction/preparation or a dedicated audited source-cleanup step | Remove only standalone page numbers, blank-page markers, technical placeholders, or repeated page-boundary headers with reliable source evidence and a removal report | Source prose rewriting, unique heading deletion, document-specific phrase lists, source-level AI rewriting, or anything difficult to audit |
 | Heading fused with body text | `reader_cleanup_mvp` | `normalize_heading_boundary`, `split_block`, or composed exact operations after removing page furniture | Deterministic heading detection, invented heading/body text, unaccounted source text |
-| TOC page numbers / generated TOC fidelity | not a target for this reader-first repair backlog | Delete or ignore TOC page numbers when they harm reader output; optionally drop TOC as text in an explicit reader profile | Rebuilding a correct translated TOC, preserving original page numbers, or treating TOC reconstruction as acceptance-critical |
+| TOC page numbers / generated TOC fidelity | not a target for this reader-first repair backlog | Filter/ignore TOC-only defects in verifier evidence when the profile marks TOC out of scope; remove stale TOC page numbers only through an explicit reader cleanup policy after translation | Broad pre-translation TOC deletion, rebuilding a correct translated TOC, preserving original page numbers, or treating TOC reconstruction as acceptance-critical |
 | Footnote markers/footnote blocks | `reader_cleanup_mvp` only after explicit MVP policy | `delete_block` or `remove_inline_noise` with exact evidence and a `drop_footnotes`/equivalent policy | Silent deletion of semantic numbers, numbered lists, citations needed by the selected mode |
 | Bold, italic, emphasis, heading/subheading styles, list styles | formatting transfer / intermediate model / DOCX writer | Preserve source run-level formatting and structural style evidence through final DOCX | Guessing styles from plain cleanup text alone or mixing this into reader-cleanup deletion work |
 | Images from PDF-derived documents | PDF import / image extraction / main pipeline asset handoff / DOCX reinsertion | Locate where image assets disappear in the main pipeline; restore asset placeholders/reinsertion in a dedicated image PR | Restoring images through reader-cleanup prompts, replacing images with descriptions, or hiding image loss inside formatting work |
@@ -107,8 +119,9 @@ Use this map to decide where a defect belongs before writing code:
 The post-PR-F/PR-G visual review changed the next priorities. Correct TOC
 reconstruction is explicitly not a goal for this backlog. In translated output,
 source page numbers become stale and do not need to be preserved; TOC page
-numbers may be removed, and TOC itself may be dropped by an explicit reader
-profile if it harms the reading experience.
+numbers may be ignored by verifier evidence or removed by explicit
+post-translation reader policy when they harm reading. Do not broaden source
+cleanup into pre-translation TOC deletion.
 
 The visible failures to address are old page furniture, running headers/footers,
 page numbers glued into prose, heading/body fusion, fragmented paragraphs,
@@ -135,8 +148,9 @@ Work must be split by owner:
       be made before testing source-side cleanup. Keep PR-H runtime stable while
       the next iteration measures whether pre-translation source cleanup reduces
       the raw translated noise that PR-H currently has to repair.
-   - TOC reconstruction is out of scope. Only remove/ignore TOC page numbers or
-      drop TOC as ordinary text when an explicit reader profile allows it.
+   - TOC reconstruction is out of scope. Verifier evidence may ignore TOC-only
+      defects when TOC is out of scope; stale TOC page numbers may be removed
+      only through explicit reader policy, not broad source cleanup.
    - Do not touch image reinsertion, bold/italic/style preservation, or verifier
       tuning except as small supporting evidence.
 - **PR-I: Formatting Preservation**
@@ -243,22 +257,32 @@ Required experiment shape:
 Success criteria for this iteration:
 
 - no false deletions and no readability regressions;
+- no failed reader-cleanup chunks in the run used as source-cleanup proof;
 - source cleanup report is reviewable and contains no unique heading/prose
    deletion;
 - translated raw Markdown has fewer page headers/page numbers embedded in prose
    than the `154237` and `154728` runs;
-- final cleaned output is at least competitive with the best baseline:
-   target `remaining_issue_count <= 16`, or a clear qualitative improvement with
-   fewer high-severity reader-visible blockers if a few minor issues remain;
+- final cleaned output is at least competitive with the best comparable
+   verifier-backed baseline: top blocker categories should not grow for the same
+   document/profile unless the run is explicitly non-comparable, and any growth
+   must be explained before promoting the approach;
 - `mixed_language_leak=0` or clearly reduced versus the fresh repeats;
-- `page_furniture_inline` and `heading_fused_with_body` do not regress versus
-   the best full baseline;
+- `page_furniture_inline` and `heading_fused_with_body` do not regress versus a
+   comparable completed run without a diagnostic explanation;
 - post-translation cleanup still rejects broad heading-eating
    `remove_inline_noise` proposals.
 
 Stop and do not promote the approach if source cleanup deletes unique semantic
 text, requires document-specific phrase lists, hides cleanup inside validation,
 or only improves numbers by making verifier evidence less complete.
+
+MVP exit criterion for this backlog: stop reader-cleanup polish once repeatable
+comparison-only evidence on the selected proof document, and at least one
+additional representative real document when available, shows `cleaned_better`
+or better, no failed cleanup chunks, no false deletions, no readability
+regressions, and no document-specific cleanup logic or acceptance-threshold
+tuning. Remaining reader-visible issues may be carried forward as known draft
+limitations instead of being polished to zero.
 
 Latest comparison-only run:
 
@@ -449,6 +473,12 @@ page furniture glued inside or at the start of paragraphs.
 The model already identified page furniture patterns, and some operations were
 accepted. Remaining problems are mostly exactness/safety/application issues.
 
+Before implementing PR-C, do one diagnostic pass on the latest completed run:
+list the current `page_furniture_inline` anchors and determine whether the
+increase came from a failed cleanup chunk or from completed cleanup producing new
+inline furniture. If the growth is explained by a failed chunk, fix chunk
+stability first and rerun before changing page-furniture application logic.
+
 #### Required Work
 
 1. Keep document-specific running headers inside the AI global cleanup plan and
@@ -489,6 +519,12 @@ bash scripts/test.sh tests/test_reader_cleanup_mvp.py -q
 ```
 
 Expected improvement: fewer `page_furniture_inline` issues after rerun.
+
+Promotion rule: do not move from the diagnostic/stability step into PR-C code
+changes until the run used for comparison has
+`reader_cleanup_failed_chunk_count = 0`. A failed chunk can make aggregate
+`cleaned_better` true while hiding local cleanup gaps, so it is not acceptable
+proof for page-furniture regressions.
 
 ### PR-D: Verifier-Guided Anchor Repair Pass
 
