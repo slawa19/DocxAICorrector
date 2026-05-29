@@ -1789,6 +1789,126 @@ def test_run_document_processing_reader_cleanup_uses_exact_raw_markdown_for_side
     assert cleanup_event["context"]["proposed_delete_block_count"] == 2
 
 
+def test_run_document_processing_reader_cleanup_applies_runtime_anchor_repair(tmp_path: Path):
+    runtime = _build_runtime_capture()
+    events, log_event = _capture_log_events()
+    artifact_calls = {}
+    cleanup_payloads = []
+    target = "КАК ЭТО РАБОТАЕТ: Местные органы власти могут помочь."
+    raw_markdown = f"Intro\n\n{target}\n\nOutro"
+    blocks = build_cleanup_blocks(raw_markdown)
+
+    def generate_markdown_block(**kwargs):
+        if kwargs["system_prompt"].startswith("You are cleaning translated book Markdown"):
+            payload = json.loads(kwargs["target_text"])
+            cleanup_payloads.append(payload)
+            if payload.get("pass_name") == "anchor_repair":
+                target_block = next(block for block in payload["blocks"] if block["id"] == blocks[1].block_id)
+                return json.dumps(
+                    {
+                        "cleanup_operations": [
+                            {
+                                "id": target_block["id"],
+                                "text_hash": target_block["text_hash"],
+                                "operation": "normalize_heading_boundary",
+                                "reason": "page_furniture_heading",
+                                "confidence": "high",
+                                "evidence_before": target_block["text"],
+                                "expected_after_preview": "КАК ЭТО РАБОТАЕТ:\n\nМестные органы власти могут помочь.",
+                                "safety_note": "Split only the exact heading/body boundary from a verifier anchor.",
+                                "heading_substring": "КАК ЭТО РАБОТАЕТ:",
+                                "body_substring": "Местные органы власти могут помочь.",
+                            }
+                        ],
+                        "warnings": [],
+                    },
+                    ensure_ascii=False,
+                )
+            return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+        return kwargs["target_text"]
+
+    def write_ui_result_artifacts(**kwargs):
+        artifact_calls["kwargs"] = dict(kwargs)
+        return {
+            "markdown_path": str(tmp_path / "final.result.md"),
+            "docx_path": str(tmp_path / "final.result.docx"),
+        }
+
+    result = document_pipeline.run_document_processing(
+        uploaded_file="report.docx",
+        jobs=[
+            {"target_text": "Intro", "context_before": "", "context_after": target, "target_chars": 5, "context_chars": len(target), "narration_include": True},
+            {"target_text": target, "context_before": "Intro", "context_after": "Outro", "target_chars": len(target), "context_chars": 10, "narration_include": True},
+            {"target_text": "Outro", "context_before": target, "context_after": "", "target_chars": 5, "context_chars": len(target), "narration_include": True},
+        ],
+        source_paragraphs=[],
+        image_assets=[],
+        image_mode="safe",
+        app_config={
+            "reader_cleanup_enabled": True,
+            "reader_cleanup_policy": "advisory",
+            "reader_cleanup_chunk_size": 500,
+            "reader_cleanup_keep_toc": True,
+            "reader_cleanup_anchor_repair_enabled": True,
+            "reader_cleanup_anchor_targets": [
+                {
+                    "anchor_id": "runtime-anchor-1",
+                    "category": "heading_fused_with_body",
+                    "block_id": blocks[1].block_id,
+                    "line_ref": "cleaned_markdown:3",
+                    "snippet": target,
+                }
+            ],
+        },
+        model="gpt-5.4-translate",
+        max_retries=1,
+        processing_operation="translate",
+        source_language="en",
+        target_language="ru",
+        on_progress=lambda **kwargs: None,
+        runtime=runtime,
+        resolve_uploaded_filename=lambda uploaded_file: str(uploaded_file),
+        get_client=lambda: object(),
+        ensure_pandoc_available=lambda: None,
+        load_system_prompt=lambda **kwargs: f"system:{kwargs['operation']}",
+        log_event=log_event,
+        present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        emit_state=_emit_state,
+        emit_finalize=_emit_finalize,
+        emit_activity=_emit_activity,
+        emit_log=_emit_log,
+        emit_status=_emit_status,
+        should_stop_processing=lambda runtime: False,
+        generate_markdown_block=generate_markdown_block,
+        process_document_images=lambda **kwargs: [],
+        inspect_placeholder_integrity=_inspect_placeholder_integrity,
+        convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
+        preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+        reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+        write_ui_result_artifacts=write_ui_result_artifacts,
+    )
+
+    assert result == "succeeded"
+    assert runtime["state"]["latest_markdown"] == "Intro\n\nКАК ЭТО РАБОТАЕТ:\n\nМестные органы власти могут помочь.\n\nOutro"
+    assert artifact_calls["kwargs"]["markdown_text"] == runtime["state"]["latest_markdown"]
+    assert any(payload.get("pass_name") == "anchor_repair" for payload in cleanup_payloads)
+
+    report_path = tmp_path / "final.reader_cleanup_report.json"
+    report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+    anchor_pass = report_payload["passes"]["anchor_repair_pass"]
+    assert anchor_pass["selected_anchor_count"] == 1
+    assert anchor_pass["stats"]["accepted_cleanup_operation_count"] == 1
+    assert report_payload["stats"]["accepted_cleanup_operation_count"] == 1
+
+    info_events = [event for event in events if event["level"] == logging.INFO]
+    anchor_events = [
+        event for event in info_events if event["context"].get("pass") == "anchor_repair"
+    ]
+    assert any(event["event_id"] == "reader_cleanup_chunk_started" for event in anchor_events)
+    cleanup_event = next(event for event in info_events if event["event_id"] == "reader_cleanup_applied")
+    assert cleanup_event["context"]["accepted_cleanup_operation_count"] == 1
+
+
 def test_run_document_processing_preserves_base_result_when_reader_cleanup_fails():
     runtime = _build_runtime_capture()
     events, log_event = _capture_log_events()

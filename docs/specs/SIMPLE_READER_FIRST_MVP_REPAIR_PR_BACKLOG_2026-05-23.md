@@ -32,7 +32,7 @@ AI-first priority is the controlling rule for all remaining work. When a real
 run gets worse, first inspect whether the AI proposed valid bounded operations
 that code rejected too narrowly, or whether the prompt/model produced non-exact
 operations. Do not respond by adding regex-repair that independently finds and
-rewrites document text. Regex may support safety acceptance for AI-proposed exact
+rewrites document text. Regex may support safety acceptance for AI-p roposed exact
 substrings, pre-audit evidence, or reporting; it must not become a hidden second
 cleanup engine.
 
@@ -144,6 +144,10 @@ Work must be split by owner:
    - Fix old page numbers, running headers/footers, page-furniture glued into
       prose, heading/body fusion, fragmented paragraphs, and reader-visible list
       marker cleanup.
+   - Current active sub-slice: targeted page-furniture plus image-caption plus
+      continuation repair. This is code-owned orchestration inside
+      `reader_cleanup_mvp`, not a validation-side repair and not a prompt-only
+      contract.
    - Current May 26 evidence suggests no further runtime safety expansion should
       be made before testing source-side cleanup. Keep PR-H runtime stable while
       the next iteration measures whether pre-translation source cleanup reduces
@@ -324,6 +328,90 @@ Current primary product blockers:
 - formatting preservation is not solved yet: bold, italic, emphasis/highlight,
    heading/subheading styles, and list styles need a later formatting PR;
 - images are not solved here and need a dedicated image handoff/reinsertion PR.
+
+## Current PR-H Sub-Slices
+
+### PR-H1: Targeted Page-Furniture + Caption + Continuation Repair
+
+Last updated: 2026-05-29 from comparison-only run
+`20260528T151827Z_1227_Rethinking-money-chapter-region-pages-10-11-and-156-217`.
+
+#### Goal
+
+Close the current single `page_furniture_inline` anchor without widening PR-H to
+the whole document. The active defect is the fused sequence around
+`166 ПРОЦВЕТАНИЕ ... Фото: A Human Right. развивающейся стране`, where a page
+number, running header, and image caption sit between two parts of one sentence.
+
+#### Ownership Boundary
+
+- `remove_inline_noise` remains a bounded AI cleanup operation in
+   `reader_cleanup_mvp`.
+- `join_fragmented_paragraph` may be used only as a follow-up after exact
+   page-furniture/caption removal exposes a continuation that should be joined
+   to the previous adjacent block.
+- Sequenced repair is code-owned orchestration in
+   `src/docxaicorrector/reader_cleanup_mvp/service.py`: the model may propose
+   both operations, but code guarantees ordering, adjacency, IDs/hashes,
+   exact substrings, and whether the follow-up join is allowed.
+- Validation remains observer-only. It may report the anchor, status, and
+   evidence, but it must not execute cleanup, mutate Markdown/DOCX, or rebuild
+   artifacts.
+
+#### Required Work
+
+1. Add or finish a targeted diagnostic path for the one page-furniture anchor,
+   using verifier-recommended current anchors rather than stale applied anchors.
+2. For the anchored block, compute a preflight preview before applying the
+   operation:
+   - `before`: current exact block text;
+   - `noise`: proposed exact page-number/running-header/caption span;
+   - `after`: remaining text after the noise span is removed.
+3. Accept `remove_inline_noise` only when the proposed noise span is exact,
+   bounded, non-semantic page furniture/caption residue and does not consume the
+   semantic continuation.
+4. Permit a follow-up `join_fragmented_paragraph` only when all are true:
+   - the same anchor block had an accepted exact `remove_inline_noise` operation;
+   - the join is from the previous adjacent payload block to the cleaned anchor
+      block;
+   - the operation uses current request `id`/`text_hash` values, not stale
+      artifact IDs;
+   - the previous block ends with a continuation signal, such as non-final
+      punctuation, an opening quote, ellipsis, or a grammar-dependent trailing
+      token, and the cleaned anchor remainder starts like sentence continuation;
+   - the join preserves every semantic character from both sides.
+5. Keep `delete_block` disallowed for this case. `duplicate_fragment` safety is
+   unchanged and must not be loosened.
+6. Do not introduce document-specific regexes or literals such as
+   `Фото: A Human Right` or `ПРОЦВЕТАНИЕ` into production code.
+
+#### Acceptance Criteria
+
+- The specific `166 ПРОЦВЕТАНИЕ ... Фото ... развивающейся стране` anchor no
+   longer appears as `page_furniture_inline` in the verifier output.
+- `reader_mvp_status_readability_regression_status=none_reported`.
+- `reader_cleanup_failed_chunk_count=0` and anchor-repair failed chunks remain
+   `0`.
+- No `delete_block` operation is accepted for this case; `remove_inline_noise`
+   is the page-furniture/caption cleanup operation.
+- Manual review confirms the Time quote reads as one sentence after cleanup:
+   `... что вы находитесь в развивающейся стране, — это мусор под ногами ...`.
+- `fragmented_paragraph` and `heading_fused_with_body` do not grow versus the
+   comparable completed baseline unless the run records a clear diagnostic
+   explanation.
+- No false deletions are reported, and no acceptance threshold or verifier
+   taxonomy is changed to make the run look better.
+
+#### Stop Conditions
+
+Stop and update this backlog before coding wider PR-H changes if any of these
+become true:
+
+- the repair needs a new cleanup operation type;
+- the repair requires document-specific caption/header regexes;
+- the model can only close the case by deleting semantic continuation text;
+- validation has to execute or apply cleanup to make the proof pass;
+- the page-only proof reports false deletions or readability regressions.
 
 ## Historical PR Order (PR-A Through PR-G)
 

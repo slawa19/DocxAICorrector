@@ -1452,6 +1452,91 @@ def test_load_reader_cleanup_evidence_extracts_artifacts_and_delete_stats(tmp_pa
     ]
 
 
+def test_load_reader_cleanup_evidence_reports_runtime_anchor_repair_status(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    cleanup_report_path = tmp_path / "ui_results" / "chapter.reader_cleanup_report.json"
+    cleanup_report_path.parent.mkdir(parents=True, exist_ok=True)
+    anchor_target = {
+        "anchor_id": "anchor-1",
+        "category": "heading_fused_with_body",
+        "block_id": "b_000002",
+        "line_ref": "cleaned_markdown:3",
+        "snippet": "КАК ЭТО РАБОТАЕТ: Местные органы власти...",
+    }
+    cleanup_report_path.write_text(
+        json.dumps(
+            {
+                "stage_status": "completed",
+                "changed": True,
+                "stats": {
+                    "proposed_delete_block_count": 0,
+                    "accepted_delete_block_count": 0,
+                    "ignored_delete_block_count": 0,
+                    "failed_chunk_count": 0,
+                },
+                "accepted_delete_blocks": [],
+                "passes": {
+                    "anchor_repair_pass": {
+                        "selected_anchor_count": 1,
+                        "selected_anchors": [anchor_target],
+                        "stats": {
+                            "accepted_cleanup_operation_count": 1,
+                            "accepted_delete_block_count": 0,
+                        },
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    evidence = validation._build_reader_cleanup_evidence_from_artifact_paths(
+        {"reader_cleanup_report_path": str(cleanup_report_path)}
+    )
+
+    assert evidence["anchor_repair_status"] == "runtime_applied"
+    assert evidence["recommended_anchor_targets"] == [anchor_target]
+    assert evidence["recommended_anchor_target_count"] == 1
+
+    cleanup_report_path.write_text(
+        json.dumps(
+            {
+                "stage_status": "completed",
+                "changed": False,
+                "stats": {
+                    "proposed_delete_block_count": 0,
+                    "accepted_delete_block_count": 0,
+                    "ignored_delete_block_count": 0,
+                    "failed_chunk_count": 0,
+                },
+                "accepted_delete_blocks": [],
+                "passes": {
+                    "anchor_repair_pass": {
+                        "selected_anchor_count": 1,
+                        "selected_anchors": [anchor_target],
+                        "stats": {
+                            "accepted_cleanup_operation_count": 0,
+                            "accepted_delete_block_count": 0,
+                        },
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    evidence = validation._build_reader_cleanup_evidence_from_artifact_paths(
+        {"reader_cleanup_report_path": str(cleanup_report_path)}
+    )
+
+    assert evidence["anchor_repair_status"] == "runtime_attempted_no_safe_ops"
+    assert evidence["recommended_anchor_targets"] == [anchor_target]
+    assert evidence["recommended_anchor_target_count"] == 1
+
+
 def test_apply_repeat_count_override_ignores_invalid_value() -> None:
     validation = _load_validation_module()
     run_profile = validation.load_validation_registry().get_run_profile("ui-parity-default")
@@ -4156,6 +4241,86 @@ def test_build_reader_cleanup_anchor_targets_ignores_raw_and_comparison_issues()
     assert cleaned_targets[0]["line_ref"] == "cleaned_markdown:3"
 
 
+def test_load_runtime_reader_cleanup_anchor_targets_from_env_accepts_review_payload(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    validation = _load_validation_module()
+
+    anchor_path = tmp_path / "reader_quality_review.json"
+    heading_target = {
+        "anchor_id": "anchor-heading",
+        "category": "heading_fused_with_body",
+        "block_id": "b_000002",
+        "line_ref": "cleaned_markdown:3",
+        "snippet": "КАК ЭТО РАБОТАЕТ: Местные органы власти...",
+    }
+    out_of_scope_target = {
+        "anchor_id": "anchor-quote",
+        "category": "quote_not_block_formatted",
+        "block_id": "b_000009",
+        "line_ref": "cleaned_markdown:18",
+        "snippet": "Quote.",
+    }
+    anchor_path.write_text(
+        json.dumps(
+            {"recommended_anchor_targets": [heading_target, out_of_scope_target]},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("DOCXAI_READER_CLEANUP_ANCHOR_TARGETS_PATH", str(anchor_path))
+    monkeypatch.delenv("DOCXAI_READER_CLEANUP_ANCHOR_TARGETS_JSON", raising=False)
+
+    targets = validation._load_runtime_reader_cleanup_anchor_targets_from_env()
+
+    assert targets == [heading_target]
+
+    monkeypatch.setenv("DOCXAI_READER_CLEANUP_ANCHOR_TARGETS_JSON", json.dumps([heading_target], ensure_ascii=False))
+    monkeypatch.delenv("DOCXAI_READER_CLEANUP_ANCHOR_TARGETS_PATH", raising=False)
+
+    assert validation._load_runtime_reader_cleanup_anchor_targets_from_env() == [heading_target]
+
+
+def test_load_runtime_reader_cleanup_anchor_targets_from_env_prefers_fresh_verifier_targets(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    validation = _load_validation_module()
+
+    anchor_path = tmp_path / "reader_quality_review.json"
+    stale_runtime_target = {
+        "anchor_id": "stale-page-furniture",
+        "category": "page_furniture_inline",
+        "block_id": "b_000278",
+        "line_ref": "559",
+        "snippet": "20 ДЕНЬГИ, КОТОРЫЕ ПАХНУТ?",
+    }
+    fresh_verifier_target = {
+        "anchor_id": "fresh-page-furniture",
+        "category": "page_furniture_inline",
+        "block_id": "b_000228",
+        "line_ref": "459",
+        "snippet": "190 ПЕРЕОСМЫСЛЕНИЕ ДЕНЕГ Особый интерес представляет",
+    }
+    anchor_path.write_text(
+        json.dumps(
+            {
+                "recommended_anchor_targets": [stale_runtime_target],
+                "verifier_recommended_anchor_targets": [fresh_verifier_target],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("DOCXAI_READER_CLEANUP_ANCHOR_TARGETS_PATH", str(anchor_path))
+    monkeypatch.delenv("DOCXAI_READER_CLEANUP_ANCHOR_TARGETS_JSON", raising=False)
+
+    assert validation._load_runtime_reader_cleanup_anchor_targets_from_env() == [fresh_verifier_target]
+
+
 def test_write_reader_verifier_artifacts_keeps_anchor_repair_diagnostic_only(tmp_path, monkeypatch) -> None:
     validation = _load_validation_module()
 
@@ -4543,7 +4708,7 @@ def test_write_reader_verifier_artifacts_preserves_runtime_applied_anchor_target
         "rejected_delete_block_count": 0,
         "failed_chunk_count": 0,
         "deleted_block_previews": [],
-        "anchor_repair_status": "applied_in_runtime",
+        "anchor_repair_status": "runtime_applied",
         "recommended_anchor_targets": [runtime_anchor_target],
         "recommended_anchor_target_count": 1,
     }
@@ -4579,10 +4744,10 @@ def test_write_reader_verifier_artifacts_preserves_runtime_applied_anchor_target
         (artifact_dir / "lietaer_pdf_chapter_region_runtime_reader_quality_evidence.json").read_text(encoding="utf-8")
     )
 
-    assert updated_evidence["anchor_repair_status"] == "applied_in_runtime"
+    assert updated_evidence["anchor_repair_status"] == "runtime_applied"
     assert updated_evidence["recommended_anchor_targets"] == [runtime_anchor_target]
     assert updated_evidence["recommended_anchor_target_count"] == 1
-    assert review["anchor_repair_status"] == "applied_in_runtime"
+    assert review["anchor_repair_status"] == "runtime_applied"
     assert review["recommended_anchor_targets"] == [runtime_anchor_target]
     assert review["recommended_anchor_target_count"] == 1
     assert updated_evidence["verifier_recommended_anchor_target_count"] == 1

@@ -131,6 +131,20 @@ def _should_run_reader_cleanup(*, context: Any) -> bool:
     )
 
 
+def _resolve_reader_cleanup_anchor_repair_targets(*, context: Any) -> list[dict[str, object]]:
+    if not bool(context.app_config.get("reader_cleanup_anchor_repair_enabled", False)):
+        return []
+    raw_targets = context.app_config.get("reader_cleanup_anchor_targets") or []
+    if not isinstance(raw_targets, Sequence) or isinstance(raw_targets, (str, bytes, bytearray)):
+        return []
+
+    targets: list[dict[str, object]] = []
+    for item in raw_targets:
+        if isinstance(item, Mapping):
+            targets.append(dict(item))
+    return targets
+
+
 def _rebuild_docx_for_markdown(
     *,
     markdown_text: str,
@@ -274,6 +288,7 @@ def _run_reader_cleanup_postprocess(
         target_text = json.dumps(request_payload, ensure_ascii=False, indent=2)
         context_before = str(request_payload.get("context_before_preview", "") or "")
         context_after = str(request_payload.get("context_after_preview", "") or "")
+        pass_name = str(request_payload.get("pass_name") or "reader_cleanup")
         started_at = time.perf_counter()
         dependencies.log_event(
             logging.INFO,
@@ -281,7 +296,7 @@ def _run_reader_cleanup_postprocess(
             "Запущен reader cleanup post-pass для cleanup chunk.",
             filename=context.uploaded_filename,
             operation="translate",
-            **{"pass": "reader_cleanup"},
+            **{"pass": pass_name},
             model=config.model,
             model_selector=model_selector,
             model_provider=model_provider,
@@ -309,7 +324,7 @@ def _run_reader_cleanup_postprocess(
             "Reader cleanup post-pass для cleanup chunk завершён.",
             filename=context.uploaded_filename,
             operation="translate",
-            **{"pass": "reader_cleanup"},
+            **{"pass": pass_name},
             model=config.model,
             model_selector=model_selector,
             model_provider=model_provider,
@@ -368,6 +383,8 @@ def _run_reader_cleanup_postprocess(
         )
         return response
 
+    anchor_targets = _resolve_reader_cleanup_anchor_repair_targets(context=context)
+
     try:
         cleanup_result = run_reader_cleanup(
             markdown_text=cleanup_input_markdown,
@@ -375,6 +392,8 @@ def _run_reader_cleanup_postprocess(
             operation_provider=_operation_provider,
             repair_provider=_repair_provider,
             global_plan_provider=_global_plan_provider,
+            anchor_operation_provider=_operation_provider if anchor_targets else None,
+            anchor_targets=anchor_targets,
             model_resolution={
                 "requested_selector": config.model,
                 "canonical_selector": model_selector,

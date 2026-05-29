@@ -292,6 +292,12 @@ def build_reader_cleanup_system_prompt() -> str:
         "Use normalize_heading_boundary only to move an exact heading-like prefix into a separate heading block and keep exact body text as a paragraph.\n"
         "If the request pass_name is anchor_repair, operate only inside the listed anchor_targets and anchor_window_block_ids.\n"
         "For anchor_repair, every returned operation still needs full audit fields: evidence_before, expected_after_preview, and safety_note are never optional.\n"
+        "For anchor_repair fragmented_paragraph targets, first inspect only adjacent payload blocks. Prefer one join_fragmented_paragraph operation when the current block and the next block are a single paragraph split by a page, caption, or image boundary.\n"
+        "For anchor_repair join_fragmented_paragraph, copy next_id and next_text_hash exactly from the current payload block list; do not reuse stale ids or hashes from a prior raw/cleaned artifact.\n"
+        "For anchor_repair fragmented_paragraph targets, do not propose delete_block duplicate_fragment unless the full candidate block is exact normalized text already preserved in one nearby payload block.\n"
+        "For anchor_repair fragmented_paragraph targets, do not combine split_block and join_fragmented_paragraph on the same evidence unless split_substrings exactly cover one extraction-artifact block and the following join still uses adjacent current payload hashes.\n"
+        "For anchor_repair page_furniture_inline targets, first propose remove_inline_noise for the exact non-semantic page-number/running-header prefix or island; do not use join_fragmented_paragraph or delete_block as a substitute for that cleanup.\n"
+        "If page furniture plus an image caption sits between two parts of one sentence, propose remove_inline_noise for the exact full noise span and then a separate join_fragmented_paragraph from the previous adjacent block to the cleaned anchor block.\n"
         "If one anchored block needs both page-furniture removal and heading/body repair, return two bounded exact-match operations on that same block instead of rewriting the block.\n"
         "If non-heading text remains before the heading candidate, such as a quote, caption, or footnote marker, do not use normalize_heading_boundary; use split_block with exact substrings instead.\n"
         "Preserve chapters, headings, normal paragraphs, lists, quotes, footnote bodies, bibliography, "
@@ -335,6 +341,11 @@ def build_reader_cleanup_system_prompt() -> str:
         "- Part title after a preceding quote: use split_block, not normalize_heading_boundary, because text exists before the heading.\n"
         "- Duplicate tail carryover as its own block: use delete_block with reason duplicate_fragment only when that full block is already preserved nearby as exact repeated text.\n"
         "For fragmented paragraph anchors, use neighbor context to decide whether a page or caption boundary split one paragraph across adjacent blocks, and use join_fragmented_paragraph only when the exact adjacent hashes match that evidence.\n"
+        "- Anchor fragmented paragraph through caption/page boundary: if the anchored block ends mid-sentence and the immediately next payload block starts with lowercase continuation prose, use join_fragmented_paragraph with that next block's exact id/hash; do not split or delete.\n"
+        "- Anchor fragmented paragraph that looks like a duplicate tail: if the full anchored block is not exact normalized text already preserved nearby, keep it and add a warning instead of delete_block duplicate_fragment.\n"
+        "- Anchor fragmented paragraph with page furniture between prose: remove only the exact page-furniture substring or block when safe, then join only adjacent current payload blocks with exact hashes; if adjacency is unclear, keep the text.\n"
+        "- Anchor page furniture prefix: for '190 ПЕРЕОСМЫСЛЕНИЕ ДЕНЕГ Особый интерес...' use remove_inline_noise with noise_substring='190 ПЕРЕОСМЫСЛЕНИЕ ДЕНЕГ ' and keep the following prose.\n"
+        "- Anchor page furniture plus caption between sentence parts: remove exactly the page header and caption span, keep the lowercase prose continuation, then join the previous unfinished block to the cleaned anchor block with exact ids/hashes.\n"
         "A leading or inline number may be removed only when it is exact non-semantic page furniture; if the number is semantic content inside a sentence, date, quantity, title, or citation, keep it.\n"
         "For obvious non-semantic noise such as standalone page numbers or lines like [[DOCX_IMAGE_img_001]], "
         'use confidence="high" instead of omitting the field.\n'
@@ -360,6 +371,9 @@ def build_reader_cleanup_schema_repair_system_prompt() -> str:
         "Each cleanup_operations item must contain id, text_hash, operation, reason, confidence, evidence_before, expected_after_preview, and safety_note.\n"
         "duplicate_fragment is an allowed delete_block reason only for exact nearby repeated carryover text that is already preserved elsewhere nearby.\n"
         "If a duplicate_fragment candidate is only similar to nearby prose but not an exact normalized nearby preserved block, drop it and add a warning instead of widening the deletion.\n"
+        "For anchor_repair fragmented_paragraph items, keep a join_fragmented_paragraph operation only when next_id and next_text_hash are copied from an adjacent block in the current request payload; otherwise drop it and add a warning.\n"
+        "For anchor_repair fragmented_paragraph items, do not convert a non-exact duplicate-looking tail into delete_block duplicate_fragment; drop unsafe deletion instead.\n"
+        "For anchor_repair page_furniture_inline items, keep join_fragmented_paragraph only as a follow-up from the previous adjacent block to the page-furniture anchor block when the response also has exact remove_inline_noise on that anchor block.\n"
         "For remove_inline_noise, page_furniture_inline, page_furniture_heading, page_number, and repeated_running_header are the preferred bounded audit reasons.\n"
         "Do not widen remove_inline_noise to consume a semantic heading after a numeric running-header prefix; keep exact prefix removal separate from normalize_heading_boundary.\n"
         "If the original response already isolates a title-case running-header island with connector words or acronyms plus a trailing page number, keep it as remove_inline_noise instead of widening the substring into neighboring prose.\n"
@@ -838,7 +852,8 @@ def _normalize_anchor_targets(
     anchor_targets: Sequence[Mapping[str, object]],
     blocks: Sequence[CleanupBlock],
 ) -> tuple[list[dict[str, str]], list[str]]:
-    block_ids = {block.block_id for block in blocks}
+    block_by_id = {block.block_id: block for block in blocks}
+    block_ids = set(block_by_id)
     normalized: list[dict[str, str]] = []
     warnings: list[str] = []
     seen_identity_keys: set[str] = set()
@@ -854,6 +869,30 @@ def _normalize_anchor_targets(
         anchor_id = str(raw_target.get("anchor_id") or "").strip()
         line_ref = str(raw_target.get("line_ref") or "").strip()
         snippet = str(raw_target.get("snippet") or "").strip()
+        anchor_block = block_by_id[block_id]
+        if snippet and snippet not in anchor_block.text:
+            snippet_matches = [block for block in blocks if snippet in block.text]
+            if len(snippet_matches) == 1:
+                warnings.append(
+                    f"reader_cleanup_anchor_target_reanchored_by_exact_snippet:{index}:{block_id}->{snippet_matches[0].block_id}"
+                )
+                block_id = snippet_matches[0].block_id
+            elif category == "page_furniture_inline":
+                resolved_block = _resolve_page_furniture_caption_anchor_block(
+                    snippet=snippet,
+                    anchor_block=anchor_block,
+                    blocks=blocks,
+                )
+                if resolved_block is not None:
+                    warnings.append(
+                        "reader_cleanup_anchor_target_reanchored_by_page_caption_signal:"
+                        f"{index}:{block_id}->{resolved_block.block_id}"
+                    )
+                    block_id = resolved_block.block_id
+                else:
+                    warnings.append(f"reader_cleanup_anchor_target_snippet_not_in_block:{index}:{block_id}")
+            else:
+                warnings.append(f"reader_cleanup_anchor_target_snippet_not_in_block:{index}:{block_id}")
         identity_key = anchor_id or f"{category}|{block_id}|{line_ref}|{snippet}"
         if identity_key in seen_identity_keys:
             continue
@@ -868,6 +907,53 @@ def _normalize_anchor_targets(
             }
         )
     return normalized, warnings
+
+
+def _resolve_page_furniture_caption_anchor_block(
+    *,
+    snippet: str,
+    anchor_block: CleanupBlock,
+    blocks: Sequence[CleanupBlock],
+) -> CleanupBlock | None:
+    if not _has_generic_caption_marker(snippet):
+        return None
+
+    start_index = max(0, anchor_block.index - 2)
+    end_index = min(len(blocks) - 1, anchor_block.index + 2)
+    candidates: list[tuple[int, int, CleanupBlock]] = []
+    for block in blocks[start_index : end_index + 1]:
+        if not _has_generic_caption_marker(block.text):
+            continue
+        overlap_score = _anchor_overlap_score(snippet=snippet, text=block.text)
+        if overlap_score < 4:
+            continue
+        distance = abs(block.index - anchor_block.index)
+        candidates.append((overlap_score, -distance, block))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    if len(candidates) > 1 and candidates[0][:2] == candidates[1][:2]:
+        return None
+    return candidates[0][2]
+
+
+def _has_generic_caption_marker(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(marker in lowered for marker in ("фото:", "photo:", "photo credit:", "caption:", "иллюстрация:", "рисунок:"))
+
+
+def _anchor_overlap_score(*, snippet: str, text: str) -> int:
+    snippet_tokens = set(_anchor_signal_tokens(snippet))
+    if not snippet_tokens:
+        return 0
+    text_tokens = set(_anchor_signal_tokens(text))
+    return len(snippet_tokens & text_tokens)
+
+
+def _anchor_signal_tokens(text: str) -> list[str]:
+    tokens = re.findall(r"[A-Za-zА-Яа-яЁё0-9]{4,}", text.lower())
+    return [token for token in tokens if not token.isdigit()]
 
 
 def _build_anchor_repair_chunks(
@@ -1215,11 +1301,58 @@ def _build_reader_cleanup_report_payload(
         "accepted_delete_blocks": list(accepted_delete_blocks),
         "ignored_cleanup_operations": list(ignored_cleanup_operations),
         "ignored_delete_blocks": list(ignored_cleanup_operations),
+        "heading_boundary_application_diagnostics": _build_heading_boundary_application_diagnostics(
+            accepted_cleanup_operations=accepted_cleanup_operations,
+            ignored_cleanup_operations=ignored_cleanup_operations,
+        ),
         "chunk_results": [dict(entry) for entry in chunk_results],
     }
     if failure is not None:
         report_payload["failure"] = dict(failure)
     return report_payload
+
+
+def _build_heading_boundary_application_diagnostics(
+    *,
+    accepted_cleanup_operations: Sequence[Mapping[str, object]],
+    ignored_cleanup_operations: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    accepted_heading_operations = [
+        dict(entry) for entry in accepted_cleanup_operations if entry.get("operation") == "normalize_heading_boundary"
+    ]
+    ignored_heading_operations = [
+        dict(entry) for entry in ignored_cleanup_operations if entry.get("operation") == "normalize_heading_boundary"
+    ]
+    ignored_reason_counts: Counter[str] = Counter(
+        str(entry.get("ignored_reason") or "unknown") for entry in ignored_heading_operations
+    )
+    return {
+        "accepted_count": len(accepted_heading_operations),
+        "ignored_count": len(ignored_heading_operations),
+        "ignored_reason_counts": dict(sorted(ignored_reason_counts.items())),
+        "ignored_examples": [
+            _build_heading_boundary_diagnostic_example(entry)
+            for entry in ignored_heading_operations[:5]
+        ],
+    }
+
+
+def _build_heading_boundary_diagnostic_example(entry: Mapping[str, object]) -> dict[str, object]:
+    preview = str(entry.get("raw_text_preview") or entry.get("evidence_before") or "").replace("\n", " ").strip()
+    if len(preview) > 180:
+        preview = preview[:177].rstrip() + "..."
+    heading = str(entry.get("heading_substring") or "").replace("\n", " ").strip()
+    body = str(entry.get("body_substring") or "").replace("\n", " ").strip()
+    if len(body) > 180:
+        body = body[:177].rstrip() + "..."
+    return {
+        "chunk_index": _coerce_int(entry.get("chunk_index"), default=0, minimum=0),
+        "ignored_reason": str(entry.get("ignored_reason") or "unknown"),
+        "reason": str(entry.get("reason") or ""),
+        "preview": preview,
+        "heading_substring": heading,
+        "body_substring_preview": body,
+    }
 
 
 def _load_cleanup_response_object(raw_response: str) -> dict[str, object] | None:
@@ -1380,9 +1513,15 @@ def _run_anchor_repair_pass(
             )
             continue
 
+        operations, scope_ignored_operations = _filter_anchor_repair_operations_to_anchor_targets(
+            operations=operations,
+            anchors=anchor_chunk.anchors,
+            editable_blocks=editable_blocks,
+        )
         all_operations.extend(operations)
         warnings.extend(chunk_warnings)
         ignored_cleanup_operations.extend(ignored_chunk_operations)
+        ignored_cleanup_operations.extend(scope_ignored_operations)
         chunk_results.append(
             {
                 "pass_name": "anchor_repair",
@@ -1391,8 +1530,11 @@ def _run_anchor_repair_pass(
                 "target_block_count": len(chunk.blocks),
                 "target_chars": sum(block.char_count for block in chunk.blocks),
                 "elapsed_ms": round((time.perf_counter() - started_at) * 1000, 3),
-                "proposed_cleanup_operation_count": len(operations) + len(ignored_chunk_operations),
-                "proposed_delete_block_count": sum(1 for operation in operations if operation.operation == "delete_block"),
+                "proposed_cleanup_operation_count": len(operations)
+                + len(ignored_chunk_operations)
+                + len(scope_ignored_operations),
+                "proposed_delete_block_count": sum(1 for operation in operations if operation.operation == "delete_block")
+                + sum(1 for operation in scope_ignored_operations if operation.get("operation") == "delete_block"),
                 "accepted_cleanup_operation_count": 0,
                 "accepted_delete_block_count": 0,
                 "ignored_cleanup_operation_count": 0,
@@ -1405,13 +1547,14 @@ def _run_anchor_repair_pass(
             }
         )
 
-    cleaned_markdown, accepted_ids, accepted_cleanup_operations, ignored_cleanup_operations = _apply_cleanup_operations(
+    cleaned_markdown, accepted_ids, accepted_cleanup_operations, apply_ignored_cleanup_operations = _apply_cleanup_operations(
         raw_markdown=raw_markdown,
         blocks=blocks,
         operations=all_operations,
         config=config,
         global_candidate_block_ids={block.block_id for anchor_chunk in anchor_chunks for block in anchor_chunk.chunk.blocks},
     )
+    ignored_cleanup_operations.extend(apply_ignored_cleanup_operations)
     accepted_counts_by_chunk: Counter[int] = Counter()
     accepted_delete_blocks: list[dict[str, object]] = []
     for block_id, entry in accepted_ids.items():
@@ -1466,6 +1609,98 @@ def _run_anchor_repair_pass(
     )
 
 
+def _filter_anchor_repair_operations_to_anchor_targets(
+    *,
+    operations: Sequence[CleanupOperation],
+    anchors: Sequence[Mapping[str, str]],
+    editable_blocks: Mapping[str, CleanupBlock],
+) -> tuple[list[CleanupOperation], list[dict[str, object]]]:
+    anchor_categories_by_block: dict[str, set[str]] = {}
+    for anchor in anchors:
+        block_id = str(anchor.get("block_id") or "")
+        category = str(anchor.get("category") or "")
+        if block_id and category:
+            anchor_categories_by_block.setdefault(block_id, set()).add(category)
+    anchor_block_ids = set(anchor_categories_by_block)
+    page_anchor_block_ids = {
+        block_id
+        for block_id, categories in anchor_categories_by_block.items()
+        if "page_furniture_inline" in categories
+    }
+    page_anchor_blocks_with_noise_removal = {
+        operation.block_id
+        for operation in operations
+        if operation.operation == "remove_inline_noise"
+        and operation.block_id in page_anchor_block_ids
+        and operation.reason in _INLINE_NOISE_REASON_GUIDANCE
+    }
+
+    filtered_operations: list[CleanupOperation] = []
+    ignored_operations: list[dict[str, object]] = []
+    for operation in operations:
+        ignored_reason = ""
+        if operation.block_id not in anchor_block_ids and not _is_allowed_page_anchor_followup_join(
+            operation=operation,
+            page_anchor_blocks_with_noise_removal=page_anchor_blocks_with_noise_removal,
+            editable_blocks=editable_blocks,
+        ):
+            ignored_reason = "anchor_repair_operation_outside_anchor_targets"
+        elif (
+            "page_furniture_inline" in anchor_categories_by_block.get(operation.block_id, set())
+            and operation.operation in {"delete_block", "join_fragmented_paragraph"}
+            and not _is_allowed_page_anchor_followup_join(
+                operation=operation,
+                page_anchor_blocks_with_noise_removal=page_anchor_blocks_with_noise_removal,
+                editable_blocks=editable_blocks,
+            )
+        ):
+            ignored_reason = "anchor_repair_page_furniture_requires_remove_inline_noise"
+
+        if not ignored_reason:
+            filtered_operations.append(operation)
+            continue
+
+        block = editable_blocks.get(operation.block_id)
+        if block is None:
+            ignored_operations.append(
+                {
+                    "id": operation.block_id,
+                    "text_hash": operation.text_hash,
+                    "operation": operation.operation,
+                    "reason": operation.reason,
+                    "confidence": operation.confidence,
+                    "chunk_index": operation.chunk_index,
+                    "ignored_reason": ignored_reason,
+                }
+            )
+            continue
+        ignored_operations.append(
+            {
+                **_serialize_cleanup_operation(operation=operation, block=block),
+                "chunk_index": operation.chunk_index,
+                "ignored_reason": ignored_reason,
+            }
+        )
+    return filtered_operations, ignored_operations
+
+
+def _is_allowed_page_anchor_followup_join(
+    *,
+    operation: CleanupOperation,
+    page_anchor_blocks_with_noise_removal: set[str],
+    editable_blocks: Mapping[str, CleanupBlock],
+) -> bool:
+    if operation.operation != "join_fragmented_paragraph":
+        return False
+    block = editable_blocks.get(operation.block_id)
+    next_block = editable_blocks.get(operation.next_id)
+    if block is None or next_block is None:
+        return False
+    if next_block.index != block.index + 1:
+        return False
+    return operation.next_id in page_anchor_blocks_with_noise_removal or operation.block_id in page_anchor_blocks_with_noise_removal
+
+
 def _merge_anchor_repair_pass_into_report(
     *,
     report_payload: Mapping[str, object],
@@ -1515,6 +1750,10 @@ def _merge_anchor_repair_pass_into_report(
     merged_report["accepted_delete_blocks"] = combined_accepted_delete_blocks
     merged_report["ignored_cleanup_operations"] = combined_ignored_cleanup_operations
     merged_report["ignored_delete_blocks"] = combined_ignored_cleanup_operations
+    merged_report["heading_boundary_application_diagnostics"] = _build_heading_boundary_application_diagnostics(
+        accepted_cleanup_operations=combined_accepted_cleanup_operations,
+        ignored_cleanup_operations=combined_ignored_cleanup_operations,
+    )
     merged_report["chunk_results"] = combined_chunk_results
     merged_report["stats"] = _build_cleanup_stats(
         raw_markdown=raw_markdown,
@@ -1771,6 +2010,21 @@ def _recover_missing_operation_exact_fields(
     chunk_index: int,
     block_id: str,
 ) -> tuple[dict[str, object], list[str]]:
+    if operation_name == "remove_inline_noise":
+        if str(normalized_item.get("noise_substring") or ""):
+            return dict(normalized_item), []
+        evidence_before = str(normalized_item.get("evidence_before") or "").strip()
+        reason = str(normalized_item.get("reason") or "").strip()
+        if (
+            evidence_before
+            and evidence_before in block.text
+            and block.text.count(evidence_before) == 1
+            and _is_safe_inline_noise_substring(noise=evidence_before, current_text=block.text, reason=reason)
+        ):
+            recovered = dict(normalized_item)
+            recovered["noise_substring"] = evidence_before
+            return recovered, [f"reader_cleanup_exact_fields_recovered:{chunk_index}:{block_id}:{operation_name}"]
+        return dict(normalized_item), []
     if operation_name != "normalize_heading_boundary":
         return dict(normalized_item), []
     if str(normalized_item.get("heading_substring") or "").strip() and str(
@@ -2049,9 +2303,112 @@ def _is_safe_inline_noise_substring(*, noise: str, current_text: str, reason: st
         current_text=current_text,
     ):
         return True
+    if _looks_like_page_furniture_caption_bridge_noise(
+        normalized_noise=normalized_noise,
+        current_text=current_text,
+        reason=reason,
+    ):
+        return True
+    if _looks_like_inline_caption_noise(
+        normalized_noise=normalized_noise,
+        current_text=current_text,
+        reason=reason,
+    ):
+        return True
     if reason not in _INLINE_NOISE_REASON_GUIDANCE:
         return False
     return _looks_like_title_case_running_header_noise(normalized_noise=normalized_noise, current_text=current_text)
+
+
+def _looks_like_page_furniture_caption_bridge_noise(*, normalized_noise: str, current_text: str, reason: str) -> bool:
+    if reason != "page_furniture_inline":
+        return False
+    candidate = normalized_noise.strip()
+    if not candidate:
+        return False
+
+    noise_index = current_text.find(candidate)
+    if noise_index < 0:
+        return False
+    noise_end_index = noise_index + len(candidate)
+    continuation = current_text[noise_end_index:].lstrip()
+    if not continuation or not continuation[0].islower():
+        return False
+
+    header_match = re.match(r"^\s*(?:\d{1,4}\s+){1,2}(?:[A-ZА-ЯЁ][A-ZА-ЯЁ-]{2,})(?:\s+[A-ZА-ЯЁ][A-ZА-ЯЁ-]{2,}){0,5}\b", candidate)
+    if header_match is None:
+        return False
+    header = header_match.group(0).strip().rstrip(_RUNNING_HEADER_TRAILING_PUNCTUATION)
+    if _NUMERIC_UPPERCASE_RUNNING_HEADER_PATTERN.fullmatch(header) is None:
+        return False
+    caption_tail = candidate[header_match.end():].strip()
+    if len(caption_tail) < 24:
+        return False
+    caption_tail_lower = caption_tail.lower()
+    if not any(marker in caption_tail_lower for marker in ("фото:", "photo:", "photo credit:", "caption:", "иллюстрация:", "рисунок:")):
+        return False
+    return True
+
+
+def _looks_like_inline_caption_noise(*, normalized_noise: str, current_text: str, reason: str) -> bool:
+    if reason != "page_furniture_inline":
+        return False
+    candidate = normalized_noise.strip()
+    if len(candidate) < 24 or not _has_generic_caption_marker(candidate):
+        return False
+
+    noise_index = current_text.find(candidate)
+    if noise_index < 0:
+        return False
+    before = current_text[:noise_index].rstrip()
+    after = current_text[noise_index + len(candidate) :].lstrip()
+    if after and after[0].islower():
+        return True
+    return _has_continuation_signal_before_inline_noise(before)
+
+
+def _has_continuation_signal_before_inline_noise(text: str) -> bool:
+    candidate = str(text or "").rstrip()
+    if not candidate:
+        return False
+    if candidate.endswith(("«", "“", "„", "(", "[", "...", "…", ",", ";", ":", "—", "-")):
+        return True
+    if candidate.endswith((".", "!", "?", "»", "”", '"')):
+        return False
+    trailing_token_match = re.search(r"([A-Za-zА-Яа-яЁё]{1,12})\s*$", candidate)
+    if trailing_token_match is None:
+        return False
+    return trailing_token_match.group(1).lower() in {
+        "a",
+        "an",
+        "and",
+        "as",
+        "at",
+        "for",
+        "from",
+        "if",
+        "in",
+        "of",
+        "or",
+        "that",
+        "the",
+        "to",
+        "в",
+        "во",
+        "и",
+        "или",
+        "к",
+        "ко",
+        "на",
+        "но",
+        "о",
+        "об",
+        "от",
+        "по",
+        "с",
+        "со",
+        "что",
+    }
 
 
 def _looks_like_numeric_uppercase_running_header_noise(*, normalized_noise: str, current_text: str) -> bool:
@@ -2307,6 +2664,9 @@ def _canonicalize_cleanup_operation_sequence(
 ) -> list[tuple[int, int, int, CleanupOperation, str | None]]:
     block_index_by_id = {block.block_id: block.index for block in blocks}
     split_index_by_block_id: dict[str, int] = {}
+    inline_noise_operation_block_ids = {
+        operation.block_id for operation in operations if operation.operation == "remove_inline_noise"
+    }
     original_indexes_by_block_id: dict[str, list[int]] = {}
     mixed_delete_block_ids: set[str] = set()
     for operation_index, operation in enumerate(operations):
@@ -2348,6 +2708,9 @@ def _canonicalize_cleanup_operation_sequence(
                 split_index_by_block_id=split_index_by_block_id,
             )
         block_index = block_index_by_id[operation.block_id]
+        if operation.operation == "join_fragmented_paragraph" and operation.next_id in inline_noise_operation_block_ids:
+            block_index = max(block_index, block_index_by_id.get(operation.next_id, block_index))
+            phase = max(phase, _same_block_operation_phase(operation_name="join_fragmented_paragraph", seen_split=False))
         sequence_decision = "operation_sequence_reordered" if operation.block_id in reordered_block_ids else None
         sequenced_entries.append((block_index, phase, operation_index, operation, sequence_decision))
 

@@ -839,7 +839,14 @@ def _build_reader_mvp_status_payload(report: Mapping[str, object]) -> dict[str, 
         cleanup_contract_blockers.append(f"cleanup_stage_status={cleanup_stage_status}")
     if failed_chunk_count > 0:
         cleanup_contract_blockers.append(f"cleanup_chunk_failures={failed_chunk_count}")
-    if anchor_repair_status not in {"not_needed", "not_reported", "unknown"} and not (
+    if anchor_repair_status not in {
+        "not_needed",
+        "not_reported",
+        "unknown",
+        "runtime_applied",
+        "runtime_attempted_no_safe_ops",
+        "applied_in_runtime",
+    } and not (
         comparison_only_validation and anchor_repair_status == "diagnostic_only_not_applied"
     ):
         cleanup_contract_blockers.append(f"anchor_repair_status={anchor_repair_status}")
@@ -3353,7 +3360,11 @@ def _write_reader_verifier_artifacts(
         reader_cleanup_evidence=reader_cleanup_evidence,
     )
     existing_anchor_status = str(reader_cleanup_evidence.get("anchor_repair_status") or "").strip()
-    preserve_runtime_anchor_targets = existing_anchor_status == "applied_in_runtime"
+    preserve_runtime_anchor_targets = existing_anchor_status in {
+        "runtime_applied",
+        "runtime_attempted_no_safe_ops",
+        "applied_in_runtime",
+    }
     updated_reader_cleanup_evidence = dict(reader_cleanup_evidence)
     updated_reader_cleanup_evidence["anchor_repair_status"] = anchor_diagnostics["anchor_repair_status"]
     updated_reader_cleanup_evidence["verifier_recommended_anchor_targets"] = anchor_diagnostics[
@@ -4496,6 +4507,14 @@ def _build_reader_cleanup_evidence_from_artifact_paths(artifact_paths: Mapping[s
     anchor_repair_pass = cast(Mapping[str, object], passes.get("anchor_repair_pass") or {})
     runtime_anchor_selected_count = _coerce_int(anchor_repair_pass.get("selected_anchor_count"))
     runtime_anchor_applied = bool(anchor_repair_pass)
+    runtime_anchor_stats = cast(Mapping[str, object], anchor_repair_pass.get("stats") or {})
+    runtime_anchor_accepted_count = _coerce_int(runtime_anchor_stats.get("accepted_cleanup_operation_count"))
+    if runtime_anchor_applied and runtime_anchor_accepted_count > 0:
+        anchor_repair_status = "runtime_applied"
+    elif runtime_anchor_applied:
+        anchor_repair_status = "runtime_attempted_no_safe_ops"
+    else:
+        anchor_repair_status = "not_reported"
     deleted_block_previews: list[dict[str, object]] = []
     for entry in accepted_delete_blocks[:5]:
         if not isinstance(entry, Mapping):
@@ -4520,7 +4539,7 @@ def _build_reader_cleanup_evidence_from_artifact_paths(artifact_paths: Mapping[s
                 proposed_delete_block_count - accepted_delete_block_count - ignored_delete_block_count,
             ),
             "failed_chunk_count": failed_chunk_count,
-            "anchor_repair_status": "applied_in_runtime" if runtime_anchor_applied else "not_reported",
+            "anchor_repair_status": anchor_repair_status,
             "recommended_anchor_targets": list(cast(Sequence[object], anchor_repair_pass.get("selected_anchors") or [])),
             "recommended_anchor_target_count": runtime_anchor_selected_count,
             "deleted_block_previews": deleted_block_previews,
@@ -4540,7 +4559,7 @@ def _build_reader_verifier_anchor_repair_diagnostics(
         review_payload=review_payload,
         cleaned_markdown=cleaned_markdown,
     )
-    if existing_status == "applied_in_runtime":
+    if existing_status in {"runtime_applied", "runtime_attempted_no_safe_ops", "applied_in_runtime"}:
         anchor_repair_status = existing_status
         recommended_anchor_targets = list(
             cast(Sequence[object], reader_cleanup_evidence.get("recommended_anchor_targets") or [])
@@ -4867,6 +4886,50 @@ def _build_reader_cleanup_anchor_targets(
             }
         )
     return anchor_targets
+
+
+def _normalize_runtime_reader_cleanup_anchor_targets_payload(payload: object) -> list[dict[str, object]]:
+    if isinstance(payload, Mapping):
+        raw_targets = (
+            payload.get("verifier_recommended_anchor_targets")
+            or payload.get("anchor_targets")
+            or payload.get("recommended_anchor_targets")
+            or []
+        )
+    else:
+        raw_targets = payload
+    if not isinstance(raw_targets, Sequence) or isinstance(raw_targets, (str, bytes, bytearray)):
+        raise RuntimeError("reader_cleanup_anchor_targets_must_be_list")
+
+    targets: list[dict[str, object]] = []
+    for index, item in enumerate(raw_targets, start=1):
+        if not isinstance(item, Mapping):
+            raise RuntimeError(f"reader_cleanup_anchor_target_must_be_object:{index}")
+        category = str(item.get("category") or "").strip()
+        if category not in _ALLOWED_READER_CLEANUP_ANCHOR_REPAIR_CATEGORIES:
+            continue
+        targets.append(dict(item))
+    return targets
+
+
+def _load_runtime_reader_cleanup_anchor_targets_from_env() -> list[dict[str, object]]:
+    raw_json = os.environ.get("DOCXAI_READER_CLEANUP_ANCHOR_TARGETS_JSON", "").strip()
+    raw_path = os.environ.get("DOCXAI_READER_CLEANUP_ANCHOR_TARGETS_PATH", "").strip()
+    if raw_json and raw_path:
+        raise RuntimeError(
+            "Use only one of DOCXAI_READER_CLEANUP_ANCHOR_TARGETS_JSON or DOCXAI_READER_CLEANUP_ANCHOR_TARGETS_PATH"
+        )
+    if not raw_json and not raw_path:
+        return []
+
+    if raw_json:
+        payload = json.loads(raw_json)
+    else:
+        anchor_path = Path(raw_path)
+        if not anchor_path.is_absolute():
+            anchor_path = PROJECT_ROOT / anchor_path
+        payload = _load_json_file(anchor_path)
+    return _normalize_runtime_reader_cleanup_anchor_targets_payload(payload)
 
 
 def _merge_reader_cleanup_artifact_paths(
@@ -5531,6 +5594,10 @@ def main() -> None:
         app_config = load_app_config()
         runtime_resolution = resolve_runtime_resolution(app_config, run_profile)
         app_config_dict = apply_runtime_resolution_to_app_config(app_config, runtime_resolution)
+        runtime_anchor_targets = _load_runtime_reader_cleanup_anchor_targets_from_env()
+        if runtime_anchor_targets:
+            app_config_dict["reader_cleanup_anchor_repair_enabled"] = True
+            app_config_dict["reader_cleanup_anchor_targets"] = runtime_anchor_targets
         tracker.set_manifest_context(
             runtime_config=runtime_resolution.effective.to_dict(),
             runtime_overrides=runtime_resolution.overrides,

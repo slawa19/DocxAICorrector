@@ -194,6 +194,12 @@ def test_reader_cleanup_system_prompt_mentions_anchor_repair_constraints() -> No
     assert "If the request pass_name is anchor_repair" in prompt
     assert "If one anchored block needs both page-furniture removal and heading/body repair" in prompt
     assert "For fragmented paragraph anchors, use neighbor context" in prompt
+    assert "For anchor_repair fragmented_paragraph targets, first inspect only adjacent payload blocks" in prompt
+    assert "copy next_id and next_text_hash exactly from the current payload block list" in prompt
+    assert "exact normalized text already preserved in one nearby payload block" in prompt
+    assert "For anchor_repair page_furniture_inline targets, first propose remove_inline_noise" in prompt
+    assert "do not use join_fragmented_paragraph or delete_block as a substitute for that cleanup" in prompt
+    assert "page furniture plus an image caption sits between two parts of one sentence" in prompt
     assert "if the number is semantic content inside a sentence" in prompt
     assert "title-case running-header island with connector words or acronyms" in prompt
     assert "Полевой отчет НКО 167" in prompt
@@ -202,6 +208,14 @@ def test_reader_cleanup_system_prompt_mentions_anchor_repair_constraints() -> No
     assert "ГРАЖДАНСКИЕ ИНИЦИАТИВЫ И НЕКОММЕРЧЕСКИЙ СЕКТОР." in prompt
     assert "Стратегии для НКО 167" not in prompt
     assert "3 Управление и мы, граждане 201" not in prompt
+
+
+def test_reader_cleanup_schema_repair_prompt_mentions_fragmented_anchor_join_safety() -> None:
+    prompt = build_reader_cleanup_schema_repair_system_prompt()
+
+    assert "For anchor_repair fragmented_paragraph items" in prompt
+    assert "next_id and next_text_hash are copied from an adjacent block in the current request payload" in prompt
+    assert "do not convert a non-exact duplicate-looking tail into delete_block duplicate_fragment" in prompt
 
 
 def test_run_reader_cleanup_repairs_schema_once_and_applies_repaired_operation() -> None:
@@ -568,6 +582,61 @@ def test_run_reader_cleanup_anchor_pass_cannot_edit_blocks_outside_editable_wind
     assert result.report_payload["passes"]["anchor_repair_pass"]["stats"]["accepted_cleanup_operation_count"] == 0
 
 
+def test_run_reader_cleanup_anchor_pass_reanchors_stale_block_id_by_exact_snippet() -> None:
+    markdown = "Intro\n\nStale block text\n\n190 ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ Потребность в глобальной валюте.\n\nOutro"
+    blocks = build_cleanup_blocks(markdown)
+    payloads: list[dict[str, Any]] = []
+
+    def anchor_operation_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        payloads.append(payload)
+        target = next(block for block in payload["blocks"] if block["id"] == blocks[2].block_id)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": target["id"],
+                        "text_hash": target["text_hash"],
+                        "operation": "remove_inline_noise",
+                        "reason": "page_furniture_inline",
+                        "confidence": "high",
+                        "evidence_before": target["text"],
+                        "expected_after_preview": "Потребность в глобальной валюте.",
+                        "safety_note": "Remove only the exact page number and running header prefix.",
+                        "noise_substring": "190 ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ ",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, policy="advisory", chunk_size=1000),
+        operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
+            {"cleanup_operations": [], "warnings": []}, ensure_ascii=False
+        ),
+        anchor_operation_provider=anchor_operation_provider,
+        anchor_targets=(
+            {
+                "anchor_id": "anchor-page",
+                "category": "page_furniture_inline",
+                "block_id": blocks[1].block_id,
+                "line_ref": "3",
+                "snippet": "190 ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ Потребность в глобальной валюте",
+            },
+        ),
+    )
+
+    assert result.changed is True
+    assert "190 ПЕРЕОСМЫСЛИВАЯ ДЕНЬГИ" not in result.cleaned_markdown
+    assert payloads[0]["anchor_targets"][0]["block_id"] == blocks[2].block_id
+    assert any(
+        warning.startswith("reader_cleanup_anchor_target_reanchored_by_exact_snippet:1:")
+        for warning in result.report_payload["passes"]["anchor_repair_pass"]["warnings"]
+    )
+
+
 def test_run_reader_cleanup_invalid_anchor_pass_response_is_noop_in_advisory_mode() -> None:
     markdown = "Intro\n\nTitle body\n\nOutro"
     blocks = build_cleanup_blocks(markdown)
@@ -774,6 +843,362 @@ def test_run_reader_cleanup_fragmented_paragraph_anchor_window_uses_wider_contex
     ]
 
 
+def test_run_reader_cleanup_anchor_repair_joins_fragmented_paragraph_with_exact_adjacent_hash() -> None:
+    markdown = (
+        "Intro\n\n"
+        "Кооперативная валюта помогла району удержать местную торговлю,\n\n"
+        "и жители продолжили обменивать услуги без дополнительных долгов.\n\n"
+        "Outro"
+    )
+    blocks = build_cleanup_blocks(markdown)
+    payloads: list[dict[str, Any]] = []
+
+    def anchor_operation_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        payloads.append(payload)
+        first = next(block for block in payload["blocks"] if block["id"] == blocks[1].block_id)
+        second = next(block for block in payload["blocks"] if block["id"] == blocks[2].block_id)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": first["id"],
+                        "text_hash": first["text_hash"],
+                        "operation": "join_fragmented_paragraph",
+                        "reason": "fragmented_paragraph",
+                        "confidence": "high",
+                        "evidence_before": "The anchored block ends with a comma and the adjacent block starts with lowercase continuation prose.",
+                        "expected_after_preview": "Кооперативная валюта помогла району удержать местную торговлю, и жители продолжили обменивать услуги без дополнительных долгов.",
+                        "safety_note": "Join only the adjacent current payload block using exact next_id and next_text_hash.",
+                        "next_id": second["id"],
+                        "next_text_hash": second["text_hash"],
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, policy="advisory", chunk_size=1000),
+        operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
+            {"cleanup_operations": [], "warnings": []}, ensure_ascii=False
+        ),
+        anchor_operation_provider=anchor_operation_provider,
+        anchor_targets=(
+            {
+                "anchor_id": "anchor-frag",
+                "category": "fragmented_paragraph",
+                "block_id": blocks[1].block_id,
+                "line_ref": "3",
+                "snippet": blocks[1].text,
+            },
+        ),
+    )
+
+    assert result.changed is True
+    assert result.cleaned_markdown == (
+        "Intro\n\n"
+        "Кооперативная валюта помогла району удержать местную торговлю, "
+        "и жители продолжили обменивать услуги без дополнительных долгов.\n\n"
+        "Outro"
+    )
+    anchor_pass = result.report_payload["passes"]["anchor_repair_pass"]
+    assert anchor_pass["selected_anchor_count"] == 1
+    assert anchor_pass["stats"]["accepted_cleanup_operation_count"] == 1
+    assert result.report_payload["accepted_cleanup_operations"][-1]["pass_name"] == "anchor_repair"
+    assert payloads[0]["anchor_targets"][0]["category"] == "fragmented_paragraph"
+
+
+def test_run_reader_cleanup_anchor_repair_rejects_non_anchor_block_delete_inside_window() -> None:
+    markdown = "Intro\n\n190 ПЕРЕОСМЫСЛЕНИЕ ДЕНЕГ Особый интерес представляет система.\n\nУправление и мы, граждане.\n\nOutro"
+    blocks = build_cleanup_blocks(markdown)
+
+    def anchor_operation_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        non_anchor_block = next(block for block in payload["blocks"] if block["id"] == blocks[2].block_id)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": non_anchor_block["id"],
+                        "text_hash": non_anchor_block["text_hash"],
+                        "operation": "delete_block",
+                        "reason": "repeated_running_header",
+                        "confidence": "high",
+                        "evidence_before": non_anchor_block["text"],
+                        "expected_after_preview": "",
+                        "safety_note": "Do not delete neighboring non-anchor blocks during bounded anchor repair.",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, policy="advisory", chunk_size=1000),
+        operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
+            {"cleanup_operations": [], "warnings": []}, ensure_ascii=False
+        ),
+        anchor_operation_provider=anchor_operation_provider,
+        anchor_targets=(
+            {
+                "anchor_id": "anchor-page",
+                "category": "page_furniture_inline",
+                "block_id": blocks[1].block_id,
+                "line_ref": "3",
+                "snippet": "190 ПЕРЕОСМЫСЛЕНИЕ ДЕНЕГ Особый интерес",
+            },
+        ),
+    )
+
+    assert result.changed is False
+    assert result.report_payload["passes"]["anchor_repair_pass"]["stats"]["accepted_delete_block_count"] == 0
+    assert result.report_payload["ignored_cleanup_operations"][-1]["ignored_reason"] == (
+        "anchor_repair_operation_outside_anchor_targets"
+    )
+
+
+def test_run_reader_cleanup_anchor_repair_rejects_page_furniture_join_instead_of_noise_removal() -> None:
+    markdown = (
+        "Intro\n\n"
+        "190 ПЕРЕОСМЫСЛЕНИЕ ДЕНЕГ Особый интерес представляет система.\n\n"
+        "Лидер избирается большинством голосов.\n\n"
+        "Outro"
+    )
+    blocks = build_cleanup_blocks(markdown)
+
+    def anchor_operation_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        first = next(block for block in payload["blocks"] if block["id"] == blocks[1].block_id)
+        second = next(block for block in payload["blocks"] if block["id"] == blocks[2].block_id)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": first["id"],
+                        "text_hash": first["text_hash"],
+                        "operation": "join_fragmented_paragraph",
+                        "reason": "fragmented_paragraph",
+                        "confidence": "high",
+                        "evidence_before": first["text"],
+                        "expected_after_preview": first["text"] + " " + second["text"],
+                        "safety_note": "Wrong operation for a page furniture prefix anchor.",
+                        "next_id": second["id"],
+                        "next_text_hash": second["text_hash"],
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, policy="advisory", chunk_size=1000),
+        operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
+            {"cleanup_operations": [], "warnings": []}, ensure_ascii=False
+        ),
+        anchor_operation_provider=anchor_operation_provider,
+        anchor_targets=(
+            {
+                "anchor_id": "anchor-page",
+                "category": "page_furniture_inline",
+                "block_id": blocks[1].block_id,
+                "line_ref": "3",
+                "snippet": "190 ПЕРЕОСМЫСЛЕНИЕ ДЕНЕГ Особый интерес",
+            },
+        ),
+    )
+
+    assert result.changed is False
+    assert result.report_payload["passes"]["anchor_repair_pass"]["stats"]["accepted_cleanup_operation_count"] == 0
+    assert result.report_payload["ignored_cleanup_operations"][-1]["ignored_reason"] == (
+        "anchor_repair_page_furniture_requires_remove_inline_noise"
+    )
+
+
+def test_run_reader_cleanup_anchor_repair_removes_page_caption_noise_then_joins_previous_fragment() -> None:
+    previous = "Как отмечалось в статье журнала Time: «Один из самых верных признаков того, что вы находитесь в"
+    current = (
+        "166 ПРОЦВЕТАНИЕ Коста Грамматис со спутником связи Echostar 16 в штаб-квартире Loral "
+        "в Пало-Альто, Калифорния. Фото: A Human Right. развивающейся стране, — это мусор под ногами."
+    )
+    noise = (
+        "166 ПРОЦВЕТАНИЕ Коста Грамматис со спутником связи Echostar 16 в штаб-квартире Loral "
+        "в Пало-Альто, Калифорния. Фото: A Human Right. "
+    )
+    markdown = f"Intro\n\n{previous}\n\n{current}\n\nOutro"
+    blocks = build_cleanup_blocks(markdown)
+
+    def anchor_operation_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        previous_block = next(block for block in payload["blocks"] if block["id"] == blocks[1].block_id)
+        current_block = next(block for block in payload["blocks"] if block["id"] == blocks[2].block_id)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": current_block["id"],
+                        "text_hash": current_block["text_hash"],
+                        "operation": "remove_inline_noise",
+                        "reason": "page_furniture_inline",
+                        "confidence": "high",
+                        "evidence_before": current_block["text"],
+                        "expected_after_preview": "развивающейся стране, — это мусор под ногами.",
+                        "safety_note": "Remove only the exact page header and image caption span.",
+                        "noise_substring": noise,
+                    },
+                    {
+                        "id": previous_block["id"],
+                        "text_hash": previous_block["text_hash"],
+                        "operation": "join_fragmented_paragraph",
+                        "reason": "fragmented_paragraph",
+                        "confidence": "high",
+                        "evidence_before": previous_block["text"],
+                        "expected_after_preview": (
+                            previous
+                            + " развивающейся стране, — это мусор под ногами."
+                        ),
+                        "safety_note": "After exact page/caption removal, join the unfinished previous sentence to the lowercase continuation.",
+                        "next_id": current_block["id"],
+                        "next_text_hash": current_block["text_hash"],
+                    },
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, policy="advisory", chunk_size=1000),
+        operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
+            {"cleanup_operations": [], "warnings": []}, ensure_ascii=False
+        ),
+        anchor_operation_provider=anchor_operation_provider,
+        anchor_targets=(
+            {
+                "anchor_id": "anchor-page-caption",
+                "category": "page_furniture_inline",
+                "block_id": blocks[2].block_id,
+                "line_ref": "5",
+                "snippet": "166 ПРОЦВЕТАНИЕ Коста Грамматис со спутником связи",
+            },
+        ),
+    )
+
+    assert result.changed is True
+    assert result.cleaned_markdown == (
+        "Intro\n\n"
+        + previous
+        + " развивающейся стране, — это мусор под ногами.\n\n"
+        "Outro"
+    )
+    anchor_pass = result.report_payload["passes"]["anchor_repair_pass"]
+    assert anchor_pass["stats"]["accepted_cleanup_operation_count"] == 2
+    assert anchor_pass["stats"]["accepted_delete_block_count"] == 0
+    assert [entry["operation"] for entry in result.report_payload["accepted_cleanup_operations"][-2:]] == [
+        "remove_inline_noise",
+        "join_fragmented_paragraph",
+    ]
+
+
+def test_run_reader_cleanup_anchor_repair_reanchors_stale_page_caption_then_joins_next_continuation() -> None:
+    current = (
+        "10 Он объясняет, что люди могут зарабатывать локальную валюту. "
+        "Как отмечалось в статье журнала Time: «Один из самых верных признаков того, что вы находитесь в"
+        "Коста Грамматис рядом со спутником связи Echostar 16 в штаб-квартире Loral "
+        "в Пало-Альто, Калифорния. Photo credit: A Human Right."
+    )
+    continuation = (
+        "развивающейся стране, — это мусор у вас под ногами. И дело здесь не столько в дурных привычках."
+    )
+    noise = (
+        "Коста Грамматис рядом со спутником связи Echostar 16 в штаб-квартире Loral "
+        "в Пало-Альто, Калифорния. Photo credit: A Human Right."
+    )
+    stale_snippet = (
+        "166 ПРОЦВЕТАНИЕ Коста Грамматис со спутником связи Echostar 16 в штаб-квартире Loral "
+        "в Пало-Альто, Калифорния. Фото: A Human Right. развивающейся стране, — это мусор под ногами"
+    )
+    markdown = f"Intro\n\n{current}\n\n{continuation}\n\nOutro"
+    blocks = build_cleanup_blocks(markdown)
+
+    def anchor_operation_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        current_block = next(block for block in payload["blocks"] if block["id"] == blocks[1].block_id)
+        continuation_block = next(block for block in payload["blocks"] if block["id"] == blocks[2].block_id)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": current_block["id"],
+                        "text_hash": current_block["text_hash"],
+                        "operation": "remove_inline_noise",
+                        "reason": "page_furniture_inline",
+                        "confidence": "high",
+                        "evidence_before": noise,
+                        "expected_after_preview": current_block["text"].replace(noise, "", 1),
+                        "safety_note": "Remove only the exact image caption span after an unfinished sentence.",
+                    },
+                    {
+                        "id": current_block["id"],
+                        "text_hash": current_block["text_hash"],
+                        "operation": "join_fragmented_paragraph",
+                        "reason": "fragmented_paragraph",
+                        "confidence": "high",
+                        "evidence_before": current_block["text"],
+                        "expected_after_preview": current_block["text"].replace(noise, "", 1) + " " + continuation,
+                        "safety_note": "Join the exact adjacent lowercase continuation after caption removal.",
+                        "next_id": continuation_block["id"],
+                        "next_text_hash": continuation_block["text_hash"],
+                    },
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, policy="advisory", chunk_size=1000),
+        operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
+            {"cleanup_operations": [], "warnings": []}, ensure_ascii=False
+        ),
+        anchor_operation_provider=anchor_operation_provider,
+        anchor_targets=(
+            {
+                "anchor_id": "stale-page-caption",
+                "category": "page_furniture_inline",
+                "block_id": blocks[2].block_id,
+                "line_ref": "261",
+                "snippet": stale_snippet,
+            },
+        ),
+    )
+
+    assert result.changed is True
+    assert result.cleaned_markdown == (
+        "Intro\n\n"
+        "10 Он объясняет, что люди могут зарабатывать локальную валюту. "
+        "Как отмечалось в статье журнала Time: «Один из самых верных признаков того, что вы находитесь в "
+        + continuation
+        + "\n\nOutro"
+    )
+    anchor_pass = result.report_payload["passes"]["anchor_repair_pass"]
+    assert anchor_pass["selected_anchors"][0]["block_id"] == blocks[1].block_id
+    assert any(
+        warning.startswith("reader_cleanup_anchor_target_reanchored_by_page_caption_signal:1:")
+        for warning in anchor_pass["warnings"]
+    )
+    assert "reader_cleanup_exact_fields_recovered:1:b_000001:remove_inline_noise" in anchor_pass["warnings"]
+    assert anchor_pass["stats"]["accepted_cleanup_operation_count"] == 2
+    assert anchor_pass["stats"]["accepted_delete_block_count"] == 0
+    assert [entry["operation"] for entry in result.report_payload["accepted_cleanup_operations"][-2:]] == [
+        "remove_inline_noise",
+        "join_fragmented_paragraph",
+    ]
+
+
 def test_run_reader_cleanup_infers_missing_confidence_for_safe_extraction_artifact_delete() -> None:
     markdown = "Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph\n\nOutro"
 
@@ -845,6 +1270,65 @@ def test_run_reader_cleanup_rejects_incompatible_duplicate_operation_with_explic
     assert result.cleaned_markdown == "Intro\n\nBody paragraph\n\nOutro"
     assert result.report_payload["stats"]["failed_chunk_count"] == 0
     assert result.report_payload["ignored_delete_blocks"][0]["ignored_reason"] == "duplicate_operation_incompatible"
+
+
+def test_run_reader_cleanup_reports_heading_boundary_application_diagnostics() -> None:
+    markdown = (
+        "Intro\n\n"
+        "РАБОЧИЙ ЗАГОЛОВОК Нормальный текст начинается здесь.\n\n"
+        "Цитата перед заголовком занимает место. СЛОЖНЫЙ ЗАГОЛОВОК Основной текст после заголовка.\n\n"
+        "Outro"
+    )
+    blocks = build_cleanup_blocks(markdown)
+
+    def operation_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        first = next(block for block in payload["blocks"] if block["id"] == blocks[1].block_id)
+        second = next(block for block in payload["blocks"] if block["id"] == blocks[2].block_id)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": first["id"],
+                        "text_hash": first["text_hash"],
+                        "operation": "normalize_heading_boundary",
+                        "reason": "likely_heading_body_patterns",
+                        "confidence": "high",
+                        "evidence_before": first["text"],
+                        "expected_after_preview": "РАБОЧИЙ ЗАГОЛОВОК\n\nНормальный текст начинается здесь.",
+                        "safety_note": "Separates exact heading prefix from body.",
+                        "heading_substring": "РАБОЧИЙ ЗАГОЛОВОК",
+                        "body_substring": "Нормальный текст начинается здесь.",
+                    },
+                    {
+                        "id": second["id"],
+                        "text_hash": second["text_hash"],
+                        "operation": "normalize_heading_boundary",
+                        "reason": "likely_heading_body_patterns",
+                        "confidence": "high",
+                        "evidence_before": second["text"],
+                        "expected_after_preview": "СЛОЖНЫЙ ЗАГОЛОВОК\n\nОсновной текст после заголовка.",
+                        "safety_note": "This should be diagnosed because semantic text precedes the heading.",
+                        "heading_substring": "СЛОЖНЫЙ ЗАГОЛОВОК",
+                        "body_substring": "Основной текст после заголовка.",
+                    },
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, policy="advisory", chunk_size=1000),
+        operation_provider=operation_provider,
+    )
+
+    diagnostics = result.report_payload["heading_boundary_application_diagnostics"]
+    assert diagnostics["accepted_count"] == 1
+    assert diagnostics["ignored_count"] == 1
+    assert diagnostics["ignored_reason_counts"] == {"heading_boundary_unaccounted_text": 1}
+    assert diagnostics["ignored_examples"][0]["heading_substring"] == "СЛОЖНЫЙ ЗАГОЛОВОК"
+    assert diagnostics["ignored_examples"][0]["ignored_reason"] == "heading_boundary_unaccounted_text"
 
 
 def test_run_reader_cleanup_does_not_infer_missing_confidence_for_heading_delete() -> None:
