@@ -77,6 +77,19 @@ def test_resolve_reader_cleanup_config_accepts_overlap_and_string_global_plan_fl
     assert config.global_plan_enabled is False
 
 
+def test_resolve_reader_cleanup_config_defaults_to_canonical_small_overlap_shape() -> None:
+    config = resolve_reader_cleanup_config(
+        app_config={"reader_cleanup_enabled": True},
+        fallback_model="fallback:model",
+    )
+
+    assert config.enabled is True
+    assert config.chunk_size == 8000
+    assert config.overlap_blocks_before == 3
+    assert config.overlap_blocks_after == 3
+    assert config.global_plan_enabled is False
+
+
 def test_run_reader_cleanup_applies_safe_delete_operations() -> None:
     markdown = "Intro\n\nCompany Header\n\n10\n\nBody paragraph\n\nCompany Header\n\nOutro"
 
@@ -320,6 +333,16 @@ def test_reader_cleanup_system_prompt_mentions_anchor_repair_constraints() -> No
     assert "exact normalized text already preserved in one nearby payload block" in prompt
     assert "For anchor_repair page_furniture_inline targets, first propose remove_inline_noise" in prompt
     assert "do not use join_fragmented_paragraph or delete_block as a substitute for that cleanup" in prompt
+    assert "For inline endnote/page marker artifacts inside prose" in prompt
+    assert "exact deleted span in noise_substring" in prompt
+    assert "For duplicate semantic heading text repeated inline" in prompt
+    assert "operation_selection_targets lists a duplicate_semantic_heading_text candidate" in prompt
+    assert "operation_selection_targets lists a side_heading_island_candidate" in prompt
+    assert "Semantic heading islands are not noise" in prompt
+    assert "Do not delete semantic heading islands with remove_inline_noise" in prompt
+    assert "first try split_block, then normalize_heading_boundary" in prompt
+    assert 'bad: remove_inline_noise "Три мультинациональные валюты"' in prompt
+    assert "Good: split_block or normalize_heading_boundary that preserves both heading text and body text exactly" in prompt
     assert "page furniture plus an image caption sits between two parts of one sentence" in prompt
     assert "if the number is semantic content inside a sentence" in prompt
     assert "title-case running-header island with connector words or acronyms" in prompt
@@ -382,6 +405,24 @@ def test_run_reader_cleanup_retries_empty_non_json_response_once() -> None:
     assert result.report_payload["chunk_results"][0]["retry_attempted"] is True
     assert result.report_payload["chunk_results"][0]["retry_status"] == "succeeded"
     assert "reader_cleanup_non_json_response_retry_succeeded:1" in result.report_payload["warnings"]
+
+
+def test_run_reader_cleanup_accepts_json_object_wrapped_in_model_prose() -> None:
+    markdown = "Intro\n\nBody paragraph"
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, policy="advisory"),
+        operation_provider=lambda payload, chunk_index, chunk_count: (
+            "I will return the JSON now.\n"
+            '{"cleanup_operations":[],"warnings":["kept text"]}\n'
+            "Done."
+        ),
+    )
+
+    assert result.changed is False
+    assert result.report_payload["chunk_results"][0]["status"] == "completed"
+    assert "kept text" in result.report_payload["warnings"]
 
 
 def test_run_reader_cleanup_records_failed_empty_response_diagnostics_after_retry() -> None:
@@ -2810,6 +2851,297 @@ def test_run_reader_cleanup_removes_inline_page_furniture_from_exact_substring()
     assert result.changed is True
     assert "248 РАЗДЕЛ ДОКУМЕНТА" not in result.cleaned_markdown
     assert "Через призму рабочего процесса" in result.cleaned_markdown
+
+
+def test_run_reader_cleanup_recovers_inline_page_marker_from_exact_preview() -> None:
+    target = "Однако в 1950-х годах 5 эта чеканка была запрещена."
+    markdown = f"Intro\n\n{target}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(block for block in payload["blocks"] if block["text"] == target)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "remove_inline_noise",
+                        "reason": "page_number",
+                        "confidence": "high",
+                        "evidence_before": "A standalone page/endnote marker is embedded between two prose tokens.",
+                        "expected_after_preview": "Однако в 1950-х годах эта чеканка была запрещена.",
+                        "safety_note": "Only the standalone marker is removed; the surrounding prose is preserved.",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is True
+    assert result.cleaned_markdown == "Intro\n\nОднако в 1950-х годах эта чеканка была запрещена.\n\nOutro"
+    assert "reader_cleanup_exact_fields_recovered:1:b_000001:remove_inline_noise" in result.report_payload["warnings"]
+    assert result.report_payload["accepted_cleanup_operations"][0]["noise_substring"] == "5 "
+
+
+def test_run_reader_cleanup_preserves_word_boundary_after_inline_marker_removal() -> None:
+    target = "Однако в 1950-х годах 5 эта чеканка была запрещена."
+    markdown = f"Intro\n\n{target}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(block for block in payload["blocks"] if block["text"] == target)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "remove_inline_noise",
+                        "reason": "orphan_footnote_marker",
+                        "confidence": "high",
+                        "evidence_before": "A standalone page/endnote marker is embedded between two prose tokens.",
+                        "expected_after_preview": "Однако в 1950-х годах эта чеканка была запрещена.",
+                        "safety_note": "The surrounding words must remain separated by one space.",
+                        "noise_substring": " 5 ",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is True
+    assert "годах эта" in result.cleaned_markdown
+    assert "годахэта" not in result.cleaned_markdown
+
+
+def test_run_reader_cleanup_does_not_recover_inline_noise_from_teaser_preview() -> None:
+    target = (
+        "25 В ответ на экономическую глобализацию и параллельно с ней огромную популярность приобрела "
+        "организация валют на местном уровне."
+    )
+    markdown = f"Intro\n\n{target}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(block for block in payload["blocks"] if block["text"] == target)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "remove_inline_noise",
+                        "reason": "page_number",
+                        "confidence": "high",
+                        "evidence_before": "The response only previews the beginning of the cleaned block.",
+                        "expected_after_preview": "В ответ на экономическую глобализацию",
+                        "safety_note": "Runtime must not infer a deletion from a teaser preview.",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    assert result.report_payload["ignored_cleanup_operations"][0]["ignored_reason"] == "noise_substring_not_found"
+
+
+def test_run_reader_cleanup_recovers_duplicate_inline_heading_from_exact_preview() -> None:
+    target = (
+        "Во многих странах национальные валюты Национальные валюты будут использоваться еще долгое время."
+    )
+    markdown = f"Intro\n\n{target}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(block for block in payload["blocks"] if block["text"] == target)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "remove_inline_noise",
+                        "reason": "duplicate_fragment",
+                        "confidence": "high",
+                        "evidence_before": "The same heading phrase is repeated inline before the body continues.",
+                        "expected_after_preview": "Во многих странах национальные валюты будут использоваться еще долгое время.",
+                        "safety_note": "Only the adjacent duplicate phrase is removed; the semantic sentence remains.",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is True
+    assert result.cleaned_markdown == (
+        "Intro\n\nВо многих странах национальные валюты будут использоваться еще долгое время.\n\nOutro"
+    )
+    assert result.report_payload["accepted_cleanup_operations"][0]["noise_substring"] == "Национальные валюты "
+
+
+def test_reader_cleanup_request_targets_duplicate_semantic_heading_for_operation_selection() -> None:
+    target = (
+        "Во многих странах национальные валюты Национальные валюты будут использоваться еще долгое время."
+    )
+    markdown = f"Intro\n\n{target}\n\nOutro"
+    seen_payloads: list[dict[str, Any]] = []
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        seen_payloads.append(payload)
+        return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    targets = seen_payloads[0]["operation_selection_targets"]
+    duplicate_target = next(
+        target for target in targets if target["category"] == "duplicate_semantic_heading_text"
+    )
+    assert duplicate_target["operation_hint"] == "remove_inline_noise"
+    assert duplicate_target["reason_hint"] == "duplicate_fragment"
+    assert duplicate_target["noise_substring"] == "Национальные валюты "
+    assert duplicate_target["expected_after_preview"] == (
+        "Во многих странах национальные валюты будут использоваться еще долгое время."
+    )
+    assert "duplicate_fragment" in seen_payloads[0]["response_contract"]["reason_guidance_by_operation"][
+        "remove_inline_noise"
+    ]
+
+
+def test_run_reader_cleanup_rejects_non_adjacent_duplicate_fragment_inline_noise() -> None:
+    target = "Во многих странах национальные валюты будут использоваться еще долгое время."
+    markdown = f"Intro\n\n{target}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(block for block in payload["blocks"] if block["text"] == target)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "remove_inline_noise",
+                        "reason": "duplicate_fragment",
+                        "confidence": "high",
+                        "evidence_before": "A semantic phrase was incorrectly proposed as duplicate inline noise.",
+                        "expected_after_preview": "Во многих странах будут использоваться еще долгое время.",
+                        "safety_note": "Runtime must reject semantic removal when there is no adjacent duplicate phrase.",
+                        "noise_substring": "национальные валюты ",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    assert result.report_payload["ignored_cleanup_operations"][0]["ignored_reason"] == (
+        "remove_inline_noise_not_exact_noise_pattern"
+    )
+
+
+def test_reader_cleanup_request_targets_side_heading_island_without_inline_delete_hint() -> None:
+    target = (
+        "Стало очевидно, что региональная Три мультинациональные валюты экономическая интеграция "
+        "может достичь зрелости только тогда, когда единая валюта уравнивает условия."
+    )
+    markdown = f"Intro\n\n{target}\n\nOutro"
+    seen_payloads: list[dict[str, Any]] = []
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        seen_payloads.append(payload)
+        return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    targets = seen_payloads[0]["operation_selection_targets"]
+    side_heading_target = next(target for target in targets if target["category"] == "side_heading_island_candidate")
+    assert side_heading_target["heading_candidate"] == "Три мультинациональные валюты"
+    assert side_heading_target["operation_hint"] == (
+        "preserve_heading_text_with_split_block_or_normalize_heading_boundary"
+    )
+    assert side_heading_target["preferred_operation_order"] == ["split_block", "normalize_heading_boundary"]
+    assert side_heading_target["forbidden_default_operation"] == "remove_inline_noise"
+    assert "Semantic heading islands are not noise" in side_heading_target["safety_note"]
+    assert "Do not delete with remove_inline_noise" in side_heading_target["safety_note"]
+    assert side_heading_target["id"].startswith("b_")
+
+
+def test_run_reader_cleanup_rejects_side_heading_island_remove_inline_noise() -> None:
+    target = (
+        "Стало очевидно, что региональная Три мультинациональные валюты экономическая интеграция "
+        "может достичь зрелости только тогда, когда единая валюта уравнивает условия."
+    )
+    markdown = f"Intro\n\n{target}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(block for block in payload["blocks"] if block["text"] == target)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "remove_inline_noise",
+                        "reason": "page_furniture_inline",
+                        "confidence": "high",
+                        "evidence_before": "A semantic side-heading island was incorrectly proposed as noise.",
+                        "expected_after_preview": (
+                            "Стало очевидно, что региональная экономическая интеграция "
+                            "может достичь зрелости только тогда, когда единая валюта уравнивает условия."
+                        ),
+                        "safety_note": "Runtime must reject deleting semantic heading island text.",
+                        "noise_substring": "Три мультинациональные валюты ",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    assert result.report_payload["ignored_cleanup_operations"][0]["ignored_reason"] == (
+        "remove_inline_noise_not_exact_noise_pattern"
+    )
+
+
+def test_reader_cleanup_request_does_not_target_leading_dash_as_side_heading_island() -> None:
+    target = (
+        "— Эти монеты чеканились в Китае и использовались в качестве торговых жетонов, "
+        "подобно тому как коренные народы использовали торговые бусины."
+    )
+    markdown = f"Intro\n\n{target}\n\nOutro"
+    seen_payloads: list[dict[str, Any]] = []
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        seen_payloads.append(payload)
+        return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    assert not any(
+        target["category"] == "side_heading_island_candidate"
+        for target in seen_payloads[0]["operation_selection_targets"]
+    )
 
 
 def test_run_reader_cleanup_removes_numeric_uppercase_running_header_prefix() -> None:

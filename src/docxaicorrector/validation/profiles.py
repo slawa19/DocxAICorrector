@@ -87,6 +87,8 @@ class RunProfile:
     reader_verifier_enabled: bool | None = None
     reader_cleanup_model: str | None = None
     reader_cleanup_chunk_size: int | None = None
+    reader_cleanup_overlap_blocks_before: int | None = None
+    reader_cleanup_overlap_blocks_after: int | None = None
     reader_cleanup_global_plan_enabled: bool | None = None
     reader_cleanup_keep_toc: bool | None = None
     reader_cleanup_drop_back_matter: bool | None = None
@@ -271,6 +273,8 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         "reader_verifier_enabled": run_profile.reader_verifier_enabled,
         "reader_cleanup_model": run_profile.reader_cleanup_model,
         "reader_cleanup_chunk_size": run_profile.reader_cleanup_chunk_size,
+        "reader_cleanup_overlap_blocks_before": run_profile.reader_cleanup_overlap_blocks_before,
+        "reader_cleanup_overlap_blocks_after": run_profile.reader_cleanup_overlap_blocks_after,
         "reader_cleanup_global_plan_enabled": run_profile.reader_cleanup_global_plan_enabled,
         "reader_cleanup_keep_toc": run_profile.reader_cleanup_keep_toc,
         "reader_cleanup_drop_back_matter": run_profile.reader_cleanup_drop_back_matter,
@@ -338,6 +342,10 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         app_config_overrides["reader_cleanup_model"] = run_profile.reader_cleanup_model
     if run_profile.reader_cleanup_chunk_size is not None:
         app_config_overrides["reader_cleanup_chunk_size"] = run_profile.reader_cleanup_chunk_size
+    if run_profile.reader_cleanup_overlap_blocks_before is not None:
+        app_config_overrides["reader_cleanup_overlap_blocks_before"] = run_profile.reader_cleanup_overlap_blocks_before
+    if run_profile.reader_cleanup_overlap_blocks_after is not None:
+        app_config_overrides["reader_cleanup_overlap_blocks_after"] = run_profile.reader_cleanup_overlap_blocks_after
     if run_profile.reader_cleanup_global_plan_enabled is not None:
         app_config_overrides["reader_cleanup_global_plan_enabled"] = run_profile.reader_cleanup_global_plan_enabled
     if run_profile.reader_cleanup_keep_toc is not None:
@@ -496,6 +504,8 @@ def _build_run_profile(payload: Any) -> RunProfile:
         reader_verifier_enabled=_optional_bool(payload, "reader_verifier_enabled"),
         reader_cleanup_model=_optional_str(payload, "reader_cleanup_model"),
         reader_cleanup_chunk_size=_optional_int(payload, "reader_cleanup_chunk_size"),
+        reader_cleanup_overlap_blocks_before=_optional_int(payload, "reader_cleanup_overlap_blocks_before"),
+        reader_cleanup_overlap_blocks_after=_optional_int(payload, "reader_cleanup_overlap_blocks_after"),
         reader_cleanup_global_plan_enabled=_optional_bool(payload, "reader_cleanup_global_plan_enabled"),
         reader_cleanup_keep_toc=_optional_bool(payload, "reader_cleanup_keep_toc"),
         reader_cleanup_drop_back_matter=_optional_bool(payload, "reader_cleanup_drop_back_matter"),

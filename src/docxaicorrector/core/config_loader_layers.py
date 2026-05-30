@@ -289,6 +289,19 @@ def build_app_config_payload(
         "image_output_trim_padding_ratio": image_output_settings["image_output_trim_padding_ratio"],
         "image_output_trim_padding_min_px": image_output_settings["image_output_trim_padding_min_px"],
         "image_output_trim_max_loss_ratio": image_output_settings["image_output_trim_max_loss_ratio"],
+        "reader_cleanup_default": semantic_validation_runtime_settings["reader_cleanup_default"],
+        "reader_cleanup_model": semantic_validation_runtime_settings["reader_cleanup_model"],
+        "reader_verifier_model": semantic_validation_runtime_settings["reader_verifier_model"],
+        "reader_cleanup_chunk_size": semantic_validation_runtime_settings["reader_cleanup_chunk_size"],
+        "reader_cleanup_overlap_blocks_before": semantic_validation_runtime_settings[
+            "reader_cleanup_overlap_blocks_before"
+        ],
+        "reader_cleanup_overlap_blocks_after": semantic_validation_runtime_settings[
+            "reader_cleanup_overlap_blocks_after"
+        ],
+        "reader_cleanup_global_plan_enabled": semantic_validation_runtime_settings[
+            "reader_cleanup_global_plan_enabled"
+        ],
     }
 
 

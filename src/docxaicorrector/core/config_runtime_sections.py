@@ -79,6 +79,32 @@ def resolve_semantic_validation_and_runtime_settings(
         "reconstruction_background_uniformity_threshold",
         10.0,
     )
+    reader_cleanup_default = parse_config_bool_fn(config_data, "reader_cleanup_default", False)
+    raw_reader_cleanup_model = config_data.get("reader_cleanup_model", "")
+    if not isinstance(raw_reader_cleanup_model, str):
+        raise RuntimeError(f"Некорректное поле reader_cleanup_model в {config_path}")
+    reader_cleanup_model = raw_reader_cleanup_model.strip()
+    reader_verifier_model = parse_config_str_fn(
+        config_data,
+        "reader_verifier_model",
+        "openrouter:google/gemini-3-flash-preview",
+    )
+    reader_cleanup_chunk_size = parse_config_int_fn(config_data, "reader_cleanup_chunk_size", 8000)
+    reader_cleanup_overlap_blocks_before = parse_config_int_fn(
+        config_data,
+        "reader_cleanup_overlap_blocks_before",
+        3,
+    )
+    reader_cleanup_overlap_blocks_after = parse_config_int_fn(
+        config_data,
+        "reader_cleanup_overlap_blocks_after",
+        3,
+    )
+    reader_cleanup_global_plan_enabled = parse_config_bool_fn(
+        config_data,
+        "reader_cleanup_global_plan_enabled",
+        False,
+    )
 
     image_mode_default = parse_image_mode_fn(
         os.getenv("DOCX_AI_IMAGE_MODE_DEFAULT", image_mode_default).strip() or image_mode_default,
@@ -213,6 +239,21 @@ def resolve_semantic_validation_and_runtime_settings(
             minimum=1.0,
             maximum=64.0,
         ),
+        "reader_cleanup_default": reader_cleanup_default,
+        "reader_cleanup_model": reader_cleanup_model,
+        "reader_verifier_model": reader_verifier_model,
+        "reader_cleanup_chunk_size": clamp_int_fn(reader_cleanup_chunk_size, minimum=3000, maximum=50000),
+        "reader_cleanup_overlap_blocks_before": clamp_int_fn(
+            reader_cleanup_overlap_blocks_before,
+            minimum=0,
+            maximum=20,
+        ),
+        "reader_cleanup_overlap_blocks_after": clamp_int_fn(
+            reader_cleanup_overlap_blocks_after,
+            minimum=0,
+            maximum=20,
+        ),
+        "reader_cleanup_global_plan_enabled": reader_cleanup_global_plan_enabled,
     }
 
 

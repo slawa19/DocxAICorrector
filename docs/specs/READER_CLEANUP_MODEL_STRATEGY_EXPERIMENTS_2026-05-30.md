@@ -206,7 +206,69 @@ Every model/strategy experiment must record:
 | 2026-05-30 | `direct_anthropic_bulk_current` | `20260530_102025...raw.result.md` | 114894 chars / 311 blocks | `anthropic:claude-sonnet-4-6` | same | stopped/no cleanup artifacts | Direct Anthropic works technically but full bulk cleanup shape is too heavy | `.run/reader_cleanup_replay_experiments/20260530T080816Z_direct-anthropic-current/` |
 | 2026-05-30 | `direct_anthropic_first40_current` | `anthropic_reader_cleanup_probe_first40.raw.result.md` | 10171 chars / 40 blocks | `anthropic:claude-sonnet-4-6` | attempted in replay; base artifacts initially missing | cleanup completed | 3 accepted operations, 0 failed chunks, useful heading/epigraph separation | `.run/reader_cleanup_replay_experiments/20260530T081037Z_direct-anthropic-first40/experiment_summary.md` |
 | 2026-05-30 | `direct_anthropic_verifier_first40` | completed first40 cleanup artifacts | 40-block cleanup output | n/a | `anthropic:claude-sonnet-4-6` | completed | `cleaned_better`, confidence high, raw 6.0 -> cleaned 7.0, 2 remaining issues | `.run/reader_cleanup_replay_experiments/20260530T081037Z_direct-anthropic-first40/anthropic-verifier-only/anthropic-verifier-probe-first40_reader_quality_review.md` |
+| 2026-05-25 | `gemini_current_baseline` | `20260525_185154...raw.result.md` | chapter-region input | `openrouter:google/gemini-3-flash-preview` | same | completed, 3 repeats | Current Gemini cleanup completed reliably but left 29, 32, and 32 remaining issues; mean 31.0; heading_fused_with_body 11-15; 1 broad unsafe remove_inline_noise proposal per repeat | `.run/reader_cleanup_replay_experiments/20260525T163254Z_fixed185154-current/experiment_summary.json` |
+| 2026-05-25 | `gemini_decomposition_first_baseline` | `20260525_185154...raw.result.md` | chapter-region input | `openrouter:google/gemini-3-flash-preview` | same | completed, 3 repeats | Best historical Gemini cleanup baseline by remaining issues: 26, 33, and 26; mean 28.333; no broad unsafe remove_inline_noise proposals, but high cleanup variability remains | `.run/reader_cleanup_replay_experiments/20260525T163257Z_fixed185154-decomposition/experiment_summary.json` |
+| 2026-05-25 | `gemini_anchor_focused_baseline` | `20260525_185154...raw.result.md` | chapter-region input | `openrouter:google/gemini-3-flash-preview` | same | completed, 3 repeats | Gemini anchor-focused left 26, 32, and 32 remaining issues; mean 30.0; did not beat decomposition_first and still left fused headings/page furniture | `.run/reader_cleanup_replay_experiments/20260525T163300Z_fixed185154-anchor/experiment_summary.json` |
 | 2026-05-30 | `anthropic_small_overlap_v1` | `20260530_102025...raw.result.md` | 114894 chars / 311 blocks | `anthropic:claude-sonnet-4-6` | same | completed with partial cleanup failures | 15 chunks at 8000 chars, 3/3 read-only overlap, global plan disabled; 3 chunks failed on empty/non-JSON model response; 41 accepted operations; verifier completed with `cleaned_better`, confidence high, 18 remaining issues | `.run/reader_cleanup_replay_experiments/20260530T085112Z_anthropic-small-overlap-v1/experiment_summary.md` |
+| 2026-05-30 | `anthropic_small_overlap_v1_json_extract` | `20260530_102025...raw.result.md` | 114894 chars / 311 blocks | `anthropic:claude-sonnet-4-6` | same | completed | Added strict JSON prompt/payload contract plus JSON-object extraction for prose-wrapped responses; 15 chunks, 0 failed chunks, 49 accepted operations, 0 broad unsafe remove_inline_noise proposals; verifier completed with `cleaned_better`, confidence high, 17 remaining issues | `.run/reader_cleanup_replay_experiments/20260530T093243Z_anthropic-small-overlap-v1-json-extract/experiment_summary.md` |
+| 2026-05-30 | `gemini_small_overlap_v1_json_extract_control` | `20260530_102025...raw.result.md` | 114894 chars / 311 blocks | `openrouter:google/gemini-3-flash-preview` | same | completed with partial cleanup failures | Same input and same shape as stabilized Anthropic: 15 chunks at 8000 chars, 3/3 read-only overlap, global plan disabled; 2 chunks failed on schema validation/repair; 36 accepted operations; verifier completed with `cleaned_better`, confidence high, 27 remaining issues; issue counts: heading_fused_with_body 12, page_furniture_inline 2, broken_list_marker 11, fragmented_paragraph 2, mixed_language_leak 0; 0 broad unsafe remove_inline_noise proposals | `.run/reader_cleanup_replay_experiments/20260530T101736Z_gemini-small-overlap-v1-json-extract-control/experiment_summary.md` |
+| 2026-05-30 | `anthropic_small_overlap_pr_h0a_inline_marker_duplicate_boundary_proof` | `20260530_102025...raw.result.md` | 114894 chars / 311 blocks | `anthropic:claude-sonnet-4-6` | same | completed | Runtime proof for inline marker and adjacent duplicate phrase contracts: 15 chunks, 0 failed chunks, 49 accepted operations, `noise_substring_not_found=0`, verifier `cleaned_better` high confidence, 17 remaining issues; inline endnote marker proof case closed, duplicate heading runtime-covered but not selected by model in this replay | `.run/reader_cleanup_replay_experiments/20260530T133307Z_anthropic-small-overlap-pr-h0a-inline-marker-duplicate-boundary-proof/experiment_summary.md` |
+| 2026-05-30 | `anthropic_small_overlap_pr_h0b_targeting_proof` | `20260530_102025...raw.result.md` | 114894 chars / 311 blocks | `anthropic:claude-sonnet-4-6` | same | completed | Advisory `operation_selection_targets` proof: duplicate semantic heading selected and accepted as `remove_inline_noise`/`duplicate_fragment`; 15 chunks, 0 failed chunks, 52 accepted operations, verifier `cleaned_better` high confidence, 19 remaining issues; side-heading islands still produced rejected `remove_inline_noise_not_exact_noise_pattern` proposals | `.run/reader_cleanup_replay_experiments/20260530T155633Z_anthropic-small-overlap-pr-h0b-targeting-proof/experiment_summary.md` |
+| 2026-05-30 | `anthropic_small_overlap_pr_h0c_side_heading_salience_proof` | `20260530_102025...raw.result.md` | 114894 chars / 311 blocks | `anthropic:claude-sonnet-4-6` | same | completed | Side-heading operation-choice salience proof: examples moved to accepted `split_block` instead of rejected semantic `remove_inline_noise`; 15 chunks, 0 failed chunks, 55 accepted operations, verifier `cleaned_better` high confidence, 20 remaining issues; success on operation choice, but new stub/continuation fragments remain | `.run/reader_cleanup_replay_experiments/20260530T165518Z_anthropic-small-overlap-pr-h0c-side-heading-salience-proof/experiment_summary.md` |
+
+## Gemini vs Anthropic Comparison
+
+The current evidence does not support the claim that a simple one-for-one model swap is enough, but the same-input/same-shape control now shows Anthropic has a real cleanup-quality lead under the bounded strategy.
+
+- Direct Anthropic on the old bulk/current shape did not produce cleanup artifacts on the 114894-char frozen input. This means the plain replacement `Gemini current -> Anthropic current` is not operationally viable for this document size.
+- Anthropic became viable only after the request shape changed: 8000-char primary chunks, 3/3 read-only overlap, disabled full global plan, strict JSON contract, JSON extraction, and one retry for empty/non-JSON responses.
+- The same-shape Gemini control used `openrouter:google/gemini-3-flash-preview` for both cleanup and verifier because that is the reader-cleanup Gemini baseline used by the historical runs. The translation default in `config.toml` is currently `openrouter:google/gemini-3.1-flash-lite-preview`; this control intentionally did not change production defaults or switch to that translation model.
+
+Same-input, same-shape control:
+
+| Metric | Anthropic stabilized | Gemini same-shape control |
+| --- | ---: | ---: |
+| cleanup chunks | 15 | 15 |
+| failed chunks | 0 | 2 |
+| accepted operations | 49 | 36 |
+| verifier verdict | `cleaned_better`, high | `cleaned_better`, high |
+| remaining issues | 17 | 27 |
+| heading_fused_with_body | 4 | 12 |
+| page_furniture_inline | 1 | 2 |
+| broken_list_marker | 10 | 11 |
+| fragmented_paragraph | 2 | 2 |
+| mixed_language_leak | 0 | 0 |
+| broad unsafe remove_inline_noise proposals | 0 | 0 |
+
+Interpretation:
+
+- The old conclusion remains true: the improvement is not `model selector only`, because Anthropic fails operationally on the old bulk prompt shape.
+- The same-shape control adds a stronger conclusion: with the same input and same small-overlap shape, Anthropic is still materially better than Gemini on this artifact: 17 vs 27 remaining issues and 4 vs 12 fused-heading issues.
+- Gemini's `failed_chunk_count=2` matters. The Gemini comparison is not just lower cleanup quality; it also shows weaker schema/contract reliability under the same shape. The failed chunks were 7 (`b_000125`-`b_000139`) and 9 (`b_000156`-`b_000175`), both from schema validation/repair failures on missing `evidence_before` fields.
+- Historical Gemini baselines remain useful context but are no longer the fair control. They show Gemini usually leaves roughly 26-33 remaining issues on similar chapter-region artifacts; the same-shape control confirms the gap on the exact 20260530 frozen input.
+
+Canonical shape decision:
+
+- Treat the small-overlap form as the reader-cleanup canonical request shape across models: `chunk_size=8000`, `overlap_blocks_before=3`, `overlap_blocks_after=3`, `global_plan_enabled=false`.
+- Do not increase chunk size in the immediate PR. The strongest completed run has 0 failed chunks at 8000 chars, while larger/bulk request shapes already failed operationally for Anthropic. A larger chunk may improve cross-boundary context, but it also increases malformed/empty response risk and reduces model portability.
+- If tuning is needed, test it as a separate experiment matrix after the blind-spot PR: keep 8000 as control, try 10000/12000 only with the same frozen input, same model selectors, same verifier policy, and require `failed_chunk_count=0` before comparing quality scores.
+
+Residual issue classes not fully surfaced by either cleanup path:
+
+- Side-heading islands are now surfaced and operation-choice salience works for some proof examples: PR-H0c moved `Три мультинациональные валюты`, `Авиационные бонусные программы`, and `Частные международные расчетные единицы` to accepted `split_block` operations. The remaining issue is the next contract boundary: these splits can leave pre-heading sentence stubs and post-heading continuation fragments.
+- Duplicate or repeated semantic heading text is closed for the proof site after PR-H0b: `Во многих странах национальные валюты Национальные валюты...` is selected as `remove_inline_noise` with reason `duplicate_fragment` and no longer remains in the cleaned proof artifact.
+- Inline endnote-like markers were closed by PR-H0a for the proof case: `Однако в 1950-х годах 5 эта чеканка была запрещена.` now becomes `Однако в 1950-х годах эта чеканка была запрещена.` without word-boundary collapse. Keep this class monitored, but it is no longer the next PR-H target.
+- The leading dash continuation artifact `— Эти монеты чеканились в Китае...` remains in both outputs. Anthropic mentions it only as a risk; Gemini does not surface it. It likely needs either merge-with-previous evidence or an explicit continuation-artifact category.
+
+PR-H0a proof update:
+
+- Proof artifact: `.run/reader_cleanup_replay_experiments/20260530T133307Z_anthropic-small-overlap-pr-h0a-inline-marker-duplicate-boundary-proof/`.
+- Result: `15` chunks, `0` failed chunks, `49` accepted operations, `22` accepted `remove_inline_noise`, verifier `cleaned_better` high confidence, raw `4.0` -> cleaned `6.0`, `17` remaining issues, `noise_substring_not_found=0`, broad unsafe remove_inline_noise proposals `0`.
+- Result after PR-H0b targeting: `.run/reader_cleanup_replay_experiments/20260530T155633Z_anthropic-small-overlap-pr-h0b-targeting-proof/`, `15` chunks, `0` failed chunks, `52` accepted operations, verifier `cleaned_better` high confidence, `19` remaining issues; duplicate semantic heading targeting worked, but side-heading islands still fell back to rejected `remove_inline_noise`.
+- Result after PR-H0c side-heading salience: `.run/reader_cleanup_replay_experiments/20260530T165518Z_anthropic-small-overlap-pr-h0c-side-heading-salience-proof/`, `15` chunks, `0` failed chunks, `55` accepted operations, verifier `cleaned_better` high confidence, `20` remaining issues; side-heading operation choice improved to accepted `split_block`, but the split result leaves orphan sentence stubs/continuations.
+- Next direction: a narrow side-heading stub/continuation contract slice, not a third-model bakeoff and not verifier-side repair.
+
+Conclusion: keep Gemini as the literary translation baseline. For reader cleanup, treat the Anthropic small-overlap path as the current quality leader, with PR-H0b/PR-H0c evidence showing that advisory targeting can change operation selection. Do not switch production cleanup defaults yet; the next decision should be based on repeat stability, cost/latency, and a side-heading stub/continuation contract proof rather than another broad model bakeoff.
 
 ## First Implementation Slice: Workable Anthropic Cleanup
 
@@ -220,6 +282,8 @@ Implemented in the current MVP, without a new strategy framework:
 - Cleanup reports and replay summaries now include model selector, chunk size, overlap before/after, global-plan mode, cleanup chunk count, and failed chunk count.
 - Replay CLI now accepts `--cleanup-chunk-size`, `--cleanup-overlap-blocks-before`, `--cleanup-overlap-blocks-after`, and `--cleanup-global-plan-enabled`.
 - Replay accepts a frozen input basename from `.run/ui_results/` and writes a per-run `.progress.json`.
+- Follow-up hardening records failed chunk diagnostics with block id range, model selector, approximate prompt/input size, raw response preview, empty-response flag, parse error, retry status, and repair status.
+- Empty/non-JSON cleanup responses are retried once; prose-wrapped JSON objects are extracted and parsed while the prompt/payload contract still requires JSON only with no markdown fences or surrounding prose.
 
 Command used for the first large-input Anthropic run:
 

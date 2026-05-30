@@ -642,7 +642,152 @@ Current primary product blockers:
 
 ## Current PR-H Sub-Slices
 
+### PR-H0a: Inline Marker + Duplicate Heading Runtime Proof
+
+Status: completed locally on 2026-05-30. This is not a clean-checkout CI proof
+because the worktree is dirty with PR-H0/PR-H0a changes.
+
+Proof artifact:
+`.run/reader_cleanup_replay_experiments/20260530T133307Z_anthropic-small-overlap-pr-h0a-inline-marker-duplicate-boundary-proof/`
+
+Completed:
+
+- `remove_inline_noise` can recover a missing `noise_substring` from a full
+   exact `expected_after_preview`, but only for safe inline numeric/endnote
+   markers and adjacent duplicate phrases.
+- Inline marker removal preserves word-boundary spacing; `... годах 5 эта ...`
+   becomes `... годах эта ...`, not `... годахэта ...`.
+- `duplicate_fragment` is accepted for `remove_inline_noise` only for exact
+   adjacent repeated semantic phrases of 2-8 words.
+- Validation/verifier remains observer-only; no repair behavior moved into
+   verifier code.
+
+Proof result:
+
+- selector: `anthropic:claude-sonnet-4-6`;
+- shape: `chunk_size=8000`, `3/3` overlap, `global_plan_enabled=false`;
+- cleanup chunks: `15`, failed chunks: `0`;
+- accepted operations: `49`, including `22` `remove_inline_noise`;
+- verifier: `cleaned_better`, high confidence, raw `4.0` -> cleaned `6.0`;
+- remaining issues: `17`;
+- `noise_substring_not_found=0`, broad unsafe remove_inline_noise proposals `0`.
+
+Closed:
+
+- inline endnote/page markers in the proof run.
+
+Implemented but not selected by the real replay:
+
+- duplicate semantic heading text such as `национальные валюты Национальные
+   валюты`; unit tests cover the runtime contract, but the model did not propose
+   the operation for the real proof site.
+
+Superseded by PR-H0b/PR-H0c targeting slices:
+
+- no verifier-side repair;
+- keep `failed_chunk_count=0`, no false deletions, and no broad unsafe
+   `remove_inline_noise` proposals.
+
+### PR-H0b: Operation Selection Targets Runtime Proof
+
+Status: completed locally on 2026-05-30. This is not a clean-checkout CI proof
+because the worktree is dirty with PR-H0/PR-H0a/PR-H0b changes.
+
+Proof artifact:
+`.run/reader_cleanup_replay_experiments/20260530T155633Z_anthropic-small-overlap-pr-h0b-targeting-proof/`
+
+Completed:
+
+- Added advisory `operation_selection_targets` to the cleanup request payload.
+- Duplicate semantic heading candidates provide `operation_hint=remove_inline_noise`,
+   `reason_hint=duplicate_fragment`, exact `noise_substring`, and full
+   `expected_after_preview`.
+- Side-heading island candidates are surfaced as classification targets without
+   making `remove_inline_noise` the default.
+
+Proof result:
+
+- selector: `anthropic:claude-sonnet-4-6`;
+- shape: `chunk_size=8000`, `3/3` overlap, `global_plan_enabled=false`;
+- cleanup chunks: `15`, failed chunks: `0`;
+- accepted operations: `52`, including `23` `remove_inline_noise`;
+- verifier: `cleaned_better`, high confidence, raw `4.0` -> cleaned `6.0`;
+- remaining issues: `19`;
+- `noise_substring_not_found=0`, broad unsafe remove_inline_noise proposals `0`.
+
+Closed:
+
+- duplicate semantic heading operation selection for the proof site:
+   `национальные валюты Национальные валюты` no longer remains, and the accepted
+   operation uses `remove_inline_noise` with reason `duplicate_fragment`.
+
+Still open:
+
+- side-heading islands were still proposed as unsafe `remove_inline_noise` and
+   rejected by runtime as `remove_inline_noise_not_exact_noise_pattern`.
+
+### PR-H0c: Side-Heading Operation Choice Salience
+
+Status: completed locally on 2026-05-30. This is not a clean-checkout CI proof
+because the worktree is dirty with PR-H0/PR-H0a/PR-H0b/PR-H0c changes.
+
+Proof artifact:
+`.run/reader_cleanup_replay_experiments/20260530T165518Z_anthropic-small-overlap-pr-h0c-side-heading-salience-proof/`
+
+Completed:
+
+- Side-heading `operation_selection_targets` now declare preferred operation
+   order: first `split_block`, second `normalize_heading_boundary`; the
+   forbidden/default-rejected operation is `remove_inline_noise`.
+- The chunk prompt explicitly says semantic heading islands are not noise, must
+   not be deleted, and should be handled only with exact `split_block` or
+   `normalize_heading_boundary`; if exact preservation is impossible, skip.
+- Runtime still rejects semantic side-heading deletion as
+   `remove_inline_noise_not_exact_noise_pattern`.
+
+Proof result:
+
+- selector: `anthropic:claude-sonnet-4-6`;
+- shape: `chunk_size=8000`, `3/3` overlap, `global_plan_enabled=false`;
+- cleanup chunks: `15`, failed chunks: `0`;
+- accepted operations: `55`, including `11` `split_block`, `13`
+   `normalize_heading_boundary`, and `24` `remove_inline_noise`;
+- verifier: `cleaned_better`, high confidence, raw `4.0` -> cleaned `6.0`;
+- remaining issues: `20`;
+- `noise_substring_not_found=0`, broad unsafe remove_inline_noise proposals `0`;
+- `remove_inline_noise_not_exact_noise_pattern` decreased from `8` in PR-H0b to
+   `3` in PR-H0c.
+
+Closed:
+
+- side-heading operation choice salience for the proof examples: `Три
+   мультинациональные валюты`, `Авиационные бонусные программы`, and `Частные
+   международные расчетные единицы` moved to accepted `split_block` operations
+   that preserve semantic text instead of rejected `remove_inline_noise`.
+
+Still open:
+
+- the accepted side-heading splits can leave sentence stubs and continuation
+   fragments around the isolated heading. This is now a separate
+   stub/continuation contract problem, not a deletion-safety problem.
+- `Потребность в глобальной валюте, Глобальная эталонная валюта...` still needs
+   a bounded decision: runtime correctly rejected a partial
+   `normalize_heading_boundary` as `heading_boundary_unaccounted_text`.
+
+Next active PR-H slice:
+
+- define a bounded side-heading stub/continuation contract: when a semantic
+   side-heading island interrupts a sentence, preserve the heading while joining
+   or retaining the pre-heading stub and post-heading continuation without
+   creating orphan fragments;
+- keep duplicate-heading PR-H0b behavior intact;
+- leading-dash continuation artifacts remain a separate classification decision.
+
 ### PR-H1: Targeted Page-Furniture + Caption + Continuation Repair
+
+Historical slice. Do not treat this as the active PR-H slice after PR-H0a; use
+the PR-H0a next-slice notes above unless a fresh proof reopens this exact
+page-furniture/caption continuation class.
 
 Last updated: 2026-05-29 from comparison-only run
 `20260528T151827Z_1227_Rethinking-money-chapter-region-pages-10-11-and-156-217`.

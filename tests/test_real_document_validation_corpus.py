@@ -900,8 +900,10 @@ def test_runtime_resolution_applies_reader_cleanup_overrides() -> None:
         processing_operation="translate",
         reader_cleanup_enabled=True,
         reader_cleanup_model="gpt-5.4-mini",
-        reader_cleanup_chunk_size=30000,
-        reader_cleanup_global_plan_enabled=True,
+        reader_cleanup_chunk_size=8000,
+        reader_cleanup_overlap_blocks_before=3,
+        reader_cleanup_overlap_blocks_after=3,
+        reader_cleanup_global_plan_enabled=False,
         reader_cleanup_keep_toc=True,
         reader_cleanup_policy="advisory",
     )
@@ -912,9 +914,16 @@ def test_runtime_resolution_applies_reader_cleanup_overrides() -> None:
     assert resolution.effective.reader_cleanup_enabled is True
     assert resolution.overrides["reader_cleanup_enabled"] is True
     assert resolution.overrides["reader_cleanup_model"] == "gpt-5.4-mini"
-    assert resolution.app_config_overrides["reader_cleanup_chunk_size"] == 30000
+    assert resolution.app_config_overrides["reader_cleanup_chunk_size"] == 8000
+    assert resolution.app_config_overrides["reader_cleanup_overlap_blocks_before"] == 3
+    assert resolution.app_config_overrides["reader_cleanup_overlap_blocks_after"] == 3
+    assert resolution.app_config_overrides["reader_cleanup_global_plan_enabled"] is False
     assert applied_config["reader_cleanup_enabled"] is True
     assert applied_config["reader_cleanup_model"] == "gpt-5.4-mini"
+    assert applied_config["reader_cleanup_chunk_size"] == 8000
+    assert applied_config["reader_cleanup_overlap_blocks_before"] == 3
+    assert applied_config["reader_cleanup_overlap_blocks_after"] == 3
+    assert applied_config["reader_cleanup_global_plan_enabled"] is False
     assert applied_config["reader_cleanup_keep_toc"] is True
 
 
@@ -997,7 +1006,10 @@ def test_validation_registry_declares_reader_cleanup_validation_profiles() -> No
     assert baseline.reader_cleanup_policy == "advisory"
     assert baseline.reader_cleanup_keep_toc is False
     assert baseline.reader_cleanup_drop_back_matter is False
-    assert baseline.reader_cleanup_chunk_size == 30000
+    assert baseline.reader_cleanup_chunk_size == 8000
+    assert baseline.reader_cleanup_overlap_blocks_before == 3
+    assert baseline.reader_cleanup_overlap_blocks_after == 3
+    assert baseline.reader_cleanup_global_plan_enabled is False
     assert baseline.comparison_only_validation is False
 
     assert comparison_only.processing_operation == "translate"
@@ -1006,13 +1018,20 @@ def test_validation_registry_declares_reader_cleanup_validation_profiles() -> No
     assert comparison_only.reader_cleanup_policy == "advisory"
     assert comparison_only.reader_cleanup_keep_toc is False
     assert comparison_only.reader_cleanup_drop_back_matter is False
-    assert comparison_only.reader_cleanup_chunk_size == 30000
+    assert comparison_only.reader_cleanup_chunk_size == 8000
+    assert comparison_only.reader_cleanup_overlap_blocks_before == 3
+    assert comparison_only.reader_cleanup_overlap_blocks_after == 3
+    assert comparison_only.reader_cleanup_global_plan_enabled is False
     assert comparison_only.translation_output_quality_gate_policy == "advisory"
     assert comparison_only.comparison_only_validation is True
 
     assert source_cleanup_remove.processing_operation == "translate"
     assert source_cleanup_remove.reader_cleanup_enabled is True
     assert source_cleanup_remove.reader_verifier_enabled is True
+    assert source_cleanup_remove.reader_cleanup_chunk_size == 8000
+    assert source_cleanup_remove.reader_cleanup_overlap_blocks_before == 3
+    assert source_cleanup_remove.reader_cleanup_overlap_blocks_after == 3
+    assert source_cleanup_remove.reader_cleanup_global_plan_enabled is False
     assert source_cleanup_remove.translation_output_quality_gate_policy == "advisory"
     assert source_cleanup_remove.layout_artifact_cleanup_mode == "remove"
     assert source_cleanup_remove.comparison_only_validation is True

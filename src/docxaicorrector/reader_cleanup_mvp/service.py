@@ -32,6 +32,10 @@ _INLINE_NOISE_REASON_GUIDANCE = {
     "page_number",
     "repeated_running_header",
 }
+_REMOVE_INLINE_NOISE_REASON_GUIDANCE = _INLINE_NOISE_REASON_GUIDANCE | {
+    "duplicate_fragment",
+    "orphan_footnote_marker",
+}
 _ALLOWED_OPERATIONS = {
     "delete_block",
     "split_block",
@@ -139,16 +143,20 @@ _ALLOWED_ANCHOR_REPAIR_CATEGORIES = {
 }
 _DUPLICATE_FRAGMENT_MIN_NON_WHITESPACE_CHARS = 24
 _DUPLICATE_FRAGMENT_MAX_NEARBY_BLOCK_DISTANCE = 3
+_DEFAULT_CLEANUP_CHUNK_SIZE = 8000
+_DEFAULT_OVERLAP_BLOCKS_BEFORE = 3
+_DEFAULT_OVERLAP_BLOCKS_AFTER = 3
+_DEFAULT_GLOBAL_PLAN_ENABLED = False
 
 
 @dataclass(frozen=True)
 class ReaderCleanupConfig:
     enabled: bool = False
     model: str = ""
-    chunk_size: int = 30000
-    overlap_blocks_before: int = 0
-    overlap_blocks_after: int = 0
-    global_plan_enabled: bool = True
+    chunk_size: int = _DEFAULT_CLEANUP_CHUNK_SIZE
+    overlap_blocks_before: int = _DEFAULT_OVERLAP_BLOCKS_BEFORE
+    overlap_blocks_after: int = _DEFAULT_OVERLAP_BLOCKS_AFTER
+    global_plan_enabled: bool = _DEFAULT_GLOBAL_PLAN_ENABLED
     keep_toc: bool = True
     drop_back_matter: bool = False
     max_delete_block_ratio: float = 0.03
@@ -259,18 +267,25 @@ def resolve_reader_cleanup_config(*, app_config: Mapping[str, object], fallback_
     return ReaderCleanupConfig(
         enabled=enabled,
         model=model,
-        chunk_size=_coerce_int(app_config.get("reader_cleanup_chunk_size", 30000), default=30000, minimum=3000),
+        chunk_size=_coerce_int(
+            app_config.get("reader_cleanup_chunk_size", _DEFAULT_CLEANUP_CHUNK_SIZE),
+            default=_DEFAULT_CLEANUP_CHUNK_SIZE,
+            minimum=3000,
+        ),
         overlap_blocks_before=_coerce_int(
-            app_config.get("reader_cleanup_overlap_blocks_before", 0),
-            default=0,
+            app_config.get("reader_cleanup_overlap_blocks_before", _DEFAULT_OVERLAP_BLOCKS_BEFORE),
+            default=_DEFAULT_OVERLAP_BLOCKS_BEFORE,
             minimum=0,
         ),
         overlap_blocks_after=_coerce_int(
-            app_config.get("reader_cleanup_overlap_blocks_after", 0),
-            default=0,
+            app_config.get("reader_cleanup_overlap_blocks_after", _DEFAULT_OVERLAP_BLOCKS_AFTER),
+            default=_DEFAULT_OVERLAP_BLOCKS_AFTER,
             minimum=0,
         ),
-        global_plan_enabled=_coerce_bool(app_config.get("reader_cleanup_global_plan_enabled", True), default=True),
+        global_plan_enabled=_coerce_bool(
+            app_config.get("reader_cleanup_global_plan_enabled", _DEFAULT_GLOBAL_PLAN_ENABLED),
+            default=_DEFAULT_GLOBAL_PLAN_ENABLED,
+        ),
         keep_toc=bool(app_config.get("reader_cleanup_keep_toc", True)),
         drop_back_matter=bool(app_config.get("reader_cleanup_drop_back_matter", False)),
         max_delete_block_ratio=_coerce_float(app_config.get("reader_cleanup_max_delete_block_ratio", 0.03), default=0.03),
@@ -304,7 +319,10 @@ def build_reader_cleanup_system_prompt() -> str:
         "page numbers, blank-page markers, orphaned footnote markers, and obvious extraction artifacts.\n"
         "Do not delete a standalone numeric block such as '8' or '12' by page_number reason unless nearby page-boundary context, repeated header/footer evidence, or explicit page-label evidence makes it safe.\n"
         "Use remove_inline_noise for exact page furniture/page number/running header substrings embedded before or inside a semantic paragraph.\n"
-        "For remove_inline_noise, prefer reasons such as page_furniture_inline, page_furniture_heading, page_number, or repeated_running_header when they match the exact residue being removed.\n"
+        "For remove_inline_noise, prefer reasons such as page_furniture_inline, page_furniture_heading, page_number, orphan_footnote_marker, or repeated_running_header when they match the exact residue being removed.\n"
+        "If operation_selection_targets lists a duplicate_semantic_heading_text candidate, inspect that block first and use remove_inline_noise with reason duplicate_fragment only if the exact adjacent repeated phrase and full expected_after_preview are still valid.\n"
+        "If operation_selection_targets lists a side_heading_island_candidate, classify it as a possible PDF/two-column side heading embedded in prose; first try split_block, then normalize_heading_boundary only when exact substrings can preserve all semantic text.\n"
+        "Semantic heading islands are not noise. Do not delete semantic heading islands with remove_inline_noise; if exact structural split cannot preserve all semantic text, skip and add a warning.\n"
         "Use split_block for one block that should become 2-3 exact substrings from the original block.\n"
         "Use join_fragmented_paragraph only for adjacent blocks that are one paragraph split by a page/caption boundary.\n"
         "Use normalize_heading_boundary only to move an exact heading-like prefix into a separate heading block and keep exact body text as a paragraph.\n"
@@ -315,6 +333,8 @@ def build_reader_cleanup_system_prompt() -> str:
         "For anchor_repair fragmented_paragraph targets, do not propose delete_block duplicate_fragment unless the full candidate block is exact normalized text already preserved in one nearby payload block.\n"
         "For anchor_repair fragmented_paragraph targets, do not combine split_block and join_fragmented_paragraph on the same evidence unless split_substrings exactly cover one extraction-artifact block and the following join still uses adjacent current payload hashes.\n"
         "For anchor_repair page_furniture_inline targets, first propose remove_inline_noise for the exact non-semantic page-number/running-header prefix or island; do not use join_fragmented_paragraph or delete_block as a substitute for that cleanup.\n"
+        "For inline endnote/page marker artifacts inside prose, such as a standalone digit between two words, use remove_inline_noise with the exact deleted span in noise_substring and the full post-removal block in expected_after_preview.\n"
+        "For duplicate semantic heading text repeated inline, use remove_inline_noise with reason duplicate_fragment only when the deleted phrase is an exact adjacent repeated phrase and expected_after_preview is the full resulting block.\n"
         "If page furniture plus an image caption sits between two parts of one sentence, propose remove_inline_noise for the exact full noise span and then a separate join_fragmented_paragraph from the previous adjacent block to the cleaned anchor block.\n"
         "If one anchored block needs both page-furniture removal and heading/body repair, return two bounded exact-match operations on that same block instead of rewriting the block.\n"
         "If non-heading text remains before the heading candidate, such as a quote, caption, or footnote marker, do not use normalize_heading_boundary; use split_block with exact substrings instead.\n"
@@ -350,6 +370,7 @@ def build_reader_cleanup_system_prompt() -> str:
         "- Leading page number or running header plus uppercase heading plus prose: first use remove_inline_noise for the exact non-semantic prefix, then normalize_heading_boundary for the remaining heading/body boundary when both exact previews are safe.\n"
         "- Running-header prefix plus semantic heading plus prose: after prefix cleanup, keep the full remaining semantic heading in heading_substring and put only the exact prose sentence start in body_substring; do not treat the whole semantic heading as removable noise and do not keep only the last heading words.\n"
         "- Do not keep only a trailing heading tail like 'И СПРАВЕДЛИВОСТЬ.' when the full semantic heading started earlier in the same block; heading_substring must begin at the first semantic heading token.\n"
+        "- Semantic side-heading island operation choice: bad: remove_inline_noise \"Три мультинациональные валюты\". Good: split_block or normalize_heading_boundary that preserves both heading text and body text exactly; if exact preservation is not possible, skip.\n"
         "- Title-case running header island inside a sentence: for '... Полевой отчет НКО 167 развивающейся организации ...' use remove_inline_noise with noise_substring='Полевой отчет НКО 167 '.\n"
         "- Title-case running header with leading page number inside a sentence: for '... 3 Городское управление 201 особенно важно ...' use remove_inline_noise with noise_substring='3 Городское управление 201 '.\n"
         "- Title plus subtitle on one line is not automatically heading/body fusion; if the second segment is a short subtitle, subtitle question, or epigraph-like line rather than narrative prose, do not use normalize_heading_boundary just to force a split.\n"
@@ -365,7 +386,7 @@ def build_reader_cleanup_system_prompt() -> str:
         "- Anchor fragmented paragraph with page furniture between prose: remove only the exact page-furniture substring or block when safe, then join only adjacent current payload blocks with exact hashes; if adjacency is unclear, keep the text.\n"
         "- Anchor page furniture prefix: for '190 ПЕРЕОСМЫСЛЕНИЕ ДЕНЕГ Особый интерес...' use remove_inline_noise with noise_substring='190 ПЕРЕОСМЫСЛЕНИЕ ДЕНЕГ ' and keep the following prose.\n"
         "- Anchor page furniture plus caption between sentence parts: remove exactly the page header and caption span, keep the lowercase prose continuation, then join the previous unfinished block to the cleaned anchor block with exact ids/hashes.\n"
-        "A leading or inline number may be removed only when it is exact non-semantic page furniture; if the number is semantic content inside a sentence, date, quantity, title, or citation, keep it.\n"
+        "A leading or inline number may be removed only when it is exact non-semantic page furniture or an orphan inline note marker; if the number is semantic content inside a sentence, date, quantity, title, or citation, keep it.\n"
         "Standalone numeric lines can be footnotes, citations, list markers, or semantic numbering; if page context is uncertain, keep them and add a warning.\n"
         "For obvious non-semantic noise such as standalone page numbers or lines like [[DOCX_IMAGE_img_001]], "
         'use confidence="high" instead of omitting the field.\n'
@@ -397,7 +418,7 @@ def build_reader_cleanup_schema_repair_system_prompt() -> str:
         "For anchor_repair fragmented_paragraph items, keep a join_fragmented_paragraph operation only when next_id and next_text_hash are copied from an adjacent block in the current request payload; otherwise drop it and add a warning.\n"
         "For anchor_repair fragmented_paragraph items, do not convert a non-exact duplicate-looking tail into delete_block duplicate_fragment; drop unsafe deletion instead.\n"
         "For anchor_repair page_furniture_inline items, keep join_fragmented_paragraph only as a follow-up from the previous adjacent block to the page-furniture anchor block when the response also has exact remove_inline_noise on that anchor block.\n"
-        "For remove_inline_noise, page_furniture_inline, page_furniture_heading, page_number, and repeated_running_header are the preferred bounded audit reasons.\n"
+        "For remove_inline_noise, page_furniture_inline, page_furniture_heading, page_number, orphan_footnote_marker, duplicate_fragment, and repeated_running_header are the preferred bounded audit reasons.\n"
         "Do not widen remove_inline_noise to consume a semantic heading after a numeric running-header prefix; keep exact prefix removal separate from normalize_heading_boundary.\n"
         "If the original response already isolates a title-case running-header island with connector words or acronyms plus a trailing page number, keep it as remove_inline_noise instead of widening the substring into neighboring prose.\n"
         "split_block must include split_substrings; remove_inline_noise must include noise_substring; join_fragmented_paragraph must include next_id and next_text_hash; normalize_heading_boundary must include heading_substring and body_substring.\n"
@@ -1202,17 +1223,6 @@ def _build_global_plan(
         "likely_fragmentation_patterns": [],
         "warnings": [],
     }
-    if not config.global_plan_enabled:
-        return {
-            "repeated_noise_patterns": repeated_noise_patterns,
-            "candidate_block_ids": candidate_block_ids,
-            "document_specific_running_headers": [],
-            "examples_do_not_delete": [],
-            "likely_heading_body_patterns": [],
-            "likely_fragmentation_patterns": [],
-            "warnings": warnings,
-        }
-
     repeated_counter = Counter(
         block.normalized_text
         for block in blocks
@@ -1239,7 +1249,7 @@ def _build_global_plan(
     if config.drop_back_matter:
         warnings.append("drop_back_matter_unsupported_noop")
 
-    if global_plan_provider is not None:
+    if config.global_plan_enabled and global_plan_provider is not None:
         try:
             ai_plan = _parse_global_plan_response(
                 global_plan_provider(
@@ -1301,11 +1311,18 @@ def _build_chunk_request_payload(
 ) -> dict[str, object]:
     readonly_before = [block.to_payload() for block in chunk.context_before_blocks]
     readonly_after = [block.to_payload() for block in chunk.context_after_blocks]
+    operation_selection_targets = _build_operation_selection_targets(blocks=chunk.blocks)
     payload: dict[str, object] = {
         "policy": config.policy,
         "keep_toc": config.keep_toc,
         "drop_back_matter": config.drop_back_matter,
         "cleanup_settings": _serialize_cleanup_settings(config),
+        "output_format_requirements": {
+            "format": "single_json_object",
+            "markdown_fences_allowed": False,
+            "prose_before_or_after_json_allowed": False,
+            "noop_response": {"cleanup_operations": [], "warnings": []},
+        },
         "response_contract": {
             "top_level_fields": ["cleanup_operations", "warnings"],
             "legacy_top_level_fields": ["delete_blocks"],
@@ -1323,7 +1340,7 @@ def _build_chunk_request_payload(
             "allowed_delete_reasons": sorted(_ALLOWED_DELETE_REASONS),
             "reason_guidance_by_operation": {
                 "delete_block": sorted(_ALLOWED_DELETE_REASONS),
-                "remove_inline_noise": sorted(_INLINE_NOISE_REASON_GUIDANCE),
+                "remove_inline_noise": sorted(_REMOVE_INLINE_NOISE_REASON_GUIDANCE),
             },
             "allowed_confidence": ["low", "medium", "high"],
             "example": {
@@ -1346,6 +1363,7 @@ def _build_chunk_request_payload(
         "context_before_preview": chunk.context_before[:240],
         "context_after_preview": chunk.context_after[:240],
         "global_plan": global_plan,
+        "operation_selection_targets": operation_selection_targets,
         "blocks": [block.to_payload() for block in chunk.blocks],
     }
     if readonly_before or readonly_after:
@@ -1357,6 +1375,119 @@ def _build_chunk_request_payload(
             }
         )
     return payload
+
+
+def _build_operation_selection_targets(*, blocks: Sequence[CleanupBlock]) -> list[dict[str, object]]:
+    targets: list[dict[str, object]] = []
+    for block in blocks:
+        duplicate_target = _build_duplicate_semantic_heading_target(block=block)
+        if duplicate_target is not None:
+            targets.append(duplicate_target)
+        targets.extend(_build_side_heading_island_targets(block=block))
+    return targets[:20]
+
+
+def _build_duplicate_semantic_heading_target(*, block: CleanupBlock) -> dict[str, object] | None:
+    duplicate = _find_adjacent_duplicate_phrase(block.text)
+    if duplicate is None:
+        return None
+    noise_substring = duplicate["noise_substring"]
+    return {
+        "category": "duplicate_semantic_heading_text",
+        "id": block.block_id,
+        "text_hash": block.text_hash,
+        "operation_hint": "remove_inline_noise",
+        "reason_hint": "duplicate_fragment",
+        "noise_substring": noise_substring,
+        "expected_after_preview": _inline_noise_removed_text(current_text=block.text, noise=noise_substring),
+        "safety_note": "Apply only if this exact adjacent repeated phrase is still present once in the editable block.",
+    }
+
+
+def _find_adjacent_duplicate_phrase(text: str) -> dict[str, str] | None:
+    tokens = list(re.finditer(r"[A-Za-zА-Яа-яЁё]{2,}", text or ""))
+    if len(tokens) < 4:
+        return None
+    for phrase_len in range(8, 1, -1):
+        if len(tokens) < phrase_len * 2:
+            continue
+        for start in range(0, len(tokens) - (phrase_len * 2) + 1):
+            first = tokens[start : start + phrase_len]
+            second = tokens[start + phrase_len : start + (phrase_len * 2)]
+            first_words = [match.group(0).lower() for match in first]
+            second_words = [match.group(0).lower() for match in second]
+            if first_words != second_words:
+                continue
+            noise_start = second[0].start()
+            noise_end = second[-1].end()
+            while noise_end < len(text) and text[noise_end].isspace():
+                noise_end += 1
+            return {"noise_substring": text[noise_start:noise_end]}
+    return None
+
+
+def _build_side_heading_island_targets(*, block: CleanupBlock) -> list[dict[str, object]]:
+    if block.is_heading or block.is_toc_like or block.char_count < 40:
+        return []
+    targets: list[dict[str, object]] = []
+    tokens = list(re.finditer(r"[A-Za-zА-Яа-яЁё]{2,}", block.text))
+    if len(tokens) < 6:
+        return []
+    for phrase_len in range(3, 6):
+        for start in range(1, len(tokens) - phrase_len):
+            phrase_tokens = tokens[start : start + phrase_len]
+            before_text = block.text[: phrase_tokens[0].start()]
+            after_text = block.text[phrase_tokens[-1].end() :]
+            if not _has_side_heading_left_context(before_text):
+                continue
+            if not _has_side_heading_right_context(after_text):
+                continue
+            phrase = block.text[phrase_tokens[0].start() : phrase_tokens[-1].end()]
+            if not _looks_like_side_heading_phrase(phrase):
+                continue
+            targets.append(
+                {
+                    "category": "side_heading_island_candidate",
+                    "id": block.block_id,
+                    "text_hash": block.text_hash,
+                    "heading_candidate": phrase,
+                    "operation_hint": "preserve_heading_text_with_split_block_or_normalize_heading_boundary",
+                    "preferred_operation_order": ["split_block", "normalize_heading_boundary"],
+                    "forbidden_default_operation": "remove_inline_noise",
+                    "safety_note": "Semantic heading islands are not noise. Do not delete with remove_inline_noise; preserve all semantic text with exact split_block or normalize_heading_boundary, or skip if boundaries are unclear.",
+                }
+            )
+            if len(targets) >= 3:
+                return targets
+    return targets
+
+
+def _has_side_heading_left_context(text: str) -> bool:
+    before = str(text or "").rstrip()
+    if not before:
+        return False
+    if before[-1] in ".!?;:…":
+        return False
+    return re.search(r"[a-zа-яё][,\s\"'«»“”„-]*$", before) is not None
+
+
+def _has_side_heading_right_context(text: str) -> bool:
+    after = str(text or "").lstrip()
+    return re.match(r"[a-zа-яё]", after) is not None
+
+
+def _looks_like_side_heading_phrase(phrase: str) -> bool:
+    if re.search(r"\b(?:and|for|from|in|of|or|the|to|в|во|для|и|или|к|на|о|от|по|с|со|у)\b", phrase, re.IGNORECASE):
+        return False
+    words = _semantic_word_tokens(phrase)
+    if len(words) < 3 or len(words) > 5:
+        return False
+    if any(word.isdigit() for word in words):
+        return False
+    if not words[0][0].isupper():
+        return False
+    uppercase_count = sum(1 for word in words if word[0].isupper())
+    return uppercase_count == 1
 
 
 def _build_failed_chunk_diagnostics(
@@ -1566,12 +1697,52 @@ def _build_heading_boundary_diagnostic_example(entry: Mapping[str, object]) -> d
 
 def _load_cleanup_response_object(raw_response: str) -> dict[str, object] | None:
     try:
-        payload = json.loads(raw_response)
+        payload = _load_cleanup_response_payload(raw_response)
     except Exception:
         return None
     if not isinstance(payload, dict):
         return None
     return cast(dict[str, object], payload)
+
+
+def _load_cleanup_response_payload(raw_response: str) -> object:
+    try:
+        return json.loads(raw_response)
+    except json.JSONDecodeError:
+        extracted = _extract_first_json_object_text(raw_response)
+        if extracted is None:
+            raise
+        return json.loads(extracted)
+
+
+def _extract_first_json_object_text(raw_response: str) -> str | None:
+    text = str(raw_response or "")
+    start = text.find("{")
+    if start < 0:
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text[start:], start=start):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
 
 
 def _build_cleanup_schema_repair_payload(
@@ -2012,7 +2183,7 @@ def _parse_cleanup_response(
     readonly_context_blocks: Mapping[str, CleanupBlock] | None = None,
     chunk_index: int,
 ) -> tuple[list[CleanupOperation], list[str], list[dict[str, object]]]:
-    payload = json.loads(raw_response)
+    payload = _load_cleanup_response_payload(raw_response)
     if not isinstance(payload, dict):
         raise RuntimeError("reader_cleanup_response_must_be_object")
 
@@ -2251,6 +2422,72 @@ def _recover_expected_after_preview(
     return None
 
 
+def _inline_noise_removed_text(*, current_text: str, noise: str) -> str:
+    noise_index = current_text.find(noise)
+    if noise_index < 0:
+        return re.sub(r"\s{2,}", " ", current_text.replace(noise, "", 1)).strip()
+    before = current_text[:noise_index].rstrip()
+    after = current_text[noise_index + len(noise) :].lstrip()
+    joiner = " " if before and after else ""
+    return re.sub(r"\s{2,}", " ", f"{before}{joiner}{after}").strip()
+
+
+def _recover_inline_noise_substring_from_preview(
+    *,
+    normalized_item: Mapping[str, object],
+    block: CleanupBlock,
+) -> str | None:
+    current_text = block.text.strip()
+    expected_after = str(normalized_item.get("expected_after_preview") or "")
+    expected_after = expected_after.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not current_text or not expected_after or expected_after == current_text:
+        return None
+
+    prefix_len = 0
+    max_prefix_len = min(len(current_text), len(expected_after))
+    while prefix_len < max_prefix_len and current_text[prefix_len] == expected_after[prefix_len]:
+        prefix_len += 1
+
+    suffix_len = 0
+    max_suffix_len = min(len(current_text) - prefix_len, len(expected_after) - prefix_len)
+    while (
+        suffix_len < max_suffix_len
+        and current_text[len(current_text) - suffix_len - 1]
+        == expected_after[len(expected_after) - suffix_len - 1]
+    ):
+        suffix_len += 1
+
+    candidate_end = len(current_text) - suffix_len
+    candidate = current_text[prefix_len:candidate_end]
+    if not candidate.strip():
+        return None
+    if current_text.count(candidate) != 1:
+        return None
+    reason = str(normalized_item.get("reason") or "").strip()
+    if not _is_recoverable_inline_noise_substring_from_preview(
+        noise=candidate,
+        current_text=current_text,
+        reason=reason,
+    ):
+        return None
+    if _inline_noise_removed_text(current_text=current_text, noise=candidate) != expected_after:
+        return None
+    return candidate
+
+
+def _is_recoverable_inline_noise_substring_from_preview(*, noise: str, current_text: str, reason: str) -> bool:
+    normalized_noise = str(noise or "").strip()
+    if not normalized_noise:
+        return False
+    if _SAFE_INLINE_NOISE_PATTERN.fullmatch(normalized_noise) is not None:
+        return True
+    return _looks_like_duplicate_inline_fragment_noise(
+        normalized_noise=normalized_noise,
+        current_text=current_text,
+        reason=reason,
+    )
+
+
 def _recover_missing_operation_exact_fields(
     *,
     operation_name: str,
@@ -2272,6 +2509,14 @@ def _recover_missing_operation_exact_fields(
         ):
             recovered = dict(normalized_item)
             recovered["noise_substring"] = evidence_before
+            return recovered, [f"reader_cleanup_exact_fields_recovered:{chunk_index}:{block_id}:{operation_name}"]
+        preview_noise = _recover_inline_noise_substring_from_preview(
+            normalized_item=normalized_item,
+            block=block,
+        )
+        if preview_noise is not None:
+            recovered = dict(normalized_item)
+            recovered["noise_substring"] = preview_noise
             return recovered, [f"reader_cleanup_exact_fields_recovered:{chunk_index}:{block_id}:{operation_name}"]
         return dict(normalized_item), []
     if operation_name != "normalize_heading_boundary":
@@ -2532,7 +2777,7 @@ def _apply_single_operation_to_blocks(
             return False, "", "remove_inline_noise_not_exact_noise_pattern"
         if current_text.count(noise) != 1:
             return False, "", "remove_inline_noise_substring_ambiguous"
-        replacement = re.sub(r"\s{2,}", " ", current_text.replace(noise, "", 1)).strip()
+        replacement = _inline_noise_removed_text(current_text=current_text, noise=noise)
         if not replacement or len(re.sub(r"\s+", "", replacement)) < 20:
             return False, "", "remove_inline_noise_would_drop_semantic_body"
         rewritten_blocks[block.index] = replacement
@@ -2696,9 +2941,47 @@ def _is_safe_inline_noise_substring(*, noise: str, current_text: str, reason: st
         reason=reason,
     ):
         return True
+    if _looks_like_duplicate_inline_fragment_noise(
+        normalized_noise=normalized_noise,
+        current_text=current_text,
+        reason=reason,
+    ):
+        return True
     if reason not in _INLINE_NOISE_REASON_GUIDANCE:
         return False
     return _looks_like_title_case_running_header_noise(normalized_noise=normalized_noise, current_text=current_text)
+
+
+def _looks_like_duplicate_inline_fragment_noise(*, normalized_noise: str, current_text: str, reason: str) -> bool:
+    if reason != "duplicate_fragment":
+        return False
+    candidate = normalized_noise.strip()
+    if not candidate or "\n" in candidate:
+        return False
+
+    candidate_words = _semantic_word_tokens(candidate)
+    if len(candidate_words) < 2 or len(candidate_words) > 8:
+        return False
+    if any(token.isdigit() for token in candidate_words):
+        return False
+
+    noise_index = current_text.find(candidate)
+    if noise_index < 0:
+        return False
+    before_words = _semantic_word_tokens(current_text[:noise_index])
+    after_words = _semantic_word_tokens(current_text[noise_index + len(candidate) :])
+    candidate_lower = [word.lower() for word in candidate_words]
+    return (
+        len(before_words) >= len(candidate_words)
+        and [word.lower() for word in before_words[-len(candidate_words) :]] == candidate_lower
+    ) or (
+        len(after_words) >= len(candidate_words)
+        and [word.lower() for word in after_words[: len(candidate_words)]] == candidate_lower
+    )
+
+
+def _semantic_word_tokens(value: str) -> list[str]:
+    return re.findall(r"[A-Za-zА-Яа-яЁё]{2,}", value or "")
 
 
 def _looks_like_page_furniture_caption_bridge_noise(*, normalized_noise: str, current_text: str, reason: str) -> bool:

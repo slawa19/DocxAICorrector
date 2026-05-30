@@ -57,10 +57,14 @@ layout cleanup, paragraph/relation normalization, image handoff и DOCX roundtri
 
 ### Что ещё не готово
 
-- Активна **PR-H (Reader Cleanup Visual Blockers)**; текущий статус по repair
-  backlog — **PR-H-exit Adjacent/Split Heading Operation Contract**, а не старые
-  PR-H1/PR-H2 формулировки. PR-H-exit является последним runtime micro-slice
-  перед ship/no-ship decision, но он **не пройден**.
+- **PR-H0/PR-H0a/PR-H0b/PR-H0c завершены локально**: canonical
+  small-overlap форма (`chunk_size=8000`, `3/3` read-only overlap,
+  `global_plan_enabled=false`) зафиксирована как runtime/config/profile канон,
+  inline markers закрыты, duplicate semantic heading targeting доказан, а
+  side-heading operation choice переведён с unsafe `remove_inline_noise` на
+  accepted `split_block` для proof examples. Следующий узкий PR-H slice — не
+  model bakeoff, а side-heading stub/continuation contract; verifier остаётся
+  observer-only.
 - Последний completed proof run
   `20260530T071434Z_968_Rethinking-money-chapter-region-pages-10-11-and-156-217`
   pipeline-level завершился и сохранил no-harm gates
@@ -86,12 +90,13 @@ layout cleanup, paragraph/relation normalization, image handoff и DOCX roundtri
   именно исчезают PDF-origin images/placeholders/assets/inline shapes.
 - **Slice 5 / UI Toggle** не сделан: в UI есть чекбоксы для translation second
   pass и audiobook postprocess, но нет reader cleanup surface.
-- **Reader cleanup config surface неполный**: `config.toml` уже содержит
-  root-level `reader_cleanup_model`/`reader_verifier_model`, а
-  `validation/profiles.py` уже читает reader-cleanup profile overrides. Но нет
-  полноценного канонического блока/default surface для
-  `reader_cleanup_default`, chunk size, global plan, policy, safety budgets,
-  TOC/back-matter policy, env и UI toggle.
+- **Reader cleanup config surface частично неполный**: `config.toml` уже содержит
+  root-level `reader_cleanup_model`/`reader_verifier_model` и canonical
+  small-overlap shape (`reader_cleanup_chunk_size=8000`, `3/3` overlap,
+  `reader_cleanup_global_plan_enabled=false`), а `validation/profiles.py` уже
+  читает reader-cleanup profile overrides. Всё ещё нет полноценного
+  канонического блока/default surface для `reader_cleanup_default`, policy,
+  safety budgets, TOC/back-matter policy, env и UI toggle.
 - MVP exit criterion ещё не достигнут: нужен повторяемый `cleaned_better` без
   failed chunks / false deletions / readability regressions на основном proof-
   документе **плюс хотя бы один дополнительный реальный документ**.
@@ -171,9 +176,10 @@ relations/segments, UI application flow, validation profiles, config и tests.
 
 ### PR-M0. Plan Refresh + Inventory Lock
 
-- Обновить repair backlog/status references: PR-H-exit является текущим active
-  sub-slice; PR-H1/PR-H2 не должны оставаться как актуальная формулировка
-  текущего состояния.
+- Обновить repair backlog/status references: PR-H0 является текущим
+  промежуточным slice; PR-H-exit остаётся следующим runtime proof slice, а
+  PR-H1/PR-H2 не должны оставаться как актуальная формулировка текущего
+  состояния.
 - Зафиксировать текущий latest completed proof из repair backlog:
   `20260530T071434Z_968_...`, pipeline succeeded, no-harm gates green, verifier
   `execution_failed`, `heading_fused_with_body=5`, `fragmented_paragraph=6`,
@@ -183,6 +189,86 @@ relations/segments, UI application flow, validation profiles, config и tests.
   и UI proof.
 
 Выход: этот migration plan и repair backlog не противоречат друг другу.
+
+### PR-H0. Canonical Small-Overlap + Shared Blind Spots
+
+Промежуточный PR между model bake-off и PR-H-exit runtime proof.
+
+Scope:
+
+- Зафиксировать small-overlap как model-compatible reader cleanup форму, а не
+  Anthropic-only workaround: `chunk_size=8000`, `overlap_blocks_before=3`,
+  `overlap_blocks_after=3`, `global_plan_enabled=false`.
+- Сохранить model selector отдельно от формы задачи: Gemini и Anthropic должны
+  проходить через один chunk/overlap/JSON contract.
+- Вынести общие blind spots из same-shape Anthropic/Gemini comparison в backlog:
+  side-heading islands inside prose, duplicate semantic heading text, inline
+  endnote/page markers, leading-dash continuation artifacts.
+- Не расширять verifier boundary: verifier только оценивает/сигналит; cleanup
+  operations остаются runtime-applied и safety-validated.
+
+Non-goals:
+
+- Не увеличивать chunk size в этом PR без отдельного repeated experiment.
+- Не возвращать full global plan как default: он снова делает request shape
+  bulk-like и хуже совместим с разными моделями.
+- Не менять literary translation baseline.
+
+Выход: config/runtime defaults и план согласованы с same-shape evidence;
+следующий runtime PR-H-exit работает уже поверх small-overlap канона, а не
+поверх старой bulk/current формы.
+
+### PR-H0a. Inline Marker + Duplicate Heading Runtime Proof
+
+Статус: завершён локально, не clean-checkout CI proof.
+
+Proof artifact:
+`.run/reader_cleanup_replay_experiments/20260530T133307Z_anthropic-small-overlap-pr-h0a-inline-marker-duplicate-boundary-proof/`
+
+Результат:
+
+- selector: `anthropic:claude-sonnet-4-6`;
+- canonical shape: `chunk_size=8000`, `3/3` read-only overlap,
+  `global_plan_enabled=false`;
+- cleanup chunks: `15`, failed chunks: `0`;
+- accepted cleanup operations: `49`, including `22` `remove_inline_noise`;
+- verifier: `cleaned_better`, confidence `high`, raw `4.0` -> cleaned `6.0`;
+- remaining issues: `17`;
+- `noise_substring_not_found=0`, broad unsafe remove_inline_noise proposals `0`.
+
+Closed by runtime proof:
+
+- inline endnote/page markers, including `Однако в 1950-х годах 5 эта...`, now
+  remove the marker without word-boundary collapse.
+
+Implemented but not selected in the real replay:
+
+- duplicate semantic heading contract for exact adjacent repeated phrases, e.g.
+  `национальные валюты Национальные валюты`, is covered by unit tests but the
+  proof run did not receive a model operation for that site. This is now an
+  operation-selection/pre-audit targeting gap, not a runtime rejection.
+
+PR-H0b/PR-H0c updates:
+
+- PR-H0b proof:
+  `20260530T155633Z_anthropic-small-overlap-pr-h0b-targeting-proof`, `15`
+  chunks, `0` failed chunks, `52` accepted operations, verifier
+  `cleaned_better` high confidence, `19` remaining issues. Duplicate semantic
+  heading operation selection worked for `национальные валюты Национальные
+  валюты`; side-heading islands still fell back to rejected
+  `remove_inline_noise`.
+- PR-H0c proof:
+  `20260530T165518Z_anthropic-small-overlap-pr-h0c-side-heading-salience-proof`,
+  `15` chunks, `0` failed chunks, `55` accepted operations, verifier
+  `cleaned_better` high confidence, `20` remaining issues. Side-heading
+  examples moved to accepted `split_block` operations and broad unsafe
+  `remove_inline_noise` remained `0`; remaining defects are now
+  stub/continuation fragments after side-heading extraction.
+
+Remaining PR-H targets:
+
+- side-heading stub/continuation contract after heading-island extraction;
+- leading-dash continuation artifacts as a separate classification decision.
 
 ### PR-H. Reader Cleanup Visual Blockers / PR-H-exit
 
@@ -363,9 +449,28 @@ pre-decommission documentation work.
 - Удалить visual structure review panel только после сохранения selection/retry
   behavior.
 
+### PR-D1. Очистка конфигурации
+
+- До удаления кода перевести в deprecated/no-op все три семьи structure config:
+  `structure_recognition`, `structure_recovery`, `structure_validation`.
+- Если deterministic source cleanup остаётся, создать новый neutral config block
+  (например source cleanup/layout hygiene), а не продолжать использовать
+  `structure_recovery.enabled`.
+- Старые config/env keys должны быть compatibility no-op, не hard error.
+- `DOCX_AI_STRUCTURE_RECOGNITION_*`, `DOCX_AI_STRUCTURE_RECOVERY_*`,
+  `DOCX_AI_STRUCTURE_VALIDATION_*` в `.env.example` сначала явно пометить как
+  deprecated; физическое удаление делать после compatibility window.
+- Structure-поля в `validation/profiles.py` и run-profile-ах
+  `corpus_registry.toml` сначала сделать ignored/deprecated для active profiles,
+  кроме archived historical profiles.
+- Model role `structure_recognition` удалять из `core/config_model_registry.py`
+  только после удаления всех consumers в PR-D2; в PR-D1 он должен стать
+  compatibility/deprecated surface, а не active production dependency.
+
 ### PR-D2. Удаление Stage 1/1.5/2 кода
 
-После PR-D0/PR-D0-UI удалить (с git-историей как архивом) изолированные модули:
+После PR-D0/PR-D0-UI и PR-D1 удалить (с git-историей как архивом)
+изолированные модули:
 
 - Пакет `src/docxaicorrector/structure/` целиком:
   `recognition.py`, `document_map.py`, `topology.py`, `reconciliation.py`,
@@ -384,22 +489,6 @@ pre-decommission documentation work.
 
 Важно: удаление вести итеративно «лист за листом», каждый шаг — targeted tests,
 `git diff --check`, затем full canonical verification на финале.
-
-### PR-D1. Очистка конфигурации
-
-- Удалить или перевести в deprecated no-op все три семьи structure config:
-  `structure_recognition`, `structure_recovery`, `structure_validation`.
-- Если deterministic source cleanup остаётся, создать новый neutral config block
-  (например source cleanup/layout hygiene), а не продолжать использовать
-  `structure_recovery.enabled`.
-- Удалить model role `structure_recognition` из `core/config_model_registry.py`
-  только после удаления всех consumers; старые config/env keys должны быть
-  compatibility no-op, не hard error.
-- Удалить `DOCX_AI_STRUCTURE_RECOGNITION_*`,
-  `DOCX_AI_STRUCTURE_RECOVERY_*`, `DOCX_AI_STRUCTURE_VALIDATION_*` из
-  `.env.example` после compatibility window или явно пометить как deprecated.
-- Удалить structure-поля из `validation/profiles.py` и run-profile-ов в
-  `corpus_registry.toml`, кроме archived historical profiles.
 
 ### PR-D2-Prompts. Промпты
 
@@ -448,7 +537,11 @@ reader-first путём.
 | --- | --- | --- |
 | PR-M0 | Plan Refresh + Inventory Lock | Обновить PR-H-exit status, latest completed proof evidence, inventory table, stop rules. |
 | PR-A0 | Reader Cleanup Config Surface | Complete missing config/env/UI-default/profile fields for reader cleanup; keep existing `reader_cleanup_model` / `reader_verifier_model`; tests for defaults/overrides. |
-| PR-H | Reader Cleanup Visual Blockers / PR-H-exit | Current sub-slice is PR-H-exit. First unblock verifier `execution_failed`, then prove or retire adjacent/split heading path; stable `failed_chunk_count=0`; fused heading/fragmented paragraph blockers fixed or classified; source-cleanup experiment measured. |
+| PR-H0 | Canonical Small-Overlap + Shared Blind Spots | Completed locally: canonical small-overlap shape is config/runtime/profile default; shared Anthropic/Gemini blind spots are explicit target classes. |
+| PR-H0a | Inline Marker + Duplicate Heading Runtime Proof | Completed locally: Anthropic canonical proof run has `failed_chunk_count=0`, `noise_substring_not_found=0`, raw `4.0` -> cleaned `6.0`; inline markers closed; duplicate heading is runtime-covered but needs operation selection/pre-audit targeting. |
+| PR-H0b | Operation Selection Targets Runtime Proof | Completed locally: duplicate semantic heading targeting is selected and accepted; side-heading islands still need operation-choice salience. |
+| PR-H0c | Side-Heading Operation Choice Salience | Completed locally: side-heading proof examples move to accepted `split_block`; remaining issue is stub/continuation fragments after extraction. |
+| PR-H | Reader Cleanup Visual Blockers / PR-H-exit | Next runtime slice after PR-H0c: side-heading stub/continuation contract; no verifier-side repair; keep stable `failed_chunk_count=0` and no false deletions. |
 | PR-I1 | Formatting Lineage Contract | Raw→cleaned→DOCX mapping для headings/lists/emphasis/source props; focused tests. |
 | PR-I2 | Formatting Preservation Implementation | Apply lineage in DOCX writer/rebuild path; preserve book-grade styles. |
 | PR-J1 | Image Handoff Evidence | Найти точку потери PDF-origin images/placeholders/assets/inline shapes. |
