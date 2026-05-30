@@ -1,7 +1,7 @@
 # Structure Recognition PR Backlog
 
 Date: 2026-05-21
-Status: Proposed implementation backlog
+Status: Archived 2026-05-30; dead-end / superseded by reader-first migration
 Source specs:
 
 - `docs/specs/STRUCTURE_RECOGNITION_INPUT_FIDELITY_SPEC_2026-05-21.md`

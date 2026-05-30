@@ -1,7 +1,7 @@
 # Structure Recognition Input Fidelity Spec
 
 Date: 2026-05-21
-Status: Proposed; ready for implementation after approval
+Status: Archived 2026-05-30; dead-end / superseded by reader-first migration
 Parent specs:
 
 - `docs/AI_FIRST_STRUCTURE_RECOVERY_SPEC_2026-05-08.md`

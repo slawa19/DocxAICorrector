@@ -2344,6 +2344,7 @@ def _build_reader_verifier_evidence_payload(
         if warning is not None
     ]
     cleanup_stats = cast(Mapping[str, object], (cleanup_report_payload or {}).get("stats") or {})
+    cleanup_settings = cast(Mapping[str, object], (cleanup_report_payload or {}).get("cleanup_settings") or {})
     cleanup_diagnostics = _build_reader_cleanup_diagnostics(cleanup_report_payload)
     deleted_block_previews = _build_reader_verifier_deleted_block_context(
         raw_markdown=raw_markdown,
@@ -2405,6 +2406,7 @@ def _build_reader_verifier_evidence_payload(
             "rejected_delete_block_count": reader_cleanup_evidence.get("rejected_delete_block_count"),
             "failed_chunk_count": reader_cleanup_evidence.get("failed_chunk_count"),
             "cleanup_chunk_count": cleanup_stats.get("cleanup_chunk_count"),
+            "cleanup_settings": dict(cleanup_settings),
             "warnings": _coerce_string_list((cleanup_report_payload or {}).get("warnings")),
         },
         "cleanup_diagnostics": cleanup_diagnostics,
@@ -4498,6 +4500,7 @@ def _build_reader_cleanup_evidence_from_artifact_paths(artifact_paths: Mapping[s
         return evidence
 
     stats = cast(Mapping[str, object], report_payload.get("stats") or {})
+    cleanup_settings = cast(Mapping[str, object], report_payload.get("cleanup_settings") or {})
     accepted_delete_block_count = _coerce_int(stats.get("accepted_delete_block_count"))
     ignored_delete_block_count = _coerce_int(stats.get("ignored_delete_block_count"))
     proposed_delete_block_count = _coerce_int(stats.get("proposed_delete_block_count"))
@@ -4539,6 +4542,8 @@ def _build_reader_cleanup_evidence_from_artifact_paths(artifact_paths: Mapping[s
                 proposed_delete_block_count - accepted_delete_block_count - ignored_delete_block_count,
             ),
             "failed_chunk_count": failed_chunk_count,
+            "cleanup_chunk_count": stats.get("cleanup_chunk_count"),
+            "cleanup_settings": dict(cleanup_settings),
             "anchor_repair_status": anchor_repair_status,
             "recommended_anchor_targets": list(cast(Sequence[object], anchor_repair_pass.get("selected_anchors") or [])),
             "recommended_anchor_target_count": runtime_anchor_selected_count,

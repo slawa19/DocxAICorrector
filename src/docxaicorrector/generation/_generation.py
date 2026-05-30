@@ -557,6 +557,12 @@ def _is_openrouter_client(client: "OpenAI") -> bool:
     return "openrouter" in str(base_url).lower()
 
 
+def _is_anthropic_client(client: object) -> bool:
+    return callable(getattr(getattr(client, "messages", None), "create", None)) and not callable(
+        getattr(getattr(client, "responses", None), "create", None)
+    )
+
+
 def _is_openrouter_responses_compatibility_error(exc: Exception) -> bool:
     status_code = getattr(exc, "status_code", None)
     if isinstance(status_code, int) and status_code not in {400, 404, 422}:
@@ -577,17 +583,28 @@ def _is_openrouter_responses_compatibility_error(exc: Exception) -> bool:
     )
 
 
-def _canonicalize_model_selector_for_client(*, client: "OpenAI", model: str) -> str:
+def _canonicalize_model_selector_for_client(*, client: object, model: str) -> str:
     stripped_model = str(model).strip()
     if not stripped_model:
         return stripped_model
     if ":" in stripped_model:
         provider_name, _, model_id = stripped_model.partition(":")
         normalized_provider = provider_name.strip().lower()
-        if normalized_provider in {"openai", "openrouter"} and model_id.strip():
+        if normalized_provider in {"openai", "openrouter", "anthropic"} and model_id.strip():
             return f"{normalized_provider}:{model_id.strip()}"
-    provider_name = "openrouter" if _is_openrouter_client(client) else "openai"
+    provider_name = "anthropic" if _is_anthropic_client(client) else "openrouter" if _is_openrouter_client(client) else "openai"
     return f"{provider_name}:{stripped_model}"
+
+
+def _normalize_anthropic_model_id(model: str) -> str:
+    model_id = str(model).strip()
+    if model_id.startswith("anthropic:"):
+        model_id = model_id.split(":", 1)[1].strip()
+    aliases = {
+        "claude-sonnet-4.6": "claude-sonnet-4-6",
+        "anthropic/claude-sonnet-4.6": "claude-sonnet-4-6",
+    }
+    return aliases.get(model_id, model_id)
 
 
 def _extract_chat_messages_from_request(request_kwargs: dict[str, object]) -> list[dict[str, str]]:
@@ -674,6 +691,88 @@ def _extract_chat_completion_markdown(response: object) -> str:
     raise RuntimeError("Модель вернула пустой ответ (empty_response).")
 
 
+def _extract_anthropic_messages_payload(request_kwargs: dict[str, object]) -> tuple[str, list[dict[str, str]]]:
+    raw_input = request_kwargs.get("input")
+    if not isinstance(raw_input, list):
+        raise RuntimeError("Provider 'anthropic' не может собрать messages из request input.")
+
+    system_parts: list[str] = []
+    messages: list[dict[str, str]] = []
+    for item in raw_input:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "user").strip() or "user"
+        raw_content = item.get("content")
+        if isinstance(raw_content, list):
+            text = "\n".join(
+                str(content_item.get("text") or "")
+                for content_item in raw_content
+                if isinstance(content_item, dict) and content_item.get("type") == "input_text"
+            )
+        else:
+            text = str(raw_content or "")
+        if not text.strip():
+            continue
+        if role == "system":
+            system_parts.append(text)
+        else:
+            messages.append({"role": "assistant" if role == "assistant" else "user", "content": text})
+
+    if not messages:
+        raise RuntimeError("Provider 'anthropic' не может собрать ни одного message.")
+    return "\n\n".join(system_parts), messages
+
+
+def _call_anthropic_messages_create(client: object, request_kwargs: dict[str, object]) -> object:
+    create = getattr(getattr(client, "messages", None), "create", None)
+    if not callable(create):
+        raise RuntimeError("Provider 'anthropic' не поддерживает required text API surface для selector '<runtime>'.")
+
+    system_prompt, messages = _extract_anthropic_messages_payload(request_kwargs)
+    payload: dict[str, object] = {
+        "model": _normalize_anthropic_model_id(str(request_kwargs["model"])),
+        "messages": messages,
+        "max_tokens": request_kwargs.get("max_output_tokens"),
+    }
+    if system_prompt:
+        payload["system"] = system_prompt
+    temperature = request_kwargs.get("temperature")
+    if temperature is not None:
+        payload["temperature"] = temperature
+
+    removable_optional_params = {"temperature"}
+    while True:
+        try:
+            return create(**payload)
+        except TypeError as exc:
+            unsupported_param = extract_unsupported_parameter_name(str(exc))
+            if unsupported_param in removable_optional_params and unsupported_param in payload:
+                payload.pop(unsupported_param, None)
+                continue
+            raise
+        except Exception as exc:
+            unsupported_param = extract_unsupported_parameter_name(str(exc))
+            if unsupported_param in removable_optional_params and unsupported_param in payload:
+                payload.pop(unsupported_param, None)
+                continue
+            raise
+
+
+def _extract_anthropic_message_markdown(response: object) -> str:
+    content = getattr(response, "content", None)
+    if not isinstance(content, list) or not content:
+        raise RuntimeError("Модель вернула пустой ответ (empty_response).")
+    text_parts = [
+        str(getattr(item, "text", "") or item.get("text") or "")
+        for item in content
+        if isinstance(item, dict) or hasattr(item, "text")
+    ]
+    markdown = normalize_model_output("\n".join(part for part in text_parts if part))
+    if markdown:
+        return markdown
+    raise RuntimeError("Модель вернула пустой ответ (empty_response).")
+
+
 def _estimate_max_output_tokens(target_text: str) -> int:
     estimated_output_tokens = max((len(target_text) // 3) * 4, 512)
     return min(estimated_output_tokens, 16384)
@@ -713,6 +812,9 @@ def _boost_request_output_budget(
 
 
 def _call_markdown_request_with_sdk_fallback(client: "OpenAI", request_kwargs: dict[str, object]) -> tuple[str, bool]:
+    if _is_anthropic_client(client):
+        response = _call_anthropic_messages_create(client, request_kwargs)
+        return _extract_anthropic_message_markdown(response), False
     try:
         response = _call_responses_create(client, cast(dict[str, Any], request_kwargs))
         return _extract_normalized_markdown(response), False

@@ -10,6 +10,7 @@ from docxaicorrector.reader_cleanup_mvp import (
     build_cleanup_blocks,
     build_reader_cleanup_system_prompt,
     build_reader_cleanup_schema_repair_system_prompt,
+    resolve_reader_cleanup_config,
     run_reader_cleanup,
     write_reader_cleanup_diagnostics,
 )
@@ -55,6 +56,27 @@ def test_build_cleanup_blocks_assigns_stable_ids_and_hashes() -> None:
     assert len({block.text_hash for block in blocks}) == 3
 
 
+def test_resolve_reader_cleanup_config_accepts_overlap_and_string_global_plan_flag() -> None:
+    config = resolve_reader_cleanup_config(
+        app_config={
+            "reader_cleanup_enabled": True,
+            "reader_cleanup_model": "anthropic:claude-sonnet-4-6",
+            "reader_cleanup_chunk_size": 8000,
+            "reader_cleanup_overlap_blocks_before": 3,
+            "reader_cleanup_overlap_blocks_after": 3,
+            "reader_cleanup_global_plan_enabled": "false",
+        },
+        fallback_model="fallback:model",
+    )
+
+    assert config.enabled is True
+    assert config.model == "anthropic:claude-sonnet-4-6"
+    assert config.chunk_size == 8000
+    assert config.overlap_blocks_before == 3
+    assert config.overlap_blocks_after == 3
+    assert config.global_plan_enabled is False
+
+
 def test_run_reader_cleanup_applies_safe_delete_operations() -> None:
     markdown = "Intro\n\nCompany Header\n\n10\n\nBody paragraph\n\nCompany Header\n\nOutro"
 
@@ -88,6 +110,100 @@ def test_run_reader_cleanup_applies_safe_delete_operations() -> None:
     assert result.report_payload["stats"]["accepted_delete_block_count"] == 3
 
 
+def test_run_reader_cleanup_rejects_standalone_numeric_page_number_without_page_context() -> None:
+    markdown = "Intro\n\n8\n\nBody paragraph\n\nOutro"
+    blocks = build_cleanup_blocks(markdown)
+    number_block = next(block for block in blocks if block.text == "8")
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, max_delete_block_ratio=0.8, max_delete_char_ratio=0.8),
+        operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
+            {
+                "cleanup_operations": [
+                    _delete_block_operation(
+                        number_block,
+                        reason="page_number",
+                        confidence="high",
+                        evidence_before="The model guessed this standalone number is a page number.",
+                        safety_note="Standalone numeric deletion needs page context.",
+                    )
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    assert result.report_payload["ignored_delete_blocks"][0]["ignored_reason"] == (
+        "standalone_number_delete_requires_page_context"
+    )
+
+
+def test_run_reader_cleanup_accepts_labeled_page_number_without_standalone_numeric_context() -> None:
+    markdown = "Intro\n\nPage 8\n\nBody paragraph\n\nOutro"
+    blocks = build_cleanup_blocks(markdown)
+    page_block = next(block for block in blocks if block.text == "Page 8")
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, max_delete_block_ratio=0.8, max_delete_char_ratio=0.8),
+        operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
+            {
+                "cleanup_operations": [
+                    _delete_block_operation(
+                        page_block,
+                        reason="page_number",
+                        confidence="high",
+                        evidence_before="The line is explicitly labeled as a page number.",
+                        safety_note="Labeled page-number furniture can be removed.",
+                    )
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    assert result.changed is True
+    assert result.cleaned_markdown == "Intro\n\nBody paragraph\n\nOutro"
+    assert result.report_payload["stats"]["accepted_delete_block_count"] == 1
+
+
+def test_run_reader_cleanup_preserves_semantic_standalone_list_number() -> None:
+    markdown = "Intro\n\n1\n\nThe first principle explains the local currency rules.\n\nOutro"
+    blocks = build_cleanup_blocks(markdown)
+    number_block = next(block for block in blocks if block.text == "1")
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, max_delete_block_ratio=0.8, max_delete_char_ratio=0.8),
+        operation_provider=lambda payload, chunk_index, chunk_count: json.dumps(
+            {
+                "cleanup_operations": [
+                    _delete_block_operation(
+                        number_block,
+                        reason="page_number",
+                        confidence="high",
+                        evidence_before="The model guessed this list marker is a page number.",
+                        safety_note="A standalone semantic list number must be preserved without page context.",
+                    )
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    assert result.report_payload["ignored_delete_blocks"][0]["ignored_reason"] == (
+        "standalone_number_delete_requires_page_context"
+    )
+
+
 def test_run_reader_cleanup_ignores_toc_blocks_when_keep_toc_is_false() -> None:
     markdown = "Intro\n\nChapter 1........ 12\n\nBody paragraph\n\nOutro"
     captured_block_texts: list[str] = []
@@ -109,7 +225,7 @@ def test_run_reader_cleanup_ignores_toc_blocks_when_keep_toc_is_false() -> None:
 
 
 def test_run_reader_cleanup_repairs_legacy_delete_blocks_into_audited_cleanup_operations() -> None:
-    markdown = "Intro\n\n10\n\nOutro"
+    markdown = "Intro\n\nCompany Header\n\n10\n\nBody paragraph\n\nCompany Header\n\nOutro"
 
     def operation_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
         return json.dumps(
@@ -180,6 +296,8 @@ def test_reader_cleanup_schema_repair_prompt_forbids_rewritten_markdown() -> Non
     prompt = build_reader_cleanup_schema_repair_system_prompt()
 
     assert "Return JSON only with top-level fields cleanup_operations and warnings." in prompt
+    assert "Do not wrap it in markdown fences" in prompt
+    assert '{"cleanup_operations":[],"warnings":[]}' in prompt
     assert "Do not return rewritten Markdown, cleaned Markdown, commentary, or extra top-level fields." in prompt
     assert "Repair every invalid cleanup operation item in the response, not only the first broken one." in prompt
     assert "If the original response uses legacy delete_blocks, convert it into cleanup_operations" in prompt
@@ -191,6 +309,9 @@ def test_reader_cleanup_schema_repair_prompt_forbids_rewritten_markdown() -> Non
 def test_reader_cleanup_system_prompt_mentions_anchor_repair_constraints() -> None:
     prompt = build_reader_cleanup_system_prompt()
 
+    assert "Return only a single valid JSON object" in prompt
+    assert "Do not wrap it in markdown fences" in prompt
+    assert '{"cleanup_operations":[],"warnings":[]}' in prompt
     assert "If the request pass_name is anchor_repair" in prompt
     assert "If one anchored block needs both page-furniture removal and heading/body repair" in prompt
     assert "For fragmented paragraph anchors, use neighbor context" in prompt
@@ -210,12 +331,80 @@ def test_reader_cleanup_system_prompt_mentions_anchor_repair_constraints() -> No
     assert "3 Управление и мы, граждане 201" not in prompt
 
 
+def test_reader_cleanup_system_prompt_requires_full_heading_body_remainder() -> None:
+    prompt = build_reader_cleanup_system_prompt()
+
+    assert "copy body_substring verbatim as the full semantic body remainder" in prompt
+    assert "heading_substring must be the complete exact heading prefix" in prompt
+    assert "body_substring must be the entire exact body remainder" in prompt
+    assert "including all later sentences in that same block" in prompt
+    assert "only copies the first few words instead of the full remaining semantic body text" in prompt
+    assert "do not propose normalize_heading_boundary" in prompt
+    assert "copying the full exact remainder" in prompt
+
+
+def test_reader_cleanup_system_prompt_forbids_title_subtitle_as_heading_body() -> None:
+    prompt = build_reader_cleanup_system_prompt()
+
+    assert "Title plus subtitle on one line is not automatically heading/body fusion" in prompt
+    assert "short subtitle, subtitle question, or epigraph-like line rather than narrative prose" in prompt
+    assert "do not force normalize_heading_boundary unless actual narrative prose starts after them" in prompt
+    assert "TOC-like rows are not heading/body prose" in prompt
+
+
 def test_reader_cleanup_schema_repair_prompt_mentions_fragmented_anchor_join_safety() -> None:
     prompt = build_reader_cleanup_schema_repair_system_prompt()
 
     assert "For anchor_repair fragmented_paragraph items" in prompt
     assert "next_id and next_text_hash are copied from an adjacent block in the current request payload" in prompt
     assert "do not convert a non-exact duplicate-looking tail into delete_block duplicate_fragment" in prompt
+
+
+def test_run_reader_cleanup_retries_empty_non_json_response_once() -> None:
+    markdown = "Intro\n\nBody paragraph"
+    calls = 0
+
+    def operation_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return "   "
+        return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, policy="advisory"),
+        operation_provider=operation_provider,
+    )
+
+    assert calls == 2
+    assert result.changed is False
+    assert result.report_payload["chunk_results"][0]["retry_attempted"] is True
+    assert result.report_payload["chunk_results"][0]["retry_status"] == "succeeded"
+    assert "reader_cleanup_non_json_response_retry_succeeded:1" in result.report_payload["warnings"]
+
+
+def test_run_reader_cleanup_records_failed_empty_response_diagnostics_after_retry() -> None:
+    markdown = "Intro\n\nBody paragraph"
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(enabled=True, model="anthropic:claude-sonnet-4-6", policy="advisory"),
+        operation_provider=lambda payload, chunk_index, chunk_count: "",
+    )
+
+    chunk_result = result.report_payload["chunk_results"][0]
+    diagnostics = chunk_result["failure_diagnostics"]
+    assert result.report_payload["stats"]["failed_chunk_count"] == 1
+    assert chunk_result["retry_attempted"] is True
+    assert chunk_result["retry_status"] == "failed"
+    assert diagnostics["chunk_index"] == 1
+    assert diagnostics["primary_block_id_range"] == {"first": "b_000000", "last": "b_000001"}
+    assert diagnostics["cleanup_model_selector"] == "anthropic:claude-sonnet-4-6"
+    assert diagnostics["request_payload_char_count"] > 0
+    assert diagnostics["raw_response_empty"] is True
+    assert diagnostics["raw_response_preview"] == ""
+    assert "Expecting value" in diagnostics["parse_error_message"]
 
 
 def test_run_reader_cleanup_repairs_schema_once_and_applies_repaired_operation() -> None:
@@ -436,7 +625,7 @@ def test_run_reader_cleanup_repair_failure_stays_fail_closed_in_strict_mode() ->
 
 
 def test_run_reader_cleanup_cleanup_operations_delete_block_requires_audit_fields() -> None:
-    markdown = "Intro\n\n10\n\nOutro"
+    markdown = "Intro\n\nCompany Header\n\n10\n\nBody paragraph\n\nCompany Header\n\nOutro"
     repair_calls: list[dict[str, Any]] = []
 
     def operation_provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
@@ -482,7 +671,7 @@ def test_run_reader_cleanup_cleanup_operations_delete_block_requires_audit_field
 
     assert len(repair_calls) == 1
     assert result.changed is True
-    assert result.cleaned_markdown == "Intro\n\nOutro"
+    assert result.cleaned_markdown == "Intro\n\nCompany Header\n\nBody paragraph\n\nCompany Header\n\nOutro"
     assert any("reader_cleanup_schema_validation_failed:1:" in warning for warning in result.report_payload["warnings"])
 
 
@@ -1229,8 +1418,9 @@ def test_run_reader_cleanup_infers_missing_confidence_for_safe_extraction_artifa
 
 
 def test_run_reader_cleanup_rejects_incompatible_duplicate_operation_with_explicit_reason() -> None:
-    markdown = "Intro\n\n10\n\nBody paragraph\n\nOutro"
+    markdown = "Intro\n\nCompany Header\n\n10\n\nBody paragraph\n\nCompany Header\n\nOutro"
     blocks = build_cleanup_blocks(markdown)
+    number_block = next(block for block in blocks if block.text == "10")
 
     result = run_reader_cleanup(
         markdown_text=markdown,
@@ -1239,8 +1429,8 @@ def test_run_reader_cleanup_rejects_incompatible_duplicate_operation_with_explic
             {
                 "cleanup_operations": [
                     {
-                        "id": blocks[1].block_id,
-                        "text_hash": blocks[1].text_hash,
+                        "id": number_block.block_id,
+                        "text_hash": number_block.text_hash,
                         "operation": "delete_block",
                         "reason": "page_number",
                         "confidence": "high",
@@ -1249,8 +1439,8 @@ def test_run_reader_cleanup_rejects_incompatible_duplicate_operation_with_explic
                         "safety_note": "Only the page number block should be removed.",
                     },
                     {
-                        "id": blocks[1].block_id,
-                        "text_hash": blocks[1].text_hash,
+                        "id": number_block.block_id,
+                        "text_hash": number_block.text_hash,
                         "operation": "remove_inline_noise",
                         "reason": "repeated_running_header",
                         "confidence": "high",
@@ -1267,7 +1457,7 @@ def test_run_reader_cleanup_rejects_incompatible_duplicate_operation_with_explic
     )
 
     assert result.changed is True
-    assert result.cleaned_markdown == "Intro\n\nBody paragraph\n\nOutro"
+    assert result.cleaned_markdown == "Intro\n\nCompany Header\n\nBody paragraph\n\nCompany Header\n\nOutro"
     assert result.report_payload["stats"]["failed_chunk_count"] == 0
     assert result.report_payload["ignored_delete_blocks"][0]["ignored_reason"] == "duplicate_operation_incompatible"
 
@@ -1569,6 +1759,65 @@ def test_run_reader_cleanup_reports_chunk_metrics_and_unsupported_drop_back_matt
     assert all("accepted_delete_block_count" in entry for entry in result.report_payload["chunk_results"])
 
 
+def test_run_reader_cleanup_sends_overlap_as_readonly_context_and_ignores_context_targets() -> None:
+    markdown = "Alpha\n\nBeta\n\nGamma"
+    seen_overlap_payload = False
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        nonlocal seen_overlap_payload
+        if chunk_index != 2:
+            return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+
+        seen_overlap_payload = True
+        editable_ids = set(payload["editable_block_ids"])
+        context_blocks = list(payload["readonly_context_blocks_before"]) + list(payload["readonly_context_blocks_after"])
+        assert {block["text"] for block in context_blocks} == {"Alpha", "Gamma"}
+        assert not editable_ids & {block["id"] for block in context_blocks}
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "remove_inline_noise",
+                        "reason": "page_furniture_inline",
+                        "confidence": "high",
+                        "evidence_before": block["text"],
+                        "expected_after_preview": "",
+                        "safety_note": "read-only overlap context must not be edited",
+                        "noise_substring": block["text"],
+                    }
+                    for block in context_blocks
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(
+            enabled=True,
+            chunk_size=7,
+            overlap_blocks_before=1,
+            overlap_blocks_after=1,
+        ),
+        operation_provider=provider,
+    )
+
+    assert seen_overlap_payload is True
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    assert result.report_payload["cleanup_settings"]["overlap_blocks_before"] == 1
+    assert result.report_payload["cleanup_settings"]["overlap_blocks_after"] == 1
+    assert result.report_payload["chunk_results"][1]["readonly_context_before_count"] == 1
+    assert result.report_payload["chunk_results"][1]["readonly_context_after_count"] == 1
+    assert {
+        entry["ignored_reason"]
+        for entry in result.report_payload["ignored_cleanup_operations"]
+    } == {"readonly_context_block"}
+
+
 def test_run_reader_cleanup_applies_split_fused_heading_body_operation() -> None:
     target = "СТРАТЕГИИ РАЗВИТИЯ Деньги — это рычаг власти."
     markdown = f"Intro\n\n{target}\n\nOutro"
@@ -1858,7 +2107,7 @@ def test_reader_cleanup_prompt_guides_heading_boundary_vs_split_choice() -> None
     assert "Part title after a preceding quote: use split_block, not normalize_heading_boundary" in prompt
     assert "heading_substring and body_substring for normalize_heading_boundary must match the exact post-prefix remainder" in prompt
     assert "Do not return a partial heading tail from the middle or last words of a wrapped heading" in prompt
-    assert "copy body_substring verbatim as the full body tail after that boundary" in prompt
+    assert "copy body_substring verbatim as the full semantic body remainder after that boundary" in prompt
     assert "not just a teaser" in prompt
     assert "expected_after_preview must show the exact post-apply result for that same block" in prompt
     assert "Use normalize_heading_boundary only when the heading is an exact prefix" in prompt
@@ -2051,6 +2300,7 @@ def test_run_reader_cleanup_splits_sentence_style_heading_boundary_with_exact_bo
 
 def test_run_reader_cleanup_preserves_full_remainder_for_unique_heading_prefix_boundary() -> None:
     target = "СТРАТЕГИИ РАЗВИТИЯ Деньги — это рычаг власти. Второе предложение тоже должно сохраниться."
+    body = "Деньги — это рычаг власти. Второе предложение тоже должно сохраниться."
     markdown = f"Intro\n\n{target}\n\nOutro"
 
     def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
@@ -2068,7 +2318,7 @@ def test_run_reader_cleanup_preserves_full_remainder_for_unique_heading_prefix_b
                         "expected_after_preview": "СТРАТЕГИИ РАЗВИТИЯ / Деньги — это рычаг власти. Второе предложение тоже должно сохраниться.",
                         "safety_note": "Heading stays exact and the full remainder stays in order.",
                         "heading_substring": "СТРАТЕГИИ РАЗВИТИЯ",
-                        "body_substring": "Деньги — это рычаг власти.",
+                        "body_substring": body,
                     }
                 ],
                 "warnings": [],
@@ -2080,6 +2330,47 @@ def test_run_reader_cleanup_preserves_full_remainder_for_unique_heading_prefix_b
 
     assert result.changed is True
     assert "СТРАТЕГИИ РАЗВИТИЯ\n\nДеньги — это рычаг власти. Второе предложение тоже должно сохраниться." in result.cleaned_markdown
+
+
+def test_run_reader_cleanup_accepts_full_exact_prefix_heading_body_remainder() -> None:
+    target = (
+        "СОЦИАЛЬНЫЕ ИНСТРУМЕНТЫ Во время пилотного проекта команда проверила новую модель. "
+        "Второе предложение остается частью того же абзаца."
+    )
+    body = (
+        "Во время пилотного проекта команда проверила новую модель. "
+        "Второе предложение остается частью того же абзаца."
+    )
+    markdown = f"Intro\n\n{target}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(block for block in payload["blocks"] if block["text"] == target)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "normalize_heading_boundary",
+                        "reason": "heading fused with body prose",
+                        "confidence": "high",
+                        "evidence_before": "A genuine prefix heading is fused to normal narrative prose.",
+                        "expected_after_preview": f"СОЦИАЛЬНЫЕ ИНСТРУМЕНТЫ\n\n{body}",
+                        "safety_note": "Split only the complete exact heading prefix and full exact body remainder.",
+                        "heading_substring": "СОЦИАЛЬНЫЕ ИНСТРУМЕНТЫ",
+                        "body_substring": body,
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is True
+    assert result.cleaned_markdown == f"Intro\n\nСОЦИАЛЬНЫЕ ИНСТРУМЕНТЫ\n\n{body}\n\nOutro"
+    assert result.report_payload["ignored_delete_blocks"] == []
 
 
 def test_run_reader_cleanup_rejects_heading_boundary_when_body_anchor_would_drop_meaningful_prefix() -> None:
@@ -2114,6 +2405,40 @@ def test_run_reader_cleanup_rejects_heading_boundary_when_body_anchor_would_drop
     assert result.changed is False
     assert result.cleaned_markdown == markdown
     assert result.report_payload["ignored_delete_blocks"][0]["ignored_reason"] == "heading_boundary_unaccounted_text"
+
+
+def test_run_reader_cleanup_rejects_heading_boundary_with_nonexistent_body_text() -> None:
+    target = "СОЦИАЛЬНЫЕ ИНСТРУМЕНТЫ Во время пилотного проекта команда проверила новую модель."
+    markdown = f"Intro\n\n{target}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(block for block in payload["blocks"] if block["text"] == target)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "normalize_heading_boundary",
+                        "reason": "heading fused with body prose",
+                        "confidence": "high",
+                        "evidence_before": "The proposed body text is not an exact substring from the block.",
+                        "expected_after_preview": "СОЦИАЛЬНЫЕ ИНСТРУМЕНТЫ / Во время проекта команда проверила новую модель.",
+                        "safety_note": "Reject when the body substring is edited instead of copied exactly.",
+                        "heading_substring": "СОЦИАЛЬНЫЕ ИНСТРУМЕНТЫ",
+                        "body_substring": "Во время проекта команда проверила новую модель.",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    assert result.report_payload["ignored_delete_blocks"][0]["ignored_reason"] == "heading_boundary_substrings_not_found"
 
 
 def test_run_reader_cleanup_recovers_heading_boundary_fields_from_exact_preview() -> None:
@@ -2729,6 +3054,254 @@ def test_run_reader_cleanup_applies_numeric_prefix_then_exact_heading_boundary_f
     )
     accepted_operations = result.report_payload["accepted_cleanup_operations"]
     assert [entry["operation"] for entry in accepted_operations] == ["remove_inline_noise", "normalize_heading_boundary"]
+
+
+def test_run_reader_cleanup_recovers_heading_boundary_from_exact_preview_with_teaser_body() -> None:
+    target = (
+        "162 ПРОЦВЕТАНИЕ ГРАЖДАНСКИЕ ИНИЦИАТИВЫ И НЕКОММЕРЧЕСКИЙ СЕКТОР "
+        "Через призму кооперативных валют становится очевидно, что для НКО открывается новая роль. "
+        "Традиционно эти структуры испытывают нехватку ресурсов."
+    )
+    markdown = f"Intro\n\n{target}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(block for block in payload["blocks"] if block["text"] == target)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "remove_inline_noise",
+                        "reason": "page_number",
+                        "confidence": "high",
+                        "evidence_before": "Only the numeric running-header prefix should be removed first.",
+                        "expected_after_preview": (
+                            "ГРАЖДАНСКИЕ ИНИЦИАТИВЫ И НЕКОММЕРЧЕСКИЙ СЕКТОР Через призму..."
+                        ),
+                        "safety_note": "Remove only the exact page-furniture prefix.",
+                        "noise_substring": "162 ПРОЦВЕТАНИЕ ",
+                    },
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "normalize_heading_boundary",
+                        "reason": "page_furniture_heading",
+                        "confidence": "high",
+                        "evidence_before": (
+                            "ГРАЖДАНСКИЕ ИНИЦИАТИВЫ И НЕКОММЕРЧЕСКИЙ СЕКТОР Через призму..."
+                        ),
+                        "expected_after_preview": (
+                            "ГРАЖДАНСКИЕ ИНИЦИАТИВЫ И НЕКОММЕРЧЕСКИЙ СЕКТОР\n\n"
+                            "Через призму..."
+                        ),
+                        "safety_note": "Recover exact substrings only from the current block text.",
+                    },
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is True
+    assert result.cleaned_markdown == (
+        "Intro\n\n"
+        "ГРАЖДАНСКИЕ ИНИЦИАТИВЫ И НЕКОММЕРЧЕСКИЙ СЕКТОР\n\n"
+        "Через призму кооперативных валют становится очевидно, что для НКО открывается новая роль. "
+        "Традиционно эти структуры испытывают нехватку ресурсов.\n\n"
+        "Outro"
+    )
+    assert any(
+        warning.endswith(":normalize_heading_boundary")
+        for warning in result.report_payload["warnings"]
+        if warning.startswith("reader_cleanup_exact_fields_recovered:")
+    )
+    accepted_heading = next(
+        entry
+        for entry in result.report_payload["accepted_cleanup_operations"]
+        if entry["operation"] == "normalize_heading_boundary"
+    )
+    assert accepted_heading["body_substring"].endswith("Традиционно эти структуры испытывают нехватку ресурсов.")
+
+
+def test_run_reader_cleanup_normalizes_heading_boundary_after_safe_joined_heading_tail() -> None:
+    first = "ВАЛЮТА, ОБЪЕДИНЯЮЩАЯ ЭФФЕКТИВНОСТЬ"
+    second = (
+        "И СПРАВЕДЛИВОСТЬ. Авиабизнес отличается жесткой конкуренцией. "
+        "Сотрудничество помогает избежать сбоев."
+    )
+    markdown = f"Intro\n\n{first}\n\n{second}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        first_block = next(block for block in payload["blocks"] if block["text"] == first)
+        second_block = next(block for block in payload["blocks"] if block["text"] == second)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": first_block["id"],
+                        "text_hash": first_block["text_hash"],
+                        "operation": "join_fragmented_paragraph",
+                        "reason": "page_furniture_inline",
+                        "confidence": "high",
+                        "evidence_before": first,
+                        "expected_after_preview": (
+                            "ВАЛЮТА, ОБЪЕДИНЯЮЩАЯ ЭФФЕКТИВНОСТЬ И СПРАВЕДЛИВОСТЬ. "
+                            "Авиабизнес отличается жесткой конкуренцией..."
+                        ),
+                        "safety_note": "Join only adjacent exact-hash heading fragments.",
+                        "next_id": second_block["id"],
+                        "next_text_hash": second_block["text_hash"],
+                    },
+                    {
+                        "id": second_block["id"],
+                        "text_hash": second_block["text_hash"],
+                        "operation": "normalize_heading_boundary",
+                        "reason": "page_furniture_heading",
+                        "confidence": "high",
+                        "evidence_before": second,
+                        "expected_after_preview": (
+                            "ВАЛЮТА, ОБЪЕДИНЯЮЩАЯ ЭФФЕКТИВНОСТЬ И СПРАВЕДЛИВОСТЬ.\n\n"
+                            "Авиабизнес отличается жесткой конкуренцией. Сотрудничество помогает избежать сбоев."
+                        ),
+                        "safety_note": "Normalize the exact joined heading/body boundary after the safe join.",
+                        "heading_substring": "ВАЛЮТА, ОБЪЕДИНЯЮЩАЯ ЭФФЕКТИВНОСТЬ И СПРАВЕДЛИВОСТЬ.",
+                        "body_substring": (
+                            "Авиабизнес отличается жесткой конкуренцией. Сотрудничество помогает избежать сбоев."
+                        ),
+                    },
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is True
+    assert result.cleaned_markdown == (
+        "Intro\n\n"
+        "ВАЛЮТА, ОБЪЕДИНЯЮЩАЯ ЭФФЕКТИВНОСТЬ И СПРАВЕДЛИВОСТЬ.\n\n"
+        "Авиабизнес отличается жесткой конкуренцией. Сотрудничество помогает избежать сбоев.\n\n"
+        "Outro"
+    )
+    accepted_operations = result.report_payload["accepted_cleanup_operations"]
+    assert [entry["operation"] for entry in accepted_operations] == [
+        "join_fragmented_paragraph",
+        "normalize_heading_boundary",
+    ]
+    assert accepted_operations[-1]["after_state"] == "heading_boundary_normalized_after_join"
+
+
+def test_run_reader_cleanup_normalizes_standalone_heading_with_adjacent_body() -> None:
+    heading = "ДЕМОКРАТИЯ, ПРОЗРАЧНОСТЬ И ПОДОТЧЕТНОСТЬ"
+    body = "Ключевые аспекты проекта требуют регулярной отчетности."
+    markdown = f"Intro\n\n{heading}\n\n{body}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        heading_block = next(block for block in payload["blocks"] if block["text"] == heading)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": heading_block["id"],
+                        "text_hash": heading_block["text_hash"],
+                        "operation": "normalize_heading_boundary",
+                        "reason": "heading fused with body prose",
+                        "confidence": "high",
+                        "evidence_before": "The heading is separated from the body by a stale block boundary.",
+                        "expected_after_preview": f"{heading}\n\n{body}",
+                        "safety_note": "Apply only when the adjacent block starts with the exact body.",
+                        "heading_substring": heading,
+                        "body_substring": body,
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    assert result.cleaned_markdown == f"Intro\n\n{heading}\n\n{body}\n\nOutro"
+    accepted_operations = result.report_payload["accepted_cleanup_operations"]
+    assert accepted_operations[-1]["after_state"] == "heading_boundary_normalized_across_adjacent_block"
+
+
+def test_run_reader_cleanup_normalizes_split_heading_with_adjacent_body_tail() -> None:
+    first = "ВАЛЮТА, ОБЪЕДИНЯЮЩАЯ ЭФФЕКТИВНОСТЬ"
+    second = "И СПРАВЕДЛИВОСТЬ. Авиабизнес отличается жесткой конкуренцией."
+    heading = "ВАЛЮТА, ОБЪЕДИНЯЮЩАЯ ЭФФЕКТИВНОСТЬ И СПРАВЕДЛИВОСТЬ."
+    body = "Авиабизнес отличается жесткой конкуренцией."
+    markdown = f"Intro\n\n{first}\n\n{second}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        first_block = next(block for block in payload["blocks"] if block["text"] == first)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": first_block["id"],
+                        "text_hash": first_block["text_hash"],
+                        "operation": "normalize_heading_boundary",
+                        "reason": "heading fused with body prose",
+                        "confidence": "high",
+                        "evidence_before": "The heading begins in this block and continues into the adjacent body block.",
+                        "expected_after_preview": f"{heading}\n\n{body}",
+                        "safety_note": "Do not apply unless the current block is the exact heading prefix.",
+                        "heading_substring": heading,
+                        "body_substring": body,
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is True
+    assert result.cleaned_markdown == f"Intro\n\n{heading}\n\n{body}\n\nOutro"
+    accepted_operations = result.report_payload["accepted_cleanup_operations"]
+    assert accepted_operations[-1]["after_state"] == "heading_boundary_normalized_across_adjacent_block"
+
+
+def test_run_reader_cleanup_rejects_adjacent_heading_boundary_with_unaccounted_prefix_prose() -> None:
+    first = "Предыдущая мысль завершается перед заголовком ДЕМОКРАТИЯ"
+    second = "Ключевые аспекты проекта требуют регулярной отчетности."
+    markdown = f"Intro\n\n{first}\n\n{second}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        first_block = next(block for block in payload["blocks"] if block["text"] == first)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": first_block["id"],
+                        "text_hash": first_block["text_hash"],
+                        "operation": "normalize_heading_boundary",
+                        "reason": "heading fused with body prose",
+                        "confidence": "high",
+                        "evidence_before": "A heading-like tail appears after prose, then the body starts in the next block.",
+                        "expected_after_preview": "ДЕМОКРАТИЯ\n\nКлючевые аспекты проекта требуют регулярной отчетности.",
+                        "safety_note": "Reject because prose appears before the heading candidate.",
+                        "heading_substring": "ДЕМОКРАТИЯ",
+                        "body_substring": second,
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    assert result.report_payload["ignored_delete_blocks"][0]["ignored_reason"] == "heading_boundary_substrings_not_found"
 
 
 def test_run_reader_cleanup_rejects_duplicate_fragment_when_nearby_tail_is_similar_but_not_exact() -> None:

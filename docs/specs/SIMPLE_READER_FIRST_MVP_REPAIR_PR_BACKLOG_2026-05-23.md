@@ -1,16 +1,20 @@
 # Simple Reader-First MVP Repair PR Backlog
 
 Date: 2026-05-23
-Status: Proposed implementation backlog for the next developer agent
+Status: Active implementation backlog; code-readiness audit updated 2026-05-30
 
 Source specs and evidence:
 
 - `docs/specs/SIMPLE_READER_FIRST_MVP_SPEC_2026-05-21.md`
-- `docs/specs/STRUCTURE_RECOGNITION_PR_BACKLOG_2026-05-21.md`
-- Latest comparison-only run:
-   `tests/artifacts/real_document_pipeline/runs/20260524T085558Z_976_Rethinking-money-chapter-region-pages-10-11-and-156-217/`
-- Latest cleanup report:
-   `.run/ui_results/20260524_120055_Rethinking-money-chapter-region-pages-10-11-and-156-217.reader_cleanup_report.json`
+- `docs/archive/specs/STRUCTURE_RECOGNITION_PR_BACKLOG_2026-05-21.md` (archived dead-end context)
+- Latest completed comparison-only run used for this audit:
+   `tests/artifacts/real_document_pipeline/runs/20260530T071434Z_968_Rethinking-money-chapter-region-pages-10-11-and-156-217/`
+- Latest completed cleanup report used for this audit:
+   `.run/ui_results/20260530_102025_Rethinking-money-chapter-region-pages-10-11-and-156-217.reader_cleanup_report.json`
+- Active model/strategy experiment log:
+   `docs/specs/READER_CLEANUP_MODEL_STRATEGY_EXPERIMENTS_2026-05-30.md`
+- Latest manifest caveat:
+   `tests/artifacts/real_document_pipeline/lietaer_pdf_chapter_region_latest.json` currently points at `20260530T074105Z_1139_...` with `status=in_progress`; do not use that run as success/failure proof until it completes.
 
 ## Purpose
 
@@ -52,6 +56,59 @@ successfully runs, but the remaining reader-visible defects are still too common
 for final output. Earlier backlog slices targeted PR-H directly; the current
 next move is to test whether cleaner source input makes PR-H stable instead of
 adding more post-translation runtime guards.
+
+## 2026-05-30 Code Readiness Audit
+
+Current code is no longer at the original May 24 backlog baseline. The reader
+cleanup MVP has runtime support for the main PR-H safety and operation-contract
+slices, but the latest completed proof does not reach MVP exit.
+
+Code-ready / implemented enough to validate:
+
+- Runtime reader cleanup is integrated in `late_phases` and writes raw, cleaned,
+   DOCX, and reader cleanup report artifacts under `.run/ui_results/`.
+- `reader_cleanup_mvp` has schema repair, exact-field recovery for
+   `normalize_heading_boundary`, standalone numeric delete page-context safety,
+   page-furniture/caption anchor repair, same-block sequencing diagnostics, and a
+   narrow adjacent/split heading application path.
+- Unit coverage exists for numeric delete safety, protected heading/first/last
+   blocks, page-caption anchor repair, ignored operation reasons, heading
+   boundary diagnostics, and Anthropic SDK request routing.
+- Provider/model configuration includes an Anthropic provider, timeout support,
+   and model selector normalization for `anthropic:claude-sonnet-4.6` / working
+   direct Anthropic id `claude-sonnet-4-6`.
+- Source-cleanup evidence is available through the existing layout artifact
+   cleanup/reporting path and validation profiles can select
+   `layout_artifact_cleanup_mode=remove`; this is the current implementation
+   route for the source-cleanup experiment, not a new broad source rewrite
+   subsystem.
+
+Not ready / still blocking MVP exit:
+
+- Latest completed proof run `20260530T071434Z_968_...` succeeded as a pipeline
+   run and kept no-harm gates green, but verifier proof failed with
+   `reader_verifier_status=failed`, `reader_verifier_reason=execution_failed`,
+   and `reader_verifier_remaining_issue_missing_required_text`.
+- Deterministic pre-audit still reports `heading_fused_with_body=5` and
+   `fragmented_paragraph=6`; top reader-visible blockers are not closed.
+- The new adjacent/split heading path did not get exercised in the latest
+   completed proof (`heading_boundary_normalized_across_adjacent_block` count was
+   `0`), so it is code-ready but not proven useful on the real document.
+- Cleanup application diagnostics still show local operation-shape problems:
+   `prior_same_block_operation_not_applied=2`,
+   `heading_boundary_substrings_not_found=2`,
+   `heading_boundary_unaccounted_text=1`, and
+   `remove_inline_noise_not_exact_noise_pattern=2`.
+- A fresh completed source-cleanup-remove comparison run is still required
+   before promoting source cleanup as the next production path. Older runs show
+   the profile exists, but the latest completed audit run did not provide the
+   needed fresh proof.
+
+Readiness conclusion: the code is ready for the next evidence-producing PR, not
+for MVP exit. The next slice should be proof/diagnostic driven: repair verifier
+preconditions first, then rerun the source-cleanup-remove comparison path and
+only after that decide whether remaining PR-H work belongs to prompt selection,
+operation contract, or source cleanup.
 
 May 26 replay experiments changed the preferred next move. Frozen cleanup replay
 showed that runtime safety is not the dominant remaining problem: valid exact
@@ -144,10 +201,14 @@ Work must be split by owner:
    - Fix old page numbers, running headers/footers, page-furniture glued into
       prose, heading/body fusion, fragmented paragraphs, and reader-visible list
       marker cleanup.
-   - Current active sub-slice: targeted page-furniture plus image-caption plus
-      continuation repair. This is code-owned orchestration inside
+   - Completed sub-slice: targeted page-furniture plus image-caption plus
+      continuation repair. This was code-owned orchestration inside
       `reader_cleanup_mvp`, not a validation-side repair and not a prompt-only
       contract.
+   - Current active sub-slice: PR-H2 Heading Boundary Application Diagnostics.
+      This is a reader-cleanup diagnostic/classification slice first; it must
+      not broaden into heading repair implementation until the current fused
+      heading anchors are classified by owner and risk.
    - Current May 26 evidence suggests no further runtime safety expansion should
       be made before testing source-side cleanup. Keep PR-H runtime stable while
       the next iteration measures whether pre-translation source cleanup reduces
@@ -179,6 +240,22 @@ owner, it must record the evidence and stop instead of broadening the PR.
 
 ### Remaining PRs In Plain Words
 
+- **Fix verifier proof before declaring MVP status.** The latest completed run
+   preserved artifacts and no-harm evidence, but verifier proof failed before a
+   reliable cleaned-vs-raw conclusion. Repair the verifier required-text/runtime
+   failure, then rerun the same comparison-only profile before using issue
+   counts as promotion evidence.
+- **Run the source-cleanup-remove experiment fresh.** Use the existing audited
+   layout cleanup/reporting path with the source-cleanup-remove profile, then
+   compare raw translated Markdown, cleaned Markdown, source cleanup evidence,
+   reader cleanup report, and verifier output against the latest completed
+   no-source-cleanup baseline.
+- **Classify the remaining PR-H blockers from fresh evidence.** If source
+   cleanup reduces page furniture and keeps safety green, keep PR-H as
+   post-translation polish. If it does not, split the remaining work into one
+   heading operation-contract slice and one fragmented-paragraph/caption slice;
+   do not merge them into one broad cleanup PR.
+
 - **Stabilize input before widening PR-H.** Continue PR-H only where AI-proposed
    bounded cleanup operations are valid but rejected too narrowly. The next
    planned iteration should instead test whether obvious source-side page
@@ -202,6 +279,240 @@ owner, it must record the evidence and stop instead of broadening the PR.
 - **Do not reopen PR-G unless validation mutates artifacts again.** Validator
    work is only supporting evidence now: it may report, filter out-of-scope TOC
    findings, and explain ignored cleanup reasons, but it must not repair output.
+
+### PR-H2: Heading Boundary Application Diagnostics
+
+#### Scope
+
+PR-H2 is limited to `reader_cleanup_mvp` diagnostics and backlog classification.
+Validation remains observer-only: it may report verifier anchors, review/status,
+and evidence, but it must not call cleanup as a repair executor, mutate cleaned
+Markdown/DOCX, or rebuild cleaned DOCX. This slice must not add Lietaer-specific
+heading literals, phrase lists, or deterministic regex repair. It also must not
+touch the larger reader-first migration/decommission plan without separate
+approval.
+
+The first deliverable is a classification table for the current heading anchors,
+not a broad heading repair. Fragmented paragraphs remain the next separate
+slice; do not fix duplicate/orphan fragments by unsafe deletion.
+
+#### Evidence Baseline
+
+Baseline run:
+`tests/artifacts/real_document_pipeline/runs/20260529T083946Z_1243_Rethinking-money-chapter-region-pages-10-11-and-156-217/`
+
+Key baseline facts:
+
+- `reader_verifier_overall_verdict=cleaned_better`
+- `reader_cleanup_failed_chunk_count=0`
+- `reader_verifier_remaining_issue_count=15`
+- blocker group: `heading_fused_with_body=9|fragmented_paragraph=6`
+- cleanup application diagnostics:
+   `prior_same_block_operation_not_applied=2`,
+   `heading_boundary_unaccounted_text=2`,
+   `heading_boundary_substrings_not_found=1`,
+   `remove_inline_noise_not_exact_noise_pattern=7`
+- accepted operation counts included `normalize_heading_boundary=13`
+
+Important evidence nuance: the blocker group says `heading_fused_with_body=9`,
+but the run artifacts contain seven unique cleaned-Markdown heading locations
+plus two lower-severity verifier-summary duplicates for lines 249 and 277. The
+filtered TOC pre-audit issue at `cleaned_markdown:1` is out of scope for TOC
+reconstruction and is not counted as a PR-H2 repair target.
+
+#### Current Heading Classification
+
+| Line ref / snippet | Issue kind | Likely owner | Suggested next action | Risk notes |
+| --- | --- | --- | --- | --- |
+| `249`: `ПЯТЬ МИЛЛИАРДОВ... Вдохновленный примером...` | genuine heading+body | prompt selection | prompt tweak | Exact prefix/body split looks safe if the model copies the full body tail; duplicated as both verifier and pre-audit issue. |
+| `277`: `ВАЛЮТА ДЛЯ ЧРЕЗВЫЧАЙНЫХ СИТУАЦИЙ Ураган...` | genuine heading+body | prompt selection | prompt tweak | Exact prefix/body split looks safe; keep disaster-event prose intact; duplicated as both verifier and pre-audit issue. |
+| `cleaned_markdown:249`: same snippet as line 249 | genuine heading+body duplicate | verifier taxonomy | verifier dedup/filtering | Do not treat as a second repair target; use as evidence that review/pre-audit dedup needs clearer reporting. |
+| `cleaned_markdown:277`: same snippet as line 277 | genuine heading+body duplicate | verifier taxonomy | verifier dedup/filtering | Do not double-count implementation impact if one block-level operation fixes it. |
+| `cleaned_markdown:303`: `ИСТИНА И ПОСЛЕДСТВИЯ: извлеченные уроки` | title+subtitle / heading-only verifier false positive | verifier taxonomy | verifier filtering | Looks like a heading plus subtitle, not running prose; avoid `normalize_heading_boundary` unless source evidence proves a body sentence starts here. |
+| `cleaned_markdown:351`: `ВОСХОЖДЕНИЕ НАЦИСТСКОЙ ПАРТИИ Подавление...` | genuine heading+body with missing exact substrings | operation contract / prompt selection | prompt tweak first; inspect mixed-language exactness before contract tweak | Ignored cleanup operation used `with` inside Russian body substring, producing `heading_boundary_substrings_not_found`; do not relax exact matching. |
+| `cleaned_markdown:359`: `СОЕДИНЕННЫЕ ШТАТЫ Во время...` | genuine heading+body | prompt selection | prompt tweak | Long body tail; next prompt should emphasize full body remainder, not teaser body substring. |
+| `cleaned_markdown:411`: `УПРАВЛЕНИЕ И МЫ, ГРАЖДАНЕ Древнее будущее?` | title+subtitle / heading-only verifier false positive | verifier taxonomy | verifier filtering | Second segment is a subtitle/question, not narrative prose; leave as known limitation unless verifier taxonomy is updated. |
+| `cleaned_markdown:521`: `ВАЛЮТА, ОБЪЕДИНЯЮЩАЯ... СПРАВЕДЛИВОСТЬ. Авиабизнес...` | genuine heading+body after same-block conflict | safety application / operation contract | operation-contract diagnostic, then prompt tweak | Cleanup proposed only trailing `И СПРАВЕДЛИВОСТЬ.` after another operation had already affected the block; next implementation should preserve full semantic heading or classify as same-block conflict, not split a trailing tail. |
+
+#### Ignored Operation Mapping
+
+Current machine-readable detail is enough to classify the rejected heading
+operations, but not enough to directly map every ignored operation to a verifier
+anchor without manual snippet matching.
+
+- `heading_boundary_substrings_not_found=1` maps to
+   `cleaned_markdown:351`: the proposed body substring contained a non-exact
+   mixed-language token (`with`) and was correctly rejected.
+- `heading_boundary_unaccounted_text=2` maps to non-prefix heading proposals:
+   one around `ЧАСТЬ ТРЕТЬЯ. ПЕРЕОСМЫСЛЕНИЕ ДЕНЕГ` after preceding quote text,
+   and one around `21 РОТТЕРДАМ.` after preceding quote/page-residue text. These
+   are operation-shape problems: `normalize_heading_boundary` is prefix-only,
+   so pre-heading prose requires `split_block` or a different bounded contract.
+- `prior_same_block_operation_not_applied=2` currently maps to
+   `join_fragmented_paragraph`, not to `normalize_heading_boundary`; keep it as
+   fragmented-paragraph evidence for the next slice.
+- `block_already_removed` for a proposed trailing heading split around
+   `И СПРАВЕДЛИВОСТЬ.` is a same-block sequencing/targeting symptom, but it is
+   not counted in the summarized heading-boundary reasons. It should be kept as
+   PR-H2 evidence because the remaining verifier issue at `cleaned_markdown:521`
+   still names the full semantic heading.
+
+If this diagnostic needs to become more machine-readable, extend
+`heading_boundary_application_diagnostics` with accepted/ignored examples and
+anchor/block IDs from report payloads; do not add repair behavior in validation.
+
+#### Acceptance Criteria
+
+- Backlog records the current run ID, issue counts, ignored heading reasons, and
+   the classification table above.
+- PR-H2 classifies each current heading issue as one of: genuine heading+body,
+   heading-only verifier false positive, page/header residue, title+subtitle,
+   same-block operation conflict, missing exact substrings, or unaccounted
+   prefix/prose.
+- Each class has an owner: prompt selection, operation contract, safety
+   application, verifier taxonomy, or known draft limitation.
+- The next implementation micro-slice is chosen explicitly before code changes:
+   start with prompt tweaks for genuine prefix heading+body cases, keep exact
+   substring safety strict, and handle verifier taxonomy/filtering for
+   title+subtitle false positives separately.
+- No document-specific heading strings, regex repair, TOC reconstruction, or
+   fragmented-paragraph deletion is introduced by this slice.
+
+#### PR-H2a / PR-H2b Continuation Note
+
+PR-H2a prompt guidance for genuine prefix heading+body is unit-ok, but the first
+real comparison-only proof is not acceptable as success proof. Run
+`20260529T105829Z_1195_Rethinking-money-chapter-region-pages-10-11-and-156-217`
+reduced `heading_fused_with_body` from `9` to `8`, kept
+`fragmented_paragraph=6`, kept `page_furniture_inline=0`, and had
+`reader_cleanup_failed_chunk_count=0`, but it reported a possible false
+deletion after accepting `delete_block` for standalone numeric block `b_000119`
+with `reason=page_number` and `raw_text_preview="8"`.
+
+The next micro-slice is PR-H2b: Numeric Delete Safety / Footnote vs Semantic
+Numbering. A standalone numeric `delete_block` must not be considered
+proof-safe by model reason alone. It should be accepted only when tied to
+document-agnostic page-boundary, repeated header/footer, or explicit
+page-furniture evidence. If that evidence is absent, keep the numeric block and
+report a clear ignored reason instead of risking deletion of footnote, citation,
+principle/list numbering, or other semantic numeric markers.
+
+PR-H2b closed the safety blocker in real comparison-only run
+`20260529T173533Z_1197_Rethinking-money-chapter-region-pages-10-11-and-156-217`:
+`reader_cleanup_accepted_delete_block_count=0`, `b_000119` is ignored with
+`standalone_number_delete_requires_page_context`, `false deletions=0`,
+`readability regressions=0`, `reader_cleanup_failed_chunk_count=0`, and
+`page_furniture_inline=0`. This is a safety proof, not a PR-H2 heading proof:
+the status still reports `heading_fused_with_body=13`,
+`fragmented_paragraph=2`, and `duplicate_fragment=1`.
+
+The next micro-slice is PR-H2c: Heading Evidence Classification / Unique Site
+Accounting. Before further prompt hardening, classify the current heading
+signals by unique cleaned Markdown site and by source. The latest report has
+`pre_audit_issue_counts.heading_fused_with_body=9`, while the aggregated
+reader-visible status reports `heading_fused_with_body=13` because several
+lines are surfaced both as verifier/model issues and pre-audit issues. PR-H2c
+should distinguish true remaining heading sites from duplicated evidence and
+then choose the next implementation slice from the remaining unique sites. Keep
+validation observer-only: it may normalize, count, and classify evidence, but it
+must not repair or rewrite Markdown/DOCX artifacts.
+
+#### PR-H2c Unique Heading Evidence Snapshot
+
+Run
+`20260529T173533Z_1197_Rethinking-money-chapter-region-pages-10-11-and-156-217`
+has 9 unique pre-audit `heading_fused_with_body` sites, not 13 unique heading
+failures. The aggregated count of 13 comes from 9 pre-audit sites plus 4
+verifier/model duplicate signals for the same cleaned Markdown line numbers
+(`93`, `221`, `229`, `251`). Treat the status-level `heading_fused_with_body=13`
+as evidence volume, not unique-site count.
+
+| Unique site | Source signals | Classification | Likely owner | Suggested next action | Risk notes |
+|---|---:|---|---|---|---|
+| `cleaned_markdown:93` `КАК ЭТО РАБОТАЕТ: Местные органы власти...` | pre-audit + verifier duplicate | genuine prefix heading+body | prompt selection / operation coverage | runtime cleanup candidate; inspect why accepted heading ops did not cover this site | Safe only with exact full heading prefix and full body remainder. |
+| `cleaned_markdown:221` `ГРАЖДАНСКИЕ ИНИЦИАТИВЫ... Через призму...` | pre-audit + verifier duplicate | genuine prefix heading+body | prompt selection / operation coverage | runtime cleanup candidate | Needs full uppercase heading prefix; no document-specific literal rules. |
+| `cleaned_markdown:229` `БЕСПЛАТНЫЕ КЛИНИКИ... Здравоохранение...` | pre-audit + verifier duplicate | genuine prefix heading+body | prompt selection / operation coverage | runtime cleanup candidate | Exact substring safety should remain strict. |
+| `cleaned_markdown:251` `ПЯТЬ МИЛЛИАРДОВ... Вдохновившись...` | pre-audit + verifier duplicate | genuine prefix heading+body | prompt selection / operation coverage | runtime cleanup candidate | PR-H2a target still remains in this run; diagnose operation proposal/acceptance gap before more prompt hardening. |
+| `cleaned_markdown:281` `ВАЛЮТА ДЛЯ ЧРЕЗВЫЧАЙНЫХ СИТУАЦИЙ Ураган...` | pre-audit only | genuine prefix heading+body | prompt selection / operation coverage | runtime cleanup candidate | No duplicate verifier signal; still a unique remaining reader-visible site. |
+| `cleaned_markdown:313` `ПРАВДА И ПОСЛЕДСТВИЯ: извлеченные уроки` | pre-audit only | title+subtitle / heading-only taxonomy | verifier taxonomy / known draft limitation | verifier filtering or known limitation | Do not split as body; no running prose remainder is present. |
+| `cleaned_markdown:361` `ВОСХОЖДЕНИЕ НАЦИСТСКОЙ ПАРТИИ Подавление...` | pre-audit only | genuine prefix heading+body with ignored exact-substring proposal | operation contract / safety application | inspect `heading_boundary_substrings_not_found` before prompt changes | Rejection is correct if substrings are not exact; do not loosen safety. |
+| `cleaned_markdown:425` `УПРАВЛЕНИЕ И МЫ, ГРАЖДАНЕ Древнее будущее?` | pre-audit only | title+subtitle / heading-only taxonomy | verifier taxonomy / known draft limitation | verifier filtering or known limitation | Subtitle/question, not body prose; runtime cleanup should not invent a body split. |
+| `cleaned_markdown:533` `ВАЛЮТА, ОБЪЕДИНЯЮЩАЯ... Авиабизнес...` | pre-audit only | genuine prefix heading+body / possible same-block sequencing residue | operation contract / sequencing diagnostics | inspect accepted/ignored operations around this block | Prior diagnostics showed same-block targeting symptoms; avoid broad prompt hardening until block-level evidence is clear. |
+
+PR-H2c acceptance for the diagnostic slice:
+
+- report both raw evidence volume and unique cleaned Markdown site count;
+- mark duplicate verifier/model signals separately from pre-audit unique sites;
+- classify each unique site as genuine prefix heading+body, title+subtitle,
+   heading-only taxonomy, operation-contract miss, or sequencing/safety
+   diagnostic;
+- choose the next runtime slice only from genuine prefix heading+body sites;
+- keep validation observer-only and do not add document-specific heading
+   literals, regex repair, or Markdown/DOCX rewriting in validation.
+
+#### PR-H-final Attempt Note
+
+PR-H-final added a runtime-only exact-field recovery for
+`normalize_heading_boundary` proposals whose `expected_after_preview` contains
+an exact heading plus a teaser body prefix. Code may recover the full
+`body_substring` only from the current block text, after verifying the exact
+heading, optional safe page-furniture prefix, and exact body-prefix match.
+Strict substring safety remains in place: non-exact body text, translated words,
+and title/subtitle rows still fail closed.
+
+Focused unit coverage passed, but the real comparison-only evidence does not
+close the MVP exit threshold. Run
+`20260529T180231Z_1206_Rethinking-money-chapter-region-pages-10-11-and-156-217`
+passed the must-hold safety gates (`failed_chunk_count=0`,
+`false_deletions=0`, `readability_regressions=0`, `page_furniture_inline=0`),
+removed the duplicate-fragment blocker, and reduced unique pre-audit heading
+sites to 7. That is still above the desired `<=2` genuine heading+body blocker
+threshold. A follow-up experimental adjacent-heading tweak was not retained:
+its proof run did not use the new path and reported
+`readability_regressions=1` plus `page_furniture_inline=1`, so it is not a
+valid PR-H-final proof.
+
+Next step should not be broader prompt hardening. Use the current exact-field
+recovery as the safe base, then decide between a narrow runtime operation
+contract for adjacent split-heading blocks or a separate caption/fragment
+repair slice, with a fresh proof run. Do not weaken delete safety or move repair
+into validation.
+
+#### PR-H-exit Adjacent/Split Heading Operation Contract
+
+PR-H-exit is the last runtime micro-slice before the MVP ship/no-ship decision.
+It targets only remaining genuine heading+body sites from run
+`20260529T180231Z_1206_Rethinking-money-chapter-region-pages-10-11-and-156-217`.
+The retained runtime contract is intentionally narrow:
+
+- `normalize_heading_boundary` may apply across the adjacent next block only
+   when the current block is the exact prefix of `heading_substring`;
+- `body_substring` must be an exact substring of the adjacent block;
+- split headings are allowed only when the adjacent block begins with the exact
+   remaining heading tail before the exact body text;
+- prose-before-heading, non-exact substrings, title/subtitle rows, and ambiguous
+   body starts still fail closed;
+- validation remains observer-only and no document-specific heading literals or
+   regex repair are introduced.
+
+Stop rule for the proof run: if must-hold safety remains green and unique
+genuine heading blockers are `<=2`, MVP exit is locally reached. If more than
+two remain but they are all classified as exact-substring/safety limitations,
+the readable-draft MVP may still be accepted by product decision. If more than
+two unclassified runtime-fixable headings remain, heading cleanup needs a
+separate operation-contract design decision rather than another prompt tweak.
+
+Outcome note from comparison-only run
+`20260530T071434Z_968_Rethinking-money-chapter-region-pages-10-11-and-156-217`:
+the pipeline succeeded and safety stayed green (`failed_chunk_count=0`,
+`accepted_delete_block_count=0`, false deletions/readability regressions empty,
+`page_furniture_inline=0`, standalone numeric guard still active), but the
+reader verifier failed with `execution_failed`, so this is not a valid MVP exit
+proof. Deterministic pre-audit still reported `heading_fused_with_body=5` and
+`fragmented_paragraph=6`. The new adjacent/split heading runtime path was not
+used in accepted operations (`heading_boundary_normalized_across_adjacent_block`
+count `0`), leaving the remaining heading issue as an operation-selection /
+contract design decision rather than a prompt wording slice.
 
 ## Latest Evidence To Preserve
 

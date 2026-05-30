@@ -1,7 +1,7 @@
 # Chapter Workflow Contract Alignment Spec
 
 Date: 2026-05-07
-Status: Implementation in progress
+Status: Archived 2026-05-30; dead-end / superseded by reader-first migration
 
 ## Problem
 

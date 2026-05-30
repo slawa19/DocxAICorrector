@@ -146,6 +146,8 @@ def test_load_app_config_exposes_image_validation_defaults(monkeypatch):
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5-mini",
+        "anthropic:claude-sonnet-4-6",
+        "openrouter:anthropic/claude-sonnet-4.6",
         "openrouter:google/gemini-3.1-flash-lite-preview",
     )
     assert models.structure_recognition == TEST_TEXT_MODEL_DEFAULT
@@ -1844,7 +1846,7 @@ def test_validate_provider_model_contracts_rejects_invalid_structure_recovery_do
     )
     args["structure_recovery_settings"] = {
         "structure_recovery_document_map_enabled": True,
-        "structure_recovery_document_map_model": "anthropic:claude-3.7-sonnet",
+        "structure_recovery_document_map_model": "unknown-provider:claude-3.7-sonnet",
     }
 
     with pytest.raises(RuntimeError, match=r"structure_recovery\.document_map\.model"):

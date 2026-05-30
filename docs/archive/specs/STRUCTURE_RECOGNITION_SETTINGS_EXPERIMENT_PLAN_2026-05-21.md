@@ -1,7 +1,7 @@
 # Structure Recognition Settings Experiment Plan
 
 Date: 2026-05-21
-Status: Proposed bounded experiment plan
+Status: Archived 2026-05-30; dead-end / superseded by reader-first migration
 
 ## Purpose
 

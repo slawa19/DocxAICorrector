@@ -62,12 +62,20 @@ reconstruction_background_sample_ratio = 0.04
 reconstruction_background_color_distance_threshold = 48.0
 reconstruction_background_uniformity_threshold = 10.0
 
+# Dedicated Simple Reader cleanup bake-off override.
+# Keep [models.text].default unchanged so translation still uses the regular
+# baseline while reader cleanup/verifier can be compared independently.
+reader_cleanup_model = "anthropic:claude-sonnet-4-6"
+reader_verifier_model = "anthropic:claude-sonnet-4-6"
+
 [models.text]
 default = "openrouter:google/gemini-3.1-flash-lite-preview"
 options = [
   "gpt-5.4",
   "gpt-5.4-mini",
   "gpt-5-mini",
+  "anthropic:claude-sonnet-4-6",
+  "openrouter:anthropic/claude-sonnet-4.6",
   "openrouter:google/gemini-3.1-flash-lite-preview",
 ]
 
@@ -109,6 +117,11 @@ api_key_env = "OPENROUTER_API_KEY"
 base_url = "https://openrouter.ai/api/v1"
 referer = "DocxAICorrector"
 title = "DocxAICorrector"
+
+[providers.anthropic]
+enabled = true
+api_key_env = "ANTHROPIC_API_KEY"
+timeout_seconds = 1200
 
 [paragraph_boundary_normalization]
 enabled = true

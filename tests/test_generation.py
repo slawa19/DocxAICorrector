@@ -183,6 +183,45 @@ def test_generate_markdown_block_retries_once_then_returns(monkeypatch):
     assert attempts[0]["max_output_tokens"] >= 512
 
 
+def test_generate_markdown_block_uses_anthropic_messages_api():
+    attempts = []
+
+    def create_message(**kwargs):
+        attempts.append(dict(kwargs))
+        return SimpleNamespace(content=[SimpleNamespace(text="```markdown\nИсправленный текст\n```")])
+
+    client = SimpleNamespace(messages=SimpleNamespace(create=create_message))
+
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="anthropic:claude-sonnet-4.6",
+        system_prompt="system",
+        target_text="target",
+        context_before="before",
+        context_after="after",
+        max_retries=1,
+    )
+
+    assert result == "Исправленный текст"
+    assert attempts == [
+        {
+            "model": "claude-sonnet-4-6",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Below is a target document block and surrounding context.\n"
+                    "Use the surrounding context only to understand meaning, terminology, and continuity.\n"
+                    "Process only the target block according to the system instructions and return only its final text.\n\n"
+                    "[CONTEXT BEFORE]\nbefore\n\n[TARGET BLOCK]\ntarget\n\n[CONTEXT AFTER]\nafter",
+                }
+            ],
+            "max_tokens": 512,
+            "system": "system",
+            "temperature": 0.4,
+        }
+    ]
+
+
 def test_generate_markdown_block_retries_on_empty_response(monkeypatch):
     attempts = []
     sleep_calls = []

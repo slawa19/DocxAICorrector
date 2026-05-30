@@ -1,7 +1,7 @@
 import logging
 import os
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from threading import Lock
@@ -65,15 +65,17 @@ from docxaicorrector.core.models import (
 from docxaicorrector.text.translation_domains import build_translation_domain_instructions
 
 OpenAI = None
+Anthropic = None
 _CLIENT = None
 _CLIENTS_BY_PROVIDER: dict[str, object] = {}
 _CLIENT_LOCK = Lock()
 _IMAGE_OUTPUT_SIZE_VALUES = {"256x256", "512x512", "1024x1024", "1024x1536", "1536x1024", "1024x1792", "1792x1024"}
 PROCESSING_OPERATION_VALUES = ("edit", "translate", "audiobook")
-_SUPPORTED_PROVIDER_IDS = ("openai", "openrouter")
+_SUPPORTED_PROVIDER_IDS = ("openai", "openrouter", "anthropic")
 _PROVIDER_CAPABILITIES = {
     "openai": frozenset({"responses_text", "responses_vision", "images_generate", "images_edit"}),
     "openrouter": frozenset({"responses_text"}),
+    "anthropic": frozenset({"responses_text"}),
 }
 _MIGRATION_DEFAULT_TEXT_MODEL = "gpt-5.4-mini"
 _MIGRATION_DEFAULT_TEXT_MODEL_OPTIONS = (
@@ -134,12 +136,20 @@ class ProviderConfig:
     base_url: str | None = None
     referer: str | None = None
     title: str | None = None
+    timeout_seconds: float | None = None
 
 
 @dataclass(frozen=True)
 class ProviderRegistry:
     openai: ProviderConfig
     openrouter: ProviderConfig
+    anthropic: ProviderConfig = field(
+        default_factory=lambda: ProviderConfig(
+            name="anthropic",
+            enabled=False,
+            api_key_env="ANTHROPIC_API_KEY",
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -191,6 +201,7 @@ _PROMPT_EXAMPLE_PATHS = {
 
 if TYPE_CHECKING:
     from openai import OpenAI as OpenAIClient
+    from anthropic import Anthropic as AnthropicClient
 
 
 @dataclass(frozen=True)
@@ -674,6 +685,8 @@ def _normalize_model_selector_for_registry(selector: str) -> str:
 def _coerce_provider_config(value: object, *, provider_name: str) -> ProviderConfig:
     if isinstance(value, ProviderConfig):
         return value
+    if value is None and provider_name == "anthropic":
+        return ProviderConfig(name="anthropic", enabled=False, api_key_env="ANTHROPIC_API_KEY")
     if not isinstance(value, Mapping):
         raise RuntimeError(f"Некорректная конфигурация provider '{provider_name}'.")
 
@@ -682,6 +695,7 @@ def _coerce_provider_config(value: object, *, provider_name: str) -> ProviderCon
     base_url = value.get("base_url")
     referer = value.get("referer")
     title = value.get("title")
+    timeout_seconds = value.get("timeout_seconds")
     if not isinstance(enabled, bool):
         raise RuntimeError(f"Некорректная конфигурация provider '{provider_name}'.")
     if not isinstance(api_key_env, str) or not api_key_env.strip():
@@ -689,6 +703,10 @@ def _coerce_provider_config(value: object, *, provider_name: str) -> ProviderCon
     for field_name, field_value in (("base_url", base_url), ("referer", referer), ("title", title)):
         if field_value is not None and (not isinstance(field_value, str) or not field_value.strip()):
             raise RuntimeError(f"Некорректная конфигурация provider '{provider_name}.{field_name}'.")
+    if timeout_seconds is not None and (
+        isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0
+    ):
+        raise RuntimeError(f"Некорректная конфигурация provider '{provider_name}.timeout_seconds'.")
 
     return ProviderConfig(
         name=provider_name,
@@ -697,6 +715,7 @@ def _coerce_provider_config(value: object, *, provider_name: str) -> ProviderCon
         base_url=base_url.strip() if isinstance(base_url, str) else None,
         referer=referer.strip() if isinstance(referer, str) else None,
         title=title.strip() if isinstance(title, str) else None,
+        timeout_seconds=float(timeout_seconds) if isinstance(timeout_seconds, (int, float)) and not isinstance(timeout_seconds, bool) else None,
     )
 
 
@@ -717,6 +736,7 @@ def get_provider_registry(config_like: object | None = None) -> ProviderRegistry
     return ProviderRegistry(
         openai=_coerce_provider_config(providers_value.get("openai"), provider_name="openai"),
         openrouter=_coerce_provider_config(providers_value.get("openrouter"), provider_name="openrouter"),
+        anthropic=_coerce_provider_config(providers_value.get("anthropic"), provider_name="anthropic"),
     )
 
 
@@ -1098,6 +1118,7 @@ def _resolve_provider_registry(*, config_data: dict[str, object]) -> ProviderReg
         default_base_url: str | None = None,
         default_referer: str | None = None,
         default_title: str | None = None,
+        default_timeout_seconds: float | None = None,
     ) -> ProviderConfig:
         section = parse_optional_config_section(providers_config, provider_name, parent_name="providers")
         enabled_value = section.get("enabled", default_enabled)
@@ -1119,11 +1140,29 @@ def _resolve_provider_registry(*, config_data: dict[str, object]) -> ProviderReg
         base_url = _optional_field("base_url", default_base_url)
         referer = _optional_field("referer", default_referer)
         title = _optional_field("title", default_title)
+        timeout_seconds_value = section.get("timeout_seconds", default_timeout_seconds)
+        if timeout_seconds_value is not None and (
+            isinstance(timeout_seconds_value, bool)
+            or not isinstance(timeout_seconds_value, (int, float))
+            or timeout_seconds_value <= 0
+        ):
+            raise RuntimeError(f"Некорректное поле providers.{provider_name}.timeout_seconds в {CONFIG_PATH}")
 
         if provider_name == "openrouter":
             base_url = parse_optional_str_env("DOCX_AI_PROVIDERS_OPENROUTER_BASE_URL") or base_url
             referer = parse_optional_str_env("DOCX_AI_PROVIDERS_OPENROUTER_REFERER") or referer
             title = parse_optional_str_env("DOCX_AI_PROVIDERS_OPENROUTER_TITLE") or title
+        if provider_name == "anthropic":
+            env_timeout = parse_optional_str_env("DOCX_AI_PROVIDERS_ANTHROPIC_TIMEOUT_SECONDS")
+            if env_timeout:
+                try:
+                    timeout_seconds_value = float(env_timeout)
+                except ValueError as exc:
+                    raise RuntimeError(
+                        "Некорректное поле DOCX_AI_PROVIDERS_ANTHROPIC_TIMEOUT_SECONDS в environment."
+                    ) from exc
+                if timeout_seconds_value <= 0:
+                    raise RuntimeError("Некорректное поле DOCX_AI_PROVIDERS_ANTHROPIC_TIMEOUT_SECONDS в environment.")
 
         return ProviderConfig(
             name=provider_name,
@@ -1132,6 +1171,11 @@ def _resolve_provider_registry(*, config_data: dict[str, object]) -> ProviderReg
             base_url=base_url,
             referer=referer,
             title=title,
+            timeout_seconds=(
+                float(timeout_seconds_value)
+                if isinstance(timeout_seconds_value, (int, float)) and not isinstance(timeout_seconds_value, bool)
+                else None
+            ),
         )
 
     return ProviderRegistry(
@@ -1147,6 +1191,12 @@ def _resolve_provider_registry(*, config_data: dict[str, object]) -> ProviderReg
             default_base_url="https://openrouter.ai/api/v1",
             default_referer="DocxAICorrector",
             default_title="DocxAICorrector",
+        ),
+        anthropic=_resolve_provider(
+            "anthropic",
+            default_enabled=False,
+            default_api_key_env="ANTHROPIC_API_KEY",
+            default_timeout_seconds=1200.0,
         ),
     )
 
@@ -1454,7 +1504,21 @@ def _get_openai_client_class() -> type["OpenAIClient"]:
     return client_cls
 
 
-def get_provider_client(provider_name: str, *, config_like: object | None = None) -> "OpenAIClient":
+def _get_anthropic_client_class() -> type["AnthropicClient"]:
+    global Anthropic
+    client_cls = Anthropic
+    if client_cls is None:
+        try:
+            from anthropic import Anthropic as imported_anthropic
+        except ImportError as exc:
+            raise RuntimeError("Provider 'anthropic' требует пакет anthropic из requirements.txt.") from exc
+
+        client_cls = imported_anthropic
+        Anthropic = imported_anthropic
+    return client_cls
+
+
+def get_provider_client(provider_name: str, *, config_like: object | None = None) -> object:
     normalized_provider_name = provider_name.strip().lower()
     provider_config = get_provider_config(normalized_provider_name, config_like)
     if not provider_config.enabled:
@@ -1493,8 +1557,13 @@ def get_provider_client(provider_name: str, *, config_like: object | None = None
             default_headers["X-OpenRouter-Title"] = provider_config.title
         if default_headers:
             client_kwargs["default_headers"] = default_headers
+        if provider_config.timeout_seconds is not None:
+            client_kwargs["timeout"] = provider_config.timeout_seconds
 
-        client = _get_openai_client_class()(**client_kwargs)
+        if normalized_provider_name == "anthropic":
+            client = _get_anthropic_client_class()(**client_kwargs)
+        else:
+            client = _get_openai_client_class()(**client_kwargs)
         _CLIENTS_BY_PROVIDER[normalized_provider_name] = client
         if normalized_provider_name == "openai":
             _CLIENT = client
@@ -1506,7 +1575,7 @@ def get_client_for_model_selector(
     required_capability: str,
     *,
     config_like: object | None = None,
-) -> "OpenAIClient":
+) -> object:
     resolved_selector = resolve_model_selector(
         selector,
         required_capability,
@@ -1523,5 +1592,5 @@ def get_client_for_model_selector(
         raise
 
 
-def get_client() -> "OpenAIClient":
+def get_client() -> object:
     return get_provider_client("openai")

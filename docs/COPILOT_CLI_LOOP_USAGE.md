@@ -80,7 +80,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\copilot-cli\scripts\
 ```text
 /copilot-loop
 Цель: добавить regression test для бага, при котором PDF structural preparation ошибочно относит главы к Front Matter.
-Контекст: смотри docs/AI_FIRST_STRUCTURE_RECOVERY_SPEC_2026-05-08.md и tests вокруг structural preparation.
+Контекст: смотри docs/archive/specs/AI_FIRST_STRUCTURE_RECOVERY_SPEC_2026-05-08.md и tests вокруг structural preparation.
 Границы: сначала только тест, production code менять только если тест невозможно выразить без минимального helper.
 Проверка: запустить конкретный test node через canonical test path.
 Автономность: до 2 итераций, не коммить.

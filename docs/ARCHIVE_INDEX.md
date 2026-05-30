@@ -47,6 +47,17 @@ Active spec из `docs/specs/` можно переносить в `docs/archive/
 
 ## Archived Specs And Plans
 
+### Dead-End: Structure-First Recognition
+
+These documents were moved to archive on 2026-05-30 after the Stage 1 DocumentMap / Stage 1.5 topology projection / Stage 2 anchored classification branch was declared a dead end and superseded by the reader-first migration path in `docs/specs/STRUCTURE_RECOGNITION_TO_READER_FIRST_MIGRATION_PLAN_2026-05-29.md`.
+
+- `docs/archive/specs/AI_FIRST_STRUCTURE_RECOVERY_SPEC_2026-05-08.md`
+- `docs/archive/specs/CHAPTER_WORKFLOW_CONTRACT_ALIGNMENT_SPEC_2026-05-07.md`
+- `docs/archive/specs/STRUCTURE_RECOGNITION_PR_BACKLOG_2026-05-21.md`
+- `docs/archive/specs/STRUCTURE_RECOGNITION_INPUT_FIDELITY_SPEC_2026-05-21.md`
+- `docs/archive/specs/STRUCTURE_RECOGNITION_SETTINGS_EXPERIMENT_PLAN_2026-05-21.md`
+- `docs/archive/specs/OUTPUT_DISPLAY_HYGIENE_AND_STRUCTURE_DETECTORS_SPEC_2026-05-21.md`
+
 - `docs/archive/specs/MULTILINGUAL_TEXT_TRANSFORM_SPEC_2026-04-18.md` — implemented and archived 2026-04-18 after multilingual text transform rollout and targeted regression verification completed
 - `docs/archive/specs/MULTILINGUAL_TEXT_TRANSFORM_HARDENING_SPEC_2026-04-18.md` — implemented and archived 2026-04-18 after multilingual guardrails and restartable-state warning behavior were verified
 - `docs/archive/specs/CENTRALIZED_MODEL_REGISTRY_REFACTOR_SPEC_2026-04-18.md` — implemented and archived 2026-04-18 after the centralized role-based model registry landed across config loading, runtime consumers, docs, and regression coverage

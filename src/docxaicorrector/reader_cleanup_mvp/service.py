@@ -146,6 +146,8 @@ class ReaderCleanupConfig:
     enabled: bool = False
     model: str = ""
     chunk_size: int = 30000
+    overlap_blocks_before: int = 0
+    overlap_blocks_after: int = 0
     global_plan_enabled: bool = True
     keep_toc: bool = True
     drop_back_matter: bool = False
@@ -189,6 +191,8 @@ class CleanupChunk:
     blocks: tuple[CleanupBlock, ...]
     context_before: str
     context_after: str
+    context_before_blocks: tuple[CleanupBlock, ...] = ()
+    context_after_blocks: tuple[CleanupBlock, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -256,7 +260,17 @@ def resolve_reader_cleanup_config(*, app_config: Mapping[str, object], fallback_
         enabled=enabled,
         model=model,
         chunk_size=_coerce_int(app_config.get("reader_cleanup_chunk_size", 30000), default=30000, minimum=3000),
-        global_plan_enabled=bool(app_config.get("reader_cleanup_global_plan_enabled", True)),
+        overlap_blocks_before=_coerce_int(
+            app_config.get("reader_cleanup_overlap_blocks_before", 0),
+            default=0,
+            minimum=0,
+        ),
+        overlap_blocks_after=_coerce_int(
+            app_config.get("reader_cleanup_overlap_blocks_after", 0),
+            default=0,
+            minimum=0,
+        ),
+        global_plan_enabled=_coerce_bool(app_config.get("reader_cleanup_global_plan_enabled", True), default=True),
         keep_toc=bool(app_config.get("reader_cleanup_keep_toc", True)),
         drop_back_matter=bool(app_config.get("reader_cleanup_drop_back_matter", False)),
         max_delete_block_ratio=_coerce_float(app_config.get("reader_cleanup_max_delete_block_ratio", 0.03), default=0.03),
@@ -280,11 +294,15 @@ def build_reader_cleanup_system_prompt() -> str:
         "You are cleaning translated book Markdown for reading.\n"
         "Do not translate, rewrite, summarize, reorder, or reformat the book.\n"
         "Return JSON only with top-level fields cleanup_operations and warnings.\n"
+        "Return only a single valid JSON object. Do not wrap it in markdown fences. Do not add prose before or after JSON.\n"
+        'For no-op chunks, return exactly {"cleanup_operations":[],"warnings":[]} or the same object with string warnings.\n'
         "Allowed operations are delete_block, split_block, remove_inline_noise, join_fragmented_paragraph, and normalize_heading_boundary.\n"
+        "Only blocks listed in editable_block_ids are mutation targets; readonly_context_blocks_before and readonly_context_blocks_after are context only and must not be edited.\n"
         "Do not reconstruct TOC or chapters as a structure-recognition task. Do not change semantic order or remove semantic content.\n"
         "For split_block, remove_inline_noise, join_fragmented_paragraph, and normalize_heading_boundary, provide only the minimal exact-match diff fields, not a rewritten document.\n"
         "Use delete_block only for non-semantic PDF/OCR/layout noise: repeated running headers, footers, "
         "page numbers, blank-page markers, orphaned footnote markers, and obvious extraction artifacts.\n"
+        "Do not delete a standalone numeric block such as '8' or '12' by page_number reason unless nearby page-boundary context, repeated header/footer evidence, or explicit page-label evidence makes it safe.\n"
         "Use remove_inline_noise for exact page furniture/page number/running header substrings embedded before or inside a semantic paragraph.\n"
         "For remove_inline_noise, prefer reasons such as page_furniture_inline, page_furniture_heading, page_number, or repeated_running_header when they match the exact residue being removed.\n"
         "Use split_block for one block that should become 2-3 exact substrings from the original block.\n"
@@ -304,17 +322,18 @@ def build_reader_cleanup_system_prompt() -> str:
         "index, and TOC unless the chunk payload explicitly marks them safe to delete.\n"
         "Each cleanup_operations item must contain id, text_hash, operation, reason, confidence, evidence_before, expected_after_preview, and safety_note. Never omit confidence.\n"
         "split_block must include split_substrings; remove_inline_noise must include noise_substring; join_fragmented_paragraph must include next_id and next_text_hash; normalize_heading_boundary must include heading_substring and body_substring.\n"
-        "For normalize_heading_boundary, use an exact heading prefix from the current block and copy body_substring verbatim as the full body tail after that boundary, not just a teaser; do not rewrite, retranslate, shorten, reorder, or normalize punctuation on either side.\n"
-        "Use normalize_heading_boundary only when the heading is an exact prefix and body_substring is the exact remainder start inside the same block.\n"
+        "For normalize_heading_boundary, use an exact heading prefix from the current block and copy body_substring verbatim as the full semantic body remainder after that boundary, not just a teaser; do not rewrite, retranslate, shorten, reorder, or normalize punctuation on either side.\n"
+        "Use normalize_heading_boundary only when the heading is an exact prefix and body_substring is the exact full remaining semantic body text inside the same block.\n"
         "If a block starts with page number plus running-header prefix plus prose, always propose remove_inline_noise for the exact non-semantic prefix first.\n"
         "Do not use normalize_heading_boundary to remove a numeric running-header prefix; use it only after exact prefix cleanup has already isolated the heading/body boundary.\n"
         "If remove_inline_noise is also needed on the same block, heading_substring and body_substring for normalize_heading_boundary must match the exact post-prefix remainder, not the pre-cleanup text.\n"
+        "For a genuine prefix heading plus normal narrative prose, heading_substring must be the complete exact heading prefix and body_substring must be the entire exact body remainder, including all later sentences in that same block.\n"
         "Uppercase heading plus normal narrative prose belongs to normalize_heading_boundary only when heading_substring is the full semantic heading from its first heading token and body_substring is the exact full prose tail that follows it.\n"
-        "Uppercase heading with a colon plus narrative prose belongs to normalize_heading_boundary when the heading stays fully inside heading_substring and body_substring starts at the first real prose sentence after it.\n"
+        "Uppercase heading with a colon plus narrative prose belongs to normalize_heading_boundary when the heading stays fully inside heading_substring and body_substring copies the full exact prose remainder from the first real prose sentence through the end of the block.\n"
         "Heading ending with a period plus narrative prose belongs to normalize_heading_boundary when the sentence after that period is real body prose rather than a subtitle, question, epigraph, TOC row, or list-like fragment.\n"
         "A short uppercase heading followed by narrative prose may still be a real heading, but only if body_substring copies the exact full semantic prose tail rather than a teaser or partial sentence.\n"
         "Do not return a partial heading tail from the middle or last words of a wrapped heading; copy the full remaining heading from its first semantic token.\n"
-        "If body_substring is not copied verbatim from the current block text, do not propose normalize_heading_boundary.\n"
+        "If body_substring is not copied verbatim from the current block text, or if it only copies the first few words instead of the full remaining semantic body text, do not propose normalize_heading_boundary.\n"
         "For normalize_heading_boundary, expected_after_preview must show the exact post-apply result for that same block with the heading first and the body remainder after a blank-line break; if you cannot provide that exact preview from the current block text, do not propose the operation.\n"
         "If a numeric prefix is followed by a semantic heading and body, do not widen remove_inline_noise to consume the semantic heading; keep prefix removal and heading/body normalization as separate exact operations.\n"
         "If a title-case running-header island with connector words or acronyms and a trailing page number interrupts semantic prose, use remove_inline_noise for only that exact island; do not widen into neighboring prose before or after it.\n"
@@ -322,12 +341,12 @@ def build_reader_cleanup_system_prompt() -> str:
         "If one block has multiple bounded operations, keep them separate; code applies them in canonical order remove_inline_noise, split_block, post-split remove_inline_noise, normalize_heading_boundary, then join_fragmented_paragraph.\n"
         "Examples for heading/body cleanup:\n"
         "- Sentence-style heading fused to prose: for 'ОБРАЗОВАНИЕ. Расходы на образование обычно ложатся на плечи федерального правительства.' use normalize_heading_boundary with heading_substring='ОБРАЗОВАНИЕ.' and body_substring='Расходы на образование обычно ложатся на плечи федерального правительства.'.\n"
-        "- Uppercase heading with colon plus prose: for 'МЕСТНАЯ ПРОГРАММА: ОБЩЕСТВЕННАЯ ПОЛЬЗА БЕЗ ДОЛГОВ В пилотном городе...' use normalize_heading_boundary with heading_substring='МЕСТНАЯ ПРОГРАММА: ОБЩЕСТВЕННАЯ ПОЛЬЗА БЕЗ ДОЛГОВ' and body_substring starting at 'В пилотном городе...'.\n"
-        "- Uppercase heading plus prose: use normalize_heading_boundary with heading_substring='СТРАТЕГИИ ДЛЯ ГОРОДСКИХ СЛУЖБ' and body_substring starting at the first prose sentence after it.\n"
-        "- Short uppercase heading plus narrative prose: for 'РАБОЧАЯ ГРУППА Во время пилотного проекта...' use normalize_heading_boundary with heading_substring='РАБОЧАЯ ГРУППА' and body_substring starting at 'Во время пилотного проекта...'.\n"
-        "- Heading ending with period plus prose: for 'ПРОЗРАЧНОСТЬ И ПОДОТЧЕТНОСТЬ. Ключевые аспекты...' use normalize_heading_boundary with heading_substring='ПРОЗРАЧНОСТЬ И ПОДОТЧЕТНОСТЬ.' and body_substring starting at 'Ключевые аспекты...'.\n"
-        "- Uppercase section heading followed immediately by sentence-case prose: for 'БЕСПЛАТНЫЕ КЛИНИКИ И «ИТАКСКИЕ ЧАСЫ» Здравоохранение — критически важная проблема...' use normalize_heading_boundary with the full uppercase title as heading_substring and body_substring starting at 'Здравоохранение — ...'.\n"
-        "- Uppercase heading ending with a period followed by body prose: for 'ГРАЖДАНСКИЕ ИНИЦИАТИВЫ И НЕКОММЕРЧЕСКИЙ СЕКТОР. Через призму...' use normalize_heading_boundary with heading_substring='ГРАЖДАНСКИЕ ИНИЦИАТИВЫ И НЕКОММЕРЧЕСКИЙ СЕКТОР.' and body_substring starting at 'Через призму...'.\n"
+        "- Uppercase heading with colon plus prose: for 'МЕСТНАЯ ПРОГРАММА: ОБЩЕСТВЕННАЯ ПОЛЬЗА БЕЗ ДОЛГОВ В пилотном городе...' use normalize_heading_boundary with heading_substring='МЕСТНАЯ ПРОГРАММА: ОБЩЕСТВЕННАЯ ПОЛЬЗА БЕЗ ДОЛГОВ' and body_substring copying the full exact remainder from 'В пилотном городе...' through the end of that block.\n"
+        "- Uppercase heading plus prose: use normalize_heading_boundary with heading_substring='СТРАТЕГИИ ДЛЯ ГОРОДСКИХ СЛУЖБ' and body_substring copying the full exact prose remainder after it.\n"
+        "- Short uppercase heading plus narrative prose: for 'РАБОЧАЯ ГРУППА Во время пилотного проекта...' use normalize_heading_boundary with heading_substring='РАБОЧАЯ ГРУППА' and body_substring copying the full exact remainder from 'Во время пилотного проекта...'.\n"
+        "- Heading ending with period plus prose: for 'ПРОЗРАЧНОСТЬ И ПОДОТЧЕТНОСТЬ. Ключевые аспекты...' use normalize_heading_boundary with heading_substring='ПРОЗРАЧНОСТЬ И ПОДОТЧЕТНОСТЬ.' and body_substring copying the full exact remainder from 'Ключевые аспекты...'.\n"
+        "- Uppercase section heading followed immediately by sentence-case prose: for 'БЕСПЛАТНЫЕ КЛИНИКИ И «ИТАКСКИЕ ЧАСЫ» Здравоохранение — критически важная проблема...' use normalize_heading_boundary with the full uppercase title as heading_substring and body_substring copying the full exact remainder from 'Здравоохранение — ...'.\n"
+        "- Uppercase heading ending with a period followed by body prose: for 'ГРАЖДАНСКИЕ ИНИЦИАТИВЫ И НЕКОММЕРЧЕСКИЙ СЕКТОР. Через призму...' use normalize_heading_boundary with heading_substring='ГРАЖДАНСКИЕ ИНИЦИАТИВЫ И НЕКОММЕРЧЕСКИЙ СЕКТОР.' and body_substring copying the full exact remainder from 'Через призму...'.\n"
         "- Leading page number or running header plus uppercase heading plus prose: first use remove_inline_noise for the exact non-semantic prefix, then normalize_heading_boundary for the remaining heading/body boundary when both exact previews are safe.\n"
         "- Running-header prefix plus semantic heading plus prose: after prefix cleanup, keep the full remaining semantic heading in heading_substring and put only the exact prose sentence start in body_substring; do not treat the whole semantic heading as removable noise and do not keep only the last heading words.\n"
         "- Do not keep only a trailing heading tail like 'И СПРАВЕДЛИВОСТЬ.' when the full semantic heading started earlier in the same block; heading_substring must begin at the first semantic heading token.\n"
@@ -347,6 +366,7 @@ def build_reader_cleanup_system_prompt() -> str:
         "- Anchor page furniture prefix: for '190 ПЕРЕОСМЫСЛЕНИЕ ДЕНЕГ Особый интерес...' use remove_inline_noise with noise_substring='190 ПЕРЕОСМЫСЛЕНИЕ ДЕНЕГ ' and keep the following prose.\n"
         "- Anchor page furniture plus caption between sentence parts: remove exactly the page header and caption span, keep the lowercase prose continuation, then join the previous unfinished block to the cleaned anchor block with exact ids/hashes.\n"
         "A leading or inline number may be removed only when it is exact non-semantic page furniture; if the number is semantic content inside a sentence, date, quantity, title, or citation, keep it.\n"
+        "Standalone numeric lines can be footnotes, citations, list markers, or semantic numbering; if page context is uncertain, keep them and add a warning.\n"
         "For obvious non-semantic noise such as standalone page numbers or lines like [[DOCX_IMAGE_img_001]], "
         'use confidence="high" instead of omitting the field.\n'
         "Preserve normal narrative wording and avoid semantic rewriting.\n"
@@ -360,6 +380,8 @@ def build_reader_cleanup_schema_repair_system_prompt() -> str:
     return (
         "You repair JSON for reader cleanup chunk responses.\n"
         "Return JSON only with top-level fields cleanup_operations and warnings.\n"
+        "Return only a single valid JSON object. Do not wrap it in markdown fences. Do not add prose before or after JSON.\n"
+        'For no-op repairs, return exactly {"cleanup_operations":[],"warnings":[]} or the same object with string warnings.\n'
         "Do not return rewritten Markdown, cleaned Markdown, commentary, or extra top-level fields.\n"
         "You may only correct schema and field mistakes inside cleanup_operations and warnings.\n"
         "Repair every invalid cleanup operation item in the response, not only the first broken one.\n"
@@ -367,6 +389,7 @@ def build_reader_cleanup_schema_repair_system_prompt() -> str:
         "Keep the allowed operations unchanged: delete_block, split_block, remove_inline_noise, join_fragmented_paragraph, and normalize_heading_boundary.\n"
         "Do not invent new block ids, text hashes, or rewritten text. Use only exact ids and text_hash values already present in the request.\n"
         "If pass_name is anchor_repair, keep the repaired response limited to anchor_targets, anchor_window_block_ids, editable_block_ids, and exact evidence already present in the request.\n"
+        "Drop or repair any operation that targets a readonly_context block instead of an editable_block_id.\n"
         "You may fill missing audit fields only from exact block text, context previews, anchor_targets, and the original response; do not fabricate rewritten prose.\n"
         "Each cleanup_operations item must contain id, text_hash, operation, reason, confidence, evidence_before, expected_after_preview, and safety_note.\n"
         "duplicate_fragment is an allowed delete_block reason only for exact nearby repeated carryover text that is already preserved elsewhere nearby.\n"
@@ -453,6 +476,8 @@ def run_reader_cleanup(
         report_payload = {
             "version": 1,
             "policy": config.policy,
+            "model": config.model,
+            "cleanup_settings": _serialize_cleanup_settings(config),
             "stage_status": "completed",
             "changed": False,
             "warnings": ["reader_cleanup_skipped_empty_markdown"],
@@ -477,7 +502,12 @@ def run_reader_cleanup(
         config=config,
         global_plan_provider=global_plan_provider,
     )
-    chunks = _build_cleanup_chunks(blocks=cleanup_blocks, chunk_size=config.chunk_size)
+    chunks = _build_cleanup_chunks(
+        blocks=cleanup_blocks,
+        chunk_size=config.chunk_size,
+        overlap_blocks_before=config.overlap_blocks_before,
+        overlap_blocks_after=config.overlap_blocks_after,
+    )
     all_operations: list[CleanupOperation] = []
     raw_global_warnings = global_plan.get("warnings")
     warnings: list[str] = list(selection_warnings)
@@ -488,53 +518,90 @@ def run_reader_cleanup(
 
     for chunk in chunks:
         request_payload = _build_chunk_request_payload(chunk=chunk, global_plan=global_plan, config=config)
+        request_payload_char_count = len(json.dumps(request_payload, ensure_ascii=False))
         started_at = time.perf_counter()
         raw_response = ""
         schema_validation_error = ""
+        parse_error_message = ""
         repair_error = ""
         repair_attempted = False
         repair_status = "not_attempted"
+        retry_attempted = False
+        retry_status = "not_attempted"
+        retry_error = ""
         ignored_chunk_operations: list[dict[str, object]] = []
         try:
             raw_response = operation_provider(request_payload, chunk.chunk_index, len(chunks))
             editable_blocks = {block.block_id: block for block in chunk.blocks}
+            readonly_context_blocks = _readonly_context_blocks_by_id(chunk)
             try:
                 operations, chunk_warnings, ignored_chunk_operations = _parse_cleanup_response(
                     raw_response=raw_response,
                     editable_blocks=editable_blocks,
+                    readonly_context_blocks=readonly_context_blocks,
                     chunk_index=chunk.chunk_index,
                 )
             except Exception as exc:
+                parse_error_message = str(exc)
                 original_response_payload = _load_cleanup_response_object(raw_response)
-                if repair_provider is None or original_response_payload is None:
+                if original_response_payload is None:
+                    retry_attempted = True
+                    retry_status = "attempted"
+                    warnings.append(f"reader_cleanup_non_json_response_retry_attempted:{chunk.chunk_index}:{parse_error_message}")
+                    try:
+                        raw_response = operation_provider(request_payload, chunk.chunk_index, len(chunks))
+                        operations, chunk_warnings, ignored_chunk_operations = _parse_cleanup_response(
+                            raw_response=raw_response,
+                            editable_blocks=editable_blocks,
+                            readonly_context_blocks=readonly_context_blocks,
+                            chunk_index=chunk.chunk_index,
+                        )
+                    except Exception as retry_exc:
+                        retry_status = "failed"
+                        retry_error = str(retry_exc)
+                        parse_error_message = retry_error
+                        warnings.append(f"reader_cleanup_non_json_response_retry_failed:{chunk.chunk_index}:{retry_error}")
+                        raise
+                    retry_status = "succeeded"
+                    warnings.append(f"reader_cleanup_non_json_response_retry_succeeded:{chunk.chunk_index}")
+                    original_response_payload = None
+                if original_response_payload is None:
+                    pass
+                else:
+                    schema_validation_error = str(exc)
+                    repair_attempted = True
+                    repair_status = "attempted"
+                    warnings.append(f"reader_cleanup_schema_validation_failed:{chunk.chunk_index}:{schema_validation_error}")
+                    warnings.append(f"reader_cleanup_schema_repair_attempted:{chunk.chunk_index}")
+                    repaired_response = repair_provider(
+                        _build_cleanup_schema_repair_payload(
+                            request_payload=request_payload,
+                            original_response=original_response_payload,
+                            validation_error=schema_validation_error,
+                        ),
+                        chunk.chunk_index,
+                        len(chunks),
+                    ) if repair_provider is not None else None
+                    if repaired_response is None:
+                        raise
+                    try:
+                        operations, chunk_warnings, ignored_chunk_operations = _parse_cleanup_response(
+                            raw_response=repaired_response,
+                            editable_blocks=editable_blocks,
+                            readonly_context_blocks=readonly_context_blocks,
+                            chunk_index=chunk.chunk_index,
+                        )
+                    except Exception as repair_exc:
+                        repair_status = "failed"
+                        repair_error = str(repair_exc)
+                        warnings.append(f"reader_cleanup_schema_repair_failed:{chunk.chunk_index}:{repair_error}")
+                        raise
+                    repair_status = "succeeded"
+                    warnings.append(f"reader_cleanup_schema_repair_succeeded:{chunk.chunk_index}")
+                if retry_status == "succeeded":
+                    pass
+                elif original_response_payload is None:
                     raise
-                schema_validation_error = str(exc)
-                repair_attempted = True
-                repair_status = "attempted"
-                warnings.append(f"reader_cleanup_schema_validation_failed:{chunk.chunk_index}:{schema_validation_error}")
-                warnings.append(f"reader_cleanup_schema_repair_attempted:{chunk.chunk_index}")
-                repaired_response = repair_provider(
-                    _build_cleanup_schema_repair_payload(
-                        request_payload=request_payload,
-                        original_response=original_response_payload,
-                        validation_error=schema_validation_error,
-                    ),
-                    chunk.chunk_index,
-                    len(chunks),
-                )
-                try:
-                    operations, chunk_warnings, ignored_chunk_operations = _parse_cleanup_response(
-                        raw_response=repaired_response,
-                        editable_blocks=editable_blocks,
-                        chunk_index=chunk.chunk_index,
-                    )
-                except Exception as repair_exc:
-                    repair_status = "failed"
-                    repair_error = str(repair_exc)
-                    warnings.append(f"reader_cleanup_schema_repair_failed:{chunk.chunk_index}:{repair_error}")
-                    raise
-                repair_status = "succeeded"
-                warnings.append(f"reader_cleanup_schema_repair_succeeded:{chunk.chunk_index}")
         except Exception as exc:
             warning = f"reader_cleanup_chunk_failed:{chunk.chunk_index}:{exc}"
             elapsed_ms = round((time.perf_counter() - started_at) * 1000, 3)
@@ -544,6 +611,8 @@ def run_reader_cleanup(
                     "status": "failed",
                     "target_block_count": len(chunk.blocks),
                     "target_chars": sum(block.char_count for block in chunk.blocks),
+                    "readonly_context_before_count": len(chunk.context_before_blocks),
+                    "readonly_context_after_count": len(chunk.context_after_blocks),
                     "elapsed_ms": elapsed_ms,
                     "proposed_cleanup_operation_count": 0,
                     "proposed_delete_block_count": 0,
@@ -553,8 +622,25 @@ def run_reader_cleanup(
                     "ignored_delete_block_count": 0,
                     "repair_attempted": repair_attempted,
                     "repair_status": repair_status,
+                    "retry_attempted": retry_attempted,
+                    "retry_status": retry_status,
+                    "retry_error": retry_error,
                     "schema_validation_error": schema_validation_error,
+                    "parse_error_message": parse_error_message or str(exc),
                     "repair_error": repair_error,
+                    "failure_diagnostics": _build_failed_chunk_diagnostics(
+                        chunk=chunk,
+                        config=config,
+                        request_payload_char_count=request_payload_char_count,
+                        raw_response=raw_response,
+                        parse_error_message=parse_error_message or str(exc),
+                        retry_attempted=retry_attempted,
+                        retry_status=retry_status,
+                        retry_error=retry_error,
+                        repair_attempted=repair_attempted,
+                        repair_status=repair_status,
+                        repair_error=repair_error,
+                    ),
                     "warning": warning,
                 }
             )
@@ -596,6 +682,8 @@ def run_reader_cleanup(
                 "status": "completed",
                 "target_block_count": len(chunk.blocks),
                 "target_chars": sum(block.char_count for block in chunk.blocks),
+                "readonly_context_before_count": len(chunk.context_before_blocks),
+                "readonly_context_after_count": len(chunk.context_after_blocks),
                 "elapsed_ms": elapsed_ms,
                 "proposed_cleanup_operation_count": len(operations) + len(ignored_chunk_operations),
                 "proposed_delete_block_count": sum(1 for operation in operations if operation.operation == "delete_block"),
@@ -605,8 +693,13 @@ def run_reader_cleanup(
                 "ignored_delete_block_count": 0,
                 "repair_attempted": repair_attempted,
                 "repair_status": repair_status,
+                "retry_attempted": retry_attempted,
+                "retry_status": retry_status,
+                "retry_error": retry_error,
                 "schema_validation_error": schema_validation_error,
+                "parse_error_message": parse_error_message,
                 "repair_error": repair_error,
+                "request_payload_char_count": request_payload_char_count,
             }
         )
 
@@ -801,30 +894,36 @@ def write_reader_cleanup_diagnostics(
     }
 
 
-def _build_cleanup_chunks(*, blocks: Sequence[CleanupBlock], chunk_size: int) -> list[CleanupChunk]:
+def _build_cleanup_chunks(
+    *,
+    blocks: Sequence[CleanupBlock],
+    chunk_size: int,
+    overlap_blocks_before: int = 0,
+    overlap_blocks_after: int = 0,
+) -> list[CleanupChunk]:
     if not blocks:
         return []
 
     chunks: list[CleanupChunk] = []
     current_blocks: list[CleanupBlock] = []
     current_chars = 0
-    chunk_start = 0
-    for block in blocks:
+    chunk_start_position = 0
+    for block_position, block in enumerate(blocks):
         separator_chars = 2 if current_blocks else 0
         projected_chars = current_chars + separator_chars + block.char_count
         if current_blocks and projected_chars > chunk_size:
-            chunk_end = current_blocks[-1].index
             chunks.append(
-                CleanupChunk(
+                _make_cleanup_chunk(
+                    blocks=blocks,
+                    selected_blocks=current_blocks,
                     chunk_index=len(chunks) + 1,
-                    start_index=chunk_start,
-                    end_index=chunk_end,
-                    blocks=tuple(current_blocks),
-                    context_before=blocks[chunk_start - 1].text if chunk_start > 0 else "",
-                    context_after=blocks[chunk_end + 1].text if chunk_end + 1 < len(blocks) else "",
+                    start_position=chunk_start_position,
+                    end_position=block_position - 1,
+                    overlap_blocks_before=overlap_blocks_before,
+                    overlap_blocks_after=overlap_blocks_after,
                 )
             )
-            chunk_start = block.index
+            chunk_start_position = block_position
             current_blocks = [block]
             current_chars = block.char_count
             continue
@@ -833,18 +932,61 @@ def _build_cleanup_chunks(*, blocks: Sequence[CleanupBlock], chunk_size: int) ->
         current_chars = projected_chars
 
     if current_blocks:
-        chunk_end = current_blocks[-1].index
         chunks.append(
-            CleanupChunk(
+            _make_cleanup_chunk(
+                blocks=blocks,
+                selected_blocks=current_blocks,
                 chunk_index=len(chunks) + 1,
-                start_index=chunk_start,
-                end_index=chunk_end,
-                blocks=tuple(current_blocks),
-                context_before=blocks[chunk_start - 1].text if chunk_start > 0 else "",
-                context_after=blocks[chunk_end + 1].text if chunk_end + 1 < len(blocks) else "",
+                start_position=chunk_start_position,
+                end_position=len(blocks) - 1,
+                overlap_blocks_before=overlap_blocks_before,
+                overlap_blocks_after=overlap_blocks_after,
             )
         )
     return chunks
+
+
+def _make_cleanup_chunk(
+    *,
+    blocks: Sequence[CleanupBlock],
+    selected_blocks: Sequence[CleanupBlock],
+    chunk_index: int,
+    start_position: int,
+    end_position: int,
+    overlap_blocks_before: int = 0,
+    overlap_blocks_after: int = 0,
+) -> CleanupChunk:
+    readonly_before = (
+        tuple(blocks[max(0, start_position - overlap_blocks_before) : start_position])
+        if overlap_blocks_before > 0
+        else ()
+    )
+    readonly_after = (
+        tuple(blocks[end_position + 1 : min(len(blocks), end_position + 1 + overlap_blocks_after)])
+        if overlap_blocks_after > 0
+        else ()
+    )
+    adjacent_before = blocks[start_position - 1].text if start_position > 0 else ""
+    adjacent_after = blocks[end_position + 1].text if end_position + 1 < len(blocks) else ""
+    context_before = "\n\n".join(block.text for block in readonly_before) if readonly_before else adjacent_before
+    context_after = "\n\n".join(block.text for block in readonly_after) if readonly_after else adjacent_after
+    return CleanupChunk(
+        chunk_index=chunk_index,
+        start_index=selected_blocks[0].index,
+        end_index=selected_blocks[-1].index,
+        blocks=tuple(selected_blocks),
+        context_before=context_before,
+        context_after=context_after,
+        context_before_blocks=readonly_before,
+        context_after_blocks=readonly_after,
+    )
+
+
+def _readonly_context_blocks_by_id(chunk: CleanupChunk) -> dict[str, CleanupBlock]:
+    return {
+        block.block_id: block
+        for block in (*chunk.context_before_blocks, *chunk.context_after_blocks)
+    }
 
 
 def _normalize_anchor_targets(
@@ -1157,10 +1299,13 @@ def _build_chunk_request_payload(
     global_plan: Mapping[str, object],
     config: ReaderCleanupConfig,
 ) -> dict[str, object]:
-    return {
+    readonly_before = [block.to_payload() for block in chunk.context_before_blocks]
+    readonly_after = [block.to_payload() for block in chunk.context_after_blocks]
+    payload: dict[str, object] = {
         "policy": config.policy,
         "keep_toc": config.keep_toc,
         "drop_back_matter": config.drop_back_matter,
+        "cleanup_settings": _serialize_cleanup_settings(config),
         "response_contract": {
             "top_level_fields": ["cleanup_operations", "warnings"],
             "legacy_top_level_fields": ["delete_blocks"],
@@ -1203,6 +1348,59 @@ def _build_chunk_request_payload(
         "global_plan": global_plan,
         "blocks": [block.to_payload() for block in chunk.blocks],
     }
+    if readonly_before or readonly_after:
+        payload.update(
+            {
+                "readonly_context_block_ids": [block["id"] for block in readonly_before + readonly_after],
+                "readonly_context_blocks_before": readonly_before,
+                "readonly_context_blocks_after": readonly_after,
+            }
+        )
+    return payload
+
+
+def _build_failed_chunk_diagnostics(
+    *,
+    chunk: CleanupChunk,
+    config: ReaderCleanupConfig,
+    request_payload_char_count: int,
+    raw_response: str,
+    parse_error_message: str,
+    retry_attempted: bool,
+    retry_status: str,
+    retry_error: str,
+    repair_attempted: bool,
+    repair_status: str,
+    repair_error: str,
+) -> dict[str, object]:
+    stripped_response = str(raw_response or "").strip()
+    return {
+        "chunk_index": chunk.chunk_index,
+        "primary_block_id_range": {
+            "first": chunk.blocks[0].block_id if chunk.blocks else "",
+            "last": chunk.blocks[-1].block_id if chunk.blocks else "",
+        },
+        "cleanup_model_selector": config.model,
+        "request_payload_char_count": request_payload_char_count,
+        "approx_prompt_input_char_count": request_payload_char_count,
+        "raw_response_empty": not bool(stripped_response),
+        "raw_response_char_count": len(raw_response or ""),
+        "raw_response_preview": _preview_text(raw_response, limit=1000),
+        "parse_error_message": parse_error_message,
+        "retry_attempted": retry_attempted,
+        "retry_status": retry_status,
+        "retry_error": retry_error,
+        "repair_attempted": repair_attempted,
+        "repair_status": repair_status,
+        "repair_error": repair_error,
+    }
+
+
+def _preview_text(value: object, *, limit: int) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
 
 
 def _build_anchor_repair_request_payload(
@@ -1262,6 +1460,16 @@ def _build_cleanup_stats(
     }
 
 
+def _serialize_cleanup_settings(config: ReaderCleanupConfig) -> dict[str, object]:
+    return {
+        "model_selector": config.model,
+        "chunk_size": config.chunk_size,
+        "overlap_blocks_before": config.overlap_blocks_before,
+        "overlap_blocks_after": config.overlap_blocks_after,
+        "global_plan_enabled": config.global_plan_enabled,
+    }
+
+
 def _build_reader_cleanup_report_payload(
     *,
     raw_markdown: str,
@@ -1291,6 +1499,7 @@ def _build_reader_cleanup_report_payload(
         "version": 1,
         "policy": config.policy,
         "model": config.model,
+        "cleanup_settings": _serialize_cleanup_settings(config),
         "stage_status": "failed_preserved_base_result" if failure is not None else "completed",
         "changed": changed,
         "warnings": list(warnings),
@@ -1382,6 +1591,13 @@ def _build_cleanup_schema_repair_payload(
         "validation_error": validation_error,
         "original_response": dict(original_response),
     }
+    for key in ("readonly_context_block_ids", "readonly_context_blocks_before", "readonly_context_blocks_after"):
+        value = request_payload.get(key)
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            payload[key] = [
+                dict(cast(Mapping[str, object], item)) if isinstance(item, Mapping) else str(item)
+                for item in value
+            ]
     anchor_targets = request_payload.get("anchor_targets")
     if isinstance(anchor_targets, Sequence) and not isinstance(anchor_targets, (str, bytes, bytearray)):
         payload["anchor_targets"] = [
@@ -1793,6 +2009,7 @@ def _parse_cleanup_response(
     *,
     raw_response: str,
     editable_blocks: Mapping[str, CleanupBlock],
+    readonly_context_blocks: Mapping[str, CleanupBlock] | None = None,
     chunk_index: int,
 ) -> tuple[list[CleanupOperation], list[str], list[dict[str, object]]]:
     payload = json.loads(raw_response)
@@ -1855,20 +2072,52 @@ def _parse_cleanup_response(
         if unknown_block_fields:
             raise RuntimeError(f"reader_cleanup_unknown_operation_fields:{','.join(unknown_block_fields)}")
 
-        if block_id not in editable_blocks:
-            raise RuntimeError(f"reader_cleanup_block_outside_chunk:{block_id}")
         if operation_name not in _ALLOWED_OPERATIONS:
             raise RuntimeError(f"reader_cleanup_unknown_operation:{operation_name}")
         if operation_name == "delete_block" and reason not in _ALLOWED_DELETE_REASONS:
             raise RuntimeError(f"reader_cleanup_unknown_reason:{reason}")
         if confidence not in _ALLOWED_CONFIDENCE:
             raise RuntimeError(f"reader_cleanup_unknown_confidence:{confidence}")
+        split_substrings = normalized_item.get("split_substrings")
+        readonly_context_block = (readonly_context_blocks or {}).get(block_id)
+        if block_id not in editable_blocks:
+            if readonly_context_block is None:
+                raise RuntimeError(f"reader_cleanup_block_outside_chunk:{block_id}")
+            ignored_operation = CleanupOperation(
+                block_id=block_id,
+                text_hash=text_hash,
+                operation=operation_name,
+                reason=reason,
+                confidence=cast(CleanupConfidence, confidence),
+                chunk_index=chunk_index,
+                evidence_before=str(normalized_item.get("evidence_before") or "").strip(),
+                expected_after_preview=str(normalized_item.get("expected_after_preview") or "").strip(),
+                safety_note=str(normalized_item.get("safety_note") or "").strip(),
+                split_substrings=tuple(
+                    str(part).strip() for part in split_substrings if str(part).strip()
+                )
+                if isinstance(split_substrings, list)
+                else (),
+                noise_substring=str(normalized_item.get("noise_substring") or ""),
+                next_id=str(normalized_item.get("next_id") or "").strip(),
+                next_text_hash=str(normalized_item.get("next_text_hash") or "").strip(),
+                heading_substring=str(normalized_item.get("heading_substring") or ""),
+                body_substring=str(normalized_item.get("body_substring") or ""),
+            )
+            ignored_operations.append(
+                {
+                    **_serialize_cleanup_operation(operation=ignored_operation, block=readonly_context_block),
+                    "chunk_index": chunk_index,
+                    "ignored_reason": "readonly_context_block",
+                }
+            )
+            warnings.append(f"reader_cleanup_readonly_context_operation_ignored:{chunk_index}:{block_id}")
+            continue
         for required_field in ("evidence_before", "safety_note"):
             if not str(normalized_item.get(required_field) or "").strip():
                 raise RuntimeError(f"reader_cleanup_operation_missing_required_field:{block_id}:{required_field}")
 
         seen_ids.add(block_id)
-        split_substrings = normalized_item.get("split_substrings")
         if operation_name == "delete_block":
             if "expected_after_preview" not in normalized_item:
                 normalized_item = dict(normalized_item)
@@ -2032,17 +2281,13 @@ def _recover_missing_operation_exact_fields(
     ).strip():
         return dict(normalized_item), []
 
-    preview = str(normalized_item.get("expected_after_preview") or "").replace("\r\n", "\n").replace("\r", "\n")
-    parts = [part.strip() for part in re.split(r"\n\s*\n", preview, maxsplit=1) if part.strip()]
-    if len(parts) != 2:
+    recovered_parts = _recover_heading_boundary_parts_from_preview(
+        normalized_item=normalized_item,
+        block=block,
+    )
+    if recovered_parts is None:
         return dict(normalized_item), []
-    heading, body = parts
-    current_text = block.text.strip()
-    if not current_text.startswith(heading):
-        return dict(normalized_item), []
-    remainder = current_text[len(heading):].lstrip()
-    if not remainder.startswith(body):
-        return dict(normalized_item), []
+    heading, body = recovered_parts
 
     recovered = dict(normalized_item)
     if not str(recovered.get("heading_substring") or "").strip():
@@ -2050,6 +2295,47 @@ def _recover_missing_operation_exact_fields(
     if not str(recovered.get("body_substring") or "").strip():
         recovered["body_substring"] = body
     return recovered, [f"reader_cleanup_exact_fields_recovered:{chunk_index}:{block_id}:{operation_name}"]
+
+
+def _recover_heading_boundary_parts_from_preview(
+    *,
+    normalized_item: Mapping[str, object],
+    block: CleanupBlock,
+) -> tuple[str, str] | None:
+    preview = str(normalized_item.get("expected_after_preview") or "").replace("\r\n", "\n").replace("\r", "\n")
+    parts = [part.strip() for part in re.split(r"\n\s*\n", preview, maxsplit=1) if part.strip()]
+    if len(parts) != 2:
+        return None
+    heading, body_preview = parts
+    if not heading or not body_preview:
+        return None
+
+    current_text = block.text.strip()
+    heading_start = current_text.find(heading)
+    if heading_start < 0 or current_text.count(heading) != 1:
+        return None
+    prefix = current_text[:heading_start]
+    if prefix.strip() and not _is_safe_inline_noise_substring(
+        noise=prefix,
+        current_text=current_text,
+        reason=str(normalized_item.get("reason") or ""),
+    ):
+        return None
+
+    remainder = current_text[heading_start + len(heading) :].lstrip()
+    body_prefix = _strip_preview_ellipsis(body_preview)
+    if not body_prefix or not remainder.startswith(body_prefix):
+        return None
+    if len(re.sub(r"\s+", "", body_prefix)) < 8:
+        return None
+    return heading, remainder
+
+
+def _strip_preview_ellipsis(value: str) -> str:
+    text = str(value or "").strip()
+    while text.endswith(("...", "…")):
+        text = text[:-3].rstrip() if text.endswith("...") else text[:-1].rstrip()
+    return text
 
 
 def _normalize_delete_block_item(
@@ -2120,6 +2406,7 @@ def _apply_cleanup_operations(
             )
             continue
         ignore_reason = _validate_operation(
+            blocks=blocks,
             block=block,
             operation=operation,
             protected_ids=protected_ids,
@@ -2204,6 +2491,12 @@ def _apply_single_operation_to_blocks(
 ) -> tuple[bool, str, str | None]:
     current_text = rewritten_blocks[block.index]
     if current_text is None:
+        if operation.operation == "normalize_heading_boundary":
+            return _apply_heading_boundary_to_joined_previous_block(
+                rewritten_blocks=rewritten_blocks,
+                operation=operation,
+                block=block,
+            )
         return False, "", "block_already_removed"
     if operation.operation == "delete_block":
         if operation.reason == "duplicate_fragment":
@@ -2262,34 +2555,122 @@ def _apply_single_operation_to_blocks(
         rewritten_blocks[next_block.index] = None
         return True, "joined_with_next", None
     if operation.operation == "normalize_heading_boundary":
-        heading = operation.heading_substring.strip()
-        body = operation.body_substring.strip()
-        if not heading or not body:
-            return False, "", "heading_boundary_missing_exact_parts"
-        if heading not in current_text or body not in current_text:
-            return False, "", "heading_boundary_substrings_not_found"
-        if current_text.count(heading) > 1:
-            return False, "", "heading_boundary_heading_ambiguous"
-        if current_text.count(body) > 1:
-            return False, "", "heading_boundary_body_ambiguous"
-        heading_start = current_text.find(heading)
-        body_start = current_text.find(body)
-        if heading_start > body_start:
-            return False, "", "heading_boundary_order_invalid"
-        body_end = body_start + len(body)
-        if heading_start == 0 and body_start > heading_start:
-            preserved_body = current_text[body_start:].strip()
-            gap = current_text[len(heading):body_start].strip()
-            if gap and len(re.sub(r"\s+", "", gap)) > 12:
-                return False, "", "heading_boundary_unaccounted_text"
-            rewritten_blocks[block.index] = f"{heading}\n\n{preserved_body}"
-            return True, "heading_boundary_normalized", None
-        remainder = f"{current_text[:heading_start]}{current_text[len(heading):body_start]}{current_text[body_end:]}".strip()
-        if remainder and len(re.sub(r"\s+", "", remainder)) > 12:
-            return False, "", "heading_boundary_unaccounted_text"
-        rewritten_blocks[block.index] = f"{heading}\n\n{body}"
+        applied_text, ignore_reason = _apply_heading_boundary_to_text(
+            current_text=current_text,
+            operation=operation,
+        )
+        if applied_text is None:
+            adjacent_applied, adjacent_after_state, _adjacent_ignore_reason = (
+                _apply_heading_boundary_across_adjacent_block(
+                    rewritten_blocks=rewritten_blocks,
+                    operation=operation,
+                    block=block,
+                )
+            )
+            if adjacent_applied:
+                return True, adjacent_after_state, None
+            return False, "", ignore_reason or "heading_boundary_not_applicable"
+        rewritten_blocks[block.index] = applied_text
         return True, "heading_boundary_normalized", None
     return False, "", "unsupported_operation"
+
+
+def _apply_heading_boundary_to_joined_previous_block(
+    *,
+    rewritten_blocks: list[str | None],
+    operation: CleanupOperation,
+    block: CleanupBlock,
+) -> tuple[bool, str, str | None]:
+    if block.index <= 0:
+        return False, "", "block_already_removed"
+    previous_text = rewritten_blocks[block.index - 1]
+    if previous_text is None:
+        return False, "", "block_already_removed"
+    evidence = operation.evidence_before.strip()
+    if evidence and evidence not in previous_text:
+        return False, "", "block_already_removed"
+    applied_text, ignore_reason = _apply_heading_boundary_to_text(
+        current_text=previous_text,
+        operation=operation,
+    )
+    if applied_text is None:
+        return False, "", ignore_reason or "block_already_removed"
+    rewritten_blocks[block.index - 1] = applied_text
+    return True, "heading_boundary_normalized_after_join", None
+
+
+def _apply_heading_boundary_across_adjacent_block(
+    *,
+    rewritten_blocks: list[str | None],
+    operation: CleanupOperation,
+    block: CleanupBlock,
+) -> tuple[bool, str, str | None]:
+    if block.index + 1 >= len(rewritten_blocks):
+        return False, "", "heading_boundary_adjacent_body_missing"
+    current_text = rewritten_blocks[block.index]
+    next_text = rewritten_blocks[block.index + 1]
+    if current_text is None or next_text is None:
+        return False, "", "heading_boundary_adjacent_body_missing"
+
+    heading = operation.heading_substring.strip()
+    body = operation.body_substring.strip()
+    current_prefix = current_text.strip()
+    next_remainder = next_text.lstrip()
+    if not heading or not body or not current_prefix or not next_remainder:
+        return False, "", "heading_boundary_missing_exact_parts"
+    if not heading.startswith(current_prefix):
+        return False, "", "heading_boundary_unaccounted_text"
+    if body not in next_text:
+        return False, "", "heading_boundary_substrings_not_found"
+
+    heading_tail = heading[len(current_prefix) :].lstrip()
+    if heading_tail and not next_remainder.startswith(heading_tail):
+        return False, "", "heading_boundary_substrings_not_found"
+    if not heading_tail and not next_remainder.startswith(body):
+        return False, "", "heading_boundary_substrings_not_found"
+
+    combined_text = f"{current_prefix} {next_remainder}"
+    applied_text, ignore_reason = _apply_heading_boundary_to_text(
+        current_text=combined_text,
+        operation=operation,
+    )
+    if applied_text is None:
+        return False, "", ignore_reason or "heading_boundary_not_applicable"
+    rewritten_blocks[block.index] = applied_text
+    rewritten_blocks[block.index + 1] = None
+    return True, "heading_boundary_normalized_across_adjacent_block", None
+
+
+def _apply_heading_boundary_to_text(
+    *,
+    current_text: str,
+    operation: CleanupOperation,
+) -> tuple[str | None, str | None]:
+    heading = operation.heading_substring.strip()
+    body = operation.body_substring.strip()
+    if not heading or not body:
+        return None, "heading_boundary_missing_exact_parts"
+    if heading not in current_text or body not in current_text:
+        return None, "heading_boundary_substrings_not_found"
+    if current_text.count(heading) > 1:
+        return None, "heading_boundary_heading_ambiguous"
+    if current_text.count(body) > 1:
+        return None, "heading_boundary_body_ambiguous"
+    heading_start = current_text.find(heading)
+    body_start = current_text.find(body)
+    if heading_start > body_start:
+        return None, "heading_boundary_order_invalid"
+    body_end = body_start + len(body)
+    if heading_start == 0 and body_start > heading_start:
+        preserved_body = current_text[body_start:].strip()
+        gap = current_text[len(heading) : body_start].strip()
+        if gap and len(re.sub(r"\s+", "", gap)) > 12:
+            return None, "heading_boundary_unaccounted_text"
+        return f"{heading}\n\n{preserved_body}", None
+    remainder = f"{current_text[:heading_start]}{current_text[len(heading):body_start]}{current_text[body_end:]}".strip()
+    if remainder and len(re.sub(r"\s+", "", remainder)) > 12:
+        return None, "heading_boundary_unaccounted_text"
+    return f"{heading}\n\n{body}", None
 
 
 def _is_safe_inline_noise_substring(*, noise: str, current_text: str, reason: str) -> bool:
@@ -2547,6 +2928,7 @@ def _build_protected_block_ids(*, blocks: Sequence[CleanupBlock], keep_toc: bool
 
 def _validate_operation(
     *,
+    blocks: Sequence[CleanupBlock],
     block: CleanupBlock,
     operation: CleanupOperation,
     protected_ids: set[str],
@@ -2592,9 +2974,37 @@ def _validate_operation(
         return "heading_protected"
     if block.block_id in protected_ids:
         return "protected_block"
+    if operation.reason == "page_number" and not _has_safe_standalone_number_delete_context(
+        blocks=blocks,
+        block=block,
+        global_candidate_block_ids=global_candidate_block_ids,
+    ):
+        return "standalone_number_delete_requires_page_context"
     if block.char_count > config.max_deleted_block_chars:
         return "block_char_limit_exceeded"
     return None
+
+
+def _has_safe_standalone_number_delete_context(
+    *,
+    blocks: Sequence[CleanupBlock],
+    block: CleanupBlock,
+    global_candidate_block_ids: set[str],
+) -> bool:
+    text = block.normalized_text.strip()
+    if not re.fullmatch(r"\d{1,4}", text):
+        return True
+
+    nearby_blocks = [
+        candidate
+        for candidate in blocks
+        if candidate.block_id != block.block_id and abs(candidate.index - block.index) <= 1
+    ]
+    return any(
+        candidate.block_id in global_candidate_block_ids
+        or candidate.kind in {"blank_page_marker", "extraction_artifact"}
+        for candidate in nearby_blocks
+    )
 
 
 def _validate_same_block_operation_sequence(
@@ -2874,6 +3284,22 @@ def _coerce_int(value: object, *, default: int, minimum: int) -> int:
         return max(int(cast(Any, value)), minimum)
     except (TypeError, ValueError):
         return default
+
+
+def _coerce_bool(value: object, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip().lower()
+        if stripped in {"1", "true", "yes", "on"}:
+            return True
+        if stripped in {"0", "false", "no", "off"}:
+            return False
+        if not stripped:
+            return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
 
 
 def _coerce_float(value: object, *, default: float) -> float:

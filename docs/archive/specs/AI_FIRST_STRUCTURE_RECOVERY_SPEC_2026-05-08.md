@@ -1,7 +1,7 @@
 # AI-First Structure Recovery Spec
 
 Date: 2026-05-08
-Status: Proposed
+Status: Archived 2026-05-30; dead-end / superseded by reader-first migration
 Supersedes: `docs/PDF_SEMANTIC_STRUCTURE_RECOVERY_SPEC_2026-05-08.md`
 
 ## Problem
