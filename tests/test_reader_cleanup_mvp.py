@@ -341,8 +341,14 @@ def test_reader_cleanup_system_prompt_mentions_anchor_repair_constraints() -> No
     assert "Semantic heading islands are not noise" in prompt
     assert "Do not delete semantic heading islands with remove_inline_noise" in prompt
     assert "first try split_block, then normalize_heading_boundary" in prompt
+    assert "extract_side_heading_and_reattach_body" in prompt
+    assert "pre_body_stub" in prompt
+    assert "do not leave a short pre-heading sentence stub" in prompt
+    assert "expected_after_preview must be exactly: heading_substring, then a blank line" in prompt
+    assert "do not add labels like '[Heading: ...]'" in prompt
+    assert "do not remove the title with remove_inline_noise" in prompt
     assert 'bad: remove_inline_noise "Три мультинациональные валюты"' in prompt
-    assert "Good: split_block or normalize_heading_boundary that preserves both heading text and body text exactly" in prompt
+    assert "Good: extract_side_heading_and_reattach_body" in prompt
     assert "page furniture plus an image caption sits between two parts of one sentence" in prompt
     assert "if the number is semantic content inside a sentence" in prompt
     assert "title-case running-header island with connector words or acronyms" in prompt
@@ -3076,7 +3082,15 @@ def test_reader_cleanup_request_targets_side_heading_island_without_inline_delet
         "preserve_heading_text_with_split_block_or_normalize_heading_boundary"
     )
     assert side_heading_target["preferred_operation_order"] == ["split_block", "normalize_heading_boundary"]
+    assert side_heading_target["reattach_operation_hint"] == "extract_side_heading_and_reattach_body"
     assert side_heading_target["forbidden_default_operation"] == "remove_inline_noise"
+    assert "pre-heading stub or orphan post-heading continuation" in side_heading_target[
+        "stub_continuation_risk"
+    ]
+    assert side_heading_target["reattach_expected_after_preview_shape"] == (
+        "heading_substring + blank line + pre_body_stub + space + post_body_continuation; "
+        "no labels and no body-first preview."
+    )
     assert "Semantic heading islands are not noise" in side_heading_target["safety_note"]
     assert "Do not delete with remove_inline_noise" in side_heading_target["safety_note"]
     assert side_heading_target["id"].startswith("b_")
@@ -3120,6 +3134,301 @@ def test_run_reader_cleanup_rejects_side_heading_island_remove_inline_noise() ->
     assert result.cleaned_markdown == markdown
     assert result.report_payload["ignored_cleanup_operations"][0]["ignored_reason"] == (
         "remove_inline_noise_not_exact_noise_pattern"
+    )
+
+
+def test_run_reader_cleanup_extracts_side_heading_and_reattaches_sentence_body() -> None:
+    target = (
+        "Стало очевидно, что региональная Три мультинациональные валюты экономическая интеграция "
+        "может достичь зрелости."
+    )
+    markdown = f"Intro\n\n{target}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(block for block in payload["blocks"] if block["text"] == target)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "extract_side_heading_and_reattach_body",
+                        "reason": "extraction_artifact",
+                        "confidence": "high",
+                        "evidence_before": "A semantic side-heading island interrupts one sentence.",
+                        "expected_after_preview": (
+                            "Три мультинациональные валюты\n\n"
+                            "Стало очевидно, что региональная экономическая интеграция может достичь зрелости."
+                        ),
+                        "safety_note": "Preserve heading text and reattach the pre-heading stub to the continuation.",
+                        "pre_body_stub": "Стало очевидно, что региональная",
+                        "heading_substring": "Три мультинациональные валюты",
+                        "post_body_continuation": "экономическая интеграция может достичь зрелости.",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is True
+    assert result.cleaned_markdown == (
+        "Intro\n\n"
+        "Три мультинациональные валюты\n\n"
+        "Стало очевидно, что региональная экономическая интеграция может достичь зрелости.\n\n"
+        "Outro"
+    )
+    assert result.report_payload["accepted_cleanup_operations"][0]["operation"] == (
+        "extract_side_heading_and_reattach_body"
+    )
+
+
+def test_run_reader_cleanup_rejects_side_heading_reattach_for_heading_stack_without_pre_stub() -> None:
+    target = (
+        "Авиационные бонусные программы Частные международные расчетные единицы стали первым масштабным "
+        "применением международных корпоративных расчетных единиц."
+    )
+    markdown = f"Intro\n\n{target}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(block for block in payload["blocks"] if block["text"] == target)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "extract_side_heading_and_reattach_body",
+                        "reason": "extraction_artifact",
+                        "confidence": "high",
+                        "evidence_before": "A heading stack has no pre-heading sentence stub to reattach.",
+                        "expected_after_preview": (
+                            "Частные международные расчетные единицы\n\n"
+                            "Авиационные бонусные программы стали первым масштабным применением международных "
+                            "корпоративных расчетных единиц."
+                        ),
+                        "safety_note": "Runtime should reject this shape as ambiguous rather than inventing continuity.",
+                        "pre_body_stub": "",
+                        "heading_substring": "Частные международные расчетные единицы",
+                        "post_body_continuation": (
+                            "стали первым масштабным применением международных корпоративных расчетных единиц."
+                        ),
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    assert result.report_payload["ignored_cleanup_operations"][0]["ignored_reason"] == (
+        "side_heading_reattach_missing_exact_parts"
+    )
+
+
+def test_run_reader_cleanup_rejects_dash_led_prose_side_heading_reattach() -> None:
+    target = "Вирджиния и Вашингтон — предприняли шаги по созданию кооперативной валюты."
+    markdown = f"Intro\n\n{target}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(block for block in payload["blocks"] if block["text"] == target)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "extract_side_heading_and_reattach_body",
+                        "reason": "extraction_artifact",
+                        "confidence": "high",
+                        "evidence_before": "A dash-led prose phrase was incorrectly treated as a heading island.",
+                        "expected_after_preview": (
+                            "Вашингтон\n\nВирджиния и — предприняли шаги по созданию кооперативной валюты."
+                        ),
+                        "safety_note": "Dash-led prose must not be repaired as a side-heading island.",
+                        "pre_body_stub": "Вирджиния и",
+                        "heading_substring": "Вашингтон",
+                        "post_body_continuation": "— предприняли шаги по созданию кооперативной валюты.",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    assert result.report_payload["ignored_cleanup_operations"][0]["ignored_reason"] == (
+        "side_heading_reattach_post_body_not_continuation"
+    )
+
+
+def test_run_reader_cleanup_rejects_capitalized_normal_prose_side_heading_reattach() -> None:
+    target = "Мы увидели Зеленая Команда решила помочь соседям и открыла общий фонд."
+    markdown = f"Intro\n\n{target}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(block for block in payload["blocks"] if block["text"] == target)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "extract_side_heading_and_reattach_body",
+                        "reason": "extraction_artifact",
+                        "confidence": "high",
+                        "evidence_before": "A capitalized prose phrase was incorrectly treated as a heading island.",
+                        "expected_after_preview": "Зеленая Команда решила\n\nМы увидели помочь соседям и открыла общий фонд.",
+                        "safety_note": "Normal prose should remain unchanged.",
+                        "pre_body_stub": "Мы увидели",
+                        "heading_substring": "Зеленая Команда решила",
+                        "post_body_continuation": "помочь соседям и открыла общий фонд.",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    assert result.report_payload["ignored_cleanup_operations"][0]["ignored_reason"] == (
+        "side_heading_reattach_heading_not_plausible"
+    )
+
+
+def test_run_reader_cleanup_rejects_digit_side_heading_reattach() -> None:
+    target = "Стало очевидно, что региональная Три 2026 валюты экономическая интеграция созрела."
+    markdown = f"Intro\n\n{target}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(block for block in payload["blocks"] if block["text"] == target)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "extract_side_heading_and_reattach_body",
+                        "reason": "extraction_artifact",
+                        "confidence": "high",
+                        "evidence_before": "A digit-bearing candidate is not a safe semantic side heading.",
+                        "expected_after_preview": (
+                            "Три 2026 валюты\n\nСтало очевидно, что региональная экономическая интеграция созрела."
+                        ),
+                        "safety_note": "Digit-bearing side-heading candidates are rejected for this bounded operation.",
+                        "pre_body_stub": "Стало очевидно, что региональная",
+                        "heading_substring": "Три 2026 валюты",
+                        "post_body_continuation": "экономическая интеграция созрела.",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    assert result.report_payload["ignored_cleanup_operations"][0]["ignored_reason"] == (
+        "side_heading_reattach_heading_contains_digits"
+    )
+
+
+def test_run_reader_cleanup_rejects_side_heading_reattach_with_ambiguous_substrings() -> None:
+    target = (
+        "Стало очевидно, что региональная Три мультинациональные валюты экономическая интеграция "
+        "и Три мультинациональные валюты зрелая система."
+    )
+    markdown = f"Intro\n\n{target}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(block for block in payload["blocks"] if block["text"] == target)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "extract_side_heading_and_reattach_body",
+                        "reason": "extraction_artifact",
+                        "confidence": "high",
+                        "evidence_before": "The same heading candidate appears twice.",
+                        "expected_after_preview": (
+                            "Три мультинациональные валюты\n\n"
+                            "Стало очевидно, что региональная экономическая интеграция и зрелая система."
+                        ),
+                        "safety_note": "Ambiguous repeated heading substrings must fail closed.",
+                        "pre_body_stub": "Стало очевидно, что региональная",
+                        "heading_substring": "Три мультинациональные валюты",
+                        "post_body_continuation": "экономическая интеграция и Три мультинациональные валюты зрелая система.",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    assert result.report_payload["ignored_cleanup_operations"][0]["ignored_reason"] == (
+        "side_heading_reattach_substring_ambiguous"
+    )
+
+
+def test_run_reader_cleanup_rejects_side_heading_reattach_preview_that_drops_text() -> None:
+    target = (
+        "Стало очевидно, что региональная Три мультинациональные валюты экономическая интеграция "
+        "может достичь зрелости."
+    )
+    markdown = f"Intro\n\n{target}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(block for block in payload["blocks"] if block["text"] == target)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "extract_side_heading_and_reattach_body",
+                        "reason": "extraction_artifact",
+                        "confidence": "high",
+                        "evidence_before": "The preview drops part of the body continuation.",
+                        "expected_after_preview": (
+                            "Три мультинациональные валюты\n\n"
+                            "Стало очевидно, что региональная экономическая интеграция."
+                        ),
+                        "safety_note": "Expected preview must preserve every semantic character.",
+                        "pre_body_stub": "Стало очевидно, что региональная",
+                        "heading_substring": "Три мультинациональные валюты",
+                        "post_body_continuation": "экономическая интеграция может достичь зрелости.",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    assert result.report_payload["ignored_cleanup_operations"][0]["ignored_reason"] == (
+        "side_heading_reattach_expected_after_preview_mismatch"
     )
 
 

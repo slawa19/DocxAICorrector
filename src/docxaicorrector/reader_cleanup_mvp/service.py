@@ -38,6 +38,7 @@ _REMOVE_INLINE_NOISE_REASON_GUIDANCE = _INLINE_NOISE_REASON_GUIDANCE | {
 }
 _ALLOWED_OPERATIONS = {
     "delete_block",
+    "extract_side_heading_and_reattach_body",
     "split_block",
     "remove_inline_noise",
     "join_fragmented_paragraph",
@@ -58,8 +59,10 @@ _OPERATION_RESPONSE_FIELDS = {
     "noise_substring",
     "next_id",
     "next_text_hash",
+    "pre_body_stub",
     "heading_substring",
     "body_substring",
+    "post_body_continuation",
 }
 _SAFE_CONFIDENCE_INFERENCE = {
     "page_number": "page_number",
@@ -218,8 +221,10 @@ class CleanupOperation:
     noise_substring: str = ""
     next_id: str = ""
     next_text_hash: str = ""
+    pre_body_stub: str = ""
     heading_substring: str = ""
     body_substring: str = ""
+    post_body_continuation: str = ""
 
 
 class ReaderCleanupStageError(RuntimeError):
@@ -311,18 +316,19 @@ def build_reader_cleanup_system_prompt() -> str:
         "Return JSON only with top-level fields cleanup_operations and warnings.\n"
         "Return only a single valid JSON object. Do not wrap it in markdown fences. Do not add prose before or after JSON.\n"
         'For no-op chunks, return exactly {"cleanup_operations":[],"warnings":[]} or the same object with string warnings.\n'
-        "Allowed operations are delete_block, split_block, remove_inline_noise, join_fragmented_paragraph, and normalize_heading_boundary.\n"
+        "Allowed operations are delete_block, extract_side_heading_and_reattach_body, split_block, remove_inline_noise, join_fragmented_paragraph, and normalize_heading_boundary.\n"
         "Only blocks listed in editable_block_ids are mutation targets; readonly_context_blocks_before and readonly_context_blocks_after are context only and must not be edited.\n"
         "Do not reconstruct TOC or chapters as a structure-recognition task. Do not change semantic order or remove semantic content.\n"
-        "For split_block, remove_inline_noise, join_fragmented_paragraph, and normalize_heading_boundary, provide only the minimal exact-match diff fields, not a rewritten document.\n"
+        "For extract_side_heading_and_reattach_body, split_block, remove_inline_noise, join_fragmented_paragraph, and normalize_heading_boundary, provide only the minimal exact-match diff fields, not a rewritten document.\n"
         "Use delete_block only for non-semantic PDF/OCR/layout noise: repeated running headers, footers, "
         "page numbers, blank-page markers, orphaned footnote markers, and obvious extraction artifacts.\n"
         "Do not delete a standalone numeric block such as '8' or '12' by page_number reason unless nearby page-boundary context, repeated header/footer evidence, or explicit page-label evidence makes it safe.\n"
         "Use remove_inline_noise for exact page furniture/page number/running header substrings embedded before or inside a semantic paragraph.\n"
         "For remove_inline_noise, prefer reasons such as page_furniture_inline, page_furniture_heading, page_number, orphan_footnote_marker, or repeated_running_header when they match the exact residue being removed.\n"
         "If operation_selection_targets lists a duplicate_semantic_heading_text candidate, inspect that block first and use remove_inline_noise with reason duplicate_fragment only if the exact adjacent repeated phrase and full expected_after_preview are still valid.\n"
-        "If operation_selection_targets lists a side_heading_island_candidate, classify it as a possible PDF/two-column side heading embedded in prose; first try split_block, then normalize_heading_boundary only when exact substrings can preserve all semantic text.\n"
-        "Semantic heading islands are not noise. Do not delete semantic heading islands with remove_inline_noise; if exact structural split cannot preserve all semantic text, skip and add a warning.\n"
+        "If operation_selection_targets lists a side_heading_island_candidate, classify it as a possible PDF/two-column side heading embedded in prose. If the heading interrupts one sentence, use extract_side_heading_and_reattach_body with exact pre_body_stub, heading_substring, and post_body_continuation; otherwise first try split_block, then normalize_heading_boundary only when exact substrings can preserve all semantic text.\n"
+        "Semantic heading islands are not noise. Do not delete semantic heading islands with remove_inline_noise; do not leave a short pre-heading sentence stub or orphan mid-sentence continuation as its own paragraph. If exact structural repair cannot preserve all semantic text and body continuity, skip and add a warning.\n"
+        "For extract_side_heading_and_reattach_body, expected_after_preview must be exactly: heading_substring, then a blank line, then pre_body_stub plus one space plus post_body_continuation. Do not put the body first, do not add labels like '[Heading: ...]', and do not invent or delete words.\n"
         "Use split_block for one block that should become 2-3 exact substrings from the original block.\n"
         "Use join_fragmented_paragraph only for adjacent blocks that are one paragraph split by a page/caption boundary.\n"
         "Use normalize_heading_boundary only to move an exact heading-like prefix into a separate heading block and keep exact body text as a paragraph.\n"
@@ -341,7 +347,7 @@ def build_reader_cleanup_system_prompt() -> str:
         "Preserve chapters, headings, normal paragraphs, lists, quotes, footnote bodies, bibliography, "
         "index, and TOC unless the chunk payload explicitly marks them safe to delete.\n"
         "Each cleanup_operations item must contain id, text_hash, operation, reason, confidence, evidence_before, expected_after_preview, and safety_note. Never omit confidence.\n"
-        "split_block must include split_substrings; remove_inline_noise must include noise_substring; join_fragmented_paragraph must include next_id and next_text_hash; normalize_heading_boundary must include heading_substring and body_substring.\n"
+        "extract_side_heading_and_reattach_body must include pre_body_stub, heading_substring, and post_body_continuation; split_block must include split_substrings; remove_inline_noise must include noise_substring; join_fragmented_paragraph must include next_id and next_text_hash; normalize_heading_boundary must include heading_substring and body_substring.\n"
         "For normalize_heading_boundary, use an exact heading prefix from the current block and copy body_substring verbatim as the full semantic body remainder after that boundary, not just a teaser; do not rewrite, retranslate, shorten, reorder, or normalize punctuation on either side.\n"
         "Use normalize_heading_boundary only when the heading is an exact prefix and body_substring is the exact full remaining semantic body text inside the same block.\n"
         "If a block starts with page number plus running-header prefix plus prose, always propose remove_inline_noise for the exact non-semantic prefix first.\n"
@@ -356,9 +362,10 @@ def build_reader_cleanup_system_prompt() -> str:
         "If body_substring is not copied verbatim from the current block text, or if it only copies the first few words instead of the full remaining semantic body text, do not propose normalize_heading_boundary.\n"
         "For normalize_heading_boundary, expected_after_preview must show the exact post-apply result for that same block with the heading first and the body remainder after a blank-line break; if you cannot provide that exact preview from the current block text, do not propose the operation.\n"
         "If a numeric prefix is followed by a semantic heading and body, do not widen remove_inline_noise to consume the semantic heading; keep prefix removal and heading/body normalization as separate exact operations.\n"
+        "If a page-like number plus a semantic section title appears at the end of a paragraph, do not remove the title with remove_inline_noise; use an exact structural operation or skip.\n"
         "If a title-case running-header island with connector words or acronyms and a trailing page number interrupts semantic prose, use remove_inline_noise for only that exact island; do not widen into neighboring prose before or after it.\n"
         "Do not treat TOC-like rows, table-like rows, list rows, title+subtitle pairs, title+question pairs, or epigraph-only continuations as heading/body prose just because uppercase text appears first.\n"
-        "If one block has multiple bounded operations, keep them separate; code applies them in canonical order remove_inline_noise, split_block, post-split remove_inline_noise, normalize_heading_boundary, then join_fragmented_paragraph.\n"
+        "If one block has multiple bounded operations, keep them separate; code applies them in canonical order remove_inline_noise, extract_side_heading_and_reattach_body, split_block, post-split remove_inline_noise, normalize_heading_boundary, then join_fragmented_paragraph.\n"
         "Examples for heading/body cleanup:\n"
         "- Sentence-style heading fused to prose: for 'ОБРАЗОВАНИЕ. Расходы на образование обычно ложатся на плечи федерального правительства.' use normalize_heading_boundary with heading_substring='ОБРАЗОВАНИЕ.' and body_substring='Расходы на образование обычно ложатся на плечи федерального правительства.'.\n"
         "- Uppercase heading with colon plus prose: for 'МЕСТНАЯ ПРОГРАММА: ОБЩЕСТВЕННАЯ ПОЛЬЗА БЕЗ ДОЛГОВ В пилотном городе...' use normalize_heading_boundary with heading_substring='МЕСТНАЯ ПРОГРАММА: ОБЩЕСТВЕННАЯ ПОЛЬЗА БЕЗ ДОЛГОВ' and body_substring copying the full exact remainder from 'В пилотном городе...' through the end of that block.\n"
@@ -370,7 +377,7 @@ def build_reader_cleanup_system_prompt() -> str:
         "- Leading page number or running header plus uppercase heading plus prose: first use remove_inline_noise for the exact non-semantic prefix, then normalize_heading_boundary for the remaining heading/body boundary when both exact previews are safe.\n"
         "- Running-header prefix plus semantic heading plus prose: after prefix cleanup, keep the full remaining semantic heading in heading_substring and put only the exact prose sentence start in body_substring; do not treat the whole semantic heading as removable noise and do not keep only the last heading words.\n"
         "- Do not keep only a trailing heading tail like 'И СПРАВЕДЛИВОСТЬ.' when the full semantic heading started earlier in the same block; heading_substring must begin at the first semantic heading token.\n"
-        "- Semantic side-heading island operation choice: bad: remove_inline_noise \"Три мультинациональные валюты\". Good: split_block or normalize_heading_boundary that preserves both heading text and body text exactly; if exact preservation is not possible, skip.\n"
+        "- Semantic side-heading island operation choice: bad: remove_inline_noise \"Три мультинациональные валюты\". Good: extract_side_heading_and_reattach_body when the island interrupts a sentence and the pre/post body parts can be reattached exactly; otherwise split_block or normalize_heading_boundary that preserves both heading text and body text exactly. If exact preservation is not possible, skip.\n"
         "- Title-case running header island inside a sentence: for '... Полевой отчет НКО 167 развивающейся организации ...' use remove_inline_noise with noise_substring='Полевой отчет НКО 167 '.\n"
         "- Title-case running header with leading page number inside a sentence: for '... 3 Городское управление 201 особенно важно ...' use remove_inline_noise with noise_substring='3 Городское управление 201 '.\n"
         "- Title plus subtitle on one line is not automatically heading/body fusion; if the second segment is a short subtitle, subtitle question, or epigraph-like line rather than narrative prose, do not use normalize_heading_boundary just to force a split.\n"
@@ -1340,7 +1347,19 @@ def _build_chunk_request_payload(
             "allowed_delete_reasons": sorted(_ALLOWED_DELETE_REASONS),
             "reason_guidance_by_operation": {
                 "delete_block": sorted(_ALLOWED_DELETE_REASONS),
+                "extract_side_heading_and_reattach_body": ["heading_fused_with_body", "extraction_artifact"],
                 "remove_inline_noise": sorted(_REMOVE_INLINE_NOISE_REASON_GUIDANCE),
+            },
+            "operation_specific_fields": {
+                "extract_side_heading_and_reattach_body": [
+                    "pre_body_stub",
+                    "heading_substring",
+                    "post_body_continuation",
+                ],
+                "split_block": ["split_substrings"],
+                "remove_inline_noise": ["noise_substring"],
+                "join_fragmented_paragraph": ["next_id", "next_text_hash"],
+                "normalize_heading_boundary": ["heading_substring", "body_substring"],
             },
             "allowed_confidence": ["low", "medium", "high"],
             "example": {
@@ -1453,8 +1472,11 @@ def _build_side_heading_island_targets(*, block: CleanupBlock) -> list[dict[str,
                     "heading_candidate": phrase,
                     "operation_hint": "preserve_heading_text_with_split_block_or_normalize_heading_boundary",
                     "preferred_operation_order": ["split_block", "normalize_heading_boundary"],
+                    "reattach_operation_hint": "extract_side_heading_and_reattach_body",
                     "forbidden_default_operation": "remove_inline_noise",
-                    "safety_note": "Semantic heading islands are not noise. Do not delete with remove_inline_noise; preserve all semantic text with exact split_block or normalize_heading_boundary, or skip if boundaries are unclear.",
+                    "stub_continuation_risk": "If this heading interrupts one sentence, do not leave a pre-heading stub or orphan post-heading continuation; use exact reattach operation or skip.",
+                    "reattach_expected_after_preview_shape": "heading_substring + blank line + pre_body_stub + space + post_body_continuation; no labels and no body-first preview.",
+                    "safety_note": "Semantic heading islands are not noise. Do not delete with remove_inline_noise; preserve all semantic text with exact extract_side_heading_and_reattach_body, split_block, or normalize_heading_boundary, or skip if boundaries are unclear.",
                 }
             )
             if len(targets) >= 3:
@@ -2272,8 +2294,10 @@ def _parse_cleanup_response(
                 noise_substring=str(normalized_item.get("noise_substring") or ""),
                 next_id=str(normalized_item.get("next_id") or "").strip(),
                 next_text_hash=str(normalized_item.get("next_text_hash") or "").strip(),
+                pre_body_stub=str(normalized_item.get("pre_body_stub") or ""),
                 heading_substring=str(normalized_item.get("heading_substring") or ""),
                 body_substring=str(normalized_item.get("body_substring") or ""),
+                post_body_continuation=str(normalized_item.get("post_body_continuation") or ""),
             )
             ignored_operations.append(
                 {
@@ -2297,7 +2321,11 @@ def _parse_cleanup_response(
                     f"reader_cleanup_expected_after_preview_recovered:{chunk_index}:{block_id}:{operation_name}"
                 )
         elif not str(normalized_item.get("expected_after_preview") or "").strip():
-            if operation_name in {"remove_inline_noise", "normalize_heading_boundary"}:
+            if operation_name in {
+                "extract_side_heading_and_reattach_body",
+                "remove_inline_noise",
+                "normalize_heading_boundary",
+            }:
                 raise RuntimeError(f"reader_cleanup_operation_missing_required_field:{block_id}:expected_after_preview")
             recovered_preview = _recover_expected_after_preview(
                 operation_name=operation_name,
@@ -2324,8 +2352,10 @@ def _parse_cleanup_response(
                     noise_substring=str(normalized_item.get("noise_substring") or ""),
                     next_id=str(normalized_item.get("next_id") or "").strip(),
                     next_text_hash=str(normalized_item.get("next_text_hash") or "").strip(),
+                    pre_body_stub=str(normalized_item.get("pre_body_stub") or ""),
                     heading_substring=str(normalized_item.get("heading_substring") or ""),
                     body_substring=str(normalized_item.get("body_substring") or ""),
+                    post_body_continuation=str(normalized_item.get("post_body_continuation") or ""),
                 )
                 ignored_operations.append(
                     {
@@ -2372,8 +2402,10 @@ def _parse_cleanup_response(
                 noise_substring=str(normalized_item.get("noise_substring") or ""),
                 next_id=str(normalized_item.get("next_id") or "").strip(),
                 next_text_hash=str(normalized_item.get("next_text_hash") or "").strip(),
+                pre_body_stub=str(normalized_item.get("pre_body_stub") or ""),
                 heading_substring=str(normalized_item.get("heading_substring") or ""),
                 body_substring=str(normalized_item.get("body_substring") or ""),
+                post_body_continuation=str(normalized_item.get("post_body_continuation") or ""),
             )
         )
 
@@ -2755,6 +2787,15 @@ def _apply_single_operation_to_blocks(
                 return False, "", duplicate_fragment_ignore_reason
         rewritten_blocks[block.index] = None
         return True, "deleted", None
+    if operation.operation == "extract_side_heading_and_reattach_body":
+        applied_text, ignore_reason = _apply_side_heading_reattach_to_text(
+            current_text=current_text,
+            operation=operation,
+        )
+        if applied_text is None:
+            return False, "", ignore_reason or "side_heading_reattach_not_applicable"
+        rewritten_blocks[block.index] = applied_text
+        return True, "side_heading_reattached", None
     if operation.operation == "split_block":
         parts = list(operation.split_substrings)
         if len(parts) not in {2, 3}:
@@ -2842,6 +2883,73 @@ def _apply_heading_boundary_to_joined_previous_block(
         return False, "", ignore_reason or "block_already_removed"
     rewritten_blocks[block.index - 1] = applied_text
     return True, "heading_boundary_normalized_after_join", None
+
+
+def _apply_side_heading_reattach_to_text(
+    *,
+    current_text: str,
+    operation: CleanupOperation,
+) -> tuple[str | None, str | None]:
+    pre_body_stub = operation.pre_body_stub.strip()
+    heading = operation.heading_substring.strip()
+    post_body_continuation = operation.post_body_continuation.strip()
+    if not pre_body_stub or not heading or not post_body_continuation:
+        return None, "side_heading_reattach_missing_exact_parts"
+    if "\n" in pre_body_stub or "\n" in heading or "\n" in post_body_continuation:
+        return None, "side_heading_reattach_multiline_parts_unsupported"
+    if re.search(r"\d", heading):
+        return None, "side_heading_reattach_heading_contains_digits"
+    if current_text.lstrip().startswith(("-", "—", "–", "•")):
+        return None, "side_heading_reattach_context_unsupported"
+    if (
+        current_text.count(pre_body_stub) != 1
+        or current_text.count(heading) != 1
+        or current_text.count(post_body_continuation) != 1
+    ):
+        return None, "side_heading_reattach_substring_ambiguous"
+    if not _ordered_substrings_cover_text(
+        text=current_text,
+        parts=(pre_body_stub, heading, post_body_continuation),
+    ):
+        return None, "side_heading_reattach_substrings_not_exact_block_cover"
+    if not _has_side_heading_left_context(pre_body_stub):
+        return None, "side_heading_reattach_pre_stub_not_continuation"
+    if not _has_side_heading_right_context(post_body_continuation):
+        return None, "side_heading_reattach_post_body_not_continuation"
+    if not _looks_like_side_heading_phrase(heading):
+        return None, "side_heading_reattach_heading_not_plausible"
+
+    body = _join_body_stub_and_continuation(
+        pre_body_stub=pre_body_stub,
+        post_body_continuation=post_body_continuation,
+    )
+    if not body:
+        return None, "side_heading_reattach_empty_body"
+    applied_text = f"{heading}\n\n{body}"
+    expected_after = operation.expected_after_preview.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if expected_after != applied_text:
+        return None, "side_heading_reattach_expected_after_preview_mismatch"
+    source_semantic = Counter(re.sub(r"\s+", "", f"{pre_body_stub}{heading}{post_body_continuation}"))
+    output_semantic = Counter(re.sub(r"\s+", "", applied_text))
+    if source_semantic != output_semantic:
+        return None, "side_heading_reattach_would_drop_semantic_text"
+    return applied_text, None
+
+
+def _ordered_substrings_cover_text(*, text: str, parts: Sequence[str]) -> bool:
+    pos = 0
+    for part in parts:
+        idx = text.find(part, pos)
+        if idx == -1:
+            return False
+        if text[pos:idx].strip():
+            return False
+        pos = idx + len(part)
+    return not text[pos:].strip()
+
+
+def _join_body_stub_and_continuation(*, pre_body_stub: str, post_body_continuation: str) -> str:
+    return f"{pre_body_stub.rstrip()} {post_body_continuation.lstrip()}".strip()
 
 
 def _apply_heading_boundary_across_adjacent_block(
@@ -3339,8 +3447,10 @@ def _validate_same_block_operation_sequence(
 def _same_block_operation_phase(*, operation_name: str, seen_split: bool) -> int:
     if operation_name == "remove_inline_noise":
         return 3 if seen_split else 1
-    if operation_name == "split_block":
+    if operation_name == "extract_side_heading_and_reattach_body":
         return 2
+    if operation_name == "split_block":
+        return 3
     if operation_name == "normalize_heading_boundary":
         return 4
     if operation_name == "join_fragmented_paragraph":
@@ -3542,10 +3652,14 @@ def _serialize_cleanup_operation(*, operation: CleanupOperation, block: CleanupB
         payload["next_id"] = operation.next_id
     if operation.next_text_hash:
         payload["next_text_hash"] = operation.next_text_hash
+    if operation.pre_body_stub:
+        payload["pre_body_stub"] = operation.pre_body_stub
     if operation.heading_substring:
         payload["heading_substring"] = operation.heading_substring
     if operation.body_substring:
         payload["body_substring"] = operation.body_substring
+    if operation.post_body_continuation:
+        payload["post_body_continuation"] = operation.post_body_continuation
     return payload
 
 

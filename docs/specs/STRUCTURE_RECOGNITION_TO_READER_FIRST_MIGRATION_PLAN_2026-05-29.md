@@ -57,14 +57,16 @@ layout cleanup, paragraph/relation normalization, image handoff и DOCX roundtri
 
 ### Что ещё не готово
 
-- **PR-H0/PR-H0a/PR-H0b/PR-H0c завершены локально**: canonical
+- **PR-H0/PR-H0a/PR-H0b/PR-H0c/PR-H0d завершены локально**: canonical
   small-overlap форма (`chunk_size=8000`, `3/3` read-only overlap,
   `global_plan_enabled=false`) зафиксирована как runtime/config/profile канон,
   inline markers закрыты, duplicate semantic heading targeting доказан, а
   side-heading operation choice переведён с unsafe `remove_inline_noise` на
-  accepted `split_block` для proof examples. Следующий узкий PR-H slice — не
-  model bakeoff, а side-heading stub/continuation contract; verifier остаётся
-  observer-only.
+  accepted `split_block` для proof examples. PR-H0d добавил bounded
+  `extract_side_heading_and_reattach_body` и доказал его на single
+  side-heading-island sentence interruptions. Следующий узкий PR-H slice — не
+  model bakeoff, а semantic-title/page-heading deletion salience и/или
+  heading-stack continuation decision; verifier остаётся observer-only.
 - Последний completed proof run
   `20260530T071434Z_968_Rethinking-money-chapter-region-pages-10-11-and-156-217`
   pipeline-level завершился и сохранил no-harm gates
@@ -264,10 +266,21 @@ PR-H0b/PR-H0c updates:
   examples moved to accepted `split_block` operations and broad unsafe
   `remove_inline_noise` remained `0`; remaining defects are now
   stub/continuation fragments after side-heading extraction.
+- PR-H0d proof:
+  `20260531T131419Z_anthropic-small-overlap-pr-h0d-side-heading-stub-continuation-proof-v2`,
+  `15` chunks, `0` failed chunks, `55` accepted operations, including `2`
+  accepted `extract_side_heading_and_reattach_body` operations, verifier
+  `cleaned_better` high confidence, `18` remaining issues. This proves the
+  bounded single-island reattach contract, but it is not an MVP exit proof:
+  heading stacks still leave continuation fragments and the run had `1` broad
+  unsafe `remove_inline_noise` proposal rejected by runtime.
 
 Remaining PR-H targets:
 
-- side-heading stub/continuation contract after heading-island extraction;
+- semantic-title/page-heading deletion salience so the model stops proposing
+  section-title-like text as `remove_inline_noise` while keeping runtime
+  rejection as a safety backstop;
+- heading-stack/body-continuation decision after side-heading extraction;
 - leading-dash continuation artifacts as a separate classification decision.
 
 ### PR-H. Reader Cleanup Visual Blockers / PR-H-exit
@@ -541,7 +554,8 @@ reader-first путём.
 | PR-H0a | Inline Marker + Duplicate Heading Runtime Proof | Completed locally: Anthropic canonical proof run has `failed_chunk_count=0`, `noise_substring_not_found=0`, raw `4.0` -> cleaned `6.0`; inline markers closed; duplicate heading is runtime-covered but needs operation selection/pre-audit targeting. |
 | PR-H0b | Operation Selection Targets Runtime Proof | Completed locally: duplicate semantic heading targeting is selected and accepted; side-heading islands still need operation-choice salience. |
 | PR-H0c | Side-Heading Operation Choice Salience | Completed locally: side-heading proof examples move to accepted `split_block`; remaining issue is stub/continuation fragments after extraction. |
-| PR-H | Reader Cleanup Visual Blockers / PR-H-exit | Next runtime slice after PR-H0c: side-heading stub/continuation contract; no verifier-side repair; keep stable `failed_chunk_count=0` and no false deletions. |
+| PR-H0d | Side-Heading Stub/Continuation Contract | Completed locally: new bounded `extract_side_heading_and_reattach_body` operation accepted in replay for single heading-island sentence interruptions; heading stacks and one broad unsafe `remove_inline_noise` proposal remain. |
+| PR-H | Reader Cleanup Visual Blockers / PR-H-exit | Next runtime slice after PR-H0d: semantic-title/page-heading deletion salience and heading-stack continuation decision; no verifier-side repair; keep stable `failed_chunk_count=0` and no false deletions. |
 | PR-I1 | Formatting Lineage Contract | Raw→cleaned→DOCX mapping для headings/lists/emphasis/source props; focused tests. |
 | PR-I2 | Formatting Preservation Implementation | Apply lineage in DOCX writer/rebuild path; preserve book-grade styles. |
 | PR-J1 | Image Handoff Evidence | Найти точку потери PDF-origin images/placeholders/assets/inline shapes. |

@@ -774,7 +774,7 @@ Still open:
    a bounded decision: runtime correctly rejected a partial
    `normalize_heading_boundary` as `heading_boundary_unaccounted_text`.
 
-Next active PR-H slice:
+Then-next PR-H slice, now completed as PR-H0d:
 
 - define a bounded side-heading stub/continuation contract: when a semantic
    side-heading island interrupts a sentence, preserve the heading while joining
@@ -782,6 +782,98 @@ Next active PR-H slice:
    creating orphan fragments;
 - keep duplicate-heading PR-H0b behavior intact;
 - leading-dash continuation artifacts remain a separate classification decision.
+
+### PR-H0d: Side-Heading Stub/Continuation Contract
+
+Status: completed locally on 2026-05-31. This is not a clean-checkout CI proof
+because the worktree is dirty with PR-H0/PR-H0a/PR-H0b/PR-H0c/PR-H0d changes.
+
+Proof artifacts:
+
+- Diagnostic first replay:
+  `.run/reader_cleanup_replay_experiments/20260531T125537Z_anthropic-small-overlap-pr-h0d-side-heading-stub-continuation-proof/`
+- Accepted-operation proof replay:
+  `.run/reader_cleanup_replay_experiments/20260531T131419Z_anthropic-small-overlap-pr-h0d-side-heading-stub-continuation-proof-v2/`
+
+Completed:
+
+- Existing operations were not enough for the reader-grade transformation.
+  `split_block` preserves text but keeps original order, which can leave a
+  pre-heading sentence stub and post-heading continuation as separate blocks.
+  `join_fragmented_paragraph` only joins adjacent resulting blocks and cannot
+  safely express "extract heading, then reattach pre-stub + continuation" from
+  one source block.
+- Added a bounded runtime operation:
+  `extract_side_heading_and_reattach_body`.
+- The operation is limited to one block containing exact
+  `pre_body_stub + heading_substring + post_body_continuation`.
+- Runtime requires exact substrings, unambiguous single occurrence, same-block
+  coverage with only whitespace gaps, plausible side-heading phrase, plausible
+  left/right sentence-continuation context, exact `expected_after_preview`, and
+  preservation of all non-whitespace semantic characters.
+- Runtime rejects digit-bearing heading candidates, dash/list-led false
+  positives, missing/ambiguous substrings, preview mismatches, semantic text
+  drops, and morphology/invention attempts.
+- Prompt/advisory guidance now tells the model to use
+  `extract_side_heading_and_reattach_body` when a semantic heading island
+  interrupts a sentence, with deterministic preview shape:
+  heading first, blank line, then `pre_body_stub + " " + post_body_continuation`.
+  The model is explicitly told not to leave short pre-heading stubs, not to
+  invent `[Heading: ...]` labels, and not to use `remove_inline_noise` for
+  semantic heading islands.
+- Validation/verifier remains observer-only; no repair moved into verifier code.
+
+Focused tests:
+
+- `bash scripts/test.sh tests/test_reader_cleanup_mvp.py -q`
+- Result: `125 passed`.
+
+Proof result, v2:
+
+- selector: `anthropic:claude-sonnet-4-6`;
+- shape: `chunk_size=8000`, `3/3` overlap, `global_plan_enabled=false`;
+- cleanup chunks: `15`, failed chunks: `0`;
+- accepted operations: `55`;
+- accepted operation counts: `extract_side_heading_and_reattach_body=2`,
+  `split_block=8`, `normalize_heading_boundary=14`,
+  `join_fragmented_paragraph=8`, `remove_inline_noise=23`;
+- verifier: `cleaned_better`, high confidence;
+- remaining issues: `18`;
+- issue counts: `heading_fused_with_body=3`, `page_furniture_inline=2`,
+  `mixed_language_leak=0`;
+- `noise_substring_not_found=0`;
+- broad unsafe `remove_inline_noise` proposals: `1`.
+
+Closed:
+
+- Single side-heading island that interrupts a sentence now has a proven
+  reader-grade operation path. The replay accepted
+  `extract_side_heading_and_reattach_body` for proof sites such as the
+  regional-currency sentence and the global-reference-currency sentence,
+  preserving the heading while reattaching the surrounding body text.
+
+Still open:
+
+- Heading stacks remain a separate decision. The
+  `Авиационные бонусные программы` / `Частные международные расчетные единицы`
+  class still tends to split into heading blocks plus an orphan continuation
+  (`стали первым масштабным...`). It needs either a bounded stack/body-attach
+  operation or an explicit product limitation.
+- PR-H0d v2 still has `broad_unsafe_remove_inline_noise_proposal_count=1`.
+  Runtime rejected the unsafe semantic deletion, but the prompt/targeting layer
+  still allowed a proposal that tried to remove a section-title-like phrase as
+  inline noise. Treat this as the next safety slice before repeat stability.
+- Period-terminated all-caps headings, residual page furniture, quote/list
+  continuation fragments, and leading-dash continuation artifacts remain outside
+  PR-H0d scope.
+
+Next active PR-H slice:
+
+- narrow semantic-title/page-heading deletion salience so `remove_inline_noise`
+  is not proposed for section-title-like text at paragraph boundaries; keep the
+  runtime rejection as the safety backstop;
+- after that, decide whether heading-stack body continuation needs a bounded
+  operation or should be documented as a readable-draft limitation.
 
 ### PR-H1: Targeted Page-Furniture + Caption + Continuation Repair
 
