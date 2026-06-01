@@ -1595,7 +1595,7 @@ def test_run_document_processing_preserves_base_result_when_audiobook_postproces
     assert any(event["event_id"] == "audiobook_postprocess_failed_base_result_preserved" for event in warning_events)
 
 
-def test_run_document_processing_applies_reader_cleanup_and_saves_raw_markdown_report_artifacts():
+def test_run_document_processing_applies_reader_cleanup_and_saves_raw_markdown_report_artifacts(tmp_path: Path):
     runtime = _build_runtime_capture()
     events, log_event = _capture_log_events()
     artifact_calls = {}
@@ -1603,25 +1603,29 @@ def test_run_document_processing_applies_reader_cleanup_and_saves_raw_markdown_r
     def generate_markdown_block(**kwargs):
         if kwargs["system_prompt"].startswith("You are cleaning translated book Markdown"):
             payload = json.loads(kwargs["target_text"])
-            delete_blocks = []
+            cleanup_operations = []
             for block in payload["blocks"]:
                 if block["text"] == "Header":
-                    delete_blocks.append(
+                    cleanup_operations.append(
                         {
                             "id": block["id"],
                             "text_hash": block["text_hash"],
+                            "operation": "delete_block",
                             "reason": "repeated_running_header",
                             "confidence": "high",
+                            "evidence_before": block["text"],
+                            "expected_after_preview": "",
+                            "safety_note": "Test fixture deletes only the repeated running header block.",
                         }
                     )
-            return json.dumps({"delete_blocks": delete_blocks, "warnings": []}, ensure_ascii=False)
+            return json.dumps({"cleanup_operations": cleanup_operations, "warnings": []}, ensure_ascii=False)
         return kwargs["target_text"]
 
     def write_ui_result_artifacts(**kwargs):
         artifact_calls["kwargs"] = dict(kwargs)
         return {
-            "markdown_path": str(Path("/tmp") / "final.result.md"),
-            "docx_path": str(Path("/tmp") / "final.result.docx"),
+            "markdown_path": str(tmp_path / "final.result.md"),
+            "docx_path": str(tmp_path / "final.result.docx"),
         }
 
     result = document_pipeline.run_document_processing(
@@ -1701,18 +1705,22 @@ def test_run_document_processing_reader_cleanup_uses_exact_raw_markdown_for_side
         if kwargs["system_prompt"].startswith("You are cleaning translated book Markdown"):
             payload = json.loads(kwargs["target_text"])
             cleanup_payloads.append(payload)
-            delete_blocks = []
+            cleanup_operations = []
             for block in payload["blocks"]:
                 if block["text"] == noisy_block:
-                    delete_blocks.append(
+                    cleanup_operations.append(
                         {
                             "id": block["id"],
                             "text_hash": block["text_hash"],
+                            "operation": "delete_block",
                             "reason": "repeated_running_header",
                             "confidence": "high",
+                            "evidence_before": block["text"],
+                            "expected_after_preview": "",
+                            "safety_note": "Test fixture deletes only exact repeated running-header blocks.",
                         }
                     )
-            return json.dumps({"delete_blocks": delete_blocks, "warnings": []}, ensure_ascii=False)
+            return json.dumps({"cleanup_operations": cleanup_operations, "warnings": []}, ensure_ascii=False)
         return kwargs["target_text"]
 
     def write_ui_result_artifacts(**kwargs):
@@ -2011,17 +2019,21 @@ def test_run_document_processing_reader_cleanup_preserves_docx_image_anchor_when
     def generate_markdown_block(**kwargs):
         if kwargs["system_prompt"].startswith("You are cleaning translated book Markdown"):
             payload = json.loads(kwargs["target_text"])
-            delete_blocks = [
+            cleanup_operations = [
                 {
                     "id": block["id"],
                     "text_hash": block["text_hash"],
+                    "operation": "delete_block",
                     "reason": "extraction_artifact",
                     "confidence": "high",
+                    "evidence_before": block["text"],
+                    "expected_after_preview": "",
+                    "safety_note": "Test fixture deletes only the exact placeholder block from display Markdown.",
                 }
                 for block in payload["blocks"]
                 if block["text"] == "[[DOCX_IMAGE_img_001]]"
             ]
-            return json.dumps({"delete_blocks": delete_blocks, "warnings": []}, ensure_ascii=False)
+            return json.dumps({"cleanup_operations": cleanup_operations, "warnings": []}, ensure_ascii=False)
         return kwargs["target_text"]
 
     def convert_markdown_to_docx_bytes(markdown_text):
@@ -4757,6 +4769,175 @@ def test_run_document_processing_passes_assembly_aware_registry_into_docx_restor
     assert preserve_calls == [[
         {"block_index": 1, "paragraph_id": "p0001", "text": "Первый фрагмент Второй фрагмент", "merged_paragraph_ids": ["p0001", "p0002"]}
     ]]
+
+
+def test_reader_cleanup_formatting_lineage_removes_deleted_registry_entries():
+    raw_markdown = "Intro\n\nHeader\n\nBody paragraph"
+    registry = [
+        {"block_index": 1, "paragraph_id": "p0001", "text": "Intro"},
+        {"block_index": 2, "paragraph_id": "p0002", "text": "Header"},
+        {"block_index": 3, "paragraph_id": "p0003", "text": "Body paragraph"},
+    ]
+    cleanup_report = {
+        "accepted_cleanup_operations": [
+            {
+                "id": "b_000001",
+                "operation": "delete_block",
+                "expected_after_preview": "",
+            }
+        ]
+    }
+
+    derived_registry, diagnostics = document_pipeline_late_phases._derive_reader_cleanup_generated_paragraph_registry(
+        generated_paragraph_registry=registry,
+        cleanup_report=cleanup_report,
+        raw_markdown=raw_markdown,
+    )
+
+    assert diagnostics["status"] == "derived"
+    assert diagnostics["deleted_registry_entry_count"] == 1
+    assert derived_registry == [
+        {"block_index": 1, "paragraph_id": "p0001", "text": "Intro"},
+        {"block_index": 3, "paragraph_id": "p0003", "text": "Body paragraph"},
+    ]
+
+
+def test_reader_cleanup_formatting_lineage_updates_split_and_heading_boundary_text():
+    raw_markdown = "HEADING Body paragraph"
+    registry = [{"block_index": 1, "paragraph_id": "p0001", "text": "HEADING Body paragraph"}]
+    cleanup_report = {
+        "accepted_cleanup_operations": [
+            {
+                "id": "b_000000",
+                "operation": "normalize_heading_boundary",
+                "expected_after_preview": "### HEADING\n\nBody paragraph",
+            }
+        ]
+    }
+
+    derived_registry, diagnostics = document_pipeline_late_phases._derive_reader_cleanup_generated_paragraph_registry(
+        generated_paragraph_registry=registry,
+        cleanup_report=cleanup_report,
+        raw_markdown=raw_markdown,
+    )
+
+    assert diagnostics["updated_registry_entry_count"] == 1
+    assert derived_registry == [
+        {
+            "block_index": 1,
+            "paragraph_id": "p0001",
+            "text": "### HEADING\n\nBody paragraph",
+            "reader_cleanup_operations": ["normalize_heading_boundary"],
+        }
+    ]
+
+
+def test_reader_cleanup_formatting_lineage_merges_joined_registry_entries():
+    raw_markdown = "First fragment\n\nsecond fragment"
+    registry = [
+        {"block_index": 1, "paragraph_id": "p0001", "text": "First fragment"},
+        {"block_index": 2, "paragraph_id": "p0002", "text": "second fragment"},
+    ]
+    cleanup_report = {
+        "accepted_cleanup_operations": [
+            {
+                "id": "b_000000",
+                "operation": "join_fragmented_paragraph",
+                "next_id": "b_000001",
+                "expected_after_preview": "First fragment second fragment",
+            }
+        ]
+    }
+
+    derived_registry, diagnostics = document_pipeline_late_phases._derive_reader_cleanup_generated_paragraph_registry(
+        generated_paragraph_registry=registry,
+        cleanup_report=cleanup_report,
+        raw_markdown=raw_markdown,
+    )
+
+    assert diagnostics["joined_registry_entry_count"] == 1
+    assert derived_registry == [
+        {
+            "block_index": 1,
+            "paragraph_id": "p0001",
+            "text": "First fragment second fragment",
+            "merged_paragraph_ids": ["p0001", "p0002"],
+            "reader_cleanup_operations": ["join_fragmented_paragraph"],
+        }
+    ]
+
+
+def test_reader_cleanup_formatting_lineage_skips_anchor_repair_operations():
+    raw_markdown = "Intro\n\nHEADING Body"
+    registry = [
+        {"block_index": 1, "paragraph_id": "p0001", "text": "Intro"},
+        {"block_index": 2, "paragraph_id": "p0002", "text": "HEADING Body"},
+    ]
+    cleanup_report = {
+        "accepted_cleanup_operations": [
+            {
+                "id": "b_000001",
+                "operation": "normalize_heading_boundary",
+                "pass_name": "anchor_repair",
+                "expected_after_preview": "### HEADING\n\nBody",
+            }
+        ]
+    }
+
+    derived_registry, diagnostics = document_pipeline_late_phases._derive_reader_cleanup_generated_paragraph_registry(
+        generated_paragraph_registry=registry,
+        cleanup_report=cleanup_report,
+        raw_markdown=raw_markdown,
+    )
+
+    assert diagnostics["status"] == "derived"
+    assert diagnostics["applied_operation_count"] == 0
+    assert diagnostics["skipped_operation_count"] == 1
+    assert derived_registry == registry
+
+
+def test_reader_cleanup_formatting_lineage_skips_when_block_count_is_ambiguous():
+    raw_markdown = "Intro\n\nBody"
+    registry = [{"block_index": 1, "paragraph_id": "p0001", "text": "Intro"}]
+
+    derived_registry, diagnostics = document_pipeline_late_phases._derive_reader_cleanup_generated_paragraph_registry(
+        generated_paragraph_registry=registry,
+        cleanup_report={"accepted_cleanup_operations": []},
+        raw_markdown=raw_markdown,
+    )
+
+    assert diagnostics == {
+        "status": "skipped",
+        "reason": "cleanup_block_registry_count_mismatch",
+        "raw_cleanup_block_count": 2,
+        "generated_registry_count": 1,
+    }
+    assert derived_registry == registry
+
+
+def test_rebuild_docx_for_markdown_prefers_cleanup_formatting_registry_override():
+    preserve_calls = []
+    override_registry = [{"block_index": 1, "paragraph_id": "p0001", "text": "Cleaned"}]
+
+    document_pipeline_late_phases._rebuild_docx_for_markdown(
+        markdown_text="Cleaned",
+        context=SimpleNamespace(source_paragraphs=[ParagraphUnit(text="Source", role="body", paragraph_id="p0001")]),
+        dependencies=SimpleNamespace(
+            convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
+            preserve_source_paragraph_properties=(
+                lambda docx_bytes, paragraphs, generated_paragraph_registry=None: preserve_calls.append(
+                    generated_paragraph_registry
+                )
+                or docx_bytes
+            ),
+            reinsert_inline_images=lambda docx_bytes, processed_assets: docx_bytes,
+        ),
+        state=SimpleNamespace(generated_paragraph_registry=[{"block_index": 1, "paragraph_id": "stale", "text": "Stale"}]),
+        processed_image_assets=[],
+        generated_paragraph_registry=override_registry,
+    )
+
+    assert preserve_calls == [override_registry]
 
 
 def test_run_document_processing_writes_marker_generation_diagnostics_artifact_on_marker_validation_failure(tmp_path, monkeypatch):

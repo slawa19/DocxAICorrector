@@ -434,6 +434,244 @@ def _convert_pdf_to_docx(*, filename: str, source_bytes: bytes) -> tuple[bytes, 
         return output_bytes, "libreoffice"
 
 
+def _pdf_text_layer_import_enabled() -> bool:
+    value = os.getenv("DOCXAI_PDF_TEXT_LAYER_IMPORT_ENABLED", "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _pdf_ocr_import_enabled() -> bool:
+    value = os.getenv("DOCXAI_PDF_OCR_IMPORT_ENABLED", "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _pdf_ocr_languages() -> str:
+    return (os.getenv("DOCXAI_PDF_OCR_LANGUAGES", "eng+rus") or "eng+rus").strip()
+
+
+def _run_pdf_ocr_to_text_layer_pdf(*, input_path: Path, output_path: Path) -> None:
+    ocrmypdf_path = shutil.which("ocrmypdf")
+    if not ocrmypdf_path:
+        raise RuntimeError("pdf_ocr_import_unavailable:ocrmypdf")
+    if not shutil.which("tesseract"):
+        raise RuntimeError("pdf_ocr_import_unavailable:tesseract")
+    languages = _pdf_ocr_languages()
+    command = [
+        ocrmypdf_path,
+        "--force-ocr",
+        "-l",
+        languages,
+        str(input_path),
+        str(output_path),
+    ]
+    _run_completed_process(
+        command,
+        error_message="Не удалось выполнить OCR PDF через OCRmyPDF/Tesseract.",
+        text=True,
+        timeout_seconds=_DOC_CONVERSION_TIMEOUT_SECONDS,
+        cleanup_process_group=True,
+    )
+    if not output_path.exists() or output_path.stat().st_size <= 0:
+        raise RuntimeError("pdf_ocr_import_empty_output")
+
+
+def _convert_pdf_text_layer_to_docx(*, filename: str, source_bytes: bytes) -> tuple[bytes, str]:
+    from docx import Document
+
+    from docxaicorrector.pdf_import.images import extract_pdf_images_with_pdfminer
+    from docxaicorrector.pdf_import.logical_import import build_paragraph_units_from_text_spans
+    from docxaicorrector.pdf_import.text_layer_quality import (
+        build_text_layer_quality_report,
+        extract_pdf_text_spans_with_pdfminer,
+    )
+
+    with tempfile.TemporaryDirectory(prefix="docxaicorrector_pdf_text_layer_") as temp_dir_name:
+        temp_dir = Path(temp_dir_name)
+        input_path = temp_dir / (Path(filename).name or "document.pdf")
+        output_path = temp_dir / Path(_build_normalized_docx_filename(filename)).name
+        input_path.write_bytes(source_bytes)
+
+        spans = extract_pdf_text_spans_with_pdfminer(input_path)
+        quality_report = build_text_layer_quality_report(spans)
+        if quality_report.decision != "promising":
+            if not _pdf_ocr_import_enabled():
+                raise RuntimeError(
+                    "pdf_text_layer_import_not_promising:"
+                    + ",".join(str(reason) for reason in quality_report.decision_reasons)
+                )
+            ocr_output_path = temp_dir / f"{input_path.stem}.ocr.pdf"
+            _run_pdf_ocr_to_text_layer_pdf(input_path=input_path, output_path=ocr_output_path)
+            spans = extract_pdf_text_spans_with_pdfminer(ocr_output_path)
+            quality_report = build_text_layer_quality_report(spans)
+            if quality_report.decision != "promising":
+                raise RuntimeError(
+                    "pdf_ocr_text_layer_import_not_promising:"
+                    + ",".join(str(reason) for reason in quality_report.decision_reasons)
+                )
+
+        import_result = build_paragraph_units_from_text_spans(spans)
+        if not import_result.paragraphs:
+            raise RuntimeError("pdf_text_layer_import_empty_document")
+        spans_by_origin_index = {
+            max(0, (span.page_number - 1) * 10000 + int(round(span.top))): span
+            for span in spans
+        }
+        try:
+            image_objects = extract_pdf_images_with_pdfminer(input_path)
+        except Exception as exc:
+            log_event(
+                logging.WARNING,
+                "pdf_text_layer_image_extraction_failed",
+                "Text-layer PDF import will continue without embedded images.",
+                filename=filename,
+                reason=str(exc),
+            )
+            image_objects = []
+
+        document = Document()
+        content_items = [
+            ("paragraph", int(getattr(paragraph, "source_index", 0)), index, paragraph)
+            for index, paragraph in enumerate(import_result.paragraphs)
+        ]
+        content_items.extend(
+            ("image", int(getattr(image, "source_index", 0)), index, image)
+            for index, image in enumerate(image_objects)
+        )
+        for item_type, _source_index, _index, payload in sorted(content_items, key=lambda item: (item[1], item[0] == "paragraph", item[2])):
+            if item_type == "image":
+                _append_pdf_image_to_docx(document, payload)
+                continue
+            paragraph = payload
+            _append_pdf_text_paragraph_to_docx(
+                document,
+                paragraph,
+                spans_by_origin_index=spans_by_origin_index,
+            )
+        document.save(output_path)
+        output_bytes = output_path.read_bytes() if output_path.exists() else b""
+        if not output_bytes:
+            raise RuntimeError("pdf_text_layer_import_empty_docx")
+        log_event(
+            logging.INFO,
+            "pdf_text_layer_import_succeeded",
+            "PDF импортирован через text-layer importer в generated DOCX.",
+            filename=filename,
+            span_count=len(spans),
+            paragraph_count=len(import_result.paragraphs),
+            image_count=len(image_objects),
+            skipped_page_number_count=import_result.report.skipped_page_number_count,
+            skipped_repeated_page_furniture_count=import_result.report.skipped_repeated_page_furniture_count,
+            skipped_blank_page_notice_count=import_result.report.skipped_blank_page_notice_count,
+            body_text_ratio=quality_report.body_text_ratio,
+        )
+        return output_bytes, "pdf-text-layer"
+
+
+def _append_pdf_text_paragraph_to_docx(document, paragraph, *, spans_by_origin_index: dict[int, object]) -> None:
+    style = _pdf_text_layer_docx_style(paragraph.role, paragraph.heading_level)
+    docx_paragraph = document.add_paragraph(style=style)
+    if paragraph.role == "heading":
+        docx_paragraph.add_run(paragraph.text)
+        return
+
+    origin_indexes = list(getattr(paragraph, "origin_raw_indexes", []) or [])
+    origin_texts = list(getattr(paragraph, "origin_raw_texts", []) or [])
+    if not origin_indexes or len(origin_indexes) != len(origin_texts):
+        run = docx_paragraph.add_run(paragraph.text)
+        if bool(getattr(paragraph, "is_bold", False)):
+            run.bold = True
+        if bool(getattr(paragraph, "is_italic", False)):
+            run.italic = True
+        return
+
+    wrote_run = False
+    for index, text in zip(origin_indexes, origin_texts):
+        if wrote_run:
+            docx_paragraph.add_run(" ")
+        span = spans_by_origin_index.get(int(index))
+        run = docx_paragraph.add_run(str(text))
+        if span is not None:
+            if bool(getattr(span, "is_bold", False)):
+                run.bold = True
+            if bool(getattr(span, "is_italic", False)):
+                run.italic = True
+        else:
+            if bool(getattr(paragraph, "is_bold", False)):
+                run.bold = True
+            if bool(getattr(paragraph, "is_italic", False)):
+                run.italic = True
+        wrote_run = True
+    if not wrote_run:
+        docx_paragraph.add_run(paragraph.text)
+
+
+def _append_pdf_image_to_docx(document, image_object) -> None:
+    image_bytes = getattr(image_object, "image_bytes", None)
+    if not isinstance(image_bytes, bytes) or not image_bytes:
+        return
+    try:
+        _append_image_bytes_to_docx(document, image_bytes)
+        return
+    except Exception:
+        coerced_image_bytes = _coerce_image_bytes_for_docx(image_bytes)
+        if coerced_image_bytes is None:
+            return
+    try:
+        _append_image_bytes_to_docx(document, coerced_image_bytes)
+    except Exception:
+        return
+
+
+def _append_image_bytes_to_docx(document, image_bytes: bytes) -> None:
+    paragraph = document.add_paragraph()
+    try:
+        paragraph.add_run().add_picture(BytesIO(image_bytes))
+    except Exception:
+        parent = paragraph._element.getparent()
+        if parent is not None:
+            parent.remove(paragraph._element)
+        raise
+
+
+def _coerce_image_bytes_for_docx(image_bytes: bytes) -> bytes | None:
+    try:
+        from PIL import Image
+    except ImportError:  # pragma: no cover - optional transcode path
+        return None
+    try:
+        with Image.open(BytesIO(image_bytes)) as image:
+            converted = image.convert("RGBA") if image.mode not in {"RGB", "RGBA"} else image
+            output = BytesIO()
+            converted.save(output, format="PNG")
+            return output.getvalue()
+    except Exception:
+        return None
+
+
+def _pdf_text_layer_docx_style(role: str, heading_level: int | None) -> str | None:
+    if role == "heading":
+        level = min(max(int(heading_level or 2), 1), 6)
+        return f"Heading {level}"
+    if role == "list":
+        return "List Bullet"
+    return None
+
+
+def _convert_pdf_to_docx_with_optional_text_layer(*, filename: str, source_bytes: bytes) -> tuple[bytes, str]:
+    if not _pdf_text_layer_import_enabled():
+        return _convert_pdf_to_docx(filename=filename, source_bytes=source_bytes)
+    try:
+        return _convert_pdf_text_layer_to_docx(filename=filename, source_bytes=source_bytes)
+    except Exception as exc:
+        log_event(
+            logging.WARNING,
+            "pdf_text_layer_import_fallback",
+            "Text-layer PDF import did not complete; falling back to LibreOffice PDF import.",
+            filename=filename,
+            reason=str(exc),
+        )
+        return _convert_pdf_to_docx(filename=filename, source_bytes=source_bytes)
+
+
 def _convert_legacy_doc_with_antiword(*, antiword_path: str, filename: str, source_bytes: bytes) -> bytes:
     from docxaicorrector.generation._generation import ensure_pandoc_available
     import pypandoc
@@ -536,7 +774,7 @@ def normalize_uploaded_document(*, filename: str, source_bytes: bytes) -> Normal
         )
 
     if source_format == "pdf":
-        converted_bytes, conversion_backend = _convert_pdf_to_docx(
+        converted_bytes, conversion_backend = _convert_pdf_to_docx_with_optional_text_layer(
             filename=filename,
             source_bytes=source_bytes,
         )
@@ -730,11 +968,11 @@ class HeartbeatBeacon:
 
 def _touch_materialized_upload_cache_entry(
     cache: OrderedDict[str, FrozenUploadPayload],
-    file_token: str,
+    cache_key: str,
     payload: FrozenUploadPayload,
 ) -> None:
-    cache.pop(file_token, None)
-    cache[file_token] = payload
+    cache.pop(cache_key, None)
+    cache[cache_key] = payload
 
 
 def _trim_materialized_upload_cache(cache: OrderedDict[str, FrozenUploadPayload]) -> None:
@@ -742,34 +980,45 @@ def _trim_materialized_upload_cache(cache: OrderedDict[str, FrozenUploadPayload]
         cache.popitem(last=False)
 
 
-def _read_or_reserve_materialized_upload(file_token: str) -> tuple[FrozenUploadPayload | None, threading.Event | None]:
+def _read_or_reserve_materialized_upload(cache_key: str) -> tuple[FrozenUploadPayload | None, threading.Event | None]:
     while True:
         with _shared_materialized_upload_cache_lock:
-            cached = _shared_materialized_upload_cache.get(file_token)
+            cached = _shared_materialized_upload_cache.get(cache_key)
             if cached is not None:
-                _touch_materialized_upload_cache_entry(_shared_materialized_upload_cache, file_token, cached)
+                _touch_materialized_upload_cache_entry(_shared_materialized_upload_cache, cache_key, cached)
                 return cached, None
 
-            in_flight = _shared_materialized_upload_inflight.get(file_token)
+            in_flight = _shared_materialized_upload_inflight.get(cache_key)
             if in_flight is None:
                 in_flight = threading.Event()
-                _shared_materialized_upload_inflight[file_token] = in_flight
+                _shared_materialized_upload_inflight[cache_key] = in_flight
                 return None, in_flight
 
         in_flight.wait()
 
 
-def _store_materialized_upload(payload: FrozenUploadPayload) -> None:
+def _store_materialized_upload(payload: FrozenUploadPayload, *, cache_key: str | None = None) -> None:
     with _shared_materialized_upload_cache_lock:
-        _touch_materialized_upload_cache_entry(_shared_materialized_upload_cache, payload.file_token, payload)
+        _touch_materialized_upload_cache_entry(
+            _shared_materialized_upload_cache,
+            cache_key or payload.file_token,
+            payload,
+        )
         _trim_materialized_upload_cache(_shared_materialized_upload_cache)
 
 
-def _release_materialized_upload_reservation(file_token: str) -> None:
+def _release_materialized_upload_reservation(cache_key: str) -> None:
     with _shared_materialized_upload_cache_lock:
-        in_flight = _shared_materialized_upload_inflight.pop(file_token, None)
+        in_flight = _shared_materialized_upload_inflight.pop(cache_key, None)
     if in_flight is not None:
         in_flight.set()
+
+
+def _materialized_upload_cache_key(payload: FrozenUploadPayload) -> str:
+    fmt = (payload.source_format or "").lower()
+    if fmt == "pdf" and _pdf_text_layer_import_enabled():
+        return f"{payload.file_token}:pdf-text-layer"
+    return payload.file_token
 
 
 def materialize_uploaded_payload(
@@ -792,7 +1041,8 @@ def materialize_uploaded_payload(
 
     fmt = (payload.source_format or "").lower()
     if fmt in {"pdf", "doc"}:
-        cached_payload, reservation = _read_or_reserve_materialized_upload(payload.file_token)
+        cache_key = _materialized_upload_cache_key(payload)
+        cached_payload, reservation = _read_or_reserve_materialized_upload(cache_key)
         if cached_payload is not None:
             if progress_callback is not None:
                 progress_callback(
@@ -816,14 +1066,20 @@ def materialize_uploaded_payload(
             )
             return cached_payload
     else:
+        cache_key = payload.file_token
         reservation = None
 
     if fmt == "pdf":
         try:
             if progress_callback is not None:
+                pdf_import_detail = (
+                    "Запускаю text-layer импорт PDF в DOCX…"
+                    if _pdf_text_layer_import_enabled()
+                    else "Запускаю конвертацию PDF в DOCX через LibreOffice…"
+                )
                 progress_callback(
                     stage="Импорт PDF",
-                    detail="Запускаю конвертацию PDF в DOCX через LibreOffice…",
+                    detail=pdf_import_detail,
                     progress=0.05,
                     metrics={
                         "source_format": "pdf",
@@ -834,12 +1090,16 @@ def materialize_uploaded_payload(
             with HeartbeatBeacon(
                 progress_callback,
                 stage="Импорт PDF",
-                detail_template="LibreOffice конвертирует PDF в DOCX… ({elapsed} сек). Для крупных книг это может занять 30–120 сек.",
+                detail_template=(
+                    "Text-layer importer собирает PDF в DOCX… ({elapsed} сек)."
+                    if _pdf_text_layer_import_enabled()
+                    else "LibreOffice конвертирует PDF в DOCX… ({elapsed} сек). Для крупных книг это может занять 30–120 сек."
+                ),
                 progress=0.10,
                 metrics={"source_format": "pdf", "file_size_bytes": payload.file_size, "conversion_reused": False},
                 interval_seconds=2.0,
             ):
-                converted_bytes, conversion_backend = _convert_pdf_to_docx(
+                converted_bytes, conversion_backend = _convert_pdf_to_docx_with_optional_text_layer(
                     filename=payload.filename,
                     source_bytes=payload.content_bytes,
                 )
@@ -865,11 +1125,11 @@ def materialize_uploaded_payload(
                 source_format="pdf",
                 conversion_backend=conversion_backend,
             )
-            _store_materialized_upload(materialized_payload)
+            _store_materialized_upload(materialized_payload, cache_key=cache_key)
             return materialized_payload
         finally:
             if reservation is not None:
-                _release_materialized_upload_reservation(payload.file_token)
+                _release_materialized_upload_reservation(cache_key)
 
     if fmt == "doc":
         try:
@@ -918,11 +1178,11 @@ def materialize_uploaded_payload(
                 source_format="doc",
                 conversion_backend=conversion_backend,
             )
-            _store_materialized_upload(materialized_payload)
+            _store_materialized_upload(materialized_payload, cache_key=cache_key)
             return materialized_payload
         finally:
             if reservation is not None:
-                _release_materialized_upload_reservation(payload.file_token)
+                _release_materialized_upload_reservation(cache_key)
 
     return payload
 

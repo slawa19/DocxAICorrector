@@ -27,6 +27,59 @@ This means a model that is high quality but slow, such as direct Anthropic Claud
 
 ## Current Evidence Snapshot
 
+### Source-Import Pivot
+
+June 1 source-quality decision: stop treating post-translation reader cleanup as
+the main PDF cleanup mechanism. The current LibreOffice `writer_pdf_import`
+path preserves visual layout too literally, which feeds page furniture,
+fragmented paragraphs, fused headings, and weak formatting lineage into
+translation. New work is tracked in
+`docs/specs/PDF_TEXT_LAYER_SOURCE_IMPORT_PIVOT_SPEC_2026-06-01.md`.
+
+Reader cleanup remains valuable as a safety net, but PR-PDF0 now measures
+whether deterministic text-layer extraction can remove repeated headers/page
+numbers and preserve source heading/bold/italic/list signals before the text is
+translated.
+
+PR-PDF0 real probe result on
+`tests/sources/Rethinking-money-chapter-region-pages-10-11-and-156-217.pdf`:
+`decision=promising`, `page_count=64`, `visible_text_chars=95179`,
+`body_text_ratio=0.9882`, `repeated_page_furniture_text_ratio=0.0099`,
+`page_number_span_count=61`, `heading_candidate_count=17`, and
+`list_candidate_count=19`. This does not replace the reader-cleanup model
+strategy, but it changes the next engineering priority: reduce source noise
+before translation, then keep Anthropic reader cleanup as a safety net.
+
+PR-PDF1a then proved the feature-flagged generated-DOCX bridge can run through
+the existing downstream DOCX extraction path. Backend comparison on the same PDF
+showed:
+
+| Backend | Paragraphs | Chars | Headings | Lists | Page-number-like paragraphs |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| LibreOffice | 336 | 113790 | 7 | 19 | 1 |
+| `pdf-text-layer` bridge | 140 | 113418 | 18 | 19 | 0 |
+
+Interpretation for cleanup strategy: source import is the right leverage point,
+but the bridge is not ready for default promotion because front matter / TOC
+grouping can still inflate headings and DOCX roundtripping can leak bold
+markdown markers into extracted text. The next work should be PR-PDF1b
+deterministic importer quality, not another reader-cleanup model micro-PR.
+
+PR-PDF1 local completion proof then fixed that specific bridge artifact:
+TOC/front-matter entries are bounded instead of merged into a giant blob,
+generated headings no longer leak `***...***`, and generic intentionally blank
+page notices are removed before translation. The text-layer bridge now reports
+`124` paragraphs, `112514` chars, `16` headings, `19` lists, `0`
+page-number-like paragraphs, and `0` markdown emphasis markers. PR-PDF2 starts
+from there for scanned PDFs only.
+
+Formatting/image evidence: text-layer import improves structural formatting
+signals for this proof PDF (`16` heading paragraphs and `19` list paragraphs),
+but image transfer is not solved. The source PDF contains `12` image objects;
+LibreOffice imports `12` DOCX media files but current extraction still sees `0`
+image assets, and the text-layer bridge emits `0` images by design. Image
+preservation belongs to PR-J/source-image handoff, not reader cleanup.
+
 ### Provider Integration
 
 Direct Anthropic provider is implemented and smoke-tested.
@@ -277,9 +330,9 @@ PR-H0a proof update:
 - Result after PR-H0h fused-heading structured targeting: local tests on 2026-06-01 pass with `138` focused reader-cleanup tests. The implementation adds `heading_fused_with_body_candidate` advisory targets that prefer existing exact operations: `normalize_heading_boundary` for single-block fused headings, or `join_fragmented_paragraph -> normalize_heading_boundary` for wrapped headings that continue into an adjacent block, with sequencing hardened when the joined adjacent block first needs exact inline-noise cleanup. Single replay `.run/reader_cleanup_replay_experiments/20260601T073422Z_anthropic-small-overlap-pr-h0h-fused-heading-targeting-proof/` completed with `15` chunks, `0` failed chunks, verifier `cleaned_better` high confidence, `17` remaining issues, `heading_fused_with_body=3`, `page_furniture_inline=2`, `prior_same_block_operation_not_applied=0`, and broad unsafe `remove_inline_noise=0`.
 - PR-H0h repeat stability: `.run/reader_cleanup_replay_experiments/20260601T075435Z_anthropic-small-overlap-pr-h0h-repeat-stability/` ran `3` repeats. All repeats had `failed_chunk_count=0`, broad unsafe `remove_inline_noise=0`, and verifier `cleaned_better` high confidence, but quality varied: `remaining_issue_count=[21,21,17]`, `heading_fused_with_body=[4,6,1]`, `page_furniture_inline=[1,1,2]`, accepted operations `[61,56,52]`, and `prior_same_block_operation_not_applied=[0,0,1]`. Summary classified dominant variability as `cleanup_proposal_variability`.
 - GPT-5.4-mini H0h same-shape control: `.run/reader_cleanup_replay_experiments/20260601T112649Z_gpt-5-4-mini-small-overlap-pr-h0h-control/` completed with cleanup selector `gpt-5.4-mini` and the Anthropic verifier as the fixed judge. It had `15` chunks, `0` failed chunks, `26` accepted operations, verifier `cleaned_better` high confidence, but quality was much worse: `59` remaining issues, `heading_fused_with_body=26`, `page_furniture_inline=7`, `fragmented_paragraph=16`, `prior_same_block_operation_not_applied=3`, and broad unsafe `remove_inline_noise=0`.
-- Next direction: stop fused-heading micro-PRs and do not route this cleanup path to `gpt-5.4-mini` as a quality replacement for Anthropic. If more model-ceiling evidence is needed, choose a stronger/different candidate deliberately; otherwise treat the current H0h bounded path as quality-limited but Anthropic-led.
+- Next direction: PR-H0 is fixed as the current reader-cleanup quality boundary. Stop fused-heading micro-PRs and do not route this cleanup path to `gpt-5.4-mini` as a quality replacement for Anthropic. The next active implementation workstream is PR-I formatting lineage/preservation; any further model-ceiling comparison should be a deliberate experiment artifact, not H0i runtime repair.
 
-Conclusion: keep Gemini as the literary translation baseline. For reader cleanup, treat the Anthropic small-overlap path as the current quality leader, with PR-H0b/PR-H0c evidence showing that advisory targeting can change operation selection, PR-H0d evidence showing that a new bounded operation can improve a specific side-heading continuation defect, PR-H0e evidence that semantic-title deletion salience removes the broad unsafe deletion proposal, PR-H0f evidence that exact numeric-prefix cleanup can preserve a multi-word semantic heading, PR-H0g evidence that existing operations needed a better same-block chain contract, and PR-H0h evidence that fused-heading structured targeting improves mechanics but not stable quality. The `gpt-5.4-mini` H0h control is not competitive on this artifact despite 0 failed chunks. Do not switch production cleanup defaults yet; fused-heading micro-PRs should stop here, and the next comparison should be either a deliberately stronger model-ceiling candidate or another broad residual class, not a one-off one-word numeric heading boundary.
+Conclusion: keep Gemini as the literary translation baseline. For reader cleanup, treat the Anthropic small-overlap path as the current quality leader, with PR-H0b/PR-H0c evidence showing that advisory targeting can change operation selection, PR-H0d evidence showing that a new bounded operation can improve a specific side-heading continuation defect, PR-H0e evidence that semantic-title deletion salience removes the broad unsafe deletion proposal, PR-H0f evidence that exact numeric-prefix cleanup can preserve a multi-word semantic heading, PR-H0g evidence that existing operations needed a better same-block chain contract, and PR-H0h evidence that fused-heading structured targeting improves mechanics but not stable quality. The `gpt-5.4-mini` H0h control is not competitive on this artifact despite 0 failed chunks. Do not switch production cleanup defaults yet; PR-H0 is now closed as a readable-draft quality boundary. After the FineReader/LibreOffice comparison, the next highest-leverage work is PR-PDF0 source-import quality evidence before expanding PR-I2 formatting preservation or more cleanup micro-PRs.
 
 ## First Implementation Slice: Workable Anthropic Cleanup
 

@@ -13,6 +13,8 @@ Source specs and evidence:
    `.run/ui_results/20260530_102025_Rethinking-money-chapter-region-pages-10-11-and-156-217.reader_cleanup_report.json`
 - Active model/strategy experiment log:
    `docs/specs/READER_CLEANUP_MODEL_STRATEGY_EXPERIMENTS_2026-05-30.md`
+- Source-import pivot spec:
+   `docs/specs/PDF_TEXT_LAYER_SOURCE_IMPORT_PIVOT_SPEC_2026-06-01.md`
 - Latest manifest caveat:
    `tests/artifacts/real_document_pipeline/lietaer_pdf_chapter_region_latest.json` currently points at `20260530T074105Z_1139_...` with `status=in_progress`; do not use that run as success/failure proof until it completes.
 
@@ -52,10 +54,81 @@ run completes, cleanup/verifier evidence is stable, no-harm invariants hold, and
 remaining issues are visible in the report.
 
 The main reason is now product-quality, not validator architecture: cleanup
-successfully runs, but the remaining reader-visible defects are still too common
-for final output. Earlier backlog slices targeted PR-H directly; the current
-next move is to test whether cleaner source input makes PR-H stable instead of
-adding more post-translation runtime guards.
+successfully runs and is safe enough for readable-draft evidence, but the
+remaining reader-visible defects are still too common for final output. PR-H0 is
+now fixed as the reader-cleanup quality boundary for this loop: Anthropic H0h is
+the current cleanup leader, fused-heading micro-PRs stop here, and the next
+active source-quality workstream is PR-PDF0. PR-I1 lineage remains useful, but
+the FineReader/LibreOffice comparison showed that the larger leverage is likely
+before translation: bypass visual PDF-to-DOCX import for text-layer PDFs when
+evidence proves deterministic source import is cleaner.
+
+PR-PDF0 evidence on 2026-06-01 confirms the chapter-region proof PDF has a
+dense selectable text layer: `decision=promising`, `visible_text_chars=95179`,
+`body_text_ratio=0.9882`, `heading_candidate_count=17`, and
+`list_candidate_count=19`. The current LibreOffice baseline for the same profile
+flags only `1` page-number artifact and `2` repeated artifacts before
+post-translation cleanup. Next implementation work should therefore move to
+PR-PDF1 behind a feature flag, not to another reader-cleanup micro-PR.
+
+PR-PDF1 started locally with the non-production `PdfTextSpan -> ParagraphUnit`
+builder. It preserves standard paragraph identity/provenance fields and source
+formatting hints while skipping deterministic repeated page furniture and page
+numbers. The next PR-PDF1 slice is runtime wiring behind a feature flag, not
+default promotion.
+
+PR-PDF1a safe bridge is now the chosen temporary path:
+`DOCXAI_PDF_TEXT_LAYER_IMPORT_ENABLED=1` makes PDF materialization try
+text-layer import into a generated DOCX first, then falls back to LibreOffice.
+This deliberately preserves existing downstream DOCX extraction while proving
+whether source-side cleanup is worth promoting. The architectural target remains
+direct `PDF text-layer -> ParagraphUnit -> preparation` after the bridge is
+validated.
+
+PR-PDF1a backend comparison proof on 2026-06-01 confirms the bridge is useful
+but not promotable yet. Against the same chapter-region PDF, LibreOffice
+produced `336` paragraphs / `113790` chars / `7` headings / `19` lists / `1`
+page-number-like paragraph, while the text-layer bridge produced `140`
+paragraphs / `113418` chars / `18` headings / `19` lists / `0`
+page-number-like paragraphs. The next safe slice is PR-PDF1b: improve
+front-matter/TOC grouping and heading inflation in the deterministic importer.
+Do not promote defaults and do not treat the generated-DOCX bridge as the final
+architecture; it is only the compatibility proof path before direct
+`PDF text-layer -> ParagraphUnit -> preparation`.
+
+PR-PDF1 is now complete locally as a feature-flagged generated-DOCX bridge, not
+as default promotion. TOC-like trailing-page entries no longer merge into one
+giant front-matter block, false `***...***` heading/front-matter leakage is
+gone, and generic intentionally blank page notices are skipped before
+translation. Final local proof metrics for the text-layer bridge are `124`
+paragraphs, `112514` chars, `16` headings, `19` lists, `0`
+page-number-like paragraphs, and `0` markdown emphasis markers. PR-PDF2 has
+partial local OCR plumbing behind explicit flags, but scanned PDFs are deferred
+for the current MVP proof.
+
+Formatting/image proof on the same PDF: text-layer bridge preserves paragraph
+structure as real styles (`16` headings, `19` lists). The hybrid image handoff
+slice now inserts PDF-origin image objects into the generated DOCX as normal
+inline Word images. Follow-up comparison artifact
+`.run/pdf_text_layer_quality/lietaer-chapter-region-format-image-comparison-hybrid-pr-j.json`
+shows the source PDF has `12` image objects and the text-layer hybrid bridge
+now emits `12` DOCX media / `12` DOCX drawings / `12` extracted image assets.
+LibreOffice still emits `12` media files but `0` extracted image assets through
+the existing extractor path.
+
+Minimal formatting scope is intentionally narrow: preserve headings/subheadings,
+paragraph order, ordered/unordered lists, tables as readable structures, images
+and captions, blockquotes, and safe semantic inline emphasis (`bold`, `italic`,
+plus already-supported underline/superscript/subscript/hyperlinks/line breaks
+where lineage exists). Do not preserve font size, source fonts, colors, custom
+style names, local style hierarchies, tabs, source indents/spacing, exact PDF
+visual layout, true Word TOC fields, or source page numbers by default.
+
+The text-layer bridge now writes adjacent PDF spans as separate DOCX runs when
+they merge into one logical paragraph, preserving span-level `bold`/`italic`
+signals where the PDF text layer exposes them. Character-level mixed emphasis
+inside one PDF line remains a later direct-import/lineage improvement, not a
+reason to reintroduce source font-size/style replay.
 
 ## 2026-05-30 Code Readiness Audit
 
@@ -198,21 +271,13 @@ Work must be split by owner:
       simplified path.
 - **PR-H: Reader Cleanup Visual Blockers**
    - Scope: `reader_cleanup_mvp` only.
-   - Fix old page numbers, running headers/footers, page-furniture glued into
-      prose, heading/body fusion, fragmented paragraphs, and reader-visible list
-      marker cleanup.
-   - Completed sub-slice: targeted page-furniture plus image-caption plus
-      continuation repair. This was code-owned orchestration inside
-      `reader_cleanup_mvp`, not a validation-side repair and not a prompt-only
-      contract.
-   - Current active sub-slice: PR-H2 Heading Boundary Application Diagnostics.
-      This is a reader-cleanup diagnostic/classification slice first; it must
-      not broaden into heading repair implementation until the current fused
-      heading anchors are classified by owner and risk.
-   - Current May 26 evidence suggests no further runtime safety expansion should
-      be made before testing source-side cleanup. Keep PR-H runtime stable while
-      the next iteration measures whether pre-translation source cleanup reduces
-      the raw translated noise that PR-H currently has to repair.
+   - PR-H0 is fixed as the current readable-draft quality boundary. It improved
+      old page numbers, inline markers, duplicate semantic headings,
+      side-heading extraction, numeric-prefix semantic headings, and
+      fused-heading operation targeting without verifier-side mutation.
+   - H0h repeat stability stayed safe but quality-variable; GPT-5.4-mini
+      same-shape control was not competitive. Do not add H0i for fused-heading
+      salience without fresh broad-class evidence.
    - TOC reconstruction is out of scope. Verifier evidence may ignore TOC-only
       defects when TOC is out of scope; stale TOC page numbers may be removed
       only through explicit reader policy, not broad source cleanup.
@@ -220,6 +285,12 @@ Work must be split by owner:
       tuning except as small supporting evidence.
 - **PR-I: Formatting Preservation**
    - Scope: formatting transfer / intermediate representation / DOCX writer.
+   - Paused after PR-I1 lineage-start evidence while PR-PDF0 tests whether the
+      source importer can preserve headings/emphasis before translation with
+      less cleanup pressure.
+   - Start with PR-I1 lineage contract: source paragraphs and generated
+      paragraph registry must remain explainably connected to reader-cleaned
+      Markdown and final DOCX paragraphs/runs/styles after cleanup.
    - Preserve bold, italic, emphasis/highlight where source evidence exists.
    - Preserve heading and subheading style levels, plus list styling/numbering
       when source evidence and translated structure can be mapped safely.
@@ -250,27 +321,19 @@ owner, it must record the evidence and stop instead of broadening the PR.
    compare raw translated Markdown, cleaned Markdown, source cleanup evidence,
    reader cleanup report, and verifier output against the latest completed
    no-source-cleanup baseline.
-- **Classify the remaining PR-H blockers from fresh evidence.** If source
-   cleanup reduces page furniture and keeps safety green, keep PR-H as
-   post-translation polish. If it does not, split the remaining work into one
-   heading operation-contract slice and one fragmented-paragraph/caption slice;
-   do not merge them into one broad cleanup PR.
-
-- **Stabilize input before widening PR-H.** Continue PR-H only where AI-proposed
-   bounded cleanup operations are valid but rejected too narrowly. The next
-   planned iteration should instead test whether obvious source-side page
-   furniture can be removed before translation so the post-translation cleanup
-   receives less noisy raw Markdown. Do not keep adding runtime guards to chase
-   translated forms that should not have reached translation.
-- **Finish PR-H after source cleanup evidence.** If pre-translation cleanup does
-   not reduce reader-visible noise, return to prompt/model discipline for PR-H.
-   If it helps, keep PR-H as the post-translation polish layer and avoid turning
-   it into a source-noise recovery engine.
-- **Start PR-I after PR-H is stable.** PR-I begins when comparison-only runs
-   consistently produce readable text with no false deletions/readability
-   regressions, and the main remaining pain is book-like formatting: bold,
-   italic, emphasis, heading/subheading styles, list styling, and DOCX style
-   preservation.
+- **Do not keep polishing PR-H0.** Remaining one-word numeric heading,
+   heading-stack continuation, leading-dash continuation, and fused-heading
+   variability are recorded as readable-draft/model-boundary limitations unless
+   fresh evidence shows a broad, frequent, reader-breaking class.
+- **Start PR-I now.** The first PR-I slice is not "make it pretty"; it is
+   lineage. Before applying more formatting, prove the runtime can explain how
+   source paragraph ids and source formatting evidence flow through generated
+   registry entries, reader cleanup changes, and final DOCX paragraphs/runs.
+- **Start PR-PDF0 before PR-I2.** The FineReader/LibreOffice comparison changed
+   the highest-leverage next question: if a deterministic text-layer importer
+   removes headers/page numbers and preserves heading/font signals before
+   translation, post-translation reader cleanup and formatting restoration can
+   shrink instead of accumulating more repair logic.
 - **Start PR-J independently when image loss matters.** PR-J begins when the
    desired output must preserve PDF-origin images and evidence shows images,
    placeholders, or inline shapes disappear in import/handoff/reinsertion. Do not
@@ -1230,6 +1293,95 @@ Next active step:
 - Move out of fused-heading micro-PRs. Either accept the current Anthropic H0h
   quality boundary for MVP repeat/stability planning, or select the next broad
   residual reader-breaking class with fresh evidence.
+
+## Current PR-I Slices
+
+### PR-I1: Formatting Lineage Contract
+
+Status: active next implementation slice after PR-H0 closure.
+
+Motivation:
+
+- PR-H0 produces readable-draft cleanup but final DOCX quality still depends on
+  book-grade formatting: bold, italic, emphasis/highlight, heading/subheading
+  styles, list styling/numbering, and source paragraph properties.
+- Existing formatting surface already includes `generation/formatting_transfer.py`,
+  `generated_paragraph_registry`, output formatting diagnostics, and DOCX rebuild
+  after reader cleanup. The risk is not absence of formatting code; the risk is
+  silent lineage loss after reader cleanup splits, joins, deletes, or normalizes
+  Markdown blocks.
+- PR-I must not infer formatting from plain cleaned Markdown alone. It must use
+  source evidence and an explainable mapping.
+
+Scope:
+
+- Build or harden the lineage contract from source `ParagraphUnit` ids and
+  generated paragraph registry entries to reader-cleaned Markdown paragraphs and
+  final DOCX paragraphs/runs/styles.
+- Treat reader cleanup operations as lineage events: deletion, split, join,
+  heading-boundary normalization, inline-noise removal, and side-heading
+  extraction must either preserve a source mapping or produce explicit
+  diagnostic evidence that formatting restoration is unsafe.
+- Keep validation/verifier observer-only; PR-I must not use validator repair.
+- Do not add document-specific formatting heuristics or infer book styles from
+  cleaned text without source evidence.
+
+Acceptance:
+
+- Focused tests show that reader-cleanup split/join/delete operations do not
+  silently discard source paragraph ids needed by formatting restoration.
+- Formatting diagnostics report mapped and unmapped cleaned DOCX paragraphs in a
+  way that distinguishes true mapping loss from intentional cleanup deletion.
+- Existing safe formatting behavior for headings, lists, captions, TOC,
+  epigraph/attribution italics, and source numbering restoration remains intact.
+- Mapping failures are surfaced as diagnostics and do not trigger guessed
+  formatting repair.
+
+Current local implementation note:
+
+- Added a conservative reader-cleanup-aware formatting registry derivation in
+  `pipeline/late_phases.py`. It updates the registry for accepted cleanup
+  delete/split/join/inline-noise/heading-boundary operations only when raw
+  cleanup block order exactly matches generated registry order.
+- Ambiguous block/registry count mismatch is diagnostic-only: the old registry
+  is preserved and formatting restoration must rely on existing conservative
+  mapping diagnostics instead of guessed lineage.
+- Anchor-repair operations are currently skipped by this lineage derivation
+  because their block ids refer to the post-first-pass cleaned Markdown, not the
+  raw cleanup block registry. That is explicit diagnostics debt for a later
+  slice, not guessed formatting repair.
+- DOCX rebuild after reader cleanup now passes the derived registry into
+  `preserve_source_paragraph_properties`, so deleted cleanup blocks and joined
+  cleanup blocks do not silently keep stale paragraph ids.
+- Focused tests were added for deleted registry entries, split/heading-boundary
+  text updates, joined registry entries, anchor-repair skip, ambiguous mismatch
+  skip, and DOCX rebuild registry override.
+
+Suggested implementation surface:
+
+- `src/docxaicorrector/pipeline/late_phases.py`
+- `src/docxaicorrector/pipeline/output_validation.py`
+- `src/docxaicorrector/generation/formatting_transfer.py`
+- `tests/test_format_restoration.py`
+- `tests/test_document_pipeline.py` or focused pipeline tests only if runtime
+  DOCX rebuild wiring changes.
+
+Validation:
+
+```bash
+bash scripts/test.sh tests/test_format_restoration.py -q
+bash scripts/test.sh tests/test_document_pipeline.py -q -k 'reader_cleanup or formatting or generated_paragraph_registry'
+git diff --check
+```
+
+Stop conditions:
+
+- Stop and write a design note instead of coding if the first safe step requires
+  a broad rewrite of final assembly, reader cleanup operation schema, or DOCX
+  conversion.
+- Stop if the proposed fix would guess styles from plain cleaned Markdown
+  without source paragraph evidence.
+- Stop if preserving formatting requires validation/verifier to mutate artifacts.
 
 ### PR-H1: Targeted Page-Furniture + Caption + Continuation Repair
 

@@ -2,4 +2,8 @@
 # Installed by scripts/setup-wsl.sh.
 antiword
 libreoffice
+ocrmypdf
 pandoc
+tesseract-ocr
+tesseract-ocr-eng
+tesseract-ocr-rus

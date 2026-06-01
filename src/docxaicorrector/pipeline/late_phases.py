@@ -152,17 +152,181 @@ def _rebuild_docx_for_markdown(
     dependencies: Any,
     state: Any,
     processed_image_assets: Sequence[Any],
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None = None,
 ) -> bytes:
     docx_bytes = dependencies.convert_markdown_to_docx_bytes(markdown_text)
     if context.source_paragraphs:
+        formatting_registry = (
+            generated_paragraph_registry
+            if generated_paragraph_registry is not None
+            else state.generated_paragraph_registry or None
+        )
         docx_bytes = dependencies.preserve_source_paragraph_properties(
             docx_bytes,
             context.source_paragraphs,
-            state.generated_paragraph_registry or None,
+            formatting_registry,
         )
     if processed_image_assets:
         docx_bytes = dependencies.reinsert_inline_images(docx_bytes, processed_image_assets)
     return docx_bytes
+
+
+def _cleanup_block_index(block_id: object) -> int | None:
+    if not isinstance(block_id, str):
+        return None
+    match = re.fullmatch(r"b_(\d{6})", block_id.strip())
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _append_reader_cleanup_lineage_operation(entry: dict[str, object], operation_name: str) -> None:
+    lineage_operations = entry.get("reader_cleanup_operations")
+    if not isinstance(lineage_operations, list):
+        lineage_operations = []
+        entry["reader_cleanup_operations"] = lineage_operations
+    lineage_operations.append(operation_name)
+
+
+def _registry_entry_paragraph_ids(entry: Mapping[str, object] | None) -> list[str]:
+    if not isinstance(entry, Mapping):
+        return []
+    paragraph_ids: list[str] = []
+    paragraph_id = entry.get("paragraph_id")
+    if isinstance(paragraph_id, str) and paragraph_id.strip():
+        paragraph_ids.append(paragraph_id.strip())
+    merged_ids = entry.get("merged_paragraph_ids")
+    if isinstance(merged_ids, Sequence) and not isinstance(merged_ids, (str, bytes, bytearray)):
+        paragraph_ids.extend(str(value).strip() for value in merged_ids if str(value).strip())
+    deduped: list[str] = []
+    for paragraph_id_value in paragraph_ids:
+        if paragraph_id_value not in deduped:
+            deduped.append(paragraph_id_value)
+    return deduped
+
+
+def _derive_reader_cleanup_generated_paragraph_registry(
+    *,
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
+    cleanup_report: Mapping[str, object],
+    raw_markdown: str,
+) -> tuple[list[dict[str, object]] | None, dict[str, object]]:
+    """Return a best-effort formatting registry that mirrors accepted cleanup.
+
+    The contract is intentionally conservative: block ids are positional
+    `build_cleanup_blocks()` ids, so we only rewrite the registry when the raw
+    cleanup block count exactly matches the registry entry count. Otherwise the
+    caller keeps the original registry and formatting diagnostics can report the
+    mismatch instead of receiving guessed lineage.
+    """
+    if not generated_paragraph_registry:
+        return None, {"status": "skipped", "reason": "missing_generated_paragraph_registry"}
+
+    registry_entries = [dict(entry) for entry in generated_paragraph_registry if isinstance(entry, Mapping)]
+    raw_blocks = build_cleanup_blocks(raw_markdown)
+    if len(raw_blocks) != len(registry_entries):
+        return registry_entries, {
+            "status": "skipped",
+            "reason": "cleanup_block_registry_count_mismatch",
+            "raw_cleanup_block_count": len(raw_blocks),
+            "generated_registry_count": len(registry_entries),
+        }
+
+    accepted_operations = cleanup_report.get("accepted_cleanup_operations") or []
+    if not isinstance(accepted_operations, Sequence) or isinstance(accepted_operations, (str, bytes, bytearray)):
+        return registry_entries, {"status": "unchanged", "reason": "missing_accepted_cleanup_operations"}
+
+    mutable_entries: list[dict[str, object] | None] = list(registry_entries)
+    applied_operations = 0
+    deleted_entries = 0
+    joined_entries = 0
+    updated_entries = 0
+    skipped_operations = 0
+
+    for raw_operation in accepted_operations:
+        if not isinstance(raw_operation, Mapping):
+            skipped_operations += 1
+            continue
+
+        pass_name = str(raw_operation.get("pass_name") or "").strip()
+        if pass_name and pass_name != "first_pass":
+            skipped_operations += 1
+            continue
+
+        operation_name = str(raw_operation.get("operation") or "").strip()
+        block_index = _cleanup_block_index(raw_operation.get("id"))
+        if block_index is None or block_index >= len(mutable_entries):
+            skipped_operations += 1
+            continue
+        current_entry = mutable_entries[block_index]
+        if current_entry is None:
+            skipped_operations += 1
+            continue
+
+        if operation_name == "delete_block":
+            mutable_entries[block_index] = None
+            applied_operations += 1
+            deleted_entries += 1
+            continue
+
+        if operation_name == "join_fragmented_paragraph":
+            next_index = _cleanup_block_index(raw_operation.get("next_id"))
+            if next_index is None or next_index != block_index + 1 or next_index >= len(mutable_entries):
+                skipped_operations += 1
+                continue
+            next_entry = mutable_entries[next_index]
+            if next_entry is None:
+                skipped_operations += 1
+                continue
+            expected_after_preview = str(raw_operation.get("expected_after_preview") or "").strip()
+            current_text = str(current_entry.get("text") or "").strip()
+            next_text = str(next_entry.get("text") or "").strip()
+            current_entry["text"] = expected_after_preview or f"{current_text} {next_text}".strip()
+            merged_ids = _registry_entry_paragraph_ids(current_entry) + _registry_entry_paragraph_ids(next_entry)
+            if merged_ids:
+                current_entry["paragraph_id"] = merged_ids[0]
+                if len(merged_ids) > 1:
+                    current_entry["merged_paragraph_ids"] = merged_ids
+            _append_reader_cleanup_lineage_operation(current_entry, operation_name)
+            mutable_entries[next_index] = None
+            applied_operations += 1
+            joined_entries += 1
+            continue
+
+        if operation_name in {
+            "remove_inline_noise",
+            "extract_side_heading_and_reattach_body",
+            "split_block",
+            "normalize_heading_boundary",
+        }:
+            replacement_text = str(raw_operation.get("expected_after_preview") or "").strip()
+            if not replacement_text and operation_name == "split_block":
+                split_substrings = raw_operation.get("split_substrings")
+                if isinstance(split_substrings, Sequence) and not isinstance(split_substrings, (str, bytes, bytearray)):
+                    replacement_text = "\n\n".join(str(value).strip() for value in split_substrings if str(value).strip())
+            if not replacement_text:
+                skipped_operations += 1
+                continue
+            current_entry["text"] = replacement_text
+            _append_reader_cleanup_lineage_operation(current_entry, operation_name)
+            applied_operations += 1
+            updated_entries += 1
+            continue
+
+        skipped_operations += 1
+
+    derived_registry = [entry for entry in mutable_entries if entry is not None]
+    return derived_registry, {
+        "status": "derived",
+        "raw_cleanup_block_count": len(raw_blocks),
+        "original_registry_count": len(registry_entries),
+        "derived_registry_count": len(derived_registry),
+        "applied_operation_count": applied_operations,
+        "deleted_registry_entry_count": deleted_entries,
+        "joined_registry_entry_count": joined_entries,
+        "updated_registry_entry_count": updated_entries,
+        "skipped_operation_count": skipped_operations,
+    }
 
 
 def _build_docx_rebuild_markdown_after_reader_cleanup(
@@ -424,12 +588,18 @@ def _run_reader_cleanup_postprocess(
             cleaned_markdown=cleaned_runtime_display_markdown,
             accepted_delete_block_ids=cleanup_result.accepted_delete_block_ids,
         )
+        cleanup_formatting_registry, cleanup_formatting_lineage = _derive_reader_cleanup_generated_paragraph_registry(
+            generated_paragraph_registry=state.generated_paragraph_registry or None,
+            cleanup_report=cleanup_result.report_payload,
+            raw_markdown=cleanup_result.raw_markdown,
+        )
         cleaned_docx_bytes = _rebuild_docx_for_markdown(
             markdown_text=docx_rebuild_markdown,
             context=context,
             dependencies=dependencies,
             state=state,
             processed_image_assets=processed_image_assets,
+            generated_paragraph_registry=cleanup_formatting_registry,
         )
         emitters.emit_state(
             context.runtime,
@@ -455,6 +625,10 @@ def _run_reader_cleanup_postprocess(
             proposed_cleanup_operation_count=stats.get("proposed_cleanup_operation_count"),
             cleanup_chunk_count=stats.get("cleanup_chunk_count"),
             failed_chunk_count=stats.get("failed_chunk_count"),
+            formatting_lineage_status=cleanup_formatting_lineage.get("status"),
+            formatting_lineage_reason=cleanup_formatting_lineage.get("reason"),
+            formatting_lineage_derived_registry_count=cleanup_formatting_lineage.get("derived_registry_count"),
+            formatting_lineage_applied_operation_count=cleanup_formatting_lineage.get("applied_operation_count"),
             cleaned_markdown_chars=len(cleaned_runtime_display_markdown),
             raw_markdown_chars=len(cleanup_result.raw_markdown),
         )

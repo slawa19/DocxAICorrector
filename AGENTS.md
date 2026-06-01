@@ -56,6 +56,14 @@ bash scripts/test.sh tests/test_file.py::test_name -vv -x
 
 Не запускайте тесты через `py -m pytest`, `python -m pytest` или PowerShell, если явно не подтверждено, что команда выполняется именно внутри project WSL runtime.
 
+Если текущий shell — Windows/PowerShell agent terminal, проверенный transport path для этого workspace:
+
+```powershell
+wsl.exe -d Debian --cd "D:\www\Projects\2025\DocxAICorrector" -- bash scripts/test.sh tests/ -q
+wsl.exe -d Debian --cd "D:\www\Projects\2025\DocxAICorrector" -- bash scripts/test.sh tests/test_file.py -vv
+wsl.exe -d Debian --cd "D:\www\Projects\2025\DocxAICorrector" -- bash scripts/test.sh tests/test_file.py::test_name -vv -x
+```
+
 Критическое различие:
 
 - `bash scripts/test.sh ...`, `bash scripts/run-real-document-validation.sh`, `bash scripts/run-real-document-quality-gate.sh` и любые тесты/spec-paths, которые сами завязаны на shell entrypoint, считаются **canonical contract path**.
@@ -73,6 +81,9 @@ pytest tests/ -q
 - Сначала решите, нужен ли вообще shell-run: для финальной верификации в VS Code сначала предпочитайте existing tasks `Run Full Pytest`, `Run Current Test File`, `Run Current Test Node`.
 - Перед первым ручным test command обязательно определите текущий shell через `uname` и `pwd`, а не по предположению.
 - До любого вывода о broken env обязательно проверьте layout `.venv`: наличие `.venv/bin/activate`, `.venv/bin/python`, `.venv/Scripts/python.exe`, `.venv/Scripts/pytest.exe`.
+- Если текущий shell не WSL, сначала проверяйте локальные WSL дистрибутивы через `wsl.exe -l -q`; не используйте `wsl --list --online` как prerequisite и не считайте его падение сигналом, что установленный Debian недоступен.
+- Если `wsl.exe -l -q` показывает `Debian`, сразу проверяйте canonical repo entry через `wsl.exe -d Debian --cd "D:\www\Projects\2025\DocxAICorrector" -- bash -lc "uname; pwd; test -f scripts/test.sh; test -f .venv/bin/activate; echo READY"`.
+- Если READY check успешен, прекращайте поисковые проверки окружения и запускайте requested canonical test command через `wsl.exe -d Debian --cd ... -- bash scripts/test.sh ...`.
 - Если `uname` показывает Linux и рабочий каталог уже под `/mnt/d/www/projects/2025/DocxAICorrector`, вы уже внутри WSL runtime: запускайте `bash scripts/test.sh ...` напрямую.
 - Если shell показывает `MSYS_NT`, `MINGW64_NT`, Windows PowerShell или иной не-WSL runtime, используйте `wsl.exe -d Debian ...` только как transport layer до project WSL runtime.
 - Если shell не WSL, но `.venv/Scripts/python.exe` и `pytest.exe` существуют и реально запускают тесты, это допустимый agent-side debug path для локальной проверки изменённого кода. Не называйте такой env broken только потому, что он не WSL-layout.
@@ -167,7 +178,7 @@ echo START && wsl.exe -d Debian bash -c "cd /mnt/d/www/projects/2025/DocxAICorre
 Обязательные правила:
 - Если `uname` уже показывает Linux и `pwd` уже под `/mnt/d/...`, не используйте `wsl.exe` повторно.
 - Всегда `wsl.exe`, не `wsl` (MSYS может не иметь `wsl` в PATH).
-- Всегда `echo START && ... && echo DONE` — без этого вывод теряется.
+- Для `wsl.exe ... bash -c "cd ...; <COMMAND>"` через хрупкий agent capture используйте `echo START && ... && echo DONE`; для короткого `--cd ... -- bash scripts/test.sh ...` добавляйте маркеры, если вывод становится неполным.
 - Всегда `2>&1` — stderr тоже буферизуется отдельно.
 
 `scripts/test.sh` НЕ работает из Bash tool напрямую — скрипт вызывает `exec pytest`, и `pytest` не находится в PATH MSYS окружения.
@@ -180,12 +191,14 @@ echo START && wsl.exe -d Debian bash -c "cd /mnt/d/www/projects/2025/DocxAICorre
 
 - `py -m pytest` из Windows shell.
 - Запуск `pytest` через PowerShell bridge / PowerShell wrapper.
+- Использовать `wsl --list --online` как prerequisite для тестов или как доказательство, что локальный Debian/WSL runtime недоступен.
+- Начинать диагностику тестов с Windows Python availability, если задача требует canonical WSL test path.
 - Заявлять, что тесты "не запускаются" или что env broken, не проверив фактические executable paths в `.venv`.
 - Подменять shell-bound spec/validation test другим underlying Python runner-ом и описывать это как эквивалент requested test execution.
 - Подменять `real`, `spec`, `ui-parity`, `validation`, `quality-gate` сценарий debug path-ом без явной маркировки, что canonical path не был выполнен.
-- Запуск `bash scripts/test.sh ...` или `source .venv/bin/activate && pytest` напрямую из Bash tool без `wsl.exe -d Debian bash -c '...'`.
+- Запуск `bash scripts/test.sh ...` или `source .venv/bin/activate && pytest` напрямую из Windows/MSYS Bash tool без `wsl.exe -d Debian ...` transport.
 - Голое `wsl` вместо `wsl.exe` из агентского терминала.
-- WSL-команды без echo-маркеров (вывод теряется).
+- Интерпретировать неполный WSL stdout без echo-маркеров как тестовый результат.
 
 ## Надёжный вызов WSL из агентского терминала
 
@@ -194,8 +207,21 @@ echo START && wsl.exe -d Debian bash -c "cd /mnt/d/www/projects/2025/DocxAICorre
 ### Синтаксис вызова
 
 - Используйте **`wsl.exe`** (не `wsl`) — голое `wsl` может не быть в PATH MSYS.
-- Предпочтительная форма: `wsl.exe -d Debian bash -c "..."`.
+- Из Windows/PowerShell agent terminal для этого workspace предпочтительная форма: `wsl.exe -d Debian --cd "D:\www\Projects\2025\DocxAICorrector" -- bash scripts/test.sh ...`.
+- Для команд, которым нужен shell context, используйте: `wsl.exe -d Debian --cd "D:\www\Projects\2025\DocxAICorrector" -- bash -lc "..."`.
+- Если `--cd` по какой-то причине недоступен, fallback: `wsl.exe -d Debian bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && ..."`.
 - `wsl.exe -- bash -lc '...'` тоже работает, но с одинарными кавычками сложнее вкладывать переменные.
+
+### Deterministic readiness check
+
+Перед объявлением WSL/canonical tests заблокированными выполните короткую локальную проверку без сети:
+
+```powershell
+wsl.exe -l -q
+wsl.exe -d Debian --cd "D:\www\Projects\2025\DocxAICorrector" -- bash -lc "uname; pwd; test -f scripts/test.sh; test -f .venv/bin/activate; echo READY"
+```
+
+Если `Debian` виден и READY printed, canonical WSL path доступен; сразу запускайте requested `bash scripts/test.sh ...`. Блокером считается только отсутствие `wsl.exe`, отсутствие `Debian` в `wsl.exe -l -q`, отказ `wsl.exe -d Debian ...` стартовать или отсутствие `scripts/test.sh` / `.venv/bin/activate` внутри Debian.
 
 ### Проблема потери вывода
 

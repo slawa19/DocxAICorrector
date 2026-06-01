@@ -7,6 +7,7 @@ Status: Active migration plan; structure-first tuning specs archived 2026-05-30
 
 - `docs/specs/SIMPLE_READER_FIRST_MVP_SPEC_2026-05-21.md`
 - `docs/specs/SIMPLE_READER_FIRST_MVP_REPAIR_PR_BACKLOG_2026-05-23.md`
+- `docs/specs/PDF_TEXT_LAYER_SOURCE_IMPORT_PIVOT_SPEC_2026-06-01.md`
 - `docs/archive/specs/STRUCTURE_RECOGNITION_PR_BACKLOG_2026-05-21.md` (тупиковая фаза)
 - `docs/ARCHIVE_INDEX.md` (контракт архивации)
 
@@ -57,7 +58,7 @@ layout cleanup, paragraph/relation normalization, image handoff и DOCX roundtri
 
 ### Что ещё не готово
 
-- **PR-H0/PR-H0a/PR-H0b/PR-H0c/PR-H0d/PR-H0e/PR-H0f завершены локально**:
+- **PR-H0/PR-H0a/PR-H0b/PR-H0c/PR-H0d/PR-H0e/PR-H0f/PR-H0g/PR-H0h завершены локально**:
   canonical
   small-overlap форма (`chunk_size=8000`, `3/3` read-only overlap,
   `global_plan_enabled=false`) зафиксирована как runtime/config/profile канон,
@@ -68,10 +69,14 @@ layout cleanup, paragraph/relation normalization, image handoff и DOCX roundtri
   side-heading-island sentence interruptions. PR-H0e снизил broad unsafe
   `remove_inline_noise` proposals для semantic title deletion с `1` до `0`.
   PR-H0f доказал exact numeric-prefix cleanup для multi-word isolated semantic
-  heading без удаления title text: broad unsafe остаётся `0`, remaining issues
-  `18`. Следующий узкий PR-H slice — не model bakeoff, а one-word numeric
-  heading policy и/или heading-stack continuation decision; verifier остаётся
-  observer-only.
+  heading без удаления title text. PR-H0g доказал доступность same-block
+  `join_fragmented_paragraph -> normalize_heading_boundary` runtime chain, но
+  replay не дал effective fused-heading fix. PR-H0h добавил structured
+  fused-heading targets и подтвердил safety, но repeat stability осталась
+  quality-variable. Same-shape `gpt-5.4-mini` control завершился без failed
+  chunks, но не конкурентен Anthropic (`remaining_issue_count=59`,
+  `heading_fused_with_body=26`). **PR-H0 зафиксирован как reader-cleanup
+  quality boundary, не как MVP exit proof.**
 - Последний completed proof run
   `20260530T071434Z_968_Rethinking-money-chapter-region-pages-10-11-and-156-217`
   pipeline-level завершился и сохранил no-harm gates
@@ -85,16 +90,41 @@ layout cleanup, paragraph/relation normalization, image handoff и DOCX roundtri
 - Новый PR-H-exit runtime path для adjacent/split heading не доказан на real-doc:
   `heading_boundary_normalized_across_adjacent_block = 0`, то есть retained code
   path ни разу не применился в accepted operations.
-- По May 26/30 evidence следующий полезный шаг внутри PR-H — сначала устранить
-  verifier `execution_failed` / missing required text precondition, затем сделать
-  fresh source-cleanup-remove comparison run и только после этого решать, является
-  ли остаток PR-H operation-selection/contract problem или product-accepted
-  readable-draft limitation.
-- **PR-I (Formatting Preservation)** не начата. Это не только DOCX-writer work:
-  нужен lineage contract raw Markdown block → cleaned block(s) → final DOCX
-  paragraphs/runs для headings, lists, emphasis и source properties.
-- **PR-J (Image Handoff/Reinsertion)** не начата. Нужен evidence slice, где
-  именно исчезают PDF-origin images/placeholders/assets/inline shapes.
+- По May 26/30/June 1 evidence новые fused-heading micro-PRs больше не должны
+  быть default next step. Остаточные PR-H defects считаются readable-draft /
+  model-boundary limitations до свежего broad-class evidence. Verifier
+  `execution_failed` по старому comparison-only run всё ещё запрещает MVP exit
+  claim, но не блокирует старт PR-I как отдельного formatting workstream.
+- **PR-PDF0 (Source Import Quality Gate)** активирован как новый
+  highest-leverage source-quality slice перед расширением PR-I2. FineReader
+  comparison показал, что текущий `writer_pdf_import` импортирует visual layout
+  как document structure; поэтому сначала нужно измерить permissive
+  text-layer-first импорт прямо в `ParagraphUnit`. PR-PDF0 probe на
+  `Rethinking-money-chapter-region-pages-10-11-and-156-217.pdf` дал
+  `decision=promising`, `visible_text_chars=95179`, `body_text_ratio=0.9882`,
+  `heading_candidate_count=17`, `list_candidate_count=19`; следующий
+  implementation PR — PR-PDF1 behind feature flag. PR-PDF1a bridge proof уже
+  показал viable generated-DOCX path (`140` paragraphs, `0` page-number-like
+  paragraphs vs LibreOffice `336` / `1`), но выявил front-matter/TOC grouping и
+  markdown-bold leakage через DOCX roundtrip. PR-PDF1 локально завершён как
+  feature-flag bridge: text-layer proof теперь даёт bounded TOC blocks (`124`
+  paragraphs, `0` page-number-like paragraphs, `0` markdown emphasis markers)
+  и generic blank-page notices удаляются до translation. PR-PDF2/OCR is deferred
+  for the current MVP proof; partial plumbing remains behind explicit flags.
+- **Formatting/image evidence по PR-PDF1:** text-layer bridge переносит
+  структурные стили лучше текущего LibreOffice baseline (`16` heading
+  paragraphs, `19` lists). Hybrid image handoff now inserts PDF image objects
+  into the generated DOCX as normal inline Word images: proof artifact
+  `.run/pdf_text_layer_quality/lietaer-chapter-region-format-image-comparison-hybrid-pr-j.json`
+  shows `12` source PDF image objects -> `12` DOCX media / `12` DOCX drawings /
+  `12` extracted image assets on the text-layer path. LibreOffice still has
+  `12` media but `0` extracted assets in the current extractor.
+- **PR-I (Formatting Preservation)** остаётся обязательным, но PR-I2 не должен
+  расти до тех пор, пока PR-PDF0 не ответит, какие heading/bold/italic/list
+  signals можно сохранить на source-import этапе.
+- **PR-J (Image Handoff/Reinsertion)** text-layer bridge path is locally proven
+  for embedded PDF image objects. Remaining image work is broader corpus/image
+  quality validation, not reader cleanup.
 - **Slice 5 / UI Toggle** не сделан: в UI есть чекбоксы для translation second
   pass и audiobook postprocess, но нет reader cleanup surface.
 - **Reader cleanup config surface частично неполный**: `config.toml` уже содержит
@@ -144,8 +174,9 @@ PR-H-exit verifier proof unblocked + PR-H stable visual baseline
 
 Verifier (Slice 4) и runtime-хук (`late_phases`) уже на месте, но verifier
 execution must be healthy before any MVP exit claim. Остаточные gating-фазы —
-PR-H-exit unblock/proof → PR-I (→ PR-J) → reader cleanup config/UI promotion →
-Decision Gate.
+PR-I lineage/preservation → optional PR-J → reader cleanup config/UI promotion →
+Decision Gate, with the old PR-H-exit verifier issue retained as MVP-exit
+evidence debt rather than the next cleanup micro-PR driver.
 
 ## 3. Current Codebase Inventory
 
@@ -199,7 +230,7 @@ relations/segments, UI application flow, validation profiles, config и tests.
 
 ### PR-H0. Canonical Small-Overlap + Shared Blind Spots
 
-Промежуточный PR между model bake-off и PR-H-exit runtime proof.
+Завершённый промежуточный PR между model bake-off и PR-I formatting workstream.
 
 Scope:
 
@@ -222,8 +253,9 @@ Non-goals:
 - Не менять literary translation baseline.
 
 Выход: config/runtime defaults и план согласованы с same-shape evidence;
-следующий runtime PR-H-exit работает уже поверх small-overlap канона, а не
-поверх старой bulk/current формы.
+small-overlap canon остаётся текущей reader-cleanup формой, Anthropic остаётся
+cleanup leader, `gpt-5.4-mini` не принят как replacement, а дальнейшие
+fused-heading micro-PRs остановлены как вероятное document polishing.
 
 ### PR-H0a. Inline Marker + Duplicate Heading Runtime Proof
 
@@ -297,41 +329,71 @@ PR-H0b/PR-H0c updates:
   prefix while preserving heading text; broad unsafe `remove_inline_noise`
   remains `0`. One-word numeric-prefixed heading `21 РОТТЕРДАМ.` remains a
   policy decision.
+- PR-H0g proof:
+  `20260601T061315Z_anthropic-small-overlap-pr-h0g-same-block-join-heading-boundary-proof`,
+  `15` chunks, `0` failed chunks, `55` accepted operations, verifier
+  `cleaned_better` high confidence, `17` remaining issues,
+  `heading_fused_with_body=4`, `prior_same_block_operation_not_applied=3`,
+  broad unsafe `remove_inline_noise=0`. Runtime chain is available, but replay
+  effectiveness is not proven.
+- PR-H0h proof:
+  `20260601T073422Z_anthropic-small-overlap-pr-h0h-fused-heading-targeting-proof`,
+  `15` chunks, `0` failed chunks, `57` accepted operations, verifier
+  `cleaned_better` high confidence, `17` remaining issues,
+  `heading_fused_with_body=3`, `prior_same_block_operation_not_applied=0`,
+  broad unsafe `remove_inline_noise=0`. Repeat stability
+  `20260601T075435Z_anthropic-small-overlap-pr-h0h-repeat-stability` kept
+  safety flat but quality variable:
+  `remaining_issue_count=[21,21,17]`, `heading_fused_with_body=[4,6,1]`.
+- GPT-5.4-mini same-shape control:
+  `20260601T112649Z_gpt-5-4-mini-small-overlap-pr-h0h-control`, cleanup
+  selector `gpt-5.4-mini`, Anthropic verifier as fixed judge, `15` chunks,
+  `0` failed chunks, `26` accepted operations, `59` remaining issues,
+  `heading_fused_with_body=26`, `page_furniture_inline=7`,
+  `fragmented_paragraph=16`, broad unsafe `remove_inline_noise=0`. This is not
+  a quality replacement for Anthropic.
 
-Remaining PR-H targets:
+PR-H0 closure decision:
 
-- one-word numeric-prefixed heading policy, without deleting title text;
-- heading-stack/body-continuation decision after side-heading extraction;
-- leading-dash continuation artifacts as a separate classification decision.
+- one-word numeric-prefixed heading policy, heading-stack/body-continuation, and
+  leading-dash continuation artifacts remain visible limitations, not active
+  micro-PR drivers;
+- no H0i fused-heading salience PR; any further model-ceiling experiment must be
+  an explicit comparison artifact with a stronger/different candidate, not a
+  runtime repair slice;
+- next active implementation workstream is PR-I1.
 
 ### PR-H. Reader Cleanup Visual Blockers / PR-H-exit
 
-- Текущий implementation source of truth: repair backlog § PR-H-exit
-  Adjacent/Split Heading Operation Contract. Все PR-H sub-slices
-  (PR-H1/PR-H2/PR-H2a/PR-H2b/PR-H2c/PR-H-final/PR-H-exit) остаются историей и
-  evidence trail; текущий blocker — PR-H-exit proof failure.
+- Текущий implementation source of truth: repair backlog § Current PR-H
+  Sub-Slices / PR-H0h closure. Старые PR-H1/PR-H2/PR-H2a/PR-H2b/PR-H2c/
+  PR-H-final/PR-H-exit остаются history/evidence trail, но не являются
+  активной next-slice формулировкой.
 - Перед любым MVP exit claim устранить verifier `execution_failed` /
   `reader_verifier_remaining_issue_missing_required_text` и получить completed
   verifier evidence.
-- Довести PR-H до stable visual baseline:
-  - сохранить `reader_cleanup_failed_chunk_count = 0`;
-  - доказать, что retained adjacent/split heading path либо применяется на
-    real-doc (`heading_boundary_normalized_across_adjacent_block > 0`), либо
-    явно классифицирован как not-useful для remaining sites;
-  - закрыть или классифицировать fused heading / fragmented paragraph anchors;
-  - проверить source-side page-furniture cleanup hypothesis отдельным audited
-    source-cleanup slice, не превращая его в broad pre-translation rewrite;
-  - не расширять runtime safety guards без evidence, что AI предлагает valid
-    bounded operations, которые code rejected too narrowly.
+- PR-H0h repeat stability and GPT-5.4-mini control classify the current
+  reader-cleanup path as safe but quality-variable. Do not continue
+  fused-heading micro-PRs without fresh broad-class evidence.
 
-Выход: PR-H имеет valid verifier proof или explicit product decision о
-readable-draft limitation; текущий `execution_failed` больше не блокирует
-evidence.
+Выход: PR-H is frozen as readable-draft quality boundary for the next PR-I
+work. The old verifier `execution_failed` remains MVP-exit evidence debt and
+must be closed before promotion, but not before starting formatting lineage.
 
 ### PR-I1 / PR-I2. Formatting Preservation
 
-- PR-I1: реализовать lineage contract raw blocks → cleaned blocks → generated
-  paragraphs/runs/styles.
+- **Active next slice: PR-I1.**
+- PR-I1: реализовать и протестировать lineage contract
+  source paragraphs / raw generated registry → reader-cleaned Markdown blocks →
+  generated paragraphs/runs/styles used by DOCX rebuild.
+- PR-I1 acceptance:
+  - formatting diagnostics can explain which cleaned DOCX paragraphs map back to
+    source paragraph ids after reader cleanup;
+  - reader cleanup split/join/delete operations do not silently destroy
+    heading/list/emphasis lineage;
+  - anchor-repair operation lineage is skipped explicitly until a later slice can
+    map post-first-pass block ids without guessing;
+  - mapping failures are diagnostic evidence, not guessed formatting repair.
 - PR-I2: применить lineage в DOCX writer/rebuild path для bold/italic/emphasis,
   heading/subheading styles и list styling/numbering.
 - Не пытаться восстановить formatting из plain cleaned Markdown без source
@@ -571,18 +633,21 @@ reader-first путём.
 | --- | --- | --- |
 | PR-M0 | Plan Refresh + Inventory Lock | Обновить PR-H-exit status, latest completed proof evidence, inventory table, stop rules. |
 | PR-A0 | Reader Cleanup Config Surface | Complete missing config/env/UI-default/profile fields for reader cleanup; keep existing `reader_cleanup_model` / `reader_verifier_model`; tests for defaults/overrides. |
-| PR-H0 | Canonical Small-Overlap + Shared Blind Spots | Completed locally: canonical small-overlap shape is config/runtime/profile default; shared Anthropic/Gemini blind spots are explicit target classes. |
+| PR-H0 | Canonical Small-Overlap + Shared Blind Spots | Closed locally as quality boundary: canonical small-overlap shape is config/runtime/profile default; Anthropic is cleanup leader; H0h repeat stability is safe but quality-variable; `gpt-5.4-mini` same-shape control is not competitive. |
 | PR-H0a | Inline Marker + Duplicate Heading Runtime Proof | Completed locally: Anthropic canonical proof run has `failed_chunk_count=0`, `noise_substring_not_found=0`, raw `4.0` -> cleaned `6.0`; inline markers closed; duplicate heading is runtime-covered but needs operation selection/pre-audit targeting. |
 | PR-H0b | Operation Selection Targets Runtime Proof | Completed locally: duplicate semantic heading targeting is selected and accepted; side-heading islands still need operation-choice salience. |
 | PR-H0c | Side-Heading Operation Choice Salience | Completed locally: side-heading proof examples move to accepted `split_block`; remaining issue is stub/continuation fragments after extraction. |
 | PR-H0d | Side-Heading Stub/Continuation Contract | Completed locally: new bounded `extract_side_heading_and_reattach_body` operation accepted in replay for single heading-island sentence interruptions; heading stacks and one broad unsafe `remove_inline_noise` proposal remain. |
 | PR-H0e | Semantic-Title / Page-Heading Deletion Salience | Completed locally: broad unsafe `remove_inline_noise` proposals dropped to `0`; semantic title is preserved, with numeric-prefix cleanup handed off to PR-H0f. |
 | PR-H0f | Numeric-Prefix Semantic Heading Cleanup | Completed locally: multi-word isolated semantic heading prefix cleanup preserves title text, removes only exact numeric prefix, keeps broad unsafe `remove_inline_noise=0`; one-word heading policy remains. |
-| PR-H | Reader Cleanup Visual Blockers / PR-H-exit | Next runtime slice after PR-H0f: one-word numeric heading policy and heading-stack continuation decision; no verifier-side repair; keep stable `failed_chunk_count=0` and no false deletions. |
-| PR-I1 | Formatting Lineage Contract | Raw→cleaned→DOCX mapping для headings/lists/emphasis/source props; focused tests. |
+| PR-H | Reader Cleanup Visual Blockers / PR-H-exit | Frozen as readable-draft quality boundary for PR-I start; old verifier `execution_failed` remains MVP-exit evidence debt, but no H0i fused-heading micro-PR. |
+| PR-PDF0 | Source Import Quality Gate | Completed locally: permissive text-layer probe on chapter-region PDF is `decision=promising` with dense body text and source structure signals; use as evidence for PR-PDF1, not production promotion. |
+| PR-PDF1 | Text-Layer PDF Importer | Completed locally as feature-flagged generated-DOCX bridge: `PdfTextSpan -> ParagraphUnit`, page furniture/page numbers/blank-page notices filtered, bounded TOC blocks, `124` paragraphs, `0` page-number-like leakage, `0` markdown emphasis markers. Default remains LibreOffice; direct `PDF -> ParagraphUnit -> preparation` remains target architecture after broader proof. |
+| PR-PDF2 | OCR Fallback | Deferred for now: partial plumbing exists behind `DOCXAI_PDF_OCR_IMPORT_ENABLED=1`, but scanned PDFs are not required for the current text-layer MVP proof. |
+| PR-I1 | Formatting Lineage Contract | Active next PR: source paragraphs/generated registry → reader-cleaned Markdown → DOCX paragraph/run/style lineage for headings/lists/emphasis/source props; focused tests. |
 | PR-I2 | Formatting Preservation Implementation | Apply lineage in DOCX writer/rebuild path; preserve book-grade styles. |
-| PR-J1 | Image Handoff Evidence | Найти точку потери PDF-origin images/placeholders/assets/inline shapes. |
-| PR-J2 | Image Reinsertion Fix | Restore image handoff/reinsertion if release-blocking. |
+| PR-J1 | Image Handoff Evidence | Completed locally for text-layer PDFs: source PDF image objects were lost because the bridge serialized text only; LibreOffice media are not extractor-visible assets. |
+| PR-J2 | Image Reinsertion Fix | Completed locally for text-layer PDFs: bridge inserts PDF images as normal inline DOCX images; extractor emits `12` image assets/placeholders on the benchmark artifact. |
 | PR-A1 | Reader-First Default Promotion | `structure_recognition.mode=off`, reader cleanup default-on, proof + extra doc + UI evidence. |
 | PR-A2 | UI Reader Report + Structure Panel Decoupling | Reader cleanup checkbox/report; selection/retry helpers extracted from structure panel. |
 | PR-A3 | Anchor Repair Decision | Runtime owner/source-of-targets or diagnostic-only decision recorded and tested. |
@@ -602,8 +667,12 @@ reader-first путём.
 ```text
 PR-M0 (plan/status/inventory)
   -> PR-A0 (reader cleanup config surface)
-  -> PR-H (PR-H-exit verifier unblock + visual cleanup/source-cleanup evidence)
-  -> PR-I1/PR-I2 (formatting lineage + implementation)
+  -> PR-H0 closure (small-overlap reader-cleanup quality boundary)
+  -> PR-I1 (formatting lineage)
+  -> PR-PDF0 (source import quality gate; completed locally)
+  -> PR-PDF1 (feature-flagged text-layer PDF importer)
+  -> PR-PDF2 (OCR fallback for scanned/empty text-layer PDFs)
+  -> PR-I2 (formatting preservation implementation)
   -> [PR-J1/PR-J2 if images are release-blocking]
   -> PR-A1 (reader-first default promotion)
   -> PR-A2 (UI reader report + structure panel decoupling)
@@ -635,9 +704,9 @@ PR-A1+PR-A2 доказаны user-visible verification (не только agent-
   config/UI.** Митигация: PR-A0 config surface перед promotion.
 - **Reader verifier падает с `execution_failed`.** Митигация: считать такой run
   невалидным для MVP exit независимо от pipeline success/no-harm gates. Следующий
-  шаг — изолировать причину verifier failure / missing required text в focused
-  test или replay before any new proof claim; не переходить к PR-I/PR-A1 как к
-  promotion evidence, пока verifier не завершён.
+  шаг для promotion evidence — изолировать причину verifier failure / missing
+  required text в focused test или replay before any MVP-exit proof claim. Это
+  не блокирует старт PR-I1, потому что PR-I не заявляет promotion readiness.
 - **Новый PR-H-exit code path не применяется на real-doc.** Митигация:
   `heading_boundary_normalized_across_adjacent_block=0` означает, что path
   code-ready but unproven. Следующий PR-H proof должен либо показать accepted

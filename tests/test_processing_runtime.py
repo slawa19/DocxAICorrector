@@ -3,6 +3,7 @@ import queue
 import sys
 import subprocess
 import threading
+from types import SimpleNamespace
 from pathlib import Path
 from typing import Any, cast
 
@@ -10,6 +11,9 @@ import pytest
 
 import docxaicorrector.processing.processing_runtime as processing_runtime
 import docxaicorrector.runtime.state as state
+from docxaicorrector.document.extraction import extract_document_content_from_docx, extract_paragraph_units_from_docx
+from docxaicorrector.pdf_import.images import PdfImageObject
+from docxaicorrector.pdf_import.text_layer_quality import PdfTextSpan
 from docxaicorrector.pipeline.contracts import SegmentSelection
 from docxaicorrector.runtime.events import (
     AppendImageLogEvent,
@@ -1353,6 +1357,30 @@ def test_build_uploaded_file_token_for_pdf_is_stable_across_converter_outputs(mo
     assert first == second
 
 
+def test_normalize_uploaded_pdf_can_use_feature_flagged_text_layer_import(monkeypatch):
+    monkeypatch.setenv("DOCXAI_PDF_TEXT_LAYER_IMPORT_ENABLED", "1")
+    monkeypatch.setattr(
+        processing_runtime,
+        "_convert_pdf_text_layer_to_docx",
+        lambda **kwargs: (b"text-layer-docx", "pdf-text-layer"),
+    )
+    monkeypatch.setattr(
+        processing_runtime,
+        "_convert_pdf_to_docx",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("libreoffice should not run")),
+    )
+
+    normalized = processing_runtime.normalize_uploaded_document(
+        filename="source.pdf",
+        source_bytes=b"%PDF-1.7\nsource",
+    )
+
+    assert normalized.filename == "source.docx"
+    assert normalized.content_bytes == b"text-layer-docx"
+    assert normalized.source_format == "pdf"
+    assert normalized.conversion_backend == "pdf-text-layer"
+
+
 def test_resolve_upload_contract_uses_original_pdf_bytes_for_source_identity(monkeypatch):
     source_bytes = b"%PDF-1.7\nsame-pdf"
     converted_bytes = b"PK\x03\x04converted-docx"
@@ -1511,6 +1539,372 @@ def test_materialize_uploaded_payload_runs_pdf_conversion_with_progress(monkeypa
     stages = [e["stage"] for e in events]
     assert "Импорт PDF" in stages
     assert "DOCX готов" in stages
+
+
+def test_materialize_uploaded_payload_can_use_feature_flagged_text_layer_import(monkeypatch):
+    _clear_materialized_upload_cache()
+    monkeypatch.setenv("DOCXAI_PDF_TEXT_LAYER_IMPORT_ENABLED", "1")
+    pdf_bytes = b"%PDF-1.4\n%text-layer\n"
+    uploaded_file = processing_runtime.build_in_memory_uploaded_file(
+        source_name="book.pdf",
+        source_bytes=pdf_bytes,
+    )
+    payload = processing_runtime.freeze_uploaded_file_lightweight(uploaded_file)
+
+    monkeypatch.setattr(
+        processing_runtime,
+        "_convert_pdf_text_layer_to_docx",
+        lambda **kwargs: (b"text-layer-docx", "pdf-text-layer"),
+    )
+    monkeypatch.setattr(
+        processing_runtime,
+        "_convert_pdf_to_docx",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("libreoffice should not run")),
+    )
+
+    events: list[dict[str, object]] = []
+    materialized = processing_runtime.materialize_uploaded_payload(
+        payload,
+        progress_callback=lambda **kwargs: events.append(kwargs),
+    )
+
+    assert materialized.conversion_backend == "pdf-text-layer"
+    assert materialized.content_bytes == b"text-layer-docx"
+    assert materialized.filename == "book.docx"
+    assert materialized.file_token == payload.file_token
+    assert any("text-layer" in str(event["detail"]) for event in events if event["stage"] == "Импорт PDF")
+
+
+def test_materialize_uploaded_payload_falls_back_to_libreoffice_when_text_layer_rejects(monkeypatch):
+    _clear_materialized_upload_cache()
+    monkeypatch.setenv("DOCXAI_PDF_TEXT_LAYER_IMPORT_ENABLED", "1")
+    pdf_bytes = b"%PDF-1.4\n%fallback\n"
+    uploaded_file = processing_runtime.build_in_memory_uploaded_file(
+        source_name="fallback.pdf",
+        source_bytes=pdf_bytes,
+    )
+    payload = processing_runtime.freeze_uploaded_file_lightweight(uploaded_file)
+
+    monkeypatch.setattr(
+        processing_runtime,
+        "_convert_pdf_text_layer_to_docx",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("pdf_text_layer_import_not_promising")),
+    )
+    monkeypatch.setattr(
+        processing_runtime,
+        "_convert_pdf_to_docx",
+        lambda **kwargs: (b"libreoffice-docx", "libreoffice"),
+    )
+
+    materialized = processing_runtime.materialize_uploaded_payload(payload, progress_callback=None)
+
+    assert materialized.conversion_backend == "libreoffice"
+    assert materialized.content_bytes == b"libreoffice-docx"
+
+
+def test_materialized_upload_cache_separates_text_layer_flag_from_libreoffice(monkeypatch):
+    _clear_materialized_upload_cache()
+    pdf_bytes = b"%PDF-1.4\n%same-token\n"
+    uploaded_file = processing_runtime.build_in_memory_uploaded_file(
+        source_name="same.pdf",
+        source_bytes=pdf_bytes,
+    )
+    payload = processing_runtime.freeze_uploaded_file_lightweight(uploaded_file)
+    calls: list[str] = []
+
+    def convert_libreoffice(**kwargs):
+        calls.append("libreoffice")
+        return b"libreoffice-docx", "libreoffice"
+
+    def convert_text_layer(**kwargs):
+        calls.append("text-layer")
+        return b"text-layer-docx", "pdf-text-layer"
+
+    monkeypatch.setattr(processing_runtime, "_convert_pdf_to_docx", convert_libreoffice)
+    monkeypatch.setattr(processing_runtime, "_convert_pdf_text_layer_to_docx", convert_text_layer)
+
+    first = processing_runtime.materialize_uploaded_payload(payload, progress_callback=None)
+    monkeypatch.setenv("DOCXAI_PDF_TEXT_LAYER_IMPORT_ENABLED", "1")
+    second = processing_runtime.materialize_uploaded_payload(payload, progress_callback=None)
+
+    assert first.conversion_backend == "libreoffice"
+    assert second.conversion_backend == "pdf-text-layer"
+    assert calls == ["libreoffice", "text-layer"]
+
+
+def test_pdf_text_layer_generated_docx_does_not_encode_false_bold_or_italic(monkeypatch):
+    from docxaicorrector.pdf_import import text_layer_quality
+
+    spans = [
+        PdfTextSpan(
+            page_number=1,
+            text="CONTENTS",
+            x0=50,
+            top=70,
+            x1=250,
+            bottom=90,
+            page_height=800,
+            font_size=18,
+            is_bold=True,
+        ),
+        PdfTextSpan(
+            page_number=1,
+            text="Plain body line",
+            x0=50,
+            top=100,
+            x1=450,
+            bottom=112,
+            page_height=800,
+            font_size=10,
+        )
+    ]
+    monkeypatch.setattr(text_layer_quality, "extract_pdf_text_spans_with_pdfminer", lambda path: spans)
+    monkeypatch.setattr(
+        text_layer_quality,
+        "build_text_layer_quality_report",
+        lambda spans: SimpleNamespace(
+            decision="promising",
+            decision_reasons=(),
+            body_text_ratio=1.0,
+        ),
+    )
+
+    docx_bytes, backend = processing_runtime._convert_pdf_text_layer_to_docx(
+        filename="plain.pdf",
+        source_bytes=b"%PDF-1.4\n",
+    )
+    paragraphs = extract_paragraph_units_from_docx(
+        processing_runtime.build_in_memory_uploaded_file(
+            source_name="plain.docx",
+            source_bytes=docx_bytes,
+        )
+    )
+
+    assert backend == "pdf-text-layer"
+    assert [paragraph.text for paragraph in paragraphs] == ["CONTENTS", "Plain body line"]
+
+
+def test_pdf_text_layer_generated_docx_preserves_span_level_bold_and_italic(monkeypatch):
+    from docxaicorrector.pdf_import import text_layer_quality
+
+    spans = [
+        PdfTextSpan(
+            page_number=1,
+            text="Normal line",
+            x0=50,
+            top=100,
+            x1=450,
+            bottom=112,
+            page_height=800,
+            font_size=10,
+        ),
+        PdfTextSpan(
+            page_number=1,
+            text="emphasis line",
+            x0=50,
+            top=114,
+            x1=450,
+            bottom=126,
+            page_height=800,
+            font_size=10,
+            is_italic=True,
+        ),
+        PdfTextSpan(
+            page_number=1,
+            text="bold phrase with enough words to avoid heading candidate in this importer",
+            x0=50,
+            top=128,
+            x1=450,
+            bottom=140,
+            page_height=800,
+            font_size=10,
+            is_bold=True,
+        ),
+    ]
+    monkeypatch.setattr(text_layer_quality, "extract_pdf_text_spans_with_pdfminer", lambda path: spans)
+    monkeypatch.setattr(
+        text_layer_quality,
+        "build_text_layer_quality_report",
+        lambda spans: SimpleNamespace(
+            decision="promising",
+            decision_reasons=(),
+            body_text_ratio=1.0,
+        ),
+    )
+
+    docx_bytes, backend = processing_runtime._convert_pdf_text_layer_to_docx(
+        filename="formatting.pdf",
+        source_bytes=b"%PDF-1.4\n",
+    )
+    paragraphs = extract_paragraph_units_from_docx(
+        processing_runtime.build_in_memory_uploaded_file(
+            source_name="formatting.docx",
+            source_bytes=docx_bytes,
+        )
+    )
+
+    assert backend == "pdf-text-layer"
+    assert [paragraph.text for paragraph in paragraphs] == [
+        "Normal line *emphasis line* **bold phrase with enough words to avoid heading candidate in this importer**",
+    ]
+
+
+def test_pdf_text_layer_generated_docx_preserves_pdf_images_as_docx_placeholders(monkeypatch):
+    from docxaicorrector.pdf_import import images as pdf_images
+    from docxaicorrector.pdf_import import text_layer_quality
+
+    spans = [
+        PdfTextSpan(
+            page_number=1,
+            text="Text before image.",
+            x0=50,
+            top=100,
+            x1=450,
+            bottom=112,
+            page_height=800,
+            font_size=10,
+        ),
+        PdfTextSpan(
+            page_number=1,
+            text="Text after image.",
+            x0=50,
+            top=220,
+            x1=450,
+            bottom=232,
+            page_height=800,
+            font_size=10,
+        ),
+    ]
+    image_bytes = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+        b"\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4"
+        b"\x89\x00\x00\x00\nIDATx\x9cc\xf8\x0f\x00\x01\x01"
+        b"\x01\x00\x18\xdd\x8d\xb0\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    image_objects = [
+        PdfImageObject(
+            page_number=1,
+            x0=50,
+            top=150,
+            x1=150,
+            bottom=210,
+            page_height=800,
+            image_bytes=image_bytes,
+            mime_type="image/png",
+            source_index=150,
+        )
+    ]
+    monkeypatch.setattr(text_layer_quality, "extract_pdf_text_spans_with_pdfminer", lambda path: spans)
+    monkeypatch.setattr(pdf_images, "extract_pdf_images_with_pdfminer", lambda path: image_objects)
+    monkeypatch.setattr(
+        text_layer_quality,
+        "build_text_layer_quality_report",
+        lambda spans: SimpleNamespace(
+            decision="promising",
+            decision_reasons=(),
+            body_text_ratio=1.0,
+        ),
+    )
+
+    docx_bytes, backend = processing_runtime._convert_pdf_text_layer_to_docx(
+        filename="with-image.pdf",
+        source_bytes=b"%PDF-1.4\n",
+    )
+    paragraphs, image_assets = extract_document_content_from_docx(
+        processing_runtime.build_in_memory_uploaded_file(
+            source_name="with-image.docx",
+            source_bytes=docx_bytes,
+        )
+    )
+
+    assert backend == "pdf-text-layer"
+    assert [paragraph.text for paragraph in paragraphs] == [
+        "Text before image.",
+        "[[DOCX_IMAGE_img_001]]",
+        "Text after image.",
+    ]
+    assert len(image_assets) == 1
+    assert image_assets[0].mime_type == "image/png"
+    assert image_assets[0].original_bytes == image_bytes
+
+
+def test_pdf_text_layer_import_can_run_ocr_fallback_for_scanned_pdf(monkeypatch, tmp_path):
+    from docxaicorrector.pdf_import import text_layer_quality
+
+    calls: list[list[str]] = []
+    input_spans: list[PdfTextSpan] = []
+    ocr_spans = [
+        PdfTextSpan(
+            page_number=1,
+            text="OCR body text.",
+            x0=50,
+            top=100,
+            x1=450,
+            bottom=112,
+            page_height=800,
+            font_size=10,
+        )
+    ]
+
+    monkeypatch.setenv("DOCXAI_PDF_OCR_IMPORT_ENABLED", "1")
+    monkeypatch.setenv("DOCXAI_PDF_OCR_LANGUAGES", "eng+deu")
+    monkeypatch.setattr(processing_runtime.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(text_layer_quality, "extract_pdf_text_spans_with_pdfminer", lambda path: ocr_spans if str(path).endswith(".ocr.pdf") else input_spans)
+
+    def fake_quality(spans):
+        return SimpleNamespace(
+            decision="promising" if spans else "scanned_or_unsupported",
+            decision_reasons=("empty_text_layer",) if not spans else (),
+            body_text_ratio=1.0 if spans else 0.0,
+        )
+
+    def fake_run_completed_process(command, **kwargs):
+        calls.append([str(part) for part in command])
+        Path(command[-1]).write_bytes(b"%PDF-1.4\n%ocr\n")
+        return object()
+
+    monkeypatch.setattr(text_layer_quality, "build_text_layer_quality_report", fake_quality)
+    monkeypatch.setattr(processing_runtime, "_run_completed_process", fake_run_completed_process)
+
+    docx_bytes, backend = processing_runtime._convert_pdf_text_layer_to_docx(
+        filename="scan.pdf",
+        source_bytes=b"%PDF-1.4\n%scan\n",
+    )
+    paragraphs = extract_paragraph_units_from_docx(
+        processing_runtime.build_in_memory_uploaded_file(
+            source_name="scan.docx",
+            source_bytes=docx_bytes,
+        )
+    )
+
+    assert backend == "pdf-text-layer"
+    assert [paragraph.text for paragraph in paragraphs] == ["OCR body text."]
+    assert calls
+    assert "-l" in calls[0]
+    assert "eng+deu" in calls[0]
+
+
+def test_pdf_text_layer_import_reports_missing_ocr_tools_when_ocr_enabled(monkeypatch):
+    from docxaicorrector.pdf_import import text_layer_quality
+
+    monkeypatch.setenv("DOCXAI_PDF_OCR_IMPORT_ENABLED", "1")
+    monkeypatch.setattr(processing_runtime.shutil, "which", lambda name: None)
+    monkeypatch.setattr(text_layer_quality, "extract_pdf_text_spans_with_pdfminer", lambda path: [])
+    monkeypatch.setattr(
+        text_layer_quality,
+        "build_text_layer_quality_report",
+        lambda spans: SimpleNamespace(
+            decision="scanned_or_unsupported",
+            decision_reasons=("empty_text_layer",),
+            body_text_ratio=0.0,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="pdf_ocr_import_unavailable:ocrmypdf"):
+        processing_runtime._convert_pdf_text_layer_to_docx(
+            filename="scan.pdf",
+            source_bytes=b"%PDF-1.4\n%scan\n",
+        )
 
 
 def test_materialize_uploaded_payload_reuses_cached_pdf_conversion(monkeypatch):
