@@ -327,7 +327,11 @@ def build_reader_cleanup_system_prompt() -> str:
         "For remove_inline_noise, prefer reasons such as page_furniture_inline, page_furniture_heading, page_number, orphan_footnote_marker, or repeated_running_header when they match the exact residue being removed.\n"
         "If operation_selection_targets lists a duplicate_semantic_heading_text candidate, inspect that block first and use remove_inline_noise with reason duplicate_fragment only if the exact adjacent repeated phrase and full expected_after_preview are still valid.\n"
         "If operation_selection_targets lists a side_heading_island_candidate, classify it as a possible PDF/two-column side heading embedded in prose. If the heading interrupts one sentence, use extract_side_heading_and_reattach_body with exact pre_body_stub, heading_substring, and post_body_continuation; otherwise first try split_block, then normalize_heading_boundary only when exact substrings can preserve all semantic text.\n"
+        "If operation_selection_targets lists a semantic_page_title_deletion_risk candidate, preserve the title; if you split it into its own block, add a separate same-block follow-up remove_inline_noise for only the exact numeric prefix in the same pass.\n"
+        "If operation_selection_targets lists an isolated_semantic_heading_numeric_prefix candidate, use remove_inline_noise only for the exact numeric prefix; never remove the heading text.\n"
+        "If operation_selection_targets lists a heading_fused_with_body_candidate, prefer the listed exact normalize_heading_boundary operation, or the listed join_fragmented_paragraph then normalize_heading_boundary chain when the heading wraps into the adjacent block.\n"
         "Semantic heading islands are not noise. Do not delete semantic heading islands with remove_inline_noise; do not leave a short pre-heading sentence stub or orphan mid-sentence continuation as its own paragraph. If exact structural repair cannot preserve all semantic text and body continuity, skip and add a warning.\n"
+        "Semantic section titles and page-heading-like titles are not remove_inline_noise targets. A page-like number adjacent to a semantic title is not permission to delete the title.\n"
         "For extract_side_heading_and_reattach_body, expected_after_preview must be exactly: heading_substring, then a blank line, then pre_body_stub plus one space plus post_body_continuation. Do not put the body first, do not add labels like '[Heading: ...]', and do not invent or delete words.\n"
         "Use split_block for one block that should become 2-3 exact substrings from the original block.\n"
         "Use join_fragmented_paragraph only for adjacent blocks that are one paragraph split by a page/caption boundary.\n"
@@ -362,10 +366,12 @@ def build_reader_cleanup_system_prompt() -> str:
         "If body_substring is not copied verbatim from the current block text, or if it only copies the first few words instead of the full remaining semantic body text, do not propose normalize_heading_boundary.\n"
         "For normalize_heading_boundary, expected_after_preview must show the exact post-apply result for that same block with the heading first and the body remainder after a blank-line break; if you cannot provide that exact preview from the current block text, do not propose the operation.\n"
         "If a numeric prefix is followed by a semantic heading and body, do not widen remove_inline_noise to consume the semantic heading; keep prefix removal and heading/body normalization as separate exact operations.\n"
+        "For isolated semantic headings with a page-like numeric prefix, remove only the exact numeric prefix when safe; never remove the heading text.\n"
         "If a page-like number plus a semantic section title appears at the end of a paragraph, do not remove the title with remove_inline_noise; use an exact structural operation or skip.\n"
+        "If the only exact candidate is page number plus a semantic title/question, do not propose remove_inline_noise for that combined span; keep the semantic title and emit a warning when no exact structural operation is safe.\n"
         "If a title-case running-header island with connector words or acronyms and a trailing page number interrupts semantic prose, use remove_inline_noise for only that exact island; do not widen into neighboring prose before or after it.\n"
         "Do not treat TOC-like rows, table-like rows, list rows, title+subtitle pairs, title+question pairs, or epigraph-only continuations as heading/body prose just because uppercase text appears first.\n"
-        "If one block has multiple bounded operations, keep them separate; code applies them in canonical order remove_inline_noise, extract_side_heading_and_reattach_body, split_block, post-split remove_inline_noise, normalize_heading_boundary, then join_fragmented_paragraph.\n"
+        "If one block has multiple bounded operations, keep them separate; code applies them in canonical order remove_inline_noise, extract_side_heading_and_reattach_body, split_block, post-split remove_inline_noise, normalize_heading_boundary, then join_fragmented_paragraph; for explicit same-block heading/body chain targets, join_fragmented_paragraph may run before normalize_heading_boundary.\n"
         "Examples for heading/body cleanup:\n"
         "- Sentence-style heading fused to prose: for 'ОБРАЗОВАНИЕ. Расходы на образование обычно ложатся на плечи федерального правительства.' use normalize_heading_boundary with heading_substring='ОБРАЗОВАНИЕ.' and body_substring='Расходы на образование обычно ложатся на плечи федерального правительства.'.\n"
         "- Uppercase heading with colon plus prose: for 'МЕСТНАЯ ПРОГРАММА: ОБЩЕСТВЕННАЯ ПОЛЬЗА БЕЗ ДОЛГОВ В пилотном городе...' use normalize_heading_boundary with heading_substring='МЕСТНАЯ ПРОГРАММА: ОБЩЕСТВЕННАЯ ПОЛЬЗА БЕЗ ДОЛГОВ' and body_substring copying the full exact remainder from 'В пилотном городе...' through the end of that block.\n"
@@ -377,6 +383,7 @@ def build_reader_cleanup_system_prompt() -> str:
         "- Leading page number or running header plus uppercase heading plus prose: first use remove_inline_noise for the exact non-semantic prefix, then normalize_heading_boundary for the remaining heading/body boundary when both exact previews are safe.\n"
         "- Running-header prefix plus semantic heading plus prose: after prefix cleanup, keep the full remaining semantic heading in heading_substring and put only the exact prose sentence start in body_substring; do not treat the whole semantic heading as removable noise and do not keep only the last heading words.\n"
         "- Do not keep only a trailing heading tail like 'И СПРАВЕДЛИВОСТЬ.' when the full semantic heading started earlier in the same block; heading_substring must begin at the first semantic heading token.\n"
+        "- Page-like number plus semantic title at paragraph end: bad: remove_inline_noise for the whole '20 NEW FORMS OF MONEY?' span. Good: preserve the title with an exact structural operation, remove only a standalone page number if that is exactly safe, or skip with a warning.\n"
         "- Semantic side-heading island operation choice: bad: remove_inline_noise \"Три мультинациональные валюты\". Good: extract_side_heading_and_reattach_body when the island interrupts a sentence and the pre/post body parts can be reattached exactly; otherwise split_block or normalize_heading_boundary that preserves both heading text and body text exactly. If exact preservation is not possible, skip.\n"
         "- Title-case running header island inside a sentence: for '... Полевой отчет НКО 167 развивающейся организации ...' use remove_inline_noise with noise_substring='Полевой отчет НКО 167 '.\n"
         "- Title-case running header with leading page number inside a sentence: for '... 3 Городское управление 201 особенно важно ...' use remove_inline_noise with noise_substring='3 Городское управление 201 '.\n"
@@ -427,6 +434,7 @@ def build_reader_cleanup_schema_repair_system_prompt() -> str:
         "For anchor_repair page_furniture_inline items, keep join_fragmented_paragraph only as a follow-up from the previous adjacent block to the page-furniture anchor block when the response also has exact remove_inline_noise on that anchor block.\n"
         "For remove_inline_noise, page_furniture_inline, page_furniture_heading, page_number, orphan_footnote_marker, duplicate_fragment, and repeated_running_header are the preferred bounded audit reasons.\n"
         "Do not widen remove_inline_noise to consume a semantic heading after a numeric running-header prefix; keep exact prefix removal separate from normalize_heading_boundary.\n"
+        "Do not keep a repaired remove_inline_noise operation when its noise_substring combines a page-like number with semantic section-title text; preserve the title and drop the deletion if no exact structural operation is available.\n"
         "If the original response already isolates a title-case running-header island with connector words or acronyms plus a trailing page number, keep it as remove_inline_noise instead of widening the substring into neighboring prose.\n"
         "split_block must include split_substrings; remove_inline_noise must include noise_substring; join_fragmented_paragraph must include next_id and next_text_hash; normalize_heading_boundary must include heading_substring and body_substring.\n"
         "For normalize_heading_boundary, keep exact copied substrings only; never invent a cleaner heading or shortened body.\n"
@@ -1398,12 +1406,201 @@ def _build_chunk_request_payload(
 
 def _build_operation_selection_targets(*, blocks: Sequence[CleanupBlock]) -> list[dict[str, object]]:
     targets: list[dict[str, object]] = []
-    for block in blocks:
+    for index, block in enumerate(blocks):
         duplicate_target = _build_duplicate_semantic_heading_target(block=block)
         if duplicate_target is not None:
             targets.append(duplicate_target)
+        isolated_numeric_heading_target = _build_isolated_semantic_heading_numeric_prefix_target(block=block)
+        if isolated_numeric_heading_target is not None:
+            targets.append(isolated_numeric_heading_target)
+        else:
+            semantic_title_target = _build_semantic_page_title_deletion_risk_target(block=block)
+            if semantic_title_target is not None:
+                targets.append(semantic_title_target)
+        next_block = blocks[index + 1] if index + 1 < len(blocks) else None
+        heading_fused_target = _build_heading_fused_with_body_target(block=block, next_block=next_block)
+        if heading_fused_target is not None:
+            targets.append(heading_fused_target)
         targets.extend(_build_side_heading_island_targets(block=block))
     return targets[:20]
+
+
+def _build_heading_fused_with_body_target(
+    *,
+    block: CleanupBlock,
+    next_block: CleanupBlock | None,
+) -> dict[str, object] | None:
+    single_block_candidate = _find_heading_fused_with_body_parts(block.text)
+    if single_block_candidate is not None:
+        return {
+            "category": "heading_fused_with_body_candidate",
+            "id": block.block_id,
+            "text_hash": block.text_hash,
+            "preferred_operation": "normalize_heading_boundary",
+            "reason_hint": "heading_fused_with_body",
+            "heading_substring": single_block_candidate["heading_substring"],
+            "body_substring": single_block_candidate["body_substring"],
+            "expected_after_preview": single_block_candidate["expected_after_preview"],
+            "forbidden_operations": ["remove_inline_noise", "delete_block"],
+            "safety_note": "This is a semantic heading/body boundary, not noise. Preserve the full heading and full body text exactly; skip if exact substrings do not match.",
+        }
+
+    if next_block is None:
+        return None
+    wrapped_candidate = _find_wrapped_heading_fused_with_body_parts(block=block, next_block=next_block)
+    if wrapped_candidate is None:
+        return None
+    return {
+        "category": "heading_fused_with_body_candidate",
+        "id": block.block_id,
+        "text_hash": block.text_hash,
+        "preferred_operation_chain": ["join_fragmented_paragraph", "normalize_heading_boundary"],
+        "reason_hint": "heading_fused_with_body",
+        "next_id": next_block.block_id,
+        "next_text_hash": next_block.text_hash,
+        "heading_substring": wrapped_candidate["heading_substring"],
+        "body_substring": wrapped_candidate["body_substring"],
+        "expected_after_preview": wrapped_candidate["expected_after_preview"],
+        "forbidden_operations": ["remove_inline_noise", "delete_block"],
+        "safety_note": "The heading wraps into the adjacent block. Join the exact adjacent block first, then normalize the heading/body boundary; preserve all semantic text.",
+    }
+
+
+def _find_wrapped_heading_fused_with_body_parts(
+    *,
+    block: CleanupBlock,
+    next_block: CleanupBlock,
+) -> dict[str, str] | None:
+    current_heading = block.text.strip()
+    if not current_heading or "\n" in current_heading:
+        return None
+    if not _looks_like_fused_heading_prefix(current_heading, min_words=2):
+        return None
+    next_candidate = _find_heading_fused_with_body_parts(next_block.text, min_heading_words=1)
+    if next_candidate is None:
+        return None
+    heading = f"{current_heading} {next_candidate['heading_substring']}".strip()
+    if len(heading) > 180:
+        return None
+    body = next_candidate["body_substring"]
+    return {
+        "heading_substring": heading,
+        "body_substring": body,
+        "expected_after_preview": f"{heading}\n\n{body}",
+    }
+
+
+def _find_heading_fused_with_body_parts(text: str, *, min_heading_words: int = 2) -> dict[str, str] | None:
+    value = str(text or "").strip()
+    if not value or "\n" in value or len(value) < 32:
+        return None
+    tokens = list(re.finditer(r"[A-Za-zА-Яа-яЁё]{1,}", value))
+    if len(tokens) < min_heading_words + 2:
+        return None
+    max_heading_tokens = min(16, len(tokens) - 1)
+    for split_index in range(min_heading_words, max_heading_tokens + 1):
+        body_token = tokens[split_index]
+        body_word = body_token.group(0)
+        if body_word.upper() == body_word:
+            continue
+        heading = value[: body_token.start()].strip()
+        body = value[body_token.start() :].strip()
+        if not _looks_like_fused_heading_prefix(heading, min_words=min_heading_words):
+            continue
+        if not _looks_like_heading_body_remainder(body):
+            continue
+        return {
+            "heading_substring": heading,
+            "body_substring": body,
+            "expected_after_preview": f"{heading}\n\n{body}",
+        }
+    return None
+
+
+def _looks_like_fused_heading_prefix(text: str, *, min_words: int) -> bool:
+    value = str(text or "").strip()
+    if not value or len(value) > 180:
+        return False
+    if re.match(r"^(?:[-*]|\d+\.)\s+", value):
+        return False
+    words = _semantic_word_tokens(value)
+    if len(words) < min_words or len(words) > 16:
+        return False
+    if any(word.isdigit() for word in words):
+        return False
+    uppercase_words = [word for word in words if word.upper() == word]
+    return len(uppercase_words) == len(words)
+
+
+def _looks_like_heading_body_remainder(text: str) -> bool:
+    value = str(text or "").strip()
+    if len(value) < 12 or value.startswith(("-", "—", "–", "•")):
+        return False
+    words = _semantic_word_tokens(value)
+    if len(words) < 2:
+        return False
+    return any(any(char.islower() for char in word) for word in words)
+
+
+def _build_isolated_semantic_heading_numeric_prefix_target(*, block: CleanupBlock) -> dict[str, object] | None:
+    candidate = _find_isolated_semantic_heading_numeric_prefix(block.text)
+    if candidate is None or block.is_toc_like:
+        return None
+    numeric_prefix = candidate["numeric_prefix"]
+    heading = candidate["semantic_heading_must_remain"]
+    return {
+        "category": "isolated_semantic_heading_numeric_prefix",
+        "id": block.block_id,
+        "text_hash": block.text_hash,
+        "preferred_operation": "remove_inline_noise",
+        "reason_hint": "page_number",
+        "forbidden_operation": "full-heading remove_inline_noise",
+        "numeric_prefix": numeric_prefix,
+        "semantic_heading_must_remain": heading,
+        "expected_after_preview": candidate["expected_after_preview"],
+        "safety_note": "Remove only the exact numeric prefix if it is still present once; never remove the semantic heading text.",
+    }
+
+
+def _find_isolated_semantic_heading_numeric_prefix(text: str) -> dict[str, str] | None:
+    value = str(text or "").strip()
+    if not value or "\n" in value:
+        return None
+    match = re.match(
+        r"^(?P<markdown_prefix>#{1,6}\s*)?(?P<number>\d{1,4})(?P<space>\s+)(?P<heading>.+?)\s*$",
+        value,
+    )
+    if match is None:
+        return None
+    markdown_prefix = match.group("markdown_prefix") or ""
+    numeric_prefix = f"{match.group('number')}{match.group('space')}"
+    heading = match.group("heading").strip()
+    if not _looks_like_isolated_semantic_heading_text(heading):
+        return None
+    return {
+        "numeric_prefix": numeric_prefix,
+        "semantic_heading_must_remain": heading,
+        "expected_after_preview": f"{markdown_prefix}{heading}",
+    }
+
+
+def _looks_like_isolated_semantic_heading_text(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value or len(value) > 120:
+        return False
+    if re.match(r"^(?:[-*]|\d+\.)\s+", value):
+        return False
+    words = _semantic_word_tokens(value)
+    if len(words) > 12:
+        return False
+    if any(word.isdigit() for word in words):
+        return False
+    if len(words) == 1:
+        return len(words[0]) >= 4 and words[0].upper() == words[0]
+    uppercase_words = [word for word in words if word.upper() == word]
+    if len(uppercase_words) == len(words):
+        return True
+    return len(words) <= 6 and sum(1 for word in words if word[0].isupper()) >= 2
 
 
 def _build_duplicate_semantic_heading_target(*, block: CleanupBlock) -> dict[str, object] | None:
@@ -1443,6 +1640,63 @@ def _find_adjacent_duplicate_phrase(text: str) -> dict[str, str] | None:
                 noise_end += 1
             return {"noise_substring": text[noise_start:noise_end]}
     return None
+
+
+def _build_semantic_page_title_deletion_risk_target(*, block: CleanupBlock) -> dict[str, object] | None:
+    if block.is_toc_like or block.char_count < 20:
+        return None
+    candidate = _find_trailing_page_like_semantic_title(block.text)
+    if candidate is None:
+        return None
+    return {
+        "category": "semantic_page_title_deletion_risk",
+        "id": block.block_id,
+        "text_hash": block.text_hash,
+        "semantic_title_candidate": candidate["semantic_title_candidate"],
+        "page_like_number": candidate["page_like_number"],
+        "numeric_prefix": candidate["numeric_prefix"],
+        "forbidden_operation": "remove_inline_noise",
+        "operation_hint": "preserve_title_with_exact_structural_operation_or_skip",
+        "after_structural_split_followup_operation": "remove_inline_noise",
+        "same_pass_followup_supported": True,
+        "followup_targets_same_original_block_id": True,
+        "after_structural_split_noise_substring": candidate["numeric_prefix"],
+        "semantic_heading_must_remain_after_followup": candidate["semantic_title_candidate"],
+        "after_structural_split_expected_after_preview": candidate["semantic_title_candidate"],
+        "safety_note": "A page-like number adjacent to a semantic section title is not enough to classify the title as noise. Do not delete the title with remove_inline_noise; remove only exact non-semantic page residue if safe, or skip with a warning.",
+    }
+
+
+def _find_trailing_page_like_semantic_title(text: str) -> dict[str, str] | None:
+    value = str(text or "").strip()
+    if not value:
+        return None
+    match = re.search(
+        r"(?P<candidate>(?P<number>\d{1,4})\s+"
+        r"(?P<title>[A-ZА-ЯЁ][A-ZА-ЯЁ0-9«»\"'(),:;!?-]*"
+        r"(?:\s+[A-ZА-ЯЁ][A-ZА-ЯЁ0-9«»\"'(),:;!?-]*){1,9}"
+        r"[.!?…]?))\s*$",
+        value,
+    )
+    if match is None:
+        return None
+    candidate = match.group("candidate").strip()
+    title = match.group("title").strip()
+    words = _semantic_word_tokens(title)
+    if len(words) < 2 or len(words) > 10:
+        return None
+    if not all(word.upper() == word for word in words):
+        return None
+    if match.start("candidate") == 0 and _looks_like_numeric_uppercase_running_header_noise(
+        normalized_noise=candidate,
+        current_text=value,
+    ):
+        return None
+    return {
+        "page_like_number": match.group("number"),
+        "numeric_prefix": f"{match.group('number')} ",
+        "semantic_title_candidate": title,
+    }
 
 
 def _build_side_heading_island_targets(*, block: CleanupBlock) -> list[dict[str, object]]:
@@ -2458,8 +2712,12 @@ def _inline_noise_removed_text(*, current_text: str, noise: str) -> str:
     noise_index = current_text.find(noise)
     if noise_index < 0:
         return re.sub(r"\s{2,}", " ", current_text.replace(noise, "", 1)).strip()
-    before = current_text[:noise_index].rstrip()
-    after = current_text[noise_index + len(noise) :].lstrip()
+    before_raw = current_text[:noise_index]
+    after_raw = current_text[noise_index + len(noise) :]
+    if re.search(r"\n\s*\n\s*$", before_raw):
+        return f"{before_raw.rstrip()}\n\n{after_raw.lstrip()}".strip()
+    before = before_raw.rstrip()
+    after = after_raw.lstrip()
     joiner = " " if before and after else ""
     return re.sub(r"\s{2,}", " ", f"{before}{joiner}{after}").strip()
 
@@ -2819,7 +3077,14 @@ def _apply_single_operation_to_blocks(
         if current_text.count(noise) != 1:
             return False, "", "remove_inline_noise_substring_ambiguous"
         replacement = _inline_noise_removed_text(current_text=current_text, noise=noise)
-        if not replacement or len(re.sub(r"\s+", "", replacement)) < 20:
+        if not replacement:
+            return False, "", "remove_inline_noise_would_drop_semantic_body"
+        if len(re.sub(r"\s+", "", replacement)) < 20 and not _is_exact_isolated_semantic_heading_numeric_prefix_cleanup(
+            current_text=current_text,
+            noise=noise,
+            replacement=replacement,
+            expected_after_preview=operation.expected_after_preview,
+        ):
             return False, "", "remove_inline_noise_would_drop_semantic_body"
         rewritten_blocks[block.index] = replacement
         return True, "inline_noise_removed", None
@@ -3058,6 +3323,27 @@ def _is_safe_inline_noise_substring(*, noise: str, current_text: str, reason: st
     if reason not in _INLINE_NOISE_REASON_GUIDANCE:
         return False
     return _looks_like_title_case_running_header_noise(normalized_noise=normalized_noise, current_text=current_text)
+
+
+def _is_exact_isolated_semantic_heading_numeric_prefix_cleanup(
+    *,
+    current_text: str,
+    noise: str,
+    replacement: str,
+    expected_after_preview: str,
+) -> bool:
+    if not noise or not re.fullmatch(r"\d{1,4}\s+", noise):
+        return False
+    if not expected_after_preview or replacement != expected_after_preview.strip():
+        return False
+    candidate = _find_isolated_semantic_heading_numeric_prefix(current_text)
+    if candidate is None:
+        return False
+    return (
+        candidate["numeric_prefix"] == noise
+        and candidate["expected_after_preview"] == replacement
+        and candidate["semantic_heading_must_remain"] in replacement
+    )
 
 
 def _looks_like_duplicate_inline_fragment_noise(*, normalized_noise: str, current_text: str, reason: str) -> bool:
@@ -3411,6 +3697,8 @@ def _validate_same_block_operation_sequence(
     candidate_sequence = tuple(previous_applied) + (operation.operation,)
     if "delete_block" in candidate_sequence and len(candidate_sequence) > 1:
         return "duplicate_operation_incompatible"
+    if _is_allowed_join_then_heading_boundary_sequence(candidate_sequence):
+        return None
 
     seen_split = False
     seen_split_count = 0
@@ -3444,6 +3732,13 @@ def _validate_same_block_operation_sequence(
     return None
 
 
+def _is_allowed_join_then_heading_boundary_sequence(candidate_sequence: Sequence[str]) -> bool:
+    return tuple(candidate_sequence) in {
+        ("join_fragmented_paragraph", "normalize_heading_boundary"),
+        ("remove_inline_noise", "join_fragmented_paragraph", "normalize_heading_boundary"),
+    }
+
+
 def _same_block_operation_phase(*, operation_name: str, seen_split: bool) -> int:
     if operation_name == "remove_inline_noise":
         return 3 if seen_split else 1
@@ -3467,15 +3762,32 @@ def _canonicalize_cleanup_operation_sequence(
 ) -> list[tuple[int, int, int, CleanupOperation, str | None]]:
     block_index_by_id = {block.block_id: block.index for block in blocks}
     split_index_by_block_id: dict[str, int] = {}
+    join_then_heading_boundary_block_ids: set[str] = set()
     inline_noise_operation_block_ids = {
         operation.block_id for operation in operations if operation.operation == "remove_inline_noise"
     }
+    join_next_inline_noise_block_indexes: dict[str, int] = {}
     original_indexes_by_block_id: dict[str, list[int]] = {}
+    operation_names_by_block_id: dict[str, set[str]] = {}
     mixed_delete_block_ids: set[str] = set()
     for operation_index, operation in enumerate(operations):
         original_indexes_by_block_id.setdefault(operation.block_id, []).append(operation_index)
+        operation_names_by_block_id.setdefault(operation.block_id, set()).add(operation.operation)
         if operation.operation == "split_block" and operation.block_id not in split_index_by_block_id:
             split_index_by_block_id[operation.block_id] = operation_index
+        if operation.operation == "join_fragmented_paragraph" and operation.next_id in inline_noise_operation_block_ids:
+            next_block_index = block_index_by_id.get(operation.next_id)
+            if next_block_index is not None:
+                join_next_inline_noise_block_indexes[operation.block_id] = max(
+                    join_next_inline_noise_block_indexes.get(operation.block_id, next_block_index),
+                    next_block_index,
+                )
+    join_then_heading_boundary_block_ids = {
+        block_id
+        for block_id, operation_names in operation_names_by_block_id.items()
+        if {"join_fragmented_paragraph", "normalize_heading_boundary"}.issubset(operation_names)
+        and not ({"delete_block", "split_block", "extract_side_heading_and_reattach_body"} & operation_names)
+    }
 
     sequenced_entries: list[tuple[int, int, int, CleanupOperation, str | None]] = []
     reordered_block_ids: set[str] = set()
@@ -3485,6 +3797,7 @@ def _canonicalize_cleanup_operation_sequence(
             operation=operation,
             operation_index=operation_index,
             split_index_by_block_id=split_index_by_block_id,
+            join_then_heading_boundary_block_ids=join_then_heading_boundary_block_ids,
         )
         per_block_entries.setdefault(operation.block_id, []).append((phase, operation_index, operation))
 
@@ -3509,11 +3822,25 @@ def _canonicalize_cleanup_operation_sequence(
                 operation=operation,
                 operation_index=operation_index,
                 split_index_by_block_id=split_index_by_block_id,
+                join_then_heading_boundary_block_ids=join_then_heading_boundary_block_ids,
             )
         block_index = block_index_by_id[operation.block_id]
-        if operation.operation == "join_fragmented_paragraph" and operation.next_id in inline_noise_operation_block_ids:
-            block_index = max(block_index, block_index_by_id.get(operation.next_id, block_index))
-            phase = max(phase, _same_block_operation_phase(operation_name="join_fragmented_paragraph", seen_split=False))
+        deferred_next_block_index = join_next_inline_noise_block_indexes.get(operation.block_id)
+        if deferred_next_block_index is not None and operation.operation in {
+            "join_fragmented_paragraph",
+            "normalize_heading_boundary",
+        }:
+            block_index = max(block_index, deferred_next_block_index)
+            if operation.operation == "join_fragmented_paragraph":
+                phase = max(
+                    phase,
+                    _same_block_operation_phase(operation_name="join_fragmented_paragraph", seen_split=False),
+                )
+            else:
+                phase = max(
+                    phase,
+                    _same_block_operation_phase(operation_name="join_fragmented_paragraph", seen_split=False) + 1,
+                )
         sequence_decision = "operation_sequence_reordered" if operation.block_id in reordered_block_ids else None
         sequenced_entries.append((block_index, phase, operation_index, operation, sequence_decision))
 
@@ -3525,7 +3852,13 @@ def _same_block_original_phase(
     operation: CleanupOperation,
     operation_index: int,
     split_index_by_block_id: Mapping[str, int],
+    join_then_heading_boundary_block_ids: set[str],
 ) -> int:
+    if operation.block_id in join_then_heading_boundary_block_ids:
+        if operation.operation == "join_fragmented_paragraph":
+            return 4
+        if operation.operation == "normalize_heading_boundary":
+            return 5
     split_index = split_index_by_block_id.get(operation.block_id)
     if operation.operation == "remove_inline_noise" and split_index is not None and operation_index > split_index:
         return 3

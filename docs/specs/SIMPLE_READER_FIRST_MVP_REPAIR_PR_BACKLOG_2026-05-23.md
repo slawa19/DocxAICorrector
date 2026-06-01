@@ -867,13 +867,369 @@ Still open:
   continuation fragments, and leading-dash continuation artifacts remain outside
   PR-H0d scope.
 
-Next active PR-H slice:
+Then-next PR-H slice, completed as PR-H0e:
 
 - narrow semantic-title/page-heading deletion salience so `remove_inline_noise`
   is not proposed for section-title-like text at paragraph boundaries; keep the
   runtime rejection as the safety backstop;
 - after that, decide whether heading-stack body continuation needs a bounded
   operation or should be documented as a readable-draft limitation.
+
+### PR-H0e: Semantic-Title / Page-Heading Deletion Salience
+
+Status: completed locally on 2026-05-31. This is not a clean-checkout CI proof
+because the worktree is dirty with PR-H0e changes.
+
+Proof artifact:
+`.run/reader_cleanup_replay_experiments/20260531T151726Z_anthropic-small-overlap-pr-h0e-semantic-title-deletion-salience-proof/`
+
+Completed:
+
+- No new operation was added.
+- Runtime safety was not widened or weakened; the existing
+  `remove_inline_noise_not_exact_noise_pattern` rejection remains the safety
+  backstop for semantic title deletion attempts.
+- Prompt and schema-repair guidance now explicitly say semantic section titles
+  and page-heading-like titles are not `remove_inline_noise` targets.
+- Added advisory `semantic_page_title_deletion_risk` targets for trailing
+  page-like number + semantic title candidates. The target has
+  `forbidden_operation=remove_inline_noise` and instructs the model to preserve
+  the title with an exact structural operation, remove only standalone numeric
+  residue if exactly safe, or skip with a warning.
+- The implementation does not hardcode proof strings or document-specific
+  titles.
+
+Focused tests:
+
+- `bash scripts/test.sh tests/test_reader_cleanup_mvp.py -q`
+- Result: `127 passed`.
+
+Proof result:
+
+- selector: `anthropic:claude-sonnet-4-6`;
+- shape: `chunk_size=8000`, `3/3` overlap, `global_plan_enabled=false`;
+- cleanup chunks: `15`, failed chunks: `0`;
+- accepted operations: `50`;
+- accepted operation counts: `extract_side_heading_and_reattach_body=2`,
+  `split_block=7`, `normalize_heading_boundary=14`,
+  `join_fragmented_paragraph=6`, `remove_inline_noise=21`;
+- verifier: `cleaned_better`, high confidence, raw `4.0` -> cleaned `6.0`;
+- remaining issues: `19`;
+- issue counts: `heading_fused_with_body=3`, `page_furniture_inline=3`,
+  `mixed_language_leak=0`;
+- `noise_substring_not_found=0`;
+- broad unsafe `remove_inline_noise` proposals: `0`.
+
+Closed:
+
+- The PR-H0d broad unsafe proposal for the semantic page-heading-like title
+  no longer appears as a broad unsafe `remove_inline_noise` proposal. The title
+  remains preserved, and the replay warning correctly says that downstream
+  cleanup may remove only the numeric prefix if safe.
+- PR-H0d `extract_side_heading_and_reattach_body` did not regress: the replay
+  still accepted `2` bounded reattach operations.
+
+Still open:
+
+- The semantic title line itself remains reader-visible as
+  `20 ДЕНЬГИ, КОТОРЫЕ ПАХНУТ?`; PR-H0e intentionally did not add a numeric
+  prefix-only heading cleanup operation or widen runtime safety. Continued in
+  PR-H0f.
+- Remaining issue count increased from PR-H0d v2 `18` to PR-H0e `19`, mostly
+  because the semantic title is now preserved and reported as page furniture
+  rather than proposed for unsafe deletion.
+- Heading-stack continuations, period-terminated heading/body fusion, residual
+  inline running headers, bullet normalization, quote/list continuations, and
+  leading-dash artifacts remain outside PR-H0e scope.
+
+Then-next PR-H slice, completed as PR-H0f:
+
+- decide the bounded contract for numeric prefix on already-isolated semantic
+  headings (`20 TITLE?`, `21 TITLE.`): either exact prefix-only cleanup with
+  heading preservation, or explicit product limitation;
+- keep the PR-H0f prompt delta minimal. Do not solve this by adding another
+   long global prompt section. Prefer a compact `operation_selection_targets`
+   advisory with exact numeric prefix / semantic heading fields and at most one
+   short global rule. Runtime safety and focused tests remain the contract;
+- only after the safety/no-deletion path is stable should repeat stability or a
+  third-model bakeoff run.
+
+Prompt/advisory budget guardrail:
+
+- The reader-cleanup prompt is now close to instruction overload. Future PR-H
+   slices must avoid accumulating case-by-case prose in the global prompt.
+- Put local, block-specific guidance in structured advisory targets whenever
+   possible: `category`, preferred/forbidden operation, exact candidate
+   substrings, and a short safety note.
+- Keep the global prompt to durable rules: semantic text is not noise; remove
+   only exact non-semantic residue; structural artifacts need structural
+   operations; skip when exact preservation is unclear.
+- Avoid brittle tests that assert long prompt paragraphs. Prefer tests for
+   advisory fields and runtime behavior, with only short key-phrase prompt
+   assertions where needed.
+
+### PR-H0f: Numeric-Prefix Semantic Heading Cleanup
+
+Status: completed locally on 2026-05-31 for multi-word isolated semantic
+headings. This is not a clean-checkout CI proof because the worktree is dirty
+with PR-H0f changes.
+
+Proof artifacts:
+
+- Diagnostic no-op replay:
+  `.run/reader_cleanup_replay_experiments/20260531T154745Z_anthropic-small-overlap-pr-h0f-numeric-prefix-semantic-heading-proof/`
+- Follow-up-target no-op replay:
+  `.run/reader_cleanup_replay_experiments/20260531T160825Z_anthropic-small-overlap-pr-h0f-numeric-prefix-semantic-heading-proof-v2/`
+- Accepted proof replay:
+  `.run/reader_cleanup_replay_experiments/20260531T162559Z_anthropic-small-overlap-pr-h0f-numeric-prefix-semantic-heading-proof-v3/`
+
+Completed:
+
+- No new operation was added.
+- Runtime safety was kept narrow: semantic title text is still rejected as
+  `remove_inline_noise`; only exact numeric prefixes on isolated semantic
+  headings can pass the short-heading safety floor.
+- Added an `isolated_semantic_heading_numeric_prefix` advisory target for
+  already-isolated semantic headings with page-like numeric prefixes.
+- Extended `semantic_page_title_deletion_risk` targets with same-pass follow-up
+  metadata so a structural split may be followed by exact prefix-only cleanup
+  on the same original block.
+- Updated prompt guidance to say semantic titles are not noise, but exact
+  numeric prefixes may be removed when the semantic heading remains intact.
+- Fixed `remove_inline_noise` application after a `split_block` so prefix
+  removal preserves paragraph boundaries instead of collapsing the new heading
+  into the previous paragraph.
+- The implementation does not hardcode proof strings or document-specific
+  titles.
+
+Focused tests:
+
+- `bash scripts/test.sh tests/test_reader_cleanup_mvp.py -q`
+- Result: `133 passed`.
+
+Proof result:
+
+- selector: `anthropic:claude-sonnet-4-6`;
+- shape: `chunk_size=8000`, `3/3` overlap, `global_plan_enabled=false`;
+- cleanup chunks: `15`, failed chunks: `0`;
+- accepted operations: `56`;
+- accepted operation counts: `extract_side_heading_and_reattach_body=3`,
+  `split_block=7`, `normalize_heading_boundary=14`,
+  `join_fragmented_paragraph=8`, `remove_inline_noise=24`;
+- ignored reason counts: `prior_same_block_operation_not_applied=3`,
+  `remove_inline_noise_not_exact_noise_pattern=3`,
+  `duplicate_operation_incompatible=1`, `noise_substring_not_found=0`;
+- verifier: `cleaned_better`, high confidence;
+- remaining issues: `18`;
+- issue counts: `heading_fused_with_body=3`, `page_furniture_inline=3`,
+  `mixed_language_leak=0`;
+- broad unsafe `remove_inline_noise` proposals: `0`.
+
+Closed:
+
+- The PR-H0e preserved title `20 ДЕНЬГИ, КОТОРЫЕ ПАХНУТ?` is now cleaned by
+  preserving the semantic heading and removing only the exact numeric prefix:
+  `ДЕНЬГИ, КОТОРЫЕ ПАХНУТ?`.
+- The accepted proof uses structural split plus same-block exact
+  `remove_inline_noise` for `20 `; the heading text remains intact.
+- PR-H0d `extract_side_heading_and_reattach_body` did not regress: the replay
+  accepted `3` bounded reattach operations.
+- Broad unsafe semantic-title deletion remained `0`.
+
+Still open:
+
+- `21 РОТТЕРДАМ.` remains reader-visible. Treat one-word period-terminated
+  all-caps headings as a separate policy decision: either bounded prefix-only
+  cleanup for one-word isolated semantic headings, or explicit readable-draft
+  limitation.
+- Heading-stack continuations, period-terminated heading/body fusion, residual
+  inline running headers, bullet normalization, quote/list continuations, and
+  leading-dash artifacts remain outside PR-H0f scope.
+- PR-H0f is not an MVP exit proof. It is a bounded proof for one numeric-prefix
+  semantic-heading class on the canonical small-overlap path.
+
+Then-next PR-H slice, superseded by PR-H0g:
+
+- do not use one-word numeric-prefixed headings like `21 TITLE.` as the next
+  implementation driver. Treat them as a policy boundary unless broader
+  evidence shows they are a frequent document-breaking class;
+- prioritize the higher-impact chained-operation class where heading/body fusion
+  remains because a required same-block or same-source-block operation is not
+  applied in the right order/pass.
+
+### PR-H0g: Same-Block Join -> Heading Boundary Chain
+
+Status: completed locally on 2026-06-01 as a runtime-contract slice. This is
+not a clean-checkout CI proof because the worktree is dirty with PR-H0g changes.
+
+Motivation:
+
+- PR-H0f replay still had `heading_fused_with_body=3` and
+  `prior_same_block_operation_not_applied=3`.
+- Remaining reviewer anchors include general heading/body fusion, not a
+  document-specific one-off:
+  - heading fragment plus body start after a stale block/page boundary;
+  - accepted or proposed operations where `join_fragmented_paragraph` must run
+    before `normalize_heading_boundary` on the same source block.
+- `21 РОТТЕРДАМ.` remains a one-word numeric-heading policy boundary, but it is
+  not the PR-H0g implementation driver.
+
+Local hypothesis:
+
+- The executor could already express the desired fix with existing operations,
+  but same-block canonical ordering put `normalize_heading_boundary` before
+  `join_fragmented_paragraph`.
+- The heading boundary operation then ran against the pre-join block, failed to
+  find the complete heading/body text, and the later join was skipped with
+  `prior_same_block_operation_not_applied`.
+
+Completed:
+
+- No new operation was added.
+- Added a narrow allowed same-block chain:
+  `join_fragmented_paragraph -> normalize_heading_boundary`.
+- Also permits the bounded variant
+  `remove_inline_noise -> join_fragmented_paragraph -> normalize_heading_boundary`
+  so exact prefix cleanup can still precede the structural chain.
+- Canonical operation sequencing now reorders same-block join/boundary proposals
+  so the join applies before heading-boundary normalization.
+- The old safety behavior remains: if the join fails, the dependent
+  `normalize_heading_boundary` is ignored as
+  `prior_same_block_operation_not_applied`; it does not partially mutate or
+  delete semantic heading/body text.
+- Verifier/validation remains observer-only.
+
+Focused tests:
+
+- `bash scripts/test.sh tests/test_reader_cleanup_mvp.py -q`
+- Result: `135 passed`.
+
+Closed:
+
+- General runtime support for heading/body fusion sites where the exact
+  heading/body boundary is only visible after joining an adjacent body tail into
+  the same source block.
+
+Still open:
+
+- Canonical replay
+  `.run/reader_cleanup_replay_experiments/20260601T061315Z_anthropic-small-overlap-pr-h0g-same-block-join-heading-boundary-proof/`
+  showed runtime path availability but not replay effectiveness:
+  `failed_chunk_count=0`, `remaining_issue_count=17`,
+  `heading_fused_with_body=4`, `prior_same_block_operation_not_applied=3`,
+  broad unsafe `remove_inline_noise=0`.
+- The miss is now classified as model selection/salience rather than a new
+  runtime ordering limitation.
+- Heading-stack/body-continuation decisions and one-word numeric heading policy
+  remain separate decisions.
+
+Then-next PR-H slice, completed locally as PR-H0h:
+
+- add structured `heading_fused_with_body_candidate` operation-selection targets
+  so the model is nudged toward existing exact structural operations instead of
+  broad prompt prose or new runtime mechanics.
+
+### PR-H0h: Fused Heading Structured Targeting
+
+Status: completed locally on 2026-06-01 as a structured-targeting slice. This
+is not a clean-checkout CI proof because the worktree is dirty with PR-H0h
+changes.
+
+Motivation:
+
+- PR-H0g replay kept the important reader-breaking class unresolved:
+  `heading_fused_with_body` moved from H0f `3` to H0g `4`, while
+  `prior_same_block_operation_not_applied` stayed `3`.
+- Safety counters stayed acceptable (`failed_chunk_count=0`, broad unsafe
+  `remove_inline_noise=0`), so the next useful change is operation selection,
+  not a broader runtime operation.
+- `21 РОТТЕРДАМ.` remains a policy boundary and is not the implementation
+  driver.
+
+Local hypothesis:
+
+- The model is not consistently choosing `normalize_heading_boundary` or the
+  H0g chain because fused-heading anchors are under-specified in structured
+  request targets, even though runtime can apply the operations.
+
+Completed:
+
+- No new cleanup operation was added.
+- Added `heading_fused_with_body_candidate` advisory targets for:
+  - single-block uppercase heading + body prose, preferring
+    `normalize_heading_boundary`;
+  - wrapped heading + adjacent body tail, preferring
+    `join_fragmented_paragraph -> normalize_heading_boundary`.
+- Targets include exact `heading_substring`, `body_substring`,
+  `expected_after_preview`, and for wrapped cases `next_id` / `next_text_hash`.
+- Targets explicitly forbid `remove_inline_noise` and `delete_block` for the
+  semantic heading/body text.
+- Prompt change is limited to one compact target-specific instruction; no
+  document-literal examples were added.
+- Hardened same-block chain sequencing so a dependent
+  `normalize_heading_boundary` is deferred with its
+  `join_fragmented_paragraph` when the joined adjacent block first needs exact
+  `remove_inline_noise` cleanup.
+
+Focused tests:
+
+- `bash scripts/test.sh tests/test_reader_cleanup_mvp.py -q`
+- Result: `138 passed`.
+
+Replay proof:
+
+- Single proof:
+  `.run/reader_cleanup_replay_experiments/20260601T073422Z_anthropic-small-overlap-pr-h0h-fused-heading-targeting-proof/`
+  completed with `failed_chunk_count=0`, `remaining_issue_count=17`,
+  `heading_fused_with_body=3`, `prior_same_block_operation_not_applied=0`,
+  broad unsafe `remove_inline_noise=0`, verifier `cleaned_better` / high.
+  This improved operation selection mechanics but left high-severity fused
+  heading anchors.
+- Repeat stability:
+  `.run/reader_cleanup_replay_experiments/20260601T075435Z_anthropic-small-overlap-pr-h0h-repeat-stability/`
+  ran `3` repeats and completed all with `failed_chunk_count=0`, broad unsafe
+  `remove_inline_noise=0`, verifier `cleaned_better` / high.
+- Stability metrics were not promotion-grade:
+  `remaining_issue_count=[21,21,17]`, `heading_fused_with_body=[4,6,1]`,
+  `prior_same_block_operation_not_applied=[0,0,1]`, and experiment summary
+  classified dominant variability as `cleanup_proposal_variability`.
+
+Model-ceiling control:
+
+- Same-shape GPT-5.4-mini control:
+  `.run/reader_cleanup_replay_experiments/20260601T112649Z_gpt-5-4-mini-small-overlap-pr-h0h-control/`
+  completed with cleanup selector `gpt-5.4-mini` and verifier selector
+  `anthropic:claude-sonnet-4-6` as the fixed judge.
+- The run used the same frozen input, H0h payload/contract, canonical shape
+  `8000`, overlap `3/3`, and `global_plan=false`.
+- Result: `failed_chunk_count=0`, `accepted_cleanup_operation_count=26`,
+  `remaining_issue_count=59`, `heading_fused_with_body=26`,
+  `page_furniture_inline=7`, `fragmented_paragraph=16`,
+  `prior_same_block_operation_not_applied=3`, broad unsafe
+  `remove_inline_noise=0`, verifier `cleaned_better` / high.
+- Interpretation: GPT-5.4-mini is safe enough under the runtime contract, but
+  not quality-competitive with Anthropic H0h on this reader-cleanup task.
+
+Decision:
+
+- Stop fused-heading micro-PRs here. PR-H0h improves the selection contract and
+  safety stays acceptable, but repeat stability shows quality variability is
+  still high enough that another fused-heading slice would likely be document
+  polishing rather than a general MVP repair.
+- Treat the remaining fused-heading quality as a bounded-path/model limitation
+  for now.
+- Do not route this cleanup path to `gpt-5.4-mini` as a quality replacement for
+  Anthropic. The controlled comparison has been run and does not justify a
+  cleanup-default change.
+- Do not add H0i for fused-heading salience. If another model-ceiling comparison
+  is needed, choose a stronger/different candidate deliberately and keep it as a
+  comparison artifact, not a new runtime repair PR.
+
+Next active step:
+
+- Move out of fused-heading micro-PRs. Either accept the current Anthropic H0h
+  quality boundary for MVP repeat/stability planning, or select the next broad
+  residual reader-breaking class with fresh evidence.
 
 ### PR-H1: Targeted Page-Furniture + Caption + Continuation Repair
 

@@ -317,6 +317,7 @@ def test_reader_cleanup_schema_repair_prompt_forbids_rewritten_markdown() -> Non
     assert "If pass_name is anchor_repair" in prompt
     assert "If a duplicate_fragment candidate is only similar to nearby prose" in prompt
     assert "Do not widen remove_inline_noise to consume a semantic heading" in prompt
+    assert "noise_substring combines a page-like number with semantic section-title text" in prompt
 
 
 def test_reader_cleanup_system_prompt_mentions_anchor_repair_constraints() -> None:
@@ -338,15 +339,25 @@ def test_reader_cleanup_system_prompt_mentions_anchor_repair_constraints() -> No
     assert "For duplicate semantic heading text repeated inline" in prompt
     assert "operation_selection_targets lists a duplicate_semantic_heading_text candidate" in prompt
     assert "operation_selection_targets lists a side_heading_island_candidate" in prompt
+    assert "operation_selection_targets lists a semantic_page_title_deletion_risk candidate" in prompt
+    assert "operation_selection_targets lists an isolated_semantic_heading_numeric_prefix candidate" in prompt
+    assert "operation_selection_targets lists a heading_fused_with_body_candidate" in prompt
+    assert "join_fragmented_paragraph then normalize_heading_boundary chain" in prompt
     assert "Semantic heading islands are not noise" in prompt
     assert "Do not delete semantic heading islands with remove_inline_noise" in prompt
+    assert "Semantic section titles and page-heading-like titles are not remove_inline_noise targets" in prompt
+    assert "A page-like number adjacent to a semantic title is not permission to delete the title" in prompt
     assert "first try split_block, then normalize_heading_boundary" in prompt
     assert "extract_side_heading_and_reattach_body" in prompt
     assert "pre_body_stub" in prompt
     assert "do not leave a short pre-heading sentence stub" in prompt
     assert "expected_after_preview must be exactly: heading_substring, then a blank line" in prompt
     assert "do not add labels like '[Heading: ...]'" in prompt
+    assert "add a separate same-block follow-up remove_inline_noise for only the exact numeric prefix in the same pass" in prompt
     assert "do not remove the title with remove_inline_noise" in prompt
+    assert "remove only the exact numeric prefix when safe; never remove the heading text" in prompt
+    assert "do not propose remove_inline_noise for that combined span" in prompt
+    assert "bad: remove_inline_noise for the whole '20 NEW FORMS OF MONEY?'" in prompt
     assert 'bad: remove_inline_noise "Три мультинациональные валюты"' in prompt
     assert "Good: extract_side_heading_and_reattach_body" in prompt
     assert "page furniture plus an image caption sits between two parts of one sentence" in prompt
@@ -3060,6 +3071,68 @@ def test_run_reader_cleanup_rejects_non_adjacent_duplicate_fragment_inline_noise
     )
 
 
+def test_reader_cleanup_request_targets_fused_heading_body_for_normalize_boundary() -> None:
+    target = (
+        "ПЯТЬ МИЛЛИАРДОВ ЛЮДЕЙ НЕ ИМЕЮТ ДОСТУПА К ИНТЕРНЕТУ "
+        "Вдохновившись примером Куритибы, предприниматель задумал создать новую валюту."
+    )
+    markdown = f"Intro\n\n{target}\n\nOutro"
+    seen_payloads: list[dict[str, Any]] = []
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        seen_payloads.append(payload)
+        return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    targets = seen_payloads[0]["operation_selection_targets"]
+    fused_target = next(target for target in targets if target["category"] == "heading_fused_with_body_candidate")
+    assert fused_target["preferred_operation"] == "normalize_heading_boundary"
+    assert fused_target["reason_hint"] == "heading_fused_with_body"
+    assert fused_target["heading_substring"] == "ПЯТЬ МИЛЛИАРДОВ ЛЮДЕЙ НЕ ИМЕЮТ ДОСТУПА К ИНТЕРНЕТУ"
+    assert fused_target["body_substring"] == (
+        "Вдохновившись примером Куритибы, предприниматель задумал создать новую валюту."
+    )
+    assert fused_target["expected_after_preview"] == (
+        "ПЯТЬ МИЛЛИАРДОВ ЛЮДЕЙ НЕ ИМЕЮТ ДОСТУПА К ИНТЕРНЕТУ\n\n"
+        "Вдохновившись примером Куритибы, предприниматель задумал создать новую валюту."
+    )
+    assert fused_target["forbidden_operations"] == ["remove_inline_noise", "delete_block"]
+    assert "not noise" in fused_target["safety_note"]
+
+
+def test_reader_cleanup_request_targets_wrapped_fused_heading_chain() -> None:
+    first = "ВАЛЮТА, ОБЪЕДИНЯЮЩАЯ ЭФФЕКТИВНОСТЬ"
+    second = "И СПРАВЕДЛИВОСТЬ. Авиабизнес отличается жесткой конкуренцией."
+    markdown = f"Intro\n\n{first}\n\n{second}\n\nOutro"
+    seen_payloads: list[dict[str, Any]] = []
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        seen_payloads.append(payload)
+        return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    targets = seen_payloads[0]["operation_selection_targets"]
+    fused_target = next(target for target in targets if target["category"] == "heading_fused_with_body_candidate")
+    second_block = next(block for block in seen_payloads[0]["blocks"] if block["text"] == second)
+    assert fused_target["preferred_operation_chain"] == [
+        "join_fragmented_paragraph",
+        "normalize_heading_boundary",
+    ]
+    assert fused_target["next_id"] == second_block["id"]
+    assert fused_target["next_text_hash"] == second_block["text_hash"]
+    assert fused_target["heading_substring"] == "ВАЛЮТА, ОБЪЕДИНЯЮЩАЯ ЭФФЕКТИВНОСТЬ И СПРАВЕДЛИВОСТЬ."
+    assert fused_target["body_substring"] == "Авиабизнес отличается жесткой конкуренцией."
+    assert fused_target["expected_after_preview"] == (
+        "ВАЛЮТА, ОБЪЕДИНЯЮЩАЯ ЭФФЕКТИВНОСТЬ И СПРАВЕДЛИВОСТЬ.\n\n"
+        "Авиабизнес отличается жесткой конкуренцией."
+    )
+    assert fused_target["forbidden_operations"] == ["remove_inline_noise", "delete_block"]
+
+
 def test_reader_cleanup_request_targets_side_heading_island_without_inline_delete_hint() -> None:
     target = (
         "Стало очевидно, что региональная Три мультинациональные валюты экономическая интеграция "
@@ -3094,6 +3167,100 @@ def test_reader_cleanup_request_targets_side_heading_island_without_inline_delet
     assert "Semantic heading islands are not noise" in side_heading_target["safety_note"]
     assert "Do not delete with remove_inline_noise" in side_heading_target["safety_note"]
     assert side_heading_target["id"].startswith("b_")
+
+
+def test_reader_cleanup_request_targets_semantic_page_title_deletion_risk() -> None:
+    target = "Абзац завершается указателем следующего раздела 20 НОВЫЕ ФОРМЫ ДЕНЕГ?"
+    markdown = f"Intro\n\n{target}\n\nOutro"
+    seen_payloads: list[dict[str, Any]] = []
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        seen_payloads.append(payload)
+        return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    targets = seen_payloads[0]["operation_selection_targets"]
+    semantic_title_target = next(
+        target for target in targets if target["category"] == "semantic_page_title_deletion_risk"
+    )
+    assert semantic_title_target["semantic_title_candidate"] == "НОВЫЕ ФОРМЫ ДЕНЕГ?"
+    assert semantic_title_target["page_like_number"] == "20"
+    assert semantic_title_target["numeric_prefix"] == "20 "
+    assert semantic_title_target["forbidden_operation"] == "remove_inline_noise"
+    assert semantic_title_target["operation_hint"] == "preserve_title_with_exact_structural_operation_or_skip"
+    assert semantic_title_target["after_structural_split_followup_operation"] == "remove_inline_noise"
+    assert semantic_title_target["same_pass_followup_supported"] is True
+    assert semantic_title_target["followup_targets_same_original_block_id"] is True
+    assert semantic_title_target["after_structural_split_noise_substring"] == "20 "
+    assert semantic_title_target["semantic_heading_must_remain_after_followup"] == "НОВЫЕ ФОРМЫ ДЕНЕГ?"
+    assert semantic_title_target["after_structural_split_expected_after_preview"] == "НОВЫЕ ФОРМЫ ДЕНЕГ?"
+    assert "Do not delete the title with remove_inline_noise" in semantic_title_target["safety_note"]
+
+
+def test_reader_cleanup_request_targets_isolated_semantic_heading_numeric_prefix() -> None:
+    target = "20 НОВЫЕ ФОРМЫ ДЕНЕГ?"
+    markdown = f"Intro\n\n{target}\n\nOutro"
+    seen_payloads: list[dict[str, Any]] = []
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        seen_payloads.append(payload)
+        return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    targets = seen_payloads[0]["operation_selection_targets"]
+    numeric_prefix_target = next(
+        target for target in targets if target["category"] == "isolated_semantic_heading_numeric_prefix"
+    )
+    assert numeric_prefix_target["preferred_operation"] == "remove_inline_noise"
+    assert numeric_prefix_target["reason_hint"] == "page_number"
+    assert numeric_prefix_target["forbidden_operation"] == "full-heading remove_inline_noise"
+    assert numeric_prefix_target["numeric_prefix"] == "20 "
+    assert numeric_prefix_target["semantic_heading_must_remain"] == "НОВЫЕ ФОРМЫ ДЕНЕГ?"
+    assert numeric_prefix_target["expected_after_preview"] == "НОВЫЕ ФОРМЫ ДЕНЕГ?"
+    assert "never remove the semantic heading text" in numeric_prefix_target["safety_note"]
+
+
+def test_reader_cleanup_request_targets_one_word_isolated_semantic_heading_numeric_prefix() -> None:
+    target = "21 РОТТЕРДАМ."
+    markdown = f"Intro\n\n{target}\n\nOutro"
+    seen_payloads: list[dict[str, Any]] = []
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        seen_payloads.append(payload)
+        return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    targets = seen_payloads[0]["operation_selection_targets"]
+    numeric_prefix_target = next(
+        target for target in targets if target["category"] == "isolated_semantic_heading_numeric_prefix"
+    )
+    assert numeric_prefix_target["numeric_prefix"] == "21 "
+    assert numeric_prefix_target["semantic_heading_must_remain"] == "РОТТЕРДАМ."
+    assert numeric_prefix_target["expected_after_preview"] == "РОТТЕРДАМ."
+
+
+def test_reader_cleanup_request_does_not_target_numbered_list_as_semantic_heading_prefix() -> None:
+    target = "20. НОВЫЕ ФОРМЫ ДЕНЕГ?"
+    markdown = f"Intro\n\n{target}\n\nOutro"
+    seen_payloads: list[dict[str, Any]] = []
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        seen_payloads.append(payload)
+        return json.dumps({"cleanup_operations": [], "warnings": []}, ensure_ascii=False)
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    assert not any(
+        target["category"] == "isolated_semantic_heading_numeric_prefix"
+        for target in seen_payloads[0]["operation_selection_targets"]
+    )
 
 
 def test_run_reader_cleanup_rejects_side_heading_island_remove_inline_noise() -> None:
@@ -3836,6 +4003,179 @@ def test_run_reader_cleanup_normalizes_heading_boundary_after_safe_joined_headin
     assert accepted_operations[-1]["after_state"] == "heading_boundary_normalized_after_join"
 
 
+def test_run_reader_cleanup_reorders_same_block_join_before_heading_boundary() -> None:
+    first = "ПЛАН ДОСТУПА К ИНТЕРНЕТУ"
+    second = "Вдохновившись региональным опытом, команда начала пилотный проект."
+    markdown = f"Intro\n\n{first}\n\n{second}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        first_block = next(block for block in payload["blocks"] if block["text"] == first)
+        second_block = next(block for block in payload["blocks"] if block["text"] == second)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": first_block["id"],
+                        "text_hash": first_block["text_hash"],
+                        "operation": "normalize_heading_boundary",
+                        "reason": "heading fused with body prose",
+                        "confidence": "high",
+                        "evidence_before": "The heading/body boundary is visible only after joining the fragmented body tail.",
+                        "expected_after_preview": f"{first}\n\n{second}",
+                        "safety_note": "Normalize only after the adjacent body tail is joined; preserve all semantic heading text.",
+                        "heading_substring": first,
+                        "body_substring": second,
+                    },
+                    {
+                        "id": first_block["id"],
+                        "text_hash": first_block["text_hash"],
+                        "operation": "join_fragmented_paragraph",
+                        "reason": "paragraph fragmented after page boundary",
+                        "confidence": "high",
+                        "evidence_before": "The next adjacent block is the body tail for the same heading/body site.",
+                        "expected_after_preview": f"{first} {second}",
+                        "safety_note": "Join only adjacent exact-hash blocks before normalizing the heading boundary.",
+                        "next_id": second_block["id"],
+                        "next_text_hash": second_block["text_hash"],
+                    },
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    assert result.cleaned_markdown == f"Intro\n\n{first}\n\n{second}\n\nOutro"
+    accepted_operations = result.report_payload["accepted_cleanup_operations"]
+    assert [entry["operation"] for entry in accepted_operations] == [
+        "join_fragmented_paragraph",
+        "normalize_heading_boundary",
+    ]
+    assert all(entry.get("sequence_decision") == "operation_sequence_reordered" for entry in accepted_operations)
+    assert accepted_operations[-1]["after_state"] == "heading_boundary_normalized"
+    assert first in result.cleaned_markdown
+
+
+def test_run_reader_cleanup_defers_heading_chain_until_next_block_noise_cleanup() -> None:
+    first = "ПЛАН ДОСТУПА К ИНТЕРНЕТУ"
+    second = "203 Вдохновившись региональным опытом, команда начала пилотный проект."
+    body = "Вдохновившись региональным опытом, команда начала пилотный проект."
+    markdown = f"Intro\n\n{first}\n\n{second}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        first_block = next(block for block in payload["blocks"] if block["text"] == first)
+        second_block = next(block for block in payload["blocks"] if block["text"] == second)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": first_block["id"],
+                        "text_hash": first_block["text_hash"],
+                        "operation": "normalize_heading_boundary",
+                        "reason": "heading fused with body prose",
+                        "confidence": "high",
+                        "evidence_before": "The heading/body boundary is visible only after joining the cleaned adjacent body tail.",
+                        "expected_after_preview": f"{first}\n\n{body}",
+                        "safety_note": "Normalize only after the adjacent body tail is cleaned and joined.",
+                        "heading_substring": first,
+                        "body_substring": body,
+                    },
+                    {
+                        "id": first_block["id"],
+                        "text_hash": first_block["text_hash"],
+                        "operation": "join_fragmented_paragraph",
+                        "reason": "paragraph fragmented after page boundary",
+                        "confidence": "high",
+                        "evidence_before": "The next adjacent block is the body tail for the same heading/body site.",
+                        "expected_after_preview": f"{first} {body}",
+                        "safety_note": "Join only after the page-like prefix in the adjacent block is removed.",
+                        "next_id": second_block["id"],
+                        "next_text_hash": second_block["text_hash"],
+                    },
+                    {
+                        "id": second_block["id"],
+                        "text_hash": second_block["text_hash"],
+                        "operation": "remove_inline_noise",
+                        "reason": "page_number",
+                        "confidence": "high",
+                        "evidence_before": "A page-like number prefixes the body tail.",
+                        "expected_after_preview": body,
+                        "safety_note": "Remove only the exact numeric prefix.",
+                        "noise_substring": "203 ",
+                    },
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is True
+    assert result.cleaned_markdown == f"Intro\n\n{first}\n\n{body}\n\nOutro"
+    accepted_operations = result.report_payload["accepted_cleanup_operations"]
+    assert [entry["operation"] for entry in accepted_operations] == [
+        "remove_inline_noise",
+        "join_fragmented_paragraph",
+        "normalize_heading_boundary",
+    ]
+    assert accepted_operations[-1]["after_state"] == "heading_boundary_normalized"
+
+
+def test_run_reader_cleanup_skips_same_block_heading_boundary_when_prior_join_fails() -> None:
+    first = "ПЛАН ДОСТУПА К ИНТЕРНЕТУ"
+    second = "Вдохновившись региональным опытом, команда начала пилотный проект."
+    markdown = f"Intro\n\n{first}\n\n{second}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        first_block = next(block for block in payload["blocks"] if block["text"] == first)
+        second_block = next(block for block in payload["blocks"] if block["text"] == second)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": first_block["id"],
+                        "text_hash": first_block["text_hash"],
+                        "operation": "join_fragmented_paragraph",
+                        "reason": "paragraph fragmented after page boundary",
+                        "confidence": "high",
+                        "evidence_before": "The next adjacent block is the body tail for the same heading/body site.",
+                        "expected_after_preview": f"{first} {second}",
+                        "safety_note": "This join must fail because the hash is stale.",
+                        "next_id": second_block["id"],
+                        "next_text_hash": "stale-hash",
+                    },
+                    {
+                        "id": first_block["id"],
+                        "text_hash": first_block["text_hash"],
+                        "operation": "normalize_heading_boundary",
+                        "reason": "heading fused with body prose",
+                        "confidence": "high",
+                        "evidence_before": "The heading/body boundary depends on the prior join.",
+                        "expected_after_preview": f"{first}\n\n{second}",
+                        "safety_note": "Do not apply if the prior join did not apply.",
+                        "heading_substring": first,
+                        "body_substring": second,
+                    },
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    ignored_operations = result.report_payload["ignored_delete_blocks"]
+    assert [entry["ignored_reason"] for entry in ignored_operations] == [
+        "join_next_text_hash_mismatch",
+        "prior_same_block_operation_not_applied",
+    ]
+
+
 def test_run_reader_cleanup_normalizes_standalone_heading_with_adjacent_body() -> None:
     heading = "ДЕМОКРАТИЯ, ПРОЗРАЧНОСТЬ И ПОДОТЧЕТНОСТЬ"
     body = "Ключевые аспекты проекта требуют регулярной отчетности."
@@ -4050,6 +4390,159 @@ def test_run_reader_cleanup_rejects_semantic_numeric_uppercase_inline_noise() ->
     assert result.changed is False
     assert result.cleaned_markdown == markdown
     assert result.report_payload["ignored_delete_blocks"][0]["ignored_reason"] == "remove_inline_noise_not_exact_noise_pattern"
+
+
+def test_run_reader_cleanup_rejects_trailing_semantic_page_title_inline_noise() -> None:
+    target = "Абзац завершается указателем следующего раздела 20 НОВЫЕ ФОРМЫ ДЕНЕГ?"
+    markdown = f"Intro\n\n{target}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(block for block in payload["blocks"] if block["text"] == target)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "remove_inline_noise",
+                        "reason": "page_furniture_inline",
+                        "confidence": "high",
+                        "evidence_before": "A page-like number plus semantic title was incorrectly proposed as noise.",
+                        "expected_after_preview": "Абзац завершается указателем следующего раздела",
+                        "safety_note": "Runtime must reject semantic title deletion even when a page-like number is attached.",
+                        "noise_substring": "20 НОВЫЕ ФОРМЫ ДЕНЕГ?",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    assert result.report_payload["ignored_delete_blocks"][0]["ignored_reason"] == (
+        "remove_inline_noise_not_exact_noise_pattern"
+    )
+
+
+def test_run_reader_cleanup_removes_only_numeric_prefix_from_isolated_semantic_heading() -> None:
+    target = "20 НОВЫЕ ФОРМЫ ДЕНЕГ?"
+    markdown = f"Intro\n\n{target}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(block for block in payload["blocks"] if block["text"] == target)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "remove_inline_noise",
+                        "reason": "page_number",
+                        "confidence": "high",
+                        "evidence_before": "An isolated semantic heading has a page-like numeric prefix.",
+                        "expected_after_preview": "НОВЫЕ ФОРМЫ ДЕНЕГ?",
+                        "safety_note": "Remove only the exact numeric prefix and preserve the heading text.",
+                        "noise_substring": "20 ",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is True
+    assert result.cleaned_markdown == "Intro\n\nНОВЫЕ ФОРМЫ ДЕНЕГ?\n\nOutro"
+    assert result.report_payload["accepted_cleanup_operations"][0]["noise_substring"] == "20 "
+
+
+def test_run_reader_cleanup_applies_split_then_numeric_prefix_cleanup_on_same_block() -> None:
+    target = "Предыдущий абзац завершился. 20 НОВЫЕ ФОРМЫ ДЕНЕГ?"
+    markdown = f"Intro\n\n{target}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(block for block in payload["blocks"] if block["text"] == target)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "split_block",
+                        "reason": "heading_fused_with_body",
+                        "confidence": "high",
+                        "evidence_before": "A semantic heading with numeric prefix is appended to the previous paragraph.",
+                        "expected_after_preview": "Предыдущий абзац завершился.\n\n20 НОВЫЕ ФОРМЫ ДЕНЕГ?",
+                        "safety_note": "Split preserves both paragraph and heading text.",
+                        "split_substrings": [
+                            "Предыдущий абзац завершился.",
+                            "20 НОВЫЕ ФОРМЫ ДЕНЕГ?",
+                        ],
+                    },
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "remove_inline_noise",
+                        "reason": "page_number",
+                        "confidence": "high",
+                        "evidence_before": "After structural split, only the numeric prefix should be removed from the heading substring.",
+                        "expected_after_preview": "НОВЫЕ ФОРМЫ ДЕНЕГ?",
+                        "safety_note": "Remove only the exact numeric prefix and keep the semantic heading.",
+                        "noise_substring": "20 ",
+                    },
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is True
+    assert result.cleaned_markdown == "Intro\n\nПредыдущий абзац завершился.\n\nНОВЫЕ ФОРМЫ ДЕНЕГ?\n\nOutro"
+    assert [entry["operation"] for entry in result.report_payload["accepted_cleanup_operations"]] == [
+        "split_block",
+        "remove_inline_noise",
+    ]
+
+
+def test_run_reader_cleanup_rejects_full_isolated_semantic_heading_inline_noise() -> None:
+    target = "20 НОВЫЕ ФОРМЫ ДЕНЕГ?"
+    markdown = f"Intro\n\n{target}\n\nOutro"
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        block = next(block for block in payload["blocks"] if block["text"] == target)
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": block["id"],
+                        "text_hash": block["text_hash"],
+                        "operation": "remove_inline_noise",
+                        "reason": "page_furniture_inline",
+                        "confidence": "high",
+                        "evidence_before": "The whole semantic title was incorrectly proposed as noise.",
+                        "expected_after_preview": "НОВЫЕ ФОРМЫ ДЕНЕГ?",
+                        "safety_note": "Runtime must reject full semantic heading deletion.",
+                        "noise_substring": "20 НОВЫЕ ФОРМЫ ДЕНЕГ?",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(markdown_text=markdown, config=ReaderCleanupConfig(enabled=True), operation_provider=provider)
+
+    assert result.changed is False
+    assert result.cleaned_markdown == markdown
+    assert result.report_payload["ignored_delete_blocks"][0]["ignored_reason"] == (
+        "remove_inline_noise_not_exact_noise_pattern"
+    )
 
 
 def test_run_reader_cleanup_rejects_semantic_two_number_numeric_uppercase_inline_noise() -> None:
