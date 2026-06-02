@@ -2005,6 +2005,55 @@ def test_run_document_processing_reader_cleanup_rebuild_preserves_images():
     assert reinsert_calls[-1] == ["img-1"]
 
 
+def test_reader_cleanup_docx_rebuild_markdown_restores_missing_image_placeholder_without_display_regression():
+    rebuilt_markdown = document_pipeline_late_phases._build_docx_rebuild_markdown_after_reader_cleanup(
+        raw_markdown="Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph\n\nOutro",
+        cleaned_markdown="Intro\n\nBody paragraph\n\nOutro",
+        accepted_delete_block_ids=[],
+    )
+
+    assert rebuilt_markdown == "Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph\n\nOutro"
+
+
+def test_reader_cleanup_docx_rebuild_markdown_does_not_duplicate_existing_image_placeholder():
+    rebuilt_markdown = document_pipeline_late_phases._build_docx_rebuild_markdown_after_reader_cleanup(
+        raw_markdown="Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph",
+        cleaned_markdown="Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph",
+        accepted_delete_block_ids=[],
+    )
+
+    assert rebuilt_markdown.count("[[DOCX_IMAGE_img_001]]") == 1
+    assert rebuilt_markdown == "Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph"
+
+
+def test_reader_cleanup_docx_rebuild_markdown_preserves_consecutive_image_placeholder_order():
+    rebuilt_markdown = document_pipeline_late_phases._build_docx_rebuild_markdown_after_reader_cleanup(
+        raw_markdown="Intro\n\n[[DOCX_IMAGE_img_001]]\n\n[[DOCX_IMAGE_img_002]]\n\nBody paragraph",
+        cleaned_markdown="Intro\n\nBody paragraph",
+        accepted_delete_block_ids=[],
+    )
+
+    assert rebuilt_markdown == "Intro\n\n[[DOCX_IMAGE_img_001]]\n\n[[DOCX_IMAGE_img_002]]\n\nBody paragraph"
+
+
+def test_reader_cleanup_docx_rebuild_markdown_anchors_missing_image_placeholder_by_paragraph_id():
+    rebuilt_markdown = document_pipeline_late_phases._build_docx_rebuild_markdown_after_reader_cleanup(
+        raw_markdown="Intro before cleanup\n\n[[DOCX_IMAGE_img_001]]\n\nBody before cleanup",
+        cleaned_markdown="Intro after cleanup\n\nBody after cleanup",
+        accepted_delete_block_ids=[],
+        cleanup_block_metadata_by_index={
+            0: {"paragraph_id": "p0001"},
+            2: {"paragraph_id": "p0002"},
+        },
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0001", "text": "Intro after cleanup"},
+            {"paragraph_id": "p0002", "text": "Body after cleanup"},
+        ],
+    )
+
+    assert rebuilt_markdown == "Intro after cleanup\n\n[[DOCX_IMAGE_img_001]]\n\nBody after cleanup"
+
+
 def test_run_document_processing_reader_cleanup_preserves_docx_image_anchor_when_markdown_cleanup_deletes_placeholder():
     runtime = _build_runtime_capture()
     artifact_calls = {}
@@ -4909,10 +4958,226 @@ def test_reader_cleanup_formatting_lineage_skips_when_block_count_is_ambiguous()
     assert diagnostics == {
         "status": "skipped",
         "reason": "cleanup_block_registry_count_mismatch",
+        "sparse_alignment_failure_reason": "non_image_placeholder_registry_gaps",
+        "alignment_gap_count": 1,
         "raw_cleanup_block_count": 2,
         "generated_registry_count": 1,
     }
     assert derived_registry == registry
+
+
+def test_reader_cleanup_formatting_lineage_allows_sparse_image_placeholder_gap():
+    raw_markdown = "Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph"
+    registry = [
+        {"block_index": 7, "paragraph_id": "p0001", "text": "Intro"},
+        {"block_index": 7, "paragraph_id": "p0003", "text": "Body paragraph"},
+    ]
+    cleanup_report = {
+        "accepted_cleanup_operations": [
+            {
+                "id": "b_000001",
+                "operation": "delete_block",
+                "expected_after_preview": "",
+            }
+        ]
+    }
+
+    derived_registry, diagnostics = document_pipeline_late_phases._derive_reader_cleanup_generated_paragraph_registry(
+        generated_paragraph_registry=registry,
+        cleanup_report=cleanup_report,
+        raw_markdown=raw_markdown,
+    )
+
+    assert diagnostics["status"] == "derived"
+    assert diagnostics["alignment_mode"] == "sparse_image_placeholders"
+    assert diagnostics["alignment_gap_count"] == 1
+    assert diagnostics["applied_operation_count"] == 0
+    assert diagnostics["skipped_operation_count"] == 1
+    assert derived_registry == registry
+
+
+def test_reader_cleanup_formatting_lineage_uses_paragraph_id_when_cleanup_text_drifted():
+    raw_markdown = "Intro before cleanup\n\n[[DOCX_IMAGE_img_001]]\n\nBody before cleanup"
+    registry = [
+        {"block_index": 7, "paragraph_id": "p0001", "text": "Intro after cleanup"},
+        {"block_index": 7, "paragraph_id": "p0003", "text": "Body after cleanup"},
+    ]
+
+    derived_registry, diagnostics = document_pipeline_late_phases._derive_reader_cleanup_generated_paragraph_registry(
+        generated_paragraph_registry=registry,
+        cleanup_report={"accepted_cleanup_operations": []},
+        raw_markdown=raw_markdown,
+        cleanup_block_metadata_by_index={
+            0: {"paragraph_id": "p0001"},
+            2: {"paragraph_id": "p0003"},
+        },
+    )
+
+    assert diagnostics["status"] == "derived"
+    assert diagnostics["alignment_mode"] == "identity_sparse_image_placeholders"
+    assert diagnostics["alignment_gap_count"] == 1
+    assert diagnostics["applied_operation_count"] == 0
+    assert derived_registry == registry
+
+
+def test_reader_cleanup_formatting_lineage_rejects_sparse_non_image_gap():
+    raw_markdown = "Intro\n\nDropped semantic text\n\nBody paragraph"
+    registry = [
+        {"block_index": 7, "paragraph_id": "p0001", "text": "Intro"},
+        {"block_index": 7, "paragraph_id": "p0003", "text": "Body paragraph"},
+    ]
+
+    derived_registry, diagnostics = document_pipeline_late_phases._derive_reader_cleanup_generated_paragraph_registry(
+        generated_paragraph_registry=registry,
+        cleanup_report={"accepted_cleanup_operations": []},
+        raw_markdown=raw_markdown,
+    )
+
+    assert diagnostics == {
+        "status": "skipped",
+        "reason": "cleanup_block_registry_count_mismatch",
+        "sparse_alignment_failure_reason": "non_image_placeholder_registry_gaps",
+        "alignment_gap_count": 1,
+        "raw_cleanup_block_count": 3,
+        "generated_registry_count": 2,
+    }
+    assert derived_registry == registry
+
+
+def test_reader_cleanup_block_identity_metadata_does_not_leak_to_model_payload():
+    blocks = build_cleanup_blocks(
+        "Intro",
+        block_metadata_by_index={0: {"paragraph_id": "p0001", "merged_paragraph_ids": ["p0001", "p0002"]}},
+    )
+
+    assert blocks[0].paragraph_id == "p0001"
+    assert blocks[0].merged_paragraph_ids == ("p0001", "p0002")
+    payload = blocks[0].to_payload()
+    assert "paragraph_id" not in payload
+    assert "merged_paragraph_ids" not in payload
+
+
+def test_reader_cleanup_block_identity_metadata_reports_id_match_and_gaps():
+    raw_markdown = "Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph"
+    registry = [
+        {"block_index": 7, "paragraph_id": "p0001", "text": "Intro"},
+        {"block_index": 7, "paragraph_id": "p0003", "text": "Body paragraph"},
+    ]
+
+    metadata, diagnostics = document_pipeline_late_phases._build_reader_cleanup_block_identity_metadata(
+        raw_markdown=raw_markdown,
+        generated_paragraph_registry=registry,
+    )
+
+    assert metadata == {
+        0: {"paragraph_id": "p0001"},
+        2: {"paragraph_id": "p0003"},
+    }
+    assert diagnostics == {
+        "status": "available",
+        "reason": None,
+        "raw_cleanup_block_count": 3,
+        "generated_registry_count": 2,
+        "id_matched_block_count": 2,
+        "missing_id_registry_entry_count": 0,
+        "gap_count": 1,
+        "image_gap_count": 1,
+        "text_gap_count": 0,
+    }
+
+
+def test_reader_cleanup_postprocess_prefers_assembly_formatting_registry_over_stale_state_registry():
+    runtime = _build_runtime_capture()
+    preserve_calls = []
+    log_events = []
+    raw_markdown = "Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph"
+    assembly_registry = [
+        {"block_index": 1, "paragraph_id": "p0001", "text": "Intro"},
+        {"block_index": 3, "paragraph_id": "p0003", "text": "Body paragraph"},
+    ]
+    stale_state_registry = [{"block_index": 1, "paragraph_id": "stale", "text": raw_markdown}]
+
+    def generate_markdown_block(**kwargs):
+        payload = json.loads(kwargs["target_text"])
+        delete_target = next(block for block in payload["blocks"] if block["text"] == "[[DOCX_IMAGE_img_001]]")
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": delete_target["id"],
+                        "text_hash": delete_target["text_hash"],
+                        "operation": "delete_block",
+                        "reason": "extraction_artifact",
+                        "confidence": "high",
+                        "evidence_before": "[[DOCX_IMAGE_img_001]]",
+                        "expected_after_preview": "",
+                        "safety_note": "test fixture",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    cleaned_markdown, cleaned_docx_bytes, report, _raw, _notice = document_pipeline_late_phases._run_reader_cleanup_postprocess(
+        context=SimpleNamespace(
+            processing_operation="translate",
+            app_config={
+                "reader_cleanup_enabled": True,
+                "reader_cleanup_policy": "advisory",
+                "reader_cleanup_chunk_size": 500,
+                "reader_cleanup_max_delete_block_ratio": 0.8,
+                "reader_cleanup_max_delete_char_ratio": 0.8,
+            },
+            model="anthropic:claude-sonnet-4-6",
+            max_retries=1,
+            uploaded_filename="report.docx",
+            runtime=runtime,
+            source_paragraphs=[ParagraphUnit(text="Intro", role="body", paragraph_id="p0001")],
+        ),
+        dependencies=SimpleNamespace(
+            get_client=lambda: object(),
+            generate_markdown_block=generate_markdown_block,
+            convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
+            preserve_source_paragraph_properties=(
+                lambda docx_bytes, paragraphs, generated_paragraph_registry=None: preserve_calls.append(
+                    generated_paragraph_registry
+                )
+                or docx_bytes
+            ),
+            reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+            log_event=lambda level, event_id, message, **context: log_events.append(
+                {"level": level, "event_id": event_id, "message": message, "context": context}
+            ),
+            present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        ),
+        emitters=SimpleNamespace(
+            emit_activity=lambda *args, **kwargs: None,
+            emit_state=lambda *args, **kwargs: None,
+        ),
+        state=SimpleNamespace(generated_paragraph_registry=stale_state_registry),
+        cleanup_input_markdown=raw_markdown,
+        runtime_display_markdown=raw_markdown,
+        base_docx_bytes=b"base-docx",
+        job_count=1,
+        processed_image_assets=[],
+        formatting_registry=assembly_registry,
+    )
+
+    assert cleaned_markdown == "Intro\n\nBody paragraph"
+    assert cleaned_docx_bytes == b"Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph"
+    assert report is not None
+    assert preserve_calls == [[
+        {"block_index": 1, "paragraph_id": "p0001", "text": "Intro"},
+        {"block_index": 3, "paragraph_id": "p0003", "text": "Body paragraph"},
+    ]]
+    applied_event = next(event for event in log_events if event["event_id"] == "reader_cleanup_applied")
+    assert applied_event["context"]["formatting_lineage_status"] == "derived"
+    assert applied_event["context"]["formatting_lineage_reason"] is None
+    assert applied_event["context"]["cleanup_identity_status"] == "available"
+    assert applied_event["context"]["cleanup_identity_id_matched_block_count"] == 2
+    assert applied_event["context"]["cleanup_identity_image_gap_count"] == 1
+    assert applied_event["context"]["cleanup_identity_text_gap_count"] == 0
 
 
 def test_rebuild_docx_for_markdown_prefers_cleanup_formatting_registry_override():

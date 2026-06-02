@@ -103,11 +103,11 @@ layout cleanup, paragraph/relation normalization, image handoff и DOCX roundtri
   `Rethinking-money-chapter-region-pages-10-11-and-156-217.pdf` дал
   `decision=promising`, `visible_text_chars=95179`, `body_text_ratio=0.9882`,
   `heading_candidate_count=17`, `list_candidate_count=19`; следующий
-  implementation PR — PR-PDF1 behind feature flag. PR-PDF1a bridge proof уже
+  implementation PR — PR-PDF1 text-layer bridge. PR-PDF1a bridge proof уже
   показал viable generated-DOCX path (`140` paragraphs, `0` page-number-like
   paragraphs vs LibreOffice `336` / `1`), но выявил front-matter/TOC grouping и
   markdown-bold leakage через DOCX roundtrip. PR-PDF1 локально завершён как
-  feature-flag bridge: text-layer proof теперь даёт bounded TOC blocks (`124`
+  bridge, and PR-PDF3 promotes it to default PDF import: text-layer proof теперь даёт bounded TOC blocks (`124`
   paragraphs, `0` page-number-like paragraphs, `0` markdown emphasis markers)
   и generic blank-page notices удаляются до translation. PR-PDF2/OCR is deferred
   for the current MVP proof; partial plumbing remains behind explicit flags.
@@ -119,6 +119,17 @@ layout cleanup, paragraph/relation normalization, image handoff и DOCX roundtri
   shows `12` source PDF image objects -> `12` DOCX media / `12` DOCX drawings /
   `12` extracted image assets on the text-layer path. LibreOffice still has
   `12` media but `0` extracted assets in the current extractor.
+- **PR-PDF3 readiness evidence:** two extra text-layer PDFs also favor the
+  hybrid importer. `Rethinking-money-first-20-pages.pdf` gives `19` headings and
+  `1` extracted image asset on the text-layer path versus LibreOffice `5`
+  headings / `0` assets. The full Mariana PDF gives `32` headings, `379` lists,
+  and `42` extracted image assets versus LibreOffice `27` headings, `363` lists,
+  and `0` assets. Promotion still needs a fallback/quality gate because Mariana
+  retains `10` page-number-like paragraphs on the text-layer path.
+- **PR-PDF3 runtime switch:** PDF import now stays text-layer-first. Legacy
+  `DOCXAI_PDF_TEXT_LAYER_IMPORT_ENABLED=0` no longer routes runtime PDF import
+  to LibreOffice. Remaining LibreOffice PDF helper references are deletion
+  cleanup debt, not product fallback policy.
 - **PR-I (Formatting Preservation)** остаётся обязательным, но PR-I2 не должен
   расти до тех пор, пока PR-PDF0 не ответит, какие heading/bold/italic/list
   signals можно сохранить на source-import этапе.
@@ -380,9 +391,81 @@ PR-H0 closure decision:
 work. The old verifier `execution_failed` remains MVP-exit evidence debt and
 must be closed before promotion, but not before starting formatting lineage.
 
+### Current Stage, 2026-06-02
+
+- PR-PDF3 is closed as runtime promotion for selectable-text PDFs:
+  text-layer-first import is active and LibreOffice PDF fallback is deletion
+  debt, not product policy.
+- Images are now **release-blocking** for the text-layer PDF MVP. The
+  PR-PDF3 closeout proof had `12` source image assets in preparation but
+  `output_inline_shapes=0` in the final DOCX, so PR-J2 is allowed to move
+  before PR-I1 under the existing image-release-blocker exception.
+- Before implementation PR-J2 must first run a narrow placeholder diagnostic:
+  check whether `[[DOCX_IMAGE_img_NNN]]` survives in pre-translation assembled
+  Markdown, translated/runtime Markdown, reader-cleaned Markdown, and final DOCX
+  text. This determines whether the fix belongs to assembly, Markdown-to-DOCX
+  rebuild, or reinsertion.
+- PR-J2 diagnostic result, 2026-06-02: the closeout raw Markdown has `12`
+  image placeholders, reader-cleaned Markdown has `0`, and final DOCX has
+  `0` placeholder paragraphs / `0` inline shapes / `0` media files. The owner
+  is reader-cleanup -> DOCX-rebuild handoff. The low-level reinsertion helper
+  is not the first failing layer because it never receives textual anchors.
+- PR-J2 local implementation, 2026-06-02: restore missing image placeholder
+  blocks from raw cleanup Markdown into rebuild-only Markdown for final DOCX
+  generation. Reader-facing cleaned Markdown remains placeholder-free.
+- PR-J2 clean proof, 2026-06-02:
+  `20260602T_pr_j2_image_reinsertion_proof` succeeded. The proof PDF now has
+  `12` prepared image assets -> `12` final inline shapes / `12` DOCX media
+  files with `output_contains_placeholder_markup=False`.
+- Reader cleanup remains reader-facing polish, not source cleanup and not image
+  or formatting repair. Do not move images into cleanup prompts and do not
+  downgrade reader cleanup to fallback until the post-PR-J/PR-I A/B proof says
+  it is safe.
+
+### PR-J2. Image Reinsertion Fix
+
+- **Completed locally on 2026-06-02 for the text-layer PDF proof path.**
+- PR-J2 diagnostic gate:
+  - Source evidence: preparation sees nonzero PDF image assets (`12` on the
+    chapter-region proof).
+  - Placeholder evidence: count `[[DOCX_IMAGE_img_NNN]]` in generated/assembled
+    Markdown before translation, translated runtime Markdown, reader-cleaned
+    Markdown, and final DOCX text before reinsertion.
+  - Reinsertion evidence: inspect `image_reinsertion_placeholder_unhandled`,
+    placeholder integrity, processed image assets, and final inline shape count.
+- Diagnostic status: confirmed on the PR-PDF3 closeout artifacts. Placeholder
+  loss happens after raw reader-cleanup Markdown and before final DOCX
+  reinsertion, because cleaned Markdown omitted all `12` image placeholder
+  blocks.
+- PR-J2 implementation target:
+  - Preserve image placeholder blocks through translation assembly and DOCX
+    rebuild, or reattach them from source/image registry when the translated
+    Markdown intentionally omits non-translatable image blocks.
+  - Current local fix chooses the rebuild-only reattach path after reader
+    cleanup: final DOCX rebuild receives missing placeholder blocks, but UI
+    cleaned Markdown stays free of internal image tags.
+  - Keep images as non-translatable structural blocks; do not ask reader cleanup
+    to recover images.
+  - Initial proof target is `>0` final inline shapes with
+    `image_reinsertion_placeholder_unhandled=0`; acceptance target is source
+    image assets matching final inline shapes where the source document has
+    stable extractable images.
+- Clean proof result:
+  `20260602T_pr_j2_image_reinsertion_proof` restored the proof PDF from
+  `output_inline_shapes=0` to `output_inline_shapes=12`, with `12` DOCX media
+  files and no visible placeholder markup in the final DOCX.
+
+Выход: text-layer PDF final DOCX contains reinjected source images or the exact
+upstream blocker is recorded with evidence.
+
 ### PR-I1 / PR-I2. Formatting Preservation
 
-- **Active next slice: PR-I1.**
+- **Current local slice: PR-I1b.** PR-I1 proved cleanup-aware lineage can be
+  derived through image-placeholder gaps; PR-I1b now carries paragraph identity
+  through cleanup blocks and switches the formatting/image stitches to id-first
+  matching with normalized-text fallback. Focused tests cover the text-drift
+  case; real-document identity evidence is still pending because the older PR-I1
+  proof artifacts do not contain `cleanup_identity_*` counters.
 - PR-I1: реализовать и протестировать lineage contract
   source paragraphs / raw generated registry → reader-cleaned Markdown blocks →
   generated paragraphs/runs/styles used by DOCX rebuild.
@@ -395,7 +478,8 @@ must be closed before promotion, but not before starting formatting lineage.
     map post-first-pass block ids without guessing;
   - mapping failures are diagnostic evidence, not guessed formatting repair.
 - PR-I2: применить lineage в DOCX writer/rebuild path для bold/italic/emphasis,
-  heading/subheading styles и list styling/numbering.
+  heading/subheading styles, list styling/numbering, superscript/subscript,
+  hyperlinks, and line/page breaks only where source evidence exists.
 - Не пытаться восстановить formatting из plain cleaned Markdown без source
   evidence и lineage.
 
@@ -404,10 +488,11 @@ must be closed before promotion, but not before starting formatting lineage.
 
 ### PR-J1 / PR-J2. Image Handoff/Reinsertion
 
-- PR-J1: если картинки release-blocking, найти точку потери PDF-origin
-  `image_count`, placeholders, processed assets или output inline shapes.
-- PR-J2: восстановить handoff/reinsertion в правильном слое pipeline; не чинить
-  images через reader cleanup prompt.
+- PR-J1: completed locally for text-layer PDFs. The importer/generated-DOCX
+  bridge now exposes PDF-origin image objects to preparation.
+- PR-J2: completed locally for the proof PDF. Reader-cleanup DOCX rebuild
+  restores missing image placeholder blocks into rebuild-only Markdown; source
+  image assets now become final inline shapes without prompt repair.
 
 Выход: image policy имеет explicit release decision: fixed, upstream-blocked или
 not release-blocking.
@@ -642,12 +727,15 @@ reader-first путём.
 | PR-H0f | Numeric-Prefix Semantic Heading Cleanup | Completed locally: multi-word isolated semantic heading prefix cleanup preserves title text, removes only exact numeric prefix, keeps broad unsafe `remove_inline_noise=0`; one-word heading policy remains. |
 | PR-H | Reader Cleanup Visual Blockers / PR-H-exit | Frozen as readable-draft quality boundary for PR-I start; old verifier `execution_failed` remains MVP-exit evidence debt, but no H0i fused-heading micro-PR. |
 | PR-PDF0 | Source Import Quality Gate | Completed locally: permissive text-layer probe on chapter-region PDF is `decision=promising` with dense body text and source structure signals; use as evidence for PR-PDF1, not production promotion. |
-| PR-PDF1 | Text-Layer PDF Importer | Completed locally as feature-flagged generated-DOCX bridge: `PdfTextSpan -> ParagraphUnit`, page furniture/page numbers/blank-page notices filtered, bounded TOC blocks, `124` paragraphs, `0` page-number-like leakage, `0` markdown emphasis markers. Default remains LibreOffice; direct `PDF -> ParagraphUnit -> preparation` remains target architecture after broader proof. |
+| PR-PDF1 | Text-Layer PDF Importer | Completed locally as generated-DOCX bridge: `PdfTextSpan -> ParagraphUnit`, page furniture/page numbers/blank-page notices filtered, bounded TOC blocks, `124` paragraphs, `0` page-number-like leakage, `0` markdown emphasis markers. Direct `PDF -> ParagraphUnit -> preparation` remains target architecture after broader proof. |
+| PR-PDF3 | Text-Layer Default Promotion | Closed locally: text-layer-first is the runtime path for selectable-text PDF imports; LibreOffice fallback/legacy override has been removed from runtime. Direct ParagraphUnit import, residual page-furniture quality gate, final-DOCX image handoff, and deletion cleanup for remaining diagnostic LibreOffice PDF references are follow-ups. |
+| PR-PDF4 | Remove Historical LibreOffice PDF Debt | Future cleanup after image/formatting proof: delete remaining LibreOffice PDF helper/comparison-only tests/docs; keep legacy `.doc` LibreOffice support separate. |
 | PR-PDF2 | OCR Fallback | Deferred for now: partial plumbing exists behind `DOCXAI_PDF_OCR_IMPORT_ENABLED=1`, but scanned PDFs are not required for the current text-layer MVP proof. |
-| PR-I1 | Formatting Lineage Contract | Active next PR: source paragraphs/generated registry → reader-cleaned Markdown → DOCX paragraph/run/style lineage for headings/lists/emphasis/source props; focused tests. |
+| PR-I1 | Formatting Lineage Contract | Completed locally as runtime-contract proof: reader cleanup postprocess receives the assembly registry and derives lineage through sparse image-placeholder gaps (`123` raw cleanup blocks vs `111` registry entries, `12` image gaps, `108` derived registry entries, `16` applied cleanup lineage ops). Images stay `12/12`; formatting acceptance still fails, so PR-I2 must focus on formatting application/diagnostics, not lineage availability. |
+| PR-I1b | Identity-Anchored Cleanup Stitch | Active locally: cleanup blocks carry internal paragraph identity without model-payload leakage; formatting lineage and rebuild-only image placeholder stitching now use id-first matching with text fallback. Focused tests pass; next step is short lineage/rebuild harness or milestone proof for real-document counters. |
 | PR-I2 | Formatting Preservation Implementation | Apply lineage in DOCX writer/rebuild path; preserve book-grade styles. |
-| PR-J1 | Image Handoff Evidence | Completed locally for text-layer PDFs: source PDF image objects were lost because the bridge serialized text only; LibreOffice media are not extractor-visible assets. |
-| PR-J2 | Image Reinsertion Fix | Completed locally for text-layer PDFs: bridge inserts PDF images as normal inline DOCX images; extractor emits `12` image assets/placeholders on the benchmark artifact. |
+| PR-J1 | Image Handoff Evidence | Completed locally for text-layer PDFs: initial text-only bridge loss was identified and the generated-DOCX bridge now exposes PDF-origin image objects to preparation; LibreOffice media are not extractor-visible assets. |
+| PR-J2 | Image Reinsertion Fix | Completed locally for the proof PDF: placeholder survival diagnostic identified reader-cleanup -> DOCX-rebuild handoff loss; rebuild-only Markdown now restores missing image placeholders, producing `12/12` final inline shapes with no visible placeholder markup. |
 | PR-A1 | Reader-First Default Promotion | `structure_recognition.mode=off`, reader cleanup default-on, proof + extra doc + UI evidence. |
 | PR-A2 | UI Reader Report + Structure Panel Decoupling | Reader cleanup checkbox/report; selection/retry helpers extracted from structure panel. |
 | PR-A3 | Anchor Repair Decision | Runtime owner/source-of-targets or diagnostic-only decision recorded and tested. |
@@ -668,12 +756,14 @@ reader-first путём.
 PR-M0 (plan/status/inventory)
   -> PR-A0 (reader cleanup config surface)
   -> PR-H0 closure (small-overlap reader-cleanup quality boundary)
-  -> PR-I1 (formatting lineage)
   -> PR-PDF0 (source import quality gate; completed locally)
-  -> PR-PDF1 (feature-flagged text-layer PDF importer)
-  -> PR-PDF2 (OCR fallback for scanned/empty text-layer PDFs)
+  -> PR-PDF1 (text-layer PDF importer bridge)
+  -> PR-PDF3 (text-layer runtime promotion; LibreOffice fallback removed)
+  -> PR-PDF2 (OCR fallback deferred for scanned/empty text-layer PDFs)
+  -> PR-J2 (image placeholder diagnostic + final DOCX reinsertion fix; completed locally)
+  -> PR-I1 (formatting lineage; completed local runtime proof)
+  -> PR-I1b (identity-anchored cleanup stitch; id-first local switch active)
   -> PR-I2 (formatting preservation implementation)
-  -> [PR-J1/PR-J2 if images are release-blocking]
   -> PR-A1 (reader-first default promotion)
   -> PR-A2 (UI reader report + structure panel decoupling)
   -> PR-A3 (anchor repair home)

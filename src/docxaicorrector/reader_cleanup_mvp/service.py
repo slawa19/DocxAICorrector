@@ -181,6 +181,8 @@ class CleanupBlock:
     kind: str
     is_heading: bool
     is_toc_like: bool
+    paragraph_id: str | None = None
+    merged_paragraph_ids: tuple[str, ...] = ()
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -455,7 +457,11 @@ def build_reader_cleanup_global_plan_system_prompt() -> str:
     )
 
 
-def build_cleanup_blocks(markdown_text: str) -> list[CleanupBlock]:
+def build_cleanup_blocks(
+    markdown_text: str,
+    *,
+    block_metadata_by_index: Mapping[int, Mapping[str, object]] | None = None,
+) -> list[CleanupBlock]:
     normalized_markdown = str(markdown_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     if not normalized_markdown:
         return []
@@ -465,6 +471,16 @@ def build_cleanup_blocks(markdown_text: str) -> list[CleanupBlock]:
     for index, raw_block in enumerate(raw_blocks):
         normalized_text = _normalize_block_text(raw_block)
         kind = _detect_block_kind(normalized_text)
+        metadata = block_metadata_by_index.get(index) if block_metadata_by_index is not None else None
+        paragraph_id = None
+        merged_paragraph_ids: tuple[str, ...] = ()
+        if isinstance(metadata, Mapping):
+            raw_paragraph_id = metadata.get("paragraph_id")
+            if isinstance(raw_paragraph_id, str) and raw_paragraph_id.strip():
+                paragraph_id = raw_paragraph_id.strip()
+            raw_merged_ids = metadata.get("merged_paragraph_ids")
+            if isinstance(raw_merged_ids, Sequence) and not isinstance(raw_merged_ids, (str, bytes, bytearray)):
+                merged_paragraph_ids = tuple(str(value).strip() for value in raw_merged_ids if str(value).strip())
         blocks.append(
             CleanupBlock(
                 index=index,
@@ -477,6 +493,8 @@ def build_cleanup_blocks(markdown_text: str) -> list[CleanupBlock]:
                 kind=kind,
                 is_heading=kind == "heading",
                 is_toc_like=kind == "toc_like",
+                paragraph_id=paragraph_id,
+                merged_paragraph_ids=merged_paragraph_ids,
             )
         )
     return blocks
@@ -504,8 +522,9 @@ def run_reader_cleanup(
     anchor_operation_provider: Callable[[dict[str, Any], int, int], str] | None = None,
     anchor_targets: Sequence[Mapping[str, object]] | None = None,
     model_resolution: Mapping[str, object] | None = None,
+    block_metadata_by_index: Mapping[int, Mapping[str, object]] | None = None,
 ) -> ReaderCleanupResult:
-    blocks = build_cleanup_blocks(markdown_text)
+    blocks = build_cleanup_blocks(markdown_text, block_metadata_by_index=block_metadata_by_index)
     cleanup_blocks, selection_warnings = _select_cleanup_blocks(blocks=blocks, keep_toc=config.keep_toc)
     raw_markdown = str(markdown_text or "")
     if not blocks:

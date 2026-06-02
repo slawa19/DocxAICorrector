@@ -1,7 +1,7 @@
 # Simple Reader-First MVP Spec
 
 Date: 2026-05-21
-Status: Proposed experiment; requires discovery gate before implementation; optimized for fastest validation, not full replacement
+Status: Updated 2026-06-01; reader-first components are locally implemented, PDF text-layer import is promoted for PDFs, but full MVP is not yet approved for unconditional main-pipeline default
 
 ## Purpose
 
@@ -20,6 +20,48 @@ Status: Proposed experiment; requires discovery gate before implementation; opti
 
 Это не замена существующего structure-first pipeline. Это параллельный
 экспериментальный режим для проверки продукта глазами читателя.
+
+## 2026-06-01 Main Pipeline Promotion Review
+
+This spec is no longer a pure proposal. The reader-first workstream now has
+implemented runtime pieces and proof artifacts, but the promotion boundary must
+stay explicit:
+
+- PDF source import for text-layer PDFs is promoted locally: the main PDF path
+  now uses the deterministic text-layer importer.
+- LibreOffice PDF import is no longer a runtime fallback for PDF input. Remaining
+  LibreOffice PDF helper references are deletion-cleanup debt, not product
+  fallback policy.
+- Reader cleanup is implemented and has canonical small-overlap proof runs, but
+  it is still a controlled reader-first mode, not an unconditional production
+  default for every pipeline run.
+- Structure-first recovery is still present in config/runtime and must not be
+  described as removed until the migration plan's deletion/deprecation PRs land.
+- Verifier/validation remain observer-only. They may score and report; they must
+  not repair Markdown, rebuild DOCX, or mutate artifacts.
+
+Promotion verdict for 2026-06-01:
+
+```text
+PDF text-layer import: promote as default for text-layer PDFs.
+Reader cleanup MVP: allow only as explicit controlled mode/profile.
+Whole reader-first MVP as main default: not yet; requires the gates below.
+```
+
+Required gates before making the whole MVP the default main pipeline:
+
+1. config surface explicitly exposes `reader_cleanup_default`, policy, keep/drop
+   TOC/back-matter behavior, model selector, chunk size, overlap, and global-plan
+   settings;
+2. default behavior is tested from config through runtime/UI, not only replay
+   harnesses;
+3. structure-first deprecation/removal is completed according to the migration
+   plan, or the main mode clearly documents which deterministic structure layers
+   still run;
+4. text-layer import quality gate covers residual page-furniture/page-number
+   leakage after materialization, not only backend extraction confidence;
+5. at least one clean-checkout proof path verifies PDF import, reader cleanup,
+   final Markdown/DOCX emission, and no-harm invariants together.
 
 ## Motivation
 
@@ -294,7 +336,8 @@ top of an unproven base path.
 
 ```text
 source PDF/DOCX
-  -> existing extraction / preparation
+  -> PDF text-layer import for text-layer PDFs, or DOCX/native extraction
+  -> explicit unsupported/OCR diagnostic if PDF text-layer import is unsuitable
   -> structure_recognition_mode = off
   -> deterministic safe pre-cleanup only
   -> optional global read-only context/noise plan

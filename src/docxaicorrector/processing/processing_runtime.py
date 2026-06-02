@@ -435,8 +435,7 @@ def _convert_pdf_to_docx(*, filename: str, source_bytes: bytes) -> tuple[bytes, 
 
 
 def _pdf_text_layer_import_enabled() -> bool:
-    value = os.getenv("DOCXAI_PDF_TEXT_LAYER_IMPORT_ENABLED", "")
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    return True
 
 
 def _pdf_ocr_import_enabled() -> bool:
@@ -657,19 +656,7 @@ def _pdf_text_layer_docx_style(role: str, heading_level: int | None) -> str | No
 
 
 def _convert_pdf_to_docx_with_optional_text_layer(*, filename: str, source_bytes: bytes) -> tuple[bytes, str]:
-    if not _pdf_text_layer_import_enabled():
-        return _convert_pdf_to_docx(filename=filename, source_bytes=source_bytes)
-    try:
-        return _convert_pdf_text_layer_to_docx(filename=filename, source_bytes=source_bytes)
-    except Exception as exc:
-        log_event(
-            logging.WARNING,
-            "pdf_text_layer_import_fallback",
-            "Text-layer PDF import did not complete; falling back to LibreOffice PDF import.",
-            filename=filename,
-            reason=str(exc),
-        )
-        return _convert_pdf_to_docx(filename=filename, source_bytes=source_bytes)
+    return _convert_pdf_text_layer_to_docx(filename=filename, source_bytes=source_bytes)
 
 
 def _convert_legacy_doc_with_antiword(*, antiword_path: str, filename: str, source_bytes: bytes) -> bytes:

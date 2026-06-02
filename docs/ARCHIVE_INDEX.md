@@ -57,6 +57,8 @@ These documents were moved to archive on 2026-05-30 after the Stage 1 DocumentMa
 - `docs/archive/specs/STRUCTURE_RECOGNITION_INPUT_FIDELITY_SPEC_2026-05-21.md`
 - `docs/archive/specs/STRUCTURE_RECOGNITION_SETTINGS_EXPERIMENT_PLAN_2026-05-21.md`
 - `docs/archive/specs/OUTPUT_DISPLAY_HYGIENE_AND_STRUCTURE_DETECTORS_SPEC_2026-05-21.md`
+- `docs/archive/specs/OUTPUT_ACCEPTANCE_CRITERIA_ANALYSIS_PROMPT_2026-05-21.md` — archived 2026-06-01 as a point-in-time review prompt superseded by the current reader-first MVP, repair backlog, and migration-plan gates.
+- `docs/archive/specs/STRUCTURE_REVIEW_PANEL_UX_REFACTOR_SPEC_2026-05-08.md` — archived 2026-06-01 because the old structure-review panel simplification track is superseded by the reader-first migration and PDF text-layer import pivot; its static mock moved with it under `docs/archive/specs/static_mocks/`.
 
 - `docs/archive/specs/MULTILINGUAL_TEXT_TRANSFORM_SPEC_2026-04-18.md` — implemented and archived 2026-04-18 after multilingual text transform rollout and targeted regression verification completed
 - `docs/archive/specs/MULTILINGUAL_TEXT_TRANSFORM_HARDENING_SPEC_2026-04-18.md` — implemented and archived 2026-04-18 after multilingual guardrails and restartable-state warning behavior were verified

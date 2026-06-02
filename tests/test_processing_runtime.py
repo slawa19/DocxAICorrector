@@ -1276,23 +1276,11 @@ def test_detect_uploaded_document_format_recognizes_pdf_suffix_fallback() -> Non
 def test_normalize_uploaded_pdf_converts_to_docx(monkeypatch):
     pdf_bytes = b"%PDF-1.7\ncontent"
     docx_bytes = b"PK\x03\x04converted-docx"
-    cleanup_flags = []
-
     monkeypatch.setattr(
-        processing_runtime.shutil,
-        "which",
-        lambda name: "/usr/bin/soffice" if name == "soffice" else None,
+        processing_runtime,
+        "_convert_pdf_text_layer_to_docx",
+        lambda **kwargs: (docx_bytes, "pdf-text-layer"),
     )
-
-    def fake_run_completed_process(command, *, error_message, text=True, timeout_seconds=120, cleanup_process_group=False):
-        cleanup_flags.append(cleanup_process_group)
-        outdir = Path(command[command.index("--outdir") + 1])
-        input_path = Path(command[-1])
-        output_path = outdir / input_path.with_suffix(".docx").name
-        output_path.write_bytes(docx_bytes)
-        return object()
-
-    monkeypatch.setattr(processing_runtime, "_run_completed_process", fake_run_completed_process)
 
     normalized = processing_runtime.normalize_uploaded_document(filename="source.pdf", source_bytes=pdf_bytes)
 
@@ -1300,8 +1288,7 @@ def test_normalize_uploaded_pdf_converts_to_docx(monkeypatch):
     assert normalized.filename == "source.docx"
     assert normalized.content_bytes == docx_bytes
     assert normalized.source_format == "pdf"
-    assert normalized.conversion_backend == "libreoffice"
-    assert cleanup_flags == [True]
+    assert normalized.conversion_backend == "pdf-text-layer"
 
 
 def test_convert_pdf_to_docx_uses_writer_pdf_import_filter(monkeypatch):
@@ -1332,10 +1319,19 @@ def test_convert_pdf_to_docx_uses_writer_pdf_import_filter(monkeypatch):
     assert commands[0][2] == "--infilter=writer_pdf_import"
 
 
-def test_normalize_uploaded_pdf_raises_clear_error_when_converter_missing(monkeypatch):
-    monkeypatch.setattr(processing_runtime.shutil, "which", lambda name: None)
+def test_normalize_uploaded_pdf_surfaces_text_layer_import_error(monkeypatch):
+    monkeypatch.setattr(
+        processing_runtime,
+        "_convert_pdf_text_layer_to_docx",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("pdf_text_layer_import_not_promising:no_text_layer")),
+    )
+    monkeypatch.setattr(
+        processing_runtime,
+        "_convert_pdf_to_docx",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("libreoffice should not run")),
+    )
 
-    with pytest.raises(RuntimeError, match="Загружен PDF-файл, но автоконвертация недоступна"):
+    with pytest.raises(RuntimeError, match="pdf_text_layer_import_not_promising:no_text_layer"):
         processing_runtime.normalize_uploaded_document(
             filename="source.pdf",
             source_bytes=b"%PDF-1.7\ncontent",
@@ -1346,9 +1342,9 @@ def test_build_uploaded_file_token_for_pdf_is_stable_across_converter_outputs(mo
     converted_outputs = [b"PK\x03\x04converted-docx-a", b"PK\x03\x04converted-docx-b"]
 
     def convert_stub(**kwargs):
-        return converted_outputs.pop(0), "libreoffice"
+        return converted_outputs.pop(0), "pdf-text-layer"
 
-    monkeypatch.setattr(processing_runtime, "_convert_pdf_to_docx", convert_stub)
+    monkeypatch.setattr(processing_runtime, "_convert_pdf_text_layer_to_docx", convert_stub)
 
     source_bytes = b"%PDF-1.7\nsame-pdf"
     first = processing_runtime.build_uploaded_file_token(source_name="source.pdf", source_bytes=source_bytes)
@@ -1357,8 +1353,8 @@ def test_build_uploaded_file_token_for_pdf_is_stable_across_converter_outputs(mo
     assert first == second
 
 
-def test_normalize_uploaded_pdf_can_use_feature_flagged_text_layer_import(monkeypatch):
-    monkeypatch.setenv("DOCXAI_PDF_TEXT_LAYER_IMPORT_ENABLED", "1")
+def test_normalize_uploaded_pdf_uses_text_layer_import_by_default(monkeypatch):
+    monkeypatch.delenv("DOCXAI_PDF_TEXT_LAYER_IMPORT_ENABLED", raising=False)
     monkeypatch.setattr(
         processing_runtime,
         "_convert_pdf_text_layer_to_docx",
@@ -1381,13 +1377,35 @@ def test_normalize_uploaded_pdf_can_use_feature_flagged_text_layer_import(monkey
     assert normalized.conversion_backend == "pdf-text-layer"
 
 
+def test_normalize_uploaded_pdf_ignores_legacy_libreoffice_override(monkeypatch):
+    monkeypatch.setenv("DOCXAI_PDF_TEXT_LAYER_IMPORT_ENABLED", "0")
+    monkeypatch.setattr(
+        processing_runtime,
+        "_convert_pdf_text_layer_to_docx",
+        lambda **kwargs: (b"text-layer-docx", "pdf-text-layer"),
+    )
+    monkeypatch.setattr(
+        processing_runtime,
+        "_convert_pdf_to_docx",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("libreoffice should not run")),
+    )
+
+    normalized = processing_runtime.normalize_uploaded_document(
+        filename="source.pdf",
+        source_bytes=b"%PDF-1.7\nsource",
+    )
+
+    assert normalized.conversion_backend == "pdf-text-layer"
+    assert normalized.content_bytes == b"text-layer-docx"
+
+
 def test_resolve_upload_contract_uses_original_pdf_bytes_for_source_identity(monkeypatch):
     source_bytes = b"%PDF-1.7\nsame-pdf"
     converted_bytes = b"PK\x03\x04converted-docx"
     monkeypatch.setattr(
         processing_runtime,
-        "_convert_pdf_to_docx",
-        lambda **kwargs: (converted_bytes, "libreoffice"),
+        "_convert_pdf_text_layer_to_docx",
+        lambda **kwargs: (converted_bytes, "pdf-text-layer"),
     )
 
     contract = processing_runtime.resolve_upload_contract(filename="source.pdf", source_bytes=source_bytes)
@@ -1517,8 +1535,8 @@ def test_materialize_uploaded_payload_runs_pdf_conversion_with_progress(monkeypa
 
     monkeypatch.setattr(
         processing_runtime,
-        "_convert_pdf_to_docx",
-        lambda **kwargs: (b"converted-docx-bytes", "libreoffice"),
+        "_convert_pdf_text_layer_to_docx",
+        lambda **kwargs: (b"converted-docx-bytes", "pdf-text-layer"),
     )
 
     events: list[dict[str, object]] = []
@@ -1531,7 +1549,7 @@ def test_materialize_uploaded_payload_runs_pdf_conversion_with_progress(monkeypa
     )
 
     assert materialized.source_format == "pdf"
-    assert materialized.conversion_backend == "libreoffice"
+    assert materialized.conversion_backend == "pdf-text-layer"
     assert materialized.content_bytes == b"converted-docx-bytes"
     assert materialized.filename == "book.docx"
     # token MUST be preserved so prepared_source_key cache stays stable
@@ -1541,9 +1559,9 @@ def test_materialize_uploaded_payload_runs_pdf_conversion_with_progress(monkeypa
     assert "DOCX готов" in stages
 
 
-def test_materialize_uploaded_payload_can_use_feature_flagged_text_layer_import(monkeypatch):
+def test_materialize_uploaded_payload_uses_text_layer_import_by_default(monkeypatch):
     _clear_materialized_upload_cache()
-    monkeypatch.setenv("DOCXAI_PDF_TEXT_LAYER_IMPORT_ENABLED", "1")
+    monkeypatch.delenv("DOCXAI_PDF_TEXT_LAYER_IMPORT_ENABLED", raising=False)
     pdf_bytes = b"%PDF-1.4\n%text-layer\n"
     uploaded_file = processing_runtime.build_in_memory_uploaded_file(
         source_name="book.pdf",
@@ -1575,9 +1593,9 @@ def test_materialize_uploaded_payload_can_use_feature_flagged_text_layer_import(
     assert any("text-layer" in str(event["detail"]) for event in events if event["stage"] == "Импорт PDF")
 
 
-def test_materialize_uploaded_payload_falls_back_to_libreoffice_when_text_layer_rejects(monkeypatch):
+def test_materialize_uploaded_payload_surfaces_text_layer_rejection(monkeypatch):
     _clear_materialized_upload_cache()
-    monkeypatch.setenv("DOCXAI_PDF_TEXT_LAYER_IMPORT_ENABLED", "1")
+    monkeypatch.delenv("DOCXAI_PDF_TEXT_LAYER_IMPORT_ENABLED", raising=False)
     pdf_bytes = b"%PDF-1.4\n%fallback\n"
     uploaded_file = processing_runtime.build_in_memory_uploaded_file(
         source_name="fallback.pdf",
@@ -1593,16 +1611,14 @@ def test_materialize_uploaded_payload_falls_back_to_libreoffice_when_text_layer_
     monkeypatch.setattr(
         processing_runtime,
         "_convert_pdf_to_docx",
-        lambda **kwargs: (b"libreoffice-docx", "libreoffice"),
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("libreoffice should not run")),
     )
 
-    materialized = processing_runtime.materialize_uploaded_payload(payload, progress_callback=None)
-
-    assert materialized.conversion_backend == "libreoffice"
-    assert materialized.content_bytes == b"libreoffice-docx"
+    with pytest.raises(RuntimeError, match="pdf_text_layer_import_not_promising"):
+        processing_runtime.materialize_uploaded_payload(payload, progress_callback=None)
 
 
-def test_materialized_upload_cache_separates_text_layer_flag_from_libreoffice(monkeypatch):
+def test_materialized_upload_cache_uses_text_layer_when_legacy_env_is_set(monkeypatch):
     _clear_materialized_upload_cache()
     pdf_bytes = b"%PDF-1.4\n%same-token\n"
     uploaded_file = processing_runtime.build_in_memory_uploaded_file(
@@ -1612,24 +1628,25 @@ def test_materialized_upload_cache_separates_text_layer_flag_from_libreoffice(mo
     payload = processing_runtime.freeze_uploaded_file_lightweight(uploaded_file)
     calls: list[str] = []
 
-    def convert_libreoffice(**kwargs):
-        calls.append("libreoffice")
-        return b"libreoffice-docx", "libreoffice"
-
     def convert_text_layer(**kwargs):
         calls.append("text-layer")
         return b"text-layer-docx", "pdf-text-layer"
 
-    monkeypatch.setattr(processing_runtime, "_convert_pdf_to_docx", convert_libreoffice)
+    monkeypatch.setattr(
+        processing_runtime,
+        "_convert_pdf_to_docx",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("libreoffice should not run")),
+    )
     monkeypatch.setattr(processing_runtime, "_convert_pdf_text_layer_to_docx", convert_text_layer)
 
+    monkeypatch.setenv("DOCXAI_PDF_TEXT_LAYER_IMPORT_ENABLED", "0")
     first = processing_runtime.materialize_uploaded_payload(payload, progress_callback=None)
-    monkeypatch.setenv("DOCXAI_PDF_TEXT_LAYER_IMPORT_ENABLED", "1")
+    monkeypatch.delenv("DOCXAI_PDF_TEXT_LAYER_IMPORT_ENABLED", raising=False)
     second = processing_runtime.materialize_uploaded_payload(payload, progress_callback=None)
 
-    assert first.conversion_backend == "libreoffice"
+    assert first.conversion_backend == "pdf-text-layer"
     assert second.conversion_backend == "pdf-text-layer"
-    assert calls == ["libreoffice", "text-layer"]
+    assert calls == ["text-layer"]
 
 
 def test_pdf_text_layer_generated_docx_does_not_encode_false_bold_or_italic(monkeypatch):
@@ -1920,9 +1937,9 @@ def test_materialize_uploaded_payload_reuses_cached_pdf_conversion(monkeypatch):
 
     def convert_pdf(**kwargs):
         convert_calls.append(kwargs)
-        return b"converted-docx-reuse", "libreoffice"
+        return b"converted-docx-reuse", "pdf-text-layer"
 
-    monkeypatch.setattr(processing_runtime, "_convert_pdf_to_docx", convert_pdf)
+    monkeypatch.setattr(processing_runtime, "_convert_pdf_text_layer_to_docx", convert_pdf)
 
     first_events: list[dict[str, Any]] = []
     second_events: list[dict[str, Any]] = []
@@ -1933,7 +1950,7 @@ def test_materialize_uploaded_payload_reuses_cached_pdf_conversion(monkeypatch):
     assert len(convert_calls) == 1
     assert first.content_bytes == b"converted-docx-reuse"
     assert second.content_bytes == b"converted-docx-reuse"
-    assert second.conversion_backend == "libreoffice"
+    assert second.conversion_backend == "pdf-text-layer"
     assert any(e["stage"] == "DOCX готов" for e in second_events)
     assert any("Использую уже сконвертированную копию DOCX" in str(e["detail"]) for e in second_events)
     assert any(bool(cast(dict[str, Any], e["metrics"]).get("conversion_reused")) for e in second_events)
@@ -2045,8 +2062,8 @@ def test_start_background_preparation_materializes_pdf_inside_worker(monkeypatch
 
     monkeypatch.setattr(
         processing_runtime,
-        "_convert_pdf_to_docx",
-        lambda **kwargs: (b"converted-docx", "libreoffice"),
+        "_convert_pdf_text_layer_to_docx",
+        lambda **kwargs: (b"converted-docx", "pdf-text-layer"),
     )
 
     received_payload: dict[str, Any] = {}
@@ -2082,7 +2099,7 @@ def test_start_background_preparation_materializes_pdf_inside_worker(monkeypatch
 
     materialized = cast(processing_runtime.FrozenUploadPayload, received_payload["payload"])
     assert isinstance(materialized, processing_runtime.FrozenUploadPayload)
-    assert materialized.conversion_backend == "libreoffice"
+    assert materialized.conversion_backend == "pdf-text-layer"
     assert materialized.content_bytes == b"converted-docx"
     # progress events from materialization must reach the UI
     stages_seen = [str(s.get("stage")) for s in statuses]

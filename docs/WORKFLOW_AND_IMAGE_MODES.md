@@ -16,7 +16,10 @@
 - Setup source of truth для нового WSL/server runtime: `system-requirements.apt` для apt-пакетов, `requirements.txt` для Python-пакетов, `scripts/setup-wsl.sh` как canonical bootstrap, VS Code task `Setup Project` как user-visible wrapper.
 - Upload contract больше не DOCX-only: пользовательский вход может быть `.docx`, legacy `.doc` или `PDF`; после boundary в `processing_runtime.py` downstream-слои обязаны работать с normalized DOCX bytes, но для legacy `.doc` и `PDF` token identity остаётся привязанной к исходным source bytes.
 - Предпочтительный backend автоконвертации legacy `.doc` внутри WSL: `LibreOffice` / `soffice`; fallback backend: `antiword` + `pandoc`.
-- PDF import требует LibreOffice (`soffice` или `libreoffice`) и использует Writer PDF import filter (`--infilter=writer_pdf_import`) перед DOCX export; OCR для scanned PDF не входит в текущий контракт.
+- PDF import uses the deterministic text-layer importer for selectable-text PDFs.
+  LibreOffice `writer_pdf_import` is no longer the runtime PDF fallback; OCR for
+  scanned PDF remains outside the current proof contract unless explicitly
+  enabled.
 - Официальные entry points для setup, запуска и диагностики: `Setup Project`, `Project Status`, `Start Project`, `Stop Project`, `Run Full Pytest`, `Run Current Test File`, `Run Current Test Node`, `Tail Streamlit Log`.
 - Официальные видимые real-document entry points: `Run Lietaer Real Validation`, `Run Real Document Validation Profile`, `Run Real Document Quality Gate`.
 - Полный `Run Full Pytest` не должен неявно запускать дорогой real-document AI smoke только потому, что в `.env` присутствует `OPENAI_API_KEY`; для такого smoke требуется явный opt-in.
@@ -79,7 +82,7 @@ docker run --rm -v "$PWD":/src -w /src python:3.12 bash -lc '
 Перед выводом, что проблема в коде, а не в runtime toolchain:
 
 ```bash
-command -v soffice || command -v libreoffice
+python -c "import pdfminer, docx"
 command -v antiword
 pandoc --version
 ```
