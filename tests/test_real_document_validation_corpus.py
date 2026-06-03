@@ -996,6 +996,8 @@ def test_validation_registry_declares_reader_cleanup_validation_profiles() -> No
 
     baseline = registry.get_run_profile("ui-parity-translate-simple-reader-cleanup")
     comparison_only = registry.get_run_profile("ui-parity-translate-simple-reader-cleanup-comparison-only")
+    minimal = registry.get_run_profile("ui-parity-translate-simple-reader-cleanup-minimal-comparison-only")
+    noop = registry.get_run_profile("ui-parity-translate-simple-reader-cleanup-noop-comparison-only")
     source_cleanup_remove = registry.get_run_profile("ui-parity-translate-simple-reader-cleanup-source-cleanup-remove")
     # Wide-chunk stays as an optional experiment profile; it is not a stronger repository contract.
     wide_chunk = registry.get_run_profile("ui-parity-translate-simple-reader-cleanup-wide-chunk")
@@ -1024,6 +1026,25 @@ def test_validation_registry_declares_reader_cleanup_validation_profiles() -> No
     assert comparison_only.reader_cleanup_global_plan_enabled is False
     assert comparison_only.translation_output_quality_gate_policy == "advisory"
     assert comparison_only.comparison_only_validation is True
+
+    assert minimal.processing_operation == "translate"
+    assert minimal.structure_recognition_mode == "off"
+    assert minimal.reader_cleanup_enabled is True
+    assert minimal.reader_cleanup_policy == "advisory"
+    assert minimal.reader_cleanup_allowed_operations == ("delete_block", "remove_inline_noise")
+    assert minimal.reader_cleanup_chunk_size == 8000
+    assert minimal.reader_cleanup_overlap_blocks_before == 3
+    assert minimal.reader_cleanup_overlap_blocks_after == 3
+    assert minimal.reader_cleanup_global_plan_enabled is False
+    assert minimal.reader_verifier_enabled is True
+    assert minimal.comparison_only_validation is True
+
+    assert noop.processing_operation == "translate"
+    assert noop.structure_recognition_mode == "off"
+    assert noop.reader_cleanup_enabled is False
+    assert noop.reader_cleanup_policy == "off"
+    assert noop.reader_verifier_enabled is True
+    assert noop.comparison_only_validation is True
 
     assert source_cleanup_remove.processing_operation == "translate"
     assert source_cleanup_remove.reader_cleanup_enabled is True

@@ -49,6 +49,11 @@ from docxaicorrector.reader_cleanup_mvp import (
     run_reader_cleanup,
     write_reader_cleanup_diagnostics,
 )
+from docxaicorrector.runtime.artifact_retention import (
+    READER_CLEANUP_LINEAGE_MAX_AGE_SECONDS,
+    READER_CLEANUP_LINEAGE_MAX_COUNT,
+    prune_artifact_dir,
+)
 
 
 PipelineResult = Literal["succeeded", "failed", "stopped"]
@@ -67,6 +72,7 @@ _NARRATION_DISALLOWED_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 QUALITY_REPORTS_DIR = Path(".run") / "quality_reports"
 QUALITY_REPORTS_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 QUALITY_REPORTS_MAX_COUNT = 100
+READER_CLEANUP_LINEAGE_DIR = Path(".run") / "reader_cleanup_lineage"
 _BULLET_MARKDOWN_HEADING_PATTERN = re.compile(r"(?m)^\s{0,3}#{1,6}\s*[\u2022\u25cf\u25e6\u2023*\-]\s*$")
 _DOCX_IMAGE_PLACEHOLDER_PATTERN = re.compile(r"^\[\[DOCX_IMAGE_[A-Za-z0-9_]+\]\]$")
 
@@ -670,6 +676,49 @@ def _build_docx_rebuild_markdown_after_reader_cleanup(
     return rebuilt_markdown if rebuilt_markdown.strip() else cleaned_markdown
 
 
+def _write_reader_cleanup_lineage_artifact(
+    *,
+    filename: str,
+    raw_markdown: str,
+    cleaned_markdown: str,
+    cleanup_report: Mapping[str, object],
+    active_formatting_registry: Sequence[Mapping[str, object]] | None,
+    cleanup_identity_metadata: Mapping[int, Mapping[str, object]],
+    cleanup_identity_diagnostics: Mapping[str, object],
+    cleanup_formatting_registry: Sequence[Mapping[str, object]] | None,
+    cleanup_formatting_lineage: Mapping[str, object],
+) -> str | None:
+    generated_at_epoch_ms = int(time.time() * 1000)
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", filename or "reader_cleanup").strip("._") or "reader_cleanup"
+    payload = {
+        "schema_version": 1,
+        "stage": "reader_cleanup_lineage",
+        "generated_at_epoch_ms": generated_at_epoch_ms,
+        "filename": filename,
+        "raw_markdown": raw_markdown,
+        "cleaned_markdown": cleaned_markdown,
+        "cleanup_report": dict(cleanup_report),
+        "active_formatting_registry": [dict(entry) for entry in active_formatting_registry or []],
+        "cleanup_identity_metadata": {str(index): dict(metadata) for index, metadata in cleanup_identity_metadata.items()},
+        "cleanup_identity_diagnostics": dict(cleanup_identity_diagnostics),
+        "cleanup_formatting_registry": [dict(entry) for entry in cleanup_formatting_registry or []],
+        "cleanup_formatting_lineage": dict(cleanup_formatting_lineage),
+    }
+    try:
+        READER_CLEANUP_LINEAGE_DIR.mkdir(parents=True, exist_ok=True)
+        artifact_path = READER_CLEANUP_LINEAGE_DIR / f"{safe_name}_{generated_at_epoch_ms}.json"
+        artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        prune_artifact_dir(
+            target_dir=READER_CLEANUP_LINEAGE_DIR,
+            max_age_seconds=READER_CLEANUP_LINEAGE_MAX_AGE_SECONDS,
+            max_count=READER_CLEANUP_LINEAGE_MAX_COUNT,
+            emit_log=False,
+        )
+        return str(artifact_path)
+    except Exception:
+        return None
+
+
 def _run_reader_cleanup_postprocess(
     *,
     context: Any,
@@ -919,6 +968,17 @@ def _run_reader_cleanup_postprocess(
             cleanup_block_metadata_by_index=cleanup_identity_metadata,
             generated_paragraph_registry=cleanup_formatting_registry,
         )
+        cleanup_lineage_artifact_path = _write_reader_cleanup_lineage_artifact(
+            filename=context.uploaded_filename,
+            raw_markdown=cleanup_result.raw_markdown,
+            cleaned_markdown=cleaned_runtime_display_markdown,
+            cleanup_report=cleanup_result.report_payload,
+            active_formatting_registry=active_formatting_registry,
+            cleanup_identity_metadata=cleanup_identity_metadata,
+            cleanup_identity_diagnostics=cleanup_identity_diagnostics,
+            cleanup_formatting_registry=cleanup_formatting_registry,
+            cleanup_formatting_lineage=cleanup_formatting_lineage,
+        )
         cleaned_docx_bytes = _rebuild_docx_for_markdown(
             markdown_text=docx_rebuild_markdown,
             context=context,
@@ -970,6 +1030,7 @@ def _run_reader_cleanup_postprocess(
             cleanup_identity_gap_count=cleanup_identity_diagnostics.get("gap_count"),
             cleanup_identity_image_gap_count=cleanup_identity_diagnostics.get("image_gap_count"),
             cleanup_identity_text_gap_count=cleanup_identity_diagnostics.get("text_gap_count"),
+            reader_cleanup_lineage_artifact_path=cleanup_lineage_artifact_path,
             cleaned_markdown_chars=len(cleaned_runtime_display_markdown),
             raw_markdown_chars=len(cleanup_result.raw_markdown),
         )
@@ -1308,7 +1369,7 @@ def _build_translation_quality_report(
     page_placeholder_heading_concat_samples = collect_page_placeholder_heading_concat_samples(display_hygiene_markdown)
     assembly_entries = tuple(getattr(assembly_result, "entries", ()) or ())
     assembly_uses_fallback = any(bool(getattr(entry, "used_fallback", False)) for entry in assembly_entries)
-    source_backed_entry_authority = _has_source_backed_entry_authority(assembly_entries) and not assembly_uses_fallback
+    source_backed_entry_authority = _has_source_backed_entry_authority(assembly_entries)
     entry_false_fragment_heading_samples = collect_false_fragment_heading_samples_from_entries(assembly_entries) if assembly_entries else []
     raw_false_fragment_heading_samples = collect_false_fragment_heading_samples(final_markdown)
     raw_residual_bullet_glyph_samples = collect_residual_bullet_glyph_samples(final_markdown)

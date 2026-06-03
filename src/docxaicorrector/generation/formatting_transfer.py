@@ -183,6 +183,75 @@ def _extract_target_heading_level(paragraph) -> int | None:
     return None
 
 
+def _count_mapping_strategies(strategy_by_source: Mapping[int, str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for strategy in strategy_by_source.values():
+        if not strategy:
+            continue
+        counts[strategy] = counts.get(strategy, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _build_unmapped_source_role_counts(
+    source_paragraphs: Sequence[ParagraphUnit],
+    unmapped_source_ids: Sequence[str],
+) -> dict[str, int]:
+    unmapped_id_set = set(unmapped_source_ids)
+    counts: dict[str, int] = {}
+    for index, paragraph in enumerate(source_paragraphs):
+        paragraph_id = paragraph.paragraph_id or f"p{index:04d}"
+        if paragraph_id not in unmapped_id_set:
+            continue
+        role = str(paragraph.role or paragraph.structural_role or "unknown").strip() or "unknown"
+        counts[role] = counts.get(role, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _build_unmapped_source_samples(
+    source_paragraphs: Sequence[ParagraphUnit],
+    unmapped_source_ids: Sequence[str],
+    *,
+    limit: int = 25,
+) -> list[dict[str, object]]:
+    unmapped_id_set = set(unmapped_source_ids)
+    samples: list[dict[str, object]] = []
+    for index, paragraph in enumerate(source_paragraphs):
+        paragraph_id = paragraph.paragraph_id or f"p{index:04d}"
+        if paragraph_id not in unmapped_id_set:
+            continue
+        samples.append(
+            {
+                "paragraph_id": paragraph_id,
+                "source_index": paragraph.source_index if paragraph.source_index >= 0 else index,
+                "role": paragraph.role,
+                "structural_role": paragraph.structural_role,
+                "heading_level": paragraph.heading_level,
+                "list_kind": paragraph.list_kind,
+                "asset_id": paragraph.asset_id,
+                "origin_raw_indexes": list(paragraph.origin_raw_indexes),
+                "origin_raw_text_count": len(paragraph.origin_raw_texts),
+                "text_preview": _paragraph_preview(_normalize_text_for_mapping(paragraph.text) or paragraph.text),
+            }
+        )
+        if len(samples) >= limit:
+            break
+    return samples
+
+
+def _build_unmapped_target_samples(
+    target_paragraphs: Sequence[Paragraph],
+    unmapped_target_indexes: Sequence[int],
+    *,
+    limit: int = 25,
+) -> list[dict[str, object]]:
+    samples: list[dict[str, object]] = []
+    for target_index in list(unmapped_target_indexes)[:limit]:
+        if target_index < 0 or target_index >= len(target_paragraphs):
+            continue
+        samples.append(_build_target_registry_entry(target_paragraphs[target_index], target_index, mapped=False))
+    return samples
+
+
 def _build_caption_heading_conflicts(
     source_paragraphs: list[ParagraphUnit],
     target_paragraphs: list[Paragraph],
@@ -378,6 +447,78 @@ def _collect_accepted_merged_sources(
                 "source_text_preview": _paragraph_preview(source_paragraph.text),
             }
         )
+    return accepted_sources
+
+
+def _source_paragraph_aggregation_kind(paragraph: ParagraphUnit) -> str | None:
+    structural_role = str(getattr(paragraph, "structural_role", "") or "").strip().lower()
+    role = str(getattr(paragraph, "role", "") or "").strip().lower()
+    if structural_role == "toc_entry":
+        return "toc_entry"
+    if role == "list" or structural_role in {"list", "list_item"} or getattr(paragraph, "list_kind", None):
+        return "list_item"
+    return None
+
+
+def _collect_accepted_aggregated_sources(
+    source_paragraphs: list[ParagraphUnit],
+    target_paragraphs: list[Paragraph],
+    mapped_target_by_source: Mapping[int, int],
+    generated_registry_by_id: Mapping[str, Mapping[str, object]],
+) -> list[dict[str, object]]:
+    accepted_sources: list[dict[str, object]] = []
+    mapped_source_indexes = set(mapped_target_by_source)
+    accepted_source_indexes: set[int] = set()
+
+    for anchor_source_index, target_index in sorted(mapped_target_by_source.items()):
+        if target_index < 0 or target_index >= len(target_paragraphs):
+            continue
+        anchor_source = source_paragraphs[anchor_source_index]
+        aggregation_kind = _source_paragraph_aggregation_kind(anchor_source)
+        if aggregation_kind is None:
+            continue
+
+        target_normalized = _normalize_text_for_mapping(target_paragraphs[target_index].text)
+        if not target_normalized:
+            continue
+
+        for source_index, source_paragraph in enumerate(source_paragraphs):
+            if source_index in mapped_source_indexes or source_index in accepted_source_indexes:
+                continue
+            if abs(source_index - anchor_source_index) > 12:
+                continue
+            if _source_paragraph_aggregation_kind(source_paragraph) != aggregation_kind:
+                continue
+
+            paragraph_id = source_paragraph.paragraph_id or f"p{source_index:04d}"
+            candidate_texts = _build_generated_registry_candidates(
+                source_paragraph,
+                _generated_registry_text(generated_registry_by_id.get(paragraph_id)) or source_paragraph.text,
+            )
+            matched_candidate = next(
+                (
+                    candidate
+                    for candidate in candidate_texts
+                    if len(candidate) >= 8 and candidate != target_normalized and candidate in target_normalized
+                ),
+                "",
+            )
+            if not matched_candidate:
+                continue
+
+            accepted_source_indexes.add(source_index)
+            accepted_sources.append(
+                {
+                    "paragraph_id": paragraph_id,
+                    "source_index": source_index,
+                    "target_index": target_index,
+                    "kind": f"{aggregation_kind}_target_aggregation",
+                    "anchor_source_index": anchor_source_index,
+                    "target_text_preview": _paragraph_preview(target_paragraphs[target_index].text),
+                    "source_text_preview": _paragraph_preview(source_paragraph.text),
+                }
+            )
+
     return accepted_sources
 
 
@@ -685,6 +826,12 @@ def _map_source_target_paragraphs(
         target_paragraphs,
         mapped_target_by_source,
     )
+    accepted_aggregated_sources = _collect_accepted_aggregated_sources(
+        source_paragraphs,
+        target_paragraphs,
+        mapped_target_by_source,
+        generated_registry_by_id,
+    )
     accepted_relations, relation_report = build_paragraph_relations(
         source_paragraphs,
         enabled_relation_kinds=resolve_effective_relation_kinds(),
@@ -773,6 +920,8 @@ def _map_source_target_paragraphs(
         "accepted_split_targets": accepted_split_targets,
         "accepted_merged_sources": accepted_merged_sources,
         "accepted_merged_sources_count": len(accepted_merged_sources),
+        "accepted_aggregated_sources": accepted_aggregated_sources,
+        "accepted_aggregated_sources_count": len(accepted_aggregated_sources),
         "max_accepted_merged_sources": max(
             (int(cast(int, entry.get("accepted_merged_sources_count", 0)) or 0) for entry in accepted_merged_sources),
             default=0,
@@ -830,12 +979,29 @@ def _map_source_target_paragraphs(
             covered_index = source_index_by_id.get(merged_id)
             if covered_index is not None:
                 covered_source_indexes.add(covered_index)
+    for accepted_source in accepted_aggregated_sources:
+        source_index = accepted_source.get("source_index")
+        if isinstance(source_index, int):
+            covered_source_indexes.add(source_index)
 
     diagnostics["unmapped_source_ids"] = [
         source_paragraphs[source_index].paragraph_id or f"p{source_index:04d}"
         for source_index in range(len(source_paragraphs))
         if source_index not in covered_source_indexes
     ]
+    diagnostics["mapping_strategy_counts"] = _count_mapping_strategies(strategy_by_source)
+    diagnostics["unmapped_source_role_counts"] = _build_unmapped_source_role_counts(
+        source_paragraphs,
+        cast(Sequence[str], diagnostics["unmapped_source_ids"]),
+    )
+    diagnostics["unmapped_source_samples"] = _build_unmapped_source_samples(
+        source_paragraphs,
+        cast(Sequence[str], diagnostics["unmapped_source_ids"]),
+    )
+    diagnostics["unmapped_target_samples"] = _build_unmapped_target_samples(
+        target_paragraphs,
+        cast(Sequence[int], diagnostics["unmapped_target_indexes"]),
+    )
     return mapping_pairs, diagnostics
 
 

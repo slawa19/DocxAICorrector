@@ -167,6 +167,7 @@ class ReaderCleanupConfig:
     max_consecutive_deleted_blocks: int = 3
     max_deleted_block_chars: int = 300
     policy: CleanupPolicy = "advisory"
+    allowed_operations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -308,7 +309,28 @@ def resolve_reader_cleanup_config(*, app_config: Mapping[str, object], fallback_
             minimum=1,
         ),
         policy=cast(CleanupPolicy, policy),
+        allowed_operations=_coerce_allowed_operations(app_config.get("reader_cleanup_allowed_operations")),
     )
+
+
+def _coerce_allowed_operations(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    raw_values: Sequence[object]
+    if isinstance(value, str):
+        raw_values = [part.strip() for part in value.split(",")]
+    elif isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        raw_values = value
+    else:
+        return ()
+
+    allowed: list[str] = []
+    for raw_value in raw_values:
+        operation = str(raw_value or "").strip()
+        if not operation or operation not in _ALLOWED_OPERATIONS or operation in allowed:
+            continue
+        allowed.append(operation)
+    return tuple(allowed)
 
 
 def build_reader_cleanup_system_prompt() -> str:
@@ -319,6 +341,7 @@ def build_reader_cleanup_system_prompt() -> str:
         "Return only a single valid JSON object. Do not wrap it in markdown fences. Do not add prose before or after JSON.\n"
         'For no-op chunks, return exactly {"cleanup_operations":[],"warnings":[]} or the same object with string warnings.\n'
         "Allowed operations are delete_block, extract_side_heading_and_reattach_body, split_block, remove_inline_noise, join_fragmented_paragraph, and normalize_heading_boundary.\n"
+        "If response_contract.allowed_operations lists fewer operations, obey that narrower contract and skip any cleanup that needs an operation outside it.\n"
         "Only blocks listed in editable_block_ids are mutation targets; readonly_context_blocks_before and readonly_context_blocks_after are context only and must not be edited.\n"
         "Do not reconstruct TOC or chapters as a structure-recognition task. Do not change semantic order or remove semantic content.\n"
         "For extract_side_heading_and_reattach_body, split_block, remove_inline_noise, join_fragmented_paragraph, and normalize_heading_boundary, provide only the minimal exact-match diff fields, not a rewritten document.\n"
@@ -1346,6 +1369,7 @@ def _build_chunk_request_payload(
     readonly_before = [block.to_payload() for block in chunk.context_before_blocks]
     readonly_after = [block.to_payload() for block in chunk.context_after_blocks]
     operation_selection_targets = _build_operation_selection_targets(blocks=chunk.blocks)
+    allowed_operations = _allowed_operations_for_config(config)
     payload: dict[str, object] = {
         "policy": config.policy,
         "keep_toc": config.keep_toc,
@@ -1370,7 +1394,7 @@ def _build_chunk_request_payload(
                 "expected_after_preview",
                 "safety_note",
             ],
-            "allowed_operations": sorted(_ALLOWED_OPERATIONS),
+            "allowed_operations": sorted(allowed_operations),
             "allowed_delete_reasons": sorted(_ALLOWED_DELETE_REASONS),
             "reason_guidance_by_operation": {
                 "delete_block": sorted(_ALLOWED_DELETE_REASONS),
@@ -1421,6 +1445,10 @@ def _build_chunk_request_payload(
             }
         )
     return payload
+
+
+def _allowed_operations_for_config(config: ReaderCleanupConfig) -> set[str]:
+    return set(config.allowed_operations) if config.allowed_operations else set(_ALLOWED_OPERATIONS)
 
 
 def _build_operation_selection_targets(*, blocks: Sequence[CleanupBlock]) -> list[dict[str, object]]:
@@ -1893,6 +1921,7 @@ def _serialize_cleanup_settings(config: ReaderCleanupConfig) -> dict[str, object
         "overlap_blocks_before": config.overlap_blocks_before,
         "overlap_blocks_after": config.overlap_blocks_after,
         "global_plan_enabled": config.global_plan_enabled,
+        "allowed_operations": sorted(config.allowed_operations),
     }
 
 
@@ -2938,9 +2967,20 @@ def _apply_cleanup_operations(
     same_block_applied_history: dict[str, list[str]] = {}
     rewritten_blocks: list[str | None] = [block.text for block in blocks]
     operations_by_index = _canonicalize_cleanup_operation_sequence(blocks=blocks, operations=operations)
+    allowed_operations = _allowed_operations_for_config(config)
 
     for _, _, _, operation, sequence_decision in operations_by_index:
         block = _block_by_id(blocks, operation.block_id)
+        if operation.operation not in allowed_operations:
+            ignored.append(
+                {
+                    **_serialize_cleanup_operation(operation=operation, block=block),
+                    "chunk_index": operation.chunk_index,
+                    "ignored_reason": "operation_not_allowed_by_cleanup_contract",
+                    **({"sequence_decision": sequence_decision} if sequence_decision else {}),
+                }
+            )
+            continue
         previous_encountered = same_block_operation_history.get(block.block_id, [])
         previous_applied = same_block_applied_history.get(block.block_id, [])
         sequence_ignore_reason = _validate_same_block_operation_sequence(

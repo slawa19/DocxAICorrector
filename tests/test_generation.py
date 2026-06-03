@@ -558,7 +558,7 @@ def test_generate_markdown_block_does_not_fallback_on_generic_invalid_input_erro
         )
 
 
-def test_generate_markdown_block_raises_after_persistent_empty_response(monkeypatch):
+def test_generate_markdown_block_falls_back_to_source_after_persistent_empty_response(monkeypatch):
     attempts = []
     sleep_calls = []
     logged_events = []
@@ -575,25 +575,22 @@ def test_generate_markdown_block_raises_after_persistent_empty_response(monkeypa
         lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-persistent-empty",
     )
 
-    try:
-        generation.generate_markdown_block(
-            client=_as_openai_client(client),
-            model="gpt-5.4",
-            system_prompt="system",
-            target_text="target",
-            context_before="before",
-            context_after="after",
-            max_retries=3,
-        )
-    except RuntimeError as exc:
-        assert "empty_response" in str(exc)
-    else:
-        raise AssertionError("Expected RuntimeError when all attempts return an empty response")
+    target_text = "Короткий исходный абзац, который должен сохраниться без падения пайплайна."
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=target_text,
+        context_before="before",
+        context_after="after",
+        max_retries=3,
+    )
 
+    assert result == target_text
     assert len(attempts) == 4
     assert sleep_calls == [1, 2]
-    assert len(logged_events) == 5
     assert any(args[1] == "markdown_empty_response_recovery_started" for args, _ in logged_events)
+    assert logged_events[-1][0][1] == "markdown_empty_response_source_fallback"
 
 
 def test_generate_markdown_block_falls_back_to_source_after_persistent_incomplete_response(monkeypatch):
@@ -715,7 +712,7 @@ def test_generate_markdown_block_passthrough_for_placeholder_only_marker_target(
     assert logged_events[0][0][1] == "image_only_target_passthrough"
 
 
-def test_generate_markdown_block_raises_on_missing_output_text(monkeypatch):
+def test_generate_markdown_block_falls_back_to_source_on_missing_output_text(monkeypatch):
     logged_events = []
     client = SimpleNamespace(
         responses=SimpleNamespace(create=lambda **_: SimpleNamespace())
@@ -726,21 +723,20 @@ def test_generate_markdown_block_raises_on_missing_output_text(monkeypatch):
         lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-missing-output",
     )
 
-    try:
-        generation.generate_markdown_block(
-            client=_as_openai_client(client),
-            model="gpt-5.4",
-            system_prompt="system",
-            target_text="target",
-            context_before="before",
-            context_after="after",
-            max_retries=1,
-        )
-    except RuntimeError as exc:
-        assert "empty_response" in str(exc)
-        assert logged_events[0][1]["error_code"] == "empty_response"
-    else:
-        raise AssertionError("Expected RuntimeError when output_text is missing")
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text="target",
+        context_before="before",
+        context_after="after",
+        max_retries=1,
+    )
+
+    assert result == "target"
+    assert logged_events[0][1]["error_code"] == "empty_response"
+    assert any(args[1] == "markdown_empty_response_recovery_started" for args, _ in logged_events)
+    assert logged_events[-1][0][1] == "markdown_empty_response_source_fallback"
 
 
 def test_extract_response_output_text_falls_back_to_supported_response_output_items():

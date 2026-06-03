@@ -1514,8 +1514,137 @@ Current local implementation note:
     raw neighbor text no longer matches.
   - Evidence caveat: previous PR-I1 proof v4 artifacts do not contain
     `cleanup_identity_*` counters because this diagnostic layer was added later.
-    The next PR-I1b step is a short lineage/rebuild harness or milestone proof,
-    not another full validation tuning loop.
+  - PR-I1b slice 3 harness, 2026-06-02:
+    `scripts/run-reader-cleanup-lineage-rebuild-harness.py`
+    runs without LLM/full validation against captured raw/cleaned Markdown,
+    cleanup report, formatting diagnostics, and future lineage artifacts.
+  - Running that harness against old proof v4 is `blocked`, not green:
+    old artifacts can restore rebuild-only image placeholders to `12`, but they
+    do not preserve the cleanup-time generated registry required to prove
+    real-artifact id-first lineage. Candidate sources either diverge after one
+    block (`processed_paragraph_registry`) or cover only `82/111` target entries
+    via formatting diagnostics.
+  - Runtime now writes `.run/reader_cleanup_lineage/*.json` artifacts with the
+    active formatting registry, cleanup identity metadata/diagnostics, cleanup
+    report, raw/cleaned Markdown, and derived cleanup formatting lineage. The
+    next PR-I1b proof must run the harness with `--lineage-artifact <path>` and
+    pass before PR-I1c starts.
+  - PR-I1b slice 3 proof, 2026-06-02:
+    `20260602T_pr_i1b_identity_lineage_artifact_proof` completed as
+    comparison-only evidence on `lietaer-pdf-chapter-region-core` /
+    `ui-parity-translate-simple-reader-cleanup-comparison-only`. Harness result
+    with the fresh `.run/reader_cleanup_lineage/*.json` artifact: `passed`.
+    Metrics: raw cleanup blocks `123`, active formatting registry entries
+    `111`, id-matched blocks `111`, image gaps `12`, text gaps `0`,
+    `formatting_lineage_status=derived`,
+    `alignment_mode=identity_sparse_image_placeholders`, derived registry
+    entries `108`, applied cleanup lineage operations `12`, reader-facing
+    placeholders `0`, rebuild-only placeholders restored `12/12`.
+  - PR-I1b is now green as a stitch/runtime-contract proof. The same
+    comparison-only real-document run remains non-acceptance-ready because
+    formatting diagnostics/unmapped thresholds and false fragment headings still
+    fail; that is PR-I1c/PR-I2 work, not an I1b blocker.
+- PR-I1c reader cleanup mutation budget:
+  - Measurement infrastructure completed locally, 2026-06-02, with verifier-
+    validity caveat. Added reproducible comparison profiles:
+    `ui-parity-translate-simple-reader-cleanup-minimal-comparison-only`
+    (`reader_cleanup_allowed_operations=["delete_block","remove_inline_noise"]`)
+    and `ui-parity-translate-simple-reader-cleanup-noop-comparison-only`
+    (`reader_cleanup_enabled=false`, `reader_cleanup_policy=off`).
+  - Focused tests prove the minimal allow-list is visible in cleanup payloads
+    and enforced by runtime as
+    `operation_not_allowed_by_cleanup_contract`.
+  - A/B artifact:
+    `.run/diagnostics/pr_i1c_reader_cleanup_mutation_budget_ab.json`.
+  - Result on `Rethinking-money-chapter-region-pages-10-11-and-156-217.pdf`:
+    `current` preserved images `12/12`, accepted `12` structural cleanup ops
+    (`join_fragmented_paragraph=3`, `normalize_heading_boundary=9`), deleted no
+    blocks/chars, and got verifier `cleaned_better`, high, score delta `+1.0`.
+    `minimal` preserved images, accepted `0` ops, and had lower reproducible
+    issue inventory (`16` vs `20` for current); `no-op` is a floor reference
+    with cleanup skipped and verifier `not_run`.
+  - Caveat: the LLM verifier produced a completed verdict only for `current`;
+    therefore PR-I1c did not prove `current > minimal` as same-basis A/B.
+    Current remains the working cleanup contract as a heuristic because it
+    performs real bounded cleanup with no body deletion, not because the A/B
+    objectively selected it.
+  - PR-I2 / PR-CLEANUP0 must not start from the old "contract fully proven"
+    claim. Next step is to either accept the caveated heuristic explicitly or
+    add same-basis A/B / current-variance proof.
+  - Follow-up current variance probe,
+    `20260602T_pr_i1c_current_verifier_variance_proof`, was a single current
+    run despite `repeat_count=3` being recorded. It preserved images `12/12`,
+    accepted `15` structural ops, deleted no body chars
+    (`deleted_char_ratio=0.0`), and got verifier `cleaned_better`, high,
+    `5.0 -> 6.0`, `remaining_issue_count=10`. This confirms current safety/useful
+    cleanup on one more run, but also confirms verifier volatility (`20` vs
+    `10` remaining issues across current runs).
+  - PR-I1c-ACCEPT, 2026-06-02: accepted current as the working heuristic
+    cleanup contract, not as an A/B-proven winner. This explicitly satisfies the
+    PR-I2 gate. LLM verdict/score remains secondary evidence; deterministic
+    pre-audit / mandatory issue inventory is the primary reproducible signal.
+- PR-CLEANUP0 dormant runtime surface removal:
+  - Unblocked only for deprecation/cleanup planning after PR-I1c-ACCEPT; PR-I2
+    remains the next product-critical slice. Remove or deprecate only the
+    runtime cleanup surface that the accepted working contract proves unused.
+  - Candidate surfaces: `reader_cleanup_global_plan_enabled` runtime global plan,
+    runtime anchor-repair pass, and `reader_verifier_*` runtime config fields
+    that are validation/replay-only rather than production gates.
+  - Preserve validation/replay harness evidence paths and cheap safety gates
+    (`max_delete_*`, protected-block guards). Do not touch legacy `.doc`
+    LibreOffice support.
+- PR-I2 formatting preservation first diagnostic:
+  - Active next after PR-I1c-ACCEPT.
+  - Diagnostic artifact:
+    `.run/diagnostics/pr_i2_unmapped_formatting_diagnostic.json`.
+  - Source run:
+    `20260602T_pr_i1c_current_verifier_variance_proof`.
+  - Current blockers: `unmapped_source=56` (allowed `12`),
+    `unmapped_target=48` (allowed `6`), and `false_fragment_heading_count=15`.
+  - Worst restore pass unmapped source role mix:
+    `body=33`, `heading=12`, `list=11`.
+  - Read-only review confirmed the lineage exists but formatting transfer is
+    conservative across translated shape changes: worst pass has roughly
+    `paragraph_id_registry=62`, `image_anchor=12`,
+    `paragraph_id_registry_similarity=1`, and `0` accepted split targets.
+  - First slice should enrich/repair formatting diagnostics and mapping
+    classification before applying formatting broadly. The stale-looking
+    `legacy_markdown` false-fragment samples (`## Глава восьмая`,
+    `# СТРАТЕГИИ ДЛЯ`, `# ПРАВИТЕЛЬСТВА`, etc.) must be classified as real
+    defects vs outdated gate rules, not converted into new cleanup heuristics.
+  - Local diagnostic enrichment added to formatting diagnostics:
+    `mapping_strategy_counts`, `unmapped_source_role_counts`,
+    `unmapped_source_samples`, `unmapped_target_samples`.
+  - PR-I2 heading-span source fix, 2026-06-03:
+    `logical_import.py` now merges adjacent same-font PDF heading spans before
+    emitting source `ParagraphUnit` headings. Proof
+    `20260603T_pr_i2_heading_span_merge_proof` shows a real but partial
+    improvement vs `20260602T_pr_i1c_current_verifier_variance_proof`:
+    `false_fragment_heading_count 15 -> 11`, worst `unmapped_source 56 -> 53`,
+    worst `unmapped_target 48 -> 47`, worst heading-role unmapped `12 -> 8`;
+    images stayed `12/12` and cleanup safety stayed flat. Remaining
+    false-fragment samples appear to include legitimate chapter/section headings,
+    so the next slice should narrow the legacy gate / move it to unit-aware
+    evidence rather than adding cleanup heuristics.
+  - PR-I2 false-fragment gate narrowing, 2026-06-03:
+    `late_phases.py` now keeps `false_fragment_headings_present` on entry-aware
+    assembly evidence whenever source-backed registry entries exist, even if
+    some entries use fallback. This avoids whole-document fallback to
+    `legacy_markdown` because of one fallback block; it is diagnostic-only and
+    does not mutate Markdown/DOCX.
+  - PR-I2 TOC/list aggregation coverage, 2026-06-03:
+    `formatting_transfer.py` now treats bounded TOC/list source entries as
+    covered when their generated registry text is contained inside an already
+    mapped target paragraph. This reduces unmapped-source noise for translated
+    target aggregation without guessing styles from cleaned Markdown.
+  - PR-I2 proof caveat, 2026-06-03:
+    follow-up comparison proof attempts
+    `20260603T_pr_i2_gate_aggregation_proof` and
+    `20260603T_pr_i2_gate_aggregation_proof_v2` both failed before DOCX rebuild
+    on translation block 36 with persistent `empty_response`. No valid
+    full-profile delta exists for the latest PR-I2 gate/aggregation changes yet.
+    Do not repeat the identical run until that proof-path/model reliability
+    issue is stabilized.
 
 Suggested implementation surface:
 

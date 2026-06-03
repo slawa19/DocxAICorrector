@@ -90,6 +90,72 @@ def test_resolve_reader_cleanup_config_defaults_to_canonical_small_overlap_shape
     assert config.global_plan_enabled is False
 
 
+def test_resolve_reader_cleanup_config_accepts_allowed_operation_list() -> None:
+    config = resolve_reader_cleanup_config(
+        app_config={
+            "reader_cleanup_enabled": True,
+            "reader_cleanup_allowed_operations": ["delete_block", "remove_inline_noise", "delete_block", "split_block_typo"],
+        },
+        fallback_model="fallback:model",
+    )
+
+    assert config.allowed_operations == ("delete_block", "remove_inline_noise")
+
+
+def test_reader_cleanup_allowed_operations_contract_filters_structural_operations() -> None:
+    markdown = "Intro\n\nPage 1\n\nHEADING Body text"
+    captured_payloads: list[dict[str, Any]] = []
+
+    def provider(payload: dict[str, Any], chunk_index: int, chunk_count: int) -> str:
+        captured_payloads.append(payload)
+        page_block = next(block for block in payload["blocks"] if block["text"] == "Page 1")
+        heading_block = next(block for block in payload["blocks"] if block["text"] == "HEADING Body text")
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    _delete_block_operation(page_block, reason="page_number", confidence="high"),
+                    {
+                        "id": heading_block["id"],
+                        "text_hash": heading_block["text_hash"],
+                        "operation": "split_block",
+                        "reason": "heading_fused_with_body",
+                        "confidence": "high",
+                        "evidence_before": "heading fused with body",
+                        "expected_after_preview": "HEADING\n\nBody text",
+                        "safety_note": "Would be structural repair outside the minimal cleanup budget.",
+                        "split_substrings": ["HEADING", "Body text"],
+                    },
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    result = run_reader_cleanup(
+        markdown_text=markdown,
+        config=ReaderCleanupConfig(
+            enabled=True,
+            max_delete_block_ratio=0.8,
+            max_delete_char_ratio=0.8,
+            allowed_operations=("delete_block", "remove_inline_noise"),
+        ),
+        operation_provider=provider,
+    )
+
+    assert captured_payloads
+    assert captured_payloads[0]["response_contract"]["allowed_operations"] == ["delete_block", "remove_inline_noise"]
+    assert captured_payloads[0]["cleanup_settings"]["allowed_operations"] == ["delete_block", "remove_inline_noise"]
+    assert result.cleaned_markdown == "Intro\n\nHEADING Body text"
+    assert result.report_payload["stats"]["accepted_delete_block_count"] == 1
+    assert result.report_payload["stats"]["accepted_cleanup_operation_count"] == 1
+    ignored_reasons = {
+        entry["ignored_reason"]
+        for entry in result.report_payload["ignored_cleanup_operations"]
+        if entry.get("operation") == "split_block"
+    }
+    assert ignored_reasons == {"operation_not_allowed_by_cleanup_contract"}
+
+
 def test_run_reader_cleanup_applies_safe_delete_operations() -> None:
     markdown = "Intro\n\nCompany Header\n\n10\n\nBody paragraph\n\nCompany Header\n\nOutro"
 

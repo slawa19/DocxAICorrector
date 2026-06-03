@@ -718,7 +718,9 @@ Slice order:
    fallback when an id is missing. Status: implemented locally for formatting
    registry derivation and rebuild-only image placeholder anchoring.
 3. Verify with the existing short lineage/rebuild diagnostic harness from PR-I1
-   proof v4, not a full-book run. Status: pending.
+   proof v4, not a full-book run. Status: harness implemented; old proof v4
+   is blocked by missing cleanup-time generated registry, so the next proof must
+   use the new lineage artifact written by runtime.
 
 Acceptance:
 
@@ -780,6 +782,524 @@ Local id-first consumer switch, 2026-06-02:
   contain `cleanup_identity_*` counters, because this diagnostic layer was added
   later. Use a short PR-I1b harness or the next milestone proof for real-document
   identity coverage evidence.
+
+Local slice 3 harness / artifact retention, 2026-06-02:
+
+- Added
+  `scripts/run-reader-cleanup-lineage-rebuild-harness.py`.
+  It runs without LLM/full validation and checks raw cleanup Markdown, cleaned
+  Markdown, cleanup report, registry/identity metadata, formatting lineage, and
+  rebuild-only image placeholder restoration.
+- Running the harness against old PR-I1 proof v4 produced
+  `status=blocked`, not a code failure:
+  - raw cleanup blocks: `123`;
+  - raw image placeholders: `12`;
+  - cleaned image placeholders: `0`;
+  - runtime `processed_paragraph_registry`: `127` entries but only `1`
+    cleanup block id match before text order diverges;
+  - formatting-diagnostics reconstruction: `82` id-mapped target entries out
+    of `111`, leaving `29` text gaps;
+  - both attempts still restore rebuild-only image placeholders to `12`, but
+    neither can prove real-artifact id-first formatting lineage.
+- Root cause: old proof artifacts did not persist the cleanup-time
+  `generated_paragraph_registry` / identity sidecar needed by PR-I1b. This is an
+  artifact-retention gap, not a reason to add cleanup heuristics.
+- Runtime now writes `.run/reader_cleanup_lineage/*.json` artifacts containing
+  raw/cleaned Markdown, cleanup report, active formatting registry,
+  `cleanup_identity_*`, and cleanup-derived formatting registry/lineage. Future
+  PR-I1b proof should run the harness with `--lineage-artifact <path>` and must
+  pass before PR-I1c starts.
+
+PR-I1b slice 3 proof, 2026-06-02:
+
+- Canonical comparison-only proof run:
+  `20260602T_pr_i1b_identity_lineage_artifact_proof`.
+- Source/profile:
+  `lietaer-pdf-chapter-region-core` with
+  `ui-parity-translate-simple-reader-cleanup-comparison-only`.
+- Lineage artifact:
+  `.run/reader_cleanup_lineage/Rethinking-money-chapter-region-pages-10-11-and-156-217.docx_1780413624541.json`.
+- Harness command:
+  `python scripts/run-reader-cleanup-lineage-rebuild-harness.py --lineage-artifact <path>`.
+- Harness result: `status=passed`.
+- Key proof metrics:
+  - raw cleanup blocks: `123`;
+  - active formatting registry entries: `111`;
+  - id-matched cleanup blocks: `111`;
+  - image gaps: `12`;
+  - text gaps: `0`;
+  - cleanup formatting lineage: `derived`;
+  - alignment mode: `identity_sparse_image_placeholders`;
+  - derived registry entries: `108`;
+  - applied cleanup lineage operations: `12`;
+  - reader-facing cleaned Markdown image placeholders: `0`;
+  - rebuild-only Markdown image placeholders restored: `12`.
+- The real-document comparison-only run itself is not an acceptance pass
+  (`acceptance_diagnostic=failed`), because formatting diagnostics/unmapped
+  thresholds and false fragment headings remain. For PR-I1b, the stitch proof is
+  green: id-first lineage and rebuild-only image placeholder restoration are
+  stable enough to unblock PR-I1c.
+
+### PR-I1c. Reader Cleanup Mutation Budget (measurement complete, decision caveated)
+
+Status: measurement infrastructure completed locally, with verifier-validity
+caveat. PR-I1b slice 3 passed on
+`20260602T_pr_i1b_identity_lineage_artifact_proof`, then PR-I1c ran the planned
+current/minimal/no-op comparison. The runs are useful evidence, but they did
+not prove a same-basis A/B winner because the LLM verifier produced a completed
+verdict only for `current`.
+
+Problem:
+
+- After the text-layer source importer, most PDF noise (page furniture, repeated
+  headers, page numbers) is supposed to be removed before translation. Yet
+  post-translation reader cleanup is still the large, heavily mutating component
+  it was when it was the primary cleaner.
+- Cleanup's text mutation is the documented root cause of the lineage/image/
+  formatting stitch failures (PR-I1 root-cause interpretation). The more it
+  mutates, the more downstream repair it forces.
+- At the same time, mutation is not pure cost: prior closeout evidence and the
+  `current` PR-I1c run show that the canonical cleanup path performs real
+  bounded structural cleanup with no body deletion. Cutting cleanup blindly to
+  delete-only could regress useful reader polish, but PR-I1c did not prove
+  `current > minimal` as a measured A/B result.
+
+Goal:
+
+- Decide, with evidence, the smallest cleanup mutation contract that preserves
+  useful reader polish while minimizing downstream stitch repair. Produce one
+  measured fork, then make exactly one final contract switch. Do not ship a
+  "try minimal for a while" intermediate.
+
+A/B measurement (one run, three measured variants on the same frozen PDF
+`tests/sources/Rethinking-money-chapter-region-pages-10-11-and-156-217.pdf`):
+
+1. `current` cleanup (full mutating contract, today's behavior).
+2. `minimal` cleanup (safe page/image/furniture deletion only; no merge/split/
+   inline-noise/heading rewrites).
+3. `no-op` cleanup (disabled), as the floor reference.
+
+Implementation note:
+
+- `minimal` is now a real profile-level contract, not a manual convention:
+  `reader_cleanup_allowed_operations = ["delete_block", "remove_inline_noise"]`.
+  The allowed operation list is serialized into cleanup payloads and enforced at
+  runtime; disallowed operations become ignored diagnostics with
+  `operation_not_allowed_by_cleanup_contract`.
+- `no-op` is a real comparison-only profile using `reader_cleanup_enabled=false`
+  and `reader_cleanup_policy="off"`.
+
+PR-I1c A/B proof, 2026-06-02:
+
+| Variant | Run id | Cleanup result | Images | Reader verifier | Reader delta | Notes |
+|---|---|---:|---:|---|---:|---|
+| `current` | `20260602T_pr_i1b_identity_lineage_artifact_proof` | `12` accepted ops (`join_fragmented_paragraph=3`, `normalize_heading_boundary=9`), `0` delete blocks, `deleted_char_ratio=0.0` | `12/12` | `cleaned_better`, high, `20` remaining issues | `+1.0` | Only variant with a completed LLM verdict; this is secondary evidence, not a measured A/B win. |
+| `minimal` | `20260602T_pr_i1c_minimal_cleanup_budget_proof` | `0` accepted ops, `0` delete blocks, `deleted_char_ratio=0.0` | `12/12` | `failed` / `unclear`, low, `16` remaining issues | `0.0` | Safe but effectively no cleanup on this artifact; lower reproducible issue inventory is a signal, not proof of better cleanup. |
+| `no-op` | `20260602T_pr_i1c_noop_cleanup_budget_proof` | cleanup skipped | `12/12` | `not_run` / `unclear`, low, `23` remaining issues | `0.0` | Floor reference; no raw/cleaned cleanup pair for verifier. |
+
+A/B artifact:
+
+- `.run/diagnostics/pr_i1c_reader_cleanup_mutation_budget_ab.json`.
+
+Interim decision:
+
+- Keep the current canonical small-overlap cleanup contract as the working
+  cleanup contract for now, as a heuristic engineering decision rather than an
+  A/B-proven superiority claim:
+  `8000`, overlap `3/3`, `global_plan=false`, `policy=advisory`, no
+  operation allow-list, existing safety caps
+  (`max_delete_block_ratio=0.03`, `max_delete_char_ratio=0.05`,
+  `max_consecutive_deleted_blocks=3`, `max_deleted_block_chars=300`).
+- Rationale: `current` performs real bounded cleanup (`12` accepted structural
+  operations, `deleted_char_ratio=0.0`, images `12/12`), while `minimal` made
+  no accepted cleanup operations on this artifact. However, do **not** claim
+  `current > minimal` was measured: the one reproducible issue-inventory signal
+  is `minimal=16`, `current=20`, `no-op=23`.
+- Do **not** promote `minimal` on this run either: it preserved safety but did
+  not demonstrate that it can clean; it mostly demonstrates that a no-mutation
+  contract is safe on this artifact.
+- PR-I2/PR-CLEANUP0 must not start from the old "A/B proved the final contract"
+  wording. They may proceed only after this caveat is accepted as the explicit
+  basis, or after a valid same-basis A/B / variance proof is added.
+- PR-I1c-ACCEPT, 2026-06-02: the project explicitly accepts the caveated
+  heuristic basis. `current` remains the working cleanup contract because it
+  performs bounded structural cleanup with flat safety metrics, not because it
+  won a same-basis A/B. LLM verdicts are secondary evidence; deterministic
+  pre-audit / mandatory issue inventory is the primary reproducible signal.
+  This acceptance removes the PR-I2 gate without changing cleanup code.
+
+Metrics to capture per variant:
+
+- deterministic verifier pre-audit / mandatory issue inventory as the primary
+  reproducible cleanup-quality signal;
+- LLM reader verifier score/verdict only as secondary explanatory evidence
+  (the completed-review `remaining_issue_count` can include model-supplied
+  issues merged with deterministic pre-audit findings);
+- final DOCX inline shapes (must stay `12/12`);
+- `formatting_lineage_status` (must reach `derived`, not `skipped`);
+- `unmapped_source` / `unmapped_target` counts;
+- semantic-deletion check: `deleted_char_ratio` and no body-content loss.
+
+Decision rule (single final cut, no shipped intermediate):
+
+- If `minimal` is approximately as good as `current` on reader quality and
+  better on lineage/stitch, make `minimal` the **final** production cleanup
+  default and freeze the mutation budget as an explicit number/flag set.
+- If `current` is clearly better on reader quality, keep it, but cap the
+  mutation budget (e.g. `deleted_char_ratio` ceiling plus disabling whichever
+  operation classes showed no reader-quality contribution in the A/B).
+- Either branch is final. The three variants are measurements, not three
+  releases.
+
+Acceptance:
+
+- One A/B artifact (single JSON/table, same shape as the existing proof
+  artifacts in this spec) records all three variants with the metrics above.
+- A single working cleanup contract is written into this spec with its mutation
+  budget and an explicit evidence class: measured, heuristic, or blocked.
+- Images stay `12/12` and `formatting_lineage_status=derived` under the selected
+  contract.
+- No semantic body deletion in the selected contract.
+
+Non-goals:
+
+- **No shipped intermediate cleanup default.** The A/B selects one contract that
+  is immediately final; do not release `minimal` "to try" and re-decide later.
+- No new reader-cleanup operations or heuristics.
+- No document-specific literals.
+- No formatting application (that is PR-I2, layered on top of the selected
+  contract).
+
+Gate to PR-I2:
+
+- Satisfied by PR-I1c-ACCEPT, 2026-06-02, as an explicit heuristic acceptance,
+  not as an A/B proof. PR-I2 formatting transfer can start over the current
+  canonical small-overlap cleanup contract. Do not cite the LLM verdict as
+  objective evidence that `current` beat `minimal`.
+
+### PR-I1c verifier-validity caveat and next-agent handoff (2026-06-02)
+
+Status: accepted as heuristic basis on 2026-06-02. The PR-I1c "keep current"
+decision is recorded above, but the evidence it rests on is weaker than it
+looks. A next agent must read this before using the A/B table as proof; PR-I2
+may start only because the caveat is explicitly accepted, not because the A/B
+proved superiority.
+
+What is actually broken in the A/B comparison:
+
+- The reader verifier is **harness-only**. It lives exclusively in
+  `tests/artifacts/real_document_pipeline/run_lietaer_validation.py`. In `src/`
+  the `reader_verifier_*` config fields gate nothing. So its verdict is
+  development evidence, not a production gate.
+- The verifier has two independent parts with very different reliability:
+  1. A deterministic regex pre-audit
+     (`_run_reader_verifier_pre_audit()`, ~L1975) that produces the mandatory
+     issue inventory. This is reproducible and comparable across variants. Use
+     this as the primary cleanup-quality signal.
+  2. An LLM-as-judge (`_build_reader_verifier_system_prompt()`, ~L2434) that
+     emits `overall_verdict` plus `reader_quality_score_raw/_cleaned`. The
+     prompt gives **no numeric scale and no rubric**, so the model invents the
+     numbers. They are non-deterministic (the same PDF produced `+2.0` in the
+     PR-PDF3 closeout and `+1.0` in this A/B). Do not treat this verdict or its
+     delta as an objective metric.
+- The LLM judge only runs when a raw/cleaned artifact pair exists. See the
+  precondition at ~L3182: missing pair returns `verifier_status="not_run"`,
+  `verifier_reason="base_artifacts_missing"`, and a hardcoded
+  `overall_verdict="unclear"` / scores `0.0` / `confidence="low"`.
+- Consequence for the A/B: the judge produced a real verdict **only for
+  `current`** (`completed`). `minimal` came back `failed`/`unclear` and `no-op`
+  came back `not_run`/`unclear`. So "only `current` has a proven reader-quality
+  gain" really means "only `current` got any verdict at all" — it is a missing-
+  data artifact, not a head-to-head win.
+- The one reproducible issue-inventory signal points the other way:
+  `minimal=16` < `current=20`. By the trustworthy floor signal, `minimal` looks
+  slightly cleaner, not worse. Caveat: `minimal` made `0` cleanup operations on
+  this artifact, so 16-vs-20 may be coincidental rather than earned. Also note:
+  when the LLM review completes, final `remaining_issue_count` can include
+  model-supplied issues merged with deterministic pre-audit findings, so do not
+  describe every completed-run count as purely regex-derived.
+
+Honest framing of the current decision:
+
+- `current` was not proven superior by the A/B. The A/B is structurally
+  unable to answer "which of three cleanup variants is best", because the LLM
+  judge only answers "is cleaned better than raw?" for one variant at a time and
+  needs a raw/cleaned pair the other two variants never produced.
+- A defensible reason to keep `current` does exist, but it is heuristic, not
+  measured: `current` performs real cleanup (12 accepted ops, no body deletion,
+  `deleted_char_ratio=0.0`, images `12/12`), while `minimal` effectively does
+  nothing on this artifact. "Safe because it changes nothing" is not the same as
+  "cleans better".
+
+What the next agent should do (pick one; do not silently keep the broken claim):
+
+1. Reframe the decision honestly in this spec (smallest, lowest-risk step).
+   Change the PR-I1c decision wording from "proven gain / do not promote
+   minimal" to: keep `current` as a heuristic choice (it cleans without content
+   loss; minimal does not clean on this artifact), explicitly marked
+   `not proven by A/B`, and demote the LLM verdict/score to secondary
+   explanatory evidence. Make deterministic pre-audit / mandatory issue
+   inventory the primary cleanup-quality metric of record.
+2. Fix the A/B so the judge runs on all three variants (only if a real measured
+   comparison is wanted). For every variant feed the same raw artifact plus that
+   variant's cleaned artifact; for `no-op` set `cleaned == raw` so the judge
+   returns "no change" instead of `not_run`; investigate why `minimal` returned
+   `failed` and give it a valid pair. Only then are the three verdicts on one
+   basis.
+3. Measure judge variance (supports option 1). Run `current` 3-5 times on the
+   same frozen PDF and record the spread of `cleaned_score` / delta. If the
+   spread is wide (we already have `+2.0` vs `+1.0`), that confirms the LLM
+   score must not drive the decision.
+
+Recommended path: option 1 + option 3. Treat the deterministic issue inventory
+as primary, fold the LLM verdict to a labeled secondary signal, and re-word the
+PR-I1c decision as a heuristic "keep current" rather than a measured win.
+
+Resolution: option 1 is now complete and option 3 has one follow-up current
+probe. The remaining action is PR-I2 diagnostic work, not another cleanup
+heuristic.
+
+Follow-up current variance probe, 2026-06-02:
+
+- Run id:
+  `20260602T_pr_i1c_current_verifier_variance_proof`.
+- Source/profile:
+  `lietaer-pdf-chapter-region-core` /
+  `ui-parity-translate-simple-reader-cleanup-comparison-only`.
+- Command caveat: this was a **single** current run. It was launched with
+  `DOCXAI_REAL_DOCUMENT_REPEAT_COUNT_OVERRIDE=3`, but the harness records
+  `repeat_count=3` without repeat orchestration (`repeat_runs` absent). Do not
+  count it as three independent repeats.
+- Result:
+  - pipeline result: `succeeded`, comparison-only acceptance diagnostic:
+    `failed` on formatting/unmapped/false-fragment checks;
+  - images: `12/12`;
+  - cleanup: `failed_chunk_count=0`, `accepted_cleanup_operation_count=15`
+    (`normalize_heading_boundary=12`, `join_fragmented_paragraph=3`),
+    `accepted_delete_block_count=0`, `deleted_char_ratio=0.0`;
+  - verifier: `completed`, `cleaned_better`, high,
+    score `5.0 -> 6.0` (`+1.0`), `remaining_issue_count=10`,
+    high severity issues `6`.
+- Interpretation: this strengthens, rather than weakens, the caveat. The same
+  current profile now has at least two materially different verifier inventories
+  on the same frozen PDF (`20` in PR-I1c A/B vs `10` in this follow-up) while
+  keeping safety flat. Treat the LLM score/verdict as secondary and volatile;
+  do not use it as the sole reason to delete or promote cleanup surface.
+
+Hard constraints for the next agent:
+
+- Do not present the LLM verdict (`cleaned_better`, PR-I1c `4.0 -> 5.0`,
+  older closeout `4.0 -> 6.0`) as an objective metric anywhere in this spec.
+- Do not claim `current > minimal` was measured; the A/B cannot support that.
+- Do not add reader-cleanup operations or heuristics to "fix" the comparison.
+- Do not start PR-I2 or PR-CLEANUP0 deletion on the assumption that the
+  contract choice is fully proven; the contract is acceptable to proceed on, but
+  the justification in the spec must be corrected first.
+
+### PR-I2. Formatting Preservation Implementation (active)
+
+Status: active next after PR-I1c-ACCEPT. The cleanup contract is accepted as a
+working heuristic, images are stable at `12/12`, and id-first cleanup stitch is
+green. PR-I2 should focus on formatting transfer/diagnostics, not new cleanup
+operations.
+
+First diagnostic slice, 2026-06-02:
+
+- Source run:
+  `20260602T_pr_i1c_current_verifier_variance_proof`.
+- Diagnostic artifact:
+  `.run/diagnostics/pr_i2_unmapped_formatting_diagnostic.json`.
+- Acceptance blockers from the run:
+  - `formatting_diagnostics_threshold`: `56` unmapped source paragraphs vs
+    threshold `12`;
+  - `unmapped_source_threshold`: `56` vs allowed `12`;
+  - `unmapped_target_threshold`: `48` vs allowed `6`;
+  - `false_fragment_headings_present`: `15`.
+- Formatting diagnostics show two restore passes:
+  - pass 0: `source_count=139`, `target_count=111`, `mapped_count=81`,
+    `unmapped_source=42`, `unmapped_target=30`, with unmapped source roles:
+    `image=4`, `heading=13`, `body=15`, `list=10`;
+  - pass 1: `source_count=139`, `target_count=123`, `mapped_count=75`,
+    `unmapped_source=56`, `unmapped_target=48`, with unmapped source roles:
+    `body=33`, `heading=12`, `list=11`.
+- Read-only code/report review confirmed the problem is conservative formatting
+  alignment, not missing lineage:
+  - worst pass mapping strategy distribution is approximately
+    `paragraph_id_registry=62`, `image_anchor=12`,
+    `paragraph_id_registry_similarity=1`;
+  - accepted split targets are `0`;
+  - therefore PR-I2 must teach formatting transfer to classify/apply lineage
+    across translated output shape changes such as TOC compaction, heading/body
+    fusion, image+heading fusion, source-paragraph merge, and target-paragraph
+    split.
+- Sample failure shape:
+  - source TOC/list-like entries remain separate (`10 truth and consequences`,
+    `11 governance and we, the citizens`, `notes`, `bibliography`);
+  - target combines several of them into one paragraph
+    (`10 истина и последствия... 11 управление... 12 ...`);
+  - body paragraphs and headings also drift between source paragraph units and
+    translated target paragraphs.
+- `false_fragment_headings_present` is currently sourced from
+  `legacy_markdown`; samples include normal chapter/section heading lines such
+  as `## Глава восьмая`, `# СТРАТЕГИИ ДЛЯ`, `# ПРАВИТЕЛЬСТВА`,
+  `# ПЕРЕОСМЫСЛЕНИЕ`, `# ДЕНЬГИ`. First PR-I2 work must classify whether this
+  is a real output defect or a stale legacy gate after text-layer import.
+- PR-I2 heading-span source fix, 2026-06-03:
+  - Local implementation in `src/docxaicorrector/pdf_import/logical_import.py`
+    merges adjacent same-font heading spans before emitting `ParagraphUnit`
+    headings. This fixes real split-heading source defects such as
+    `STRATEGIES FOR` + `GOVERNMENTS`, while preserving separate headings with
+    different font sizes.
+  - Focused tests cover merge and non-merge cases in
+    `tests/test_pdf_text_layer_logical_import.py`.
+  - Comparison-only proof run:
+    `20260603T_pr_i2_heading_span_merge_proof`.
+  - Diagnostic delta artifact:
+    `.run/diagnostics/pr_i2_heading_span_merge_proof_delta.json`.
+  - Result vs `20260602T_pr_i1c_current_verifier_variance_proof`:
+    `false_fragment_heading_count 15 -> 11`,
+    worst `unmapped_source 56 -> 53`,
+    worst `unmapped_target 48 -> 47`,
+    worst heading-role unmapped `12 -> 8`,
+    images stayed `12/12`,
+    cleanup stayed safe (`failed_chunk_count=0`, `deleted_char_ratio=0.0`).
+  - Caveat: the run remains comparison-only non-acceptance evidence:
+    formatting/unmapped/false-fragment checks still fail, and the reader
+    verifier returned `execution_failed`. The fix is accepted as a source
+    quality improvement, not as PR-I2 completion.
+- PR-I2 false-fragment gate narrowing, 2026-06-03:
+  - Local implementation in `src/docxaicorrector/pipeline/late_phases.py`
+    keeps `false_fragment_headings_present` on entry-aware assembly evidence
+    whenever any source-backed registry entry exists, even if the assembly also
+    contains fallback entries. The previous whole-document fallback to
+    `legacy_markdown` made one fallback block invalidate source-backed heading
+    evidence for the entire gate.
+  - This does not mutate Markdown/DOCX and does not add cleanup heuristics. It
+    only prevents stale line-based markdown checks from flagging source-backed
+    chapter/section headings after text-layer import.
+  - Focused test:
+    `tests/test_document_pipeline.py::test_build_translation_quality_report_keeps_entry_authority_with_mixed_fallback_entries`.
+- PR-I2 TOC/list aggregation coverage, 2026-06-03:
+  - Local implementation in
+    `src/docxaicorrector/generation/formatting_transfer.py` recognizes
+    high-confidence source entries aggregated into an already mapped target
+    paragraph for bounded TOC/list cases. These source entries are counted as
+    covered in formatting diagnostics instead of remaining unmapped.
+  - This is still diagnostic/lineage coverage, not broad style guessing: it
+    requires generated registry text to be present inside the mapped target and
+    is limited to TOC/list-shaped source paragraphs.
+  - Focused test:
+    `tests/test_format_restoration.py::test_mapping_treats_toc_entries_aggregated_into_mapped_target_as_covered`.
+- PR-I2 comparison proof attempt, 2026-06-03:
+  - Attempted proof labels:
+    `20260603T_pr_i2_gate_aggregation_proof` and
+    `20260603T_pr_i2_gate_aggregation_proof_v2`.
+  - Both runs failed before DOCX rebuild / formatting diagnostics on translation
+    block 36 with persistent `empty_response`.
+  - Therefore there is no valid delta yet for the gate narrowing or TOC/list
+    aggregation coverage on the full chapter-region profile:
+    `translation_quality_report_path=None`, `formatting_diagnostics_count=0`,
+    `docx_path=None`, and `reader_verifier_status=not_run`.
+  - Treat this as a proof-path reliability blocker, not as evidence against the
+    PR-I2 formatting changes. Do not launch another identical run until the
+    block-36 empty-response path is stabilized, cached, or retried through a
+    known-good model/run profile.
+
+First implementation target:
+
+1. Enrich formatting diagnostics enough to explain unmapped source/target with
+   previews, role, paragraph id, mapping strategy, and whether the failure is
+   TOC/list aggregation, heading split/merge, image placeholder gap, or body
+   paragraph drift.
+   - Status: local diagnostic payload enrichment added. Runtime formatting
+     diagnostics now include `mapping_strategy_counts`,
+     `unmapped_source_role_counts`, `unmapped_source_samples`, and
+     `unmapped_target_samples`.
+2. Only then apply formatting transfer for high-confidence mapped paragraphs:
+   headings/subheadings, list styling/numbering, bold/italic/emphasis,
+   superscript/subscript, hyperlinks, and line/page breaks only where source
+   evidence exists.
+   - Status: first bounded coverage for TOC/list target aggregation is local;
+     it reduces unmapped-source noise when source entries are visibly contained
+     in an already mapped target paragraph. Style application for those
+     aggregated targets remains a separate guarded step.
+3. Reclassify or narrow the stale `false_fragment_headings_present` gate if the
+   samples are valid text-layer headings rather than reader-breaking fragments.
+   - Status: real split-heading continuation defects are partially reduced by
+     the source fix above. Remaining samples still include legitimate chapter/
+     section headings, so the gate now prefers unit-aware evidence when
+     source-backed entries are available, even in mixed fallback assemblies.
+
+Non-goals:
+
+- No new reader-cleanup operations.
+- No document-specific literals.
+- No guessing styles from cleaned Markdown without source paragraph evidence.
+- No broad rewrite of final assembly.
+
+### PR-CLEANUP0. Dormant Runtime Surface Removal (after PR-I1c)
+
+Status: not started. Unblocked by PR-I1c-ACCEPT only for deprecation/cleanup
+planning, not for aggressive deletion. Do not delete runtime cleanup surface
+from the claim that PR-I1c fully proved the contract; it did not. Remove or
+deprecate only surfaces unused by the explicitly accepted working contract, and
+prefer PR-I2 first because formatting preservation is the active product
+blocker.
+
+Problem:
+
+- Several cleanup-adjacent surfaces are effectively dormant in the shipping
+  configuration but still carry runtime cost, code surface, and false "feature
+  exists" signals:
+  - global plan pass (`reader_cleanup_global_plan_enabled` default `false`,
+    advisory-only, extra LLM call);
+  - anchor repair pass (`reader_cleanup_anchor_targets` default empty, extra LLM
+    pass plus a separate chunk builder);
+  - `reader_verifier_*` runtime config (`reader_verifier_enabled` /
+    `reader_verifier_model`): the scoring logic lives only in the validation/
+    replay harness under `tests/artifacts/real_document_pipeline/`, not in
+    `src/`. In runtime these fields gate nothing.
+
+Goal:
+
+- Remove dormant runtime surface only after the selected cleanup contract is
+  accepted with explicit evidence class, so the runtime cleanup component
+  matches its real responsibility.
+
+Slice order (deprecate before delete; no abrupt removal):
+
+1. Mark `reader_verifier_*` runtime config as validation-only / deprecated
+   (documentation + config comment), keeping the harness behavior unchanged.
+   Do not delete the config surface in the same slice.
+2. After the PR-I1c caveat is resolved and a cleanup contract is accepted,
+   remove from the **runtime** path whatever the contract does not use:
+   - global plan pass, if unused by the selected contract;
+   - anchor repair pass, if unused by the selected contract;
+   - the deprecated `reader_verifier_*` runtime config fields.
+   Keep global plan / anchor repair / verifier available in the replay/
+   validation harness if they still have diagnostic value there.
+3. Remove genuinely unreachable cleanup operations in the engine only if the
+   selected contract excludes them and tests confirm they are unreachable in
+   runtime.
+
+Acceptance:
+
+- Runtime cleanup config surface contains only fields that actually gate runtime
+  behavior under the selected contract.
+- `reader_verifier_*` is either removed from runtime or clearly documented as
+  validation-only, with no runtime code implying it gates production output.
+- Removed passes remain available in the validation/replay harness where they
+  still provide evidence.
+- Full pytest suite stays green via the canonical path.
+
+Non-goals:
+
+- No removal of safety gates (`max_delete_*`, protected-block guards); those are
+  cheap and protect against content loss.
+- No removal of legacy `.doc` LibreOffice support; that is a separate input
+  path.
+- No engine-wide refactor of the first-pass cleanup beyond removing operations
+  the selected contract provably excludes.
 
 ## Stop Rules
 

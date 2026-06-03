@@ -1,6 +1,8 @@
 import base64
 import json
 import logging
+import subprocess
+import sys
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -4048,6 +4050,66 @@ def test_build_translation_quality_report_prefers_entry_authority_over_raw_false
     assert report["raw_false_fragment_heading_count"] == 1
 
 
+def test_build_translation_quality_report_keeps_entry_authority_with_mixed_fallback_entries():
+    assembly_result = document_pipeline_output_validation.FinalMarkdownAssemblyResult(
+        final_markdown=(
+            "Иисус постоянно говорит о том, как важно распознавать знамения, чтобы, если им будет даровано пережить\n\n"
+            "## Великую скорбь\n\n"
+            "они могли устоять до конца."
+        ),
+        entries=(
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="Иисус постоянно говорит о том, как важно распознавать знамения, чтобы, если им будет даровано пережить",
+                block_index=1,
+                paragraph_id="p1",
+                source_index=0,
+                role="body",
+                structural_role="body",
+                from_registry=True,
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="## Великую скорбь",
+                block_index=2,
+                paragraph_id="p2",
+                source_index=1,
+                role="heading",
+                structural_role="heading",
+                heading_level=2,
+                from_registry=True,
+                generated_heading_kind="real_heading",
+            ),
+            document_pipeline_output_validation.FinalAssemblyEntry(
+                text="они могли устоять до конца.",
+                block_index=3,
+                used_fallback=True,
+            ),
+        ),
+        diagnostics=document_pipeline_output_validation.FinalAssemblyDiagnostics(),
+    )
+
+    report = document_pipeline_late_phases._build_translation_quality_report(
+        context=SimpleNamespace(
+            app_config={"translation_output_quality_gate_policy": "strict"},
+            processing_operation="translate",
+            uploaded_filename="report.docx",
+            translation_domain="general",
+        ),
+        final_markdown=(
+            "Иисус постоянно говорит о том, как важно распознавать знамения, чтобы, если им будет даровано пережить\n\n"
+            "## Великую скорбь\n\n"
+            "они могли устоять до конца."
+        ),
+        formatting_diagnostics_artifacts=[],
+        assembly_result=assembly_result,
+    )
+
+    assert report["quality_status"] == "pass"
+    assert report["gate_reasons"] == []
+    assert report["false_fragment_heading_count"] == 0
+    assert report["false_fragment_heading_gate_source"] == "entry_assembly"
+    assert report["raw_false_fragment_heading_count"] == 1
+
+
 def test_collect_false_fragment_heading_samples_from_entries_preserves_source_backed_real_heading():
     entries = (
         document_pipeline_output_validation.FinalAssemblyEntry(
@@ -5086,7 +5148,11 @@ def test_reader_cleanup_block_identity_metadata_reports_id_match_and_gaps():
     }
 
 
-def test_reader_cleanup_postprocess_prefers_assembly_formatting_registry_over_stale_state_registry():
+def test_reader_cleanup_postprocess_prefers_assembly_formatting_registry_over_stale_state_registry(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(document_pipeline_late_phases, "READER_CLEANUP_LINEAGE_DIR", tmp_path / "reader_cleanup_lineage")
     runtime = _build_runtime_capture()
     preserve_calls = []
     log_events = []
@@ -5178,6 +5244,13 @@ def test_reader_cleanup_postprocess_prefers_assembly_formatting_registry_over_st
     assert applied_event["context"]["cleanup_identity_id_matched_block_count"] == 2
     assert applied_event["context"]["cleanup_identity_image_gap_count"] == 1
     assert applied_event["context"]["cleanup_identity_text_gap_count"] == 0
+    lineage_artifact_path = Path(applied_event["context"]["reader_cleanup_lineage_artifact_path"])
+    assert lineage_artifact_path.exists()
+    lineage_payload = json.loads(lineage_artifact_path.read_text(encoding="utf-8"))
+    assert lineage_payload["stage"] == "reader_cleanup_lineage"
+    assert lineage_payload["active_formatting_registry"] == assembly_registry
+    assert lineage_payload["cleanup_identity_diagnostics"]["text_gap_count"] == 0
+    assert lineage_payload["cleanup_formatting_lineage"]["status"] == "derived"
 
 
 def test_rebuild_docx_for_markdown_prefers_cleanup_formatting_registry_override():
@@ -5203,6 +5276,53 @@ def test_rebuild_docx_for_markdown_prefers_cleanup_formatting_registry_override(
     )
 
     assert preserve_calls == [override_registry]
+
+
+def test_reader_cleanup_lineage_rebuild_harness_accepts_runtime_lineage_artifact(tmp_path):
+    project_root = Path(__file__).resolve().parents[1]
+    artifact_path = tmp_path / "reader_cleanup_lineage.json"
+    output_path = tmp_path / "harness_result.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "stage": "reader_cleanup_lineage",
+                "raw_markdown": "Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody",
+                "cleaned_markdown": "Intro\n\nBody",
+                "cleanup_report": {"accepted_cleanup_operations": []},
+                "active_formatting_registry": [
+                    {"block_index": 1, "paragraph_id": "p0001", "text": "Intro"},
+                    {"block_index": 3, "paragraph_id": "p0003", "text": "Body"},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(project_root / "scripts/run-reader-cleanup-lineage-rebuild-harness.py"),
+            "--lineage-artifact",
+            str(artifact_path),
+            "--output",
+            str(output_path),
+        ],
+        cwd=project_root,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "passed"
+    attempt = payload["candidate_attempts"][0]
+    assert attempt["lineage_diagnostics"]["status"] == "derived"
+    assert attempt["lineage_diagnostics"]["alignment_mode"] == "identity_sparse_image_placeholders"
+    assert attempt["artifact_shape"]["raw_image_placeholder_count"] == 1
+    assert attempt["artifact_shape"]["cleaned_image_placeholder_count"] == 0
+    assert attempt["artifact_shape"]["rebuilt_image_placeholder_count"] == 1
 
 
 def test_run_document_processing_writes_marker_generation_diagnostics_artifact_on_marker_validation_failure(tmp_path, monkeypatch):

@@ -97,6 +97,7 @@ class RunProfile:
     reader_cleanup_max_consecutive_deleted_blocks: int | None = None
     reader_cleanup_max_deleted_block_chars: int | None = None
     reader_cleanup_policy: str | None = None
+    reader_cleanup_allowed_operations: tuple[str, ...] | None = None
     enable_paragraph_markers: bool | None = None
     keep_all_image_variants: bool | None = None
     structure_recognition_mode: str | None = None
@@ -283,6 +284,7 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         "reader_cleanup_max_consecutive_deleted_blocks": run_profile.reader_cleanup_max_consecutive_deleted_blocks,
         "reader_cleanup_max_deleted_block_chars": run_profile.reader_cleanup_max_deleted_block_chars,
         "reader_cleanup_policy": run_profile.reader_cleanup_policy,
+        "reader_cleanup_allowed_operations": run_profile.reader_cleanup_allowed_operations,
         "enable_paragraph_markers": run_profile.enable_paragraph_markers,
         "keep_all_image_variants": run_profile.keep_all_image_variants,
         "structure_recognition_mode": run_profile.structure_recognition_mode,
@@ -364,6 +366,8 @@ def resolve_runtime_resolution(app_config, run_profile: RunProfile) -> RuntimeRe
         app_config_overrides["reader_cleanup_max_deleted_block_chars"] = run_profile.reader_cleanup_max_deleted_block_chars
     if run_profile.reader_cleanup_policy is not None:
         app_config_overrides["reader_cleanup_policy"] = run_profile.reader_cleanup_policy
+    if run_profile.reader_cleanup_allowed_operations is not None:
+        app_config_overrides["reader_cleanup_allowed_operations"] = list(run_profile.reader_cleanup_allowed_operations)
     for key, default_value in ui_defaults.to_dict().items():
         effective_value = effective.to_dict()[key]
         if effective_value != default_value:
@@ -514,6 +518,7 @@ def _build_run_profile(payload: Any) -> RunProfile:
         reader_cleanup_max_consecutive_deleted_blocks=_optional_int(payload, "reader_cleanup_max_consecutive_deleted_blocks"),
         reader_cleanup_max_deleted_block_chars=_optional_int(payload, "reader_cleanup_max_deleted_block_chars"),
         reader_cleanup_policy=_optional_reader_cleanup_policy(payload, "reader_cleanup_policy"),
+        reader_cleanup_allowed_operations=_optional_str_tuple(payload, "reader_cleanup_allowed_operations"),
         enable_paragraph_markers=_optional_bool(payload, "enable_paragraph_markers"),
         keep_all_image_variants=_optional_bool(payload, "keep_all_image_variants"),
         structure_recognition_mode=_optional_structure_recognition_mode(payload, "structure_recognition_mode"),
@@ -547,6 +552,15 @@ def _optional_str(payload: dict[str, Any], key: str) -> str | None:
     if not isinstance(value, str) or not value.strip():
         raise RuntimeError(f"Registry field {key} must be a non-empty string when provided")
     return value.strip()
+
+
+def _optional_str_tuple(payload: dict[str, Any], key: str) -> tuple[str, ...] | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+        raise RuntimeError(f"Registry field {key} must be a list of non-empty strings when provided")
+    return tuple(item.strip() for item in value)
 
 
 def _coerce_int(payload: dict[str, Any], key: str, default: int) -> int:

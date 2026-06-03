@@ -464,8 +464,30 @@ upstream blocker is recorded with evidence.
   derived through image-placeholder gaps; PR-I1b now carries paragraph identity
   through cleanup blocks and switches the formatting/image stitches to id-first
   matching with normalized-text fallback. Focused tests cover the text-drift
-  case; real-document identity evidence is still pending because the older PR-I1
-  proof artifacts do not contain `cleanup_identity_*` counters.
+  case. Slice 3 passed on
+  `20260602T_pr_i1b_identity_lineage_artifact_proof`: id-matched cleanup blocks
+  `111/111`, image gaps `12`, text gaps `0`,
+  `alignment_mode=identity_sparse_image_placeholders`, rebuild-only image
+  placeholders restored `12/12`.
+- **PR-I1c measured locally, decision caveated.** The controlled cleanup-
+  contract runs produced useful current/minimal/no-op evidence, but the LLM
+  verifier produced a completed verdict only for `current`; therefore the A/B
+  did not prove `current > minimal`. Current canonical small-overlap advisory
+  cleanup remains the working contract as a heuristic (`12` structural ops,
+  `deleted_char_ratio=0.0`, images `12/12`), while the reproducible issue
+  inventory signal was `minimal=16`, `current=20`, `no-op=23`.
+- **PR-I1c-ACCEPT completed.** The project explicitly accepts current canonical
+  small-overlap advisory cleanup as the working heuristic contract, not as an
+  A/B-proven winner. LLM verifier score/verdict is secondary evidence;
+  deterministic pre-audit / mandatory issue inventory is the primary
+  reproducible signal. This satisfies the PR-I2 gate without changing cleanup
+  code.
+- **Current variance probe added.** A follow-up single current run
+  `20260602T_pr_i1c_current_verifier_variance_proof` preserved safety/images
+  (`12/12`, `deleted_char_ratio=0.0`, `failed_chunk_count=0`) and accepted `15`
+  structural ops, but verifier inventory moved to `remaining_issue_count=10`
+  with score `5.0 -> 6.0`. This supports current as a useful working heuristic
+  and confirms the LLM verifier is too volatile to be the sole contract gate.
 - PR-I1: реализовать и протестировать lineage contract
   source paragraphs / raw generated registry → reader-cleaned Markdown blocks →
   generated paragraphs/runs/styles used by DOCX rebuild.
@@ -732,8 +754,11 @@ reader-first путём.
 | PR-PDF4 | Remove Historical LibreOffice PDF Debt | Future cleanup after image/formatting proof: delete remaining LibreOffice PDF helper/comparison-only tests/docs; keep legacy `.doc` LibreOffice support separate. |
 | PR-PDF2 | OCR Fallback | Deferred for now: partial plumbing exists behind `DOCXAI_PDF_OCR_IMPORT_ENABLED=1`, but scanned PDFs are not required for the current text-layer MVP proof. |
 | PR-I1 | Formatting Lineage Contract | Completed locally as runtime-contract proof: reader cleanup postprocess receives the assembly registry and derives lineage through sparse image-placeholder gaps (`123` raw cleanup blocks vs `111` registry entries, `12` image gaps, `108` derived registry entries, `16` applied cleanup lineage ops). Images stay `12/12`; formatting acceptance still fails, so PR-I2 must focus on formatting application/diagnostics, not lineage availability. |
-| PR-I1b | Identity-Anchored Cleanup Stitch | Active locally: cleanup blocks carry internal paragraph identity without model-payload leakage; formatting lineage and rebuild-only image placeholder stitching now use id-first matching with text fallback. Focused tests pass; next step is short lineage/rebuild harness or milestone proof for real-document counters. |
-| PR-I2 | Formatting Preservation Implementation | Apply lineage in DOCX writer/rebuild path; preserve book-grade styles. |
+| PR-I1b | Identity-Anchored Cleanup Stitch | Completed locally as runtime-contract proof: cleanup blocks carry internal paragraph identity without model-payload leakage; formatting lineage and rebuild-only image placeholder stitching now use id-first matching with text fallback. Proof `20260602T_pr_i1b_identity_lineage_artifact_proof` passed the lineage harness with `111/111` id-matched registry entries, `0` text gaps, `12` image gaps, `formatting_lineage_status=derived`, and rebuild-only image placeholders restored `12/12`. |
+| PR-I1c | Reader Cleanup Mutation Budget | Measurement complete, decision caveated: artifact `.run/diagnostics/pr_i1c_reader_cleanup_mutation_budget_ab.json` recorded `current` / `minimal` / `no-op`, but the LLM verifier completed only for `current`, so it did not prove `current > minimal`. Working stance: keep current canonical small-overlap advisory cleanup as a heuristic (`12` structural ops, `deleted_char_ratio=0.0`, images `12/12`); reproducible issue inventory was `minimal=16`, `current=20`, `no-op=23`. Follow-up current run `20260602T_pr_i1c_current_verifier_variance_proof` stayed safe and useful (`15` ops, images `12/12`, `deleted_char_ratio=0.0`) but moved verifier inventory to `10`, confirming volatility. |
+| PR-I1c-ACCEPT | Verifier Validity / Decision Closure | Completed locally: current cleanup contract explicitly accepted as a heuristic working contract, not an A/B-proven winner. Do not cite the old LLM verdict as objective selection evidence. |
+| PR-I2 | Formatting Preservation Implementation | Active: diagnostics enriched and first source-quality sub-slice completed locally. Heading-span merge proof `20260603T_pr_i2_heading_span_merge_proof` reduced `false_fragment_heading_count 15 -> 11`, worst `unmapped_source 56 -> 53`, worst `unmapped_target 48 -> 47`, and heading-role unmapped `12 -> 8`, with images `12/12` and cleanup safety flat. False-fragment gate now prefers entry-aware evidence in mixed fallback assemblies, and TOC/list entries aggregated into a mapped target are counted as covered. Follow-up proof attempts `20260603T_pr_i2_gate_aggregation_proof(_v2)` are blocked by persistent block-36 `empty_response`, so no full-profile delta exists yet for the latest PR-I2 changes. Remaining work: stabilize proof path, then style application across body/list TOC aggregation and merge/split shapes. |
+| PR-CLEANUP0 | Dormant Runtime Surface Removal | After/parallel to PR-I2 planning only: remove/deprecate runtime-only dead cleanup surface not used by the accepted contract (`global_plan`, `anchor_repair`, validation-only `reader_verifier_*`) while preserving harness evidence paths and safety gates. |
 | PR-J1 | Image Handoff Evidence | Completed locally for text-layer PDFs: initial text-only bridge loss was identified and the generated-DOCX bridge now exposes PDF-origin image objects to preparation; LibreOffice media are not extractor-visible assets. |
 | PR-J2 | Image Reinsertion Fix | Completed locally for the proof PDF: placeholder survival diagnostic identified reader-cleanup -> DOCX-rebuild handoff loss; rebuild-only Markdown now restores missing image placeholders, producing `12/12` final inline shapes with no visible placeholder markup. |
 | PR-A1 | Reader-First Default Promotion | `structure_recognition.mode=off`, reader cleanup default-on, proof + extra doc + UI evidence. |
@@ -763,7 +788,10 @@ PR-M0 (plan/status/inventory)
   -> PR-J2 (image placeholder diagnostic + final DOCX reinsertion fix; completed locally)
   -> PR-I1 (formatting lineage; completed local runtime proof)
   -> PR-I1b (identity-anchored cleanup stitch; id-first local switch active)
+  -> PR-I1c (cleanup mutation budget; measurement complete, decision caveated)
+  -> PR-I1c-ACCEPT (current accepted as heuristic working contract)
   -> PR-I2 (formatting preservation implementation)
+  -> PR-CLEANUP0 (dormant runtime cleanup surface removal after accepted contract)
   -> PR-A1 (reader-first default promotion)
   -> PR-A2 (UI reader report + structure panel decoupling)
   -> PR-A3 (anchor repair home)

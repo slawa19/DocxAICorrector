@@ -62,9 +62,26 @@ def build_paragraph_units_from_text_spans(
 
     emitted: list[ParagraphUnit] = []
     pending_body_spans: list[PdfTextSpan] = []
+    pending_heading_spans: list[PdfTextSpan] = []
     skipped_repeated_page_furniture_count = 0
     skipped_page_number_count = 0
     skipped_blank_page_notice_count = 0
+
+    def _flush_body() -> None:
+        nonlocal pending_body_spans
+        if pending_body_spans:
+            emitted.append(_paragraph_from_body_spans(pending_body_spans))
+            pending_body_spans = []
+
+    def _flush_heading() -> None:
+        nonlocal pending_heading_spans
+        if pending_heading_spans:
+            emitted.append(
+                _paragraph_from_heading_spans(
+                    pending_heading_spans, median_font_size=median_font_size
+                )
+            )
+            pending_heading_spans = []
 
     for span in sorted(normalized_spans, key=lambda item: (item.page_number, item.top, item.x0)):
         if _span_furniture_key(span) in repeated_furniture_keys:
@@ -78,24 +95,30 @@ def build_paragraph_units_from_text_spans(
             continue
         role = _classify_span_role(span, median_font_size=median_font_size)
         if role == "body":
+            _flush_heading()
             if pending_body_spans and not _can_merge_body_span(pending_body_spans[-1], span):
-                emitted.append(_paragraph_from_body_spans(pending_body_spans))
-                pending_body_spans = []
+                _flush_body()
             pending_body_spans.append(span)
             continue
+        if role == "heading":
+            _flush_body()
+            if pending_heading_spans and not _can_merge_heading_span(
+                pending_heading_spans[-1], span
+            ):
+                _flush_heading()
+            pending_heading_spans.append(span)
+            continue
         if role == "toc_entry":
-            if pending_body_spans:
-                emitted.append(_paragraph_from_body_spans(pending_body_spans))
-                pending_body_spans = []
+            _flush_body()
+            _flush_heading()
             emitted.append(_paragraph_from_span(span, role=role, median_font_size=median_font_size))
             continue
-        if pending_body_spans:
-            emitted.append(_paragraph_from_body_spans(pending_body_spans))
-            pending_body_spans = []
+        _flush_body()
+        _flush_heading()
         emitted.append(_paragraph_from_span(span, role=role, median_font_size=median_font_size))
 
-    if pending_body_spans:
-        emitted.append(_paragraph_from_body_spans(pending_body_spans))
+    _flush_body()
+    _flush_heading()
 
     for logical_index, paragraph in enumerate(emitted):
         _assign_pdf_paragraph_identity(paragraph, logical_index)
@@ -137,6 +160,36 @@ def _can_merge_body_span(previous: PdfTextSpan, current: PdfTextSpan) -> bool:
     return vertical_gap <= max_gap
 
 
+def _can_merge_heading_span(previous: PdfTextSpan, current: PdfTextSpan) -> bool:
+    if previous.page_number != current.page_number:
+        return False
+    if _looks_like_toc_entry(previous) or _looks_like_toc_entry(current):
+        return False
+    previous_text = _normalize_text(previous.text)
+    if previous_text and previous_text[-1] in ".!?:":
+        return False
+    previous_font_size = (
+        float(previous.font_size)
+        if isinstance(previous.font_size, (int, float)) and previous.font_size > 0
+        else None
+    )
+    current_font_size = (
+        float(current.font_size)
+        if isinstance(current.font_size, (int, float)) and current.font_size > 0
+        else None
+    )
+    if previous_font_size and current_font_size:
+        smaller = min(previous_font_size, current_font_size)
+        larger = max(previous_font_size, current_font_size)
+        if larger - smaller > max(0.5, smaller * 0.1):
+            return False
+    base_font_size = previous_font_size or current_font_size or 10.0
+    vertical_gap = max(0.0, float(current.top) - float(previous.bottom))
+    max_gap = max(8.0, base_font_size * 1.4)
+    return vertical_gap <= max_gap
+
+
+
 def _paragraph_from_body_spans(spans: list[PdfTextSpan]) -> ParagraphUnit:
     text = " ".join(_normalize_text(span.text) for span in spans)
     first = spans[0]
@@ -155,6 +208,38 @@ def _paragraph_from_body_spans(spans: list[PdfTextSpan]) -> ParagraphUnit:
         boundary_source="pdf_text_layer",
         boundary_confidence="heuristic",
         boundary_rationale="merged_adjacent_pdf_text_spans",
+        source_index=_span_origin_index(first),
+    )
+
+
+def _paragraph_from_heading_spans(
+    spans: list[PdfTextSpan],
+    *,
+    median_font_size: float | None,
+) -> ParagraphUnit:
+    if len(spans) == 1:
+        return _paragraph_from_span(spans[0], role="heading", median_font_size=median_font_size)
+    text = " ".join(_normalize_text(span.text) for span in spans)
+    first = spans[0]
+    heading_level = _infer_heading_level(first, median_font_size=median_font_size)
+    return ParagraphUnit(
+        text=text,
+        role="heading",
+        structural_role="heading",
+        role_confidence="heuristic",
+        style_name=_style_name_for_role("heading"),
+        heading_level=heading_level,
+        heading_source="pdf_text_layer",
+        list_level=0,
+        is_bold=all(span.is_bold for span in spans),
+        is_italic=all(span.is_italic for span in spans),
+        font_size_pt=_median_font_size(spans),
+        origin_raw_indexes=[_span_origin_index(span) for span in spans],
+        origin_raw_texts=[_normalize_text(span.text) for span in spans],
+        layout_origin="pdf_text_layer",
+        boundary_source="pdf_text_layer",
+        boundary_confidence="heuristic",
+        boundary_rationale="merged_adjacent_pdf_heading_spans",
         source_index=_span_origin_index(first),
     )
 

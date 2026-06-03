@@ -117,7 +117,7 @@ bash -c "cd /mnt/d/www/projects/2025/DocxAICorrector && python3 scripts/_list_lo
 ### 3.4 Generation
 
 - `context_leakage_persisted`, `image_only_target_passthrough`.
-- `markdown_empty_response_recovery_started`, `markdown_incomplete_response_source_fallback`.
+- `markdown_empty_response_recovery_started`, `markdown_incomplete_response_source_fallback`, `markdown_empty_response_source_fallback`.
 - `model_empty_response_shape`, `prompt_quality_warning`.
 
 ### 3.5 Image pipeline

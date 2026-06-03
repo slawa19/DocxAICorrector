@@ -86,6 +86,47 @@ def test_build_paragraph_units_preserves_heading_list_and_formatting_signals() -
     ]
 
 
+def test_build_paragraph_units_merges_multiline_heading_into_single_heading() -> None:
+    spans = [
+        _span(1, "Глава восьмая", top=80, bottom=98, font_size=16, bold=True),
+        _span(1, "STRATEGIES FOR", top=110, bottom=140, font_size=28, bold=True),
+        _span(1, "GOVERNMENTS", top=142, bottom=172, font_size=28, bold=True),
+        _span(1, "Money is the lever of power.", top=210, bottom=222, font_size=10),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.role for paragraph in result.paragraphs] == [
+        "heading",
+        "heading",
+        "body",
+    ]
+    chapter_label = result.paragraphs[0]
+    merged_heading = result.paragraphs[1]
+    assert chapter_label.text == "Глава восьмая"
+    assert merged_heading.text == "STRATEGIES FOR GOVERNMENTS"
+    assert merged_heading.boundary_rationale == "merged_adjacent_pdf_heading_spans"
+    assert merged_heading.heading_level is not None
+    assert merged_heading.heading_source == "pdf_text_layer"
+    assert merged_heading.origin_raw_texts == ["STRATEGIES FOR", "GOVERNMENTS"]
+
+
+def test_build_paragraph_units_keeps_separate_headings_with_different_font_size() -> None:
+    spans = [
+        _span(1, "PART THREE", top=80, bottom=98, font_size=14, bold=True),
+        _span(1, "RETHINKING MONEY", top=110, bottom=140, font_size=26, bold=True),
+        _span(1, "Body paragraph follows.", top=200, bottom=212, font_size=10),
+    ]
+
+    result = build_paragraph_units_from_text_spans(spans)
+
+    assert [paragraph.text for paragraph in result.paragraphs] == [
+        "PART THREE",
+        "RETHINKING MONEY",
+        "Body paragraph follows.",
+    ]
+
+
 def test_build_paragraph_units_does_not_merge_toc_entries_into_large_body_blob() -> None:
     spans = [
         _span(1, "CONTENTS", top=100, bottom=120, font_size=18, bold=True),

@@ -434,6 +434,68 @@ def test_build_output_formatting_diagnostics_maps_symbol_only_carryover_marker()
     assert diagnostics["unmapped_target_indexes"] == []
 
 
+def test_build_output_formatting_diagnostics_summarizes_unmapped_roles_and_samples():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="Stable source paragraph",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0002",
+            text="Chapter Heading",
+            role="heading",
+            structural_role="heading",
+            role_confidence="explicit",
+            heading_level=2,
+        ),
+        ParagraphUnit(
+            paragraph_id="p0003",
+            text="List item",
+            role="list",
+            structural_role="list",
+            role_confidence="heuristic",
+            list_kind="bullet",
+        ),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("Stable source paragraph")
+    target_doc.add_paragraph("Translated paragraph that does not map")
+
+    diagnostics = _build_output_formatting_diagnostics(
+        source_paragraphs,
+        list(target_doc.paragraphs),
+        document=target_doc,
+    )
+
+    assert diagnostics["mapped_count"] == 1
+    assert diagnostics["mapping_strategy_counts"] == {"exact_text": 1}
+    assert diagnostics["unmapped_source_ids"] == ["p0002", "p0003"]
+    assert diagnostics["unmapped_source_role_counts"] == {"heading": 1, "list": 1}
+
+    source_samples = cast(list[dict[str, object]], diagnostics["unmapped_source_samples"])
+    assert [
+        (sample["paragraph_id"], sample["role"], sample["text_preview"])
+        for sample in source_samples
+    ] == [
+        ("p0002", "heading", "chapter heading"),
+        ("p0003", "list", "list item"),
+    ]
+
+    target_samples = cast(list[dict[str, object]], diagnostics["unmapped_target_samples"])
+    assert target_samples == [
+        {
+            "target_index": 1,
+            "mapped": False,
+            "style_name": "Normal",
+            "heading_level": None,
+            "text_preview": "translated paragraph that does not map",
+        }
+    ]
+
+
 def test_mapping_reports_accepted_merged_sources_in_diagnostics():
     source_paragraphs = [
         ParagraphUnit(
@@ -611,6 +673,59 @@ def test_mapping_treats_assembly_merged_paragraph_ids_as_covered_source_paragrap
     assert diagnostics["mapped_count"] == 1
     assert diagnostics["unmapped_source_ids"] == []
     assert diagnostics["unmapped_target_indexes"] == []
+
+
+def test_mapping_treats_toc_entries_aggregated_into_mapped_target_as_covered():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="10 truth and consequences",
+            role="body",
+            structural_role="toc_entry",
+            role_confidence="heuristic",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0002",
+            text="11 governance and we, the citizens",
+            role="body",
+            structural_role="toc_entry",
+            role_confidence="heuristic",
+        ),
+    ]
+
+    target_doc = Document()
+    target_doc.add_paragraph("10 истина и последствия 11 управление и мы, граждане")
+
+    _, diagnostics = _map_source_target_paragraphs(
+        source_paragraphs,
+        target_doc.paragraphs,
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0001",
+                "text": "10 истина и последствия 11 управление и мы, граждане",
+            },
+            {
+                "paragraph_id": "p0002",
+                "text": "11 управление и мы, граждане",
+            },
+        ],
+    )
+
+    assert diagnostics["mapped_count"] == 1
+    assert diagnostics["unmapped_source_ids"] == []
+    assert diagnostics["unmapped_target_indexes"] == []
+    assert diagnostics["accepted_aggregated_sources_count"] == 1
+    assert diagnostics["accepted_aggregated_sources"] == [
+        {
+            "paragraph_id": "p0002",
+            "source_index": 1,
+            "target_index": 0,
+            "kind": "toc_entry_target_aggregation",
+            "anchor_source_index": 0,
+            "target_text_preview": "10 истина и последствия 11 управление и мы, граждане",
+            "source_text_preview": "11 governance and we, the citizens",
+        }
+    ]
 
 
 def test_mapping_normalizes_markdown_list_and_blockquote_prefixes_from_generated_registry():

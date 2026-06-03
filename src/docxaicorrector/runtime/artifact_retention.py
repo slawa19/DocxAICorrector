@@ -68,6 +68,10 @@ UI_RESULT_ARTIFACTS_MAX_COUNT = 80
 STRUCTURE_MANIFESTS_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 STRUCTURE_MANIFESTS_MAX_COUNT = 200
 
+# Reader-cleanup lineage stitch diagnostics (``late_phases.py``).
+READER_CLEANUP_LINEAGE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+READER_CLEANUP_LINEAGE_MAX_COUNT = 50
+
 _UI_RESULT_GROUP_SUFFIXES = (
     ".result.manifest.json",
     ".result.meta.json",

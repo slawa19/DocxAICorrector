@@ -896,6 +896,14 @@ def _can_fallback_to_source_text_after_marker_validation_failure(target_text: st
     return marker_mode and bool(target_text.strip())
 
 
+def _is_empty_response_error(exc: Exception) -> bool:
+    return isinstance(exc, RuntimeError) and "empty_response" in str(exc)
+
+
+def _can_fallback_to_source_text_after_empty_response(target_text: str) -> bool:
+    return bool(target_text.strip())
+
+
 def _is_retryable_empty_generation_error(exc: Exception) -> bool:
     return isinstance(exc, RuntimeError) and (
         "empty_response" in str(exc) or "collapsed_output" in str(exc) or "incomplete_response" in str(exc)
@@ -1051,6 +1059,19 @@ def generate_markdown_block(
                     marker_error=str(recovery_exc),
                 )
                 return target_text_for_leakage
+            if _is_empty_response_error(recovery_exc) and _can_fallback_to_source_text_after_empty_response(
+                target_text
+            ):
+                log_event(
+                    logging.WARNING,
+                    "markdown_empty_response_source_fallback",
+                    "Recovery для блока снова завершился empty_response; сохраняю исходный текст блока как controlled fallback.",
+                    model=model,
+                    target_chars=len(target_text),
+                    marker_mode=marker_mode,
+                    recovery_error=str(recovery_exc),
+                )
+                return target_text
             if _is_retryable_empty_generation_error(recovery_exc) or _is_retryable_marker_validation_error(recovery_exc):
                 raise recovery_exc
             raise recovery_exc
