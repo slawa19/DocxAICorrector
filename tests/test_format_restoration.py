@@ -652,6 +652,39 @@ def test_formatting_diagnostics_classify_marker_closable_residual_when_target_te
     assert samples[0]["free_target_candidate_indexes_containing_registry_text"] == [0]
 
 
+def test_formatting_diagnostics_keep_full_residual_rows_beyond_sample_limit():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id=f"p{index:04d}",
+            text=f"Source paragraph {index}",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        )
+        for index in range(30)
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("Unrelated target")
+
+    diagnostics = _build_output_formatting_diagnostics(
+        source_paragraphs,
+        list(target_doc.paragraphs),
+        document=target_doc,
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": paragraph.paragraph_id,
+                "text": f"Generated paragraph {index}",
+            }
+            for index, paragraph in enumerate(source_paragraphs)
+        ],
+    )
+
+    residual = cast(dict[str, object], diagnostics["unmapped_source_residual_diagnostics"])
+    assert len(cast(list[dict[str, object]], residual["residual_rows"])) == 30
+    assert len(cast(list[dict[str, object]], residual["samples"])) == 25
+    assert residual["residual_closability_diagnostics"]["classification_basis"] == "full_unmapped_source_set"
+
+
 def test_formatting_diagnostics_credit_body_dissolved_into_mapped_neighbor_body_target():
     source_paragraphs = [
         ParagraphUnit(

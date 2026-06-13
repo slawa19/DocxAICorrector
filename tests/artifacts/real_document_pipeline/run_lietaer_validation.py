@@ -463,14 +463,60 @@ def _resolve_filtered_formatting_unmapped_source_count(
     return max_count, benign_reduction_applied
 
 
-def _resolve_acceptance_unmapped_source_count(
+def _formatting_payload_format_neutral_creditable_count(payload: Mapping[str, object]) -> int | None:
+    residual = payload.get("unmapped_source_residual_diagnostics")
+    if not isinstance(residual, Mapping):
+        return None
+    effective = residual.get("effective_formatting_coverage_diagnostics")
+    if not isinstance(effective, Mapping):
+        return None
+    if "format_neutral_creditable_count" not in effective:
+        return None
+    return max(0, _coerce_int(effective.get("format_neutral_creditable_count"), default=0))
+
+
+def _resolve_role_aware_formatting_unmapped_source_summary(
+    formatting_diagnostics: Sequence[Mapping[str, object]],
+) -> dict[str, object] | None:
+    summaries: list[dict[str, object]] = []
+    for payload in formatting_diagnostics:
+        creditable_count = _formatting_payload_format_neutral_creditable_count(payload)
+        if creditable_count is None:
+            continue
+        raw_ids = _coerce_string_list(payload.get("unmapped_source_ids"))
+        filtered_ids = _filter_benign_unmapped_source_ids(payload)
+        raw_count = len(raw_ids)
+        filtered_count = len(filtered_ids)
+        effective_count = max(filtered_count - creditable_count, 0)
+        summaries.append(
+            {
+                "raw_unmapped_source_count": raw_count,
+                "filtered_unmapped_source_count": filtered_count,
+                "format_neutral_creditable_count": creditable_count,
+                "effective_unmapped_source_count": effective_count,
+                "benign_reduction_applied": filtered_count != raw_count,
+            }
+        )
+
+    if not summaries:
+        return None
+
+    max_summary = max(summaries, key=lambda item: int(item["effective_unmapped_source_count"]))
+    return {
+        **max_summary,
+        "unmapped_source_count_basis": "role_aware_formatting_coverage",
+        "payload_count": len(summaries),
+    }
+
+
+def _resolve_acceptance_unmapped_source_summary(
     *,
     formatting_diagnostics: Sequence[Mapping[str, object]],
     translation_quality_report: Mapping[str, object],
-) -> int:
+) -> dict[str, object]:
     count_basis = str(translation_quality_report.get("unmapped_source_count_basis") or "").strip().lower()
     if count_basis in {"topology_unit", "accepted_aggregation_legacy"}:
-        return _coerce_int(
+        actual = _coerce_int(
             translation_quality_report.get(
                 "structure_unit_unmapped_source_count",
                 translation_quality_report.get(
@@ -479,6 +525,26 @@ def _resolve_acceptance_unmapped_source_count(
                 ),
             )
         )
+        return {
+            "actual": actual,
+            "unmapped_source_count_basis": count_basis,
+            "raw_worst_unmapped_source_count": _max_payload_list_length(formatting_diagnostics, "unmapped_source_ids"),
+            "format_neutral_creditable_count": 0,
+        }
+
+    role_aware_summary = _resolve_role_aware_formatting_unmapped_source_summary(formatting_diagnostics)
+    if role_aware_summary is not None:
+        return {
+            "actual": int(role_aware_summary["effective_unmapped_source_count"]),
+            **role_aware_summary,
+            "quality_unmapped_source_count": _coerce_int(
+                translation_quality_report.get(
+                    "worst_unmapped_source_count",
+                    translation_quality_report.get("unmapped_source_count"),
+                )
+            ),
+        }
+
     quality_count = _coerce_int(
         translation_quality_report.get(
             "worst_unmapped_source_count",
@@ -486,9 +552,29 @@ def _resolve_acceptance_unmapped_source_count(
         )
     )
     formatting_count, benign_reduction_applied = _resolve_filtered_formatting_unmapped_source_count(formatting_diagnostics)
-    if benign_reduction_applied:
-        return formatting_count
-    return max(quality_count, formatting_count)
+    actual = formatting_count if benign_reduction_applied else max(quality_count, formatting_count)
+    return {
+        "actual": actual,
+        "unmapped_source_count_basis": translation_quality_report.get("unmapped_source_count_basis"),
+        "raw_worst_unmapped_source_count": _max_payload_list_length(formatting_diagnostics, "unmapped_source_ids"),
+        "filtered_unmapped_source_count": formatting_count,
+        "quality_unmapped_source_count": quality_count,
+        "benign_reduction_applied": benign_reduction_applied,
+        "format_neutral_creditable_count": 0,
+    }
+
+
+def _resolve_acceptance_unmapped_source_count(
+    *,
+    formatting_diagnostics: Sequence[Mapping[str, object]],
+    translation_quality_report: Mapping[str, object],
+) -> int:
+    return int(
+        _resolve_acceptance_unmapped_source_summary(
+            formatting_diagnostics=formatting_diagnostics,
+            translation_quality_report=translation_quality_report,
+        )["actual"]
+    )
 
 
 def _resolve_acceptance_unmapped_target_count(
@@ -5179,10 +5265,11 @@ def evaluate_lietaer_acceptance(
         total_caption_heading_conflicts += len(
             cast(Sequence[object], payload.get("caption_heading_conflicts") or [])
         )
-    explicit_unmapped_source_count = _resolve_acceptance_unmapped_source_count(
+    unmapped_source_summary = _resolve_acceptance_unmapped_source_summary(
         formatting_diagnostics=formatting_diagnostics,
         translation_quality_report=translation_quality_report,
     )
+    explicit_unmapped_source_count = int(unmapped_source_summary["actual"])
     explicit_unmapped_target_count = _resolve_acceptance_unmapped_target_count(
         formatting_diagnostics=formatting_diagnostics,
         translation_quality_report=translation_quality_report,
@@ -5193,7 +5280,11 @@ def evaluate_lietaer_acceptance(
         actual=explicit_unmapped_source_count,
         worst_unmapped_source_count=worst_unmapped_source_count,
         raw_worst_unmapped_source_count=worst_unmapped_source_count,
-        unmapped_source_count_basis=translation_quality_report.get("unmapped_source_count_basis"),
+        unmapped_source_count_basis=unmapped_source_summary.get("unmapped_source_count_basis"),
+        role_aware_effective_unmapped_source_count=unmapped_source_summary.get("effective_unmapped_source_count"),
+        filtered_unmapped_source_count=unmapped_source_summary.get("filtered_unmapped_source_count"),
+        format_neutral_creditable_count=unmapped_source_summary.get("format_neutral_creditable_count"),
+        quality_unmapped_source_count=unmapped_source_summary.get("quality_unmapped_source_count"),
         mismatch_threshold=mismatch_threshold,
         caption_heading_conflicts=total_caption_heading_conflicts,
         artifact_count=len(formatting_diagnostics),
@@ -5204,6 +5295,10 @@ def evaluate_lietaer_acceptance(
         actual=explicit_unmapped_source_count,
         allowed=mismatch_threshold,
         worst_unmapped_source_count=explicit_unmapped_source_count,
+        raw_worst_unmapped_source_count=worst_unmapped_source_count,
+        count_basis=unmapped_source_summary.get("unmapped_source_count_basis"),
+        role_aware_effective_unmapped_source_count=unmapped_source_summary.get("effective_unmapped_source_count"),
+        format_neutral_creditable_count=unmapped_source_summary.get("format_neutral_creditable_count"),
     )
     add_check(
         "unmapped_target_threshold",
@@ -5211,6 +5306,7 @@ def evaluate_lietaer_acceptance(
         actual=explicit_unmapped_target_count,
         allowed=unmapped_target_threshold,
         unmapped_target_count=explicit_unmapped_target_count,
+        count_basis=translation_quality_report.get("unmapped_target_count_basis") or "raw_paragraph",
     )
 
     if translation_quality_report:

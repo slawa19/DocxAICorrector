@@ -114,6 +114,18 @@ must stay counted even when content survives.
 
 **Depends on:** PR-FC2 (evidence), validated through PR-FC3 (replay).
 
+**Local implementation note, 2026-06-13:**
+- Source-side acceptance now uses `role_aware_formatting_coverage` when
+  formatting diagnostics expose `effective_formatting_coverage_diagnostics`.
+  The gate actual is `filtered_raw_unmapped_source_count -
+  format_neutral_creditable_count`, with raw/effective/credit counts recorded on
+  `formatting_diagnostics_threshold` and `unmapped_source_threshold`.
+- Explicit `topology_unit` / `accepted_aggregation_legacy` bases still take
+  precedence.
+- Target-side threshold remains raw paragraph count for now and exposes
+  `count_basis`; no target-side role-aware credit is invented without a separate
+  target coverage diagnostic.
+
 ## PR-FC2. Stronger Coverage Evidence Collector (measurement-only)
 
 **Intent:** make PR-FC1 honest. Exact-substring containment under-proves
@@ -136,6 +148,16 @@ content.
 
 **Depends on:** none. Build alongside PR-FC1.
 
+**Local implementation note, 2026-06-13:**
+- Live diagnostics and `scripts/classify-formatting-residuals.py` now use
+  `registry_text_exact_or_fuzzy_overlap_in_already_mapped_neighbor_target`.
+- Evidence remains measurement-only: it is recorded in
+  `effective_formatting_coverage_diagnostics` and `occupied_neighbor_candidate_evidence`;
+  it does not change `mapped_count`, mapping strategy selection, or style
+  application.
+- Focused tests cover both sides of the role-aware rule: fuzzy body->body is
+  creditable, while fuzzy heading->body remains formatting loss.
+
 ## PR-FC3. No-LLM Diagnostic Replay Harness — build first
 
 **Intent:** remove the expensive, flaky full-translation proof from the inner
@@ -157,6 +179,18 @@ loop. Almost every check above is deterministic post-processing of restore.
 
 **Depends on:** none. This is the scaffolding; build it before FC1/FC2 so they
 are validated cheaply.
+
+**Local implementation note, 2026-06-13:**
+- Future restore diagnostics now persist full `residual_rows` in addition to the
+  capped `samples` preview. This makes no-LLM replay possible without relying on
+  the sample limit.
+- `scripts/classify-formatting-residuals.py` uses `residual_rows` when present
+  and reports `classification_basis=full_residual_rows`; for older artifacts
+  such as `20260613T_pr_i2c_rebuild_identity_key_proof`, it falls back to
+  `classification_basis=saved_residual_samples` / `sample_based=true`.
+  Therefore the old report remains a conservative replay signal, while the next
+  live/proof artifact will be replayable as a full-set diagnostic without model
+  calls.
 
 ## PR-FC4. Single Final DOCX Build
 

@@ -462,6 +462,7 @@ def _build_unmapped_source_residual_diagnostics(
     stage_counts: dict[str, int] = {}
     closability_counts: dict[str, int] = {}
     effective_coverage_counts: dict[str, int] = {}
+    residual_rows: list[dict[str, object]] = []
     samples: list[dict[str, object]] = []
     mapped_source_by_target = {target_index: source_index for source_index, target_index in mapped_target_by_source.items()}
     mapped_target_indexes = set(mapped_source_by_target)
@@ -527,33 +528,31 @@ def _build_unmapped_source_residual_diagnostics(
             first_missing_stage = "rebuilt_docx_restore_match_missing"
         stage_counts[first_missing_stage] = stage_counts.get(first_missing_stage, 0) + 1
 
-        if len(samples) >= limit:
-            continue
-
-        samples.append(
-            {
-                "paragraph_id": paragraph_id,
-                "source_index": paragraph.source_index if paragraph.source_index >= 0 else index,
-                "role": paragraph.role,
-                "structural_role": paragraph.structural_role,
-                "source_format_role": source_format_role,
-                "residual_category": category,
-                "residual_closability_class": closability_class,
-                "effective_formatting_coverage_class": effective_coverage_class,
-                "first_missing_identity_stage": first_missing_stage,
-                "source_paragraph_id_available": bool(paragraph.paragraph_id),
-                "generated_registry_entry_available": registry_entry is not None,
-                "generated_registry_merged_ids": merged_ids,
-                "relation_ids": relation_ids,
-                "target_candidate_indexes_containing_registry_text": target_candidate_indexes,
-                "free_target_candidate_indexes_containing_registry_text": free_target_candidate_indexes,
-                "occupied_neighbor_candidate_evidence": neighbor_evidence,
-                "origin_raw_text_count": len(paragraph.origin_raw_texts),
-                "origin_raw_indexes": list(paragraph.origin_raw_indexes),
-                "text_preview": _paragraph_preview(_normalize_text_for_mapping(paragraph.text) or paragraph.text),
-                "generated_text_preview": _paragraph_preview(registry_text) if registry_text else "",
-            }
-        )
+        row: dict[str, object] = {
+            "paragraph_id": paragraph_id,
+            "source_index": paragraph.source_index if paragraph.source_index >= 0 else index,
+            "role": paragraph.role,
+            "structural_role": paragraph.structural_role,
+            "source_format_role": source_format_role,
+            "residual_category": category,
+            "residual_closability_class": closability_class,
+            "effective_formatting_coverage_class": effective_coverage_class,
+            "first_missing_identity_stage": first_missing_stage,
+            "source_paragraph_id_available": bool(paragraph.paragraph_id),
+            "generated_registry_entry_available": registry_entry is not None,
+            "generated_registry_merged_ids": merged_ids,
+            "relation_ids": relation_ids,
+            "target_candidate_indexes_containing_registry_text": target_candidate_indexes,
+            "free_target_candidate_indexes_containing_registry_text": free_target_candidate_indexes,
+            "occupied_neighbor_candidate_evidence": neighbor_evidence,
+            "origin_raw_text_count": len(paragraph.origin_raw_texts),
+            "origin_raw_indexes": list(paragraph.origin_raw_indexes),
+            "text_preview": _paragraph_preview(_normalize_text_for_mapping(paragraph.text) or paragraph.text),
+            "generated_text_preview": _paragraph_preview(registry_text) if registry_text else "",
+        }
+        residual_rows.append(row)
+        if len(samples) < limit:
+            samples.append(row)
 
     return {
         "category_counts": dict(sorted(category_counts.items())),
@@ -580,6 +579,7 @@ def _build_unmapped_source_residual_diagnostics(
                 0,
             ),
         },
+        "residual_rows": residual_rows,
         "samples": samples,
     }
 

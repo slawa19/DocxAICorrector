@@ -254,10 +254,14 @@ def _summarize_diagnostic(path: str, diagnostic: Mapping[str, Any]) -> dict[str,
     residual = diagnostic.get("unmapped_source_residual_diagnostics")
     if not isinstance(residual, Mapping):
         residual = {}
+    residual_rows = residual.get("residual_rows")
+    if not isinstance(residual_rows, list):
+        residual_rows = []
     samples = residual.get("samples")
     if not isinstance(samples, list):
         samples = []
-    sample_mappings = [sample for sample in samples if isinstance(sample, Mapping)]
+    row_source = residual_rows if residual_rows else samples
+    row_mappings = [sample for sample in row_source if isinstance(sample, Mapping)]
     category_counts = residual.get("category_counts")
     if not isinstance(category_counts, Mapping):
         category_counts = {}
@@ -265,9 +269,9 @@ def _summarize_diagnostic(path: str, diagnostic: Mapping[str, Any]) -> dict[str,
     mapped_source_by_target = _mapped_source_by_target(diagnostic)
     target_roles_by_index = _target_roles_by_index(diagnostic)
     target_previews_by_index = _target_previews_by_index(diagnostic)
-    classification_counts = _count_classes(sample_mappings, mapped_source_by_target, target_previews_by_index)
+    classification_counts = _count_classes(row_mappings, mapped_source_by_target, target_previews_by_index)
     effective_counts = _count_effective_classes(
-        sample_mappings,
+        row_mappings,
         mapped_source_by_target,
         target_roles_by_index,
         target_previews_by_index,
@@ -282,9 +286,10 @@ def _summarize_diagnostic(path: str, diagnostic: Mapping[str, Any]) -> dict[str,
         "unmapped_source_count": len(diagnostic.get("unmapped_source_ids") or []),
         "unmapped_target_count": len(diagnostic.get("unmapped_target_indexes") or []),
         "residual_category_counts": dict(sorted(category_counts.items())),
-        "classification_basis": "saved_residual_samples",
-        "sample_based": True,
-        "sample_count": len(sample_mappings),
+        "classification_basis": "full_residual_rows" if residual_rows else "saved_residual_samples",
+        "sample_based": not bool(residual_rows),
+        "row_count": len(row_mappings),
+        "sample_count": len(samples),
         "total_residual_count_from_category_counts": total_residual_count,
         "classification_counts": classification_counts,
         "embedded_marker_upper_bound_count": classification_counts.get("target_exists_text_align_missed", 0),
