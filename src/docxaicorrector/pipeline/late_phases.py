@@ -1505,6 +1505,8 @@ def _build_translation_quality_report(
         "structure_unit_total_count": authority_fields.get("structure_unit_total_count"),
         "structure_unit_unmapped_source_count": authority_fields.get("structure_unit_unmapped_source_count"),
         "structure_unit_unmapped_target_count": authority_fields.get("structure_unit_unmapped_target_count"),
+        "accepted_aggregated_source_unit_count": authority_fields.get("accepted_aggregated_source_unit_count"),
+        "accepted_aggregated_target_index_count": authority_fields.get("accepted_aggregated_target_index_count"),
         "unmapped_source_count_basis": authority_fields.get("unmapped_source_count_basis", "legacy_paragraph"),
         "unmapped_target_count_basis": authority_fields.get("unmapped_target_count_basis", "legacy_paragraph"),
         "unit_unmapped_source_gate_source": authority_fields.get(
@@ -1699,6 +1701,8 @@ def _derive_translation_quality_authority_fields(
                 "structure_unit_total_count",
                 "structure_unit_unmapped_source_count",
                 "structure_unit_unmapped_target_count",
+                "accepted_aggregated_source_unit_count",
+                "accepted_aggregated_target_index_count",
                 "unmapped_source_count_basis",
                 "unmapped_target_count_basis",
                 "unit_unmapped_source_gate_source",
@@ -1717,7 +1721,11 @@ def _effective_authoritative_unmapped_count(
     structure_count_key: str,
 ) -> int:
     basis = str(fields.get(basis_key) or "legacy_paragraph").strip().lower() or "legacy_paragraph"
-    candidate = fields.get(structure_count_key) if basis == "topology_unit" else fields.get(raw_count_key)
+    candidate = (
+        fields.get(structure_count_key)
+        if basis in {"topology_unit", "accepted_aggregation_legacy"}
+        else fields.get(raw_count_key)
+    )
     return int(candidate or 0) if isinstance(candidate, (int, float, bool)) else 0
 
 

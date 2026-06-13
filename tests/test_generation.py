@@ -593,6 +593,44 @@ def test_generate_markdown_block_falls_back_to_source_after_persistent_empty_res
     assert logged_events[-1][0][1] == "markdown_empty_response_source_fallback"
 
 
+def test_generate_markdown_block_falls_back_when_recovery_returns_blank_markdown(monkeypatch):
+    attempts = []
+    sleep_calls = []
+    logged_events = []
+
+    def call_markdown_request_with_sdk_fallback(client, request_kwargs):
+        attempts.append(dict(request_kwargs))
+        if len(attempts) <= 2:
+            raise RuntimeError("Модель вернула пустой ответ (empty_response).")
+        return "", False
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: SimpleNamespace(output_text="unused")))
+    monkeypatch.setattr(generation, "_call_markdown_request_with_sdk_fallback", call_markdown_request_with_sdk_fallback)
+    monkeypatch.setattr(generation.time, "sleep", sleep_calls.append)
+    monkeypatch.setattr(
+        generation,
+        "log_event",
+        lambda *args, **kwargs: logged_events.append((args, kwargs)) or "evt-blank-recovery",
+    )
+
+    target_text = "Исходный абзац должен сохраниться, если recovery вернул пустой markdown."
+    result = generation.generate_markdown_block(
+        client=_as_openai_client(client),
+        model="gpt-5.4",
+        system_prompt="system",
+        target_text=target_text,
+        context_before="before",
+        context_after="after",
+        max_retries=2,
+    )
+
+    assert result == target_text
+    assert len(attempts) == 3
+    assert sleep_calls == [1]
+    assert any(args[1] == "markdown_empty_response_recovery_started" for args, _ in logged_events)
+    assert logged_events[-1][0][1] == "markdown_empty_response_source_fallback"
+
+
 def test_generate_markdown_block_falls_back_to_source_after_persistent_incomplete_response(monkeypatch):
     attempts = []
     sleep_calls = []

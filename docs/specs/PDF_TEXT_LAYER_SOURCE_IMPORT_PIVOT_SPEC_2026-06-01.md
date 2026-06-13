@@ -1204,6 +1204,157 @@ First diagnostic slice, 2026-06-02:
     PR-I2 formatting changes. Do not launch another identical run until the
     block-36 empty-response path is stabilized, cached, or retried through a
     known-good model/run profile.
+- PR-R0 translation empty-response reliability, 2026-06-12:
+  - Completed locally as reliability prerequisite for product proof.
+  - Local implementation in `src/docxaicorrector/generation/_generation.py`
+    makes recovery-time blank markdown explicit: if the post-retry recovery call
+    returns an empty string without raising, it is converted into
+    `empty_response` so the existing controlled source-block fallback can keep
+    the pipeline moving and log `markdown_empty_response_source_fallback`.
+  - Focused tests in `tests/test_generation.py` cover persistent empty response,
+    blank recovery output, and incomplete response fallback.
+  - Proof `20260612T_pr_r0_empty_response_recovery_proof` completed the
+    chapter-region comparison profile after the previous block-36 reliability
+    failures. It produced final raw/cleaned Markdown plus DOCX artifacts,
+    `output_docx_openable=True`, `output_inline_shapes=12`,
+    `output_contains_placeholder_markup=False`, `reader_cleanup_failed_chunk_count=0`,
+    and verifier `cleaned_better` / high confidence.
+  - The proof reclassifies the active blocker: translation reliability no longer
+    prevents inspection. Remaining failure is product formatting/mapping:
+    comparison-only acceptance failed only
+    `formatting_diagnostics_threshold`, `unmapped_source_threshold`, and
+    `unmapped_target_threshold` (`52` worst unmapped source vs threshold `12`,
+    `48` unmapped target vs threshold `6`). PR-I2 should continue from these
+    mapping diagnostics; do not launch another identical reliability proof.
+  - Manual verifier audit, 2026-06-12: do not treat verifier output as ground
+    truth without artifact inspection. Confirmed real reader-visible defects in
+    the proof output include numbered headings fused with body text (`10. КАК
+    ЭТО РАБОТАЕТ...`, `11. РЕШЕНИЕ КРИЗИСА...`), paragraph continuations after
+    image/caption boundaries, and one large untranslated English source fallback
+    block. Confirmed verifier/report noise includes negated safety summaries
+    being counted as risks (`No false deletions...`, `No regressions...`) and at
+    least one stale line reference for an embedded-heading finding. The
+    validation harness now hardens the reader-verifier prompt/parser so absence
+    statements in `possible_false_deletions` / `readability_regressions` become
+    empty lists instead of false safety risks.
+  - Verifier contract clarification, 2026-06-13: the LLM reader verifier is
+    advisory-only and must not be a source of acceptance truth. In
+    `20260612T_pr_i2a_aggregation_coverage_proof` it returned
+    `verifier_status=failed`, `overall_verdict=unclear`,
+    `cleaned_audit_verdict=unclear`, and `confidence=low`, while the pipeline
+    and deterministic diagnostics still produced usable proof evidence. This
+    matches earlier evidence where verifier execution failed or gave high
+    confidence to a weaker result. Gate truth is deterministic:
+    `unmapped_*`, `accepted_aggregated_*`, image counts, false-fragment counts,
+    and explicit artifact inspection. Verifier output may contribute issue
+    categories and anchors, but its verdict/confidence must not pass or fail a
+    PR.
+- PR-I2a aggregation-coverage restore, 2026-06-12:
+  - Active slice name: **Aggregation-Coverage Final Formatting Restore**.
+  - Corrected diagnosis: id-first matching is already implemented and dominates
+    the proof (`paragraph_id_registry=62`, `image_anchor=12` in the final pass).
+    The remaining `52/48` mapping failure is not primarily missing identity; it
+    is N-to-1 / 1-to-N granularity drift after translation and reader cleanup.
+  - The current mapper accepted `0` aggregated sources in the PR-R0 proof even
+    though cleanup lineage already had `merged_paragraph_ids` for TOC/front
+    matter groups such as `p0015 -> p0015..p0024`. Those sources were therefore
+    reported as unmapped even when the target paragraph visibly contained the
+    combined generated text.
+  - Local implementation in
+    `src/docxaicorrector/generation/formatting_transfer.py` adds a bounded
+    registry-aggregation anchor mapping: if a generated registry entry has
+    `merged_paragraph_ids` and its generated text is contained in one nearby
+    target paragraph with high coverage, that target can be mapped as
+    `paragraph_id_registry_aggregation_anchor`. The merged ids are then emitted
+    as `accepted_aggregated_sources` and counted as covered diagnostics instead
+    of raw unmapped source loss.
+  - Gate wiring follow-up in `src/docxaicorrector/validation/structural.py`:
+    `accepted_aggregated_sources` now contributes to unit-aware effective
+    coverage. Its source units are removed from
+    `structure_unit_unmapped_source_count`, and accepted aggregation target
+    indexes can remove corresponding units from
+    `structure_unit_unmapped_target_count`. `late_phases.py` carries
+    `accepted_aggregated_source_unit_count` and
+    `accepted_aggregated_target_index_count` into the translation quality report
+    so real-document acceptance sees the same effective coverage as formatting
+    diagnostics.
+  - Legacy-path wiring follow-up: chapter-region currently reports
+    `unmapped_source_count_basis=legacy_paragraph`, so topology-only subtraction
+    would be unreachable. The same accepted aggregation coverage now applies
+    before the topology early-return as `accepted_aggregation_legacy`: raw
+    counts remain visible, but `structure_unit_unmapped_*` carries the
+    aggregation-adjusted effective counts and the real-document acceptance
+    runner treats that basis like topology-unit effective coverage.
+  - This is lineage/diagnostic coverage, not cleanup or style guessing. It does
+    not add reader-cleanup operations, does not mutate validation/verifier, and
+    does not infer formatting from plain cleaned Markdown.
+  - Focused tests:
+    `tests/test_format_restoration.py::test_mapping_treats_toc_entries_aggregated_into_mapped_target_as_covered`
+    and
+    `tests/test_format_restoration.py::test_mapping_accepts_registry_aggregate_anchor_when_target_has_extra_context`;
+    gate wiring test:
+    `tests/test_real_document_validation_corpus.py::test_derive_unit_aware_unmapped_fields_counts_accepted_aggregation_as_effective_coverage`;
+    legacy-path gate tests:
+    `tests/test_real_document_validation_corpus.py::test_derive_unit_aware_unmapped_fields_applies_accepted_aggregation_without_topology_projection`
+    and
+    `tests/test_real_document_pipeline_validation.py::test_evaluate_lietaer_acceptance_prefers_accepted_aggregation_legacy_basis_over_raw_counts`.
+  - PR-I2a proof, 2026-06-12:
+    `20260612T_pr_i2a_aggregation_coverage_proof` completed the chapter-region
+    comparison profile. Pipeline result was `succeeded`; reader/output
+    artifacts were produced; final formatting diagnostics still failed
+    `formatting_diagnostics_threshold`, `unmapped_source_threshold`, and
+    `unmapped_target_threshold`.
+  - Observed metrics:
+    - pre-cleanup restore pass: `mapped=83`, `unmapped_source=36`,
+      `unmapped_target=28`, `accepted_aggregated_sources_count=16`;
+    - post-cleanup/final restore pass: `mapped=80`, `unmapped_source=38`,
+      `unmapped_target=42`, `accepted_aggregated_sources_count=17`;
+    - final-pass mapping strategies included `image_anchor=12`,
+      `paragraph_id_registry=66`, `paragraph_id_registry_similarity=1`, and
+      `paragraph_id_registry_aggregation_anchor=1`.
+  - Interpretation correction: the proof did **not** activate
+    `accepted_aggregation_legacy` as the authoritative basis. The accepted
+    aggregated ids mostly described source components that were no longer in
+    `unmapped_source_ids`; therefore legacy subtraction had nothing to remove
+    on this document. This is not the previous "topology-only branch not
+    reached" bug; it is a sharper finding that TOC/front-matter aggregation is
+    now mostly covered before the legacy gate, while the remaining gate failure
+    is dominated by residual body/list/heading N-to-M drift.
+  - Attribution correction: the observed improvement (`52 -> 38/36` source
+    unmapped depending on acceptance/report view) came from matcher-side
+    coverage such as `paragraph_id_registry_aggregation_anchor`, not from the
+    legacy-basis subtraction path. Keep the subtraction code as a safety net for
+    future payloads where accepted ids still intersect unmapped ids, but do not
+    credit it for this proof.
+  - PR-I2a result: partial improvement and useful diagnostics, but not PR-I2
+    closeout. Compared with the PR-R0 proof baseline (`52` source / `48`
+    target worst unmapped), final source unmapped improved to `38`, but target
+    unmapped stayed high at `42`, and both remain above thresholds (`12` and
+    `6`). Do not repeat this same proof expecting the gate to turn green; the
+    next slice must attack residual body/list/heading granularity coverage or
+    narrow the gate semantics to distinguish real formatting loss from
+    intentionally shared/aggregated targets.
+  - PR-I2a follow-up local slice, 2026-06-12: bounded shared-target coverage for
+    `image + adjacent heading` paragraphs. If a source image placeholder maps
+    to a target paragraph that also contains the generated text for the next
+    source heading, the image source maps as `image_anchor_contained` and the
+    heading is recorded as `accepted_aggregated_sources` with kind
+    `image_heading_shared_target`. This does not promote the mixed target to a
+    Word heading and does not cover arbitrary body text; it only prevents a
+    proven adjacent heading from being counted as lost when the rebuild path
+    emits `[[DOCX_IMAGE_img_NNN]] Chapter...` as one paragraph.
+  - Scope correction: `image_anchor_contained` /
+    `image_heading_shared_target` is a narrow fallback for already-blended
+    rebuild targets, not the main PR-I2 direction. Do not grow this into a
+    family of text-containment heuristics. The next main slice should move
+    upstream: carry explicit cleanup/assembly split-merge relations and
+    `origin_paragraph_ids` into final formatting restore so N-to-M coverage is
+    based on recorded structural facts rather than substring thresholds.
+  - Commit hygiene: `tests/artifacts/real_document_pipeline/run_lietaer_validation.py`
+    currently contains both PR-I2a acceptance-basis wiring and verifier
+    hardening. Stage it by hunk: basis handling for
+    `accepted_aggregation_legacy` belongs to PR-I2a; verifier prompt/parser
+    changes belong to the separate verifier-hardening workstream.
 
 First implementation target:
 
@@ -1225,6 +1376,37 @@ First implementation target:
      aggregated targets remains a separate guarded step.
 3. Reclassify or narrow the stale `false_fragment_headings_present` gate if the
    samples are valid text-layer headings rather than reader-breaking fragments.
+
+Next implementation plan after PR-I2a:
+
+1. **PR-I2b. Relation-Anchored Formatting Restore**
+   - Goal: make final restore consume explicit source-to-target relations
+     produced by assembly/cleanup (`origin_paragraph_ids`, split/merge/shared
+     target metadata) instead of adding more text-containment fallbacks.
+   - First diagnostic step: extend formatting diagnostics with relation coverage
+     classes for the remaining `38/42` failures:
+     `image_heading_shared_target`, `heading_body_shared_target`,
+     `body_merge_shared_target`, `list_or_definition_shared_target`,
+     and `real_uncovered`.
+   - Implementation step: for high-confidence recorded relations, mark covered
+     source paragraphs and shared target paragraphs without applying unsafe
+     styles to mixed targets. For example, a target that contains both image and
+     heading should be counted as covered, while style application remains
+     conservative.
+   - Acceptance: source/target effective unmapped counts decrease because
+     relation evidence explains N-to-M drift; images remain `12/12`; no verifier
+     verdict is used as a gate; no document-specific strings or new cleanup
+     operations are added.
+2. **PR-I2c. Formatting Application On Proven Relations**
+   - Start only after PR-I2b reduces false-unmapped noise enough to identify real
+     formatting loss.
+   - Apply heading/list/caption/run styling only where the relation is
+     unambiguous and the target is not a mixed paragraph that would be corrupted
+     by a single Word style.
+3. **PR-CLEANUP0**
+   - Keep blocked until PR-I2b/PR-I2c define which runtime surfaces are actually
+     unused. Verifier config can be marked validation-only, but do not delete
+     proof harnesses or safety guards while formatting restore is still moving.
    - Status: real split-heading continuation defects are partially reduced by
      the source fix above. Remaining samples still include legitimate chapter/
      section headings, so the gate now prefers unit-aware evidence when

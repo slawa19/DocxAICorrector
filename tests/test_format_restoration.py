@@ -728,6 +728,136 @@ def test_mapping_treats_toc_entries_aggregated_into_mapped_target_as_covered():
     ]
 
 
+def test_mapping_accepts_registry_aggregate_anchor_when_target_has_extra_context():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id=f"p000{index}",
+            text=f"Unrelated source {index}",
+            role="body",
+            structural_role="body",
+            role_confidence="heuristic",
+        )
+        for index in range(4)
+    ]
+    source_paragraphs.extend(
+        [
+            ParagraphUnit(
+                paragraph_id="p0004",
+                text="10 truth and consequences: lessons learned 175",
+                role="body",
+                structural_role="toc_entry",
+                role_confidence="heuristic",
+            ),
+            ParagraphUnit(
+                paragraph_id="p0005",
+                text="11 governance and we, the citizens: an ancient future? 187",
+                role="body",
+                structural_role="toc_entry",
+                role_confidence="heuristic",
+            ),
+            ParagraphUnit(
+                paragraph_id="p0006",
+                text="12 our available future: the cooperative society 203",
+                role="body",
+                structural_role="toc_entry",
+                role_confidence="heuristic",
+            ),
+        ]
+    )
+
+    target_doc = Document()
+    target_doc.add_paragraph(
+        "10 истина и последствия: извлеченные уроки 175 "
+        "11 управление и мы, граждане: будущее из древности? 187 "
+        "12 наше доступное будущее: общество сотрудничества 203 "
+        "примечания 225"
+    )
+
+    _, diagnostics = _map_source_target_paragraphs(
+        source_paragraphs,
+        target_doc.paragraphs,
+        generated_paragraph_registry=[
+            {
+                "paragraph_id": "p0004",
+                "text": (
+                    "10 истина и последствия: извлеченные уроки 175 "
+                    "11 управление и мы, граждане: будущее из древности? 187 "
+                    "12 наше доступное будущее: общество сотрудничества 203"
+                ),
+                "merged_paragraph_ids": ["p0004", "p0005", "p0006"],
+            },
+        ],
+    )
+
+    assert diagnostics["mapped_count"] == 1
+    assert diagnostics["mapping_strategy_counts"] == {"paragraph_id_registry_aggregation_anchor": 1}
+    assert diagnostics["unmapped_source_ids"] == ["p0000", "p0001", "p0002", "p0003"]
+    assert diagnostics["unmapped_target_indexes"] == []
+    assert diagnostics["accepted_aggregated_sources_count"] == 2
+    assert [
+        (entry["paragraph_id"], entry["kind"], entry["anchor_paragraph_id"])
+        for entry in diagnostics["accepted_aggregated_sources"]
+    ] == [
+        ("p0005", "toc_entry_generated_registry_target_aggregation", "p0004"),
+        ("p0006", "toc_entry_generated_registry_target_aggregation", "p0004"),
+    ]
+
+
+def test_mapping_covers_heading_embedded_in_image_anchor_target():
+    source_paragraphs = [
+        ParagraphUnit(
+            paragraph_id="p0001",
+            text="[[DOCX_IMAGE_img_001]]",
+            role="image",
+            structural_role="image",
+            asset_id="img_001",
+        ),
+        ParagraphUnit(
+            paragraph_id="p0002",
+            text="Chapter Ten",
+            role="heading",
+            structural_role="heading",
+            heading_level=2,
+        ),
+        ParagraphUnit(
+            paragraph_id="p0003",
+            text="Body text that must not be covered by the image-heading rule.",
+            role="body",
+            structural_role="body",
+        ),
+    ]
+    target_doc = Document()
+    target_doc.add_paragraph("[[DOCX_IMAGE_img_001]] Глава десятая")
+    target_doc.add_paragraph("Непохожий текст")
+
+    _, diagnostics = _map_source_target_paragraphs(
+        source_paragraphs,
+        target_doc.paragraphs,
+        generated_paragraph_registry=[
+            {"paragraph_id": "p0002", "text": "## Глава десятая"},
+            {"paragraph_id": "p0003", "text": "Текст тела не совпадает"},
+        ],
+    )
+
+    assert diagnostics["mapped_count"] == 1
+    assert diagnostics["mapping_strategy_counts"] == {"image_anchor_contained": 1}
+    assert diagnostics["unmapped_source_ids"] == ["p0003"]
+    assert diagnostics["unmapped_target_indexes"] == [1]
+    assert diagnostics["accepted_aggregated_sources_count"] == 1
+    assert diagnostics["accepted_aggregated_sources"] == [
+        {
+            "paragraph_id": "p0002",
+            "source_index": 1,
+            "target_index": 0,
+            "kind": "image_heading_shared_target",
+            "anchor_source_index": 0,
+            "anchor_paragraph_id": "p0001",
+            "target_text_preview": "[[DOCX_IMAGE_img_001]] Глава десятая",
+            "source_text_preview": "Chapter Ten",
+        }
+    ]
+
+
 def test_mapping_normalizes_markdown_list_and_blockquote_prefixes_from_generated_registry():
     source_paragraphs = [
         ParagraphUnit(

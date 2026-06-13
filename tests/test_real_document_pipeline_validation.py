@@ -1079,6 +1079,65 @@ def test_evaluate_lietaer_acceptance_prefers_structure_unit_unmapped_basis_over_
     assert by_name["unmapped_target_threshold"]["actual"] == 1
 
 
+def test_evaluate_lietaer_acceptance_prefers_accepted_aggregation_legacy_basis_over_raw_counts() -> None:
+    validation = _load_validation_module()
+
+    source_doc = Document()
+    source_doc.add_paragraph("Один абзац")
+    output_doc = Document()
+    output_doc.add_paragraph("Один абзац")
+
+    report = {
+        "result": "succeeded",
+        "output_artifacts": {
+            "output_docx_openable": True,
+            "output_contains_placeholder_markup": False,
+        },
+        "formatting_diagnostics": [
+            {
+                "unmapped_source_ids": ["p0003", "p0004"],
+                "unmapped_target_indexes": [12],
+                "accepted_aggregated_sources": [
+                    {"paragraph_id": "p0003", "target_index": 12},
+                    {"paragraph_id": "p0004", "target_index": 12},
+                ],
+            }
+        ],
+        "translation_quality_report": {
+            "worst_unmapped_source_count": 2,
+            "unmapped_source_count": 2,
+            "raw_unmapped_source_paragraph_count": 2,
+            "structure_unit_unmapped_source_count": 0,
+            "unmapped_source_count_basis": "accepted_aggregation_legacy",
+            "unmapped_target_count": 1,
+            "raw_unmapped_target_paragraph_count": 1,
+            "structure_unit_unmapped_target_count": 0,
+            "unmapped_target_count_basis": "accepted_aggregation_legacy",
+            "accepted_aggregated_source_unit_count": 2,
+            "accepted_aggregated_target_index_count": 1,
+            "toc_body_concat_detected": False,
+        },
+    }
+
+    acceptance = validation.evaluate_lietaer_acceptance(
+        report,
+        source_docx_bytes=_docx_bytes(source_doc),
+        output_docx_bytes=_docx_bytes(output_doc),
+        mismatch_threshold=0,
+        unmapped_target_threshold=0,
+    )
+
+    by_name = {check["name"]: check for check in acceptance["checks"]}
+    assert by_name["formatting_diagnostics_threshold"]["passed"] is True
+    assert by_name["formatting_diagnostics_threshold"]["actual"] == 0
+    assert by_name["formatting_diagnostics_threshold"]["raw_worst_unmapped_source_count"] == 2
+    assert by_name["formatting_diagnostics_threshold"]["unmapped_source_count_basis"] == "accepted_aggregation_legacy"
+    assert by_name["unmapped_source_threshold"]["passed"] is True
+    assert by_name["unmapped_source_threshold"]["actual"] == 0
+    assert by_name["unmapped_target_threshold"]["passed"] is True
+    assert by_name["unmapped_target_threshold"]["actual"] == 0
+
+
 def test_evaluate_lietaer_acceptance_emits_required_no_toc_body_concat_check() -> None:
     validation = _load_validation_module()
 
@@ -2174,9 +2233,11 @@ def test_main_comparison_only_reader_cleanup_reports_non_acceptance_artifacts_fo
         "accepted_delete_block_count": 1,
         "ignored_delete_block_count": 1,
         "rejected_delete_block_count": 0,
-        "failed_chunk_count": 0,
-        "anchor_repair_status": "diagnostic_only_not_applied",
-        "recommended_anchor_targets": report["reader_cleanup_evidence"]["recommended_anchor_targets"],
+            "failed_chunk_count": 0,
+            "cleanup_chunk_count": None,
+            "cleanup_settings": {},
+            "anchor_repair_status": "diagnostic_only_not_applied",
+            "recommended_anchor_targets": report["reader_cleanup_evidence"]["recommended_anchor_targets"],
         "recommended_anchor_target_count": report["reader_cleanup_evidence"]["recommended_anchor_target_count"],
         "verifier_recommended_anchor_targets": report["reader_cleanup_evidence"]["verifier_recommended_anchor_targets"],
         "verifier_recommended_anchor_target_count": report["reader_cleanup_evidence"][
@@ -2807,6 +2868,52 @@ def test_parse_reader_verifier_completed_review_normalizes_object_findings_to_st
     assert review["noise_removed"] == ["Repeated header removed."]
     assert review["possible_false_deletions"] == ["One short paragraph may be too aggressive."]
     assert review["readability_regressions"] == ["Some spacing drift remains."]
+
+
+def test_parse_reader_verifier_completed_review_ignores_negated_safety_summaries(tmp_path) -> None:
+    validation = _load_validation_module()
+
+    evidence_path = tmp_path / "reader_quality_evidence.json"
+    evidence_path.write_text("{}", encoding="utf-8")
+    evidence_payload = _reader_verifier_test_evidence_payload()
+    raw_response = _reader_verifier_test_response(
+        overall_verdict="cleaned_better",
+        cleaned_audit_verdict="clean",
+        reader_quality_score_raw=5,
+        reader_quality_score_cleaned=6,
+        confidence="high",
+        noise_removed=["Image placeholders were removed from reader-facing Markdown."],
+        possible_false_deletions=[
+            "No content deletions were accepted per cleanup report; no false deletions detected."
+        ],
+        readability_regressions=["No regressions introduced by cleanup; structural improvements are net positive."],
+        remaining_issues=[],
+        evidence_anchors=[
+            {
+                "kind": "improvement_seen",
+                "artifact": "comparison",
+                "line_ref": "comparison:3",
+                "snippet": "Image placeholders were removed from reader-facing Markdown.",
+                "note": "Reader-visible internal markers were removed.",
+            }
+        ],
+    )
+
+    review = validation._parse_reader_verifier_completed_review(
+        raw_response=raw_response,
+        run_id="run-1",
+        document_profile_id="lietaer-pdf-chapter-region-core",
+        run_profile_id="ui-parity-translate-simple-reader-cleanup-comparison-only",
+        requested_selector="openrouter:google/gemini-3-flash-preview",
+        canonical_selector="openrouter:google/gemini-3-flash-preview",
+        provider="openrouter",
+        model_id="google/gemini-3-flash-preview",
+        evidence_path=evidence_path,
+        evidence_payload=evidence_payload,
+    )
+
+    assert review["possible_false_deletions"] == []
+    assert review["readability_regressions"] == []
 
 
 def test_parse_reader_verifier_completed_review_hardens_overconfident_simple_language(tmp_path) -> None:

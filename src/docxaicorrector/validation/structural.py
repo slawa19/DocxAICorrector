@@ -1065,17 +1065,46 @@ def _derive_unit_aware_unmapped_fields(
                 except (TypeError, ValueError):
                     continue
             unmapped_target_indexes = unresolved_indexes
+    accepted_aggregated_source_ids: set[str] = set()
+    accepted_aggregated_target_indexes: set[int] = set()
+    if formatting_payload is not None:
+        accepted_aggregated_sources = formatting_payload.get("accepted_aggregated_sources")
+        if isinstance(accepted_aggregated_sources, list):
+            for raw_entry in accepted_aggregated_sources:
+                if not isinstance(raw_entry, Mapping):
+                    continue
+                paragraph_id = str(raw_entry.get("paragraph_id") or "").strip()
+                if paragraph_id:
+                    accepted_aggregated_source_ids.add(paragraph_id)
+                try:
+                    target_index = int(cast(Any, raw_entry.get("target_index", -1)))
+                except (TypeError, ValueError):
+                    continue
+                if target_index >= 0:
+                    accepted_aggregated_target_indexes.add(target_index)
+    legacy_effective_unmapped_source_ids = [
+        paragraph_id for paragraph_id in unmapped_source_ids if paragraph_id not in accepted_aggregated_source_ids
+    ]
+    legacy_effective_unmapped_target_indexes = [
+        target_index for target_index in unmapped_target_indexes if target_index not in accepted_aggregated_target_indexes
+    ]
+    legacy_aggregation_adjusted = (
+        len(legacy_effective_unmapped_source_ids) != len(unmapped_source_ids)
+        or len(legacy_effective_unmapped_target_indexes) != len(unmapped_target_indexes)
+    )
     fields: dict[str, object] = {
         "raw_unmapped_source_paragraph_count": len(unmapped_source_ids),
         "raw_unmapped_target_paragraph_count": len(unmapped_target_indexes),
-        "structure_unit_unmapped_source_count": len(unmapped_source_ids),
-        "structure_unit_unmapped_target_count": len(unmapped_target_indexes),
+        "structure_unit_unmapped_source_count": len(legacy_effective_unmapped_source_ids),
+        "structure_unit_unmapped_target_count": len(legacy_effective_unmapped_target_indexes),
         "unit_covered_source_fragment_count": 0,
         "unit_covered_target_fragment_count": 0,
-        "unmapped_source_count_basis": "legacy_paragraph",
-        "unmapped_target_count_basis": "legacy_paragraph",
-        "unit_unmapped_source_gate_source": "legacy_paragraph",
-        "unit_unmapped_target_gate_source": "legacy_paragraph",
+        "accepted_aggregated_source_unit_count": len(accepted_aggregated_source_ids),
+        "accepted_aggregated_target_index_count": len(accepted_aggregated_target_indexes),
+        "unmapped_source_count_basis": "accepted_aggregation_legacy" if legacy_aggregation_adjusted else "legacy_paragraph",
+        "unmapped_target_count_basis": "accepted_aggregation_legacy" if legacy_aggregation_adjusted else "legacy_paragraph",
+        "unit_unmapped_source_gate_source": "accepted_aggregation_legacy" if legacy_aggregation_adjusted else "legacy_paragraph",
+        "unit_unmapped_target_gate_source": "accepted_aggregation_legacy" if legacy_aggregation_adjusted else "legacy_paragraph",
     }
     if formatting_payload is None or not _projection_has_units_or_operations(topology_projection):
         return fields
@@ -1085,11 +1114,34 @@ def _derive_unit_aware_unmapped_fields(
     unmapped_source_unit_keys: set[str] = set()
     for paragraph_id in unmapped_source_ids:
         unmapped_source_unit_keys.update(paragraph_unit_keys.get(paragraph_id, frozenset({f"paragraph:{paragraph_id}"})))
+    accepted_aggregated_source_unit_keys: set[str] = set()
+    accepted_aggregated_target_unit_keys_by_index: dict[int, set[str]] = {}
+    accepted_aggregated_sources = formatting_payload.get("accepted_aggregated_sources")
+    if isinstance(accepted_aggregated_sources, list):
+        for raw_entry in accepted_aggregated_sources:
+            if not isinstance(raw_entry, Mapping):
+                continue
+            paragraph_id = str(raw_entry.get("paragraph_id") or "").strip()
+            if not paragraph_id:
+                continue
+            unit_keys = set(paragraph_unit_keys.get(paragraph_id, frozenset({f"paragraph:{paragraph_id}"})))
+            accepted_aggregated_source_unit_keys.update(unit_keys)
+            try:
+                target_index = int(cast(Any, raw_entry.get("target_index", -1)))
+            except (TypeError, ValueError):
+                continue
+            if target_index >= 0:
+                accepted_aggregated_target_unit_keys_by_index.setdefault(target_index, set()).update(unit_keys)
     aligned_target_unit_keys = _align_target_indexes_to_unit_keys(
         formatting_payload,
         generated_paragraph_registry=generated_paragraph_registry,
         paragraph_unit_keys=paragraph_unit_keys,
     )
+    if accepted_aggregated_target_unit_keys_by_index:
+        merged_alignments: dict[int, frozenset[str]] = dict(aligned_target_unit_keys or {})
+        for target_index, unit_keys in accepted_aggregated_target_unit_keys_by_index.items():
+            _merge_target_alignment_unit_keys(merged_alignments, target_index=target_index, unit_keys=unit_keys)
+        aligned_target_unit_keys = merged_alignments
     generated_registry_aligned_target_indexes: set[int] = set()
     if generated_paragraph_registry:
         generated_registry_aligned_target_indexes = set(
@@ -1115,7 +1167,11 @@ def _derive_unit_aware_unmapped_fields(
             if target_index < 0:
                 continue
             covered_target_unit_keys.update(aligned_target_unit_keys.get(target_index, frozenset()))
+    for unit_keys in accepted_aggregated_target_unit_keys_by_index.values():
+        covered_target_unit_keys.update(unit_keys)
     effective_unmapped_source_unit_keys = set(unmapped_source_unit_keys)
+    if accepted_aggregated_source_unit_keys:
+        effective_unmapped_source_unit_keys.difference_update(accepted_aggregated_source_unit_keys)
     if covered_target_unit_keys:
         effective_unmapped_source_unit_keys.difference_update(covered_target_unit_keys)
     fields.update(
@@ -1123,6 +1179,8 @@ def _derive_unit_aware_unmapped_fields(
             "structure_unit_total_count": len(all_unit_keys),
             "structure_unit_unmapped_source_count": len(effective_unmapped_source_unit_keys),
             "unit_covered_source_fragment_count": max(0, len(all_unit_keys) - len(effective_unmapped_source_unit_keys)),
+            "accepted_aggregated_source_unit_count": len(accepted_aggregated_source_unit_keys),
+            "accepted_aggregated_target_index_count": len(accepted_aggregated_target_unit_keys_by_index),
             "unmapped_source_count_basis": "topology_unit",
             "unit_unmapped_source_gate_source": "topology_unit",
         }
@@ -2476,7 +2534,7 @@ def _build_structural_checks(
     ).strip().lower()
     unmapped_source_actual = (
         _as_int(metrics, "structure_unit_unmapped_source_count")
-        if unmapped_source_gate_source == "topology_unit"
+        if unmapped_source_gate_source in {"topology_unit", "accepted_aggregation_legacy"}
         else _as_int(metrics, "max_unmapped_source_paragraphs")
     )
     unmapped_target_gate_source = str(
@@ -2486,7 +2544,7 @@ def _build_structural_checks(
     ).strip().lower()
     unmapped_target_actual = (
         _as_int(metrics, "structure_unit_unmapped_target_count")
-        if unmapped_target_gate_source == "topology_unit"
+        if unmapped_target_gate_source in {"topology_unit", "accepted_aggregation_legacy"}
         else _as_int(metrics, "max_unmapped_target_paragraphs")
     )
     checks = [

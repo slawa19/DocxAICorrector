@@ -468,7 +468,7 @@ def _resolve_acceptance_unmapped_source_count(
     translation_quality_report: Mapping[str, object],
 ) -> int:
     count_basis = str(translation_quality_report.get("unmapped_source_count_basis") or "").strip().lower()
-    if count_basis == "topology_unit":
+    if count_basis in {"topology_unit", "accepted_aggregation_legacy"}:
         return _coerce_int(
             translation_quality_report.get(
                 "structure_unit_unmapped_source_count",
@@ -496,7 +496,7 @@ def _resolve_acceptance_unmapped_target_count(
     translation_quality_report: Mapping[str, object],
 ) -> int:
     count_basis = str(translation_quality_report.get("unmapped_target_count_basis") or "").strip().lower()
-    if count_basis == "topology_unit":
+    if count_basis in {"topology_unit", "accepted_aggregation_legacy"}:
         return _coerce_int(
             translation_quality_report.get(
                 "structure_unit_unmapped_target_count",
@@ -2445,6 +2445,8 @@ def _build_reader_verifier_system_prompt() -> str:
         "Allowed cleaned_audit_verdict values: clean, improved_but_has_remaining_issues, unsafe_or_regressed, unclear.\n"
         "Allowed confidence values: low, medium, high.\n"
         "noise_removed, possible_false_deletions, and readability_regressions must be arrays of short strings, not objects.\n"
+        "If there are no possible false deletions, possible_false_deletions must be an empty array, not a sentence saying none were found.\n"
+        "If there are no readability regressions, readability_regressions must be an empty array, not a sentence saying none were found.\n"
         "remaining_issues must be a list of objects with exactly category, severity, artifact, line_ref, snippet, why_reader_hurts, recommended_fix_type.\n"
         "Allowed remaining_issues categories: page_furniture_inline, heading_fused_with_body, broken_list_marker, fragmented_paragraph, duplicate_fragment, orphan_caption, mixed_language_leak, quote_not_block_formatted.\n"
         "Allowed severity values: high, medium, low. Allowed artifact values: cleaned_markdown, raw_markdown, comparison. Allowed recommended_fix_type values: delete_noise, split_heading, merge_paragraph, normalize_list, format_quote, other.\n"
@@ -2618,9 +2620,34 @@ def _require_string_list(payload: Mapping[str, object], key: str) -> list[str]:
     result = []
     for item in value:
         normalized = _normalize_string_list_item(item, key=key)
+        if _is_reader_verifier_negated_absence_statement(normalized, key=key):
+            continue
         if normalized:
             result.append(normalized)
     return result
+
+
+def _is_reader_verifier_negated_absence_statement(text: str, *, key: str) -> bool:
+    normalized = " ".join(text.strip().lower().split())
+    if not normalized:
+        return False
+    if key == "possible_false_deletions":
+        return bool(
+            re.search(
+                r"\bno\b.*\b(?:false deletions?|content deletions?|deletions?)\b.*\b(?:detected|reported|accepted|found)\b",
+                normalized,
+            )
+            or re.search(r"\b(?:false deletions?|content deletions?)\b.*\bno\b", normalized)
+        )
+    if key == "readability_regressions":
+        return bool(
+            re.search(
+                r"\bno\b.*\b(?:readability regressions?|regressions?)\b.*\b(?:detected|reported|introduced|found)\b",
+                normalized,
+            )
+            or re.search(r"\b(?:readability regressions?|regressions?)\b.*\bno\b", normalized)
+        )
+    return False
 
 
 def _contains_uncertainty_marker(text: str) -> bool:

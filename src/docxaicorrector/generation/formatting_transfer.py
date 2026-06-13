@@ -469,6 +469,95 @@ def _collect_accepted_aggregated_sources(
     accepted_sources: list[dict[str, object]] = []
     mapped_source_indexes = set(mapped_target_by_source)
     accepted_source_indexes: set[int] = set()
+    source_index_by_id = {
+        (paragraph.paragraph_id or f"p{index:04d}"): index for index, paragraph in enumerate(source_paragraphs)
+    }
+
+    for anchor_source_index, target_index in sorted(mapped_target_by_source.items()):
+        if target_index < 0 or target_index >= len(target_paragraphs):
+            continue
+        anchor_source = source_paragraphs[anchor_source_index]
+        anchor_paragraph_id = anchor_source.paragraph_id or f"p{anchor_source_index:04d}"
+        merged_ids = _generated_registry_merged_ids(generated_registry_by_id.get(anchor_paragraph_id))
+        for merged_id in merged_ids:
+            if merged_id == anchor_paragraph_id:
+                continue
+            source_index = source_index_by_id.get(merged_id)
+            if source_index is None:
+                continue
+            if source_index in mapped_source_indexes or source_index in accepted_source_indexes:
+                continue
+
+            source_paragraph = source_paragraphs[source_index]
+            accepted_source_indexes.add(source_index)
+            aggregation_kind = _source_paragraph_aggregation_kind(source_paragraph)
+            accepted_sources.append(
+                {
+                    "paragraph_id": merged_id,
+                    "source_index": source_index,
+                    "target_index": target_index,
+                    "kind": (
+                        f"{aggregation_kind}_generated_registry_target_aggregation"
+                        if aggregation_kind is not None
+                        else "generated_registry_target_aggregation"
+                    ),
+                    "anchor_source_index": anchor_source_index,
+                    "anchor_paragraph_id": anchor_paragraph_id,
+                    "target_text_preview": _paragraph_preview(target_paragraphs[target_index].text),
+                    "source_text_preview": _paragraph_preview(source_paragraph.text),
+                }
+            )
+
+    for anchor_source_index, target_index in sorted(mapped_target_by_source.items()):
+        if target_index < 0 or target_index >= len(target_paragraphs):
+            continue
+        anchor_source = source_paragraphs[anchor_source_index]
+        if anchor_source.role != "image":
+            continue
+        target_text = target_paragraphs[target_index].text
+        if not IMAGE_PLACEHOLDER_PATTERN.search(target_text):
+            continue
+        target_normalized = _normalize_text_for_mapping(target_text)
+        if not target_normalized:
+            continue
+
+        for source_index in range(anchor_source_index + 1, min(len(source_paragraphs), anchor_source_index + 4)):
+            if source_index in mapped_source_indexes or source_index in accepted_source_indexes:
+                continue
+            source_paragraph = source_paragraphs[source_index]
+            structural_role = str(getattr(source_paragraph, "structural_role", "") or "").strip().lower()
+            role = str(getattr(source_paragraph, "role", "") or "").strip().lower()
+            if role != "heading" and structural_role != "heading":
+                break
+
+            paragraph_id = source_paragraph.paragraph_id or f"p{source_index:04d}"
+            generated_text = _generated_registry_text(generated_registry_by_id.get(paragraph_id))
+            if not generated_text:
+                continue
+            matched_candidate = next(
+                (
+                    candidate
+                    for candidate in _build_generated_registry_candidates(source_paragraph, generated_text)
+                    if len(candidate) >= 5 and candidate in target_normalized
+                ),
+                "",
+            )
+            if not matched_candidate:
+                continue
+
+            accepted_source_indexes.add(source_index)
+            accepted_sources.append(
+                {
+                    "paragraph_id": paragraph_id,
+                    "source_index": source_index,
+                    "target_index": target_index,
+                    "kind": "image_heading_shared_target",
+                    "anchor_source_index": anchor_source_index,
+                    "anchor_paragraph_id": anchor_source.paragraph_id or f"p{anchor_source_index:04d}",
+                    "target_text_preview": _paragraph_preview(target_text),
+                    "source_text_preview": _paragraph_preview(source_paragraph.text),
+                }
+            )
 
     for anchor_source_index, target_index in sorted(mapped_target_by_source.items()):
         if target_index < 0 or target_index >= len(target_paragraphs):
@@ -629,6 +718,52 @@ def _map_source_target_paragraphs(
         paragraph_id = source_paragraph.paragraph_id
         if not paragraph_id or source_index in mapped_target_by_source or source_paragraph.role == "image":
             continue
+
+        registry_entry = generated_registry_by_id.get(paragraph_id)
+        if not _generated_registry_merged_ids(registry_entry):
+            continue
+
+        registry_candidates = [
+            candidate
+            for candidate in _build_generated_registry_candidates(
+                source_paragraph,
+                _generated_registry_text(registry_entry),
+            )
+            if len(candidate) >= 30
+        ]
+        if not registry_candidates:
+            continue
+
+        aggregation_candidates: list[int] = []
+        for target_index in sorted(available_target_indexes):
+            if abs(target_index - source_index) > 12:
+                continue
+            target_normalized = _normalize_text_for_mapping(target_paragraphs[target_index].text)
+            if not target_normalized:
+                continue
+            if any(
+                candidate in target_normalized
+                and len(candidate) / max(len(target_normalized), 1) >= 0.6
+                for candidate in registry_candidates
+            ):
+                aggregation_candidates.append(target_index)
+
+        if len(aggregation_candidates) != 1:
+            continue
+
+        _register_mapping(
+            source_index,
+            aggregation_candidates[0],
+            "paragraph_id_registry_aggregation_anchor",
+            mapped_target_by_source=mapped_target_by_source,
+            strategy_by_source=strategy_by_source,
+            available_target_indexes=available_target_indexes,
+        )
+
+    for source_index, source_paragraph in enumerate(source_paragraphs):
+        paragraph_id = source_paragraph.paragraph_id
+        if not paragraph_id or source_index in mapped_target_by_source or source_paragraph.role == "image":
+            continue
         generated_text = _generated_registry_text(generated_registry_by_id.get(paragraph_id))
         if not generated_text:
             continue
@@ -674,11 +809,22 @@ def _map_source_target_paragraphs(
             for target_index in target_indexes_by_exact_text.get(source_paragraph.text.strip(), [])
             if target_index in available_target_indexes
         ]
+        strategy = "image_anchor"
+        if not candidates:
+            source_image_text = source_paragraph.text.strip()
+            candidates = [
+                target_index
+                for target_index in sorted(available_target_indexes)
+                if source_image_text
+                and source_image_text in target_paragraphs[target_index].text
+                and IMAGE_PLACEHOLDER_PATTERN.search(target_paragraphs[target_index].text)
+            ]
+            strategy = "image_anchor_contained"
         if len(candidates) == 1:
             _register_mapping(
                 source_index,
                 candidates[0],
-                "image_anchor",
+                strategy,
                 mapped_target_by_source=mapped_target_by_source,
                 strategy_by_source=strategy_by_source,
                 available_target_indexes=available_target_indexes,

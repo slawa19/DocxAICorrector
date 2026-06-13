@@ -877,11 +877,14 @@ def _recover_from_persistent_empty_response(
             minimum_tokens=minimum_output_tokens,
         )
     markdown = _call_markdown_request_with_sdk_fallback(client, request_kwargs)[0]
-    return _strip_and_validate_paragraph_markers(
+    cleaned_markdown = _strip_and_validate_paragraph_markers(
         markdown,
         expected_paragraph_ids,
         marker_mode=marker_mode,
     )
+    if not cleaned_markdown.strip():
+        raise RuntimeError("Модель вернула пустой ответ (empty_response).")
+    return cleaned_markdown
 
 
 def _is_incomplete_response_error(exc: Exception) -> bool:

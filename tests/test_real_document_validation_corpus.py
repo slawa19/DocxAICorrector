@@ -4139,6 +4139,139 @@ def test_derive_unit_aware_unmapped_fields_promotes_target_basis_when_all_unmapp
     assert fields["unit_unmapped_target_gate_source"] == "topology_unit"
 
 
+def test_derive_unit_aware_unmapped_fields_counts_accepted_aggregation_as_effective_coverage() -> None:
+    source_paragraphs = [
+        ParagraphUnit(
+            text="10 truth and consequences",
+            role="body",
+            structural_role="toc_entry",
+            paragraph_id="p0015",
+            source_index=15,
+            logical_index=15,
+        ),
+        ParagraphUnit(
+            text="11 governance and we, the citizens",
+            role="body",
+            structural_role="toc_entry",
+            paragraph_id="p0016",
+            source_index=16,
+            logical_index=16,
+        ),
+        ParagraphUnit(
+            text="12 our available future",
+            role="body",
+            structural_role="toc_entry",
+            paragraph_id="p0017",
+            source_index=17,
+            logical_index=17,
+        ),
+    ]
+    projection = DocumentTopologyProjection(
+        cache_key="accepted-aggregation-effective-coverage",
+        projected_units=(
+            StructuralUnit(
+                unit_id="u_elsewhere",
+                unit_type="body",
+                logical_indexes=(99,),
+                canonical_text="Elsewhere",
+                role="body",
+                heading_level=None,
+                confidence="high",
+                authority="document_map_outline",
+            ),
+        ),
+    )
+
+    fields = real_document_validation_structural._derive_unit_aware_unmapped_fields(
+        source_paragraphs=source_paragraphs,
+        topology_projection=projection,
+        formatting_payload={
+            "unmapped_source_ids": ["p0016", "p0017"],
+            "unmapped_target_indexes": [9],
+            "target_registry": [
+                {
+                    "target_index": 9,
+                    "mapped": False,
+                    "text_preview": "10 истина и последствия 11 управление и мы, граждане 12 наше доступное будущее",
+                },
+            ],
+            "accepted_aggregated_sources": [
+                {
+                    "paragraph_id": "p0016",
+                    "source_index": 16,
+                    "target_index": 9,
+                    "kind": "toc_entry_generated_registry_target_aggregation",
+                    "anchor_paragraph_id": "p0015",
+                },
+                {
+                    "paragraph_id": "p0017",
+                    "source_index": 17,
+                    "target_index": 9,
+                    "kind": "toc_entry_generated_registry_target_aggregation",
+                    "anchor_paragraph_id": "p0015",
+                },
+            ],
+        },
+        generated_paragraph_registry=None,
+    )
+
+    assert fields["raw_unmapped_source_paragraph_count"] == 2
+    assert fields["raw_unmapped_target_paragraph_count"] == 1
+    assert fields["structure_unit_unmapped_source_count"] == 0
+    assert fields["structure_unit_unmapped_target_count"] == 0
+    assert fields["accepted_aggregated_source_unit_count"] == 2
+    assert fields["accepted_aggregated_target_index_count"] == 1
+    assert fields["unmapped_source_count_basis"] == "topology_unit"
+    assert fields["unmapped_target_count_basis"] == "topology_unit"
+    assert fields["unit_unmapped_source_gate_source"] == "topology_unit"
+    assert fields["unit_unmapped_target_gate_source"] == "topology_unit"
+
+
+def test_derive_unit_aware_unmapped_fields_applies_accepted_aggregation_without_topology_projection() -> None:
+    source_paragraphs = [
+        ParagraphUnit(text="10 truth and consequences", role="body", paragraph_id="p0015", source_index=15),
+        ParagraphUnit(text="11 governance and we", role="body", paragraph_id="p0016", source_index=16),
+        ParagraphUnit(text="12 available future", role="body", paragraph_id="p0017", source_index=17),
+    ]
+
+    fields = real_document_validation_structural._derive_unit_aware_unmapped_fields(
+        source_paragraphs=source_paragraphs,
+        topology_projection=None,
+        formatting_payload={
+            "unmapped_source_ids": ["p0016", "p0017"],
+            "unmapped_target_indexes": [9],
+            "accepted_aggregated_sources": [
+                {
+                    "paragraph_id": "p0016",
+                    "source_index": 16,
+                    "target_index": 9,
+                    "kind": "generated_registry_target_aggregation",
+                    "anchor_paragraph_id": "p0015",
+                },
+                {
+                    "paragraph_id": "p0017",
+                    "source_index": 17,
+                    "target_index": 9,
+                    "kind": "generated_registry_target_aggregation",
+                    "anchor_paragraph_id": "p0015",
+                },
+            ],
+        },
+        generated_paragraph_registry=None,
+    )
+
+    assert fields["raw_unmapped_source_paragraph_count"] == 2
+    assert fields["raw_unmapped_target_paragraph_count"] == 1
+    assert fields["structure_unit_unmapped_source_count"] == 0
+    assert fields["structure_unit_unmapped_target_count"] == 0
+    assert fields["accepted_aggregated_source_unit_count"] == 2
+    assert fields["accepted_aggregated_target_index_count"] == 1
+    assert fields["unmapped_source_count_basis"] == "accepted_aggregation_legacy"
+    assert fields["unmapped_target_count_basis"] == "accepted_aggregation_legacy"
+    assert fields["unit_unmapped_source_gate_source"] == "accepted_aggregation_legacy"
+    assert fields["unit_unmapped_target_gate_source"] == "accepted_aggregation_legacy"
+
+
 def test_derive_unit_aware_unmapped_fields_suppresses_relation_sibling_covered_by_mapped_target_alignment() -> None:
     source_paragraphs = [
         ParagraphUnit(
