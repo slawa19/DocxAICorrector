@@ -5495,7 +5495,7 @@ def test_reader_cleanup_postprocess_prefers_assembly_formatting_registry_over_st
             ensure_ascii=False,
         )
 
-    cleaned_markdown, cleaned_docx_bytes, report, _raw, _notice = document_pipeline_late_phases._run_reader_cleanup_postprocess(
+    cleaned_markdown, cleaned_docx_bytes, report, _raw, _notice, final_registry = document_pipeline_late_phases._run_reader_cleanup_postprocess(
         context=SimpleNamespace(
             processing_operation="translate",
             app_config={
@@ -5543,6 +5543,10 @@ def test_reader_cleanup_postprocess_prefers_assembly_formatting_registry_over_st
     assert cleaned_markdown == "Intro\n\nBody paragraph"
     assert cleaned_docx_bytes == b"Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph"
     assert report is not None
+    assert final_registry == [
+        {"block_index": 1, "paragraph_id": "p0001", "text": "Intro", "target_paragraph_indexes": [0]},
+        {"block_index": 3, "paragraph_id": "p0003", "text": "Body paragraph", "target_paragraph_indexes": [2]},
+    ]
     assert preserve_calls == [[
         {"block_index": 1, "paragraph_id": "p0001", "text": "Intro", "target_paragraph_indexes": [0]},
         {"block_index": 3, "paragraph_id": "p0003", "text": "Body paragraph", "target_paragraph_indexes": [2]},
@@ -5561,6 +5565,84 @@ def test_reader_cleanup_postprocess_prefers_assembly_formatting_registry_over_st
     assert lineage_payload["active_formatting_registry"] == assembly_registry
     assert lineage_payload["cleanup_identity_diagnostics"]["text_gap_count"] == 0
     assert lineage_payload["cleanup_formatting_lineage"]["status"] == "derived"
+
+
+def test_reader_cleanup_postprocess_persists_final_generated_registry_in_runtime_state(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(document_pipeline_late_phases, "READER_CLEANUP_LINEAGE_DIR", tmp_path / "reader_cleanup_lineage")
+    runtime = _build_runtime_capture()
+    raw_markdown = "Intro\n\n[[DOCX_IMAGE_img_001]]\n\nBody paragraph"
+    assembly_registry = [
+        {"block_index": 1, "paragraph_id": "p0001", "text": "Intro"},
+        {"block_index": 3, "paragraph_id": "p0003", "text": "Body paragraph"},
+    ]
+
+    def generate_markdown_block(**kwargs):
+        payload = json.loads(kwargs["target_text"])
+        delete_target = next(block for block in payload["blocks"] if block["text"] == "[[DOCX_IMAGE_img_001]]")
+        return json.dumps(
+            {
+                "cleanup_operations": [
+                    {
+                        "id": delete_target["id"],
+                        "text_hash": delete_target["text_hash"],
+                        "operation": "delete_block",
+                        "reason": "extraction_artifact",
+                        "confidence": "high",
+                        "evidence_before": "[[DOCX_IMAGE_img_001]]",
+                        "expected_after_preview": "",
+                        "safety_note": "test fixture",
+                    }
+                ],
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    document_pipeline_late_phases._run_reader_cleanup_postprocess(
+        context=SimpleNamespace(
+            processing_operation="translate",
+            app_config={
+                "reader_cleanup_enabled": True,
+                "reader_cleanup_policy": "advisory",
+                "reader_cleanup_chunk_size": 500,
+                "reader_cleanup_max_delete_block_ratio": 0.8,
+                "reader_cleanup_max_delete_char_ratio": 0.8,
+            },
+            model="anthropic:claude-sonnet-4-6",
+            max_retries=1,
+            uploaded_filename="report.docx",
+            runtime=runtime,
+            source_paragraphs=[ParagraphUnit(text="Intro", role="body", paragraph_id="p0001")],
+        ),
+        dependencies=SimpleNamespace(
+            get_client=lambda: object(),
+            generate_markdown_block=generate_markdown_block,
+            convert_markdown_to_docx_bytes=lambda markdown_text: markdown_text.encode("utf-8"),
+            preserve_source_paragraph_properties=lambda docx_bytes, paragraphs, generated_paragraph_registry=None: docx_bytes,
+            reinsert_inline_images=lambda docx_bytes, image_assets: docx_bytes,
+            log_event=lambda *args, **kwargs: None,
+            present_error=lambda code, exc, title, **kwargs: f"{title}: {exc}",
+        ),
+        emitters=SimpleNamespace(
+            emit_activity=lambda *args, **kwargs: None,
+            emit_state=_emit_state,
+        ),
+        state=SimpleNamespace(generated_paragraph_registry=None),
+        cleanup_input_markdown=raw_markdown,
+        runtime_display_markdown=raw_markdown,
+        base_docx_bytes=b"base-docx",
+        job_count=1,
+        processed_image_assets=[],
+        formatting_registry=assembly_registry,
+    )
+
+    assert runtime["state"]["final_generated_paragraph_registry"] == [
+        {"block_index": 1, "paragraph_id": "p0001", "text": "Intro", "target_paragraph_indexes": [0]},
+        {"block_index": 3, "paragraph_id": "p0003", "text": "Body paragraph", "target_paragraph_indexes": [2]},
+    ]
 
 
 def test_rebuild_docx_for_markdown_prefers_cleanup_formatting_registry_override():

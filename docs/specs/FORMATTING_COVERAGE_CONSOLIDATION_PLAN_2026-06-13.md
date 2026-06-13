@@ -193,13 +193,23 @@ are validated cheaply.
   the sample limit.
 - `scripts/classify-formatting-residuals.py --replay` now recomputes restore
   diagnostics from the saved final DOCX with current mapping code and no model
-  call. When no source DOCX is supplied, it reconstructs source paragraphs from
-  the saved `source_registry` preview and labels the result
-  `source_reconstruction_basis=saved_source_registry_preview`.
+  call. Replay now treats the saved `source_registry` preview as the canonical
+  source paragraph set for parity with the saved run; source DOCX is only an
+  explicit override/debug path. Results are labelled with
+  `source_reconstruction_basis`.
 - Replay output now also labels fidelity against the saved report
   (`replay_fidelity` plus saved/replayed source counts), so older artifacts do
   not masquerade as exact historical parity when the available source artifact
   differs from the saved source paragraph set.
+- For saved artifacts that only retain source-language `source_registry`
+  previews, replay may report `count_parity_only_source_language_preview`: this
+  is enough to preserve source count/order, but not enough to reproduce the
+  translated rebuild-key sidecar exactly. FC5 decisions must not use that mode
+  as marker-proof parity.
+- Future live proof artifacts should also persist the final post-cleanup
+  generated paragraph registry that fed rebuild-key restore, so replay can
+  recover exact translated identity inputs instead of relying on source-language
+  previews only.
 - Plain non-replay mode still supports legacy report inspection from saved
   `residual_rows` / `samples`, but that path is now explicitly a viewer for
   baked diagnostics rather than the primary FC3 verification path.
@@ -247,10 +257,31 @@ sidecar). Do not lose the pre-cleanup baseline.
   the expected single final formatting diagnostic on the real cleanup-enabled
   profile.
 
-## PR-FC5. Embedded Id-Marker — conditional, likely dropped
+## PR-FC5. Embedded Id-Marker — dropped for this iteration
 
 **Intent:** the only thing that closes `target_exists_text_align_missed` without
-text equality. Upper bound is `7`, so it cannot pass the gate alone.
+text equality. Historical optimistic upper bound is `7`, so it cannot pass the
+gate alone.
+
+**Decision (2026-06-13):** drop from the current implementation branch.
+
+**Why this is a real decision, not deferral:**
+- even the optimistic historical upper bound (`7`) cannot move
+  `unmapped_source 29 -> <=12`;
+- PR-FC1 changes the gate semantics toward role-aware coverage, so the right
+  next lever is coverage accounting, not identity plumbing;
+- the FC3 replay on the saved i2c artifact is intentionally labelled
+  `count_parity_only_source_language_preview`, so there is no value in trying to
+  squeeze marker-proof parity out of a stale artifact that does not persist the
+  final translated rebuild registry;
+- all available measurements point the same way: marker is not the main
+  leverage, and the residual is dominated by images, aggregates, and real role
+  loss rather than marker-closable single-origin misses.
+
+**Durable follow-through kept:** future live proof artifacts should persist the
+final post-cleanup generated paragraph registry that actually feeds rebuild-key
+restore. That improves future replay fidelity, but it is not a blocker for the
+FC5 drop decision on this iteration.
 
 **Decision gate (made after PR-FC1):**
 - If the role-aware gate already credits/closes those cases or reduces them to an

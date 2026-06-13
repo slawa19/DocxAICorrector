@@ -184,6 +184,20 @@ def _rebuild_docx_for_markdown(
     return docx_bytes
 
 
+def _resolve_final_generated_paragraph_registry(
+    *,
+    markdown_text: str,
+    generated_paragraph_registry: Sequence[Mapping[str, object]] | None,
+) -> Sequence[Mapping[str, object]] | None:
+    if generated_paragraph_registry is None:
+        return None
+    rebuild_identity_registry = _build_rebuild_identity_formatting_registry(
+        markdown_text=markdown_text,
+        generated_paragraph_registry=generated_paragraph_registry,
+    )
+    return rebuild_identity_registry or generated_paragraph_registry
+
+
 def _resolve_docx_phase_bytes(docx_phase: Mapping[str, object]) -> bytes:
     docx_bytes = docx_phase.get("docx_bytes")
     if isinstance(docx_bytes, bytes):
@@ -918,7 +932,14 @@ def _run_reader_cleanup_postprocess(
     processed_image_assets: Sequence[Any],
     formatting_registry: Sequence[Mapping[str, object]] | None = None,
     base_docx_builder: Callable[[], bytes] | None = None,
-) -> tuple[str, bytes, dict[str, object] | None, str | None, dict[str, str] | None]:
+) -> tuple[
+    str,
+    bytes,
+    dict[str, object] | None,
+    str | None,
+    dict[str, str] | None,
+    Sequence[Mapping[str, object]] | None,
+]:
     def _base_docx_bytes() -> bytes:
         if base_docx_bytes is not None:
             return base_docx_bytes
@@ -926,12 +947,18 @@ def _run_reader_cleanup_postprocess(
             return base_docx_builder()
         return b""
 
+    active_formatting_registry = formatting_registry or state.generated_paragraph_registry or None
+    base_final_generated_registry = _resolve_final_generated_paragraph_registry(
+        markdown_text=runtime_display_markdown,
+        generated_paragraph_registry=active_formatting_registry,
+    )
+
     if not _should_run_reader_cleanup(context=context):
-        return runtime_display_markdown, _base_docx_bytes(), None, None, None
+        return runtime_display_markdown, _base_docx_bytes(), None, None, None, base_final_generated_registry
 
     config = resolve_reader_cleanup_config(app_config=context.app_config, fallback_model=context.model)
     if not config.enabled:
-        return runtime_display_markdown, _base_docx_bytes(), None, None, None
+        return runtime_display_markdown, _base_docx_bytes(), None, None, None, base_final_generated_registry
     if config.drop_back_matter:
         dependencies.log_event(
             logging.WARNING,
@@ -958,7 +985,6 @@ def _run_reader_cleanup_postprocess(
     )
 
     emitters.emit_activity(context.runtime, "Запущен reader cleanup post-pass для итогового Markdown.")
-    active_formatting_registry = formatting_registry or state.generated_paragraph_registry or None
     cleanup_identity_metadata, cleanup_identity_diagnostics = _build_reader_cleanup_block_identity_metadata(
         raw_markdown=cleanup_input_markdown,
         generated_paragraph_registry=active_formatting_registry,
@@ -1146,7 +1172,14 @@ def _run_reader_cleanup_postprocess(
                 cleanup_identity_image_gap_count=cleanup_identity_diagnostics.get("image_gap_count"),
                 cleanup_identity_text_gap_count=cleanup_identity_diagnostics.get("text_gap_count"),
             )
-            return runtime_display_markdown, _base_docx_bytes(), cleanup_result.report_payload, cleanup_result.raw_markdown, None
+            return (
+                runtime_display_markdown,
+                _base_docx_bytes(),
+                cleanup_result.report_payload,
+                cleanup_result.raw_markdown,
+                None,
+                base_final_generated_registry,
+            )
 
         cleaned_runtime_display_markdown = _normalize_final_markdown_for_runtime_display(cleanup_result.cleaned_markdown)
         cleanup_formatting_registry, cleanup_formatting_lineage = _derive_reader_cleanup_generated_paragraph_registry(
@@ -1181,8 +1214,13 @@ def _run_reader_cleanup_postprocess(
             processed_image_assets=processed_image_assets,
             generated_paragraph_registry=cleanup_formatting_registry,
         )
+        final_generated_registry = _resolve_final_generated_paragraph_registry(
+            markdown_text=docx_rebuild_markdown,
+            generated_paragraph_registry=cleanup_formatting_registry,
+        )
         emitters.emit_state(
             context.runtime,
+            final_generated_paragraph_registry=final_generated_registry,
             latest_markdown=cleaned_runtime_display_markdown,
             latest_docx_bytes=cleaned_docx_bytes,
         )
@@ -1228,7 +1266,14 @@ def _run_reader_cleanup_postprocess(
             cleaned_markdown_chars=len(cleaned_runtime_display_markdown),
             raw_markdown_chars=len(cleanup_result.raw_markdown),
         )
-        return cleaned_runtime_display_markdown, cleaned_docx_bytes, cleanup_result.report_payload, cleanup_result.raw_markdown, None
+        return (
+            cleaned_runtime_display_markdown,
+            cleaned_docx_bytes,
+            cleanup_result.report_payload,
+            cleanup_result.raw_markdown,
+            None,
+            final_generated_registry,
+        )
     except Exception as exc:
         error_message = dependencies.present_error(
             "reader_cleanup_failed",
@@ -1267,13 +1312,21 @@ def _run_reader_cleanup_postprocess(
             )
         emitters.emit_state(
             context.runtime,
+            final_generated_paragraph_registry=base_final_generated_registry,
             latest_docx_bytes=_base_docx_bytes(),
             latest_markdown=runtime_display_markdown,
             latest_narration_text=None,
             latest_result_notice=result_notice,
             last_error=error_message,
         )
-        return runtime_display_markdown, _base_docx_bytes(), cast(dict[str, object] | None, strict_report), strict_raw_markdown, result_notice
+        return (
+            runtime_display_markdown,
+            _base_docx_bytes(),
+            cast(dict[str, object] | None, strict_report),
+            strict_raw_markdown,
+            result_notice,
+            base_final_generated_registry,
+        )
 
 
 def _serialize_assembly_decisions(decisions: Sequence[object], *, limit: int = 20) -> list[dict[str, object]]:
@@ -2672,7 +2725,7 @@ def finalize_processing_success(
     reader_cleanup_report: dict[str, object] | None = None
     reader_cleanup_raw_markdown: str | None = None
     reader_cleanup_result_notice: dict[str, str] | None = None
-    runtime_display_markdown, final_docx_bytes, reader_cleanup_report, reader_cleanup_raw_markdown, reader_cleanup_result_notice = _run_reader_cleanup_postprocess(
+    runtime_display_markdown, final_docx_bytes, reader_cleanup_report, reader_cleanup_raw_markdown, reader_cleanup_result_notice, final_generated_paragraph_registry = _run_reader_cleanup_postprocess(
         context=context,
         dependencies=dependencies,
         emitters=emitters,
@@ -2685,6 +2738,9 @@ def finalize_processing_success(
         formatting_registry=build_generated_paragraph_registry_from_entries(assembly_result.entries),
         base_docx_builder=cast(Callable[[], bytes] | None, docx_phase.get("base_docx_builder")),
     )
+    if final_generated_paragraph_registry is not None:
+        docx_phase = dict(docx_phase)
+        docx_phase["final_generated_paragraph_registry"] = final_generated_paragraph_registry
     empty_docx_failure = _validate_nonempty_docx_bytes_or_fail(
         context=context,
         dependencies=dependencies,
@@ -2816,6 +2872,9 @@ def finalize_processing_success(
                 )
     emitters.emit_state(
         context.runtime,
+        final_generated_paragraph_registry=cast(
+            Sequence[Mapping[str, object]] | None, docx_phase.get("final_generated_paragraph_registry")
+        ),
         latest_docx_bytes=_resolve_docx_phase_bytes(docx_phase),
         latest_markdown=runtime_display_markdown,
         latest_narration_text=narration_text,

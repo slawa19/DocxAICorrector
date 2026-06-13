@@ -371,7 +371,7 @@ def main() -> int:
         "--source-docx",
         type=Path,
         default=None,
-        help="Optional source DOCX path. If omitted, replay reconstructs source paragraphs from saved source_registry previews.",
+        help="Optional source DOCX override/debug path. Default replay uses saved source_registry when available.",
     )
     parser.add_argument(
         "--target-docx",

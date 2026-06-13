@@ -141,6 +141,28 @@ def build_source_paragraphs_from_saved_registry(
     return paragraphs
 
 
+def _saved_registry_preview_looks_source_language(
+    source_registry: Sequence[Mapping[str, object]],
+    target_registry: Sequence[Mapping[str, object]],
+) -> bool:
+    source_previews = [
+        str(entry.get("text_preview") or "").strip().casefold()
+        for entry in source_registry[:8]
+        if str(entry.get("text_preview") or "").strip()
+    ]
+    target_previews = [
+        str(entry.get("text_preview") or "").strip().casefold()
+        for entry in target_registry[:8]
+        if str(entry.get("text_preview") or "").strip()
+    ]
+    if not source_previews or not target_previews:
+        return False
+    if any(preview.startswith("contents") or preview.startswith("foreword") or preview.startswith("introduction") for preview in source_previews):
+        if any("содержание" in preview or "предислов" in preview or "введение" in preview for preview in target_previews):
+            return True
+    return False
+
+
 def _select_formatting_payload(
     report_payload: Mapping[str, object],
     diagnostic_index: int = -1,
@@ -171,27 +193,32 @@ def replay_formatting_diagnostics_from_report(
     if resolved_target_docx_path is None or not resolved_target_docx_path.exists():
         raise FileNotFoundError("Target DOCX path for replay is missing.")
 
+    source_registry = _coerce_mapping_sequence(saved_payload.get("source_registry"))
     resolved_source_docx_path = source_docx_path
-    if resolved_source_docx_path is None:
+    if resolved_source_docx_path is not None:
+        if not resolved_source_docx_path.exists():
+            raise FileNotFoundError(f"Explicit source_docx_path does not exist: {resolved_source_docx_path}")
+        source_paragraphs, _ = extract_document_content_from_docx(BytesIO(resolved_source_docx_path.read_bytes()))
+        source_reconstruction_basis = "source_docx_override"
+    elif source_registry:
+        source_paragraphs = build_source_paragraphs_from_saved_registry(source_registry)
+        source_reconstruction_basis = "saved_source_registry_preview"
+    else:
         resolved_source_docx_path = resolve_source_docx_from_report(
             report_path=report_path,
             report_payload=report_payload,
             target_docx_path=resolved_target_docx_path,
         )
-
-    if resolved_source_docx_path is not None and resolved_source_docx_path.exists():
+        if resolved_source_docx_path is None or not resolved_source_docx_path.exists():
+            raise FileNotFoundError("Replay requires saved source_registry or explicit/derived source_docx_path.")
         source_paragraphs, _ = extract_document_content_from_docx(BytesIO(resolved_source_docx_path.read_bytes()))
-        source_reconstruction_basis = "source_docx"
-    else:
-        source_registry = _coerce_mapping_sequence(saved_payload.get("source_registry"))
-        if not source_registry:
-            raise FileNotFoundError("Replay requires source_docx_path or saved source_registry.")
-        source_paragraphs = build_source_paragraphs_from_saved_registry(source_registry)
-        source_reconstruction_basis = "saved_source_registry_preview"
+        source_reconstruction_basis = "source_docx_fallback"
 
     target_document = Document(str(resolved_target_docx_path))
     target_paragraphs = _collect_target_paragraphs(target_document)
-    saved_source_count = len(_coerce_mapping_sequence(saved_payload.get("source_registry")))
+    saved_source_registry = _coerce_mapping_sequence(saved_payload.get("source_registry"))
+    saved_target_registry = _coerce_mapping_sequence(saved_payload.get("target_registry"))
+    saved_source_count = len(saved_source_registry)
     replayed_diagnostics = _build_output_formatting_diagnostics(
         source_paragraphs,
         target_paragraphs,
@@ -205,6 +232,15 @@ def replay_formatting_diagnostics_from_report(
         replay_fidelity_note = (
             "Current replay source paragraphs do not match the saved report source_registry count; "
             "treat replay output as current-code diagnostic evidence, not exact historical parity."
+        )
+    elif (
+        source_reconstruction_basis == "saved_source_registry_preview"
+        and _saved_registry_preview_looks_source_language(saved_source_registry, saved_target_registry)
+    ):
+        replay_fidelity = "count_parity_only_source_language_preview"
+        replay_fidelity_note = (
+            "Saved source_registry restores paragraph count/order, but its text preview appears to remain in the source language. "
+            "This is enough for count parity, not for exact historical rebuild-key parity against translated output."
         )
     return {
         "report_path": str(report_path),

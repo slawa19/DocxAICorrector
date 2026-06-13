@@ -68,6 +68,7 @@ _DEFAULT_UPLOADED_FILENAME = "document.docx"
 _DOC_CONVERSION_TIMEOUT_SECONDS = 120
 _MATERIALIZED_UPLOAD_CACHE_LIMIT = 4
 _ALLOWED_SET_STATE_EVENT_KEYS = {
+    "final_generated_paragraph_registry",
     "image_assets",
     "last_background_error",
     "last_error",
